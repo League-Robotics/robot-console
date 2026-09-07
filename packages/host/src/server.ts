@@ -4,7 +4,11 @@
  * Express + `ws`: one WebSocket carries device-list updates and line
  * traffic to and from the browser (telemetry frames join this same
  * channel in sprint 4, not this one). Express itself serves the built
- * `packages/ui` output as static files.
+ * `packages/ui` output as static files. Sprint 2 (ticket 006) adds
+ * flash-start/flash-progress/flash-result traffic and merges the
+ * `FirmwareAvailabilityCache`'s current status into every `devices`
+ * broadcast, joining the same channel and the same "no logic of its
+ * own" contract described below.
  *
  * This module contains **no naming, framing, or sequencing logic of its
  * own** -- it only composes `deviceRegistry.ts` (itself a composition of
@@ -28,7 +32,9 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocket, WebSocketServer } from "ws";
 import { DeviceRegistry } from "./deviceRegistry.js";
-import { parseClientMessage, type ServerMessage } from "./wsMessages.js";
+import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
+import { FirmwareAvailabilityCache } from "./releases.js";
+import { parseClientMessage, type DeviceListEntry, type DevicesMessage, type ServerMessage } from "./wsMessages.js";
 
 /** Default port `npx robot-console` listens on. Override via
  * {@link StartServerOptions.port} (the `cli.ts` entry point also
@@ -64,6 +70,19 @@ export interface StartServerOptions {
   /** Injectable {@link DeviceRegistry}; defaults to a real one (real
    * USB/HID/serial I/O). Tests substitute one built from fakes. */
   registry?: DeviceRegistry;
+  /** Injectable firmware-source configuration (ticket 002); defaults to
+   * a real call to {@link getFirmwareConfig} (real environment/dotconfig
+   * `.env` parsing). Used to construct the default
+   * {@link FirmwareAvailabilityCache} below -- ignored if
+   * {@link StartServerOptions.availabilityCache} is passed directly. */
+  firmwareConfig?: FirmwareConfigMap;
+  /** Injectable {@link FirmwareAvailabilityCache}; defaults to one
+   * constructed from {@link StartServerOptions.firmwareConfig}. Tests
+   * substitute one built with a fake `checkAvailability` (mirroring how
+   * {@link StartServerOptions.registry} substitutes fakes for
+   * `DeviceRegistry`), so `pollOnce()`/`onChange` can be driven
+   * deterministically with no real GitHub call. */
+  availabilityCache?: FirmwareAvailabilityCache;
 }
 
 export interface RunningServer {
@@ -138,6 +157,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   const port = options.port ?? DEFAULT_PORT;
   const staticDir = options.staticDir ?? defaultStaticDir();
   const registry = options.registry ?? new DeviceRegistry();
+  const firmwareConfig = options.firmwareConfig ?? getFirmwareConfig();
+  const availabilityCache = options.availabilityCache ?? new FirmwareAvailabilityCache(firmwareConfig);
 
   const app = buildApp(staticDir);
   const httpServer = createServer(app);
@@ -162,8 +183,15 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     }
   }
 
+  /** Merge an already-computed device snapshot with the availability
+   * cache's current status into one full-snapshot {@link DevicesMessage}
+   * -- no new logic, per this module's own "composition only" contract. */
+  function buildDevicesMessage(devices: DeviceListEntry[]): DevicesMessage {
+    return { type: "devices", devices, firmwareStatus: availabilityCache.current() };
+  }
+
   const unsubscribeDevices = registry.onDevicesChanged((devices) => {
-    broadcast({ type: "devices", devices });
+    broadcast(buildDevicesMessage(devices));
   });
   const unsubscribeLine = registry.onLine((deviceId, direction, line) => {
     broadcast({ type: "line", deviceId, direction, line });
@@ -171,10 +199,28 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   const unsubscribeError = registry.onError((deviceId, message) => {
     broadcast(deviceId !== undefined ? { type: "error", deviceId, message } : { type: "error", message });
   });
+  const unsubscribeFlashProgress = registry.onFlashProgress((deviceId, firmware, phase) => {
+    broadcast({ type: "flash-progress", deviceId, firmware, phase });
+  });
+  const unsubscribeFlashResult = registry.onFlashResult((deviceId, firmware, status, message) => {
+    broadcast(
+      message !== undefined
+        ? { type: "flash-result", deviceId, firmware, status, message }
+        : { type: "flash-result", deviceId, firmware, status },
+    );
+  });
+  // The availability cache's own poll can change `firmwareStatus`
+  // independently of any device attach/detach -- re-broadcast the
+  // current device snapshot so the robot-firmware button can flip to
+  // enabled with no user action, per the ticket's self-healing
+  // requirement.
+  const unsubscribeAvailability = availabilityCache.onChange(() => {
+    broadcast(buildDevicesMessage(registry.snapshot()));
+  });
 
   wss.on("connection", (ws) => {
     clients.add(ws);
-    ws.send(JSON.stringify({ type: "devices", devices: registry.snapshot() } satisfies ServerMessage));
+    ws.send(JSON.stringify(buildDevicesMessage(registry.snapshot()) satisfies ServerMessage));
 
     ws.on("message", (data) => {
       let parsed: unknown;
@@ -206,6 +252,9 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
         case "line":
           void registry.sendLine(message.deviceId, message.line);
           break;
+        case "flash-start":
+          void registry.requestFlash(message.deviceId, message.firmware);
+          break;
       }
     });
 
@@ -215,16 +264,22 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   });
 
   registry.start();
+  availabilityCache.start();
   try {
     await listen(httpServer, port, host);
   } catch (error) {
     // Don't leak a running DeviceRegistry (device polling, and any link
-    // it may have opened) behind a server that failed to bind -- see
-    // the module doc comment's port-busy requirement.
+    // it may have opened) or a live FirmwareAvailabilityCache poll timer
+    // behind a server that failed to bind -- see the module doc
+    // comment's port-busy requirement.
     unsubscribeDevices();
     unsubscribeLine();
     unsubscribeError();
+    unsubscribeFlashProgress();
+    unsubscribeFlashResult();
+    unsubscribeAvailability();
     await registry.stop().catch(() => {});
+    availabilityCache.stop();
     wss.close();
     throw error;
   }
@@ -240,6 +295,10 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       unsubscribeDevices();
       unsubscribeLine();
       unsubscribeError();
+      unsubscribeFlashProgress();
+      unsubscribeFlashResult();
+      unsubscribeAvailability();
+      availabilityCache.stop();
       for (const client of clients) {
         client.terminate();
       }

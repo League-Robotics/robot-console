@@ -18,6 +18,7 @@
 
 import open from "open";
 import { startServer } from "./server.js";
+import { getFirmwareConfig } from "./config.js";
 
 /** `--port <n>` / `--port=<n>` from argv, if present and a valid
  * integer. */
@@ -62,13 +63,22 @@ function parsePortEnv(env: NodeJS.ProcessEnv): number | undefined {
  * still fully usable by pointing a browser or a WebSocket client at
  * {@link RunningServer.url} manually. A failure to *start the server*
  * (most commonly: the port is already in use) propagates to the caller.
+ *
+ * Also resolves the two flashable firmware sources via `config.ts`'s
+ * {@link getFirmwareConfig} (sprint 2, ticket 002) and threads the
+ * result into {@link startServer}'s options, alongside the
+ * `--port`/`ROBOT_CONSOLE_PORT` resolution -- `getFirmwareConfig` never
+ * throws, so a checkout with no `dotconfig` install at all still starts
+ * normally, with both flash buttons rendering in their "not configured"
+ * state.
  */
 export async function main(
   argv: readonly string[] = [],
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
   const port = parsePortFlag(argv) ?? parsePortEnv(env);
-  const server = await startServer(port !== undefined ? { port } : {});
+  const firmwareConfig = getFirmwareConfig(env);
+  const server = await startServer({ ...(port !== undefined ? { port } : {}), firmwareConfig });
   console.log(`robot-console: listening on ${server.url}`);
 
   try {

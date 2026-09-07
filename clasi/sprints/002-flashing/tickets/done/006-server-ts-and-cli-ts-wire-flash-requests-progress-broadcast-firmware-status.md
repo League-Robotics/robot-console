@@ -1,9 +1,13 @@
 ---
 id: '006'
 title: 'server.ts and cli.ts: wire flash requests, progress broadcast, firmware status'
-status: open
+status: done
 use-cases: []
-depends-on: ["001", "002", "003", "005"]
+depends-on:
+- '001'
+- '002'
+- '003'
+- '005'
 github-issue: ''
 issue: flash-firmware-buttons-for-unresponsive-boards.md
 completes_issue: true
@@ -25,36 +29,36 @@ module doc comment, it only composes already-computed things into
 
 ## Acceptance Criteria
 
-- [ ] `server.ts`'s `ws.on("message", ...)` switch gains a
+- [x] `server.ts`'s `ws.on("message", ...)` switch gains a
       `"flash-start"` case calling `registry.requestFlash(deviceId,
       firmware)` — added alongside, not interleaved into, the existing
       `open`/`close`/`line` cases.
-- [ ] `registry.onFlashProgress`/`onFlashResult` (ticket 005) are
+- [x] `registry.onFlashProgress`/`onFlashResult` (ticket 005) are
       subscribed at server startup and broadcast as `flash-progress`/
       `flash-result` `ServerMessage`s to every connected client (not
       just the requester) — a flash in progress must be visible to a
       second connected tab too.
-- [ ] `startServer` accepts an injectable `firmwareConfig`
+- [x] `startServer` accepts an injectable `firmwareConfig`
       (`FirmwareConfigMap`, from ticket 002) and constructs one
       `FirmwareAvailabilityCache` (ticket 003) from it, started
       alongside `registry.start()` and stopped alongside
       `registry.stop()` in `close()`.
-- [ ] Every `devices` broadcast (both the on-connect snapshot send and
+- [x] Every `devices` broadcast (both the on-connect snapshot send and
       every subsequent `registry.onDevicesChanged` broadcast) includes
       `firmwareStatus` built from the cache's `current()` — merging two
       already-computed values, not new logic.
-- [ ] The availability cache's own `onChange` triggers a fresh `devices`
+- [x] The availability cache's own `onChange` triggers a fresh `devices`
       broadcast (current device snapshot + updated `firmwareStatus`),
       so a client sees the robot-firmware button flip to enabled
       without reconnecting, once the poll detects a release.
-- [ ] `cli.ts`'s `main()` calls `getFirmwareConfig()` (ticket 002) and
+- [x] `cli.ts`'s `main()` calls `getFirmwareConfig()` (ticket 002) and
       passes the result into `startServer`'s options, alongside the
       existing `--port`/`ROBOT_CONSOLE_PORT` resolution; existing
       argv/env parsing and browser-open behavior are unchanged.
-- [ ] No change to `server.ts`'s existing `open`/`close`/`line`
+- [x] No change to `server.ts`'s existing `open`/`close`/`line`
       handling, its `wss`/`clients` bookkeeping, or its port-busy error
       handling.
-- [ ] `server.test.ts` gains coverage for: a `flash-start` message
+- [x] `server.test.ts` gains coverage for: a `flash-start` message
       reaching `registry.requestFlash` with the right args; a
       `flash-progress`/`flash-result` event from the registry reaching
       every connected fake client; `firmwareStatus` appearing in a

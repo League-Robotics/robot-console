@@ -1,7 +1,7 @@
 ---
 id: '007'
 title: 'host: swdName.ts (SWD-based five-letter naming)'
-status: pending
+status: done
 use-cases:
 - SUC-001
 depends-on:
@@ -45,23 +45,67 @@ mistake to not repeat).
 
 ## Acceptance Criteria
 
-- [ ] Given a joined device record from `devices.ts` (ticket 006), reads
+- [x] Given a joined device record from `devices.ts` (ticket 006), reads
       `FICR.DEVICEID[1] @ 0x10000064` via `dapjs`'s `readMem32` in attach
       mode (no halt, no reset).
-- [ ] The read succeeds against a device running arbitrary/unrelated
+- [x] The read succeeds against a device running arbitrary/unrelated
       firmware (relay, robot, or something else entirely) without
       requiring that firmware to cooperate in any way.
-- [ ] The raw register value is passed through `naming.ts`'s ID-to-name
+- [x] The raw register value is passed through `naming.ts`'s ID-to-name
       function (ticket 002) to produce the five-letter name.
-- [ ] On SWD attach failure, returns/reports a distinct
+- [x] On SWD attach failure, returns/reports a distinct
       "detected-but-unnamed, error: <reason>" result rather than
       throwing uncaught, returning a default name, or omitting the
       device.
-- [ ] Does not read the USB serial number as a naming fallback under any
+- [x] Does not read the USB serial number as a naming fallback under any
       circumstance.
 - [ ] Verified manually against a blank, never-flashed micro:bit as part
       of this sprint's hardware smoke test (cannot be meaningfully unit-
       tested without real SWD-capable hardware — see Testing below).
+      **Not yet done**: only one board was available for this dispatch,
+      already running firmware. See Verification Record below — this
+      criterion needs a follow-up pass with a blank board (and ideally a
+      relay/robot) before the sprint's blank-board done-criterion can be
+      considered met.
+
+## Verification Record
+
+Real attached hardware (not a blank board — a running micro:bit, serial
+`9906360200052820aba2e384f40cfd6c000000006e052820`, HID product `BBC
+micro:bit CMSIS-DAP`, DAPLink `v0257`, port `/dev/cu.usbmodem2121102`):
+
+- `enumerateDaplinkDevices()` found it with `availability: "full"`.
+- `readSwdName(device)` attached over SWD (attach only — no halt, no
+  reset) and read `FICR.DEVICEID[1]` **twice**, on separate runs, both
+  times returning the identical raw value `0xfbfd96c9` (4227700425),
+  which `naming.ts`'s `deviceIdToName` turns into **`zeguz`** —
+  consonant/vowel/consonant/vowel/consonant over `zvgpt`/`uoiea`, as
+  required.
+- Verified with `npx vitest run packages/host` (25 tests) and `npm test`
+  (266 tests, up from the 258 baseline — the 8 new tests are this
+  ticket's), both passing, plus `npm run build` (clean across all three
+  packages).
+- **Runtime import trap found and fixed during verification**: `dapjs`
+  ships only a UMD bundle with no ESM build and no `__esModule` marker.
+  `import { CortexM, HID } from "dapjs"` type-checks fine and even
+  passes under `vitest` (Vite's commonjs plugin actually executes the
+  module to resolve named exports), but throws `SyntaxError: ... does
+  not provide an export named 'CortexM'` under real Node at runtime,
+  because Node's static CJS/ESM interop (`cjs-module-lexer`) cannot
+  detect named exports assigned through the UMD wrapper's renamed
+  `exports` parameter. Caught this by actually running the module under
+  plain Node (`tsx`) against the attached hardware, not just `vitest` —
+  `npm test` alone would never have caught it. Fixed by taking the
+  default import (always `module.exports` itself, regardless of static
+  detection) for runtime values and a `type`-only import (erased at
+  compile time, unaffected by the runtime interop path) for types. See
+  `swdName.ts`'s import-block comment.
+- Blank/never-flashed-board and multi-firmware (relay/robot) cases from
+  the ticket's Testing section were **not** exercised — only one board
+  was available, already running firmware, for this dispatch. That
+  coverage still needs a manual pass with a blank board and a relay/robot
+  before the sprint's own done-criterion (which depends on the blank-
+  board case) can be considered met.
 
 ## Testing
 

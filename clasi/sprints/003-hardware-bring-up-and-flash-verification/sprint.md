@@ -1,7 +1,7 @@
 ---
 id: '003'
 title: Hardware bring-up and flash verification
-status: ticketing
+status: executing
 branch: sprint/003-hardware-bring-up-and-flash-verification
 use-cases:
 - SUC-001

@@ -65,21 +65,30 @@
  * limit `swdName.ts`'s own `classifyAttachError` already accepts for its
  * own error surface.
  *
- * ## MSD volume-to-device matching is a known, deferred gap
+ * ## MSD volume-to-device matching: real join, hardware proof still deferred
  *
- * Per `sprint.md`'s Step 7 open question: which mounted `/Volumes/
- * MICROBIT*` path corresponds to which physical {@link DaplinkDevice}
- * when more than one board is attached is not resolvable without
- * hardware to test against. {@link flash}'s default volume resolver
- * (`defaultResolveVolumePath`) picks the first `MICROBIT*` volume it
- * finds and ignores which device was asked for — a placeholder, not a
- * verified matching heuristic. Every test in this module's test file
- * injects its own `resolveVolumePath` rather than exercising this
- * default; its correctness against multiple attached boards is deferred
- * hardware verification (see `sprint.md`'s Success Criteria).
+ * Per `sprint.md`'s Step 2 and `radio_relay/scripts/flash-local.js` (the
+ * named template, `specification.md` §4.5): {@link flash}'s default
+ * volume resolver (`defaultResolveVolumePath`) reads every mounted
+ * `/Volumes/MICROBIT*` volume's `DETAILS.TXT`, extracts its `Unique ID`
+ * field, and matches it — an exact string match, never a prefix/suffix
+ * heuristic — against the target {@link DaplinkDevice.serialNumber}.
+ * `Unique ID` is verified (against real hardware) to be character-for-
+ * character identical to the device's USB serial number. A volume with
+ * no `DETAILS.TXT`, an unreadable one, or one whose `Unique ID` doesn't
+ * match is skipped, not treated as a match; "no volume found" is a
+ * legitimate result {@link flash} already handles. The join logic itself
+ * ({@link parseDetailsTxt}, {@link findMatchingVolume}) is desk-verified
+ * against fixtures covering unique match, no match, and multiple
+ * candidates. What remains genuinely unverified is whether this correctly
+ * discriminates between multiple *physically mounted* volumes at once —
+ * that needs two real boards and is deferred to ticket 006 (see
+ * `sprint.md`'s Success Criteria); this module's own tests still inject
+ * their own `resolveVolumePath` rather than exercising the real
+ * filesystem.
  */
 
-import { readdir, writeFile as fsWriteFile } from "node:fs/promises";
+import { readdir, readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
 import path from "node:path";
 import { HID as NodeHidDevice } from "node-hid";
 // `dapjs` ships only a UMD bundle (no ESM build, no `__esModule` marker) --
@@ -416,24 +425,134 @@ export async function flashViaMsd(
   await writeFile(path.join(volumePath, MSD_HEX_FILENAME), hex);
 }
 
+/** Function shape used to read a text file's contents whole. Defaults to
+ * `node:fs/promises`'s `readFile` (utf-8); overridable so tests supply
+ * fixture `DETAILS.TXT` content without touching a real mounted volume,
+ * mirroring this module's existing {@link WriteFileFn} injection
+ * pattern. */
+export type ReadTextFileFn = (filePath: string) => Promise<string>;
+
+async function defaultReadTextFile(filePath: string): Promise<string> {
+  return fsReadFile(filePath, "utf-8");
+}
+
+/** Filename DAPLink writes onto every mounted MSD volume, carrying
+ * (among other fields) the `Unique ID` this module joins against
+ * {@link DaplinkDevice.serialNumber}. */
+const DETAILS_TXT_FILENAME = "DETAILS.TXT";
+
+/** The `DETAILS.TXT` field verified (against real hardware) to be
+ * character-for-character identical to the owning device's USB serial
+ * number -- the join key {@link findMatchingVolume} matches on. */
+const DETAILS_UNIQUE_ID_KEY = "Unique ID";
+
 /**
- * Default MSD volume resolver: the first `/Volumes/MICROBIT*` directory
- * found, ignoring which {@link DaplinkDevice} was asked for. This is a
- * placeholder, not a verified matching heuristic -- see the module doc's
- * "MSD volume-to-device matching is a known, deferred gap" section.
- * Never called by this file's own tests, which always inject
- * `resolveVolumePath`; exercised only as a real-hardware smoke test,
- * which this sprint has no board available to run.
+ * Parse DAPLink's `DETAILS.TXT` format into a flat key/value map: `#`-
+ * prefixed comment lines are ignored, blank lines are ignored, and every
+ * remaining line is split on its *first* `:` into a trimmed key and
+ * trimmed value -- tolerant of the single space DAPLink puts after the
+ * colon and of keys that themselves contain spaces (e.g. `Unique ID`,
+ * `Auto Reset`, `USB Interfaces`). A line with no `:` at all, or an
+ * empty key, is skipped rather than producing a malformed entry. Pure
+ * and filesystem-free -- unit-testable directly against fixture text.
  */
-async function defaultResolveVolumePath(_device: DaplinkDevice): Promise<string | undefined> {
+export function parseDetailsTxt(text: string): Record<string, string> {
+  const details: Record<string, string> = {};
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.length === 0 || line.startsWith("#")) {
+      continue;
+    }
+    const separatorIndex = line.indexOf(":");
+    if (separatorIndex === -1) {
+      continue;
+    }
+    const key = line.slice(0, separatorIndex).trim();
+    const value = line.slice(separatorIndex + 1).trim();
+    if (key.length === 0) {
+      continue;
+    }
+    details[key] = value;
+  }
+  return details;
+}
+
+/** One mounted candidate volume, already read and parsed -- what
+ * {@link findMatchingVolume} joins against a device's `serialNumber`. */
+export interface VolumeCandidate {
+  volumePath: string;
+  details: Record<string, string>;
+}
+
+/**
+ * Pure join: the `volumePath` of whichever `candidates` entry's
+ * `Unique ID` field is an *exact* string match for `serialNumber` --
+ * never a prefix/suffix heuristic, since several mounted `MICROBIT*`
+ * volumes are otherwise indistinguishable by name alone (see the module
+ * doc). A candidate with no `Unique ID` field, or one that doesn't
+ * match, is not returned. `undefined` (no match among any candidate) is
+ * a legitimate result, not a failure. When more than one candidate
+ * somehow reports the same `Unique ID` (not expected on real hardware),
+ * the first such candidate is returned, mirroring `Array#find`'s own
+ * first-match semantics rather than inventing a tie-break rule nothing
+ * requires. Pure and filesystem-free -- unit-testable directly against
+ * fixture candidates.
+ */
+export function findMatchingVolume(
+  candidates: readonly VolumeCandidate[],
+  serialNumber: string,
+): string | undefined {
+  return candidates.find((candidate) => candidate.details[DETAILS_UNIQUE_ID_KEY] === serialNumber)
+    ?.volumePath;
+}
+
+/**
+ * Default MSD volume resolver: list `/Volumes/MICROBIT*` entries
+ * (unchanged from the old placeholder's discovery step), read each
+ * one's `DETAILS.TXT`, and hand the parsed candidates to
+ * {@link findMatchingVolume} to pick the one actually belonging to
+ * `device` -- see the module doc's "MSD volume-to-device matching"
+ * section. A volume whose `DETAILS.TXT` is missing or unreadable is
+ * skipped (not a match, and not a failure of the whole resolution); an
+ * empty `/Volumes` listing or a failure listing it at all still returns
+ * `undefined`, exactly mirroring the old placeholder's `readdir`
+ * try/catch. `listVolumeNames`/`readTextFile` are injectable (defaulting
+ * to the real filesystem) purely so this function itself is
+ * unit-testable with no real mounted volume -- {@link flash}'s own tests
+ * always inject their own `resolveVolumePath` instead of exercising this
+ * default (see the module doc).
+ */
+export async function defaultResolveVolumePath(
+  device: DaplinkDevice,
+  options?: {
+    listVolumeNames?: () => Promise<string[]>;
+    readTextFile?: ReadTextFileFn;
+  },
+): Promise<string | undefined> {
+  const listVolumeNames = options?.listVolumeNames ?? (() => readdir("/Volumes"));
+  const readTextFile = options?.readTextFile ?? defaultReadTextFile;
+
   let entries: string[];
   try {
-    entries = await readdir("/Volumes");
+    entries = await listVolumeNames();
   } catch {
     return undefined;
   }
-  const match = entries.find((name) => name.startsWith("MICROBIT"));
-  return match ? path.join("/Volumes", match) : undefined;
+
+  const candidates: VolumeCandidate[] = [];
+  for (const name of entries.filter((entry) => entry.startsWith("MICROBIT"))) {
+    const volumePath = path.join("/Volumes", name);
+    try {
+      const text = await readTextFile(path.join(volumePath, DETAILS_TXT_FILENAME));
+      candidates.push({ volumePath, details: parseDetailsTxt(text) });
+    } catch {
+      // No DETAILS.TXT, or unreadable -- skip this volume rather than
+      // failing the whole resolution.
+      continue;
+    }
+  }
+
+  return findMatchingVolume(candidates, device.serialNumber);
 }
 
 export interface FlashOptions {
@@ -444,8 +563,9 @@ export interface FlashOptions {
    * `node:fs/promises`'s `writeFile`. */
   writeFile?: WriteFileFn;
   /** Resolve a mounted MSD volume path for `device`, or `undefined` if
-   * none can be found. Defaults to {@link defaultResolveVolumePath} (a
-   * placeholder -- see the module doc). Tests always inject their own. */
+   * none can be found. Defaults to {@link defaultResolveVolumePath}'s
+   * real `DETAILS.TXT`-to-serial join (see the module doc). Tests always
+   * inject their own. */
   resolveVolumePath?: (device: DaplinkDevice) => Promise<string | undefined>;
 }
 

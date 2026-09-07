@@ -2,13 +2,17 @@ import { describe, expect, it, vi } from "vitest";
 import DapJs from "dapjs";
 import type { DAPLink } from "dapjs";
 import {
+  defaultResolveVolumePath,
   extractV2Hex,
+  findMatchingVolume,
   flash,
   flashOverSwd,
   flashViaMsd,
   isUniversalHex,
   isValidIntelHexText,
+  parseDetailsTxt,
 } from "./flash.js";
+import type { VolumeCandidate } from "./flash.js";
 import type { FlashPhase } from "./flash.js";
 import type { DaplinkDevice } from "./devices.js";
 
@@ -141,6 +145,191 @@ function device(overrides: Partial<DaplinkDevice> = {}): DaplinkDevice {
     ...overrides,
   };
 }
+
+// Real `DETAILS.TXT` content captured from an attached micro:bit --
+// its `Unique ID` is verified (against that same board's USB enumeration)
+// to be character-for-character identical to `DaplinkDevice.serialNumber`.
+const REAL_SERIAL_NUMBER = "99063602000528202e78ea8f7143163f000000006e052820";
+const REAL_DETAILS_TXT = `# DAPLink Firmware - see https://daplink.io
+Build ID: v0257-gc782a5ba (gcc)
+Unique ID: ${REAL_SERIAL_NUMBER}
+HIC ID: 6e052820
+Auto Reset: 1
+Automation allowed: 0
+Overflow detection: 0
+Incompatible image detection: 1
+Page erasing: 0
+Daplink Mode: Interface
+Interface Version: 0257
+Bootloader Version: 0257
+Git SHA: c782a5ba907377658bc28aa8d132a0fa44543687
+Local Mods: 0
+USB Interfaces: MSD, CDC, HID, WebUSB
+Bootloader CRC: 0x725bea7d
+Interface CRC: 0xe561f1de
+Remount count: 0
+URL: https://microbit.org/device/?id=9906&v=0257
+`;
+
+describe("parseDetailsTxt", () => {
+  it("parses real DETAILS.TXT content into a key/value map, ignoring the # comment line", () => {
+    const details = parseDetailsTxt(REAL_DETAILS_TXT);
+
+    expect(details["Unique ID"]).toBe(REAL_SERIAL_NUMBER);
+    expect(details["Build ID"]).toBe("v0257-gc782a5ba (gcc)");
+    expect(details["HIC ID"]).toBe("6e052820");
+    // Keys containing spaces parse correctly (split on the *first* colon).
+    expect(details["Daplink Mode"]).toBe("Interface");
+    expect(details["USB Interfaces"]).toBe("MSD, CDC, HID, WebUSB");
+    // The leading `#` comment line contributes no entry at all.
+    expect(Object.keys(details)).not.toContain("# DAPLink Firmware - see https://daplink.io");
+  });
+
+  it("ignores blank lines and lines with no colon", () => {
+    const details = parseDetailsTxt("\n\nnot a details line\nKey: value\n");
+    expect(details).toEqual({ Key: "value" });
+  });
+
+  it("returns an empty map for empty text", () => {
+    expect(parseDetailsTxt("")).toEqual({});
+  });
+});
+
+describe("findMatchingVolume", () => {
+  function candidate(volumePath: string, uniqueId: string | undefined): VolumeCandidate {
+    return {
+      volumePath,
+      details: uniqueId === undefined ? {} : { "Unique ID": uniqueId },
+    };
+  }
+
+  it("returns the one candidate whose Unique ID matches the serial number", () => {
+    const result = findMatchingVolume(
+      [candidate("/Volumes/MICROBIT", REAL_SERIAL_NUMBER)],
+      REAL_SERIAL_NUMBER,
+    );
+    expect(result).toBe("/Volumes/MICROBIT");
+  });
+
+  it("returns undefined when no candidate's Unique ID matches", () => {
+    const result = findMatchingVolume(
+      [candidate("/Volumes/MICROBIT", "some-other-unique-id")],
+      REAL_SERIAL_NUMBER,
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it("returns undefined when there are no candidates at all", () => {
+    expect(findMatchingVolume([], REAL_SERIAL_NUMBER)).toBeUndefined();
+  });
+
+  it("with several candidates, returns only the one that actually matches -- not the first one found", () => {
+    const result = findMatchingVolume(
+      [
+        candidate("/Volumes/MICROBIT", "not-this-one"),
+        candidate("/Volumes/MICROBIT 1", REAL_SERIAL_NUMBER),
+        candidate("/Volumes/MICROBIT 2", "not-this-one-either"),
+      ],
+      REAL_SERIAL_NUMBER,
+    );
+    expect(result).toBe("/Volumes/MICROBIT 1");
+  });
+
+  it("skips a candidate with no Unique ID field at all", () => {
+    const result = findMatchingVolume(
+      [candidate("/Volumes/MICROBIT", undefined)],
+      REAL_SERIAL_NUMBER,
+    );
+    expect(result).toBeUndefined();
+  });
+});
+
+describe("defaultResolveVolumePath", () => {
+  it("returns undefined when no MICROBIT* volumes are mounted at all", async () => {
+    const result = await defaultResolveVolumePath(device({ serialNumber: REAL_SERIAL_NUMBER }), {
+      listVolumeNames: async () => ["Macintosh HD", "SomeOtherDrive"],
+      readTextFile: vi.fn(),
+    });
+    expect(result).toBeUndefined();
+  });
+
+  it("returns undefined when the volume listing itself fails, mirroring the readdir try/catch", async () => {
+    const result = await defaultResolveVolumePath(device({ serialNumber: REAL_SERIAL_NUMBER }), {
+      listVolumeNames: async () => {
+        throw new Error("mock: ENOENT /Volumes");
+      },
+      readTextFile: vi.fn(),
+    });
+    expect(result).toBeUndefined();
+  });
+
+  it("resolves the single mounted candidate when its Unique ID matches", async () => {
+    const result = await defaultResolveVolumePath(device({ serialNumber: REAL_SERIAL_NUMBER }), {
+      listVolumeNames: async () => ["MICROBIT"],
+      readTextFile: async (filePath) => {
+        expect(filePath).toBe("/Volumes/MICROBIT/DETAILS.TXT");
+        return REAL_DETAILS_TXT;
+      },
+    });
+    expect(result).toBe("/Volumes/MICROBIT");
+  });
+
+  it("returns undefined when the single mounted candidate's Unique ID does not match", async () => {
+    const result = await defaultResolveVolumePath(device({ serialNumber: "not-the-real-serial" }), {
+      listVolumeNames: async () => ["MICROBIT"],
+      readTextFile: async () => REAL_DETAILS_TXT,
+    });
+    expect(result).toBeUndefined();
+  });
+
+  it("with several mounted candidates, returns the one whose Unique ID matches -- not just the first found", async () => {
+    const otherSerial = "9906360200052820ffffffffffffffff000000006e052820";
+    const readTextFile = async (filePath: string) => {
+      if (filePath === "/Volumes/MICROBIT/DETAILS.TXT") {
+        return REAL_DETAILS_TXT.replace(REAL_SERIAL_NUMBER, otherSerial);
+      }
+      if (filePath === "/Volumes/MICROBIT 1/DETAILS.TXT") {
+        return REAL_DETAILS_TXT;
+      }
+      throw new Error(`unexpected path: ${filePath}`);
+    };
+
+    const result = await defaultResolveVolumePath(device({ serialNumber: REAL_SERIAL_NUMBER }), {
+      listVolumeNames: async () => ["MICROBIT", "MICROBIT 1"],
+      readTextFile,
+    });
+    expect(result).toBe("/Volumes/MICROBIT 1");
+  });
+
+  it("skips a candidate volume whose DETAILS.TXT is missing or unreadable, rather than failing resolution", async () => {
+    const readTextFile = async (filePath: string) => {
+      if (filePath === "/Volumes/MICROBIT/DETAILS.TXT") {
+        throw new Error("mock: ENOENT DETAILS.TXT");
+      }
+      if (filePath === "/Volumes/MICROBIT 1/DETAILS.TXT") {
+        return REAL_DETAILS_TXT;
+      }
+      throw new Error(`unexpected path: ${filePath}`);
+    };
+
+    const result = await defaultResolveVolumePath(device({ serialNumber: REAL_SERIAL_NUMBER }), {
+      listVolumeNames: async () => ["MICROBIT", "MICROBIT 1"],
+      readTextFile,
+    });
+    expect(result).toBe("/Volumes/MICROBIT 1");
+  });
+
+  it("only inspects entries starting with MICROBIT, ignoring other mounted volumes", async () => {
+    const readTextFile = vi.fn(async () => REAL_DETAILS_TXT);
+    const result = await defaultResolveVolumePath(device({ serialNumber: REAL_SERIAL_NUMBER }), {
+      listVolumeNames: async () => ["Macintosh HD", "MICROBIT"],
+      readTextFile,
+    });
+    expect(result).toBe("/Volumes/MICROBIT");
+    expect(readTextFile).toHaveBeenCalledTimes(1);
+    expect(readTextFile).toHaveBeenCalledWith("/Volumes/MICROBIT/DETAILS.TXT");
+  });
+});
 
 describe("flashOverSwd", () => {
   // Seam-level only, per this ticket's explicit precedent (see this

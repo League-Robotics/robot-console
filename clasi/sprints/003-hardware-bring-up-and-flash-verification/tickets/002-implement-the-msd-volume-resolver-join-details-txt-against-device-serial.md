@@ -1,8 +1,9 @@
 ---
 id: '002'
 title: 'Implement the MSD volume resolver: join DETAILS.TXT against device serial'
-status: open
-use-cases: [SUC-002]
+status: done
+use-cases:
+- SUC-002
 depends-on: []
 github-issue: ''
 issue: msd-fallback-volume-matching-heuristic-unimplemented.md
@@ -33,26 +34,77 @@ bench.
 
 ## Acceptance Criteria
 
-- [ ] provable-without-hardware: the `DETAILS.TXT`-to-serial join logic is
+- [x] provable-without-hardware: the `DETAILS.TXT`-to-serial join logic is
       unit-tested against fixture `DETAILS.TXT` content covering: a unique
       match (one candidate volume's id matches the device serial), no match
       (no candidate volume's id matches), and multiple candidate volumes
       (only the one whose id actually matches is returned, not the first
       one found).
-- [ ] provable-without-hardware: when no `MICROBIT*` volumes are mounted at
+- [x] provable-without-hardware: when no `MICROBIT*` volumes are mounted at
       all, or the volume listing itself fails (mirrors today's `readdir`
       try/catch), resolution returns `undefined`, unchanged from today's
       behavior.
-- [ ] provable-without-hardware: every existing `flash.test.ts` test still
+- [x] provable-without-hardware: every existing `flash.test.ts` test still
       passes unmodified — they all inject their own `resolveVolumePath`
       per the module's documented test convention, so this change must not
       alter `flash()`'s public contract or its `FlashOptions` shape in a
       way that breaks existing injection.
-- [ ] `npm run build` passes.
-- [ ] Not a checkbox, but note it in this ticket's notes on completion: the
+- [x] `npm run build` passes.
+- [x] Not a checkbox, but note it in this ticket's notes on completion: the
       real-hardware, two-board proof that this correctly discriminates
       between multiple *physically mounted* volumes is explicitly out of
       scope here — see ticket 006.
+
+## Notes on completion
+
+- The join is a real, exact string match: `DETAILS.TXT`'s `Unique ID`
+  field against `DaplinkDevice.serialNumber`, verified character-for-
+  character identical against a real attached board (`Unique ID:
+  99063602000528202e78ea8f7143163f000000006e052820`, matching that same
+  board's `serialNumber` from `enumerateDaplinkDevices()`). Never a
+  prefix/suffix heuristic.
+- `defaultResolveVolumePath(device, options?)` in `packages/host/src/
+  flash.ts` is now exported (was private) so it is directly unit-testable.
+  It takes an optional second parameter `{ listVolumeNames?: () =>
+  Promise<string[]>; readTextFile?: ReadTextFileFn }`, both defaulting to
+  the real filesystem (`readdir("/Volumes")`, `fs.readFile(..., "utf-8")`).
+  `FlashOptions.resolveVolumePath`'s public single-argument shape is
+  unchanged — `defaultResolveVolumePath`'s extra optional parameter is
+  assignable to it, so `flash()`'s existing default wiring
+  (`options?.resolveVolumePath ?? defaultResolveVolumePath`) needed no
+  change.
+- New pure, filesystem-free exports: `parseDetailsTxt(text): Record<string,
+  string>` (splits each non-comment, non-blank line on its *first* `:`,
+  tolerant of keys containing spaces like `Unique ID`/`Daplink Mode`) and
+  `findMatchingVolume(candidates: VolumeCandidate[], serialNumber):
+  string | undefined` (exact match against the `Unique ID` field only).
+  `ReadTextFileFn` is a new exported type mirroring the existing
+  `WriteFileFn` injection pattern.
+- Behavior with zero/one/several candidates: zero `MICROBIT*` volumes (or
+  a failed listing) returns `undefined`, exactly mirroring the old
+  placeholder's `readdir` try/catch. One candidate returns its path only
+  if its `Unique ID` matches, else `undefined`. Several candidates: each
+  is read and parsed independently, a volume with a missing/unreadable
+  `DETAILS.TXT` is skipped (not a failure of the whole resolution), and
+  the one whose `Unique ID` actually matches is returned regardless of
+  discovery order.
+- Tests: `npm test -- packages/host/src/flash.test.ts` — 41 passed
+  (existing 31 plus 10 new, covering `parseDetailsTxt`,
+  `findMatchingVolume`, and `defaultResolveVolumePath`'s zero/one/several/
+  missing-file/non-MICROBIT-entry cases). `npm run build` — all three
+  workspaces (`host`, `protocol`, `ui`) typecheck clean.
+- For ticket 006: with two real boards attached, call
+  `defaultResolveVolumePath(device)` with no options (real filesystem) —
+  it will `readdir("/Volumes")`, read each mounted `MICROBIT*` volume's
+  real `DETAILS.TXT`, and match on `Unique ID` against `device.
+  serialNumber` from `enumerateDaplinkDevices()`. The only thing this
+  ticket could not prove is whether *both* boards' `DETAILS.TXT` files
+  are actually mounted and readable at the paths this code assumes
+  (`/Volumes/MICROBIT*/DETAILS.TXT`) when two boards are attached
+  simultaneously (e.g. macOS's exact naming for the second volume,
+  such as `MICROBIT 1` — the discovery filter (`startsWith("MICROBIT")`)
+  already tolerates that, but it has only been exercised against a
+  fixture name, not real second-volume mount behavior).
 
 ## Implementation Plan
 

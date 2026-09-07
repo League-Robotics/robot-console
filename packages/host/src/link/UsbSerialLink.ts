@@ -2,51 +2,63 @@
  * UsbSerialLink.ts — the USB serial transport for a robot or relay
  * connected locally over its DAPLink CDC serial port. Per
  * `docs/design/specification.md` §4.3: every transport in this system
- * (this sprint's USB link, and sprint 3/6's relay/TCP/UDP links) reduces
+ * (this sprint's USB link, and sprint 7's relay/TCP/UDP links) reduces
  * to the same shape — a paced, banner-aware stream of newline-delimited
- * protocol-v6 lines. This module establishes that shape; it does not
- * itself carry any verb/arity/sequencing knowledge — that all lives in
- * `@robot-console/protocol` (`banner.ts`, `v6/codec.ts`, `v6/session.ts`),
- * which this module composes rather than reimplements.
+ * protocol-v6 lines. This module establishes that shape by implementing
+ * {@link Link}; it does not itself carry any verb/arity/sequencing
+ * knowledge — that lives in `@robot-console/protocol` (`banner.ts`,
+ * `v6/codec.ts`, `v6/session.ts`), composed here rather than
+ * reimplemented, and in the transport-agnostic `link/lineStream.ts`
+ * (`LineReassembler`), `link/pacing.ts` (`WritePacer`/`Scheduler`), and
+ * `link/LineRouter.ts` (decode -> classify -> ack/nack -> resend) pieces
+ * this class composes rather than owns.
  *
- * ## The open → HELLO → read-banner-from-reply sequence
+ * ## `connect()` then `identify()` — two steps, not one
  *
  * Opening the port resets the target board on macOS (the open toggles
  * DTR and DAPLink resets on DTR assertion); on Linux nothing resets it
  * except a serial break, which this module does not attempt to send. In
  * both cases the boot banner — if the board happens to emit one at all
  * on this platform — is emitted **while the port is still opening**, so
- * waiting for an unsolicited read after open routinely misses it
+ * waiting for an unsolicited read after connect routinely misses it
  * entirely.
  *
- * The reliable, platform-independent pattern — and the ONLY sequence
- * {@link UsbSerialLink.open} implements — is: open the port, send
- * `HELLO` (paced like any other write), and read the banner from
- * `HELLO`'s own reply, never from whatever arrived unsolicited during
- * open. There is deliberately no macOS/Linux branch in {@link
- * UsbSerialLink.open} itself — the open→HELLO→read-reply sequence works
- * identically on both, by construction, whether or not the open
- * actually reset the board underneath it.
+ * The reliable, platform-independent pattern is: {@link connect} opens
+ * the port and attaches listeners only — no `HELLO`, no banner wait.
+ * {@link identify} then sends `HELLO` (paced like any other write) and
+ * reads the banner from `HELLO`'s own reply, never from whatever
+ * arrived unsolicited during connect. There is deliberately no macOS/
+ * Linux branch anywhere in this sequence — it works identically on
+ * both, by construction, whether or not connecting actually reset the
+ * board underneath it.
+ *
+ * {@link identify} **never throws**. A board that never replies is a
+ * normal, representable outcome (`null`), not a transport failure — see
+ * `link/Link.ts`'s own doc comment for why, and for how this is also
+ * the fix for `port-lock-contention-between-identify-and-user-open.md`:
+ * {@link connect} opens the port exactly once, and it stays open across
+ * every later {@link identify} call — calling {@link identify} again
+ * after a `null` resolution re-sends `HELLO` without touching the port.
+ * Only {@link connect} itself can reject, and only on a genuine
+ * transport-level failure (the port refusing to open, or erroring
+ * before it does).
  *
  * ## `HELLO` is a reset, not a health check
  *
  * `HELLO` resets the robot's sequence state to 1 (protocol.md §8.3,
- * mirrored in `v6/session.ts`'s own doc comment). {@link
- * UsbSerialLink.open} is the ONLY place this module ever sends `HELLO`
- * — it does so via `Session.connect()`, never a hand-formatted line —
- * and nothing in this module re-sends it later as an ongoing liveness
- * check. `Session.sendUnsequenced()` itself refuses the verb `"HELLO"`
- * for exactly this reason, so a caller reaching for the general
- * unsequenced-send path cannot accidentally re-issue it either; use
- * {@link UsbSerialLink.checkLiveness} (`PING`) for any post-open
- * liveness need.
+ * mirrored in `v6/session.ts`'s own doc comment). {@link identify} is
+ * the ONLY place this module ever sends `HELLO` — it does so via
+ * `Session.connect()`, never a hand-formatted line — and nothing in
+ * this module re-sends it later as an ongoing liveness check.
+ * `Session.sendUnsequenced()` itself refuses the verb `"HELLO"` for
+ * exactly this reason, so a caller reaching for the general unsequenced-
+ * send path cannot accidentally re-issue it either; use {@link
+ * checkLiveness} (`PING`) for any post-connect liveness need.
  */
 
 import { SerialPort } from "serialport";
 import {
   parseBanner,
-  decodeLine,
-  classifyLine,
   Session,
   type ParsedBanner,
   type DecodedLine,
@@ -54,6 +66,10 @@ import {
   type WireField,
 } from "@robot-console/protocol";
 import { toCalloutPath } from "../devices.js";
+import type { Link, LineListener, AckNackListener, LinkErrorListener } from "./Link.js";
+import { LineReassembler } from "./lineStream.js";
+import { WritePacer, realScheduler, type Scheduler } from "./pacing.js";
+import { LineRouter } from "./LineRouter.js";
 
 /** DAPLink CDC serial ports always run at this fixed baud rate. */
 const BAUD_RATE = 115200;
@@ -66,7 +82,7 @@ const BAUD_RATE = 115200;
 const DEFAULT_WRITE_PACE_MS = 10;
 
 /** Default time to wait for a `HELLO` reply (the banner line) during
- * {@link UsbSerialLink.open} before giving up. */
+ * {@link UsbSerialLink.identify} before giving up (resolving `null`). */
 const DEFAULT_OPEN_TIMEOUT_MS = 3000;
 
 // ---------------------------------------------------------------------
@@ -74,109 +90,12 @@ const DEFAULT_OPEN_TIMEOUT_MS = 3000;
 //
 // `toCalloutPath` now lives in `../devices.ts` (sprint 003 ticket 001) —
 // `devices.ts` applies it when building `SerialPortInfo.path` so every
-// consumer (the Devices tab, `linkError` text) agrees on the open-safe
+// consumer (the Devices tab, `sessionError` text) agrees on the open-safe
 // path, not just this one call site. It is imported above and still
-// called below in `open()`, as deliberate defense-in-depth: correct
+// called below in `connect()`, as deliberate defense-in-depth: correct
 // even if a caller ever constructs a link directly from a raw path, not
 // the only correctness mechanism now.
 // ---------------------------------------------------------------------
-// Line reassembly (trap #6, #7)
-// ---------------------------------------------------------------------
-
-/**
- * Reassembles a raw byte stream into complete wire lines, buffering a
- * partial line across calls (a `read`/`data` boundary can split a line
- * anywhere — including mid-`ack`, which would silently lose it if not
- * buffered). Mirrors `vendor/radio-robot-lib`'s own
- * `Transport.read_lines()` reassembly discipline.
- *
- * Two things are normalized on every extracted line, unconditionally,
- * before it is handed back:
- *   - a trailing `\r` (a terminal artifact of the wire's own `\n`
- *     convention) is stripped;
- *   - a leading `"< "` prefix is stripped. Nothing the robot/relay
- *     legitimately says begins with `"< "`; making this conditional
- *     (only strip it for carriers that are "known" to add it) becomes a
- *     per-carrier flag the carriers disagree about, so it is applied to
- *     every line unconditionally instead.
- */
-export class LineReassembler {
-  private buffer = "";
-
-  /** Feed newly arrived bytes; returns every complete line that became
-   * available (zero, one, or several), each already normalized per the
-   * class doc comment. Any trailing partial line is retained internally
-   * for the next call. */
-  push(chunk: Buffer | string): string[] {
-    this.buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-    const lines: string[] = [];
-    let newlineIndex: number;
-    while ((newlineIndex = this.buffer.indexOf("\n")) >= 0) {
-      let raw = this.buffer.slice(0, newlineIndex);
-      this.buffer = this.buffer.slice(newlineIndex + 1);
-      if (raw.endsWith("\r")) {
-        raw = raw.slice(0, -1);
-      }
-      if (raw.startsWith("< ")) {
-        raw = raw.slice(2);
-      }
-      lines.push(raw);
-    }
-    return lines;
-  }
-}
-
-// ---------------------------------------------------------------------
-// Write pacing (trap #5)
-// ---------------------------------------------------------------------
-
-/** Injectable delay primitive so write-pacing timing is unit-testable
- * without real wall-clock waits. Real usage defaults to {@link
- * realScheduler}; tests substitute a fake that records/controls delay
- * calls directly. */
-export interface Scheduler {
-  delay(ms: number): Promise<void>;
-}
-
-export const realScheduler: Scheduler = {
-  delay: (ms: number) =>
-    new Promise((resolve) => {
-      setTimeout(resolve, ms);
-    }),
-};
-
-/**
- * Serializes writes through a single chain so that every write this
- * module makes is separated from the next by at least `paceMs` — the
- * initial `HELLO` included, not just steady-state console traffic (see
- * the module doc comment's pacing trap). Implemented as a promise chain
- * rather than a timer-driven queue so that back-to-back `schedule()`
- * calls compose correctly regardless of how many are already pending.
- */
-export class WritePacer {
-  private chain: Promise<void> = Promise.resolve();
-
-  constructor(
-    private readonly paceMs: number,
-    private readonly scheduler: Scheduler = realScheduler,
-  ) {}
-
-  /** Enqueue `write` to run once every previously-scheduled write (and
-   * its trailing pace delay) has completed. A throwing `write` does not
-   * wedge later writes — the failure is swallowed here (there is no
-   * caller to report it to; this is fire-and-forget queuing) and the
-   * chain continues. */
-  schedule(write: () => void): void {
-    this.chain = this.chain
-      .then(() => {
-        write();
-      })
-      .then(() => this.scheduler.delay(this.paceMs))
-      .catch(() => {
-        // Swallow: one bad write must not stall every later paced write.
-      });
-  }
-}
 
 // ---------------------------------------------------------------------
 // Injectable port shape (real `serialport` in production, a fake in tests)
@@ -209,15 +128,11 @@ function defaultCreatePort(path: string, options: { baudRate: number }): SerialP
 // UsbSerialLink
 // ---------------------------------------------------------------------
 
-export type LineListener = (line: DecodedLine) => void;
-export type AckNackListener = (event: AckNackEvent) => void;
-export type LinkErrorListener = (err: Error) => void;
-
 export interface UsbSerialLinkOptions {
   /** ms between paced writes; default {@link DEFAULT_WRITE_PACE_MS}. */
   writePaceMs?: number;
   /** ms to wait for the `HELLO` banner reply during {@link
-   * UsbSerialLink.open} before rejecting; default {@link
+   * UsbSerialLink.identify} before resolving `null`; default {@link
    * DEFAULT_OPEN_TIMEOUT_MS}. */
   openTimeoutMs?: number;
   /** Injectable port factory. Defaults to real `serialport`; tests
@@ -229,17 +144,18 @@ export interface UsbSerialLinkOptions {
   scheduler?: Scheduler;
 }
 
-type LinkState = "idle" | "opening" | "open" | "closed";
+type LinkState = "idle" | "connecting" | "connected" | "closed";
 
 /**
  * The USB serial transport for a robot or relay on local USB — the
- * first of the `link/` family (see the module doc comment). Owns the
- * actual `serialport` I/O, the open→HELLO→read-banner sequence, and
- * write pacing; it composes `@robot-console/protocol`'s `banner.ts`/
- * `v6/codec.ts`/`v6/session.ts` rather than reimplementing banner
- * parsing, line framing, or ack/nack sequencing itself.
+ * first implementation of {@link Link} (see `link/Link.ts`'s own doc
+ * comment). Owns the actual `serialport` I/O and the connect/identify
+ * sequence; composes `link/lineStream.ts`, `link/pacing.ts`, and
+ * `link/LineRouter.ts` for the transport-agnostic pieces, and
+ * `@robot-console/protocol`'s `banner.ts`/`v6/session.ts` for banner
+ * parsing and sequencing, rather than reimplementing any of them.
  */
-export class UsbSerialLink {
+export class UsbSerialLink implements Link {
   private readonly portPath: string;
   private readonly createPort: (
     path: string,
@@ -249,6 +165,7 @@ export class UsbSerialLink {
   private readonly openTimeoutMs: number;
   private readonly lineReassembler = new LineReassembler();
   private readonly protocolSession = new Session();
+  private readonly lineRouter: LineRouter;
 
   private readonly lineListeners = new Set<LineListener>();
   private readonly ackNackListeners = new Set<AckNackListener>();
@@ -257,7 +174,10 @@ export class UsbSerialLink {
   private port: SerialPortLike | undefined;
   private state: LinkState = "idle";
   private parsedBanner: ParsedBanner | undefined;
-  private resolveBannerWait: ((banner: ParsedBanner) => void) | undefined;
+  /** Set only while {@link identify} is actively waiting for a `HELLO`
+   * banner reply — see {@link handleLine}'s own doc comment for why
+   * inbound lines are routed differently depending on this flag. */
+  private resolveBannerWait: ((banner: ParsedBanner | null) => void) | undefined;
 
   constructor(portPath: string, options: UsbSerialLinkOptions = {}) {
     this.portPath = portPath;
@@ -267,39 +187,49 @@ export class UsbSerialLink {
       options.writePaceMs ?? DEFAULT_WRITE_PACE_MS,
       options.scheduler ?? realScheduler,
     );
+    this.lineRouter = new LineRouter(this.protocolSession, {
+      onLine: (line) => this.dispatchLine(line),
+      onAckNack: (event) => this.dispatchAckNack(event),
+      resend: (line) => this.paceWrite(line),
+    });
   }
 
-  // ---- identity, populated after open() -------------------------------
+  // ---- identity, populated once identify() resolves a banner ---------
 
-  /** The parsed `HELLO` banner reply, once {@link open} has resolved. */
+  /** The parsed `HELLO` banner reply, once {@link identify} has resolved
+   * one. */
   get banner(): ParsedBanner | undefined {
     return this.parsedBanner;
   }
 
-  /** Banner role token (e.g. `"RADIOBRIDGE"`, `"NEZHA2"`), once open. */
+  /** Banner role token (e.g. `"RADIOBRIDGE"`, `"NEZHA2"`), once
+   * identified. */
   get role(): string | undefined {
     return this.parsedBanner?.role;
   }
 
-  /** Five-letter device name, once open. */
+  /** Five-letter device name, once identified. */
   get name(): string | undefined {
     return this.parsedBanner?.name;
   }
 
   /** Device serial number (decoded per the banner's own role-keyed
-   * radix), once open. */
+   * radix), once identified. */
   get serial(): number | undefined {
     return this.parsedBanner?.serial;
   }
 
+  /** True once {@link connect} has succeeded — reflects the transport,
+   * not identification. A `connect()`-ed link with no banner yet (or
+   * whose {@link identify} timed out) is still `isOpen`. */
   get isOpen(): boolean {
-    return this.state === "open";
+    return this.state === "connected";
   }
 
   /** The underlying `v6/session.ts` `Session`, exposed read/write for
-   * callers (`server.ts`, ticket 009) that need direct visibility into
-   * sequencing state (`pendingCount`, `seq`, ...) beyond what {@link
-   * onAckNack} reports as events. Prefer {@link sendCommand}/{@link
+   * callers (`server.ts`) that need direct visibility into sequencing
+   * state (`pendingCount`, `seq`, ...) beyond what {@link onAckNack}
+   * reports as events. Prefer {@link sendCommand}/{@link
    * sendUnsequenced}/{@link checkLiveness} over calling this directly
    * to send — those also take care of write pacing, which sending
    * through the session alone does not. */
@@ -310,28 +240,46 @@ export class UsbSerialLink {
   // ---- lifecycle --------------------------------------------------------
 
   /**
-   * Open the serial port and identify the device on the other end.
-   *
-   * Always follows open → send `HELLO` → read the banner from the
-   * reply (see the module doc comment) — never from an unsolicited read
-   * during open. Resolves with the parsed banner once it arrives, or
-   * rejects if the port fails to open, errors before a banner arrives,
-   * or no banner-shaped reply arrives within `openTimeoutMs`.
+   * Open the serial port and attach listeners. Never sends `HELLO`,
+   * never waits for a banner — see the module doc comment. Rejects only
+   * on a transport-level failure: the port failing to open, or erroring
+   * before it does.
    */
-  async open(): Promise<ParsedBanner> {
+  async connect(): Promise<void> {
     if (this.state !== "idle") {
       throw new Error(
-        `UsbSerialLink.open() called while state is "${this.state}" -- a link may only be opened once`,
+        `UsbSerialLink.connect() called while state is "${this.state}" -- a link may only be connected once`,
       );
     }
-    this.state = "opening";
+    this.state = "connecting";
 
     const calloutPath = toCalloutPath(this.portPath);
     const port = this.createPort(calloutPath, { baudRate: BAUD_RATE });
     this.port = port;
     this.attachPortListeners(port);
 
-    await this.waitForPortOpen(port);
+    try {
+      await this.waitForPortOpen(port);
+    } catch (error) {
+      this.state = "closed";
+      throw error;
+    }
+
+    this.state = "connected";
+  }
+
+  /**
+   * Send `HELLO` and wait for the banner reply. Resolves the parsed
+   * banner, or `null` if no banner-shaped reply arrives within
+   * `openTimeoutMs` — **never rejects**. May be called again after a
+   * `null` resolution; each call re-sends `HELLO` (resetting the
+   * session's sequence state, per the module doc comment) without
+   * touching the port itself. Throws only if called before {@link
+   * connect} has succeeded — a programmer error, not a runtime
+   * condition this method's `null`/banner contract covers.
+   */
+  async identify(): Promise<ParsedBanner | null> {
+    this.assertConnected("identify");
 
     // The one and only place this module ever sends HELLO -- via
     // Session.connect(), never a hand-formatted line, so the session's
@@ -342,13 +290,14 @@ export class UsbSerialLink {
     this.paceWrite(helloLine);
     const banner = await bannerWait;
 
-    this.parsedBanner = banner;
-    this.state = "open";
+    if (banner) {
+      this.parsedBanner = banner;
+    }
     return banner;
   }
 
   /** Close the port. Idempotent -- calling it again, or before {@link
-   * open} ever succeeded, is a no-op. */
+   * connect} ever succeeded, is a no-op. */
   close(): Promise<void> {
     const port = this.port;
     if (!port || this.state === "closed") {
@@ -377,7 +326,7 @@ export class UsbSerialLink {
    * exactly what the user typed).
    */
   sendLine(line: string): void {
-    this.assertOpen();
+    this.assertConnected("sendLine");
     this.paceWrite(line.endsWith("\n") ? line : `${line}\n`);
   }
 
@@ -390,7 +339,7 @@ export class UsbSerialLink {
    * text sent, for callers that want it (e.g. logging).
    */
   sendCommand(verb: string, fields: readonly WireField[] = []): string {
-    this.assertOpen();
+    this.assertConnected("sendCommand");
     const line = this.protocolSession.send(verb, fields);
     this.paceWrite(line);
     return line;
@@ -404,7 +353,7 @@ export class UsbSerialLink {
    * `HELLO` as a live-session health check.
    */
   sendUnsequenced(verb: string, fields: readonly WireField[] = []): string {
-    this.assertOpen();
+    this.assertConnected("sendUnsequenced");
     const line = this.protocolSession.sendUnsequenced(verb, fields);
     this.paceWrite(line);
     return line;
@@ -413,14 +362,14 @@ export class UsbSerialLink {
   /** Send `PING` — the liveness probe to use instead of re-sending
    * `HELLO` once a session is live (see the module doc comment). */
   checkLiveness(): void {
-    this.assertOpen();
+    this.assertConnected("checkLiveness");
     this.paceWrite(this.protocolSession.checkLiveness());
   }
 
-  private assertOpen(): void {
-    if (this.state !== "open") {
+  private assertConnected(callerName: string): void {
+    if (this.state !== "connected") {
       throw new Error(
-        `UsbSerialLink is not open (state: "${this.state}") -- call open() first`,
+        `UsbSerialLink.${callerName}() called while not connected (state: "${this.state}") -- call connect() first`,
       );
     }
   }
@@ -434,12 +383,11 @@ export class UsbSerialLink {
   // ---- receiving ------------------------------------------------------
 
   /** Subscribe to every inbound reply-direction line (protocol.md
-   * §2.1's case-as-direction rule, via `v6/codec.ts`'s `classifyLine`) —
-   * `ack`/`nack` included, alongside `pong`/`status`/`id`/`ver`/`help`/
-   * `debug`/`ret`/`err`/etc. A foreign or command-direction inbound
-   * line is never delivered here (dropped silently — see the module doc
-   * comment and the ticket's acceptance criteria). Returns an
-   * unsubscribe function. */
+   * §2.1's case-as-direction rule, via `v6/codec.ts`'s `classifyLine`,
+   * applied through {@link LineRouter}) — `ack`/`nack` included,
+   * alongside `pong`/`status`/`id`/`ver`/`help`/`debug`/`ret`/`err`/etc.
+   * A foreign or command-direction inbound line is never delivered here
+   * (dropped silently). Returns an unsubscribe function. */
   onLine(listener: LineListener): () => void {
     this.lineListeners.add(listener);
     return () => {
@@ -458,9 +406,9 @@ export class UsbSerialLink {
     };
   }
 
-  /** Subscribe to port-level errors that occur after {@link open} has
-   * already resolved (an error during open instead rejects {@link
-   * open} itself). Returns an unsubscribe function. */
+  /** Subscribe to port-level errors that occur after {@link connect} has
+   * already resolved (an error during connect instead rejects {@link
+   * connect} itself). Returns an unsubscribe function. */
   onError(listener: LinkErrorListener): () => void {
     this.errorListeners.add(listener);
     return () => {
@@ -493,15 +441,13 @@ export class UsbSerialLink {
     });
   }
 
-  private waitForBanner(): Promise<ParsedBanner> {
-    return new Promise((resolve, reject) => {
+  /** Never rejects -- resolves `null` on timeout instead. See {@link
+   * identify}'s own doc comment and the module doc comment for why. */
+  private waitForBanner(): Promise<ParsedBanner | null> {
+    return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.resolveBannerWait = undefined;
-        reject(
-          new Error(
-            `timed out after ${this.openTimeoutMs}ms waiting for a HELLO banner reply from ${this.portPath}`,
-          ),
-        );
+        resolve(null);
       }, this.openTimeoutMs);
       this.resolveBannerWait = (banner) => {
         clearTimeout(timer);
@@ -516,55 +462,36 @@ export class UsbSerialLink {
    * (trailing `\r` and leading `"< "` already stripped by {@link
    * LineReassembler}).
    *
-   * While `opening`: this is exclusively the HELLO-reply banner wait
-   * (see the module doc comment) — every line is tried against {@link
-   * parseBanner} and anything that doesn't parse as a banner is
-   * ignored (not an error) until one does or the open timeout fires.
+   * While {@link identify} is actively waiting for a banner reply
+   * ({@link resolveBannerWait} is set): every line is tried against
+   * {@link parseBanner} and anything that doesn't parse as a banner is
+   * ignored (not an error, not routed through {@link LineRouter}) until
+   * one does or the wait times out.
    *
-   * Once `open`: lines are framed via `v6/codec.ts`'s `decodeLine`,
-   * then classified via `classifyLine`. Only `"reply"`-direction lines
-   * are ever surfaced to listeners; a blank line, an over-length line,
-   * a foreign (unrecognized lowercase) line, and an unexpected
-   * command-direction line are all dropped here silently — never
-   * surfaced as an error or shown in any output this module produces
-   * (the ticket's own acceptance criterion). `ack`/`nack` replies are
-   * additionally fed to the session for sequencing bookkeeping, with
-   * any resend the session requires re-sent through the same paced
-   * write path as everything else.
+   * Otherwise, whenever the transport is `connected` — whether {@link
+   * identify} has never been called yet, resolved a banner, or timed
+   * out with `null` — inbound lines are handed to {@link LineRouter}
+   * (decode -> classify -> ack/nack -> resend -> dispatch). Routing
+   * traffic this way even after a `null` identify is deliberate: a
+   * connected-but-unidentified transport (a relay whose target robot
+   * hasn't answered) can still legitimately exchange console/liveness
+   * traffic (see `link/Link.ts`'s own doc comment for why this state
+   * is normal, not an error).
    */
   private handleLine(raw: string): void {
-    if (this.state === "opening") {
+    if (this.resolveBannerWait) {
       const banner = parseBanner(raw);
       if (banner) {
-        this.resolveBannerWait?.(banner);
+        this.resolveBannerWait(banner);
       }
       return;
     }
 
-    if (this.state !== "open") {
+    if (this.state !== "connected") {
       return;
     }
 
-    const decoded = decodeLine(raw);
-    if (decoded.kind !== "line") {
-      return;
-    }
-
-    if (classifyLine(decoded.verb) !== "reply") {
-      return;
-    }
-
-    if (decoded.verb === "ack" || decoded.verb === "nack") {
-      const event = this.protocolSession.handleReply(decoded);
-      if (event) {
-        for (const resendLine of event.resend) {
-          this.paceWrite(resendLine);
-        }
-        this.dispatchAckNack(event);
-      }
-    }
-
-    this.dispatchLine(decoded);
+    this.lineRouter.handleLine(raw);
   }
 
   private dispatchLine(line: DecodedLine): void {

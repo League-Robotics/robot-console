@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { DecodedLine, ParsedBanner } from "@robot-console/protocol";
+import type { AckNackEvent, DecodedLine, ParsedBanner } from "@robot-console/protocol";
 import { DeviceWatcher, type DaplinkDevice } from "./devices.js";
 import type { SwdNameResult } from "./swdName.js";
-import { DeviceRegistry, type UsbSerialLinkLike } from "./deviceRegistry.js";
+import { DeviceRegistry } from "./deviceRegistry.js";
+import type { Link } from "./link/Link.js";
 import type { EndpointListEntry, FirmwareKind, FlashPhase } from "./wsMessages.js";
 import type { FirmwareConfigMap, FirmwareSource } from "./config.js";
 import type { ResolvedRelease } from "./releases.js";
@@ -46,21 +47,38 @@ function banner(overrides: Partial<ParsedBanner> = {}): ParsedBanner {
   };
 }
 
-/** A fully synthetic {@link UsbSerialLinkLike}: no real `serialport`
- * I/O, full control over open()'s outcome and timing, and helpers to
- * simulate an inbound line or a post-open error. */
-class FakeLink implements UsbSerialLinkLike {
-  openCalls = 0;
+/** A fully synthetic {@link Link}: no real `serialport` I/O, full
+ * control over `connect()`/`identify()`'s outcome and timing (separate
+ * seams, per the ticket's `connect()`/`identify()` split), and helpers
+ * to simulate an inbound line or a post-connect error.
+ *
+ * `connectImpl` defaults to an immediately-succeeding transport, since
+ * most tests care only about `identify()`'s outcome (a banner, or `null`
+ * for a silent board) -- tests exercising a genuine transport failure
+ * (`connect()` itself failing) pass their own rejecting `connectImpl`.
+ */
+class FakeLink implements Link {
+  connectCalls = 0;
+  identifyCalls = 0;
   closeCalls = 0;
   sentLines: string[] = [];
   private lineListeners = new Set<(line: DecodedLine) => void>();
+  private ackNackListeners = new Set<(event: AckNackEvent) => void>();
   private errorListeners = new Set<(err: Error) => void>();
 
-  constructor(private readonly openImpl: () => Promise<ParsedBanner>) {}
+  constructor(
+    private readonly identifyImpl: () => Promise<ParsedBanner | null>,
+    private readonly connectImpl: () => Promise<void> = () => Promise.resolve(),
+  ) {}
 
-  open(): Promise<ParsedBanner> {
-    this.openCalls++;
-    return this.openImpl();
+  connect(): Promise<void> {
+    this.connectCalls++;
+    return this.connectImpl();
+  }
+
+  identify(): Promise<ParsedBanner | null> {
+    this.identifyCalls++;
+    return this.identifyImpl();
   }
 
   close(): Promise<void> {
@@ -72,10 +90,29 @@ class FakeLink implements UsbSerialLinkLike {
     this.sentLines.push(line);
   }
 
+  sendCommand(): string {
+    throw new Error("FakeLink.sendCommand is not exercised by DeviceRegistry");
+  }
+
+  sendUnsequenced(): string {
+    throw new Error("FakeLink.sendUnsequenced is not exercised by DeviceRegistry");
+  }
+
+  checkLiveness(): void {
+    // Not exercised by DeviceRegistry -- no-op.
+  }
+
   onLine(listener: (line: DecodedLine) => void): () => void {
     this.lineListeners.add(listener);
     return () => {
       this.lineListeners.delete(listener);
+    };
+  }
+
+  onAckNack(listener: (event: AckNackEvent) => void): () => void {
+    this.ackNackListeners.add(listener);
+    return () => {
+      this.ackNackListeners.delete(listener);
     };
   }
 
@@ -132,7 +169,7 @@ describe("DeviceRegistry", () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const resolveName = vi.fn(async () => namedResult("zeguz"));
-    const createLink = vi.fn(() => new FakeLink(() => new Promise<ParsedBanner>(() => {})));
+    const createLink = vi.fn(() => new FakeLink(() => new Promise<ParsedBanner | null>(() => {})));
 
     const registry = new DeviceRegistry({ watcher, resolveName, createLink });
     const seen: EndpointListEntry[][] = [];
@@ -171,17 +208,25 @@ describe("DeviceRegistry", () => {
     expect(snap[0]).toEqual(
       expect.objectContaining({ name: "zeguz", role: "NEZHA2", sessionOpen: true }),
     );
-    expect(link.openCalls).toBe(1);
+    expect(link.connectCalls).toBe(1);
+    expect(link.identifyCalls).toBe(1);
 
     await registry.stop();
   });
 
-  it("degrades gracefully when link open fails: named, role null, sessionError set, no throw", async () => {
+  it("degrades gracefully when connect() fails: named, role null, sessionError set, sessionOpen false, no throw", async () => {
+    // A genuine transport-level failure -- the port itself refusing to
+    // open. Distinct from identify() timing out (see the next test):
+    // only a connect() failure is still an error state under sprint 4
+    // ticket 002's connect()/identify() split.
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const resolveName = async () => namedResult("zeguz");
     const createLink = () =>
-      new FakeLink(() => Promise.reject(new Error("timed out waiting for a HELLO banner reply")));
+      new FakeLink(
+        async () => banner(), // never reached -- connect() fails first
+        () => Promise.reject(new Error("permission denied opening port")),
+      );
 
     const registry = new DeviceRegistry({ watcher, resolveName, createLink });
     registry.start();
@@ -192,32 +237,67 @@ describe("DeviceRegistry", () => {
         name: "zeguz",
         role: null,
         sessionOpen: false,
-        sessionError: expect.stringContaining("HELLO"),
+        sessionError: expect.stringContaining("permission denied"),
       }),
     );
 
     await registry.stop();
   });
 
-  it("closes the underlying link after a failed open, so the OS-level port handle is not leaked", async () => {
+  it("treats a silent board (identify() resolves null) as connected-but-unresponsive, not an error", async () => {
+    // The core behavior change this ticket introduces: a healthy
+    // transport with nothing answering HELLO is a normal, representable
+    // state -- sessionOpen: true, classification unknown, no
+    // sessionError -- not the error state a connect() failure produces
+    // (previous test). This is also the port-lock-contention fix: the
+    // link connect() opened is never closed just because identify()
+    // found nothing.
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("zeguz");
+    const link = new FakeLink(async () => null);
+    const createLink = () => link;
+
+    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    registry.start();
+
+    const snap = await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    expect(snap[0]).toEqual(
+      expect.objectContaining({
+        name: "zeguz",
+        role: null,
+        sessionOpen: true,
+        classification: expect.objectContaining({ type: "unknown", evidence: "none" }),
+      }),
+    );
+    expect(snap[0]?.sessionError).toBeUndefined();
+    expect(link.closeCalls).toBe(0);
+
+    await registry.stop();
+  });
+
+  it("closes the underlying link after a failed connect(), so the OS-level port handle is not leaked", async () => {
     // Regression test for a real bug sprint 003 ticket 005's bench
-    // session exposed: `UsbSerialLink.open()` rejects only once its
-    // `waitForPortOpen` step has already resolved (see that module's
-    // own doc comment) -- so by the time the HELLO-banner-reply timeout
-    // fires, the underlying `SerialPort` is genuinely open at the OS
-    // level. `openLink`'s failure branch recorded `sessionError` but never
-    // called `link.close()` on the link it had just created, leaking
-    // the OS-level handle for the rest of the process's lifetime --
-    // verified against real hardware: every later open attempt on that
-    // same port (a manual "Retry connection", or `requestFlash`'s own
-    // post-flash reopen) then failed with "Cannot lock port", even
-    // though nothing else on the machine was touching the device.
+    // session exposed, carried forward under the connect()/identify()
+    // split (sprint 4 ticket 002): a transport-level connect() failure
+    // may still leave the underlying port genuinely open at the OS
+    // level by the time it rejects. The old `openLink`'s failure branch
+    // recorded `sessionError` but never called `link.close()` on the
+    // link it had just created, leaking the OS-level handle for the
+    // rest of the process's lifetime -- verified against real hardware:
+    // every later open attempt on that same port (a manual "Retry
+    // connection", or `requestFlash`'s own post-flash reopen) then
+    // failed with "Cannot lock port". `connectAndIdentify`'s connect()
+    // failure branch still closes the link it just created.
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const resolveName = async () => namedResult("zeguz");
     let failedLink: FakeLink | undefined;
     const createLink = () => {
-      failedLink = new FakeLink(() => Promise.reject(new Error("timed out waiting for a HELLO banner reply")));
+      failedLink = new FakeLink(
+        async () => banner(), // never reached
+        () => Promise.reject(new Error("permission denied opening port")),
+      );
       return failedLink;
     };
 
@@ -266,7 +346,7 @@ describe("DeviceRegistry", () => {
     await registry.stop();
   });
 
-  it("serializes name resolution and link open per device (never races)", async () => {
+  it("serializes name resolution and link connect/identify per device (never races)", async () => {
     const order: string[] = [];
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
@@ -278,22 +358,31 @@ describe("DeviceRegistry", () => {
     };
     const createLink = () =>
       new FakeLink(async () => {
-        order.push("open-start");
+        order.push("identify-start");
         await new Promise((resolve) => setTimeout(resolve, 5));
-        order.push("open-end");
+        order.push("identify-end");
         return banner();
       });
 
     const registry = new DeviceRegistry({ watcher, resolveName, createLink });
     registry.start();
-    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    // sessionOpen flips true as soon as connect() succeeds, before
+    // identify() even starts (see connectAndIdentify's own doc comment)
+    // -- wait for role instead, which is only set once identify()
+    // resolves, to observe the full sequence.
+    await waitForSnapshot(registry, (s) => s.length > 0 && s[0]?.role !== null);
 
-    expect(order).toEqual(["name-start", "name-end", "open-start", "open-end"]);
+    expect(order).toEqual(["name-start", "name-end", "identify-start", "identify-end"]);
 
     await registry.stop();
   });
 
-  it("requestOpen retries a previously-failed link and requestClose tears it down", async () => {
+  it("requestOpen retries after a previously-failed connect() and requestClose tears it down", async () => {
+    // requestOpen() only retries a link whose connect() genuinely
+    // failed (sessionOpen: false) -- a "connected, unresponsive"
+    // endpoint already has sessionOpen: true and is out of scope for
+    // this ticket's requestOpen (see connectAndIdentify's own doc
+    // comment).
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const resolveName = async () => namedResult("zeguz");
@@ -302,8 +391,9 @@ describe("DeviceRegistry", () => {
     const createLink = () => {
       const shouldFail = attempt === 0;
       attempt++;
-      const link = new FakeLink(async () =>
-        shouldFail ? Promise.reject(new Error("no reply")) : banner(),
+      const link = new FakeLink(
+        async () => banner(),
+        shouldFail ? () => Promise.reject(new Error("permission denied opening port")) : () => Promise.resolve(),
       );
       links.push(link);
       return link;
@@ -509,7 +599,10 @@ describe("DeviceRegistry — requestFlash", () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const resolveName = async () => namedResult("zeguz");
-    const createLink = () => new FakeLink(() => Promise.reject(new Error("no reply")));
+    const createLink = () => new FakeLink(
+      async () => banner(), // never reached -- connect() fails first
+      () => Promise.reject(new Error("no reply")),
+    );
 
     const resolveReleaseFn = vi.fn(async (): Promise<ResolvedRelease> => resolvedRelease());
     const fetchAndVerifyHexFn = vi.fn(async () => ({ error: "sha256 mismatch for downloaded hex" }));
@@ -544,7 +637,10 @@ describe("DeviceRegistry — requestFlash", () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const resolveName = async () => namedResult("zeguz");
-    const createLink = () => new FakeLink(() => Promise.reject(new Error("no reply")));
+    const createLink = () => new FakeLink(
+      async () => banner(), // never reached -- connect() fails first
+      () => Promise.reject(new Error("no reply")),
+    );
 
     const resolveReleaseFn = vi.fn(async () => ({ reason: "no-releases" as const, message: "no releases published" }));
     const fetchAndVerifyHexFn = vi.fn(async () => ({ hex: Buffer.from(":00000001FF\n") }));
@@ -580,7 +676,10 @@ describe("DeviceRegistry — requestFlash", () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const resolveName = async () => namedResult("zeguz");
-    const createLink = vi.fn(() => new FakeLink(() => Promise.reject(new Error("no reply"))));
+    const createLink = vi.fn(() => new FakeLink(
+      async () => banner(), // never reached -- connect() fails first
+      () => Promise.reject(new Error("no reply")),
+    ));
 
     const resolveReleaseFn = vi.fn(async (): Promise<ResolvedRelease> => resolvedRelease());
     const fetchAndVerifyHexFn = vi.fn(async () => ({ hex: Buffer.from(":00000001FF\n") }));
@@ -626,7 +725,10 @@ describe("DeviceRegistry — requestFlash", () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const resolveName = async () => namedResult("zeguz");
-    const createLink = () => new FakeLink(() => Promise.reject(new Error("no reply")));
+    const createLink = () => new FakeLink(
+      async () => banner(), // never reached -- connect() fails first
+      () => Promise.reject(new Error("no reply")),
+    );
 
     const resolveReleaseFn = vi.fn(async (): Promise<ResolvedRelease> => resolvedRelease());
     const fetchAndVerifyHexFn = vi.fn(async () => ({ hex: Buffer.from(":00000001FF\n") }));
@@ -678,7 +780,10 @@ describe("DeviceRegistry — requestFlash", () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const resolveName = async () => namedResult("zeguz");
-    const createLink = () => new FakeLink(() => Promise.reject(new Error("no reply")));
+    const createLink = () => new FakeLink(
+      async () => banner(), // never reached -- connect() fails first
+      () => Promise.reject(new Error("no reply")),
+    );
 
     const resolveReleaseFn = vi.fn(async (): Promise<ResolvedRelease> => {
       order.push("flash-resolve-start");

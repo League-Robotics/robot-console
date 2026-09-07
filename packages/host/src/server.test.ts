@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
-import type { DecodedLine, ParsedBanner } from "@robot-console/protocol";
+import type { AckNackEvent, DecodedLine, ParsedBanner } from "@robot-console/protocol";
 import { DeviceWatcher, type DaplinkDevice } from "./devices.js";
-import { DeviceRegistry, type DeviceRegistryOptions, type UsbSerialLinkLike } from "./deviceRegistry.js";
+import { DeviceRegistry, type DeviceRegistryOptions } from "./deviceRegistry.js";
+import type { Link } from "./link/Link.js";
 import type { FirmwareConfigMap, FirmwareSource } from "./config.js";
 import { FirmwareAvailabilityCache, type ResolvedRelease } from "./releases.js";
 import { startServer, type RunningServer } from "./server.js";
@@ -35,15 +36,28 @@ function banner(overrides: Partial<ParsedBanner> = {}): ParsedBanner {
   };
 }
 
-class FakeLink implements UsbSerialLinkLike {
+/** See `deviceRegistry.test.ts`'s own `FakeLink` for the full doc
+ * comment on the `connect()`/`identify()` split this implements --
+ * `connectImpl` defaults to an immediately-succeeding transport since
+ * every test here except the "no open link" one below cares only about
+ * `identify()`'s outcome. */
+class FakeLink implements Link {
   sentLines: string[] = [];
   private lineListeners = new Set<(line: DecodedLine) => void>();
+  private ackNackListeners = new Set<(event: AckNackEvent) => void>();
   private errorListeners = new Set<(err: Error) => void>();
 
-  constructor(private readonly openImpl: () => Promise<ParsedBanner>) {}
+  constructor(
+    private readonly identifyImpl: () => Promise<ParsedBanner | null>,
+    private readonly connectImpl: () => Promise<void> = () => Promise.resolve(),
+  ) {}
 
-  open(): Promise<ParsedBanner> {
-    return this.openImpl();
+  connect(): Promise<void> {
+    return this.connectImpl();
+  }
+
+  identify(): Promise<ParsedBanner | null> {
+    return this.identifyImpl();
   }
 
   close(): Promise<void> {
@@ -54,10 +68,29 @@ class FakeLink implements UsbSerialLinkLike {
     this.sentLines.push(line);
   }
 
+  sendCommand(): string {
+    throw new Error("FakeLink.sendCommand is not exercised by server.test.ts");
+  }
+
+  sendUnsequenced(): string {
+    throw new Error("FakeLink.sendUnsequenced is not exercised by server.test.ts");
+  }
+
+  checkLiveness(): void {
+    // Not exercised here -- no-op.
+  }
+
   onLine(listener: (line: DecodedLine) => void): () => void {
     this.lineListeners.add(listener);
     return () => {
       this.lineListeners.delete(listener);
+    };
+  }
+
+  onAckNack(listener: (event: AckNackEvent) => void): () => void {
+    this.ackNackListeners.add(listener);
+    return () => {
+      this.ackNackListeners.delete(listener);
     };
   }
 
@@ -270,17 +303,24 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
   });
 
   it("reports a graceful error, not a crash, for a line sent to a device with no open link", async () => {
-    // Mirrors the real UsbSerialLink against a silent board: open()
-    // eventually rejects (a bounded timeout in production; a short
-    // delay here) rather than ever resolving. DeviceRegistry serializes
-    // open/send per device, so sendLine() sent while this is still in
-    // flight is queued behind it and observes the settled (failed)
-    // state -- see deviceRegistry.ts's "serializes name-read and
-    // link-open" test for the same guarantee in isolation.
+    // Mirrors the real UsbSerialLink against a genuine transport
+    // failure: connect() eventually rejects (a bounded timeout in
+    // production; a short delay here) rather than ever resolving. Under
+    // sprint 4 ticket 002's connect()/identify() split, only a
+    // connect() failure leaves the endpoint with no open link
+    // (sessionOpen: false) -- an identify() timeout (a silent board) no
+    // longer does, since that link stays open (see
+    // deviceRegistry.test.ts's "connected-but-unresponsive" test).
+    // DeviceRegistry serializes connect/send per device, so sendLine()
+    // sent while this is still in flight is queued behind it and
+    // observes the settled (failed) state -- see deviceRegistry.ts's
+    // "serializes name-read and link-open" test for the same guarantee
+    // in isolation.
     const link = new FakeLink(
+      async () => banner(), // never reached -- connect() fails first
       () =>
-        new Promise<ParsedBanner>((_resolve, reject) => {
-          setTimeout(() => reject(new Error("timed out waiting for a HELLO banner reply")), 20);
+        new Promise<void>((_resolve, reject) => {
+          setTimeout(() => reject(new Error("permission denied opening port")), 20);
         }),
     );
     server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });

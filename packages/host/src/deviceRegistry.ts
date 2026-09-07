@@ -42,12 +42,25 @@
  * endpoint list must never block on SWD/serial I/O) and its name/role
  * resolution is kicked off asynchronously, serialized per-endpoint as
  * above: resolve the five-letter name over SWD first (fast, no reset),
- * then attempt to open a `UsbSerialLink` to learn its role from the
- * boot banner and classify it via `classifyBanner`. A device that never
- * replies to `HELLO` (a silently running board) still ends up listed,
- * named, with `role: null`, `classification.type: "unknown"`, and a
- * `sessionError` -- `UsbSerialLink.open()`'s own timeout bounds this, so
- * this never hangs the endpoint list.
+ * then {@link connectAndIdentify} the link -- `Link.connect()` opens the
+ * port, then `Link.identify()` learns its role from the boot banner and
+ * classifies it via `classifyBanner`. `connect()`/`identify()` fail
+ * differently, and this module treats them differently (sprint 4 ticket
+ * 002, folding in
+ * `port-lock-contention-between-identify-and-user-open.md`):
+ *
+ * - `connect()` throws only on a genuine transport failure (the port
+ *   itself failing to open). That is still today's error state --
+ *   `sessionOpen: false`, `sessionError` set -- and the link is closed.
+ * - `identify()` never throws. A device that never replies to `HELLO`
+ *   (a silently running board) resolves `null` and still ends up
+ *   listed, named, with `role: null`, `classification.type: "unknown"`,
+ *   `sessionOpen: true`, and **no** `sessionError` -- "connected,
+ *   unresponsive" is a normal, representable state (the state a relay
+ *   whose target robot never answers is in), not an error. The link
+ *   stays open: it is never closed and reopened just because identify
+ *   found nothing, which is what used to race the OS over the port
+ *   handle (see the linked issue).
  *
  * ## Detach flow
  *
@@ -69,9 +82,9 @@
  * look up the configured `FirmwareSource`, fetch+verify the hex
  * (reporting `"fetching"`/`"verifying"` progress), write it (reporting
  * `"erasing"`/`"writing"`/`"resetting"` progress), and -- on success --
- * re-open a link exactly the way the attach flow above already does, so
- * the newly-flashed firmware's banner is picked up with no separate
- * manual Connect click. See {@link DeviceRegistry.requestFlash}'s own
+ * connect and identify a link exactly the way the attach flow above
+ * already does, so the newly-flashed firmware's banner is picked up
+ * with no separate manual Connect click. See {@link DeviceRegistry.requestFlash}'s own
  * doc comment for why this task holds the endpoint's mutex slot across
  * the network fetch rather than releasing and re-acquiring it. A
  * failure at any stage clears `flashStatus` and reports a `flash-result`
@@ -88,7 +101,7 @@
  * only freezes the shape it will report through.
  */
 
-import type { DecodedLine, DeviceClassification, ParsedBanner } from "@robot-console/protocol";
+import type { DecodedLine, DeviceClassification } from "@robot-console/protocol";
 import { classifyBanner, encodeLine } from "@robot-console/protocol";
 import {
   DeviceWatcher,
@@ -97,6 +110,7 @@ import {
 } from "./devices.js";
 import { readSwdName, type SwdNameResult } from "./swdName.js";
 import { UsbSerialLink } from "./link/UsbSerialLink.js";
+import type { Link, LinkFactory, LinkSpec } from "./link/Link.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
 import { resolveRelease, fetchAndVerifyHex } from "./releases.js";
 import { flash } from "./flash.js";
@@ -118,24 +132,16 @@ function usbEndpointId(serialNumber: string): string {
 // Injectable seams (real implementations by default; fakes in tests)
 // ---------------------------------------------------------------------
 
-/** The slice of `UsbSerialLink` this module actually uses. Kept narrow
- * and exported so tests can drive {@link DeviceRegistry} against a
- * fully synthetic fake link, without any real `serialport` I/O -- the
- * ticket's own testing note asks for exactly this. The real
- * `UsbSerialLink` class satisfies this structurally. */
-export interface UsbSerialLinkLike {
-  open(): Promise<ParsedBanner>;
-  close(): Promise<void>;
-  sendLine(line: string): void;
-  onLine(listener: (line: DecodedLine) => void): () => void;
-  onError(listener: (err: Error) => void): () => void;
-}
-
 export type NameResolver = (device: DaplinkDevice) => Promise<SwdNameResult>;
-export type LinkFactory = (portPath: string) => UsbSerialLinkLike;
 
-function defaultLinkFactory(portPath: string): UsbSerialLinkLike {
-  return new UsbSerialLink(portPath);
+/** Real `Link` factory: builds a {@link UsbSerialLink} from a
+ * {@link LinkSpec} (only the `"usb"` variant exists this sprint --
+ * see `link/Link.ts`'s own doc comment). Tests substitute a fake
+ * {@link LinkFactory} returning a fully synthetic {@link Link}, without
+ * any real `serialport` I/O -- the ticket's own testing note asks for
+ * exactly this. */
+function defaultLinkFactory(spec: LinkSpec): Link {
+  return new UsbSerialLink(spec.portPath);
 }
 
 // ---------------------------------------------------------------------
@@ -188,12 +194,14 @@ interface DeviceState {
   /** This endpoint's device-type classification, derived from the most
    * recently seen banner via `classifyBanner`. Starts at
    * `classifyBanner(null)` (`type: "unknown"`, `evidence: "none"`)
-   * before any link has ever been opened, and is kept in sync with
-   * {@link role} by every call site that sets `role` -- ticket 003
-   * restructures this internal state further; this ticket only wires
-   * classification through the existing role-setting call sites. */
+   * before any link has ever connected, stays there if `identify()`
+   * ever resolves `null` (connected, unresponsive -- see this module's
+   * own doc comment), and is kept in sync with {@link role} by every
+   * call site that sets `role` -- ticket 003 restructures this internal
+   * state further; this ticket only wires classification through the
+   * existing role-setting call sites. */
   classification: DeviceClassification;
-  link?: UsbSerialLinkLike | undefined;
+  link?: Link | undefined;
   linkOpen: boolean;
   linkError?: string | undefined;
   unsubscribeLine?: (() => void) | undefined;
@@ -286,8 +294,9 @@ export interface DeviceRegistryOptions {
   watcher?: DeviceWatcher;
   /** Injectable SWD name resolver; defaults to {@link readSwdName}. */
   resolveName?: NameResolver;
-  /** Injectable `UsbSerialLink` factory; defaults to real
-   * `UsbSerialLink`. Tests substitute a fake {@link UsbSerialLinkLike}. */
+  /** Injectable {@link Link} factory; defaults to real `UsbSerialLink`
+   * (via {@link defaultLinkFactory}). Tests substitute a fake
+   * {@link LinkFactory} returning a fully synthetic {@link Link}. */
   createLink?: LinkFactory;
   /** Injectable firmware-source config accessor; defaults to a call to
    * `config.ts`'s real {@link getFirmwareConfig} (real environment/
@@ -419,10 +428,15 @@ export class DeviceRegistry {
     };
   }
 
-  /** (Re-)open a link to an endpoint, e.g. retrying after a silent-board
-   * timeout. No-op if already open. Errors are reported via
-   * {@link onError} and reflected in the next {@link onDevicesChanged}
-   * snapshot -- never thrown to the caller. */
+  /** (Re-)open a link to an endpoint, e.g. retrying after a `connect()`
+   * failure (a genuine transport error). No-op if a link is already
+   * open -- note that a "connected, unresponsive" endpoint (a
+   * successful `connect()` whose `identify()` resolved `null`) already
+   * has `linkOpen: true`, so this is a no-op for it too; retrying
+   * `identify()` on an already-open link is ticket 003's concern, not
+   * this one. Errors are reported via {@link onError} and reflected in
+   * the next {@link onDevicesChanged} snapshot -- never thrown to the
+   * caller. */
   async requestOpen(endpointId: string): Promise<void> {
     await this.mutex.run(endpointId, async () => {
       const state = this.states.get(endpointId);
@@ -433,7 +447,7 @@ export class DeviceRegistry {
       if (state.linkOpen) {
         return;
       }
-      await this.openLink(state);
+      await this.connectAndIdentify(state);
     });
   }
 
@@ -588,11 +602,12 @@ export class DeviceRegistry {
       this.emitDevices();
 
       // Pick up the newly-flashed firmware's banner without a separate
-      // manual Connect click (SUC-001's postcondition). openLink never
-      // throws and reports its own errors via linkError/onDevicesChanged
-      // rather than rejecting, so a failed re-open here never turns an
-      // already-succeeded flash into a reported failure.
-      await this.openLink(state);
+      // manual Connect click (SUC-001's postcondition).
+      // connectAndIdentify() never throws and reports its own errors via
+      // linkError/onDevicesChanged rather than rejecting, so a failed
+      // re-connect here never turns an already-succeeded flash into a
+      // reported failure.
+      await this.connectAndIdentify(state);
     } catch (error) {
       // Defense in depth: every injected step here (config.ts,
       // releases.ts, flash.ts) documents "never throws", but a flash
@@ -679,10 +694,23 @@ export class DeviceRegistry {
     }
     this.emitDevices();
 
-    await this.openLink(state);
+    await this.connectAndIdentify(state);
   }
 
-  private async openLink(state: DeviceState): Promise<void> {
+  /**
+   * Connect a link to `state`'s device and identify it -- the
+   * `Link.connect()` + `Link.identify()` two-step replacing the old
+   * one-shot `UsbSerialLink.open()` (sprint 4 ticket 002). See this
+   * module's own "Attach flow" doc comment for the two failure modes
+   * this distinguishes.
+   *
+   * `connect()` and `identify()` are awaited as two separate steps
+   * (not one combined try/catch) specifically so a `connect()` failure
+   * -- a genuine transport error -- and an `identify()` `null` --
+   * "connected, unresponsive", not an error -- update state
+   * differently, per this module's own doc comment.
+   */
+  private async connectAndIdentify(state: DeviceState): Promise<void> {
     const portPath = state.device.serialPort?.path;
     if (!portPath) {
       state.linkError = "no serial port available for this device";
@@ -690,51 +718,76 @@ export class DeviceRegistry {
       return;
     }
 
-    const link = this.createLink(portPath);
+    const link = this.createLink({ transport: "usb", resourceKey: state.endpointId, portPath });
+
     try {
-      const banner = await link.open();
-      if (this.states.get(state.endpointId) !== state) {
-        // Removed while opening -- don't leak the link we just opened.
-        await link.close().catch(() => {});
-        return;
-      }
-      state.link = link;
-      state.linkOpen = true;
-      state.linkError = undefined;
-      // classification is derived from the same banner role is read
-      // from, and kept in sync with it here -- see DeviceState's own
-      // doc comment. classifyBanner never throws (pure, no I/O).
-      state.classification = classifyBanner(banner);
-      state.role = state.classification.role;
-      state.unsubscribeLine = link.onLine((decoded) => {
-        this.emitLine(state.endpointId, "rx", reconstructLineText(decoded));
-      });
-      state.unsubscribeError = link.onError((err) => {
-        this.handleLinkError(state, err);
-      });
+      await link.connect();
     } catch (error) {
-      // A silent board (never replies to HELLO) times out here rather
-      // than hanging -- UsbSerialLink.open()'s own timeout bounds this.
-      // Degrade gracefully: the device stays listed, named, with role
-      // still null and this reason recorded.
+      // A genuine transport-level failure (the port itself refusing to
+      // open, or erroring before it does) -- today's error state:
+      // sessionOpen: false, sessionError set. Degrade gracefully: the
+      // device stays listed, named, with role still null and this
+      // reason recorded.
       state.linkOpen = false;
       state.link = undefined;
       state.linkError = error instanceof Error ? error.message : String(error);
-      // Close the link we just created before giving up on it. By the
-      // time `link.open()`'s HELLO-banner-reply wait times out, its
-      // underlying `SerialPort` is already open at the OS level (see
-      // `UsbSerialLink.open()`'s own doc comment: the port-open wait
-      // resolves before the banner wait even starts) -- verified
-      // against real hardware (sprint 003 ticket 005): leaving this
-      // link unclosed here held that OS-level handle for the rest of
-      // the process's lifetime, permanently locking the port
-      // ("Cannot lock port") against every later open attempt on this
-      // device, including a manual retry and `requestFlash`'s own
-      // post-flash reopen. Best-effort -- a failed close must not mask
-      // the `linkError` already recorded above, same precedent as
-      // `teardownLink`'s and `flash.ts`'s own cleanup.
+      // Close the link we just created before giving up on it --
+      // best-effort, since a failed close must not mask the linkError
+      // already recorded above (same precedent as teardownLink's and
+      // flash.ts's own cleanup). Whether the underlying transport is
+      // actually open at the OS level at this point depends on where
+      // connect() failed; closing unconditionally is what
+      // port-lock-contention-between-identify-and-user-open.md's
+      // partial sprint-003 fix already established as the safe default
+      // here.
       await link.close().catch(() => {});
+      this.emitDevices();
+      return;
     }
+
+    if (this.states.get(state.endpointId) !== state) {
+      // Removed while connecting -- don't leak the link we just opened.
+      await link.close().catch(() => {});
+      return;
+    }
+
+    // The transport is up. Keep this link -- and only this link -- for
+    // the endpoint's entire lifetime from here on: this is the
+    // port-lock-contention fix (see this module's own doc comment and
+    // port-lock-contention-between-identify-and-user-open.md). Unlike
+    // the old open()-throws shape, a failed/timed-out identify() below
+    // does NOT close this link or fall into the catch above -- there is
+    // no repeated open/close cycle on this physical port for the OS to
+    // contend over, whether identify() succeeds, comes back null, or is
+    // retried later.
+    state.link = link;
+    state.linkOpen = true;
+    state.linkError = undefined;
+    state.unsubscribeLine = link.onLine((decoded) => {
+      this.emitLine(state.endpointId, "rx", reconstructLineText(decoded));
+    });
+    state.unsubscribeError = link.onError((err) => {
+      this.handleLinkError(state, err);
+    });
+    this.emitDevices();
+
+    // identify() never throws -- a silent board (never replies to
+    // HELLO) resolves null here rather than hanging or rejecting; the
+    // link above is already established either way.
+    const banner = await link.identify();
+    if (this.states.get(state.endpointId) !== state) {
+      // Removed while identifying -- teardownLink (already run for the
+      // now-orphaned state via the detach path) owns closing it.
+      return;
+    }
+    // classification is derived from the same banner role is read
+    // from, and kept in sync with it here -- see DeviceState's own doc
+    // comment. classifyBanner never throws (pure, no I/O) and accepts
+    // `null` directly: a null banner classifies exactly like "no banner
+    // yet" (type "unknown", evidence "none") -- a normal state, not an
+    // error.
+    state.classification = classifyBanner(banner);
+    state.role = state.classification.role;
     this.emitDevices();
   }
 

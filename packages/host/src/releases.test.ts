@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { FirmwareSource } from "./config.js";
+import type { FirmwareConfigMap, FirmwareSource } from "./config.js";
 import {
   checkAvailability,
   DEFAULT_AVAILABILITY_POLL_INTERVAL_MS,
@@ -9,6 +9,7 @@ import {
   resolveRelease,
   type FetchFn,
   type ReleasesFetchResponse,
+  type FirmwareStatusMap,
   type ResolvedRelease,
 } from "./releases.js";
 
@@ -471,5 +472,62 @@ describe("FirmwareAvailabilityCache", () => {
 
   it("documents a multi-minute default poll interval", () => {
     expect(DEFAULT_AVAILABILITY_POLL_INTERVAL_MS).toBeGreaterThanOrEqual(60_000);
+  });
+});
+
+describe("FirmwareAvailabilityCache config reload", () => {
+  it("re-reads configuration on each poll when loadConfig is supplied", async () => {
+    // The host-start-before-`dotconfig load` case: the cache is
+    // constructed while nothing is configured, and must still notice
+    // the source once the file lands.
+    let config: FirmwareConfigMap = { relay: undefined, robot: undefined };
+    const cache = new FirmwareAvailabilityCache(config, {
+      loadConfig: () => config,
+      checkAvailability: async () => ({ available: true }),
+    });
+
+    expect((await cache.pollOnce()).relay).toEqual({ configured: false });
+
+    config = {
+      relay: { repoUrl: "https://example.test/relay", tag: "latest" },
+      robot: undefined,
+    };
+
+    expect((await cache.pollOnce()).relay).toEqual({
+      configured: true,
+      repoUrl: "https://example.test/relay",
+      tag: "latest",
+      available: true,
+    });
+  });
+
+  it("notifies listeners when a reload changes the status", async () => {
+    let config: FirmwareConfigMap = { relay: undefined, robot: undefined };
+    const cache = new FirmwareAvailabilityCache(config, {
+      loadConfig: () => config,
+      checkAvailability: async () => ({ available: true }),
+    });
+    await cache.pollOnce();
+
+    const seen: FirmwareStatusMap[] = [];
+    cache.onChange((status) => seen.push(status));
+
+    config = {
+      relay: { repoUrl: "https://example.test/relay", tag: "latest" },
+      robot: undefined,
+    };
+    await cache.pollOnce();
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.relay).toMatchObject({ configured: true, available: true });
+  });
+
+  it("keeps using the constructor config when loadConfig is omitted", async () => {
+    const cache = new FirmwareAvailabilityCache(
+      { relay: { repoUrl: "https://example.test/relay", tag: "pinned" }, robot: undefined },
+      { checkAvailability: async () => ({ available: true }) },
+    );
+
+    expect((await cache.pollOnce()).relay).toMatchObject({ tag: "pinned", available: true });
   });
 });

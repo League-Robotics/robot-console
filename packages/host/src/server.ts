@@ -158,7 +158,18 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   const staticDir = options.staticDir ?? defaultStaticDir();
   const registry = options.registry ?? new DeviceRegistry();
   const firmwareConfig = options.firmwareConfig ?? getFirmwareConfig();
-  const availabilityCache = options.availabilityCache ?? new FirmwareAvailabilityCache(firmwareConfig);
+  // `loadConfig` is passed only for the default (real) cache, and only
+  // when the caller did not pin `firmwareConfig` itself: a host started
+  // before `dotconfig load` wrote `.env` must still pick the file up,
+  // within one poll interval, rather than reporting "not configured"
+  // for the life of the process. A caller who supplied an explicit
+  // config map meant that map, so it is left alone.
+  const availabilityCache =
+    options.availabilityCache ??
+    new FirmwareAvailabilityCache(
+      firmwareConfig,
+      options.firmwareConfig === undefined ? { loadConfig: () => getFirmwareConfig() } : {},
+    );
 
   const app = buildApp(staticDir);
   const httpServer = createServer(app);

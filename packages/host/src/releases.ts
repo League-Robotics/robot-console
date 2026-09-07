@@ -419,6 +419,18 @@ export interface FirmwareAvailabilityCacheOptions {
    * Tests inject a fixture-backed fake so `pollOnce()` can be driven
    * deterministically with no network call. */
   checkAvailability?: FirmwareAvailabilityChecker;
+  /** Re-read the firmware configuration at the start of every
+   * {@link FirmwareAvailabilityCache.pollOnce}. Supply
+   * `() => getFirmwareConfig()` (as `server.ts` does) so a `.env` that
+   * appears or changes *after* the host started is picked up within one
+   * poll interval instead of never -- the constructor's `config`
+   * argument is only ever a starting snapshot.
+   *
+   * Opt-in rather than defaulted: a cache constructed with an explicit
+   * config map (every test, and any caller wiring its own sources)
+   * must keep using exactly that map, not silently reach out to the
+   * real repo-root `.env` behind the caller's back. */
+  loadConfig?: () => FirmwareConfigMap;
 }
 
 /**
@@ -472,9 +484,10 @@ function initialStatus(config: FirmwareConfigMap): FirmwareStatusMap {
  * drive the check deterministically without depending on real timers.
  */
 export class FirmwareAvailabilityCache {
-  private readonly config: FirmwareConfigMap;
+  private config: FirmwareConfigMap;
   private readonly pollIntervalMs: number;
   private readonly checkAvailabilityFn: FirmwareAvailabilityChecker;
+  private readonly loadConfigFn: (() => FirmwareConfigMap) | undefined;
   private timer: ReturnType<typeof setInterval> | undefined;
   private readonly listeners = new Set<FirmwareAvailabilityListener>();
   private status: FirmwareStatusMap;
@@ -483,6 +496,7 @@ export class FirmwareAvailabilityCache {
     this.config = config;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_AVAILABILITY_POLL_INTERVAL_MS;
     this.checkAvailabilityFn = options.checkAvailability ?? defaultAvailabilityChecker;
+    this.loadConfigFn = options.loadConfig;
     this.status = initialStatus(config);
   }
 
@@ -502,12 +516,20 @@ export class FirmwareAvailabilityCache {
   }
 
   /**
-   * Run one poll immediately: re-check every configured firmware
-   * source, update the snapshot, and notify listeners only if the
-   * result actually changed. Returns the latest snapshot either way so
-   * callers/tests can inspect it without a listener.
+   * Run one poll immediately: re-read configuration (if `loadConfig`
+   * was supplied), re-check every configured firmware source, update
+   * the snapshot, and notify listeners only if the result actually
+   * changed. Returns the latest snapshot either way so callers/tests
+   * can inspect it without a listener.
    */
   async pollOnce(): Promise<FirmwareStatusMap> {
+    // Re-read configuration first, when the caller opted into it: a
+    // source that was unconfigured at startup (no `.env` yet) or has
+    // been repointed at a different tag since must take effect here,
+    // otherwise it never would. See `loadConfig`'s own doc.
+    if (this.loadConfigFn !== undefined) {
+      this.config = this.loadConfigFn();
+    }
     const next = {} as FirmwareStatusMap;
     for (const kind of FIRMWARE_KINDS) {
       const source = this.config[kind];

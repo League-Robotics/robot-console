@@ -116,26 +116,28 @@ function defaultDotenvPath(): string {
 }
 
 /**
- * Minimal `.env` reader: splits on newlines, skips blank lines and
- * `#`-comments, and splits each remaining line on its first `=` into
- * a key/value pair. Sets `env[key]` only when that key is not already
- * present on `env` -- an explicit environment variable always wins
- * over the assembled file. A missing `dotenvPath` file is a no-op, not
- * an error; this is the only I/O in this module and it deliberately
- * never throws.
+ * Minimal `.env` parser: splits on newlines, skips blank lines and
+ * `#`-comments, and splits each remaining line on its first `=` into a
+ * key/value pair. Returns a plain map and mutates nothing. A missing
+ * `dotenvPath` file yields an empty map, not an error; this is the only
+ * I/O in this module and it deliberately never throws.
+ *
+ * Kept separate from {@link loadEnvFile} because {@link
+ * getFirmwareConfig} must be able to re-read the file on demand. The
+ * host resolves firmware config repeatedly while running (see that
+ * function's doc), and a parser that mutates `process.env` can only
+ * ever be believed once -- the first read would win permanently.
  */
-export function loadEnvFile(
-  dotenvPath: string = defaultDotenvPath(),
-  env: NodeJS.ProcessEnv = process.env,
-): void {
+export function parseEnvFile(dotenvPath: string = defaultDotenvPath()): Record<string, string> {
+  const vars: Record<string, string> = {};
   if (!existsSync(dotenvPath)) {
-    return;
+    return vars;
   }
   let contents: string;
   try {
     contents = readFileSync(dotenvPath, "utf8");
   } catch {
-    return;
+    return vars;
   }
   for (const line of contents.split("\n")) {
     const trimmed = line.trim();
@@ -147,38 +149,76 @@ export function loadEnvFile(
       continue;
     }
     const key = trimmed.slice(0, eq).trim();
-    if (key.length === 0 || key in env) {
+    if (key.length === 0) {
       continue;
     }
-    env[key] = trimmed.slice(eq + 1).trim();
+    vars[key] = trimmed.slice(eq + 1).trim();
+  }
+  return vars;
+}
+
+/**
+ * Copy {@link parseEnvFile}'s result onto `env`, setting `env[key]`
+ * only when that key is not already present -- an explicit environment
+ * variable always wins over the assembled file. A missing `dotenvPath`
+ * file is a no-op, not an error.
+ *
+ * Note this is *not* how {@link getFirmwareConfig} reads its own
+ * variables; see that function for why it resolves against a fresh
+ * parse instead of a one-time mutation.
+ */
+export function loadEnvFile(
+  dotenvPath: string = defaultDotenvPath(),
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  for (const [key, value] of Object.entries(parseEnvFile(dotenvPath))) {
+    if (!(key in env)) {
+      env[key] = value;
+    }
   }
 }
 
 /**
  * Read the two `ROBOT_CONSOLE_*_FIRMWARE` environment variables and
- * parse them into a {@link FirmwareConfigMap}. Called once at host
- * startup (`cli.ts`) and the result threaded down to
- * `deviceRegistry.ts`/`server.ts`.
+ * parse them into a {@link FirmwareConfigMap}. Called at host startup
+ * (`cli.ts`) and again on every availability poll, so the result is
+ * threaded down to `deviceRegistry.ts`/`server.ts` afresh rather than
+ * captured once.
  *
- * First loads `dotenvPath` (default: the repo-root `.env` `dotconfig
- * load` assembles) via {@link loadEnvFile} -- a no-op if that file
- * doesn't exist, e.g. no `dotconfig` install at all -- then reads from
- * `env`. Never throws: an absent, empty, or unparseable variable
- * yields `undefined` for that {@link FirmwareKind}'s entry.
+ * **Re-reads `dotenvPath` on every call, and never mutates `env`.**
+ * That is deliberate, and it is what makes the config self-heal. The
+ * normal `dotconfig` workflow assembles `.env` with `dotconfig load`,
+ * which a student may well run *after* starting the host -- and editing
+ * a pinned tag in `.env` mid-session is likewise expected. A one-time
+ * read into `process.env` cannot see either: the file's absence would
+ * be cached forever, and once a value had been copied into
+ * `process.env` no later edit could displace it. Resolving against a
+ * fresh parse on each call means the host notices both, within one poll
+ * interval, with no restart.
+ *
+ * An explicit environment variable still wins over the file, matching
+ * {@link loadEnvFile}'s precedence. A missing file is a no-op, e.g. no
+ * `dotconfig` install at all. Never throws: an absent, empty, or
+ * unparseable variable yields `undefined` for that
+ * {@link FirmwareKind}'s entry.
  */
 export function getFirmwareConfig(
   env: NodeJS.ProcessEnv = process.env,
   dotenvPath?: string,
 ): FirmwareConfigMap {
-  loadEnvFile(dotenvPath, env);
+  const fileVars = parseEnvFile(dotenvPath);
   return {
-    relay: parseConfiguredVar(env, ENV_VAR_BY_FIRMWARE.relay),
-    robot: parseConfiguredVar(env, ENV_VAR_BY_FIRMWARE.robot),
+    relay: parseConfiguredVar(env, fileVars, ENV_VAR_BY_FIRMWARE.relay),
+    robot: parseConfiguredVar(env, fileVars, ENV_VAR_BY_FIRMWARE.robot),
   };
 }
 
-function parseConfiguredVar(env: NodeJS.ProcessEnv, key: string): FirmwareSource | undefined {
-  const raw = env[key];
+function parseConfiguredVar(
+  env: NodeJS.ProcessEnv,
+  fileVars: Record<string, string>,
+  key: string,
+): FirmwareSource | undefined {
+  const raw = env[key] ?? fileVars[key];
   if (raw === undefined || raw.trim().length === 0) {
     return undefined;
   }

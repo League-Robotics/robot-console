@@ -182,6 +182,13 @@ function connect(url: string): Promise<{ ws: WebSocket; messages: MessageCollect
   });
 }
 
+/** No firmware configured, injected explicitly so these tests never
+ * read the developer's own repo-root `.env`. Without this they pass or
+ * fail depending on whether `dotconfig load` has been run on the
+ * machine -- which is exactly how this file started failing once a real
+ * `.env` appeared. */
+const NO_FIRMWARE: FirmwareConfigMap = { relay: undefined, robot: undefined };
+
 describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () => {
   let server: RunningServer | undefined;
   let ws: WebSocket | undefined;
@@ -195,14 +202,14 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
 
   it("binds to localhost only", async () => {
     const link = new FakeLink(async () => banner());
-    server = await startServer({ port: 0, registry: buildRegistry(link) });
+    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
     expect(server.host).toBe("127.0.0.1");
     expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
   });
 
   it("sends a devices snapshot on connect, then a live-updated one with name/role resolved", async () => {
     const link = new FakeLink(async () => banner());
-    server = await startServer({ port: 0, registry: buildRegistry(link) });
+    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
     const connected = await connect(server.url.replace("http://", "ws://"));
     ws = connected.ws;
 
@@ -238,7 +245,7 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
 
   it("round-trips a line: client sends a line for a device and receives its reply", async () => {
     const link = new FakeLink(async () => banner());
-    server = await startServer({ port: 0, registry: buildRegistry(link) });
+    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
     const connected = await connect(server.url.replace("http://", "ws://"));
     ws = connected.ws;
 
@@ -271,7 +278,7 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
           setTimeout(() => reject(new Error("timed out waiting for a HELLO banner reply")), 20);
         }),
     );
-    server = await startServer({ port: 0, registry: buildRegistry(link) });
+    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
     const connected = await connect(server.url.replace("http://", "ws://"));
     ws = connected.ws;
 
@@ -288,7 +295,7 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
 
   it("reports a graceful error for a malformed client message instead of closing the connection", async () => {
     const link = new FakeLink(async () => banner());
-    server = await startServer({ port: 0, registry: buildRegistry(link) });
+    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
     const connected = await connect(server.url.replace("http://", "ws://"));
     ws = connected.ws;
 
@@ -302,10 +309,14 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
 
   it("fails clearly, rather than silently picking another port, when the port is already in use", async () => {
     const link = new FakeLink(async () => banner());
-    server = await startServer({ port: 0, registry: buildRegistry(link) });
+    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
 
     await expect(
-      startServer({ port: server.port, registry: buildRegistry(new FakeLink(async () => banner())) }),
+      startServer({
+        port: server.port,
+        registry: buildRegistry(new FakeLink(async () => banner())),
+        firmwareConfig: NO_FIRMWARE,
+      }),
     ).rejects.toThrow(/already in use/);
   });
 });
@@ -352,7 +363,7 @@ describe("server.ts flash wiring (sprint 2, ticket 006)", () => {
       flash: flashFn,
     });
 
-    server = await startServer({ port: 0, registry });
+    server = await startServer({ port: 0, registry, firmwareConfig: NO_FIRMWARE });
     const first = await connectTracked(server.url.replace("http://", "ws://"));
     // A second, independently-connected client -- proves the broadcast
     // reaches every connected socket, not just the one that sent

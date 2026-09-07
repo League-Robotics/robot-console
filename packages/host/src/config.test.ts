@@ -1,8 +1,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { getFirmwareConfig, loadEnvFile, parseFirmwareSource } from "./config.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getFirmwareConfig, loadEnvFile, parseEnvFile, parseFirmwareSource } from "./config.js";
 
 /** A path that never resolves to a real file, so `getFirmwareConfig()`
  * calls in tests that don't care about `.env` reading never
@@ -138,5 +138,82 @@ describe("loadEnvFile", () => {
     const env: NodeJS.ProcessEnv = {};
     expect(() => loadEnvFile(NO_SUCH_FILE, env)).not.toThrow();
     expect(env).toEqual({});
+  });
+});
+
+/**
+ * Regression tests for the failure that motivated this: a host started
+ * *before* `dotconfig load` assembled `.env` reported both firmware
+ * kinds as unconfigured for the life of the process, and the Devices
+ * tab told the student "Not set up for this classroom yet" even though
+ * the file was sitting right there. `getFirmwareConfig` must therefore
+ * re-read the file on every call and must not mutate `env` -- a value
+ * copied into `process.env` once could never afterwards be displaced by
+ * an edit to the file.
+ */
+describe("getFirmwareConfig re-reads .env", () => {
+  let dir: string;
+  let envPath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), "robot-console-config-"));
+    envPath = path.join(dir, ".env");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("picks up a .env that did not exist on the first call", () => {
+    const env: NodeJS.ProcessEnv = {};
+
+    expect(getFirmwareConfig(env, envPath)).toEqual({ relay: undefined, robot: undefined });
+
+    writeFileSync(
+      envPath,
+      "ROBOT_CONSOLE_RELAY_FIRMWARE=https://github.com/League-Robotics/microbit-radio-relay:latest\n",
+    );
+
+    expect(getFirmwareConfig(env, envPath).relay).toEqual({
+      repoUrl: "https://github.com/League-Robotics/microbit-radio-relay",
+      tag: "latest",
+    });
+  });
+
+  it("picks up a tag edited in .env after the first call", () => {
+    const env: NodeJS.ProcessEnv = {};
+    writeFileSync(envPath, "ROBOT_CONSOLE_RELAY_FIRMWARE=https://example.test/repo:latest\n");
+    expect(getFirmwareConfig(env, envPath).relay?.tag).toBe("latest");
+
+    writeFileSync(envPath, "ROBOT_CONSOLE_RELAY_FIRMWARE=https://example.test/repo:v1.2.3\n");
+    expect(getFirmwareConfig(env, envPath).relay?.tag).toBe("v1.2.3");
+  });
+
+  it("does not mutate the env it reads from", () => {
+    const env: NodeJS.ProcessEnv = {};
+    writeFileSync(envPath, "ROBOT_CONSOLE_RELAY_FIRMWARE=https://example.test/repo:latest\n");
+
+    getFirmwareConfig(env, envPath);
+
+    expect(env.ROBOT_CONSOLE_RELAY_FIRMWARE).toBeUndefined();
+  });
+
+  it("lets an explicit environment variable win over the file", () => {
+    const env: NodeJS.ProcessEnv = {
+      ROBOT_CONSOLE_RELAY_FIRMWARE: "https://explicit.test/repo:pinned",
+    };
+    writeFileSync(envPath, "ROBOT_CONSOLE_RELAY_FIRMWARE=https://from-file.test/repo:latest\n");
+
+    expect(getFirmwareConfig(env, envPath).relay).toEqual({
+      repoUrl: "https://explicit.test/repo",
+      tag: "pinned",
+    });
+  });
+});
+
+describe("parseEnvFile", () => {
+  it("returns an empty map for a missing file, never throwing", () => {
+    expect(() => parseEnvFile(NO_SUCH_FILE)).not.toThrow();
+    expect(parseEnvFile(NO_SUCH_FILE)).toEqual({});
   });
 });

@@ -16,7 +16,11 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import type { DeviceListEntry } from "@robot-console/host/src/wsMessages.js";
+import type {
+  DeviceListEntry,
+  FirmwareAvailability,
+  FirmwareKind,
+} from "@robot-console/host/src/wsMessages.js";
 import { DevicesList, DevicesTab } from "./DevicesTab";
 import { WsProvider, type WebSocketLike } from "../ws/WsProvider";
 
@@ -55,6 +59,43 @@ function baseDevice(overrides: Partial<DeviceListEntry> = {}): DeviceListEntry {
     role: "NEZHA2",
     port: "/dev/cu.usbmodemA",
     linkOpen: true,
+    ...overrides,
+  };
+}
+
+/** A failed-identify device -- `role: null`, `linkError` set -- the
+ * only state per the sprint architecture that renders flash buttons. */
+function failedIdentifyDevice(overrides: Partial<DeviceListEntry> = {}): DeviceListEntry {
+  return baseDevice({
+    id: "SERIAL-UNRESPONSIVE",
+    name: "zeguz",
+    role: null,
+    linkOpen: false,
+    linkError: "HELLO reply timed out after 2000ms",
+    ...overrides,
+  });
+}
+
+/** Firmware status matching the real, verified `pxt-nezha-diffdrive`
+ * zero-release state (relay available, robot not) per sprint.md's
+ * Success Criteria fixture. */
+function firmwareStatusFixture(
+  overrides: Partial<Record<FirmwareKind, FirmwareAvailability>> = {},
+): Record<FirmwareKind, FirmwareAvailability> {
+  return {
+    relay: {
+      configured: true,
+      repoUrl: "https://github.com/League-Robotics/microbit-radio-relay",
+      tag: "v0.20260831.1",
+      available: true,
+    },
+    robot: {
+      configured: true,
+      repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive",
+      tag: "latest",
+      available: false,
+      reason: "no-releases",
+    },
     ...overrides,
   };
 }
@@ -221,6 +262,187 @@ describe("DevicesList", () => {
     });
     expect(closed).toEqual(["SERIAL-F"]);
   });
+
+  it("shows no flash buttons for an identified device", () => {
+    const el = mount(
+      <DevicesList
+        status="open"
+        devices={[baseDevice({ id: "SERIAL-IDENTIFIED", role: "NEZHA2" })]}
+        firmwareStatus={firmwareStatusFixture()}
+        onOpen={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(el.textContent ?? "").not.toContain("Flash relay firmware");
+    expect(el.textContent ?? "").not.toContain("Flash robot firmware");
+  });
+
+  it("shows no flash buttons for an unprobed device (no role, no linkError)", () => {
+    const el = mount(
+      <DevicesList
+        status="open"
+        devices={[baseDevice({ id: "SERIAL-UNPROBED", role: null, linkOpen: false })]}
+        firmwareStatus={firmwareStatusFixture()}
+        onOpen={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(el.textContent ?? "").not.toContain("Flash relay firmware");
+    expect(el.textContent ?? "").not.toContain("Flash robot firmware");
+  });
+
+  it("shows both flash buttons for a failed-identify device", () => {
+    const el = mount(
+      <DevicesList
+        status="open"
+        devices={[failedIdentifyDevice()]}
+        firmwareStatus={firmwareStatusFixture()}
+        onOpen={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    const text = el.textContent ?? "";
+    expect(text).toContain("Flash relay firmware");
+    expect(text).toContain("Flash robot firmware");
+  });
+
+  it("disables the robot button with a readable reason on the zero-release fixture", () => {
+    const el = mount(
+      <DevicesList
+        status="open"
+        devices={[failedIdentifyDevice()]}
+        firmwareStatus={firmwareStatusFixture()}
+        onOpen={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    const buttons = Array.from(el.querySelectorAll("button"));
+    const robotButton = buttons.find((b) => b.textContent === "Flash robot firmware");
+    expect(robotButton?.disabled).toBe(true);
+    expect(el.textContent ?? "").toContain("No build has been published yet");
+  });
+
+  it("enables the relay button when its release is available", () => {
+    const el = mount(
+      <DevicesList
+        status="open"
+        devices={[failedIdentifyDevice()]}
+        firmwareStatus={firmwareStatusFixture()}
+        onOpen={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    const buttons = Array.from(el.querySelectorAll("button"));
+    const relayButton = buttons.find((b) => b.textContent === "Flash relay firmware");
+    expect(relayButton?.disabled).toBe(false);
+  });
+
+  it("flips the robot button to enabled with no code change when availability flips", () => {
+    const el = mount(
+      <DevicesList
+        status="open"
+        devices={[failedIdentifyDevice()]}
+        firmwareStatus={firmwareStatusFixture({
+          robot: {
+            configured: true,
+            repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive",
+            tag: "latest",
+            available: true,
+          },
+        })}
+        onOpen={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    const buttons = Array.from(el.querySelectorAll("button"));
+    const robotButton = buttons.find((b) => b.textContent === "Flash robot firmware");
+    expect(robotButton?.disabled).toBe(false);
+  });
+
+  it("shows a not-broken message before the first availability poll completes", () => {
+    const el = mount(
+      <DevicesList
+        status="open"
+        devices={[failedIdentifyDevice()]}
+        firmwareStatus={firmwareStatusFixture({
+          robot: {
+            configured: true,
+            repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive",
+            tag: "latest",
+            available: false,
+            reason: "not-yet-checked",
+          },
+        })}
+        onOpen={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(el.textContent ?? "").toContain("Checking whether this firmware is available");
+  });
+
+  it("sends a flash-start message when Flash relay firmware is clicked", () => {
+    const sent: Array<{ deviceId: string; firmware: FirmwareKind }> = [];
+    const el = mount(
+      <DevicesList
+        status="open"
+        devices={[failedIdentifyDevice({ id: "SERIAL-FLASH" })]}
+        firmwareStatus={firmwareStatusFixture()}
+        onOpen={() => {}}
+        onClose={() => {}}
+        onFlash={(deviceId, firmware) => sent.push({ deviceId, firmware })}
+      />,
+    );
+
+    const buttons = Array.from(el.querySelectorAll("button"));
+    const relayButton = buttons.find((b) => b.textContent === "Flash relay firmware");
+    act(() => {
+      relayButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(sent).toEqual([{ deviceId: "SERIAL-FLASH", firmware: "relay" }]);
+  });
+
+  it("hides both flash buttons and shows phase-derived progress while flashStatus is set", () => {
+    const el = mount(
+      <DevicesList
+        status="open"
+        devices={[
+          failedIdentifyDevice({
+            flashStatus: { firmware: "relay", phase: "writing" },
+          }),
+        ]}
+        firmwareStatus={firmwareStatusFixture()}
+        onOpen={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    const text = el.textContent ?? "";
+    expect(text).not.toContain("Flash relay firmware");
+    expect(text).not.toContain("Flash robot firmware");
+    expect(text).toContain("Flashing relay firmware: writing…");
+  });
+
+  it("surfaces a terminal flash-result error's message", () => {
+    const el = mount(
+      <DevicesList
+        status="open"
+        devices={[failedIdentifyDevice()]}
+        firmwareStatus={firmwareStatusFixture()}
+        flashErrors={{ "SERIAL-UNRESPONSIVE": "sha256 mismatch on downloaded hex" }}
+        onOpen={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(el.textContent ?? "").toContain("sha256 mismatch on downloaded hex");
+  });
 });
 
 /** A fully synthetic `WebSocketLike` for driving `WsProvider` in tests
@@ -289,6 +511,87 @@ describe("WsProvider end-to-end wiring", () => {
     });
 
     expect(el.textContent).toContain("kivon");
+  });
+
+  it("sends a well-formed flash-start message when a flash button is clicked through the live socket", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+        <DevicesTabProbe />
+      </WsProvider>,
+    );
+
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage({
+        type: "devices",
+        devices: [
+          baseDevice({
+            id: "SERIAL-LIVE-FLASH",
+            name: "kivon",
+            role: null,
+            linkOpen: false,
+            linkError: "HELLO reply timed out after 2000ms",
+          }),
+        ],
+        firmwareStatus: firmwareStatusFixture(),
+      });
+    });
+
+    const relayButton = Array.from(el.querySelectorAll("button")).find(
+      (b) => b.textContent === "Flash relay firmware",
+    );
+    act(() => {
+      relayButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(socket!.sent).toEqual([
+      JSON.stringify({ type: "flash-start", deviceId: "SERIAL-LIVE-FLASH", firmware: "relay" }),
+    ]);
+  });
+
+  it("surfaces a live flash-result error pushed over the socket, fanned out independently of who clicked", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+        <DevicesTabProbe />
+      </WsProvider>,
+    );
+
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage({
+        type: "devices",
+        devices: [
+          baseDevice({
+            id: "SERIAL-LIVE-ERROR",
+            name: "kivon",
+            role: null,
+            linkOpen: false,
+            linkError: "HELLO reply timed out after 2000ms",
+          }),
+        ],
+        firmwareStatus: firmwareStatusFixture(),
+      });
+    });
+
+    // No click from this client -- proves the error surfaces purely from
+    // the server's fan-out broadcast, per every connected tab seeing it.
+    act(() => {
+      socket!.emitMessage({
+        type: "flash-result",
+        deviceId: "SERIAL-LIVE-ERROR",
+        firmware: "relay",
+        status: "error",
+        message: "sha256 mismatch on downloaded hex",
+      });
+    });
+
+    expect(el.textContent ?? "").toContain("sha256 mismatch on downloaded hex");
   });
 });
 

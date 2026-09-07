@@ -82,26 +82,63 @@
  * never an uncaught exception that
  * would take the whole server down over one board.
  *
- * ## Flash flow (sprint 2, reidentify sequencing added sprint 4 ticket 004)
+ * ## Flash flow (sprint 2, reidentify sequencing added sprint 4 ticket
+ * 004, local-hex source added sprint 4 ticket 005)
  *
  * {@link DeviceRegistry.requestFlash} is one more operation run through
  * the same per-endpoint {@link KeyedMutex} as name resolution/link open/
- * close/send -- not a new synchronization mechanism. It composes
- * `config.ts` (which firmware source) -> `releases.ts` (fetch+verify
- * the hex) -> `flash.ts` (write it) as one mutex-guarded task: tear
- * down any open link first (so `flash.ts`'s DAPjs session never
- * contends with an open serial port over the same physical board),
- * look up the configured `FirmwareSource`, fetch+verify the hex
- * (reporting `"fetching"`/`"verifying"` progress), write it (reporting
- * `"erasing"`/`"writing"`/`"resetting"` progress), and -- on success --
+ * close/send -- not a new synchronization mechanism. It takes a full
+ * {@link FirmwareSourceRef} (not a bare {@link FirmwareKind}) and
+ * {@link DeviceRegistry.runFlash} branches on `source.kind` exactly
+ * once, to obtain the hex bytes to write:
+ *
+ *   - `"release"` composes `config.ts` (which firmware source) ->
+ *     `releases.ts` (fetch+verify the hex), reporting `"fetching"` then
+ *     `"verifying"` progress -- unchanged from before this ticket.
+ *   - `"local-hex"` calls the injected `consumeUpload(source.uploadId)`
+ *     seam (`localHexUpload.ts`'s `LocalHexUploadManager`, shared with
+ *     `server.ts`'s own binary-frame handling -- see
+ *     {@link DeviceRegistryOptions.consumeUpload}'s own doc comment)
+ *     instead of any network call, reporting `"verifying"` alone (no
+ *     `"fetching"` -- there is nothing to fetch, the bytes already
+ *     arrived over the socket and were sha256-verified at upload time).
+ *     An upload not found (unknown, expired, or already consumed by an
+ *     earlier `flash-start`) is a `flash-result` error, never a thrown
+ *     exception -- mirroring every other failure mode this method
+ *     already handles as a value.
+ *
+ * From that point on -- write it via `flash.ts` (reporting
+ * `"erasing"`/`"writing"`/`"resetting"` progress), and on success
  * connect and identify a link exactly the way the attach flow above
  * already does, so the newly-flashed firmware's banner is picked up
- * with no separate manual Connect click. See {@link DeviceRegistry.requestFlash}'s own
- * doc comment for why this task holds the endpoint's mutex slot across
- * the network fetch rather than releasing and re-acquiring it. A
- * failure at any stage clears `flashStatus` and reports a `flash-result`
- * error -- it never leaves `flashStatus` stuck or the registry believing
- * a link is open when {@link teardownLink} already closed it.
+ * with no separate manual Connect click -- the pipeline is identical
+ * for both `source.kind`s and untouched by this ticket. Tear down any
+ * open link first (so `flash.ts`'s DAPjs session never contends with an
+ * open serial port over the same physical board), same for both kinds.
+ * See {@link DeviceRegistry.requestFlash}'s own doc comment for why this
+ * task holds the endpoint's mutex slot across the network fetch (or, for
+ * `"local-hex"`, across nothing slower than a map lookup) rather than
+ * releasing and re-acquiring it. A failure at any stage clears
+ * `flashStatus` and reports a `flash-result` error -- it never leaves
+ * `flashStatus` stuck or the registry believing a link is open when
+ * {@link teardownLink} already closed it.
+ *
+ * ### `flashStatus` gap for `"local-hex"` (known, accepted this ticket)
+ *
+ * `wsMessages.ts`'s `EndpointListEntry.flashStatus` is frozen (ticket
+ * 001) as `{ firmware: FirmwareKind; phase: FlashPhase }` -- there is no
+ * shape in that field for a local-hex source (no `FirmwareKind` names
+ * it). Rather than force a `FirmwareKind` value onto a local-hex flash
+ * or change the frozen wire contract, `state.flashStatus` is left
+ * `undefined` for the whole duration of a `"local-hex"` `runFlash`
+ * task -- {@link FlashProgressMessage}/{@link FlashResultMessage} (which
+ * both carry the full `source: FirmwareSourceRef`) still fire normally
+ * over the WebSocket, so a client connected for the duration of the
+ * flash sees every event; only a client that *reconnects* mid-flash
+ * would fail to see it reflected in the next `endpoints` snapshot. This
+ * is an accepted gap for this host-side ticket (UI is ticket 008's
+ * scope) rather than a silent bug -- flagged here for whoever revisits
+ * `EndpointListEntry.flashStatus`'s shape next.
  *
  * ## Post-flash reidentify sequencing (ticket 004, fix for roadmap
  * issue "finding 5")
@@ -172,7 +209,13 @@ import type { Link, LinkFactory, LinkSpec } from "./link/Link.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
 import { resolveRelease, fetchAndVerifyHex } from "./releases.js";
 import { flash } from "./flash.js";
-import type { EndpointListEntry, LineDirection, FirmwareKind, FlashPhase } from "./wsMessages.js";
+import type {
+  EndpointListEntry,
+  LineDirection,
+  FirmwareKind,
+  FirmwareSourceRef,
+  FlashPhase,
+} from "./wsMessages.js";
 
 /** Mint a URL-safe, stable endpoint id for a USB device from its serial
  * number -- see `wsMessages.ts`'s `EndpointListEntry.endpointId` doc
@@ -414,18 +457,25 @@ export type RegistryErrorListener = (endpointId: string | undefined, message: st
 /** Notified once per {@link FlashPhase} as a `requestFlash` task
  * advances -- mirrors {@link LineListener}'s per-event shape rather
  * than a bulk snapshot, since `server.ts` forwards these directly as
- * {@link FlashProgressMessage}-shaped broadcasts. */
-export type FlashProgressListener = (endpointId: string, firmware: FirmwareKind, phase: FlashPhase) => void;
+ * {@link FlashProgressMessage}-shaped broadcasts. Carries the full
+ * {@link FirmwareSourceRef} the flash was requested with (ticket 005)
+ * rather than a bare {@link FirmwareKind} -- the same object `server.ts`
+ * received on the originating `flash-start`, echoed straight through so
+ * a `"local-hex"` flash's `fileName`/`sha256`/`uploadId` reach the
+ * client without `server.ts` reconstructing them. */
+export type FlashProgressListener = (endpointId: string, source: FirmwareSourceRef, phase: FlashPhase) => void;
 /** Notified exactly once per `requestFlash` call, with its terminal
  * outcome -- mirrors {@link FlashResultMessage}'s own shape field for
  * field. `message` is present only on `status: "error"`.
  * `classification`/`name`/`reidentify` are present only on
  * `status: "ok"` (ticket 004): the post-flash identity, from whatever
  * {@link DeviceRegistry.reidentifyAfterFlash}'s `identify()` returned,
- * plus `reidentify: "timeout"` if it never returned a banner. */
+ * plus `reidentify: "timeout"` if it never returned a banner. Carries
+ * the full {@link FirmwareSourceRef}, same as {@link FlashProgressListener}
+ * -- see that type's own doc comment. */
 export type FlashResultListener = (
   endpointId: string,
-  firmware: FirmwareKind,
+  source: FirmwareSourceRef,
   status: "ok" | "error",
   message?: string,
   classification?: DeviceClassification,
@@ -463,6 +513,19 @@ export interface DeviceRegistryOptions {
    * node-hid-backed {@link flash}. Tests substitute a fully synthetic
    * fake, never real USB/SWD I/O. */
   flash?: typeof flash;
+  /** Ticket 005: retrieve (and consume) a previously verified local-hex
+   * upload's bytes by `uploadId` -- the seam `runFlash`'s `"local-hex"`
+   * branch calls instead of `resolveRelease`/`fetchAndVerifyHex`.
+   * `server.ts` passes `localHexUpload.ts`'s `LocalHexUploadManager
+   * #consumeUpload` (bound), the *same instance* it uses to handle
+   * `flash-local-begin` and the binary frame, so an upload verified over
+   * the socket is the very one `runFlash` consumes here -- these are two
+   * views onto one shared upload store, not two independent ones.
+   * Defaults to a function that always returns `undefined` (every
+   * `"local-hex"` flash ends in a `flash-result` error) so a
+   * `DeviceRegistry` built with no local-hex wiring at all (every
+   * existing test in this file) never needs to know this seam exists. */
+  consumeUpload?: (uploadId: string) => Buffer | undefined;
   /** Budget for a single post-flash reidentify attempt (ticket 004);
    * defaults to {@link DEFAULT_REIDENTIFY_TIMEOUT_MS}. Tests substitute
    * a tiny value so a fake `identify()` that never resolves doesn't
@@ -486,6 +549,7 @@ export class DeviceRegistry {
   private readonly resolveReleaseFn: typeof resolveRelease;
   private readonly fetchAndVerifyHexFn: typeof fetchAndVerifyHex;
   private readonly flashFn: typeof flash;
+  private readonly consumeUploadFn: (uploadId: string) => Buffer | undefined;
   private readonly reidentifyTimeoutMs: number;
   private readonly mutex = new KeyedMutex();
   private readonly states = new Map<string, EndpointState>();
@@ -505,6 +569,7 @@ export class DeviceRegistry {
     this.resolveReleaseFn = options.resolveRelease ?? resolveRelease;
     this.fetchAndVerifyHexFn = options.fetchAndVerifyHex ?? fetchAndVerifyHex;
     this.flashFn = options.flash ?? flash;
+    this.consumeUploadFn = options.consumeUpload ?? (() => undefined);
     this.reidentifyTimeoutMs = options.reidentifyTimeoutMs ?? DEFAULT_REIDENTIFY_TIMEOUT_MS;
   }
 
@@ -646,14 +711,17 @@ export class DeviceRegistry {
   }
 
   /**
-   * Flash `firmware` onto an endpoint: orchestrates `config.ts` (which
-   * source) -> `releases.ts` (fetch+verify the hex) -> `flash.ts`
-   * (write it), run as one more task through the same per-endpoint
-   * {@link KeyedMutex} as {@link requestOpen}/{@link requestClose}/
-   * {@link sendLine} -- no new synchronization primitive (see the
-   * module doc comment's "Flash flow" section). An unknown `endpointId`
-   * is reported via {@link onError}, matching {@link requestOpen}'s own
-   * handling -- never thrown to the caller.
+   * Flash `source` onto an endpoint: for `source.kind === "release"`,
+   * orchestrates `config.ts` (which source) -> `releases.ts`
+   * (fetch+verify the hex); for `"local-hex"`, retrieves the bytes a
+   * prior local-hex upload already verified (see
+   * {@link DeviceRegistryOptions.consumeUpload}) -- either way -> then
+   * `flash.ts` (write it), run as one more task through the same
+   * per-endpoint {@link KeyedMutex} as {@link requestOpen}/
+   * {@link requestClose}/{@link sendLine} -- no new synchronization
+   * primitive (see the module doc comment's "Flash flow" section). An
+   * unknown `endpointId` is reported via {@link onError}, matching
+   * {@link requestOpen}'s own handling -- never thrown to the caller.
    *
    * ## Mutex scope: the whole task, including `releases.ts`'s network fetch
    *
@@ -701,30 +769,36 @@ export class DeviceRegistry {
    * false` (as teardown itself sets), the same state {@link requestClose}
    * leaves behind, ready for a future {@link requestOpen} retry.
    */
-  async requestFlash(endpointId: string, firmware: FirmwareKind): Promise<void> {
+  async requestFlash(endpointId: string, source: FirmwareSourceRef): Promise<void> {
     await this.mutex.run(endpointId, async () => {
       const state = this.states.get(endpointId);
       if (!state) {
         this.emitError(endpointId, `no such device: ${endpointId}`);
         return;
       }
-      await this.runFlash(state, firmware);
+      await this.runFlash(state, source);
     });
   }
 
   /** The mutex-guarded body of {@link requestFlash} -- see that method's
-   * doc comment for the mutex-scope and failure-recovery rationale. */
-  private async runFlash(state: EndpointState, firmware: FirmwareKind): Promise<void> {
+   * doc comment for the mutex-scope and failure-recovery rationale, and
+   * the module doc comment's "Flash flow" section for the `source.kind`
+   * branch this method makes exactly once, to obtain `hexBuffer` --
+   * every step from `flashFn` onward is identical for both kinds. */
+  private async runFlash(state: EndpointState, source: FirmwareSourceRef): Promise<void> {
     const endpointId = state.endpointId;
     // Set at the very start (before teardown even) so a client that
     // observes the very next snapshot already sees flashStatus, per the
     // ticket's "set at the start of the flash task" requirement. There
     // is no dedicated FlashPhase for "tearing down the old link", so
-    // this first phase is reported as "fetching" -- the next real
-    // progress event ("verifying", once releases.ts resolves) replaces
-    // it, same best-effort phase-reporting precedent flash.ts's own doc
-    // comment already accepts for DAPjs's coarser event surface.
-    this.setFlashPhase(state, endpointId, firmware, "fetching");
+    // this first phase is reported as "fetching" for a release source
+    // (the next real progress event, "verifying", replaces it once
+    // releases.ts resolves) -- same best-effort phase-reporting
+    // precedent flash.ts's own doc comment already accepts for DAPjs's
+    // coarser event surface. A local-hex source has nothing to fetch (the
+    // bytes already arrived over the socket and were sha256-verified at
+    // upload time), so it starts directly at "verifying" instead.
+    this.setFlashPhase(state, endpointId, source, source.kind === "release" ? "fetching" : "verifying");
 
     try {
       // Tear down any open link before touching config/network/SWD --
@@ -736,35 +810,60 @@ export class DeviceRegistry {
       await this.teardownLink(state);
       this.emitDevices();
 
-      const source = this.getFirmwareConfigFn()[firmware];
-      if (!source) {
-        this.failFlash(state, endpointId, firmware, `no firmware source configured for "${firmware}"`);
-        return;
-      }
+      // The one place this method branches on source.kind (see this
+      // method's own doc comment) -- everything below, from flashFn
+      // onward, is identical for both kinds.
+      let hexBuffer: Buffer;
+      if (source.kind === "release") {
+        const firmwareSource = this.getFirmwareConfigFn()[source.firmware];
+        if (!firmwareSource) {
+          this.failFlash(state, endpointId, source, `no firmware source configured for "${source.firmware}"`);
+          return;
+        }
 
-      const resolved = await this.resolveReleaseFn(source);
-      if ("reason" in resolved) {
-        this.failFlash(state, endpointId, firmware, resolved.message);
-        return;
-      }
+        const resolved = await this.resolveReleaseFn(firmwareSource);
+        if ("reason" in resolved) {
+          this.failFlash(state, endpointId, source, resolved.message);
+          return;
+        }
 
-      // fetchAndVerifyHex both downloads and sha256-verifies in one
-      // call (releases.ts has no seam between the two) -- "verifying"
-      // is reported for the whole call, same best-effort phase mapping
-      // as flash.ts's own erase/write/reset reporting.
-      this.setFlashPhase(state, endpointId, firmware, "verifying");
-      const fetched = await this.fetchAndVerifyHexFn(resolved);
-      if ("error" in fetched) {
-        this.failFlash(state, endpointId, firmware, fetched.error);
-        return;
+        // fetchAndVerifyHex both downloads and sha256-verifies in one
+        // call (releases.ts has no seam between the two) -- "verifying"
+        // is reported for the whole call, same best-effort phase mapping
+        // as flash.ts's own erase/write/reset reporting.
+        this.setFlashPhase(state, endpointId, source, "verifying");
+        const fetched = await this.fetchAndVerifyHexFn(resolved);
+        if ("error" in fetched) {
+          this.failFlash(state, endpointId, source, fetched.error);
+          return;
+        }
+        hexBuffer = fetched.hex;
+      } else {
+        // "local-hex": the bytes were already uploaded and sha256-verified
+        // by localHexUpload.ts's receiveFrame -- consumeUpload just hands
+        // them over (exactly once). An unknown/expired/already-consumed
+        // uploadId is a flash-start error, never a crash -- the same
+        // "failure is a value" shape as the release branch above.
+        const uploaded = this.consumeUploadFn(source.uploadId);
+        if (uploaded === undefined) {
+          this.failFlash(
+            state,
+            endpointId,
+            source,
+            `no pending local-hex upload found for id ${source.uploadId} -- it may have expired, ` +
+              `already been used, or never completed the upload handshake`,
+          );
+          return;
+        }
+        hexBuffer = uploaded;
       }
 
       const onProgress = (phase: FlashPhase) => {
-        this.setFlashPhase(state, endpointId, firmware, phase);
+        this.setFlashPhase(state, endpointId, source, phase);
       };
-      const outcome = await this.flashFn(state.device, fetched.hex.toString("utf-8"), onProgress);
+      const outcome = await this.flashFn(state.device, hexBuffer.toString("utf-8"), onProgress);
       if (outcome.status === "error") {
-        this.failFlash(state, endpointId, firmware, outcome.error);
+        this.failFlash(state, endpointId, source, outcome.error);
         return;
       }
 
@@ -782,16 +881,16 @@ export class DeviceRegistry {
         // returned -- nothing left to attribute flashStatus to, but the
         // write itself succeeded and the client is still waiting for a
         // terminal result.
-        this.emitFlashResult(endpointId, firmware, "ok", undefined, classifyBanner(null), null, "timeout");
+        this.emitFlashResult(endpointId, source, "ok", undefined, classifyBanner(null), null, "timeout");
         return;
       }
-      await this.reidentifyAfterFlash(liveState, endpointId, firmware);
+      await this.reidentifyAfterFlash(liveState, endpointId, source);
     } catch (error) {
       // Defense in depth: every injected step here (config.ts,
       // releases.ts, flash.ts) documents "never throws", but a flash
       // must not leave flashStatus stuck even if that contract is ever
       // violated -- by a future change, or by a test's own fake.
-      this.failFlash(state, endpointId, firmware, error instanceof Error ? error.message : String(error));
+      this.failFlash(state, endpointId, source, error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -806,28 +905,31 @@ export class DeviceRegistry {
     return this.states.get(state.endpointId) === state;
   }
 
-  /** Advance an in-flight flash to `phase`: update `flashStatus`, emit a
-   * {@link onFlashProgress} event, and emit an updated device snapshot
-   * so a client that reconnects mid-flash sees the current phase. A
-   * no-op, per {@link isLive}, if `state` has been orphaned. */
-  private setFlashPhase(state: EndpointState, endpointId: string, firmware: FirmwareKind, phase: FlashPhase): void {
+  /** Advance an in-flight flash to `phase`: update `flashStatus` (for a
+   * `"release"` source only -- see the module doc comment's "flashStatus
+   * gap for local-hex" note; a `"local-hex"` source leaves `flashStatus`
+   * `undefined` throughout), emit a {@link onFlashProgress} event
+   * (carrying the full `source` either way), and emit an updated device
+   * snapshot so a client that reconnects mid-flash sees the current
+   * phase. A no-op, per {@link isLive}, if `state` has been orphaned. */
+  private setFlashPhase(state: EndpointState, endpointId: string, source: FirmwareSourceRef, phase: FlashPhase): void {
     if (!this.isLive(state)) {
       return;
     }
-    state.flashStatus = { firmware, phase };
-    this.emitFlashProgress(endpointId, firmware, phase);
+    state.flashStatus = source.kind === "release" ? { firmware: source.firmware, phase } : undefined;
+    this.emitFlashProgress(endpointId, source, phase);
     this.emitDevices();
   }
 
   /** End an in-flight flash in failure: clear `flashStatus` and emit a
    * `flash-result` `status: "error"` event plus an updated snapshot. A
    * no-op, per {@link isLive}, if `state` has been orphaned. */
-  private failFlash(state: EndpointState, endpointId: string, firmware: FirmwareKind, message: string): void {
+  private failFlash(state: EndpointState, endpointId: string, source: FirmwareSourceRef, message: string): void {
     if (!this.isLive(state)) {
       return;
     }
     state.flashStatus = undefined;
-    this.emitFlashResult(endpointId, firmware, "error", message);
+    this.emitFlashResult(endpointId, source, "error", message);
     this.emitDevices();
   }
 
@@ -841,7 +943,7 @@ export class DeviceRegistry {
   private succeedFlash(
     state: EndpointState,
     endpointId: string,
-    firmware: FirmwareKind,
+    source: FirmwareSourceRef,
     classification: DeviceClassification,
     name: string | null,
     reidentify?: "timeout",
@@ -852,9 +954,9 @@ export class DeviceRegistry {
     state.flashStatus = undefined;
     state.classification = classification;
     if (reidentify) {
-      this.emitFlashResult(endpointId, firmware, "ok", undefined, classification, name, reidentify);
+      this.emitFlashResult(endpointId, source, "ok", undefined, classification, name, reidentify);
     } else {
-      this.emitFlashResult(endpointId, firmware, "ok", undefined, classification, name);
+      this.emitFlashResult(endpointId, source, "ok", undefined, classification, name);
     }
     this.emitDevices();
   }
@@ -897,13 +999,13 @@ export class DeviceRegistry {
   private async reidentifyAfterFlash(
     state: EndpointState,
     endpointId: string,
-    firmware: FirmwareKind,
+    source: FirmwareSourceRef,
   ): Promise<void> {
-    this.setFlashPhase(state, endpointId, firmware, "reidentifying");
+    this.setFlashPhase(state, endpointId, source, "reidentifying");
 
     const portPath = state.device.serialPort?.path;
     if (!portPath) {
-      this.succeedFlash(state, endpointId, firmware, classifyBanner(null), state.name, "timeout");
+      this.succeedFlash(state, endpointId, source, classifyBanner(null), state.name, "timeout");
       return;
     }
 
@@ -922,7 +1024,7 @@ export class DeviceRegistry {
         state.sessionError = error instanceof Error ? error.message : String(error);
       }
       await link.close().catch(() => {});
-      this.succeedFlash(state, endpointId, firmware, classifyBanner(null), state.name, "timeout");
+      this.succeedFlash(state, endpointId, source, classifyBanner(null), state.name, "timeout");
       return;
     }
 
@@ -960,9 +1062,9 @@ export class DeviceRegistry {
 
     const classification = classifyBanner(banner);
     if (banner) {
-      this.succeedFlash(state, endpointId, firmware, classification, state.name);
+      this.succeedFlash(state, endpointId, source, classification, state.name);
     } else {
-      this.succeedFlash(state, endpointId, firmware, classification, state.name, "timeout");
+      this.succeedFlash(state, endpointId, source, classification, state.name, "timeout");
     }
   }
 
@@ -1171,15 +1273,15 @@ export class DeviceRegistry {
     }
   }
 
-  private emitFlashProgress(endpointId: string, firmware: FirmwareKind, phase: FlashPhase): void {
+  private emitFlashProgress(endpointId: string, source: FirmwareSourceRef, phase: FlashPhase): void {
     for (const listener of this.flashProgressListeners) {
-      listener(endpointId, firmware, phase);
+      listener(endpointId, source, phase);
     }
   }
 
   private emitFlashResult(
     endpointId: string,
-    firmware: FirmwareKind,
+    source: FirmwareSourceRef,
     status: "ok" | "error",
     message?: string,
     classification?: DeviceClassification,
@@ -1187,7 +1289,7 @@ export class DeviceRegistry {
     reidentify?: "timeout",
   ): void {
     for (const listener of this.flashResultListeners) {
-      listener(endpointId, firmware, status, message, classification, name, reidentify);
+      listener(endpointId, source, status, message, classification, name, reidentify);
     }
   }
 }

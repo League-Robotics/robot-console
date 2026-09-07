@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { AckNackEvent, DecodedLine, ParsedBanner } from "@robot-console/protocol";
@@ -5,9 +6,10 @@ import { DeviceWatcher, type DaplinkDevice } from "./devices.js";
 import { DeviceRegistry, type DeviceRegistryOptions } from "./deviceRegistry.js";
 import type { Link } from "./link/Link.js";
 import type { FirmwareConfigMap, FirmwareSource } from "./config.js";
+import { LocalHexUploadManager } from "./localHexUpload.js";
 import { FirmwareAvailabilityCache, type ResolvedRelease } from "./releases.js";
 import { startServer, type RunningServer } from "./server.js";
-import type { FlashPhase, ServerMessage } from "./wsMessages.js";
+import { UPLOAD_ID_BYTE_LENGTH, type FlashPhase, type ServerMessage } from "./wsMessages.js";
 
 // Per the ticket's Testing section: a full end-to-end WebSocket round
 // trip -- a real Express/`ws` server, a real WebSocket client, and fake
@@ -458,6 +460,139 @@ describe("server.ts flash wiring (sprint 2, ticket 006)", () => {
 
     expect(resolveReleaseFn).toHaveBeenCalledTimes(1);
     expect(fetchAndVerifyHexFn).toHaveBeenCalledTimes(1);
+    expect(flashFn).toHaveBeenCalledTimes(1);
+  });
+});
+
+function sha256Hex(payload: Buffer): string {
+  return createHash("sha256").update(payload).digest("hex");
+}
+
+describe("server.ts local-hex upload handshake (sprint 4 ticket 005)", () => {
+  let server: RunningServer | undefined;
+  let sockets: WebSocket[] = [];
+
+  afterEach(async () => {
+    for (const socket of sockets) {
+      socket.close();
+    }
+    sockets = [];
+    await server?.close();
+    server = undefined;
+  });
+
+  async function connectTracked(url: string): Promise<{ ws: WebSocket; messages: MessageCollector }> {
+    const connected = await connect(url);
+    sockets.push(connected.ws);
+    return connected;
+  }
+
+  it("routes a binary frame to localHexUpload (isBinary branch), distinct from the JSON text path", async () => {
+    const link = new FakeLink(async () => banner());
+    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
+    const connected = await connectTracked(server.url.replace("http://", "ws://"));
+    await connected.messages.waitFor((m) => m.type === "endpoints");
+
+    // A text message that isn't valid JSON goes through the JSON/
+    // parseClientMessage path and reports the "malformed JSON message"
+    // error -- confirms the baseline (non-binary) behavior first.
+    connected.ws.send("not json");
+    const textError = await connected.messages.waitFor((m) => m.type === "error");
+    expect(textError).toEqual({ type: "error", message: "malformed JSON message" });
+
+    // A binary frame carrying a well-formed-length but unknown uploadId
+    // prefix goes through localHexUpload.receiveFrame instead -- a
+    // distinctly different error message proves the isBinary branch
+    // actually dispatched to it rather than falling through to
+    // JSON.parse (which would report "malformed JSON message" again for
+    // this same garbage bytes).
+    const unknownUploadId = "00000000-0000-0000-0000-000000000000";
+    expect(unknownUploadId).toHaveLength(UPLOAD_ID_BYTE_LENGTH);
+    const frame = Buffer.concat([Buffer.from(unknownUploadId, "ascii"), Buffer.from("payload", "utf-8")]);
+    connected.ws.send(frame);
+
+    const binaryError = await connected.messages.waitFor(
+      (m) => m.type === "error" && m.message !== "malformed JSON message",
+    );
+    expect(binaryError).toEqual({
+      type: "error",
+      message: expect.stringContaining(unknownUploadId),
+    });
+
+    // The connection survives both -- a bad message is never a reason to
+    // close the socket.
+    expect(connected.ws.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it("round-trips the full handshake: flash-local-begin -> flash-local-ready -> binary frame -> flash-start -> successful flash", async () => {
+    const link = new FakeLink(async () => banner());
+    const localHexUpload = new LocalHexUploadManager();
+
+    let observedHexText: string | undefined;
+    const flashFn = vi.fn(
+      async (
+        _device: DaplinkDevice,
+        hexText: string,
+        onProgress: (phase: FlashPhase) => void,
+      ) => {
+        observedHexText = hexText;
+        onProgress("erasing");
+        onProgress("writing");
+        onProgress("resetting");
+        return { status: "ok" as const, method: "swd" as const };
+      },
+    );
+    const registry = buildRegistry(link, {
+      // The same LocalHexUploadManager instance server.ts uses for the
+      // JSON/binary handling below -- see StartServerOptions
+      // .localHexUpload's own doc comment for why a caller-supplied
+      // registry must wire this itself.
+      consumeUpload: (uploadId) => localHexUpload.consumeUpload(uploadId),
+      flash: flashFn,
+    });
+
+    server = await startServer({
+      port: 0,
+      registry,
+      firmwareConfig: NO_FIRMWARE,
+      localHexUpload,
+    });
+    const connected = await connectTracked(server.url.replace("http://", "ws://"));
+    await connected.messages.waitFor((m) => m.type === "endpoints" && m.endpoints[0]?.sessionOpen === true);
+
+    const payload = Buffer.from(":10000000AABBCCDD00000000000000000000005A\n:00000001FF\n", "utf-8");
+    const fileName = "my-firmware.hex";
+    const sha256 = sha256Hex(payload);
+
+    connected.ws.send(
+      JSON.stringify({ type: "flash-local-begin", fileName, byteLength: payload.length, sha256 }),
+    );
+    const ready = await connected.messages.waitFor((m) => m.type === "flash-local-ready");
+    expect(ready).toEqual({ type: "flash-local-ready", uploadId: expect.any(String) });
+    const uploadId = (ready as { uploadId: string }).uploadId;
+    expect(uploadId).toHaveLength(UPLOAD_ID_BYTE_LENGTH);
+
+    connected.ws.send(Buffer.concat([Buffer.from(uploadId, "ascii"), payload]));
+
+    const source = { kind: "local-hex" as const, uploadId, fileName, sha256 };
+    connected.ws.send(
+      JSON.stringify({ type: "flash-start", endpointId: "usb-SERIAL-A", source }),
+    );
+
+    const progress = await connected.messages.waitFor((m) => m.type === "flash-progress");
+    expect(progress).toEqual({ type: "flash-progress", endpointId: "usb-SERIAL-A", source, phase: "verifying" });
+
+    const result = await connected.messages.waitFor((m) => m.type === "flash-result");
+    expect(result).toEqual({
+      type: "flash-result",
+      endpointId: "usb-SERIAL-A",
+      source,
+      status: "ok",
+      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "common-name" },
+      name: "zeguz",
+    });
+
+    expect(observedHexText).toBe(payload.toString("utf-8"));
     expect(flashFn).toHaveBeenCalledTimes(1);
   });
 });

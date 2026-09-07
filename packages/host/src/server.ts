@@ -19,12 +19,24 @@
  * `host`'s other modules instead -- see the ticket.
  *
  * Sprint 4 note: `flash-start`'s `source: FirmwareSourceRef` can name
- * either a configured release build (`kind: "release"`, wired below the
- * same way `firmware` was before the reshape) or a locally-uploaded hex
- * (`kind: "local-hex"`). The local-hex upload handshake itself
- * (`localHexUpload.ts`, the binary-frame handler) is a later ticket's
- * scope -- this module reports a clear, non-crashing error for
- * `kind: "local-hex"` today rather than pretending to flash it.
+ * either a configured release build (`kind: "release"`) or a
+ * locally-uploaded hex (`kind: "local-hex"`) -- both are forwarded to
+ * `registry.requestFlash(endpointId, source)` unchanged; `deviceRegistry
+ * .ts#runFlash` is what branches on `source.kind` (see that module's own
+ * doc comment), not this one, per this module's "no logic of its own"
+ * contract. Ticket 005 also extends the `ws.on("message", ...)` handler
+ * with an `isBinary` branch (`ws`'s message event carries `isBinary`
+ * alongside the raw data): a binary frame is the local-hex upload's raw
+ * bytes, routed straight to `localHexUpload.ts`'s `LocalHexUploadManager
+ * #receiveFrame` with no further inspection; every other (text/JSON)
+ * message continues through `JSON.parse`/`parseClientMessage` exactly as
+ * before. Splitting the frame, verifying it, and holding the bytes is
+ * `localHexUpload.ts`'s job -- this module only routes based on
+ * `isBinary`, the same composition-only boundary as everything else
+ * here. The one `LocalHexUploadManager` instance constructed per
+ * {@link startServer} call is shared between that binary-frame handling
+ * and the `DeviceRegistry`'s injected `consumeUpload` seam, so an
+ * upload verified here is the very one `runFlash` consumes later.
  *
  * **Localhost only.** This process can open serial ports, attach over
  * SWD, and (in later sprints) flash firmware and drive a physical
@@ -42,6 +54,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { DeviceRegistry } from "./deviceRegistry.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
 import { FirmwareAvailabilityCache } from "./releases.js";
+import { LocalHexUploadManager } from "./localHexUpload.js";
 import {
   parseClientMessage,
   type EndpointListEntry,
@@ -97,6 +110,19 @@ export interface StartServerOptions {
    * `DeviceRegistry`), so `pollOnce()`/`onChange` can be driven
    * deterministically with no real GitHub call. */
   availabilityCache?: FirmwareAvailabilityCache;
+  /** Injectable {@link LocalHexUploadManager} (ticket 005); defaults to a
+   * fresh instance per {@link startServer} call. Handles the
+   * `flash-local-begin`/binary-frame half of the local-hex upload
+   * handshake here, and -- when {@link StartServerOptions.registry} is
+   * *not* also supplied -- is wired into the default {@link DeviceRegistry}'s
+   * `consumeUpload` seam so the same verified upload a client sent over
+   * this socket is what `runFlash` later consumes. A caller that
+   * supplies its own `registry` is responsible for wiring that
+   * registry's own `consumeUpload` to this same manager instance itself
+   * (see `server.test.ts`'s local-hex tests) -- mirroring how
+   * {@link StartServerOptions.firmwareConfig} is only consulted for the
+   * *default* {@link FirmwareAvailabilityCache}. */
+  localHexUpload?: LocalHexUploadManager;
 }
 
 export interface RunningServer {
@@ -129,6 +155,21 @@ function buildApp(staticDir: string): express.Express {
     });
   }
   return app;
+}
+
+/** Normalize `ws`'s `RawData` (a `Buffer`, an `ArrayBuffer`, or a
+ * `Buffer[]` -- the last only when the client sent a fragmented message
+ * and `ws` was configured not to reassemble it, which this server never
+ * does) into one contiguous `Buffer`, for {@link LocalHexUploadManager
+ * #receiveFrame} to split. */
+function toBuffer(data: WebSocket.RawData): Buffer {
+  if (Buffer.isBuffer(data)) {
+    return data;
+  }
+  if (Array.isArray(data)) {
+    return Buffer.concat(data);
+  }
+  return Buffer.from(data);
 }
 
 function listen(server: HttpServer, port: number, host: string): Promise<void> {
@@ -170,7 +211,15 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   const host = DEFAULT_HOST;
   const port = options.port ?? DEFAULT_PORT;
   const staticDir = options.staticDir ?? defaultStaticDir();
-  const registry = options.registry ?? new DeviceRegistry();
+  const localHexUpload = options.localHexUpload ?? new LocalHexUploadManager();
+  // consumeUpload is wired only for the *default* registry, mirroring
+  // firmwareConfig's own "only consulted for the default cache" pattern
+  // just below -- a caller supplying its own `registry` must wire that
+  // registry's `consumeUpload` to this same `localHexUpload` instance
+  // itself (see StartServerOptions.localHexUpload's own doc comment).
+  const registry =
+    options.registry ??
+    new DeviceRegistry({ consumeUpload: (uploadId) => localHexUpload.consumeUpload(uploadId) });
   const firmwareConfig = options.firmwareConfig ?? getFirmwareConfig();
   // `loadConfig` is passed only for the default (real) cache, and only
   // when the caller did not pin `firmwareConfig` itself: a host started
@@ -224,23 +273,22 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   const unsubscribeError = registry.onError((endpointId, message) => {
     broadcast(endpointId !== undefined ? { type: "error", endpointId, message } : { type: "error", message });
   });
-  // requestFlash (deviceRegistry.ts) does not yet know about
-  // FirmwareSourceRef -- it still only flashes a configured release
-  // build (see this module's own doc comment) -- so every progress/
-  // result event it emits is wrapped as a `"release"` source here. A
-  // later ticket teaches deviceRegistry.ts about local-hex sources
-  // directly, at which point this wrapping moves there.
-  const unsubscribeFlashProgress = registry.onFlashProgress((endpointId, firmware, phase) => {
-    broadcast({ type: "flash-progress", endpointId, source: { kind: "release", firmware }, phase });
+  // deviceRegistry.ts (ticket 005) now carries the full FirmwareSourceRef
+  // through requestFlash/runFlash itself -- every progress/result event
+  // it emits already carries the exact `source` the client requested, so
+  // this module just relays it straight through (no wrapping here
+  // anymore, per this module's own "no logic of its own" contract).
+  const unsubscribeFlashProgress = registry.onFlashProgress((endpointId, source, phase) => {
+    broadcast({ type: "flash-progress", endpointId, source, phase });
   });
   const unsubscribeFlashResult = registry.onFlashResult(
-    (endpointId, firmware, status, message, classification, name, reidentify) => {
+    (endpointId, source, status, message, classification, name, reidentify) => {
       // classification/name/reidentify are only ever present on
       // registry.ts's own `status: "ok"` (ticket 004's reidentify
       // sequencing) -- omit each field rather than sending it
       // `undefined`, matching this module's existing `message` handling
       // just above.
-      const result: FlashResultMessage = { type: "flash-result", endpointId, source: { kind: "release", firmware }, status };
+      const result: FlashResultMessage = { type: "flash-result", endpointId, source, status };
       if (message !== undefined) {
         result.message = message;
       }
@@ -269,7 +317,23 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     clients.add(ws);
     ws.send(JSON.stringify(buildEndpointsMessage(registry.snapshot()) satisfies ServerMessage));
 
-    ws.on("message", (data) => {
+    ws.on("message", (data, isBinary) => {
+      if (isBinary) {
+        // The local-hex upload handshake's binary half (see this
+        // module's own doc comment and wsMessages.ts's convention):
+        // uploadId (ASCII) || payload, with no JSON envelope at all --
+        // splitting and verifying it is localHexUpload.ts's job, not
+        // this module's.
+        const result = localHexUpload.receiveFrame(toBuffer(data));
+        if ("error" in result) {
+          ws.send(JSON.stringify({ type: "error", message: result.error } satisfies ServerMessage));
+        }
+        // On success there is nothing to send back yet -- the client
+        // already has the uploadId from flash-local-ready, and proceeds
+        // straight to flash-start referencing it.
+        return;
+      }
+
       let parsed: unknown;
       try {
         parsed = JSON.parse(data.toString());
@@ -304,34 +368,26 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
           void registry.sendLine(message.endpointId, message.line);
           break;
         case "flash-start":
-          if (message.source.kind === "release") {
-            void registry.requestFlash(message.endpointId, message.source.firmware);
-          } else {
-            // local-hex flashing is a later ticket's scope
-            // (`localHexUpload.ts` + the binary-frame handler) -- report
-            // a clear, non-crashing error rather than silently dropping
-            // the request or pretending to flash it.
-            ws.send(
-              JSON.stringify({
-                type: "error",
-                endpointId: message.endpointId,
-                message: "flashing a local hex file is not yet supported",
-              } satisfies ServerMessage),
-            );
-          }
+          // Both source kinds forward straight to requestFlash unchanged
+          // -- deviceRegistry.ts#runFlash is what branches on
+          // source.kind (see this module's own doc comment).
+          void registry.requestFlash(message.endpointId, message.source);
           break;
-        case "flash-local-begin":
-          // The local-hex upload handshake itself is a later ticket's
-          // scope (see this module's own doc comment) -- report a
-          // clear, non-crashing error rather than silently dropping the
-          // request.
+        case "flash-local-begin": {
+          const result = localHexUpload.beginUpload({
+            fileName: message.fileName,
+            byteLength: message.byteLength,
+            sha256: message.sha256,
+          });
           ws.send(
-            JSON.stringify({
-              type: "error",
-              message: "local-hex uploads are not yet supported",
-            } satisfies ServerMessage),
+            JSON.stringify(
+              "error" in result
+                ? ({ type: "error", message: result.error } satisfies ServerMessage)
+                : ({ type: "flash-local-ready", uploadId: result.uploadId } satisfies ServerMessage),
+            ),
           );
           break;
+        }
       }
     });
 

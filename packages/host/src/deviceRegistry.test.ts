@@ -4,7 +4,7 @@ import { DeviceWatcher, type DaplinkDevice } from "./devices.js";
 import type { SwdNameResult } from "./swdName.js";
 import { DeviceRegistry, KeyedMutex } from "./deviceRegistry.js";
 import type { Link } from "./link/Link.js";
-import type { EndpointListEntry, FirmwareKind, FlashPhase } from "./wsMessages.js";
+import type { EndpointListEntry, FirmwareKind, FirmwareSourceRef, FlashPhase } from "./wsMessages.js";
 import type { FirmwareConfigMap, FirmwareSource } from "./config.js";
 import type { ResolvedRelease } from "./releases.js";
 import type { FlashOutcome } from "./flash.js";
@@ -525,6 +525,14 @@ function firmwareSource(overrides: Partial<FirmwareSource> = {}): FirmwareSource
   return { repoUrl: "https://github.com/org/relay-firmware", tag: "latest", ...overrides };
 }
 
+/** A `release`-kind {@link FirmwareSourceRef} for `firmware` -- ticket
+ * 005's `requestFlash` takes the full source ref now, not a bare
+ * {@link FirmwareKind}, so every existing release-flash test in this
+ * file wraps its firmware kind with this helper. */
+function releaseSource(firmware: FirmwareKind): FirmwareSourceRef {
+  return { kind: "release", firmware };
+}
+
 function resolvedRelease(overrides: Partial<ResolvedRelease> = {}): ResolvedRelease {
   return {
     tag: "v1.0.0",
@@ -548,7 +556,7 @@ function configWith(relay?: FirmwareSource, robot?: FirmwareSource): () => Firmw
  * actually delivers. */
 interface FlashResultEvent {
   endpointId: string;
-  firmware: FirmwareKind;
+  source: FirmwareSourceRef;
   status: "ok" | "error";
   message: string | undefined;
   classification: unknown;
@@ -594,12 +602,12 @@ describe("DeviceRegistry — requestFlash", () => {
       flash: flashFn,
     });
 
-    const progress: Array<{ endpointId: string; firmware: FirmwareKind; phase: FlashPhase }> = [];
+    const progress: Array<{ endpointId: string; source: FirmwareSourceRef; phase: FlashPhase }> = [];
     const results: FlashResultEvent[] = [];
     const flashStatusSnapshots: Array<{ firmware: FirmwareKind; phase: FlashPhase } | undefined> = [];
-    registry.onFlashProgress((endpointId, firmware, phase) => progress.push({ endpointId, firmware, phase }));
-    registry.onFlashResult((endpointId, firmware, status, message, classification, name, reidentify) =>
-      results.push({ endpointId, firmware, status, message, classification, name, reidentify }),
+    registry.onFlashProgress((endpointId, source, phase) => progress.push({ endpointId, source, phase }));
+    registry.onFlashResult((endpointId, source, status, message, classification, name, reidentify) =>
+      results.push({ endpointId, source, status, message, classification, name, reidentify }),
     );
     registry.onDevicesChanged((snap) => flashStatusSnapshots.push(snap[0]?.flashStatus));
 
@@ -608,7 +616,7 @@ describe("DeviceRegistry — requestFlash", () => {
     expect(links).toHaveLength(1);
     const preFlashRole = registry.snapshot()[0]?.role;
 
-    await registry.requestFlash("usb-SERIAL-A", "relay");
+    await registry.requestFlash("usb-SERIAL-A", releaseSource("relay"));
 
     // "reidentifying" now runs between the write's last phase and the
     // terminal result -- see this class's own "Post-flash reidentify
@@ -686,14 +694,14 @@ describe("DeviceRegistry — requestFlash", () => {
     });
 
     const results: FlashResultEvent[] = [];
-    registry.onFlashResult((endpointId, firmware, status, message, classification, name, reidentify) =>
-      results.push({ endpointId, firmware, status, message, classification, name, reidentify }),
+    registry.onFlashResult((endpointId, source, status, message, classification, name, reidentify) =>
+      results.push({ endpointId, source, status, message, classification, name, reidentify }),
     );
 
     registry.start();
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
 
-    await registry.requestFlash("usb-SERIAL-A", "relay");
+    await registry.requestFlash("usb-SERIAL-A", releaseSource("relay"));
 
     expect(results).toHaveLength(1);
     expect(results[0]).toMatchObject({ status: "ok", message: undefined, reidentify: "timeout" });
@@ -751,8 +759,8 @@ describe("DeviceRegistry — requestFlash", () => {
     });
 
     const results: FlashResultEvent[] = [];
-    registry.onFlashResult((endpointId, firmware, status, message, classification, name, reidentify) =>
-      results.push({ endpointId, firmware, status, message, classification, name, reidentify }),
+    registry.onFlashResult((endpointId, source, status, message, classification, name, reidentify) =>
+      results.push({ endpointId, source, status, message, classification, name, reidentify }),
     );
 
     registry.start();
@@ -760,7 +768,7 @@ describe("DeviceRegistry — requestFlash", () => {
     const originalState = registry.snapshot()[0];
     expect(originalState).toBeDefined();
 
-    await registry.requestFlash("usb-SERIAL-A", "relay");
+    await registry.requestFlash("usb-SERIAL-A", releaseSource("relay"));
 
     // The re-added endpoint (a brand new attach, unrelated to the stale
     // flash) is live and untouched by runFlash's orphaned writes -- no
@@ -800,12 +808,12 @@ describe("DeviceRegistry — requestFlash", () => {
     });
 
     const results: Array<{ status: string; message: string | undefined }> = [];
-    registry.onFlashResult((_endpointId, _firmware, status, message) => results.push({ status, message }));
+    registry.onFlashResult((_endpointId, _source, status, message) => results.push({ status, message }));
 
     registry.start();
     await waitForSnapshot(registry, (s) => s[0]?.sessionError !== undefined);
 
-    await registry.requestFlash("usb-SERIAL-A", "relay");
+    await registry.requestFlash("usb-SERIAL-A", releaseSource("relay"));
 
     expect(flashFn).not.toHaveBeenCalled();
     expect(results).toEqual([{ status: "error", message: "sha256 mismatch for downloaded hex" }]);
@@ -838,12 +846,12 @@ describe("DeviceRegistry — requestFlash", () => {
     });
 
     const results: Array<{ status: string; message: string | undefined }> = [];
-    registry.onFlashResult((_endpointId, _firmware, status, message) => results.push({ status, message }));
+    registry.onFlashResult((_endpointId, _source, status, message) => results.push({ status, message }));
 
     registry.start();
     await waitForSnapshot(registry, (s) => s[0]?.sessionError !== undefined);
 
-    await registry.requestFlash("usb-SERIAL-A", "robot");
+    await registry.requestFlash("usb-SERIAL-A", releaseSource("robot"));
 
     expect(fetchAndVerifyHexFn).not.toHaveBeenCalled();
     expect(flashFn).not.toHaveBeenCalled();
@@ -884,13 +892,13 @@ describe("DeviceRegistry — requestFlash", () => {
     });
 
     const results: Array<{ status: string; message: string | undefined }> = [];
-    registry.onFlashResult((_endpointId, _firmware, status, message) => results.push({ status, message }));
+    registry.onFlashResult((_endpointId, _source, status, message) => results.push({ status, message }));
 
     registry.start();
     await waitForSnapshot(registry, (s) => s[0]?.sessionError !== undefined);
     const createLinkCallsBefore = createLink.mock.calls.length;
 
-    await registry.requestFlash("usb-SERIAL-A", "relay");
+    await registry.requestFlash("usb-SERIAL-A", releaseSource("relay"));
 
     expect(results).toEqual([{ status: "error", message: "write failed at page 3" }]);
     const snap = registry.snapshot();
@@ -926,12 +934,12 @@ describe("DeviceRegistry — requestFlash", () => {
     });
 
     const results: Array<{ status: string; message: string | undefined }> = [];
-    registry.onFlashResult((_endpointId, _firmware, status, message) => results.push({ status, message }));
+    registry.onFlashResult((_endpointId, _source, status, message) => results.push({ status, message }));
 
     registry.start();
     await waitForSnapshot(registry, (s) => s[0]?.sessionError !== undefined);
 
-    await registry.requestFlash("usb-SERIAL-A", "relay");
+    await registry.requestFlash("usb-SERIAL-A", releaseSource("relay"));
 
     expect(resolveReleaseFn).not.toHaveBeenCalled();
     expect(fetchAndVerifyHexFn).not.toHaveBeenCalled();
@@ -950,7 +958,7 @@ describe("DeviceRegistry — requestFlash", () => {
     const errors: Array<{ endpointId: string | undefined; message: string }> = [];
     registry.onError((endpointId, message) => errors.push({ endpointId, message }));
 
-    await expect(registry.requestFlash("no-such-device", "relay")).resolves.toBeUndefined();
+    await expect(registry.requestFlash("no-such-device", releaseSource("relay"))).resolves.toBeUndefined();
     expect(errors).toContainEqual({ endpointId: "no-such-device", message: "no such device: no-such-device" });
 
     await registry.stop();
@@ -993,12 +1001,147 @@ describe("DeviceRegistry — requestFlash", () => {
     // entire flash task (including the slow "network" resolve step) to
     // finish before it ever runs -- the core mutex guarantee this
     // ticket relies on.
-    const flashPromise = registry.requestFlash("usb-SERIAL-A", "relay").then(() => order.push("flash-done"));
+    const flashPromise = registry
+      .requestFlash("usb-SERIAL-A", releaseSource("relay"))
+      .then(() => order.push("flash-done"));
     const openPromise = registry.requestOpen("usb-SERIAL-A").then(() => order.push("open-done"));
 
     await Promise.all([flashPromise, openPromise]);
 
     expect(order).toEqual(["flash-resolve-start", "flash-resolve-end", "flash-done", "open-done"]);
+
+    await registry.stop();
+  });
+});
+
+// ---------------------------------------------------------------------
+// requestFlash -- local-hex source (sprint 4 ticket 005). The
+// consumeUpload seam stands in for localHexUpload.ts's
+// LocalHexUploadManager#consumeUpload -- server.ts wires the real one;
+// these tests exercise only DeviceRegistry's own branch on
+// source.kind, per this file's "never test against real hardware"
+// precedent.
+// ---------------------------------------------------------------------
+
+type LocalHexSourceRef = Extract<FirmwareSourceRef, { kind: "local-hex" }>;
+
+function localHexSource(overrides: Partial<LocalHexSourceRef> = {}): LocalHexSourceRef {
+  return {
+    kind: "local-hex",
+    uploadId: "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    fileName: "my-firmware.hex",
+    sha256: "d".repeat(64),
+    ...overrides,
+  };
+}
+
+describe("DeviceRegistry — requestFlash (local-hex source)", () => {
+  it("flashes the consumed upload bytes through the unchanged flash.ts pipeline, skipping the fetching phase", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("zeguz");
+    const createLink = () => new FakeLink(async () => banner());
+
+    const uploadedHex = Buffer.from(":10000000AABBCCDD00000000000000000000005A\n:00000001FF\n", "utf-8");
+    const consumeUploadFn = vi.fn((uploadId: string) =>
+      uploadId === "3fa85f64-5717-4562-b3fc-2c963f66afa6" ? uploadedHex : undefined,
+    );
+
+    let observedHexText: string | undefined;
+    const flashFn = vi.fn(
+      async (
+        _device: DaplinkDevice,
+        hexText: string,
+        onProgress: (phase: FlashPhase) => void,
+      ): Promise<FlashOutcome> => {
+        observedHexText = hexText;
+        onProgress("erasing");
+        onProgress("writing");
+        onProgress("resetting");
+        return { status: "ok", method: "swd" };
+      },
+    );
+
+    const registry = new DeviceRegistry({
+      watcher,
+      resolveName,
+      createLink,
+      consumeUpload: consumeUploadFn,
+      flash: flashFn,
+    });
+
+    const progress: Array<{ source: FirmwareSourceRef; phase: FlashPhase }> = [];
+    const results: FlashResultEvent[] = [];
+    registry.onFlashProgress((endpointId, source, phase) => progress.push({ source, phase }));
+    registry.onFlashResult((endpointId, source, status, message, classification, name, reidentify) =>
+      results.push({ endpointId, source, status, message, classification, name, reidentify }),
+    );
+
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    const source = localHexSource();
+    await registry.requestFlash("usb-SERIAL-A", source);
+
+    // No "fetching" phase for a local-hex source -- the bytes already
+    // arrived over the socket; verification already happened at upload
+    // time (localHexUpload.ts), so "verifying" here is a display-only
+    // formality before the real write phases.
+    expect(progress.map((p) => p.phase)).toEqual(["verifying", "erasing", "writing", "resetting", "reidentifying"]);
+    // Every progress event echoes the exact source the flash was
+    // requested with, including its fileName/sha256 -- not just the
+    // uploadId.
+    for (const p of progress) {
+      expect(p.source).toEqual(source);
+    }
+
+    expect(consumeUploadFn).toHaveBeenCalledWith(source.uploadId);
+    expect(observedHexText).toBe(uploadedHex.toString("utf-8"));
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.status).toBe("ok");
+    expect(results[0]?.source).toEqual(source);
+    expect(results[0]?.message).toBeUndefined();
+
+    await registry.stop();
+  });
+
+  it("an unknown/already-consumed uploadId ends in a flash-result error without ever calling flash.ts", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("zeguz");
+    const createLink = () => new FakeLink(async () => banner());
+
+    // Always reports "not found" -- stands in for an expired, unknown,
+    // or already-consumed uploadId (localHexUpload.ts's own
+    // consumeUpload contract: undefined for all three cases).
+    const consumeUploadFn = vi.fn((_uploadId: string) => undefined);
+    const flashFn = vi.fn(async (): Promise<FlashOutcome> => ({ status: "ok", method: "swd" }));
+
+    const registry = new DeviceRegistry({
+      watcher,
+      resolveName,
+      createLink,
+      consumeUpload: consumeUploadFn,
+      flash: flashFn,
+    });
+
+    const results: FlashResultEvent[] = [];
+    registry.onFlashResult((endpointId, source, status, message, classification, name, reidentify) =>
+      results.push({ endpointId, source, status, message, classification, name, reidentify }),
+    );
+
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    const source = localHexSource({ uploadId: "00000000-0000-0000-0000-000000000000" });
+    await expect(registry.requestFlash("usb-SERIAL-A", source)).resolves.toBeUndefined();
+
+    expect(flashFn).not.toHaveBeenCalled();
+    expect(results).toHaveLength(1);
+    expect(results[0]?.status).toBe("error");
+    expect(results[0]?.message).toEqual(expect.stringContaining(source.uploadId));
+    expect(registry.snapshot()[0]?.flashStatus).toBeUndefined();
 
     await registry.stop();
   });

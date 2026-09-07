@@ -1,9 +1,11 @@
 ---
 id: '005'
 title: 'Local-hex upload path: binary frame handshake and in-memory flash source'
-status: open
-use-cases: ["SUC-003"]
-depends-on: ["004"]
+status: done
+use-cases:
+- SUC-003
+depends-on:
+- '004'
 github-issue: ''
 issue: robot-console-two-level-ui-and-multi-transport-roadmap.md
 completes_issue: false
@@ -61,33 +63,33 @@ does not need modification.
 
 ## Acceptance Criteria
 
-- [ ] `beginUpload` rejects a `byteLength` over 4MB with a clear error
+- [x] `beginUpload` rejects a `byteLength` over 4MB with a clear error
       **before** allocating any buffer (assert no `Buffer` is
       allocated for the rejected size — e.g. via a spy/counter, not
       just that the function returns an error).
-- [ ] `receiveFrame` correctly splits `uploadId`/payload for a
+- [x] `receiveFrame` correctly splits `uploadId`/payload for a
       well-formed frame, and verifies length and sha256; a
       length or hash mismatch returns an error and the upload is
       discarded (a subsequent `consumeUpload` for that id returns
       `undefined`).
-- [ ] `consumeUpload` returns the bytes exactly once — a second call
+- [x] `consumeUpload` returns the bytes exactly once — a second call
       for the same `uploadId` returns `undefined` (prevents replaying
       one upload into two flashes without a fresh `flash-local-begin`).
-- [ ] `server.ts`'s message handler correctly distinguishes binary
+- [x] `server.ts`'s message handler correctly distinguishes binary
       frames from JSON text messages (`isBinary` branch), verified
       against a fake WebSocket that can send both.
-- [ ] `runFlash` with `source: { kind: "local-hex", ... }` flashes the
+- [x] `runFlash` with `source: { kind: "local-hex", ... }` flashes the
       consumed bytes through the unchanged `flash.ts` pipeline —
       verified against a fake `flash` implementation, asserting the
       hex bytes passed through match what was uploaded.
-- [ ] `runFlash` with `source: { kind: "local-hex", uploadId }` for an
+- [x] `runFlash` with `source: { kind: "local-hex", uploadId }` for an
       unknown/already-consumed `uploadId` reports `flash-result`
       `status: "error"` with a clear message, never throws.
-- [ ] The full handshake round-trips end-to-end against a fake socket
+- [x] The full handshake round-trips end-to-end against a fake socket
       in a `server.test.ts`-style test: `flash-local-begin` →
       `flash-local-ready` → binary frame → `flash-start` with the
       returned `uploadId` → successful flash.
-- [ ] `npm test` and `npm run build` pass in full.
+- [x] `npm test` and `npm run build` pass in full.
 
 ## Testing
 

@@ -70,8 +70,10 @@
  *     {@link UPLOAD_ID_BYTE_LENGTH} bytes) immediately followed by the
  *     raw file bytes, with no length prefix or delimiter (the socket
  *     frame boundary *is* the message boundary) -- documented here as a
- *     convention, not yet implemented as a handler (that is a later
- *     ticket; this ticket only freezes the shape and the constant).
+ *     convention; `localHexUpload.ts` (ticket 005) is the concrete
+ *     handler that splits, verifies, and holds the frame's bytes, and
+ *     `server.ts`'s `isBinary` branch is what routes a binary frame to
+ *     it.
  *
  * ## Forward compatibility: an unrecognized `classification.type`
  *
@@ -381,10 +383,12 @@ export interface FlashLocalReadyMessage {
  * `"3fa85f64-5717-4562-b3fc-2c963f66afa6"`). The frame is
  * `uploadId || payload` with no length prefix or delimiter between
  * them -- the receiver reads exactly this many bytes as the id and
- * treats everything after as the file's raw bytes. Documented here (not
- * yet consumed by any handler in this ticket) so ticket 005's
- * implementation and this module agree on the convention without
- * re-deriving it. */
+ * treats everything after as the file's raw bytes. Documented here so
+ * ticket 005's implementation and this module agree on the convention
+ * without re-deriving it. `localHexUpload.ts`'s `LocalHexUploadManager`
+ * is the concrete implementation of this convention (ticket 005) --
+ * `receiveFrame` there is the one place a raw binary frame is actually
+ * split using this constant; this module only documents the shape. */
 export const UPLOAD_ID_BYTE_LENGTH = 36;
 
 /** Server -> client: something went wrong. `endpointId` is present when

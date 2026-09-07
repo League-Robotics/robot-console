@@ -541,8 +541,23 @@ function configWith(relay?: FirmwareSource, robot?: FirmwareSource): () => Firmw
   return () => ({ relay, robot });
 }
 
+/** A `results` entry shape shared by the requestFlash tests below --
+ * mirrors {@link FlashResultListener}'s own parameter list (ticket
+ * 004's reidentify fields included) rather than {@link
+ * FlashResultMessage}'s object shape, since that's what `onFlashResult`
+ * actually delivers. */
+interface FlashResultEvent {
+  endpointId: string;
+  firmware: FirmwareKind;
+  status: "ok" | "error";
+  message: string | undefined;
+  classification: unknown;
+  name: string | null | undefined;
+  reidentify: "timeout" | undefined;
+}
+
 describe("DeviceRegistry — requestFlash", () => {
-  it("flashes successfully end to end: progress sequence, result, flashStatus cleared, link re-opened", async () => {
+  it("flashes successfully end to end: progress sequence through reidentifying, result carries the post-flash identity with no flicker, flashStatus cleared once, link re-opened", async () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const resolveName = async () => namedResult("zeguz");
@@ -580,40 +595,183 @@ describe("DeviceRegistry — requestFlash", () => {
     });
 
     const progress: Array<{ endpointId: string; firmware: FirmwareKind; phase: FlashPhase }> = [];
-    const results: Array<{ endpointId: string; firmware: FirmwareKind; status: string; message: string | undefined }> = [];
+    const results: FlashResultEvent[] = [];
     const flashStatusSnapshots: Array<{ firmware: FirmwareKind; phase: FlashPhase } | undefined> = [];
     registry.onFlashProgress((endpointId, firmware, phase) => progress.push({ endpointId, firmware, phase }));
-    registry.onFlashResult((endpointId, firmware, status, message) =>
-      results.push({ endpointId, firmware, status, message }),
+    registry.onFlashResult((endpointId, firmware, status, message, classification, name, reidentify) =>
+      results.push({ endpointId, firmware, status, message, classification, name, reidentify }),
     );
     registry.onDevicesChanged((snap) => flashStatusSnapshots.push(snap[0]?.flashStatus));
 
     registry.start();
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
     expect(links).toHaveLength(1);
+    const preFlashRole = registry.snapshot()[0]?.role;
 
     await registry.requestFlash("usb-SERIAL-A", "relay");
 
+    // "reidentifying" now runs between the write's last phase and the
+    // terminal result -- see this class's own "Post-flash reidentify
+    // sequencing" doc comment.
     expect(progress.map((p) => p.phase)).toEqual([
       "fetching",
       "verifying",
       "erasing",
       "writing",
       "resetting",
+      "reidentifying",
     ]);
-    expect(results).toEqual([{ endpointId: "usb-SERIAL-A", firmware: "relay", status: "ok", message: undefined }]);
+    // Exactly one flash-result, carrying the *post-flash* classification
+    // (role "RADIORELAY") -- never the pre-flash one ("RADIOBRIDGE"),
+    // and never an intermediate "ok" sent before it (no flicker).
+    expect(results).toHaveLength(1);
+    expect(results[0]?.status).toBe("ok");
+    expect(results[0]?.message).toBeUndefined();
+    expect(results[0]?.reidentify).toBeUndefined();
+    expect(results[0]?.name).toBe("zeguz");
+    expect(results[0]?.classification).toEqual(expect.objectContaining({ role: "RADIORELAY", type: "relay" }));
+    expect((results[0]?.classification as { role: string }).role).not.toBe(preFlashRole);
     expect(resolveReleaseFn).toHaveBeenCalledTimes(1);
     expect(fetchAndVerifyHexFn).toHaveBeenCalledTimes(1);
     expect(flashFn).toHaveBeenCalledTimes(1);
     // The pre-existing link was torn down before flashing began.
     expect(links[0]?.closeCalls).toBe(1);
     expect(flashStatusSnapshots).toContainEqual({ firmware: "relay", phase: "erasing" });
+    // flashStatus is still present mid-reidentify -- it is cleared only
+    // at the final flash-result emission, not before.
+    expect(flashStatusSnapshots).toContainEqual({ firmware: "relay", phase: "reidentifying" });
 
     const snap = await waitForSnapshot(registry, (s) => s[0]?.role === "RADIORELAY");
     expect(snap[0]?.flashStatus).toBeUndefined();
     expect(snap[0]?.sessionOpen).toBe(true);
     // Re-opened after success to pick up the new banner.
     expect(links).toHaveLength(2);
+
+    await registry.stop();
+  });
+
+  it("reidentify timeout: identify() called at most twice, result is status ok with classification unknown and reidentify timeout, never an error", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("zeguz");
+    const links: FakeLink[] = [];
+    let reidentifyLink: FakeLink | undefined;
+    const createLink = vi.fn(() => {
+      if (links.length === 0) {
+        const link = new FakeLink(async () => banner());
+        links.push(link);
+        return link;
+      }
+      // The post-flash reidentify link: never replies to HELLO.
+      reidentifyLink = new FakeLink(() => new Promise<ParsedBanner | null>(() => {}));
+      links.push(reidentifyLink);
+      return reidentifyLink;
+    });
+
+    const resolveReleaseFn = vi.fn(async (): Promise<ResolvedRelease> => resolvedRelease());
+    const fetchAndVerifyHexFn = vi.fn(async () => ({ hex: Buffer.from(":00000001FF\n", "utf-8") }));
+    const flashFn = vi.fn(async (): Promise<FlashOutcome> => ({ status: "ok", method: "swd" }));
+
+    const registry = new DeviceRegistry({
+      watcher,
+      resolveName,
+      createLink,
+      getFirmwareConfig: configWith(firmwareSource()),
+      resolveRelease: resolveReleaseFn,
+      fetchAndVerifyHex: fetchAndVerifyHexFn,
+      flash: flashFn,
+      // A hung identify() would otherwise cost DEFAULT_REIDENTIFY_TIMEOUT_MS
+      // (~8s) of real wall-clock time per attempt, twice over.
+      reidentifyTimeoutMs: 5,
+    });
+
+    const results: FlashResultEvent[] = [];
+    registry.onFlashResult((endpointId, firmware, status, message, classification, name, reidentify) =>
+      results.push({ endpointId, firmware, status, message, classification, name, reidentify }),
+    );
+
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    await registry.requestFlash("usb-SERIAL-A", "relay");
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ status: "ok", message: undefined, reidentify: "timeout" });
+    expect(results[0]?.classification).toEqual(expect.objectContaining({ type: "unknown" }));
+    // identify() is called exactly twice against the reidentify link
+    // (the initial attempt, plus one retry) -- never more.
+    expect(reidentifyLink?.identifyCalls).toBe(2);
+
+    const snap = registry.snapshot();
+    expect(snap[0]?.flashStatus).toBeUndefined();
+    expect(snap[0]?.classification.type).toBe("unknown");
+
+    await registry.stop();
+  });
+
+  it("orphaned-state guard: a device re-enumerating mid-flash (remove+add) drops runFlash's stale writes without touching the live re-added endpoint or emitting a flash-result", async () => {
+    let devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("zeguz");
+    const createLink = () => new FakeLink(async () => banner());
+
+    const resolveReleaseFn = vi.fn(async (): Promise<ResolvedRelease> => resolvedRelease());
+    const fetchAndVerifyHexFn = vi.fn(async () => ({ hex: Buffer.from(":00000001FF\n", "utf-8") }));
+    // Orphan the state mid-write (between "erasing" and "writing"), then
+    // let the write itself fail -- mirrors a board that reset and
+    // re-enumerated (a fresh state object registered under the same id)
+    // while runFlash still held the original object, per the module's
+    // own "Orphaned state during a flash" doc comment.
+    const flashFn = vi.fn(
+      async (
+        _device: DaplinkDevice,
+        _hexText: string,
+        onProgress: (phase: FlashPhase) => void,
+      ): Promise<FlashOutcome> => {
+        onProgress("erasing");
+        // Same serial number (same endpoint id) but a changed field --
+        // devices.ts's diff (content-equality per serial number) reports
+        // this as a "modified" device, i.e. remove+add, exactly like a
+        // real re-enumeration after a reset.
+        devices = [device({ hid: { path: "/hid/A-REENUM" } })];
+        await watcher.pollOnce();
+        onProgress("writing");
+        return { status: "error", method: "swd", reason: "program-failed", error: "write failed at page 3" };
+      },
+    );
+
+    const registry = new DeviceRegistry({
+      watcher,
+      resolveName,
+      createLink,
+      getFirmwareConfig: configWith(firmwareSource()),
+      resolveRelease: resolveReleaseFn,
+      fetchAndVerifyHex: fetchAndVerifyHexFn,
+      flash: flashFn,
+    });
+
+    const results: FlashResultEvent[] = [];
+    registry.onFlashResult((endpointId, firmware, status, message, classification, name, reidentify) =>
+      results.push({ endpointId, firmware, status, message, classification, name, reidentify }),
+    );
+
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    const originalState = registry.snapshot()[0];
+    expect(originalState).toBeDefined();
+
+    await registry.requestFlash("usb-SERIAL-A", "relay");
+
+    // The re-added endpoint (a brand new attach, unrelated to the stale
+    // flash) is live and untouched by runFlash's orphaned writes -- no
+    // flashStatus ever attributed to it.
+    const snap = await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    expect(snap[0]?.flashStatus).toBeUndefined();
+    expect(snap[0]?.endpointId).toBe("usb-SERIAL-A");
+
+    // No flash-result at all -- the guard silently dropped the failure
+    // write against the now-stale state object.
+    expect(results).toEqual([]);
 
     await registry.stop();
   });

@@ -46,6 +46,7 @@ import {
   parseClientMessage,
   type EndpointListEntry,
   type EndpointsMessage,
+  type FlashResultMessage,
   type ServerMessage,
 } from "./wsMessages.js";
 
@@ -232,13 +233,29 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   const unsubscribeFlashProgress = registry.onFlashProgress((endpointId, firmware, phase) => {
     broadcast({ type: "flash-progress", endpointId, source: { kind: "release", firmware }, phase });
   });
-  const unsubscribeFlashResult = registry.onFlashResult((endpointId, firmware, status, message) => {
-    broadcast(
-      message !== undefined
-        ? { type: "flash-result", endpointId, source: { kind: "release", firmware }, status, message }
-        : { type: "flash-result", endpointId, source: { kind: "release", firmware }, status },
-    );
-  });
+  const unsubscribeFlashResult = registry.onFlashResult(
+    (endpointId, firmware, status, message, classification, name, reidentify) => {
+      // classification/name/reidentify are only ever present on
+      // registry.ts's own `status: "ok"` (ticket 004's reidentify
+      // sequencing) -- omit each field rather than sending it
+      // `undefined`, matching this module's existing `message` handling
+      // just above.
+      const result: FlashResultMessage = { type: "flash-result", endpointId, source: { kind: "release", firmware }, status };
+      if (message !== undefined) {
+        result.message = message;
+      }
+      if (classification !== undefined) {
+        result.classification = classification;
+      }
+      if (name !== undefined) {
+        result.name = name;
+      }
+      if (reidentify !== undefined) {
+        result.reidentify = reidentify;
+      }
+      broadcast(result);
+    },
+  );
   // The availability cache's own poll can change `firmwareStatus`
   // independently of any device attach/detach -- re-broadcast the
   // current endpoint snapshot so the robot-firmware button can flip to

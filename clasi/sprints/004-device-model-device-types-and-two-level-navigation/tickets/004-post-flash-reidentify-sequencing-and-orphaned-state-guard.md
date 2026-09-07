@@ -1,9 +1,12 @@
 ---
 id: '004'
 title: Post-flash reidentify sequencing and orphaned-state guard
-status: open
-use-cases: ["SUC-004", "SUC-005"]
-depends-on: ["003"]
+status: done
+use-cases:
+- SUC-004
+- SUC-005
+depends-on:
+- '003'
 github-issue: ''
 issue: robot-console-two-level-ui-and-multi-transport-roadmap.md
 completes_issue: false
@@ -48,33 +51,33 @@ connection-model sprint:
 
 ## Acceptance Criteria
 
-- [ ] `FlashPhase` reidentify sequencing: after a successful write,
+- [x] `FlashPhase` reidentify sequencing: after a successful write,
       phase advances to `"reidentifying"` (emitted via the existing
       flash-progress channel) before any `flash-result` is sent.
-- [ ] `flash-result` on success carries `classification`/`name`
+- [x] `flash-result` on success carries `classification`/`name`
       reflecting the **post-flash** identity — a test asserts the
       classification differs from the pre-flash one when the fake
       link's post-reidentify banner differs, and that no intermediate
       snapshot in between shows the old type as if flashing had
       already completed.
-- [ ] Reidentify uses a distinct timeout (not the 3s open timeout) and
+- [x] Reidentify uses a distinct timeout (not the 3s open timeout) and
       retries exactly once on a `null` identify before giving up.
-- [ ] A reidentify that never succeeds (both attempts return `null`)
+- [x] A reidentify that never succeeds (both attempts return `null`)
       emits `flash-result { status: "ok", classification: { type:
       "unknown", ... }, reidentify: "timeout" }` — **not**
       `status: "error"` — since the write itself succeeded.
-- [ ] `flashStatus` is cleared exactly once, at the final
+- [x] `flashStatus` is cleared exactly once, at the final
       `flash-result` emission (success or error) — not earlier, tested
       by asserting `flashStatus` is still present in the snapshot
       during the `"reidentifying"` phase.
-- [ ] Every state-mutating step inside `runFlash` (progress, failure,
+- [x] Every state-mutating step inside `runFlash` (progress, failure,
       and the new reidentify tail) checks the staleness guard;
       orphaning the state mid-flash (simulate a remove+add in a test,
       as `deviceRegistry.test.ts` likely already does for
       `resolveNameAndOpen`) results in no mutation of the live
       (re-added) endpoint's state and no `flash-result` emitted
       against the stale id.
-- [ ] `npm test` and `npm run build` pass in full.
+- [x] `npm test` and `npm run build` pass in full.
 
 ## Testing
 

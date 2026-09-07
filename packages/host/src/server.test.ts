@@ -434,23 +434,27 @@ describe("server.ts flash wiring (sprint 2, ticket 006)", () => {
       phase: "fetching",
     });
 
-    const resultOnFirst = await first.messages.waitFor((m) => m.type === "flash-result");
-    expect(resultOnFirst).toEqual({
+    // ticket 004: the terminal flash-result waits for the post-flash
+    // reidentify to settle and carries its classification/name --
+    // FakeLink's identify() resolves the same banner() both times here
+    // (createLink returns the one shared `link` fake), so the endpoint's
+    // classification survives the round trip unchanged, but the field is
+    // now populated end to end over the wire.
+    const expectedResult = {
       type: "flash-result",
       endpointId: "usb-SERIAL-A",
       source: { kind: "release", firmware: "relay" },
       status: "ok",
-    });
+      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "common-name" },
+      name: "zeguz",
+    };
+    const resultOnFirst = await first.messages.waitFor((m) => m.type === "flash-result");
+    expect(resultOnFirst).toEqual(expectedResult);
 
     // The requester's own client saw it; confirm the *other* connected
     // client did too.
     const resultOnSecond = await second.messages.waitFor((m) => m.type === "flash-result");
-    expect(resultOnSecond).toEqual({
-      type: "flash-result",
-      endpointId: "usb-SERIAL-A",
-      source: { kind: "release", firmware: "relay" },
-      status: "ok",
-    });
+    expect(resultOnSecond).toEqual(expectedResult);
 
     expect(resolveReleaseFn).toHaveBeenCalledTimes(1);
     expect(fetchAndVerifyHexFn).toHaveBeenCalledTimes(1);

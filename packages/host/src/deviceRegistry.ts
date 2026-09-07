@@ -82,7 +82,7 @@
  * never an uncaught exception that
  * would take the whole server down over one board.
  *
- * ## Flash flow (sprint 2)
+ * ## Flash flow (sprint 2, reidentify sequencing added sprint 4 ticket 004)
  *
  * {@link DeviceRegistry.requestFlash} is one more operation run through
  * the same per-endpoint {@link KeyedMutex} as name resolution/link open/
@@ -103,17 +103,63 @@
  * error -- it never leaves `flashStatus` stuck or the registry believing
  * a link is open when {@link teardownLink} already closed it.
  *
- * Sprint 4 note: this ticket reshapes `FlashResultMessage` to carry
- * optional `classification`/`name`/`reidentify` fields and adds
- * `"reidentifying"` to {@link FlashPhase}, but {@link DeviceRegistry.requestFlash}
- * itself is *not yet* changed to populate them or to wait for a
- * post-flash re-identify -- it still clears `flashStatus` and reports
- * `flash-result` immediately after a successful write, exactly as
- * before. A later ticket makes the reidentify sequencing real; this one
- * only freezes the shape it will report through.
+ * ## Post-flash reidentify sequencing (ticket 004, fix for roadmap
+ * issue "finding 5")
+ *
+ * A write success does **not** mean the client should be told yet.
+ * `flash-result` is the message a client navigates on (ticket 008), so
+ * emitting it -- and clearing `flashStatus` -- *before* the board has
+ * had a chance to re-announce itself would show the device's stale
+ * pre-flash type for up to the reidentify window, then flip it
+ * underneath the client. Instead, once {@link flash} reports success:
+ * `flashStatus` **stays set**, phase advances to `"reidentifying"`
+ * (one more {@link FlashProgressMessage}), and
+ * {@link DeviceRegistry.reidentifyAfterFlash} connects and identifies a
+ * fresh link exactly like {@link connectAndIdentify}, except with a
+ * distinct, longer `reidentifyTimeoutMs` (reset + re-enumeration + the
+ * `HELLO` round trip can exceed the plain attach flow's identify
+ * timeout) and one retry on a `null` identify. Only once that settles
+ * is `flash-result` emitted -- `status: "ok"` either way, since the
+ * write itself already succeeded -- carrying the post-flash
+ * `classification`/`name` in the same snapshot (no flicker), or
+ * `reidentify: "timeout"` alongside an `unknown` classification if the
+ * board never re-announced. `flashStatus` is cleared exactly once, at
+ * this final emission.
+ *
+ * Sprint 3's real bench run hit exactly this timeout path (flash
+ * succeeded, board never re-announced -- tracked in
+ * `flash-succeeds-but-board-never-announces.md`), so this is the
+ * common outcome on real hardware today, not an edge case.
+ *
+ * ## Orphaned state during a flash (ticket 004, fix for roadmap issue
+ * "finding 5")
+ *
+ * A board can reset and re-enumerate mid-flash (the MSD write-mode
+ * fallback re-enumerates as mass storage and back; a plain nRF flash
+ * over SWD does not, since the KL27 interface chip that owns the USB
+ * serial port is untouched by it -- either way the endpoint id stays
+ * stable, because it is minted from the KL27's own serial number, not
+ * the target chip's). {@link handleChange} reports a "modified" device
+ * as remove+add, and the *added* half replaces this endpoint's
+ * `EndpointState` object in {@link states} synchronously, with no
+ * regard for whether a {@link runFlash} task is still holding this
+ * endpoint's mutex slot. Every state mutation `runFlash` makes --
+ * {@link setFlashPhase}, {@link failFlash}, {@link succeedFlash} --
+ * checks {@link isLive} first and silently drops the write if the
+ * object it holds is no longer the live one, exactly like
+ * {@link resolveNameAndOpen}/{@link connectAndIdentify} already do.
+ * Re-enumeration *after* a successful write is the expected outcome
+ * here, not a failure, so {@link runFlash} re-acquires whatever object
+ * is live under the endpoint id right after the write completes,
+ * rather than continuing to write through a reference that guard would
+ * only ever reject from that point on. (Re-enumeration racing an
+ * already-queued {@link resolveNameAndOpen} for the freshly re-added
+ * object against this method's own reidentify is a known, narrower
+ * follow-on gap this ticket does not close -- see
+ * {@link reidentifyAfterFlash}'s own doc comment.)
  */
 
-import type { DecodedLine, DeviceClassification } from "@robot-console/protocol";
+import type { DecodedLine, DeviceClassification, ParsedBanner } from "@robot-console/protocol";
 import { classifyBanner, encodeLine } from "@robot-console/protocol";
 import {
   DeviceWatcher,
@@ -154,6 +200,41 @@ export type NameResolver = (device: DaplinkDevice) => Promise<SwdNameResult>;
  * exactly this. */
 function defaultLinkFactory(spec: LinkSpec): Link {
   return new UsbSerialLink(spec.portPath);
+}
+
+/** Default budget for a single post-flash reidentify attempt (ticket
+ * 004) -- deliberately longer than `UsbSerialLink`'s own ~3s
+ * open-flow identify timeout, since a reset + re-enumeration + `HELLO`
+ * round trip after a flash can exceed that. Overridable via
+ * {@link DeviceRegistryOptions.reidentifyTimeoutMs} (tests use a tiny
+ * value so a hung `identify()` fake doesn't cost real wall-clock time). */
+const DEFAULT_REIDENTIFY_TIMEOUT_MS = 8000;
+
+/** Bound `link.identify()` to `timeoutMs`, resolving `null` if it has
+ * not settled by then. `Link.identify()` already documents its own
+ * "never throws, `null` on timeout" contract, so this is a second,
+ * outer safety net rather than the only timeout mechanism -- it exists
+ * so `DeviceRegistry`'s reidentify SLA does not depend on every current
+ * and future {@link Link} implementation choosing a timeout at least as
+ * generous as `reidentifyTimeoutMs` on its own. Never rejects, same as
+ * the `identify()` it wraps. */
+function identifyWithTimeout(link: Link, timeoutMs: number): Promise<ParsedBanner | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        resolve(null);
+      }
+    }, timeoutMs);
+    void link.identify().then((banner) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve(banner);
+      }
+    });
+  });
 }
 
 // ---------------------------------------------------------------------
@@ -336,13 +417,20 @@ export type RegistryErrorListener = (endpointId: string | undefined, message: st
  * {@link FlashProgressMessage}-shaped broadcasts. */
 export type FlashProgressListener = (endpointId: string, firmware: FirmwareKind, phase: FlashPhase) => void;
 /** Notified exactly once per `requestFlash` call, with its terminal
- * outcome -- `message` is present only on `status: "error"`, mirroring
- * {@link FlashResultMessage}'s own shape. */
+ * outcome -- mirrors {@link FlashResultMessage}'s own shape field for
+ * field. `message` is present only on `status: "error"`.
+ * `classification`/`name`/`reidentify` are present only on
+ * `status: "ok"` (ticket 004): the post-flash identity, from whatever
+ * {@link DeviceRegistry.reidentifyAfterFlash}'s `identify()` returned,
+ * plus `reidentify: "timeout"` if it never returned a banner. */
 export type FlashResultListener = (
   endpointId: string,
   firmware: FirmwareKind,
   status: "ok" | "error",
   message?: string,
+  classification?: DeviceClassification,
+  name?: string | null,
+  reidentify?: "timeout",
 ) => void;
 
 export interface DeviceRegistryOptions {
@@ -375,6 +463,11 @@ export interface DeviceRegistryOptions {
    * node-hid-backed {@link flash}. Tests substitute a fully synthetic
    * fake, never real USB/SWD I/O. */
   flash?: typeof flash;
+  /** Budget for a single post-flash reidentify attempt (ticket 004);
+   * defaults to {@link DEFAULT_REIDENTIFY_TIMEOUT_MS}. Tests substitute
+   * a tiny value so a fake `identify()` that never resolves doesn't
+   * cost real wall-clock time. */
+  reidentifyTimeoutMs?: number;
 }
 
 /**
@@ -393,6 +486,7 @@ export class DeviceRegistry {
   private readonly resolveReleaseFn: typeof resolveRelease;
   private readonly fetchAndVerifyHexFn: typeof fetchAndVerifyHex;
   private readonly flashFn: typeof flash;
+  private readonly reidentifyTimeoutMs: number;
   private readonly mutex = new KeyedMutex();
   private readonly states = new Map<string, EndpointState>();
   private unsubscribeWatcher: (() => void) | undefined;
@@ -411,6 +505,7 @@ export class DeviceRegistry {
     this.resolveReleaseFn = options.resolveRelease ?? resolveRelease;
     this.fetchAndVerifyHexFn = options.fetchAndVerifyHex ?? fetchAndVerifyHex;
     this.flashFn = options.flash ?? flash;
+    this.reidentifyTimeoutMs = options.reidentifyTimeoutMs ?? DEFAULT_REIDENTIFY_TIMEOUT_MS;
   }
 
   /** Start watching for devices. Idempotent-ish in practice (callers
@@ -673,17 +768,24 @@ export class DeviceRegistry {
         return;
       }
 
-      state.flashStatus = undefined;
-      this.emitFlashResult(endpointId, firmware, "ok");
-      this.emitDevices();
-
-      // Pick up the newly-flashed firmware's banner without a separate
-      // manual Connect click (SUC-001's postcondition).
-      // connectAndIdentify() never throws and reports its own errors via
-      // sessionError/onDevicesChanged rather than rejecting, so a failed
-      // re-connect here never turns an already-succeeded flash into a
-      // reported failure.
-      await this.connectAndIdentify(state);
+      // The write succeeded. Re-acquire whatever object is currently
+      // live under this id rather than continuing to write through
+      // `state` -- a board that re-enumerated during the write (see
+      // this class's own "Orphaned state during a flash" doc comment)
+      // has already had its state object replaced by now, and
+      // re-enumeration here is the *expected* outcome of a successful
+      // flash, not a failure that should make {@link isLive} silently
+      // drop the reidentify tail forever.
+      const liveState = this.states.get(endpointId);
+      if (!liveState) {
+        // Gone entirely and never came back by the time the write
+        // returned -- nothing left to attribute flashStatus to, but the
+        // write itself succeeded and the client is still waiting for a
+        // terminal result.
+        this.emitFlashResult(endpointId, firmware, "ok", undefined, classifyBanner(null), null, "timeout");
+        return;
+      }
+      await this.reidentifyAfterFlash(liveState, endpointId, firmware);
     } catch (error) {
       // Defense in depth: every injected step here (config.ts,
       // releases.ts, flash.ts) documents "never throws", but a flash
@@ -693,21 +795,175 @@ export class DeviceRegistry {
     }
   }
 
+  /** Whether `state` is still the live object registered under its own
+   * endpoint id -- the same staleness check {@link resolveNameAndOpen}/
+   * {@link connectAndIdentify} already make after every `await`. A
+   * board that re-enumerates mid-flash is reported by the watcher as
+   * remove+add, which can destroy and recreate this endpoint's state
+   * object while {@link runFlash} still holds a reference to the old
+   * one; every write {@link runFlash} makes checks this first. */
+  private isLive(state: EndpointState): boolean {
+    return this.states.get(state.endpointId) === state;
+  }
+
   /** Advance an in-flight flash to `phase`: update `flashStatus`, emit a
    * {@link onFlashProgress} event, and emit an updated device snapshot
-   * so a client that reconnects mid-flash sees the current phase. */
+   * so a client that reconnects mid-flash sees the current phase. A
+   * no-op, per {@link isLive}, if `state` has been orphaned. */
   private setFlashPhase(state: EndpointState, endpointId: string, firmware: FirmwareKind, phase: FlashPhase): void {
+    if (!this.isLive(state)) {
+      return;
+    }
     state.flashStatus = { firmware, phase };
     this.emitFlashProgress(endpointId, firmware, phase);
     this.emitDevices();
   }
 
   /** End an in-flight flash in failure: clear `flashStatus` and emit a
-   * `flash-result` `status: "error"` event plus an updated snapshot. */
+   * `flash-result` `status: "error"` event plus an updated snapshot. A
+   * no-op, per {@link isLive}, if `state` has been orphaned. */
   private failFlash(state: EndpointState, endpointId: string, firmware: FirmwareKind, message: string): void {
+    if (!this.isLive(state)) {
+      return;
+    }
     state.flashStatus = undefined;
     this.emitFlashResult(endpointId, firmware, "error", message);
     this.emitDevices();
+  }
+
+  /** End an in-flight flash in success -- clear `flashStatus`, apply the
+   * post-flash `classification`, and emit a `flash-result` `status:
+   * "ok"` event (carrying `classification`/`name`, plus `reidentify:
+   * "timeout"` if the board never re-announced) plus an updated
+   * snapshot. A no-op, per {@link isLive}, if `state` has been
+   * orphaned -- see {@link reidentifyAfterFlash}'s own doc comment for
+   * why that can still happen even this late. */
+  private succeedFlash(
+    state: EndpointState,
+    endpointId: string,
+    firmware: FirmwareKind,
+    classification: DeviceClassification,
+    name: string | null,
+    reidentify?: "timeout",
+  ): void {
+    if (!this.isLive(state)) {
+      return;
+    }
+    state.flashStatus = undefined;
+    state.classification = classification;
+    if (reidentify) {
+      this.emitFlashResult(endpointId, firmware, "ok", undefined, classification, name, reidentify);
+    } else {
+      this.emitFlashResult(endpointId, firmware, "ok", undefined, classification, name);
+    }
+    this.emitDevices();
+  }
+
+  /**
+   * Reconnect and re-identify `state` after a successful flash write,
+   * then emit the terminal `flash-result` -- the fix for the roadmap
+   * issue's "finding 5" post-flash type flicker (see this class's own
+   * "Post-flash reidentify sequencing" doc comment). Structurally the
+   * same connect()-then-identify() shape as {@link connectAndIdentify},
+   * with two differences: `identify()` is bounded by this registry's
+   * (longer) `reidentifyTimeoutMs` via {@link identifyWithTimeout}
+   * rather than whatever timeout the `Link` implementation defaults to,
+   * and a `null` result is retried exactly once before giving up.
+   *
+   * A `connect()` failure here is reported the same way
+   * `connectAndIdentify`'s own failure branch does (`sessionError` set,
+   * no session) -- but unlike that method, this always still ends in a
+   * `flash-result`, `status: "ok"`, `reidentify: "timeout"`: the flash
+   * write already succeeded, so a failure to *reconnect* afterward is
+   * never reported as a flash failure, per the ticket's own "never as a
+   * failure" requirement.
+   *
+   * Known gap: if `state` is a freshly re-added object (the board
+   * re-enumerated during the write -- see the module doc comment's
+   * "Orphaned state during a flash" section), {@link handleChange}
+   * already queued its own {@link resolveNameAndOpen} for it, behind
+   * this very task's mutex slot. That queued task runs immediately
+   * after this one returns and will attempt its own `connect()`/
+   * `identify()` against the same physical port this method just
+   * opened -- on real hardware the second `connect()` typically fails
+   * (the port is still held open by the session this method
+   * established), which then overwrites the session/classification
+   * this method just set with a `sessionError`. This is a narrower,
+   * separate race from the two defects this ticket fixes; flagged here
+   * rather than fixed because closing it needs `handleChange` to know
+   * a flash is in flight for the resource key, which is out of this
+   * ticket's scope.
+   */
+  private async reidentifyAfterFlash(
+    state: EndpointState,
+    endpointId: string,
+    firmware: FirmwareKind,
+  ): Promise<void> {
+    this.setFlashPhase(state, endpointId, firmware, "reidentifying");
+
+    const portPath = state.device.serialPort?.path;
+    if (!portPath) {
+      this.succeedFlash(state, endpointId, firmware, classifyBanner(null), state.name, "timeout");
+      return;
+    }
+
+    const link = this.createLink({ transport: "usb", resourceKey: state.resourceKey, portPath });
+
+    try {
+      await link.connect();
+    } catch (error) {
+      // A genuine transport-level failure reconnecting post-flash --
+      // degrade exactly like connectAndIdentify's own connect() failure
+      // branch, except the terminal report here is always "ok" (see
+      // this method's own doc comment).
+      if (this.isLive(state)) {
+        state.sessionOpen = false;
+        state.session = undefined;
+        state.sessionError = error instanceof Error ? error.message : String(error);
+      }
+      await link.close().catch(() => {});
+      this.succeedFlash(state, endpointId, firmware, classifyBanner(null), state.name, "timeout");
+      return;
+    }
+
+    if (!this.isLive(state)) {
+      // Orphaned while connecting -- don't leak the link we just opened.
+      await link.close().catch(() => {});
+      return;
+    }
+
+    state.session = {
+      link,
+      unsubscribeLine: link.onLine((decoded) => {
+        this.emitLine(state.endpointId, "rx", reconstructLineText(decoded));
+      }),
+      unsubscribeError: link.onError((err) => {
+        this.handleLinkError(state, err);
+      }),
+    };
+    state.sessionOpen = true;
+    state.sessionError = undefined;
+    this.emitDevices();
+
+    // One retry on a null identify, per the ticket's acceptance
+    // criteria: identify() is called at most twice total.
+    let banner = await identifyWithTimeout(link, this.reidentifyTimeoutMs);
+    if (banner === null) {
+      banner = await identifyWithTimeout(link, this.reidentifyTimeoutMs);
+    }
+
+    if (!this.isLive(state)) {
+      // Orphaned while identifying -- teardownLink (already run for the
+      // now-orphaned state via the detach path) owns closing it.
+      return;
+    }
+
+    const classification = classifyBanner(banner);
+    if (banner) {
+      this.succeedFlash(state, endpointId, firmware, classification, state.name);
+    } else {
+      this.succeedFlash(state, endpointId, firmware, classification, state.name, "timeout");
+    }
   }
 
   // ---- watcher-driven attach/detach ------------------------------------
@@ -926,9 +1182,12 @@ export class DeviceRegistry {
     firmware: FirmwareKind,
     status: "ok" | "error",
     message?: string,
+    classification?: DeviceClassification,
+    name?: string | null,
+    reidentify?: "timeout",
   ): void {
     for (const listener of this.flashResultListeners) {
-      listener(endpointId, firmware, status, message);
+      listener(endpointId, firmware, status, message, classification, name, reidentify);
     }
   }
 }

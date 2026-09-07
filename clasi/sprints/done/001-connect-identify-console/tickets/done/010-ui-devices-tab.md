@@ -5,7 +5,7 @@ status: done
 use-cases:
 - SUC-001
 depends-on:
-- '009'
+- 009
 github-issue: ''
 issue: robot-console-architecture-and-roadmap.md
 completes_issue: false

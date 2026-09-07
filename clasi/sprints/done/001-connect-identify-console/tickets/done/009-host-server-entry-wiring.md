@@ -1,5 +1,5 @@
 ---
-id: '009'
+id: 009
 title: 'host: server.ts + npx entry wiring'
 status: done
 use-cases:
@@ -8,7 +8,7 @@ use-cases:
 depends-on:
 - '006'
 - '007'
-- '008'
+- 008
 github-issue: ''
 issue: robot-console-architecture-and-roadmap.md
 completes_issue: false

@@ -1,5 +1,5 @@
 ---
-id: '008'
+id: 008
 title: 'host: UsbSerialLink (open/HELLO/banner, paced writes)'
 status: done
 use-cases:

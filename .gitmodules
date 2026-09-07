@@ -1,0 +1,6 @@
+[submodule "vendor/pxt-nezha-diffdrive"]
+	path = vendor/pxt-nezha-diffdrive
+	url = https://github.com/League-Robotics/pxt-nezha-diffdrive.git
+[submodule "vendor/radio-robot-lib"]
+	path = vendor/radio-robot-lib
+	url = https://github.com/League-Robotics/radio-robot-lib.git

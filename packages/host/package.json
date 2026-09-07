@@ -1,0 +1,15 @@
+{
+  "name": "@robot-console/host",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The privileged half: USB, SWD, mDNS, TCP, UDP, hex fetch, and the Express/ws server bridging it all to the browser.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@robot-console/protocol": "*"
+  }
+}

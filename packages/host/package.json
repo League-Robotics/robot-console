@@ -12,7 +12,14 @@
   "dependencies": {
     "@robot-console/protocol": "*",
     "dapjs": "^2.3.0",
+    "express": "^5.2.1",
     "node-hid": "^3.4.0",
-    "serialport": "^13.0.0"
+    "open": "^11.0.2",
+    "serialport": "^13.0.0",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/ws": "^8.18.1"
   }
 }

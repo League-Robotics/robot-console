@@ -48,7 +48,7 @@ top of `v6/codec.ts` (ticket 004). Per `sprint.md`'s Architecture and
 
 Check behavior against `radio-robot-lib/src/host/robot_v6/reliability.py`
 and relevant ack/nack lines in
-`radio-robot-lib/tests/protocol/golden_vectors.txt` — reference only,
+`vendor/radio-robot-lib/tests/protocol/golden_vectors.txt` — reference only,
 not a line-for-line port.
 
 ## Acceptance Criteria
@@ -86,7 +86,7 @@ not a line-for-line port.
 
 **Approach**:
 1. Read `radio-robot-lib/src/host/robot_v6/reliability.py` and the
-   ack/nack lines in `golden_vectors.txt` before implementing.
+   ack/nack lines in `vendor/radio-robot-lib/tests/protocol/golden_vectors.txt` before implementing.
 2. Define the session state (current sequence number, table of
    in-flight id-bearing frames pending ack for retransmit purposes).
 3. Implement `onAck(n)`/`onNack(n)` per the rules above, with the

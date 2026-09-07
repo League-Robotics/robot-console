@@ -60,7 +60,7 @@ Scaffold an npm-workspaces TypeScript monorepo (`packages/protocol`,
 Reference implementations to check behavior against, not to port
 blindly: `radio-robot-lib/src/host/robot_v6/{codec,transport,
 reliability}.py` and `pxt-nezha-diffdrive/tools/link.py`. Golden wire
-vectors: `radio-robot-lib/tests/protocol/golden_vectors.txt`.
+vectors: `vendor/radio-robot-lib/tests/protocol/golden_vectors.txt`.
 
 ## Success Criteria
 
@@ -75,7 +75,7 @@ vectors: `radio-robot-lib/tests/protocol/golden_vectors.txt`.
   serial number).
 - `radioAddress.ts`'s conformance test asserts the **entire 3125-name
   space** against the published sha256 in
-  `pxt-nezha-diffdrive/docs/radio-address-vectors.json` — a sampled
+  `vendor/pxt-nezha-diffdrive/docs/radio-address-vectors.json` — a sampled
   table is not sufficient (it would pass a reversed/little-endian
   encoder; see Design Rationale).
 - `npm test` runs the full protocol-package unit-test suite from a clean
@@ -124,7 +124,7 @@ build any of these now, and do not add placeholder UI for them:
   hardware attached — every file in `protocol` is zero-I/O by design.
 - **Strongest single gate**: `radioAddress.ts`'s conformance test
   asserts the full 3125-name space against the published sha256 in
-  `pxt-nezha-diffdrive/docs/radio-address-vectors.json`. This is an
+  `vendor/pxt-nezha-diffdrive/docs/radio-address-vectors.json`. This is an
   existing three-repo contract, so it is free correctness, and it is the
   only check that catches the documented endianness trap: `zuzuv` is
   n=1; a reversed encoder says `vuzuz` and would still pass a sampled
@@ -133,7 +133,7 @@ build any of these now, and do not add placeholder UI for them:
   serial for legacy `RADIORELAY` / decimal serial for `RADIOBRIDGE`, and
   the lowercase space form robots emit today), not just one.
 - `v6/codec.ts` and `v6/session.ts` are checked against relevant lines
-  from `radio-robot-lib/tests/protocol/golden_vectors.txt` where they
+  from `vendor/radio-robot-lib/tests/protocol/golden_vectors.txt` where they
   apply to HELLO/banner/ack/nack framing (full drive-command coverage of
   those vectors is sprint 3's concern, once `WHEELS_X`/etc. exist on the
   console side).
@@ -350,17 +350,25 @@ external interface.
 
 ### Step 7: Open Questions
 
-1. **Vendoring the conformance/golden-vector fixtures.** The published
-   `radio-address-vectors.json` and `golden_vectors.txt` currently live
-   in sibling repos (`pxt-nezha-diffdrive`, `radio-robot-lib`) at
-   absolute, machine-local paths. Ticket 002 vendors a copy of the
-   radio-address vectors file into `packages/protocol` as a fixture
-   (with a comment recording its canonical source) so the conformance
-   test is reproducible on any checkout/CI, rather than depending on an
-   absolute path that only exists on this machine. This is a planning
-   decision made now, not left open, but is flagged here because it
-   was not spelled out in the source issue and a future sprint should
-   keep the vendored copy in sync if the upstream vectors file changes.
+1. **Sourcing the conformance/golden-vector fixtures — RESOLVED by the
+   stakeholder.** The published `radio-address-vectors.json` and
+   `golden_vectors.txt` live in sibling repos (`pxt-nezha-diffdrive`,
+   `radio-robot-lib`), which planning initially proposed copying into
+   `packages/protocol` as fixtures. **The stakeholder rejected copying:
+   both repos are added as git submodules instead**, using HTTPS URLs:
+
+   - `vendor/pxt-nezha-diffdrive` — `https://github.com/League-Robotics/pxt-nezha-diffdrive.git`
+   - `vendor/radio-robot-lib` — `https://github.com/League-Robotics/radio-robot-lib.git`
+
+   Ticket 001 adds them; tickets 002, 004 and 005 read their fixtures
+   at repo-relative paths under `vendor/`. A copy would silently drift
+   from upstream, whereas a submodule pins an exact commit and is
+   updated deliberately. `vendor/` is reference data only — no package
+   imports source code from it and the TypeScript build excludes it.
+   CI must clone with `--recurse-submodules` (or run
+   `git submodule update --init` before `npm test`), and the fixture
+   readers must fail with an actionable "submodule not initialized"
+   message rather than a bare file-not-found.
 2. **How much of the v6 session layer sprint 1 actually exercises.**
    `v6/session.ts`'s ack/nack/retransmit logic is built and unit-tested
    against synthetic sequences in this sprint, but the hardware smoke

@@ -47,7 +47,8 @@ one place a plausible-looking guess is most likely to be wrong).
 **Conformance test — the strongest single gate in this sprint.** Assert
 `radioAddress.ts` against the **entire 3125-name space** (5^5 names)
 against the published sha256 in
-`/Volumes/Proj/proj/RobotProjects/pxt-nezha-diffdrive/docs/radio-address-vectors.json`.
+`vendor/pxt-nezha-diffdrive/docs/radio-address-vectors.json` (the
+submodule added in ticket 001).
 A sampled table is not acceptable — it would pass a reversed
 (little-endian) encoder, and the full-space digest is the only check
 that catches that. Known fixed point: `zuzuv` is `n=1`; a reversed
@@ -56,15 +57,23 @@ sampled table, so include this exact case as a named unit test in
 addition to the full-space hash assertion (a good sanity check to run
 first if the full-space hash ever fails, to localize the bug quickly).
 
-**Vendoring decision (recorded here per sprint.md Open Question 1)**:
-`radio-address-vectors.json` currently lives only in the sibling
-`pxt-nezha-diffdrive` repo at an absolute, machine-local path. Copy it
-into this repo as a test fixture (e.g.
-`packages/protocol/src/__fixtures__/radio-address-vectors.json`) with a
-comment/README note recording its canonical upstream source and the
-date it was copied, so the conformance test is reproducible on any
-checkout or CI runner — do not read the fixture from the absolute
-external path.
+**Fixture sourcing — stakeholder decision, supersedes sprint.md Open
+Question 1**: do **not** copy `radio-address-vectors.json` into this
+repo. `pxt-nezha-diffdrive` is a **git submodule** at
+`vendor/pxt-nezha-diffdrive` (added in ticket 001), and the conformance
+test reads the vectors file from there:
+`vendor/pxt-nezha-diffdrive/docs/radio-address-vectors.json`.
+
+A copy would silently drift from upstream; the submodule pins an exact
+commit and updates deliberately. The path is repo-relative, so the test
+still runs on any checkout and in CI (CI must clone with
+`--recurse-submodules`, or run `git submodule update --init` before
+`npm test`).
+
+The test must **fail loudly with an actionable message** if the vectors
+file is missing — that means the submodule was not initialized, and the
+error should say exactly that rather than surfacing as a confusing
+file-not-found.
 
 ## Acceptance Criteria
 
@@ -82,10 +91,10 @@ external path.
 - [ ] `zuzuv` → `n=1` is asserted as an explicit named test case (not
       only covered incidentally by the full-space test).
 - [ ] The conformance test asserts the derived `(channel, group)` for
-      **all 3125 names** against the published sha256 in the vendored
+      **all 3125 names** against the published sha256 in the submodule
       copy of `radio-address-vectors.json`, and fails if the computed
       digest does not match.
-- [ ] The vendored fixture file records its canonical upstream source
+- [ ] The conformance test records its canonical upstream source
       path/repo in a comment or adjacent note.
 - [ ] All tests run under `npm test` with no hardware attached.
 
@@ -96,7 +105,7 @@ external path.
 - **New tests to write**: unit tests for `naming.ts` (spot-checked
   encode/decode pairs plus round-trip), the `zuzuv`/`n=1` named case,
   and the full-3125-name-space conformance test for `radioAddress.ts`
-  against the vendored sha256-verified fixture.
+  against the submodule's sha256-verified vectors file.
 - **Verification command**: `npm test -- packages/protocol` (or
   workspace-scoped equivalent).
 
@@ -111,9 +120,11 @@ external path.
 2. Implement `naming.ts`: numeric ID → five-letter name and its inverse.
 3. Implement `radioAddress.ts`: five-letter name → `(channel, group)`,
    built on `naming.ts`'s inverse function.
-4. Copy `radio-address-vectors.json` from
-   `/Volumes/Proj/proj/RobotProjects/pxt-nezha-diffdrive/docs/` into
-   `packages/protocol/src/__fixtures__/`, with a source-note comment.
+4. Read the vectors file from the submodule at
+   `vendor/pxt-nezha-diffdrive/docs/radio-address-vectors.json`,
+   resolving the path relative to the repo root (never an absolute or
+   machine-local path). Guard the read so a missing file reports
+   "submodule not initialized — run `git submodule update --init`".
 5. Write the conformance test: compute `(channel, group)` for all 3125
    names, hash the result in the same format the vectors file's
    published sha256 expects (read the vectors file's own structure/
@@ -127,13 +138,13 @@ external path.
 - `packages/protocol/src/naming.test.ts`
 - `packages/protocol/src/radioAddress.ts`
 - `packages/protocol/src/radioAddress.test.ts`
-- `packages/protocol/src/__fixtures__/radio-address-vectors.json`
-  (vendored copy)
 
-**Files to modify**: none.
+**Files to modify**: none. (The vectors file is read from the
+`vendor/pxt-nezha-diffdrive` submodule; nothing is copied into this
+repo.)
 
 **Testing plan**: `npm test` from the repo root; the conformance test
 must exercise all 3125 names, not a sample.
 
-**Documentation updates**: none required beyond the source-note comment
-on the vendored fixture.
+**Documentation updates**: none required beyond a brief comment in the
+conformance test naming the submodule path as the canonical source.

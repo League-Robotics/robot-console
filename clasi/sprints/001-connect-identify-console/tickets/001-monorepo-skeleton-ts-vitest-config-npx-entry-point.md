@@ -65,6 +65,14 @@ logic here — that is every ticket after this one). It also creates:
       checks all three packages with no errors.
 - [ ] `npx robot-console` (run locally via `npm link` or `npx --package
       . robot-console`) executes the entry point without crashing.
+- [ ] `vendor/pxt-nezha-diffdrive` and `vendor/radio-robot-lib` exist
+      as git submodules with HTTPS URLs, `.gitmodules` is committed,
+      and `vendor/pxt-nezha-diffdrive/docs/radio-address-vectors.json`
+      and `vendor/radio-robot-lib/tests/protocol/golden_vectors.txt`
+      are both readable after `git submodule update --init`.
+- [ ] `vendor/` is excluded from the TypeScript build and no package
+      imports source code from it.
+- [ ] `README.md` tells a fresh cloner how to initialize submodules.
 - [ ] No naming/banner/codec/session/devices/server/UI logic exists yet
       in any package — this ticket is scaffolding only.
 
@@ -97,7 +105,30 @@ logic here — that is every ticket after this one). It also creates:
    discovers `*.test.ts` files under all three `packages/*/src`.
 5. Add the `bin` entry point per the Description above, with a `TODO`
    marker for ticket 009.
-6. Verify `npm install`, `npm test`, `npm run build`, and a manual
+6. **Add the two reference-spec submodules** (stakeholder decision —
+   these repos are submoduled, never copied into this tree):
+
+   ```
+   git submodule add https://github.com/League-Robotics/pxt-nezha-diffdrive.git vendor/pxt-nezha-diffdrive
+   git submodule add https://github.com/League-Robotics/radio-robot-lib.git   vendor/radio-robot-lib
+   ```
+
+   Use the **HTTPS** URLs exactly as written (both upstream repos use
+   HTTPS remotes; HTTPS also needs no SSH key, which matters for the
+   student audience). Commit the resulting `.gitmodules`.
+
+   These supply the test fixtures later tickets read at repo-relative
+   paths — `vendor/pxt-nezha-diffdrive/docs/radio-address-vectors.json`
+   (ticket 002) and `vendor/radio-robot-lib/tests/protocol/golden_vectors.txt`
+   (tickets 004, 005). They are **reference data only**: nothing in
+   `packages/*` may import source code from `vendor/`, and the
+   TypeScript build must not compile anything under `vendor/` (add it
+   to `exclude` in the root tsconfig and to `.gitignore`-adjacent build
+   globs as needed).
+7. Add a short `README.md` note telling a fresh cloner to use
+   `git clone --recurse-submodules`, or run
+   `git submodule update --init` before `npm test`.
+8. Verify `npm install`, `npm test`, `npm run build`, and a manual
    `npx robot-console` run all succeed.
 
 **Files to create**:
@@ -111,6 +142,9 @@ logic here — that is every ticket after this one). It also creates:
 - `packages/ui/package.json`, `packages/ui/tsconfig.json`, a minimal
   Vite scaffold (`packages/ui/src/main.tsx`, `packages/ui/index.html`)
   sufficient to build, with no real UI yet.
+
+**Files to create (cont.)**: `.gitmodules` (via `git submodule add`),
+a root `README.md` with the submodule-init note.
 
 **Files to modify**: none — greenfield.
 

@@ -42,7 +42,7 @@ apply the 11-verb rule on top without the codec silently defaulting a
 missing id to a valid-looking value.
 
 Check parsed/encoded output against relevant lines in
-`radio-robot-lib/tests/protocol/golden_vectors.txt` and the reference
+`vendor/radio-robot-lib/tests/protocol/golden_vectors.txt` and the reference
 implementation `radio-robot-lib/src/host/robot_v6/codec.py` for behavior
 to match — not to port line-for-line, since this is a TypeScript
 reimplementation, but any line-framing edge case that vectors file
@@ -66,7 +66,7 @@ covers should produce the same parsed result here.
       as "foreign traffic to drop silently" rather than as a decode
       error.
 - [ ] Relevant framing cases from
-      `radio-robot-lib/tests/protocol/golden_vectors.txt` (HELLO/banner/
+      `vendor/radio-robot-lib/tests/protocol/golden_vectors.txt` (HELLO/banner/
       ack/nack framing specifically — full drive-verb coverage is
       sprint 3's concern) decode to the expected fields.
 - [ ] All tests run under `npm test` with no hardware attached.
@@ -86,7 +86,7 @@ covers should produce the same parsed result here.
 **Approach**:
 1. Read the relevant sections of
    `radio-robot-lib/src/host/robot_v6/codec.py` and the HELLO/banner/
-   ack/nack lines in `golden_vectors.txt` before implementing, to
+   ack/nack lines in `vendor/radio-robot-lib/tests/protocol/golden_vectors.txt` before implementing, to
    confirm the exact grammar and byte-length boundary behavior.
 2. Implement `decodeLine`: split on whitespace, extract trailing
    `#id` if present, parse fields as base-10 integers (leaving
@@ -99,8 +99,12 @@ covers should produce the same parsed result here.
    list or lookup of known reply verbs (an implementation of "case is
    direction," per specification §3.4) that callers use to distinguish a
    real reply from foreign radio traffic.
-5. Add tests, including a fixture file or inline copies of the relevant
-   `golden_vectors.txt` lines this ticket's scope covers.
+5. Add tests that read the relevant lines directly from the submodule
+   at `vendor/radio-robot-lib/tests/protocol/golden_vectors.txt` —
+   parse and filter that file at test time rather than inlining or
+   copying its lines, so the vectors cannot drift from upstream. Fail
+   with an actionable "submodule not initialized" message if the file
+   is absent.
 
 **Files to create**:
 - `packages/protocol/src/v6/codec.ts`

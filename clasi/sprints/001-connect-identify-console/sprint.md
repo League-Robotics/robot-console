@@ -1,7 +1,7 @@
 ---
 id: '001'
 title: Connect, identify, console
-status: planning
+status: done
 branch: sprint/001-connect-identify-console
 use-cases:
 - SUC-001
@@ -487,3 +487,51 @@ Before tickets can be created, all of the following must be true:
 | 011 | ui: Console tab | 009, 010 |
 
 Tickets execute serially in the order listed.
+
+
+---
+
+## Hardware Verification Gap (recorded at sprint close)
+
+Three of five Success Criteria are verified. Two are **not**, for want of
+hardware rather than for any defect:
+
+| Criterion | Status |
+| --- | --- |
+| Relay and robot show correct five-letter **name** | ✅ verified (`zeguz`) |
+| ...and correct **role** | ❌ **unverified** — no board emitted a banner |
+| `HELLO`/`?`/`STATUS` return sane replies | ❌ **unverified** — board silent |
+| A blank board still shows its name | ✅ verified (see below) |
+| Full 3125-name conformance test | ✅ verified against both published digests |
+| `npm test` from a clean checkout, no hardware | ✅ 350 tests |
+
+The only board available throughout execution returns **zero bytes** to
+`HELLO` and `?` — confirmed through `UsbSerialLink`, through a raw
+`serialport` script bypassing all project code, and through a third
+independent probe. `role` is parsed from a boot banner, so with no
+announcing board it cannot be exercised end to end. `banner.ts` is
+unit-tested against canned strings taken from the specs, and
+`UsbSerialLink` against an injected fake port, but neither has met real
+firmware.
+
+The blank-board criterion is satisfied *in substance* by that same
+silent board: it was correctly named `zeguz` from
+`FICR.DEVICEID[1] = 0xfbfd96c9` read over SWD, cross-checked against the
+relay protocol spec's own worked-example table (n=425, channel 25,
+group 19). The criterion exists to prove the name comes from the target
+chip rather than from firmware output or the USB serial number, and a
+board that says nothing and is still named correctly is exactly that.
+
+Tracked as `clasi/issues/sprint-001-hardware-criteria-unverified-no-announcing-board.md`.
+Retest with a `RADIOBRIDGE` relay (colon dialect) and a
+pxt-nezha-diffdrive robot (space dialect) before relying on the role
+path in sprint 3.
+
+## Follow-up issues raised by this sprint
+
+- `no-build-pipeline-tsx-is-a-runtime-dependency.md` — packages resolve
+  `main` to `.ts` source, so `tsx` shipped as a production dependency.
+- `device-list-shows-tty-path-not-cu-path.md` — the UI displays a path
+  that hangs if a user opens it directly.
+- `port-lock-contention-between-identify-and-user-open.md` — a
+  user-initiated open can race the registry's own identify probe.

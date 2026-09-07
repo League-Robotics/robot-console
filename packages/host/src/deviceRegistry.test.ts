@@ -197,6 +197,37 @@ describe("DeviceRegistry", () => {
     await registry.stop();
   });
 
+  it("closes the underlying link after a failed open, so the OS-level port handle is not leaked", async () => {
+    // Regression test for a real bug sprint 003 ticket 005's bench
+    // session exposed: `UsbSerialLink.open()` rejects only once its
+    // `waitForPortOpen` step has already resolved (see that module's
+    // own doc comment) -- so by the time the HELLO-banner-reply timeout
+    // fires, the underlying `SerialPort` is genuinely open at the OS
+    // level. `openLink`'s failure branch recorded `linkError` but never
+    // called `link.close()` on the link it had just created, leaking
+    // the OS-level handle for the rest of the process's lifetime --
+    // verified against real hardware: every later open attempt on that
+    // same port (a manual "Retry connection", or `requestFlash`'s own
+    // post-flash reopen) then failed with "Cannot lock port", even
+    // though nothing else on the machine was touching the device.
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("zeguz");
+    let failedLink: FakeLink | undefined;
+    const createLink = () => {
+      failedLink = new FakeLink(() => Promise.reject(new Error("timed out waiting for a HELLO banner reply")));
+      return failedLink;
+    };
+
+    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    registry.start();
+
+    await waitForSnapshot(registry, (s) => s[0]?.linkError !== undefined);
+    expect(failedLink?.closeCalls).toBe(1);
+
+    await registry.stop();
+  });
+
   it("reports detected-but-unnamed devices via nameError rather than a fallback name", async () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);

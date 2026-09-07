@@ -375,7 +375,30 @@ export async function flashOverSwd(
       error: errorMessage(error),
     };
   } finally {
-    daplink.off(DapJs.DAPLink.EVENT_PROGRESS, reportWriting);
+    // `dapjs`'s `DAPLink` extends `CmsisDAP`, whose TypeScript typings
+    // declare it as a Node `events.EventEmitter` (which has both `.off`
+    // and `.removeListener`) -- but the actual runtime object, verified
+    // against real hardware, is backed by dapjs's own bundled UMD event
+    // emitter, which implements `on`/`emit`/`removeListener` but has no
+    // `.off` alias at all. Calling `.off` here threw `"daplink.off is
+    // not a function"` from inside this `finally` block, which replaced
+    // -- silently, since a `finally`-block throw always wins over a
+    // `try`-block `return` -- an already-successful `{ status: "ok" }`
+    // result with an uncaught rejection. That broke this function's own
+    // "always resolves, never throws" contract and, one level up,
+    // `deviceRegistry.ts#runFlash` never reached its post-flash
+    // `openLink` call, so a board that *had* been flashed correctly
+    // never re-announced. `removeListener` is the one method this
+    // listener-detach step can rely on existing on both the real
+    // runtime object and the Node-shaped type declaration; wrapped in
+    // its own try/catch (same as `disconnect()` just below) so that
+    // even a `removeListener` failure can never mask or replace
+    // whatever result was already determined above.
+    try {
+      daplink.removeListener(DapJs.DAPLink.EVENT_PROGRESS, reportWriting);
+    } catch {
+      // Best-effort cleanup only -- see comment above.
+    }
     try {
       await daplink.disconnect();
     } catch {

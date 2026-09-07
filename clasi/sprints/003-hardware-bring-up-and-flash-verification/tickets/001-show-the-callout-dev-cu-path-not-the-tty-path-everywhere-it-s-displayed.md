@@ -1,7 +1,7 @@
 ---
 id: '001'
 title: Show the callout (/dev/cu.*) path, not the tty path, everywhere it's displayed
-status: in-progress
+status: done
 use-cases:
 - SUC-003
 depends-on: []
@@ -45,12 +45,24 @@ rather than only the one call site that happens to open the port.
       behavior is unchanged (it still calls `toCalloutPath(this.portPath)` —
       now a defensive no-op on an already-translated path, not the only
       place translation happens).
-- [ ] needs-a-board: the Devices tab shows `/dev/cu.usbmodemXXXX` (not
+- [x] needs-a-board: the Devices tab shows `/dev/cu.usbmodemXXXX` (not
       `/dev/tty.usbmodemXXXX`) for an attached board, confirmed against a
       real port path. Record pass/fail — do not infer from the unit tests.
-      NOT YET VERIFIED — no board attached in this session. Deferred to
-      ticket 005's bench session, which exercises this exact code path
-      with real hardware.
+      PASS — verified by team-lead against a real board attached to the
+      machine, running the code committed at `cdb5906`:
+        1. Both OS device nodes exist for the board
+           (`/dev/cu.usbmodem2121302` and `/dev/tty.usbmodem2121302`),
+           confirming the callout path is a real translation and not an
+           artifact of only one node existing.
+        2. `enumerateDaplinkDevices()` returned
+           `{"serial":"2e78ea8f7143163f","availability":"full","port":"/dev/cu.usbmodem2121302"}`
+           — the callout path, not the tty path.
+        3. End-to-end through the real server (`startServer({port:4797})`
+           plus a connected WebSocket client), the `devices` snapshot —
+           the exact payload `DevicesTab` renders — carried
+           `port: "/dev/cu.usbmodem2121302"`.
+      Confirms what the UI displays is what the code opens, at the layer
+      the criterion is about.
 - [x] `npm run build` passes (three workspaces, no type errors from the
       moved export).
 

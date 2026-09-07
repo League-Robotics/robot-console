@@ -31,6 +31,26 @@ npm test
 npm run build
 ```
 
+## Development
+
+One command, one terminal, hot reload:
+
+```sh
+npm run dev
+```
+
+That starts the Node host (`127.0.0.1:4795`) and the Vite dev server in
+a single process, opens a browser to the Vite URL, and points the page's
+WebSocket at the host. Ctrl-C stops both. Use `--host-port <n>` (or
+`ROBOT_CONSOLE_PORT`) if 4795 is taken.
+
+To run the app the way students will, against the built UI instead:
+
+```sh
+npm run --workspace @robot-console/ui vite:build
+npx robot-console
+```
+
 ## Layout
 
 ```

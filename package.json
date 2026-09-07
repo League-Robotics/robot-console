@@ -11,6 +11,7 @@
     "packages/*"
   ],
   "scripts": {
+    "dev": "node scripts/dev.mjs",
     "test": "vitest run",
     "build": "npm run build --workspaces --if-present"
   },

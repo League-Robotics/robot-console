@@ -70,6 +70,17 @@ const WsContext = createContext<WsContextValue | undefined>(undefined);
 const RECONNECT_DELAY_MS = 1500;
 
 function defaultSocketUrl(): string {
+  // Development only: `npm run dev` (scripts/dev.mjs) serves this page
+  // from Vite on its own port while the host runs on another, so the
+  // page cannot find the host by looking at its own origin. That script
+  // `define`s this to the host's real address. A production `vite build`
+  // never sets it, so the fallback below -- connect back to whoever
+  // served the page, which under `npx robot-console` is the host itself
+  // -- remains the only path that ships.
+  const configured = import.meta.env.VITE_WS_URL;
+  if (typeof configured === "string" && configured !== "") {
+    return configured;
+  }
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   return `${protocol}://${window.location.host}/`;
 }

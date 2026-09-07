@@ -33,16 +33,20 @@
  * language for a non-technical reader.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { EndpointListEntry, LineMessage } from "@robot-console/host/src/wsMessages.js";
-import { useWs } from "../ws/WsProvider";
+import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import {
+  MAX_LINES_PER_DEVICE,
+  useConnectionStatus,
+  useEndpointLog,
+  useEndpoints,
+  useWsActions,
+} from "../ws/WsProvider";
 import "./ConsoleTab.css";
 
-/** Maximum lines retained per device in the in-memory log. Oldest
- * lines are dropped once a device's log exceeds this so a busy board
- * (telemetry lands in a later sprint at up to 20 Hz) can't grow the
- * log without bound. Exported so tests can exercise the exact
- * boundary rather than duplicating the number. */
-export const MAX_LINES_PER_DEVICE = 500;
+// Re-exported so existing call sites/tests (`MAX_LINES_PER_DEVICE` was
+// this module's own constant pre-ticket-006) keep working now that the
+// cap lives with the hoisted log buffer in `WsProvider.tsx`.
+export { MAX_LINES_PER_DEVICE };
 
 /** How long the send box stays disabled after a submit. A simple
  * client-side pacing nicety, not the correctness mechanism -- the
@@ -50,14 +54,6 @@ export const MAX_LINES_PER_DEVICE = 500;
  * device; this just keeps a student from firing unpaced writes by
  * mashing Enter. */
 const SEND_COOLDOWN_MS = 250;
-
-let nextLogEntryId = 0;
-
-interface LogEntry {
-  id: number;
-  direction: "tx" | "rx";
-  line: string;
-}
 
 type LineKind = "comment" | "debug" | "error" | "ack" | "data";
 
@@ -93,34 +89,24 @@ function deviceLabel(device: EndpointListEntry): string {
 }
 
 export function ConsoleTab() {
-  const { status, devices, send, onLine } = useWs();
+  const status = useConnectionStatus();
+  const devices = useEndpoints();
+  const { send, clearEndpointLog } = useWsActions();
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [logsByDevice, setLogsByDevice] = useState<Record<string, LogEntry[]>>({});
   const [autoScroll, setAutoScroll] = useState(true);
   const [pending, setPending] = useState(false);
   const [draft, setDraft] = useState("");
   const logRef = useRef<HTMLDivElement | null>(null);
   const cooldownTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  // Subscribed once, independent of which device is currently
-  // selected, so switching the picker never drops a line that arrived
-  // while a different device was in view.
-  useEffect(() => {
-    return onLine((message: LineMessage) => {
-      setLogsByDevice((prev) => {
-        const existing = prev[message.endpointId] ?? [];
-        const next = existing.concat({
-          id: nextLogEntryId++,
-          direction: message.direction,
-          line: message.line,
-        });
-        if (next.length > MAX_LINES_PER_DEVICE) {
-          next.splice(0, next.length - MAX_LINES_PER_DEVICE);
-        }
-        return { ...prev, [message.endpointId]: next };
-      });
-    });
-  }, [onLine]);
+  // The log buffer itself lives in `WsProvider`'s store (ticket 006),
+  // subscribed once there independent of which device is selected here
+  // -- so switching the picker never drops a line that arrived while a
+  // different device was in view. `""` is not a real `endpointId`, so
+  // this resolves to the store's shared empty-log value before a device
+  // is selected -- `useEndpointLog` must still be called unconditionally
+  // per the rules of hooks.
+  const log = useEndpointLog(selectedId ?? "");
 
   // Default to the first known device once the list arrives. Sticky
   // afterwards -- never yanks the student to a different device just
@@ -141,7 +127,6 @@ export function ConsoleTab() {
   }, []);
 
   const selectedDevice = devices.find((device) => device.endpointId === selectedId) ?? null;
-  const log = selectedId ? logsByDevice[selectedId] ?? [] : [];
 
   useEffect(() => {
     if (autoScroll && logRef.current) {
@@ -170,7 +155,7 @@ export function ConsoleTab() {
     if (!selectedId) {
       return;
     }
-    setLogsByDevice((prev) => ({ ...prev, [selectedId]: [] }));
+    clearEndpointLog(selectedId);
   };
 
   const openLink = () => {

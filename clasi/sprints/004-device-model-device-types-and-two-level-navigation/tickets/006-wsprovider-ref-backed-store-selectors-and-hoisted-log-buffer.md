@@ -1,9 +1,13 @@
 ---
 id: '006'
 title: WsProvider ref-backed store, selectors, and hoisted log buffer
-status: open
-use-cases: ["SUC-001", "SUC-006", "SUC-007"]
-depends-on: ["001"]
+status: done
+use-cases:
+- SUC-001
+- SUC-006
+- SUC-007
+depends-on:
+- '001'
 github-issue: ''
 issue: robot-console-two-level-ui-and-multi-transport-roadmap.md
 completes_issue: false
@@ -69,30 +73,30 @@ test file exercises the store directly) to import it from there.
 
 ## Acceptance Criteria
 
-- [ ] A component subscribed only to `useEndpoint("A")` does **not**
+- [x] A component subscribed only to `useEndpoint("A")` does **not**
       re-render when a `type: "line"` message arrives for a different
       endpoint, or when `endpoint B`'s state changes — verified by an
       explicit render-count assertion in a test (per `sprint.md`'s
       Success Criteria: "verified via render counts in a test, not by
       inspection").
-- [ ] A component subscribed only to `useEndpointLog("A")` does not
+- [x] A component subscribed only to `useEndpointLog("A")` does not
       re-render on an `endpoints` snapshot update that leaves A's log
       untouched.
-- [ ] `hasSnapshot` is `false` before the first `endpoints` message,
+- [x] `hasSnapshot` is `false` before the first `endpoints` message,
       `true` after, and stays `true` across a reconnect (simulate
       close → reconnect in a test).
-- [ ] The hoisted log buffer preserves `ConsoleTab`'s existing
+- [x] The hoisted log buffer preserves `ConsoleTab`'s existing
       behavior exactly: append order, `MAX_LINES_PER_DEVICE` trimming
       from the front, independent per-endpoint buffers.
-- [ ] `FakeSocket` exists in exactly one place
+- [x] `FakeSocket` exists in exactly one place
       (`packages/ui/src/testing/`) and both `DevicesTab.test.tsx` and
       `ConsoleTab.test.tsx` import it from there with no behavior
       change to either test file's assertions.
-- [ ] Every existing `WsProvider`-dependent test (`DevicesTab.test.tsx`,
+- [x] Every existing `WsProvider`-dependent test (`DevicesTab.test.tsx`,
       `ConsoleTab.test.tsx`) passes against the new hook surface —
       update call sites (`useWs()` → the new selector hooks) without
       changing what each test asserts.
-- [ ] `npm test` and `npm run build` pass in full.
+- [x] `npm test` and `npm run build` pass in full.
 
 ## Testing
 

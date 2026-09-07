@@ -8,8 +8,10 @@
  * -- offers the two flash-firmware buttons that let a student recover
  * it without a command line.
  *
- * Split into a connected `DevicesTab` (reads `useWs()`) and a
- * presentational `DevicesList`/`DeviceCard` so the rendering rules for
+ * Split into a connected `DevicesTab` (reads `WsProvider`'s selector
+ * hooks -- `useConnectionStatus`/`useEndpoints`/`useFirmwareStatus`/
+ * `useWsActions`, ticket 006) and a presentational `DevicesList`/
+ * `DeviceCard` so the rendering rules for
  * each device state (normal, unnamed/error, unresponsive, HID-only,
  * reconnecting, flash buttons visible/disabled/in-progress) can be
  * exercised directly in tests against plain `EndpointListEntry` data,
@@ -23,11 +25,14 @@ import type {
   FlashPhase,
 } from "@robot-console/host/src/wsMessages.js";
 import type { ConnectionStatus } from "../ws/WsProvider";
-import { useWs } from "../ws/WsProvider";
+import { useConnectionStatus, useEndpoints, useFirmwareStatus, useWsActions } from "../ws/WsProvider";
 import "./DevicesTab.css";
 
 export function DevicesTab() {
-  const { status, devices, firmwareStatus, send, onFlashResult } = useWs();
+  const status = useConnectionStatus();
+  const devices = useEndpoints();
+  const firmwareStatus = useFirmwareStatus();
+  const { send, onFlashResult } = useWsActions();
   const [flashErrors, setFlashErrors] = useState<Record<string, string>>({});
 
   useEffect(

@@ -3,25 +3,82 @@
  * `packages/host`'s `server.ts`, per `wsMessages.ts`'s contract.
  *
  * Ticket 010's plan calls for a single shared connection/context that
- * both the Devices tab (this ticket) and the Console tab (ticket 011)
- * consume, rather than each tab opening its own socket. This module is
- * that shared piece: it owns the socket lifecycle (connect, reconnect
- * after an unexpected close, teardown on unmount), keeps the latest
- * `endpoints` snapshot in React state (still exposed as `devices` on
- * this module's own context, per its "internal store shape" being out
- * of scope for sprint 4's ticket 001 -- ticket 006 is what reworks this
- * to a ref-backed store) -- the server always sends a full snapshot,
- * never a delta -- see `wsMessages.ts`'s `EndpointsMessage` doc comment
- * -- so consumers never need to diff. It also keeps the snapshot's
- * `firmwareStatus` (sprint 2) in state alongside `devices`,
- * and offers a small pub/sub surface for `line`/`error`/`flash-result`
- * messages that a future Console tab (or, for `flash-result`, the
- * Devices tab itself) can subscribe to without this module needing to
- * know anything about tab-specific rendering.
+ * both the Devices tab and the Console tab consume, rather than each
+ * tab opening its own socket. This module is that shared piece: it
+ * owns the socket lifecycle (connect, reconnect after an unexpected
+ * close, teardown on unmount) exactly as before -- ticket 006 changes
+ * how the socket's data is *exposed* to consumers, not how the socket
+ * itself behaves.
  *
- * Deliberately out of scope here (per this ticket's scope discipline):
- * anything about *what* the Console tab does with `line` traffic --
- * only the transport is shared, not any console-specific logic.
+ * **Why a ref-backed store instead of `useState` (ticket 006):**
+ * Before this ticket, every field (`devices`, `firmwareStatus`, ...)
+ * lived in its own `useState` and was assembled into one context value
+ * object literal on every render -- so *every* consumer of `useWs()`
+ * re-rendered on *every* WebSocket message, including a `line` message
+ * for a device nobody was looking at. Sprint 8 pushes telemetry at
+ * 20Hz; that whole-context-value shape cannot survive it, and sprint 4
+ * ticket 007's router unmounts/remounts components on navigation, which
+ * would also destroy `ConsoleTab`'s in-component log state on every
+ * device switch.
+ *
+ * So state now lives in a plain mutable `Store` object held in a ref
+ * (never in React state), mutated only by this provider's socket event
+ * handlers, and exposed to consumers via `useSyncExternalStore` through
+ * the granular selector hooks below (`useEndpoint`, `useEndpointLog`,
+ * ...) rather than one `useWs()` grab-bag. Each selector's `getSnapshot`
+ * returns a **cached, referentially stable** value that only changes
+ * when the specific slice it reads actually changes -- see `deepEqual`
+ * and the structural-sharing logic in `applySnapshot` below, which
+ * reuses the previous `EndpointListEntry` object for any endpoint whose
+ * fields are unchanged between two `endpoints` snapshots (the snapshot
+ * is a fresh `JSON.parse` every time, so naive reuse of `parsed.endpoints`
+ * would hand out a new object per endpoint on every message even when
+ * nothing about that endpoint changed -- exactly the `getSnapshot`
+ * pitfall that makes React re-render, or in the worst case loop). A
+ * component that only reads `useEndpoint("A")` therefore does not
+ * re-render when endpoint B changes, or when a `line` message arrives
+ * for a different endpoint.
+ *
+ * **The hoisted log buffer:** `ConsoleTab.tsx` used to own
+ * `logsByDevice` in its own `useState`, which ticket 007's router would
+ * destroy on every navigation away from the console. That buffer now
+ * lives in this store (`logsByEndpoint`), subscribed once here
+ * (independent of which endpoint is currently selected, preserving
+ * today's "switching devices never drops a line" behavior) and exposed
+ * per-endpoint via `useEndpointLog`, so a mounted console for endpoint
+ * A does not re-render when a snapshot update or a line for endpoint B
+ * changes only B's slice.
+ *
+ * **Buffer bounding:** `MAX_LINES_PER_DEVICE` bounds one endpoint's log
+ * length, but endpoints x 500 lines is itself unbounded once sprint 7
+ * adds network endpoints that can appear and disappear over a long
+ * session. This store additionally keeps only the
+ * `MAX_TRACKED_ENDPOINT_LOGS` (8) most recently *active* endpoints'
+ * logs at all -- the least-recently-touched endpoint's entire log is
+ * evicted once a 9th distinct endpoint logs a line. "Recently active"
+ * (touched when a line is appended) was chosen over "recently viewed"
+ * (touched when a component reads it) because the latter would require
+ * mutating store state from inside a selector's `getSnapshot`, which
+ * `useSyncExternalStore` requires to be a pure read -- write-side
+ * touching keeps every mutation on the socket message handlers, which
+ * is where every other slice of this store is already mutated.
+ *
+ * **Flash progress for both source kinds (ticket 005's flagged gap):**
+ * `EndpointListEntry.flashStatus` is frozen as `{ firmware, phase }` --
+ * it has no shape for a local-hex source (see `wsMessages.ts`'s
+ * `FirmwareSourceRef`), so a local-hex flash leaves `flashStatus`
+ * undefined in every `endpoints` snapshot. The server still emits
+ * `flash-progress` events (carrying the full `source`, release or
+ * local-hex) for every flash, so this store now handles that message
+ * type -- previously ignored entirely -- and keeps the latest
+ * `{ source, phase }` per endpoint in `flashProgressByEndpoint`,
+ * cleared on the terminal `flash-result`. `useFlashProgress(endpointId)`
+ * exposes this for both source kinds. This does not fix the frozen
+ * wire type (out of scope, per the ticket): a client that reconnects
+ * mid-local-hex-flash still has no snapshot field to self-heal
+ * `flashStatus` from, and so will not see progress until the next
+ * `flash-progress` event arrives -- release-kind flashes are unaffected
+ * since `flashStatus` already self-heals those via the snapshot.
  */
 import {
   createContext,
@@ -29,21 +86,64 @@ import {
   useContext,
   useEffect,
   useRef,
-  useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import type {
   ClientMessage,
   EndpointListEntry,
-  ErrorMessage,
   FirmwareAvailability,
   FirmwareKind,
+  FirmwareSourceRef,
+  FlashPhase,
   FlashResultMessage,
   LineMessage,
   ServerMessage,
 } from "@robot-console/host/src/wsMessages.js";
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
+
+/** One line in an endpoint's console log, in the order it was
+ * appended. Hoisted here (from `ConsoleTab.tsx`) as part of ticket
+ * 006's store; `ConsoleTab` re-exports this type for its own call
+ * sites rather than importing it twice under two names. */
+export interface LogEntry {
+  id: number;
+  direction: "tx" | "rx";
+  line: string;
+}
+
+/** Maximum lines retained per endpoint in the in-memory log. Oldest
+ * lines are dropped once an endpoint's log exceeds this so a busy
+ * board (telemetry lands in a later sprint at up to 20Hz) can't grow
+ * the log without bound. Exported so tests can exercise the exact
+ * boundary rather than duplicating the number -- unchanged from
+ * `ConsoleTab.tsx`'s pre-ticket-006 constant of the same name and
+ * value. */
+export const MAX_LINES_PER_DEVICE = 500;
+
+/** How many distinct endpoints' logs this store keeps at once -- see
+ * this module's doc comment ("Buffer bounding") for why eviction is
+ * driven by log-write recency rather than view recency. Exported so
+ * tests can pin down the exact eviction boundary rather than
+ * duplicating the number. */
+export const MAX_TRACKED_ENDPOINT_LOGS = 8;
+
+/** Shared empty array returned by `useEndpointLog` for an endpoint
+ * with no log yet, so repeated calls before any line arrives return
+ * the same reference rather than a fresh `[]` each time (which would
+ * otherwise look like a change to `useSyncExternalStore`). */
+const EMPTY_LOG: readonly LogEntry[] = [];
+
+let nextLogEntryId = 0;
+
+/** The latest known progress of an in-flight flash for one endpoint,
+ * populated from live `flash-progress` events -- see this module's doc
+ * comment ("Flash progress for both source kinds"). */
+export interface FlashProgressState {
+  source: FirmwareSourceRef;
+  phase: FlashPhase;
+}
 
 /** Firmware availability before the first `devices` snapshot has ever
  * arrived (e.g. the instant after this provider mounts). Treated the
@@ -73,30 +173,206 @@ export interface WebSocketLike {
 
 const WEBSOCKET_OPEN = 1;
 
-interface WsContextValue {
-  status: ConnectionStatus;
-  devices: EndpointListEntry[];
-  /** Per-firmware availability from the most recent `endpoints` snapshot
-   * (sprint 2) -- see `wsMessages.ts`'s `EndpointsMessage.firmwareStatus`
-   * doc comment. Drives the robot/relay flash buttons' disabled state
-   * in `DevicesTab`; never a hardcoded UI flag. */
-  firmwareStatus: Record<FirmwareKind, FirmwareAvailability>;
-  send: (message: ClientMessage) => void;
-  onLine: (handler: (message: LineMessage) => void) => () => void;
-  onError: (handler: (message: ErrorMessage) => void) => () => void;
-  /** Subscribe to the terminal outcome of a flash (sprint 2). Per-phase
-   * progress does *not* need a matching subscription: `deviceRegistry.ts`
-   * re-emits a full `endpoints` snapshot on every `FlashPhase` change (see
-   * `server.ts`'s `onDevicesChanged` wiring), so `EndpointListEntry.flashStatus`
-   * alone already carries live progress. Only the terminal `flash-result`'s
-   * `message` (present on `status: "error"`) is not represented anywhere in
-   * the snapshot -- `flashStatus` is cleared, not replaced with an error --
-   * so that one event needs its own subscription, following the existing
-   * `onLine`/`onError` pattern rather than inventing a different shape. */
-  onFlashResult: (handler: (message: FlashResultMessage) => void) => () => void;
+/** Structural (deep) equality over plain JSON-shaped values -- every
+ * field on `EndpointListEntry`/`FirmwareAvailability` is a primitive,
+ * plain object, or array of those, so a generic recursive comparison
+ * is enough; no `Map`/`Set`/`Date`/class instances ever appear here.
+ * Used to decide whether a freshly-parsed value (every `endpoints`
+ * message is a brand-new `JSON.parse`) actually differs from what the
+ * store already has, so unchanged slices can keep their old object
+ * reference -- see this module's doc comment on `getSnapshot`
+ * stability. */
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) {
+    return false;
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
+      return false;
+    }
+    for (let i = 0; i < a.length; i++) {
+      if (!deepEqual(a[i], b[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  const aRecord = a as Record<string, unknown>;
+  const bRecord = b as Record<string, unknown>;
+  const aKeys = Object.keys(aRecord);
+  const bKeys = Object.keys(bRecord);
+  if (aKeys.length !== bKeys.length) {
+    return false;
+  }
+  for (const key of aKeys) {
+    if (!Object.prototype.hasOwnProperty.call(bRecord, key) || !deepEqual(aRecord[key], bRecord[key])) {
+      return false;
+    }
+  }
+  return true;
 }
 
-const WsContext = createContext<WsContextValue | undefined>(undefined);
+/** The ref-backed store: one instance per `WsProvider` mount, mutated
+ * only by that provider's socket event handlers, and read by consumer
+ * hooks via `useSyncExternalStore`. Never itself placed in React
+ * state -- see this module's doc comment. */
+interface Store {
+  status: ConnectionStatus;
+  /** `false` until the first `endpoints` message is processed, `true`
+   * forever after -- including across a reconnect, since the last
+   * known snapshot is still meaningful (mirrors `devices` itself never
+   * being cleared on close). */
+  hasSnapshot: boolean;
+  endpointIds: string[];
+  endpointsById: Map<string, EndpointListEntry>;
+  /** Cached array form of `endpointsById` in `endpointIds` order, for
+   * `useEndpoints()`. Only rebuilt when some endpoint actually changed,
+   * was added, removed, or reordered -- see `applySnapshot`. */
+  endpointsArray: EndpointListEntry[];
+  firmwareStatus: Record<FirmwareKind, FirmwareAvailability>;
+  logsByEndpoint: Map<string, LogEntry[]>;
+  /** LRU order for `logsByEndpoint`, oldest-touched first. See
+   * `touchLog`. */
+  logOrder: string[];
+  flashProgressByEndpoint: Map<string, FlashProgressState>;
+  flashResultHandlers: Set<(message: FlashResultMessage) => void>;
+  listeners: Set<() => void>;
+  /** `useSyncExternalStore`'s subscribe half -- registers `cb` to be
+   * called after any store mutation, returns the unsubscribe function.
+   * A stable method (defined once, in `createStore`) so every selector
+   * hook below can pass it straight to `useSyncExternalStore` with no
+   * `useCallback` wrapper of its own. Every hook shares this one
+   * "something changed" signal; the fine-grained re-render bail-out
+   * comes from each hook's own `getSnapshot` returning a referentially
+   * stable value when its particular slice didn't change (see
+   * `applySnapshot`/`appendLine`'s structural-sharing logic), not from
+   * subscribing more narrowly here. */
+  subscribe: (cb: () => void) => () => void;
+  /** Built once, in `WsProvider`, right after the store itself --
+   * split out of `createStore` only because `send` needs to close over
+   * the component's `socketRef`, which the store itself does not
+   * hold. */
+  actions: WsActions;
+}
+
+export interface WsActions {
+  send: (message: ClientMessage) => void;
+  onFlashResult: (handler: (message: FlashResultMessage) => void) => () => void;
+  /** Empty one endpoint's log buffer -- `ConsoleTab`'s "Clear log"
+   * button used to do this directly via its own `setLogsByDevice`
+   * before the buffer was hoisted into this store; now that the store
+   * owns it, clearing has to go through an action instead of local
+   * state. Does not evict the endpoint from the LRU tracked set (see
+   * `touchLog`) -- an explicit clear is not the same signal as
+   * inactivity. */
+  clearEndpointLog: (endpointId: string) => void;
+}
+
+function notify(store: Store): void {
+  for (const listener of store.listeners) {
+    listener();
+  }
+}
+
+function touchLog(store: Store, endpointId: string): void {
+  const idx = store.logOrder.indexOf(endpointId);
+  if (idx !== -1) {
+    store.logOrder.splice(idx, 1);
+  }
+  store.logOrder.push(endpointId);
+  while (store.logOrder.length > MAX_TRACKED_ENDPOINT_LOGS) {
+    const evicted = store.logOrder.shift();
+    if (evicted !== undefined) {
+      store.logsByEndpoint.delete(evicted);
+    }
+  }
+}
+
+function appendLine(store: Store, message: LineMessage): void {
+  const existing = store.logsByEndpoint.get(message.endpointId) ?? [];
+  const next = existing.concat({
+    id: nextLogEntryId++,
+    direction: message.direction,
+    line: message.line,
+  });
+  if (next.length > MAX_LINES_PER_DEVICE) {
+    next.splice(0, next.length - MAX_LINES_PER_DEVICE);
+  }
+  store.logsByEndpoint.set(message.endpointId, next);
+  touchLog(store, message.endpointId);
+}
+
+function applySnapshot(
+  store: Store,
+  endpoints: EndpointListEntry[],
+  firmwareStatus: Record<FirmwareKind, FirmwareAvailability>,
+): void {
+  const nextIds: string[] = [];
+  const nextMap = new Map<string, EndpointListEntry>();
+  for (const entry of endpoints) {
+    const previous = store.endpointsById.get(entry.endpointId);
+    nextMap.set(entry.endpointId, previous && deepEqual(previous, entry) ? previous : entry);
+    nextIds.push(entry.endpointId);
+  }
+
+  const idsChanged =
+    nextIds.length !== store.endpointIds.length ||
+    nextIds.some((id, i) => id !== store.endpointIds[i]);
+  const anyEntryChanged =
+    idsChanged || nextIds.some((id) => nextMap.get(id) !== store.endpointsById.get(id));
+
+  store.endpointIds = nextIds;
+  store.endpointsById = nextMap;
+  if (anyEntryChanged) {
+    store.endpointsArray = nextIds.map((id) => nextMap.get(id)!);
+  }
+
+  if (!deepEqual(store.firmwareStatus, firmwareStatus)) {
+    store.firmwareStatus = firmwareStatus;
+  }
+
+  // A flash's terminal `flash-result` clears `flashStatus` from the
+  // snapshot; mirror that into our own progress map for any endpoint
+  // this client has been tracking, so a stale bar never lingers past
+  // the snapshot that says the flash is over.
+  for (const entry of endpoints) {
+    if (!entry.flashStatus) {
+      store.flashProgressByEndpoint.delete(entry.endpointId);
+    }
+  }
+
+  store.hasSnapshot = true;
+}
+
+function createStore(): Store {
+  const listeners = new Set<() => void>();
+  const store: Store = {
+    status: "connecting",
+    hasSnapshot: false,
+    endpointIds: [],
+    endpointsById: new Map(),
+    endpointsArray: [],
+    firmwareStatus: DEFAULT_FIRMWARE_STATUS,
+    logsByEndpoint: new Map(),
+    logOrder: [],
+    flashProgressByEndpoint: new Map(),
+    flashResultHandlers: new Set(),
+    listeners,
+    subscribe: (cb: () => void) => {
+      listeners.add(cb);
+      return () => {
+        listeners.delete(cb);
+      };
+    },
+    actions: undefined as unknown as WsActions,
+  };
+  return store;
+}
+
+const StoreContext = createContext<Store | undefined>(undefined);
 
 /** Fixed delay before retrying after an unexpected close. The host
  * process is local and either up or not -- there is no meaningful
@@ -142,15 +418,37 @@ export interface WsProviderProps {
 }
 
 export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
-  const [status, setStatus] = useState<ConnectionStatus>("connecting");
-  const [devices, setDevices] = useState<EndpointListEntry[]>([]);
-  const [firmwareStatus, setFirmwareStatus] = useState<Record<FirmwareKind, FirmwareAvailability>>(
-    DEFAULT_FIRMWARE_STATUS,
-  );
+  const storeRef = useRef<Store | null>(null);
+  if (!storeRef.current) {
+    storeRef.current = createStore();
+  }
+  const store = storeRef.current;
   const socketRef = useRef<WebSocketLike | null>(null);
-  const lineHandlers = useRef(new Set<(message: LineMessage) => void>());
-  const errorHandlers = useRef(new Set<(message: ErrorMessage) => void>());
-  const flashResultHandlers = useRef(new Set<(message: FlashResultMessage) => void>());
+
+  // Stable across the store's lifetime -- `send` closes over `socketRef`
+  // (a plain React ref, not state) and `onFlashResult` over
+  // `store.flashResultHandlers`, so this object never needs to change
+  // and effects that depend on it never need to re-run.
+  if (!store.actions) {
+    store.actions = {
+      send: (message: ClientMessage) => {
+        const socket = socketRef.current;
+        if (socket && socket.readyState === WEBSOCKET_OPEN) {
+          socket.send(JSON.stringify(message));
+        }
+      },
+      onFlashResult: (handler: (message: FlashResultMessage) => void) => {
+        store.flashResultHandlers.add(handler);
+        return () => {
+          store.flashResultHandlers.delete(handler);
+        };
+      },
+      clearEndpointLog: (endpointId: string) => {
+        store.logsByEndpoint.set(endpointId, []);
+        notify(store);
+      },
+    };
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -162,7 +460,8 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
       if (cancelled) {
         return;
       }
-      setStatus("connecting");
+      store.status = "connecting";
+      notify(store);
       const socket = makeSocket(resolvedUrl);
       socketRef.current = socket;
 
@@ -170,7 +469,8 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
         if (cancelled) {
           return;
         }
-        setStatus("open");
+        store.status = "open";
+        notify(store);
       });
 
       socket.addEventListener("message", (event) => {
@@ -189,23 +489,41 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
         }
         switch (parsed.type) {
           case "endpoints":
-            setDevices(parsed.endpoints);
-            setFirmwareStatus(parsed.firmwareStatus);
+            applySnapshot(store, parsed.endpoints, parsed.firmwareStatus);
+            notify(store);
             break;
           case "line":
-            for (const handler of lineHandlers.current) {
-              handler(parsed);
-            }
+            appendLine(store, parsed);
+            notify(store);
             break;
           case "error":
-            for (const handler of errorHandlers.current) {
-              handler(parsed);
-            }
+            // Pre-ticket-006 exposed an `onError` pub/sub, but no
+            // component ever subscribed to it -- dropped here rather
+            // than carried forward unused (see this module's doc
+            // comment on `useWsActions`). Kept as an explicit no-op
+            // case (rather than falling through) so this switch stays
+            // exhaustive over `ServerMessage.type` and a future ticket
+            // adding error handling has an obvious place to put it.
+            break;
+          case "flash-progress":
+            store.flashProgressByEndpoint.set(parsed.endpointId, {
+              source: parsed.source,
+              phase: parsed.phase,
+            });
+            notify(store);
             break;
           case "flash-result":
-            for (const handler of flashResultHandlers.current) {
+            store.flashProgressByEndpoint.delete(parsed.endpointId);
+            for (const handler of store.flashResultHandlers) {
               handler(parsed);
             }
+            notify(store);
+            break;
+          case "flash-local-ready":
+            // Local-hex upload handshake (ticket 005) -- no store slice
+            // consumes this yet; a later ticket wires the upload UI to
+            // it. Explicit no-op for the same exhaustiveness reason as
+            // "error" above.
             break;
         }
       });
@@ -220,12 +538,12 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
         if (cancelled) {
           return;
         }
-        // Deliberately does not clear `devices`: a dropped connection
-        // should not blank out the last-known list while reconnecting
-        // (same "never destabilize the list" requirement the ticket
-        // calls for on a per-device basis, applied to the whole-list
-        // case too).
-        setStatus("closed");
+        // Deliberately does not clear `endpointsById`/`endpointsArray`:
+        // a dropped connection should not blank out the last-known list
+        // while reconnecting. `hasSnapshot` is likewise never reset --
+        // see this module's doc comment.
+        store.status = "closed";
+        notify(store);
         socketRef.current = null;
         reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
       });
@@ -241,53 +559,101 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
       socketRef.current?.close();
       socketRef.current = null;
     };
-  }, [url, socketFactory]);
+  }, [url, socketFactory, store]);
 
-  const send = useCallback((message: ClientMessage) => {
-    const socket = socketRef.current;
-    if (socket && socket.readyState === WEBSOCKET_OPEN) {
-      socket.send(JSON.stringify(message));
-    }
-  }, []);
-
-  const onLine = useCallback((handler: (message: LineMessage) => void) => {
-    lineHandlers.current.add(handler);
-    return () => {
-      lineHandlers.current.delete(handler);
-    };
-  }, []);
-
-  const onError = useCallback((handler: (message: ErrorMessage) => void) => {
-    errorHandlers.current.add(handler);
-    return () => {
-      errorHandlers.current.delete(handler);
-    };
-  }, []);
-
-  const onFlashResult = useCallback((handler: (message: FlashResultMessage) => void) => {
-    flashResultHandlers.current.add(handler);
-    return () => {
-      flashResultHandlers.current.delete(handler);
-    };
-  }, []);
-
-  const value: WsContextValue = {
-    status,
-    devices,
-    firmwareStatus,
-    send,
-    onLine,
-    onError,
-    onFlashResult,
-  };
-
-  return <WsContext.Provider value={value}>{children}</WsContext.Provider>;
+  return <StoreContext.Provider value={store}>{children}</StoreContext.Provider>;
 }
 
-export function useWs(): WsContextValue {
-  const ctx = useContext(WsContext);
-  if (!ctx) {
-    throw new Error("useWs must be called within a WsProvider");
+function useStore(): Store {
+  const store = useContext(StoreContext);
+  if (!store) {
+    throw new Error("this hook must be called within a WsProvider");
   }
-  return ctx;
+  return store;
+}
+
+export function useConnectionStatus(): ConnectionStatus {
+  const store = useStore();
+  return useSyncExternalStore(store.subscribe, () => store.status);
+}
+
+export function useHasSnapshot(): boolean {
+  const store = useStore();
+  return useSyncExternalStore(store.subscribe, () => store.hasSnapshot);
+}
+
+/** The full endpoint list, for the front page -- still one
+ * subscription, since the front page legitimately needs the whole
+ * list. Not the render-storm case telemetry will be; per-endpoint
+ * pages (ticket 008) should use `useEndpoint` instead. */
+export function useEndpoints(): EndpointListEntry[] {
+  const store = useStore();
+  return useSyncExternalStore(store.subscribe, () => store.endpointsArray);
+}
+
+/** One endpoint's slice of the latest snapshot, or `undefined` if no
+ * endpoint with this id exists. Subscribes only to that one endpoint --
+ * a component reading `useEndpoint("A")` does not re-render when
+ * endpoint B changes or when a `line`/`flash-progress` message arrives
+ * for a different endpoint. */
+export function useEndpoint(endpointId: string): EndpointListEntry | undefined {
+  const store = useStore();
+  return useSyncExternalStore(
+    store.subscribe,
+    useCallback(() => store.endpointsById.get(endpointId), [store, endpointId]),
+  );
+}
+
+/** One endpoint's console log, hoisted out of `ConsoleTab`'s own
+ * state. Subscribes only to that endpoint's log -- a mounted console
+ * for endpoint A does not re-render on an `endpoints` snapshot update
+ * that leaves A's log untouched, or on a line for a different
+ * endpoint. Returns a shared stable empty array before any line has
+ * arrived for this endpoint. */
+export function useEndpointLog(endpointId: string): LogEntry[] {
+  const store = useStore();
+  return useSyncExternalStore(
+    store.subscribe,
+    useCallback(() => store.logsByEndpoint.get(endpointId) ?? (EMPTY_LOG as LogEntry[]), [store, endpointId]),
+  );
+}
+
+/** Per-firmware availability from the most recent `endpoints` snapshot
+ * (sprint 2) -- see `wsMessages.ts`'s `EndpointsMessage.firmwareStatus`
+ * doc comment. Drives the robot/relay flash buttons' disabled state in
+ * `DevicesTab`; never a hardcoded UI flag. */
+export function useFirmwareStatus(): Record<FirmwareKind, FirmwareAvailability> {
+  const store = useStore();
+  return useSyncExternalStore(store.subscribe, () => store.firmwareStatus);
+}
+
+/** Live progress of an in-flight flash for one endpoint, populated
+ * from `flash-progress` events -- works for both a release source and
+ * a local-hex source (unlike `EndpointListEntry.flashStatus`, which is
+ * frozen to `{ firmware, phase }` and cannot represent local-hex). See
+ * this module's doc comment ("Flash progress for both source kinds")
+ * for the reconnect-gap this does not close. */
+export function useFlashProgress(endpointId: string): FlashProgressState | undefined {
+  const store = useStore();
+  return useSyncExternalStore(
+    store.subscribe,
+    useCallback(() => store.flashProgressByEndpoint.get(endpointId), [store, endpointId]),
+  );
+}
+
+/** The imperative surface: send a client message, and subscribe to the
+ * terminal outcome of a flash. Per-phase progress does *not* need a
+ * matching subscription here: `useFlashProgress` (this ticket) and
+ * `EndpointListEntry.flashStatus` already carry live progress; only the
+ * terminal `flash-result`'s `message` (present on `status: "error"`) is
+ * not represented anywhere in the snapshot, so that one event keeps its
+ * own subscription. `onLine`/`onError` from the pre-ticket-006 context
+ * are gone: log population is now internal store logic
+ * (`useEndpointLog`), and nothing outside this module ever consumed
+ * `onError`. Returns a stable object for this store's whole lifetime,
+ * so `useEffect(() => onFlashResult(...), [onFlashResult])` never
+ * re-runs on an unrelated render. */
+export function useWsActions(): WsActions {
+  const store = useStore();
+  return store.actions;
 }

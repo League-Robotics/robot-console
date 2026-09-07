@@ -22,7 +22,8 @@ import type {
   FirmwareKind,
 } from "@robot-console/host/src/wsMessages.js";
 import { DevicesList, DevicesTab } from "./DevicesTab";
-import { WsProvider, type WebSocketLike } from "../ws/WsProvider";
+import { WsProvider } from "../ws/WsProvider";
+import { FakeSocket } from "../testing/FakeSocket";
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -497,49 +498,6 @@ describe("DevicesList", () => {
   });
 });
 
-/** A fully synthetic `WebSocketLike` for driving `WsProvider` in tests
- * without real network I/O or depending on jsdom implementing
- * `WebSocket` itself. */
-class FakeSocket implements WebSocketLike {
-  readyState = 0;
-  sent: string[] = [];
-  private listeners = new Map<string, Set<(event: unknown) => void>>();
-
-  addEventListener(type: string, listener: (event: unknown) => void): void {
-    const set = this.listeners.get(type) ?? new Set();
-    set.add(listener);
-    this.listeners.set(type, set);
-  }
-
-  removeEventListener(type: string, listener: (event: unknown) => void): void {
-    this.listeners.get(type)?.delete(listener);
-  }
-
-  send(data: string): void {
-    this.sent.push(data);
-  }
-
-  close(): void {
-    this.readyState = 3;
-    this.emit("close", {});
-  }
-
-  emit(type: string, event: unknown): void {
-    for (const listener of this.listeners.get(type) ?? []) {
-      listener(event);
-    }
-  }
-
-  emitOpen(): void {
-    this.readyState = 1;
-    this.emit("open", {});
-  }
-
-  emitMessage(data: unknown): void {
-    this.emit("message", { data: JSON.stringify(data) });
-  }
-}
-
 describe("WsProvider end-to-end wiring", () => {
   it("renders a live 'devices' message pushed over the socket, with no manual refresh", () => {
     let socket: FakeSocket | null = null;
@@ -652,7 +610,8 @@ describe("WsProvider end-to-end wiring", () => {
 });
 
 // Local probe component: exercises the real connected `DevicesTab`
-// (which reads `useWs()`), rather than re-testing `DevicesList` again.
+// (which reads `WsProvider`'s selector hooks), rather than
+// re-testing `DevicesList` again.
 function DevicesTabProbe() {
   return <DevicesTab />;
 }

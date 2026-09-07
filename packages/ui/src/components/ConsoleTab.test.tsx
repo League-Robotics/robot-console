@@ -17,7 +17,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
 import { ConsoleTab, MAX_LINES_PER_DEVICE, classifyLine } from "./ConsoleTab";
-import { WsProvider, type WebSocketLike } from "../ws/WsProvider";
+import { WsProvider } from "../ws/WsProvider";
+import { FakeSocket } from "../testing/FakeSocket";
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -87,49 +88,6 @@ function baseDevice(overrides: BaseDeviceOverrides = {}): EndpointListEntry {
     sessionOpen: overrides.linkOpen ?? true,
     usb: { serialNumber: `${id}-FULL`, displaySerial: "0002", port: "/dev/cu.usbmodemA" },
   };
-}
-
-/** A fully synthetic `WebSocketLike` for driving `WsProvider` in tests
- * without real network I/O or depending on jsdom implementing
- * `WebSocket` itself. Mirrors `DevicesTab.test.tsx`'s `FakeSocket`. */
-class FakeSocket implements WebSocketLike {
-  readyState = 0;
-  sent: string[] = [];
-  private listeners = new Map<string, Set<(event: unknown) => void>>();
-
-  addEventListener(type: string, listener: (event: unknown) => void): void {
-    const set = this.listeners.get(type) ?? new Set();
-    set.add(listener);
-    this.listeners.set(type, set);
-  }
-
-  removeEventListener(type: string, listener: (event: unknown) => void): void {
-    this.listeners.get(type)?.delete(listener);
-  }
-
-  send(data: string): void {
-    this.sent.push(data);
-  }
-
-  close(): void {
-    this.readyState = 3;
-    this.emit("close", {});
-  }
-
-  emit(type: string, event: unknown): void {
-    for (const listener of this.listeners.get(type) ?? []) {
-      listener(event);
-    }
-  }
-
-  emitOpen(): void {
-    this.readyState = 1;
-    this.emit("open", {});
-  }
-
-  emitMessage(data: unknown): void {
-    this.emit("message", { data: JSON.stringify(data) });
-  }
 }
 
 function mountConsole(devices: EndpointListEntry[]): { el: HTMLDivElement; socket: FakeSocket } {

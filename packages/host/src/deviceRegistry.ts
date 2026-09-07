@@ -1,12 +1,27 @@
 /**
  * deviceRegistry.ts — composes `devices.ts` (live enumeration),
- * `swdName.ts` (five-letter naming), and `UsbSerialLink` (per-device
- * I/O) into one live-updated set of {@link DeviceListEntry} snapshots
- * and per-device line/error events, for `server.ts` to push over the
- * WebSocket. This module owns *orchestration* only -- which device
- * operation runs when, and that two operations never race on the same
- * physical board -- never naming, banner-parsing, framing, or
- * sequencing logic, all of which stays in the composed modules.
+ * `swdName.ts` (five-letter naming), `@robot-console/protocol`'s
+ * `classifyBanner` (device-type classification), and `UsbSerialLink`
+ * (per-device I/O) into one live-updated set of {@link EndpointListEntry}
+ * snapshots and per-endpoint line/error events, for `server.ts` to push
+ * over the WebSocket. This module owns *orchestration* only -- which
+ * device operation runs when, and that two operations never race on the
+ * same physical board -- never naming, banner-parsing, classification,
+ * framing, or sequencing logic, all of which stays in the composed
+ * modules.
+ *
+ * ## Sprint 4: endpoint ids, mapping only
+ *
+ * `EndpointListEntry` replaced `DeviceListEntry` in sprint 4's wire
+ * contract reshape (see `wsMessages.ts`'s own module doc comment). This
+ * ticket only remaps `toEntry`'s *output* shape and mints the URL-safe
+ * `usb-<serialNumber>` endpoint id ({@link usbEndpointId}) used as this
+ * module's own internal key (the `states` map, the {@link KeyedMutex}
+ * key, and every public method's `endpointId` parameter) -- it does
+ * **not** yet implement the endpoint/session/resource-key *model*
+ * (multiple endpoints sharing one contended resource) that a later
+ * ticket introduces for relay-carried robots. For USB, one endpoint is
+ * still exactly one physical device, one to one, as before.
  *
  * ## The race this module exists to prevent
  *
@@ -16,22 +31,23 @@
  * one board, must never happen concurrently -- either can corrupt or
  * disrupt the other's in-flight operation. {@link KeyedMutex} below
  * serializes every operation this module performs against a given
- * device's USB serial number (name resolution, link open, link close,
- * a line send) so at most one is ever in flight per device at a time,
- * while different devices proceed fully in parallel.
+ * endpoint (name resolution, link open, link close, a line send) so at
+ * most one is ever in flight per endpoint at a time, while different
+ * endpoints proceed fully in parallel.
  *
  * ## Attach flow
  *
  * On each `DeviceWatcher` diff, a newly-added device is registered
  * immediately (so it is visible, named `null`, right away -- the
- * device list must never block on SWD/serial I/O) and its name/role
- * resolution is kicked off asynchronously, serialized per-device as
+ * endpoint list must never block on SWD/serial I/O) and its name/role
+ * resolution is kicked off asynchronously, serialized per-endpoint as
  * above: resolve the five-letter name over SWD first (fast, no reset),
  * then attempt to open a `UsbSerialLink` to learn its role from the
- * boot banner. A device that never replies to `HELLO` (a silently
- * running board -- see the ticket) still ends up listed, named, with
- * `role: null` and a `linkError` -- `UsbSerialLink.open()`'s own
- * timeout bounds this, so this never hangs the device list.
+ * boot banner and classify it via `classifyBanner`. A device that never
+ * replies to `HELLO` (a silently running board) still ends up listed,
+ * named, with `role: null`, `classification.type: "unknown"`, and a
+ * `sessionError` -- `UsbSerialLink.open()`'s own timeout bounds this, so
+ * this never hangs the endpoint list.
  *
  * ## Detach flow
  *
@@ -44,7 +60,7 @@
  * ## Flash flow (sprint 2)
  *
  * {@link DeviceRegistry.requestFlash} is one more operation run through
- * the same per-device {@link KeyedMutex} as name resolution/link open/
+ * the same per-endpoint {@link KeyedMutex} as name resolution/link open/
  * close/send -- not a new synchronization mechanism. It composes
  * `config.ts` (which firmware source) -> `releases.ts` (fetch+verify
  * the hex) -> `flash.ts` (write it) as one mutex-guarded task: tear
@@ -56,15 +72,24 @@
  * re-open a link exactly the way the attach flow above already does, so
  * the newly-flashed firmware's banner is picked up with no separate
  * manual Connect click. See {@link DeviceRegistry.requestFlash}'s own
- * doc comment for why this task holds the device's mutex slot across
+ * doc comment for why this task holds the endpoint's mutex slot across
  * the network fetch rather than releasing and re-acquiring it. A
  * failure at any stage clears `flashStatus` and reports a `flash-result`
  * error -- it never leaves `flashStatus` stuck or the registry believing
  * a link is open when {@link teardownLink} already closed it.
+ *
+ * Sprint 4 note: this ticket reshapes `FlashResultMessage` to carry
+ * optional `classification`/`name`/`reidentify` fields and adds
+ * `"reidentifying"` to {@link FlashPhase}, but {@link DeviceRegistry.requestFlash}
+ * itself is *not yet* changed to populate them or to wait for a
+ * post-flash re-identify -- it still clears `flashStatus` and reports
+ * `flash-result` immediately after a successful write, exactly as
+ * before. A later ticket makes the reidentify sequencing real; this one
+ * only freezes the shape it will report through.
  */
 
-import type { DecodedLine, ParsedBanner } from "@robot-console/protocol";
-import { encodeLine } from "@robot-console/protocol";
+import type { DecodedLine, DeviceClassification, ParsedBanner } from "@robot-console/protocol";
+import { classifyBanner, encodeLine } from "@robot-console/protocol";
 import {
   DeviceWatcher,
   type DaplinkDevice,
@@ -75,7 +100,19 @@ import { UsbSerialLink } from "./link/UsbSerialLink.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
 import { resolveRelease, fetchAndVerifyHex } from "./releases.js";
 import { flash } from "./flash.js";
-import type { DeviceListEntry, LineDirection, FirmwareKind, FlashPhase } from "./wsMessages.js";
+import type { EndpointListEntry, LineDirection, FirmwareKind, FlashPhase } from "./wsMessages.js";
+
+/** Mint a URL-safe, stable endpoint id for a USB device from its serial
+ * number -- see `wsMessages.ts`'s `EndpointListEntry.endpointId` doc
+ * comment for why this must be URL-safe from the start (sprint 4's
+ * router puts it directly in a path segment). This is the one place
+ * that mapping happens; every other USB-facing id in this module (the
+ * `states` map key, the per-endpoint mutex key, every public method's
+ * `endpointId` parameter) uses this same value, so a caller never needs
+ * to convert between a raw serial number and an endpoint id. */
+function usbEndpointId(serialNumber: string): string {
+  return `usb-${serialNumber}`;
+}
 
 // ---------------------------------------------------------------------
 // Injectable seams (real implementations by default; fakes in tests)
@@ -102,7 +139,7 @@ function defaultLinkFactory(portPath: string): UsbSerialLinkLike {
 }
 
 // ---------------------------------------------------------------------
-// KeyedMutex -- serialize operations per device, not globally
+// KeyedMutex -- serialize operations per endpoint, not globally
 // ---------------------------------------------------------------------
 
 /**
@@ -135,14 +172,27 @@ class KeyedMutex {
 }
 
 // ---------------------------------------------------------------------
-// Per-device state
+// Per-endpoint state
 // ---------------------------------------------------------------------
 
 interface DeviceState {
   device: DaplinkDevice;
+  /** This endpoint's stable, URL-safe id -- `usbEndpointId(device.serialNumber)`,
+   * computed once when the state is created. Stored rather than
+   * re-derived everywhere so a rename of the minting scheme only touches
+   * one call site. */
+  endpointId: string;
   name: string | null;
   nameError?: { reason: string; message: string } | undefined;
   role: string | null;
+  /** This endpoint's device-type classification, derived from the most
+   * recently seen banner via `classifyBanner`. Starts at
+   * `classifyBanner(null)` (`type: "unknown"`, `evidence: "none"`)
+   * before any link has ever been opened, and is kept in sync with
+   * {@link role} by every call site that sets `role` -- ticket 003
+   * restructures this internal state further; this ticket only wires
+   * classification through the existing role-setting call sites. */
+  classification: DeviceClassification;
   link?: UsbSerialLinkLike | undefined;
   linkOpen: boolean;
   linkError?: string | undefined;
@@ -151,25 +201,36 @@ interface DeviceState {
   /** Present only while a flash is in flight for this device (sprint
    * 2) -- set at the start of {@link DeviceRegistry.requestFlash}'s
    * task and cleared (success or error) at its end. Reflected into
-   * {@link DeviceListEntry.flashStatus} by {@link toEntry}. */
+   * {@link EndpointListEntry.flashStatus} by {@link toEntry}. */
   flashStatus?: { firmware: FirmwareKind; phase: FlashPhase } | undefined;
 }
 
-function toEntry(state: DeviceState): DeviceListEntry {
-  const entry: DeviceListEntry = {
-    id: state.device.serialNumber,
-    serialNumber: state.device.serialNumber,
-    displaySerial: state.device.displaySerial,
+function toEntry(state: DeviceState): EndpointListEntry {
+  const entry: EndpointListEntry = {
+    endpointId: state.endpointId,
+    transport: "usb",
+    // Equal to endpointId for every endpoint this sprint -- USB is 1:1
+    // between endpoint and physical resource. Kept as its own field
+    // (not derived from endpointId by consumers) so sprint 7's
+    // relay-carries-many-robots case only has to make this value
+    // diverge, not add the field -- see wsMessages.ts's own doc
+    // comment.
+    resourceKey: state.endpointId,
+    classification: state.classification,
     name: state.name,
     role: state.role,
-    port: state.device.serialPort?.path ?? null,
-    linkOpen: state.linkOpen,
+    sessionOpen: state.linkOpen,
+    usb: {
+      serialNumber: state.device.serialNumber,
+      displaySerial: state.device.displaySerial,
+      port: state.device.serialPort?.path ?? null,
+    },
   };
   if (state.nameError) {
     entry.nameError = state.nameError;
   }
   if (state.linkError) {
-    entry.linkError = state.linkError;
+    entry.sessionError = state.linkError;
   }
   if (state.flashStatus) {
     entry.flashStatus = state.flashStatus;
@@ -200,19 +261,19 @@ function reconstructLineText(decoded: DecodedLine): string {
 // DeviceRegistry
 // ---------------------------------------------------------------------
 
-export type DevicesListener = (devices: DeviceListEntry[]) => void;
-export type LineListener = (deviceId: string, direction: LineDirection, line: string) => void;
-export type RegistryErrorListener = (deviceId: string | undefined, message: string) => void;
+export type DevicesListener = (endpoints: EndpointListEntry[]) => void;
+export type LineListener = (endpointId: string, direction: LineDirection, line: string) => void;
+export type RegistryErrorListener = (endpointId: string | undefined, message: string) => void;
 /** Notified once per {@link FlashPhase} as a `requestFlash` task
  * advances -- mirrors {@link LineListener}'s per-event shape rather
- * than a bulk snapshot, since `server.ts` (ticket 006) forwards these
- * directly as {@link FlashProgressMessage}-shaped broadcasts. */
-export type FlashProgressListener = (deviceId: string, firmware: FirmwareKind, phase: FlashPhase) => void;
+ * than a bulk snapshot, since `server.ts` forwards these directly as
+ * {@link FlashProgressMessage}-shaped broadcasts. */
+export type FlashProgressListener = (endpointId: string, firmware: FirmwareKind, phase: FlashPhase) => void;
 /** Notified exactly once per `requestFlash` call, with its terminal
  * outcome -- `message` is present only on `status: "error"`, mirroring
  * {@link FlashResultMessage}'s own shape. */
 export type FlashResultListener = (
-  deviceId: string,
+  endpointId: string,
   firmware: FirmwareKind,
   status: "ok" | "error",
   message?: string,
@@ -250,11 +311,12 @@ export interface DeviceRegistryOptions {
 }
 
 /**
- * Live registry of attached devices, their resolved identity, and any
- * open per-device link -- the one stateful object `server.ts` composes
- * to turn `devices.ts`/`swdName.ts`/`UsbSerialLink` into WebSocket
- * messages. See the module doc comment for the attach/detach flows and
- * the race this module's {@link KeyedMutex} usage prevents.
+ * Live registry of attached devices, their resolved identity/
+ * classification, and any open per-endpoint link -- the one stateful
+ * object `server.ts` composes to turn `devices.ts`/`swdName.ts`/
+ * `classifyBanner`/`UsbSerialLink` into WebSocket messages. See the
+ * module doc comment for the attach/detach flows and the race this
+ * module's {@link KeyedMutex} usage prevents.
  */
 export class DeviceRegistry {
   private readonly watcher: DeviceWatcher;
@@ -311,11 +373,11 @@ export class DeviceRegistry {
     this.states.clear();
   }
 
-  /** The current device list, sorted by id for a deterministic order. */
-  snapshot(): DeviceListEntry[] {
+  /** The current endpoint list, sorted by id for a deterministic order. */
+  snapshot(): EndpointListEntry[] {
     return [...this.states.values()]
       .map(toEntry)
-      .sort((a, b) => a.id.localeCompare(b.id));
+      .sort((a, b) => a.endpointId.localeCompare(b.endpointId));
   }
 
   onDevicesChanged(listener: DevicesListener): () => void {
@@ -357,15 +419,15 @@ export class DeviceRegistry {
     };
   }
 
-  /** (Re-)open a link to a device, e.g. retrying after a silent-board
+  /** (Re-)open a link to an endpoint, e.g. retrying after a silent-board
    * timeout. No-op if already open. Errors are reported via
    * {@link onError} and reflected in the next {@link onDevicesChanged}
    * snapshot -- never thrown to the caller. */
-  async requestOpen(deviceId: string): Promise<void> {
-    await this.mutex.run(deviceId, async () => {
-      const state = this.states.get(deviceId);
+  async requestOpen(endpointId: string): Promise<void> {
+    await this.mutex.run(endpointId, async () => {
+      const state = this.states.get(endpointId);
       if (!state) {
-        this.emitError(deviceId, `no such device: ${deviceId}`);
+        this.emitError(endpointId, `no such device: ${endpointId}`);
         return;
       }
       if (state.linkOpen) {
@@ -375,12 +437,12 @@ export class DeviceRegistry {
     });
   }
 
-  /** Close an open link to a device. No-op if not open. */
-  async requestClose(deviceId: string): Promise<void> {
-    await this.mutex.run(deviceId, async () => {
-      const state = this.states.get(deviceId);
+  /** Close an open link to an endpoint. No-op if not open. */
+  async requestClose(endpointId: string): Promise<void> {
+    await this.mutex.run(endpointId, async () => {
+      const state = this.states.get(endpointId);
       if (!state) {
-        this.emitError(deviceId, `no such device: ${deviceId}`);
+        this.emitError(endpointId, `no such device: ${endpointId}`);
         return;
       }
       await this.teardownLink(state);
@@ -388,34 +450,34 @@ export class DeviceRegistry {
     });
   }
 
-  /** Send a line to a device's open link. Reports (via {@link onError})
-   * rather than throws if the device is unknown, has no open link, or
+  /** Send a line to an endpoint's open link. Reports (via {@link onError})
+   * rather than throws if the endpoint is unknown, has no open link, or
    * the underlying write itself fails. On success, also emits the sent
    * line back out via {@link onLine} (`direction: "tx"`) so every
    * connected client's console view reflects it, not just the sender. */
-  async sendLine(deviceId: string, line: string): Promise<void> {
-    await this.mutex.run(deviceId, async () => {
-      const state = this.states.get(deviceId);
+  async sendLine(endpointId: string, line: string): Promise<void> {
+    await this.mutex.run(endpointId, async () => {
+      const state = this.states.get(endpointId);
       if (!state?.linkOpen || !state.link) {
-        this.emitError(deviceId, `device ${deviceId} has no open link`);
+        this.emitError(endpointId, `device ${endpointId} has no open link`);
         return;
       }
       try {
         state.link.sendLine(line);
-        this.emitLine(deviceId, "tx", line);
+        this.emitLine(endpointId, "tx", line);
       } catch (error) {
-        this.emitError(deviceId, error instanceof Error ? error.message : String(error));
+        this.emitError(endpointId, error instanceof Error ? error.message : String(error));
       }
     });
   }
 
   /**
-   * Flash `firmware` onto a device: orchestrates `config.ts` (which
+   * Flash `firmware` onto an endpoint: orchestrates `config.ts` (which
    * source) -> `releases.ts` (fetch+verify the hex) -> `flash.ts`
-   * (write it), run as one more task through the same per-device
+   * (write it), run as one more task through the same per-endpoint
    * {@link KeyedMutex} as {@link requestOpen}/{@link requestClose}/
    * {@link sendLine} -- no new synchronization primitive (see the
-   * module doc comment's "Flash flow" section). An unknown `deviceId`
+   * module doc comment's "Flash flow" section). An unknown `endpointId`
    * is reported via {@link onError}, matching {@link requestOpen}'s own
    * handling -- never thrown to the caller.
    *
@@ -454,11 +516,11 @@ export class DeviceRegistry {
    * teardown itself sets), the same state {@link requestClose} leaves
    * behind, ready for a future {@link requestOpen} retry.
    */
-  async requestFlash(deviceId: string, firmware: FirmwareKind): Promise<void> {
-    await this.mutex.run(deviceId, async () => {
-      const state = this.states.get(deviceId);
+  async requestFlash(endpointId: string, firmware: FirmwareKind): Promise<void> {
+    await this.mutex.run(endpointId, async () => {
+      const state = this.states.get(endpointId);
       if (!state) {
-        this.emitError(deviceId, `no such device: ${deviceId}`);
+        this.emitError(endpointId, `no such device: ${endpointId}`);
         return;
       }
       await this.runFlash(state, firmware);
@@ -468,7 +530,7 @@ export class DeviceRegistry {
   /** The mutex-guarded body of {@link requestFlash} -- see that method's
    * doc comment for the mutex-scope and failure-recovery rationale. */
   private async runFlash(state: DeviceState, firmware: FirmwareKind): Promise<void> {
-    const deviceId = state.device.serialNumber;
+    const endpointId = state.endpointId;
     // Set at the very start (before teardown even) so a client that
     // observes the very next snapshot already sees flashStatus, per the
     // ticket's "set at the start of the flash task" requirement. There
@@ -477,7 +539,7 @@ export class DeviceRegistry {
     // progress event ("verifying", once releases.ts resolves) replaces
     // it, same best-effort phase-reporting precedent flash.ts's own doc
     // comment already accepts for DAPjs's coarser event surface.
-    this.setFlashPhase(state, deviceId, firmware, "fetching");
+    this.setFlashPhase(state, endpointId, firmware, "fetching");
 
     try {
       // Tear down any open link before touching config/network/SWD --
@@ -491,13 +553,13 @@ export class DeviceRegistry {
 
       const source = this.getFirmwareConfigFn()[firmware];
       if (!source) {
-        this.failFlash(state, deviceId, firmware, `no firmware source configured for "${firmware}"`);
+        this.failFlash(state, endpointId, firmware, `no firmware source configured for "${firmware}"`);
         return;
       }
 
       const resolved = await this.resolveReleaseFn(source);
       if ("reason" in resolved) {
-        this.failFlash(state, deviceId, firmware, resolved.message);
+        this.failFlash(state, endpointId, firmware, resolved.message);
         return;
       }
 
@@ -505,24 +567,24 @@ export class DeviceRegistry {
       // call (releases.ts has no seam between the two) -- "verifying"
       // is reported for the whole call, same best-effort phase mapping
       // as flash.ts's own erase/write/reset reporting.
-      this.setFlashPhase(state, deviceId, firmware, "verifying");
+      this.setFlashPhase(state, endpointId, firmware, "verifying");
       const fetched = await this.fetchAndVerifyHexFn(resolved);
       if ("error" in fetched) {
-        this.failFlash(state, deviceId, firmware, fetched.error);
+        this.failFlash(state, endpointId, firmware, fetched.error);
         return;
       }
 
       const onProgress = (phase: FlashPhase) => {
-        this.setFlashPhase(state, deviceId, firmware, phase);
+        this.setFlashPhase(state, endpointId, firmware, phase);
       };
       const outcome = await this.flashFn(state.device, fetched.hex.toString("utf-8"), onProgress);
       if (outcome.status === "error") {
-        this.failFlash(state, deviceId, firmware, outcome.error);
+        this.failFlash(state, endpointId, firmware, outcome.error);
         return;
       }
 
       state.flashStatus = undefined;
-      this.emitFlashResult(deviceId, firmware, "ok");
+      this.emitFlashResult(endpointId, firmware, "ok");
       this.emitDevices();
 
       // Pick up the newly-flashed firmware's banner without a separate
@@ -536,24 +598,24 @@ export class DeviceRegistry {
       // releases.ts, flash.ts) documents "never throws", but a flash
       // must not leave flashStatus stuck even if that contract is ever
       // violated -- by a future change, or by a test's own fake.
-      this.failFlash(state, deviceId, firmware, error instanceof Error ? error.message : String(error));
+      this.failFlash(state, endpointId, firmware, error instanceof Error ? error.message : String(error));
     }
   }
 
   /** Advance an in-flight flash to `phase`: update `flashStatus`, emit a
    * {@link onFlashProgress} event, and emit an updated device snapshot
    * so a client that reconnects mid-flash sees the current phase. */
-  private setFlashPhase(state: DeviceState, deviceId: string, firmware: FirmwareKind, phase: FlashPhase): void {
+  private setFlashPhase(state: DeviceState, endpointId: string, firmware: FirmwareKind, phase: FlashPhase): void {
     state.flashStatus = { firmware, phase };
-    this.emitFlashProgress(deviceId, firmware, phase);
+    this.emitFlashProgress(endpointId, firmware, phase);
     this.emitDevices();
   }
 
   /** End an in-flight flash in failure: clear `flashStatus` and emit a
    * `flash-result` `status: "error"` event plus an updated snapshot. */
-  private failFlash(state: DeviceState, deviceId: string, firmware: FirmwareKind, message: string): void {
+  private failFlash(state: DeviceState, endpointId: string, firmware: FirmwareKind, message: string): void {
     state.flashStatus = undefined;
-    this.emitFlashResult(deviceId, firmware, "error", message);
+    this.emitFlashResult(endpointId, firmware, "error", message);
     this.emitDevices();
   }
 
@@ -565,27 +627,31 @@ export class DeviceRegistry {
     // a remove+add pair) has a chance to overwrite the map entry -- see
     // the module doc comment.
     for (const device of event.removed) {
-      const state = this.states.get(device.serialNumber);
-      void this.mutex.run(device.serialNumber, async () => {
+      const endpointId = usbEndpointId(device.serialNumber);
+      const state = this.states.get(endpointId);
+      void this.mutex.run(endpointId, async () => {
         if (state) {
           await this.teardownLink(state).catch(() => {});
         }
-        if (this.states.get(device.serialNumber) === state) {
-          this.states.delete(device.serialNumber);
+        if (this.states.get(endpointId) === state) {
+          this.states.delete(endpointId);
         }
         this.emitDevices();
       });
     }
 
     for (const device of event.added) {
+      const endpointId = usbEndpointId(device.serialNumber);
       const state: DeviceState = {
         device,
+        endpointId,
         name: null,
         role: null,
+        classification: classifyBanner(null),
         linkOpen: false,
       };
-      this.states.set(device.serialNumber, state);
-      void this.mutex.run(device.serialNumber, async () => {
+      this.states.set(endpointId, state);
+      void this.mutex.run(endpointId, async () => {
         await this.resolveNameAndOpen(state);
       });
     }
@@ -601,7 +667,7 @@ export class DeviceRegistry {
     // The device may have been removed (and even re-added under a new
     // state object) while the SWD read was in flight; only apply the
     // result if this state object is still the live one.
-    if (this.states.get(state.device.serialNumber) !== state) {
+    if (this.states.get(state.endpointId) !== state) {
       return;
     }
     if (result.status === "named") {
@@ -627,7 +693,7 @@ export class DeviceRegistry {
     const link = this.createLink(portPath);
     try {
       const banner = await link.open();
-      if (this.states.get(state.device.serialNumber) !== state) {
+      if (this.states.get(state.endpointId) !== state) {
         // Removed while opening -- don't leak the link we just opened.
         await link.close().catch(() => {});
         return;
@@ -635,9 +701,13 @@ export class DeviceRegistry {
       state.link = link;
       state.linkOpen = true;
       state.linkError = undefined;
-      state.role = banner.role;
+      // classification is derived from the same banner role is read
+      // from, and kept in sync with it here -- see DeviceState's own
+      // doc comment. classifyBanner never throws (pure, no I/O).
+      state.classification = classifyBanner(banner);
+      state.role = state.classification.role;
       state.unsubscribeLine = link.onLine((decoded) => {
-        this.emitLine(state.device.serialNumber, "rx", reconstructLineText(decoded));
+        this.emitLine(state.endpointId, "rx", reconstructLineText(decoded));
       });
       state.unsubscribeError = link.onError((err) => {
         this.handleLinkError(state, err);
@@ -672,7 +742,7 @@ export class DeviceRegistry {
     state.linkOpen = false;
     state.linkError = err.message;
     this.emitDevices();
-    this.emitError(state.device.serialNumber, err.message);
+    this.emitError(state.endpointId, err.message);
   }
 
   private async teardownLink(state: DeviceState): Promise<void> {
@@ -697,32 +767,32 @@ export class DeviceRegistry {
     }
   }
 
-  private emitLine(deviceId: string, direction: LineDirection, line: string): void {
+  private emitLine(endpointId: string, direction: LineDirection, line: string): void {
     for (const listener of this.lineListeners) {
-      listener(deviceId, direction, line);
+      listener(endpointId, direction, line);
     }
   }
 
-  private emitError(deviceId: string | undefined, message: string): void {
+  private emitError(endpointId: string | undefined, message: string): void {
     for (const listener of this.errorListeners) {
-      listener(deviceId, message);
+      listener(endpointId, message);
     }
   }
 
-  private emitFlashProgress(deviceId: string, firmware: FirmwareKind, phase: FlashPhase): void {
+  private emitFlashProgress(endpointId: string, firmware: FirmwareKind, phase: FlashPhase): void {
     for (const listener of this.flashProgressListeners) {
-      listener(deviceId, firmware, phase);
+      listener(endpointId, firmware, phase);
     }
   }
 
   private emitFlashResult(
-    deviceId: string,
+    endpointId: string,
     firmware: FirmwareKind,
     status: "ok" | "error",
     message?: string,
   ): void {
     for (const listener of this.flashResultListeners) {
-      listener(deviceId, firmware, status, message);
+      listener(endpointId, firmware, status, message);
     }
   }
 }

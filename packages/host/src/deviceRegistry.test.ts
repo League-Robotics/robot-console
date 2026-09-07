@@ -3,7 +3,7 @@ import type { DecodedLine, ParsedBanner } from "@robot-console/protocol";
 import { DeviceWatcher, type DaplinkDevice } from "./devices.js";
 import type { SwdNameResult } from "./swdName.js";
 import { DeviceRegistry, type UsbSerialLinkLike } from "./deviceRegistry.js";
-import type { DeviceListEntry, FirmwareKind, FlashPhase } from "./wsMessages.js";
+import type { EndpointListEntry, FirmwareKind, FlashPhase } from "./wsMessages.js";
 import type { FirmwareConfigMap, FirmwareSource } from "./config.js";
 import type { ResolvedRelease } from "./releases.js";
 import type { FlashOutcome } from "./flash.js";
@@ -115,8 +115,8 @@ function fixtureWatcher(getDevices: () => DaplinkDevice[]): DeviceWatcher {
  * `setTimeout(0)` flushes is always enough. */
 async function waitForSnapshot(
   registry: DeviceRegistry,
-  predicate: (devices: DeviceListEntry[]) => boolean,
-): Promise<DeviceListEntry[]> {
+  predicate: (devices: EndpointListEntry[]) => boolean,
+): Promise<EndpointListEntry[]> {
   for (let attempt = 0; attempt < 50; attempt++) {
     const snap = registry.snapshot();
     if (predicate(snap)) {
@@ -135,18 +135,20 @@ describe("DeviceRegistry", () => {
     const createLink = vi.fn(() => new FakeLink(() => new Promise<ParsedBanner>(() => {})));
 
     const registry = new DeviceRegistry({ watcher, resolveName, createLink });
-    const seen: DeviceListEntry[][] = [];
+    const seen: EndpointListEntry[][] = [];
     registry.onDevicesChanged((snap) => seen.push(snap));
     registry.start();
 
     const resolved = await waitForSnapshot(registry, (snap) => snap[0]?.name === "zeguz");
     expect(resolved).toEqual([
       expect.objectContaining({
-        id: "SERIAL-A",
-        serialNumber: "SERIAL-A",
-        displaySerial: "SHORT-A",
+        endpointId: "usb-SERIAL-A",
         name: "zeguz",
-        port: "/dev/cu.usbmodemA",
+        usb: expect.objectContaining({
+          serialNumber: "SERIAL-A",
+          displaySerial: "SHORT-A",
+          port: "/dev/cu.usbmodemA",
+        }),
       }),
     ]);
     // Some earlier snapshot showed the device before naming resolved.
@@ -165,16 +167,16 @@ describe("DeviceRegistry", () => {
     const registry = new DeviceRegistry({ watcher, resolveName, createLink });
     registry.start();
 
-    const snap = await waitForSnapshot(registry, (s) => s[0]?.linkOpen === true);
+    const snap = await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
     expect(snap[0]).toEqual(
-      expect.objectContaining({ name: "zeguz", role: "NEZHA2", linkOpen: true }),
+      expect.objectContaining({ name: "zeguz", role: "NEZHA2", sessionOpen: true }),
     );
     expect(link.openCalls).toBe(1);
 
     await registry.stop();
   });
 
-  it("degrades gracefully when link open fails: named, role null, linkError set, no throw", async () => {
+  it("degrades gracefully when link open fails: named, role null, sessionError set, no throw", async () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const resolveName = async () => namedResult("zeguz");
@@ -184,13 +186,13 @@ describe("DeviceRegistry", () => {
     const registry = new DeviceRegistry({ watcher, resolveName, createLink });
     registry.start();
 
-    const snap = await waitForSnapshot(registry, (s) => s[0]?.linkError !== undefined);
+    const snap = await waitForSnapshot(registry, (s) => s[0]?.sessionError !== undefined);
     expect(snap[0]).toEqual(
       expect.objectContaining({
         name: "zeguz",
         role: null,
-        linkOpen: false,
-        linkError: expect.stringContaining("HELLO"),
+        sessionOpen: false,
+        sessionError: expect.stringContaining("HELLO"),
       }),
     );
 
@@ -203,7 +205,7 @@ describe("DeviceRegistry", () => {
     // `waitForPortOpen` step has already resolved (see that module's
     // own doc comment) -- so by the time the HELLO-banner-reply timeout
     // fires, the underlying `SerialPort` is genuinely open at the OS
-    // level. `openLink`'s failure branch recorded `linkError` but never
+    // level. `openLink`'s failure branch recorded `sessionError` but never
     // called `link.close()` on the link it had just created, leaking
     // the OS-level handle for the rest of the process's lifetime --
     // verified against real hardware: every later open attempt on that
@@ -222,7 +224,7 @@ describe("DeviceRegistry", () => {
     const registry = new DeviceRegistry({ watcher, resolveName, createLink });
     registry.start();
 
-    await waitForSnapshot(registry, (s) => s[0]?.linkError !== undefined);
+    await waitForSnapshot(registry, (s) => s[0]?.sessionError !== undefined);
     expect(failedLink?.closeCalls).toBe(1);
 
     await registry.stop();
@@ -253,7 +255,7 @@ describe("DeviceRegistry", () => {
 
     const registry = new DeviceRegistry({ watcher, resolveName, createLink });
     registry.start();
-    await waitForSnapshot(registry, (s) => s[0]?.linkOpen === true);
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
 
     devices = [];
     await watcher.pollOnce();
@@ -284,7 +286,7 @@ describe("DeviceRegistry", () => {
 
     const registry = new DeviceRegistry({ watcher, resolveName, createLink });
     registry.start();
-    await waitForSnapshot(registry, (s) => s[0]?.linkOpen === true);
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
 
     expect(order).toEqual(["name-start", "name-end", "open-start", "open-end"]);
 
@@ -309,16 +311,16 @@ describe("DeviceRegistry", () => {
 
     const registry = new DeviceRegistry({ watcher, resolveName, createLink });
     registry.start();
-    await waitForSnapshot(registry, (s) => s[0]?.linkError !== undefined);
+    await waitForSnapshot(registry, (s) => s[0]?.sessionError !== undefined);
 
-    await registry.requestOpen("SERIAL-A");
-    const opened = await waitForSnapshot(registry, (s) => s[0]?.linkOpen === true);
-    expect(opened[0]?.linkOpen).toBe(true);
+    await registry.requestOpen("usb-SERIAL-A");
+    const opened = await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    expect(opened[0]?.sessionOpen).toBe(true);
     expect(links).toHaveLength(2);
 
-    await registry.requestClose("SERIAL-A");
-    const closed = await waitForSnapshot(registry, (s) => s[0]?.linkOpen === false);
-    expect(closed[0]?.linkOpen).toBe(false);
+    await registry.requestClose("usb-SERIAL-A");
+    const closed = await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === false);
+    expect(closed[0]?.sessionOpen).toBe(false);
     expect(links[1]?.closeCalls).toBe(1);
 
     await registry.stop();
@@ -332,20 +334,20 @@ describe("DeviceRegistry", () => {
     const createLink = () => link;
 
     const registry = new DeviceRegistry({ watcher, resolveName, createLink });
-    const lines: Array<{ deviceId: string; direction: string; line: string }> = [];
-    const errors: Array<{ deviceId: string | undefined; message: string }> = [];
-    registry.onLine((deviceId, direction, line) => lines.push({ deviceId, direction, line }));
-    registry.onError((deviceId, message) => errors.push({ deviceId, message }));
+    const lines: Array<{ endpointId: string; direction: string; line: string }> = [];
+    const errors: Array<{ endpointId: string | undefined; message: string }> = [];
+    registry.onLine((endpointId, direction, line) => lines.push({ endpointId, direction, line }));
+    registry.onError((endpointId, message) => errors.push({ endpointId, message }));
     registry.start();
 
-    await waitForSnapshot(registry, (s) => s[0]?.linkOpen === true);
-    await registry.sendLine("SERIAL-A", "HELLO");
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    await registry.sendLine("usb-SERIAL-A", "HELLO");
     expect(link.sentLines).toEqual(["HELLO"]);
-    expect(lines).toContainEqual({ deviceId: "SERIAL-A", direction: "tx", line: "HELLO" });
+    expect(lines).toContainEqual({ endpointId: "usb-SERIAL-A", direction: "tx", line: "HELLO" });
 
     await registry.sendLine("no-such-device", "HELLO");
     expect(errors).toContainEqual({
-      deviceId: "no-such-device",
+      endpointId: "no-such-device",
       message: "device no-such-device has no open link",
     });
 
@@ -360,15 +362,15 @@ describe("DeviceRegistry", () => {
     const createLink = () => link;
 
     const registry = new DeviceRegistry({ watcher, resolveName, createLink });
-    const lines: Array<{ deviceId: string; direction: string; line: string }> = [];
-    registry.onLine((deviceId, direction, l) => lines.push({ deviceId, direction, line: l }));
+    const lines: Array<{ endpointId: string; direction: string; line: string }> = [];
+    registry.onLine((endpointId, direction, l) => lines.push({ endpointId, direction, line: l }));
     registry.start();
 
-    await waitForSnapshot(registry, (s) => s[0]?.linkOpen === true);
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
     link.emitLine({ kind: "line", verb: "status", fields: ["mode=idle", "flags=d8"], id: 3 });
 
     expect(lines).toContainEqual({
-      deviceId: "SERIAL-A",
+      endpointId: "usb-SERIAL-A",
       direction: "rx",
       line: "status mode=idle flags=d8 #3",
     });
@@ -384,16 +386,16 @@ describe("DeviceRegistry", () => {
     const createLink = () => link;
 
     const registry = new DeviceRegistry({ watcher, resolveName, createLink });
-    const errors: Array<{ deviceId: string | undefined; message: string }> = [];
-    registry.onError((deviceId, message) => errors.push({ deviceId, message }));
+    const errors: Array<{ endpointId: string | undefined; message: string }> = [];
+    registry.onError((endpointId, message) => errors.push({ endpointId, message }));
     registry.start();
 
-    await waitForSnapshot(registry, (s) => s[0]?.linkOpen === true);
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
     expect(() => link.emitError(new Error("device unplugged"))).not.toThrow();
 
-    const snap = await waitForSnapshot(registry, (s) => s[0]?.linkOpen === false);
-    expect(snap[0]?.linkError).toBe("device unplugged");
-    expect(errors).toContainEqual({ deviceId: "SERIAL-A", message: "device unplugged" });
+    const snap = await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === false);
+    expect(snap[0]?.sessionError).toBe("device unplugged");
+    expect(errors).toContainEqual({ endpointId: "usb-SERIAL-A", message: "device unplugged" });
 
     await registry.stop();
   });
@@ -464,20 +466,20 @@ describe("DeviceRegistry — requestFlash", () => {
       flash: flashFn,
     });
 
-    const progress: Array<{ deviceId: string; firmware: FirmwareKind; phase: FlashPhase }> = [];
-    const results: Array<{ deviceId: string; firmware: FirmwareKind; status: string; message: string | undefined }> = [];
+    const progress: Array<{ endpointId: string; firmware: FirmwareKind; phase: FlashPhase }> = [];
+    const results: Array<{ endpointId: string; firmware: FirmwareKind; status: string; message: string | undefined }> = [];
     const flashStatusSnapshots: Array<{ firmware: FirmwareKind; phase: FlashPhase } | undefined> = [];
-    registry.onFlashProgress((deviceId, firmware, phase) => progress.push({ deviceId, firmware, phase }));
-    registry.onFlashResult((deviceId, firmware, status, message) =>
-      results.push({ deviceId, firmware, status, message }),
+    registry.onFlashProgress((endpointId, firmware, phase) => progress.push({ endpointId, firmware, phase }));
+    registry.onFlashResult((endpointId, firmware, status, message) =>
+      results.push({ endpointId, firmware, status, message }),
     );
     registry.onDevicesChanged((snap) => flashStatusSnapshots.push(snap[0]?.flashStatus));
 
     registry.start();
-    await waitForSnapshot(registry, (s) => s[0]?.linkOpen === true);
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
     expect(links).toHaveLength(1);
 
-    await registry.requestFlash("SERIAL-A", "relay");
+    await registry.requestFlash("usb-SERIAL-A", "relay");
 
     expect(progress.map((p) => p.phase)).toEqual([
       "fetching",
@@ -486,7 +488,7 @@ describe("DeviceRegistry — requestFlash", () => {
       "writing",
       "resetting",
     ]);
-    expect(results).toEqual([{ deviceId: "SERIAL-A", firmware: "relay", status: "ok", message: undefined }]);
+    expect(results).toEqual([{ endpointId: "usb-SERIAL-A", firmware: "relay", status: "ok", message: undefined }]);
     expect(resolveReleaseFn).toHaveBeenCalledTimes(1);
     expect(fetchAndVerifyHexFn).toHaveBeenCalledTimes(1);
     expect(flashFn).toHaveBeenCalledTimes(1);
@@ -496,7 +498,7 @@ describe("DeviceRegistry — requestFlash", () => {
 
     const snap = await waitForSnapshot(registry, (s) => s[0]?.role === "RADIORELAY");
     expect(snap[0]?.flashStatus).toBeUndefined();
-    expect(snap[0]?.linkOpen).toBe(true);
+    expect(snap[0]?.sessionOpen).toBe(true);
     // Re-opened after success to pick up the new banner.
     expect(links).toHaveLength(2);
 
@@ -524,12 +526,12 @@ describe("DeviceRegistry — requestFlash", () => {
     });
 
     const results: Array<{ status: string; message: string | undefined }> = [];
-    registry.onFlashResult((_deviceId, _firmware, status, message) => results.push({ status, message }));
+    registry.onFlashResult((_endpointId, _firmware, status, message) => results.push({ status, message }));
 
     registry.start();
-    await waitForSnapshot(registry, (s) => s[0]?.linkError !== undefined);
+    await waitForSnapshot(registry, (s) => s[0]?.sessionError !== undefined);
 
-    await registry.requestFlash("SERIAL-A", "relay");
+    await registry.requestFlash("usb-SERIAL-A", "relay");
 
     expect(flashFn).not.toHaveBeenCalled();
     expect(results).toEqual([{ status: "error", message: "sha256 mismatch for downloaded hex" }]);
@@ -559,12 +561,12 @@ describe("DeviceRegistry — requestFlash", () => {
     });
 
     const results: Array<{ status: string; message: string | undefined }> = [];
-    registry.onFlashResult((_deviceId, _firmware, status, message) => results.push({ status, message }));
+    registry.onFlashResult((_endpointId, _firmware, status, message) => results.push({ status, message }));
 
     registry.start();
-    await waitForSnapshot(registry, (s) => s[0]?.linkError !== undefined);
+    await waitForSnapshot(registry, (s) => s[0]?.sessionError !== undefined);
 
-    await registry.requestFlash("SERIAL-A", "robot");
+    await registry.requestFlash("usb-SERIAL-A", "robot");
 
     expect(fetchAndVerifyHexFn).not.toHaveBeenCalled();
     expect(flashFn).not.toHaveBeenCalled();
@@ -602,18 +604,18 @@ describe("DeviceRegistry — requestFlash", () => {
     });
 
     const results: Array<{ status: string; message: string | undefined }> = [];
-    registry.onFlashResult((_deviceId, _firmware, status, message) => results.push({ status, message }));
+    registry.onFlashResult((_endpointId, _firmware, status, message) => results.push({ status, message }));
 
     registry.start();
-    await waitForSnapshot(registry, (s) => s[0]?.linkError !== undefined);
+    await waitForSnapshot(registry, (s) => s[0]?.sessionError !== undefined);
     const createLinkCallsBefore = createLink.mock.calls.length;
 
-    await registry.requestFlash("SERIAL-A", "relay");
+    await registry.requestFlash("usb-SERIAL-A", "relay");
 
     expect(results).toEqual([{ status: "error", message: "write failed at page 3" }]);
     const snap = registry.snapshot();
     expect(snap[0]?.flashStatus).toBeUndefined();
-    expect(snap[0]?.linkOpen).toBe(false);
+    expect(snap[0]?.sessionOpen).toBe(false);
     // A failed flash never attempts to reopen -- nothing new to identify.
     expect(createLink.mock.calls.length).toBe(createLinkCallsBefore);
 
@@ -641,12 +643,12 @@ describe("DeviceRegistry — requestFlash", () => {
     });
 
     const results: Array<{ status: string; message: string | undefined }> = [];
-    registry.onFlashResult((_deviceId, _firmware, status, message) => results.push({ status, message }));
+    registry.onFlashResult((_endpointId, _firmware, status, message) => results.push({ status, message }));
 
     registry.start();
-    await waitForSnapshot(registry, (s) => s[0]?.linkError !== undefined);
+    await waitForSnapshot(registry, (s) => s[0]?.sessionError !== undefined);
 
-    await registry.requestFlash("SERIAL-A", "relay");
+    await registry.requestFlash("usb-SERIAL-A", "relay");
 
     expect(resolveReleaseFn).not.toHaveBeenCalled();
     expect(fetchAndVerifyHexFn).not.toHaveBeenCalled();
@@ -657,16 +659,16 @@ describe("DeviceRegistry — requestFlash", () => {
     await registry.stop();
   });
 
-  it("requestFlash for an unknown deviceId reports via onError, never throws", async () => {
+  it("requestFlash for an unknown endpointId reports via onError, never throws", async () => {
     const registry = new DeviceRegistry({
       watcher: fixtureWatcher(() => []),
       getFirmwareConfig: configWith(firmwareSource()),
     });
-    const errors: Array<{ deviceId: string | undefined; message: string }> = [];
-    registry.onError((deviceId, message) => errors.push({ deviceId, message }));
+    const errors: Array<{ endpointId: string | undefined; message: string }> = [];
+    registry.onError((endpointId, message) => errors.push({ endpointId, message }));
 
     await expect(registry.requestFlash("no-such-device", "relay")).resolves.toBeUndefined();
-    expect(errors).toContainEqual({ deviceId: "no-such-device", message: "no such device: no-such-device" });
+    expect(errors).toContainEqual({ endpointId: "no-such-device", message: "no such device: no-such-device" });
 
     await registry.stop();
   });
@@ -698,15 +700,15 @@ describe("DeviceRegistry — requestFlash", () => {
     });
 
     registry.start();
-    await waitForSnapshot(registry, (s) => s[0]?.linkError !== undefined);
+    await waitForSnapshot(registry, (s) => s[0]?.sessionError !== undefined);
 
     // Issued back-to-back for the same device: requestFlash's mutex slot
     // is claimed first, so requestOpen's own work must wait for the
     // entire flash task (including the slow "network" resolve step) to
     // finish before it ever runs -- the core mutex guarantee this
     // ticket relies on.
-    const flashPromise = registry.requestFlash("SERIAL-A", "relay").then(() => order.push("flash-done"));
-    const openPromise = registry.requestOpen("SERIAL-A").then(() => order.push("open-done"));
+    const flashPromise = registry.requestFlash("usb-SERIAL-A", "relay").then(() => order.push("flash-done"));
+    const openPromise = registry.requestOpen("usb-SERIAL-A").then(() => order.push("open-done"));
 
     await Promise.all([flashPromise, openPromise]);
 

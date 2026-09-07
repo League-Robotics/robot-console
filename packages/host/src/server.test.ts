@@ -207,30 +207,35 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
     expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
   });
 
-  it("sends a devices snapshot on connect, then a live-updated one with name/role resolved", async () => {
+  it("sends an endpoints snapshot on connect, then a live-updated one with name/role resolved", async () => {
     const link = new FakeLink(async () => banner());
     server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
     const connected = await connect(server.url.replace("http://", "ws://"));
     ws = connected.ws;
 
     const resolved = await connected.messages.waitFor(
-      (m) => m.type === "devices" && m.devices[0]?.role === "NEZHA2",
+      (m) => m.type === "endpoints" && m.endpoints[0]?.role === "NEZHA2",
     );
     expect(resolved).toEqual({
-      type: "devices",
-      devices: [
+      type: "endpoints",
+      endpoints: [
         expect.objectContaining({
-          id: "SERIAL-A",
-          serialNumber: "SERIAL-A",
-          displaySerial: "SHORT-A",
+          endpointId: "usb-SERIAL-A",
+          transport: "usb",
+          resourceKey: "usb-SERIAL-A",
+          classification: expect.objectContaining({ type: "robot" }),
           name: "zeguz",
           role: "NEZHA2",
-          port: "/dev/cu.usbmodemA",
-          linkOpen: true,
+          sessionOpen: true,
+          usb: {
+            serialNumber: "SERIAL-A",
+            displaySerial: "SHORT-A",
+            port: "/dev/cu.usbmodemA",
+          },
         }),
       ],
-      // Ticket 006: every `devices` broadcast carries `firmwareStatus`,
-      // built from the availability cache -- no `firmwareConfig`/
+      // Every `endpoints` broadcast carries `firmwareStatus`, built from
+      // the availability cache -- no `firmwareConfig`/
       // `availabilityCache` override was passed to `startServer` here,
       // so this exercises the real default (`getFirmwareConfig()` off
       // this test process's real, firmware-var-free environment) rather
@@ -249,19 +254,19 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
     const connected = await connect(server.url.replace("http://", "ws://"));
     ws = connected.ws;
 
-    await connected.messages.waitFor((m) => m.type === "devices" && m.devices[0]?.linkOpen === true);
+    await connected.messages.waitFor((m) => m.type === "endpoints" && m.endpoints[0]?.sessionOpen === true);
 
-    ws.send(JSON.stringify({ type: "line", deviceId: "SERIAL-A", direction: "tx", line: "HELLO" }));
+    ws.send(JSON.stringify({ type: "line", endpointId: "usb-SERIAL-A", direction: "tx", line: "HELLO" }));
 
     // Server echoes the sent line back to every client...
     const echoed = await connected.messages.waitFor((m) => m.type === "line" && m.direction === "tx");
-    expect(echoed).toEqual({ type: "line", deviceId: "SERIAL-A", direction: "tx", line: "HELLO" });
+    expect(echoed).toEqual({ type: "line", endpointId: "usb-SERIAL-A", direction: "tx", line: "HELLO" });
     expect(link.sentLines).toEqual(["HELLO"]);
 
     // ...and once the fake device "replies", the client sees that too.
     link.emitLine({ kind: "line", verb: "status", fields: ["mode=idle"] });
     const reply = await connected.messages.waitFor((m) => m.type === "line" && m.direction === "rx");
-    expect(reply).toEqual({ type: "line", deviceId: "SERIAL-A", direction: "rx", line: "status mode=idle" });
+    expect(reply).toEqual({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: "status mode=idle" });
   });
 
   it("reports a graceful error, not a crash, for a line sent to a device with no open link", async () => {
@@ -282,14 +287,14 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
     const connected = await connect(server.url.replace("http://", "ws://"));
     ws = connected.ws;
 
-    await connected.messages.waitFor((m) => m.type === "devices" && m.devices.length === 1);
-    ws.send(JSON.stringify({ type: "line", deviceId: "SERIAL-A", direction: "tx", line: "HELLO" }));
+    await connected.messages.waitFor((m) => m.type === "endpoints" && m.endpoints.length === 1);
+    ws.send(JSON.stringify({ type: "line", endpointId: "usb-SERIAL-A", direction: "tx", line: "HELLO" }));
 
     const error = await connected.messages.waitFor((m) => m.type === "error");
     expect(error).toEqual({
       type: "error",
-      deviceId: "SERIAL-A",
-      message: "device SERIAL-A has no open link",
+      endpointId: "usb-SERIAL-A",
+      message: "device usb-SERIAL-A has no open link",
     });
   });
 
@@ -299,7 +304,7 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
     const connected = await connect(server.url.replace("http://", "ws://"));
     ws = connected.ws;
 
-    await connected.messages.waitFor((m) => m.type === "devices");
+    await connected.messages.waitFor((m) => m.type === "endpoints");
     ws.send("not json");
 
     const error = await connected.messages.waitFor((m) => m.type === "error");
@@ -371,23 +376,29 @@ describe("server.ts flash wiring (sprint 2, ticket 006)", () => {
     // tab too" requirement).
     const second = await connectTracked(server.url.replace("http://", "ws://"));
 
-    await first.messages.waitFor((m) => m.type === "devices" && m.devices[0]?.linkOpen === true);
+    await first.messages.waitFor((m) => m.type === "endpoints" && m.endpoints[0]?.sessionOpen === true);
 
-    first.ws.send(JSON.stringify({ type: "flash-start", deviceId: "SERIAL-A", firmware: "relay" }));
+    first.ws.send(
+      JSON.stringify({
+        type: "flash-start",
+        endpointId: "usb-SERIAL-A",
+        source: { kind: "release", firmware: "relay" },
+      }),
+    );
 
     const progressOnFirst = await first.messages.waitFor((m) => m.type === "flash-progress");
     expect(progressOnFirst).toEqual({
       type: "flash-progress",
-      deviceId: "SERIAL-A",
-      firmware: "relay",
+      endpointId: "usb-SERIAL-A",
+      source: { kind: "release", firmware: "relay" },
       phase: "fetching",
     });
 
     const resultOnFirst = await first.messages.waitFor((m) => m.type === "flash-result");
     expect(resultOnFirst).toEqual({
       type: "flash-result",
-      deviceId: "SERIAL-A",
-      firmware: "relay",
+      endpointId: "usb-SERIAL-A",
+      source: { kind: "release", firmware: "relay" },
       status: "ok",
     });
 
@@ -396,8 +407,8 @@ describe("server.ts flash wiring (sprint 2, ticket 006)", () => {
     const resultOnSecond = await second.messages.waitFor((m) => m.type === "flash-result");
     expect(resultOnSecond).toEqual({
       type: "flash-result",
-      deviceId: "SERIAL-A",
-      firmware: "relay",
+      endpointId: "usb-SERIAL-A",
+      source: { kind: "release", firmware: "relay" },
       status: "ok",
     });
 
@@ -434,9 +445,9 @@ describe("server.ts firmwareStatus (sprint 2, ticket 006)", () => {
     const connected = await connect(server.url.replace("http://", "ws://"));
     ws = connected.ws;
 
-    const initial = await connected.messages.waitFor((m) => m.type === "devices");
+    const initial = await connected.messages.waitFor((m) => m.type === "endpoints");
     expect(initial).toMatchObject({
-      type: "devices",
+      type: "endpoints",
       firmwareStatus: {
         relay: { configured: true, repoUrl: firmwareSource().repoUrl, tag: "latest", available: true },
         robot: { configured: false },
@@ -465,7 +476,7 @@ describe("server.ts firmwareStatus (sprint 2, ticket 006)", () => {
     const connected = await connect(server.url.replace("http://", "ws://"));
     ws = connected.ws;
 
-    const initial = await connected.messages.waitFor((m) => m.type === "devices");
+    const initial = await connected.messages.waitFor((m) => m.type === "endpoints");
     expect(initial).toMatchObject({ firmwareStatus: { robot: { configured: true, available: false } } });
 
     // The poll (not any client message) is what flips this -- simulating
@@ -475,12 +486,12 @@ describe("server.ts firmwareStatus (sprint 2, ticket 006)", () => {
 
     const updated = await connected.messages.waitFor(
       (m) =>
-        m.type === "devices" &&
+        m.type === "endpoints" &&
         m.firmwareStatus.robot.configured === true &&
         m.firmwareStatus.robot.available === true,
     );
     expect(updated).toMatchObject({
-      type: "devices",
+      type: "endpoints",
       firmwareStatus: {
         relay: { configured: false },
         robot: {

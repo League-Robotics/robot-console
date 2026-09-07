@@ -7,10 +7,13 @@
  * consume, rather than each tab opening its own socket. This module is
  * that shared piece: it owns the socket lifecycle (connect, reconnect
  * after an unexpected close, teardown on unmount), keeps the latest
- * `devices` snapshot in React state (the server always sends a full
- * snapshot, never a delta -- see `wsMessages.ts`'s `DevicesMessage`
- * doc comment -- so consumers never need to diff), also keeps the
- * snapshot's `firmwareStatus` (sprint 2) in state alongside `devices`,
+ * `endpoints` snapshot in React state (still exposed as `devices` on
+ * this module's own context, per its "internal store shape" being out
+ * of scope for sprint 4's ticket 001 -- ticket 006 is what reworks this
+ * to a ref-backed store) -- the server always sends a full snapshot,
+ * never a delta -- see `wsMessages.ts`'s `EndpointsMessage` doc comment
+ * -- so consumers never need to diff. It also keeps the snapshot's
+ * `firmwareStatus` (sprint 2) in state alongside `devices`,
  * and offers a small pub/sub surface for `line`/`error`/`flash-result`
  * messages that a future Console tab (or, for `flash-result`, the
  * Devices tab itself) can subscribe to without this module needing to
@@ -31,7 +34,7 @@ import {
 } from "react";
 import type {
   ClientMessage,
-  DeviceListEntry,
+  EndpointListEntry,
   ErrorMessage,
   FirmwareAvailability,
   FirmwareKind,
@@ -72,9 +75,9 @@ const WEBSOCKET_OPEN = 1;
 
 interface WsContextValue {
   status: ConnectionStatus;
-  devices: DeviceListEntry[];
-  /** Per-firmware availability from the most recent `devices` snapshot
-   * (sprint 2) -- see `wsMessages.ts`'s `DevicesMessage.firmwareStatus`
+  devices: EndpointListEntry[];
+  /** Per-firmware availability from the most recent `endpoints` snapshot
+   * (sprint 2) -- see `wsMessages.ts`'s `EndpointsMessage.firmwareStatus`
    * doc comment. Drives the robot/relay flash buttons' disabled state
    * in `DevicesTab`; never a hardcoded UI flag. */
   firmwareStatus: Record<FirmwareKind, FirmwareAvailability>;
@@ -83,8 +86,8 @@ interface WsContextValue {
   onError: (handler: (message: ErrorMessage) => void) => () => void;
   /** Subscribe to the terminal outcome of a flash (sprint 2). Per-phase
    * progress does *not* need a matching subscription: `deviceRegistry.ts`
-   * re-emits a full `devices` snapshot on every `FlashPhase` change (see
-   * `server.ts`'s `onDevicesChanged` wiring), so `DeviceListEntry.flashStatus`
+   * re-emits a full `endpoints` snapshot on every `FlashPhase` change (see
+   * `server.ts`'s `onDevicesChanged` wiring), so `EndpointListEntry.flashStatus`
    * alone already carries live progress. Only the terminal `flash-result`'s
    * `message` (present on `status: "error"`) is not represented anywhere in
    * the snapshot -- `flashStatus` is cleared, not replaced with an error --
@@ -140,7 +143,7 @@ export interface WsProviderProps {
 
 export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
-  const [devices, setDevices] = useState<DeviceListEntry[]>([]);
+  const [devices, setDevices] = useState<EndpointListEntry[]>([]);
   const [firmwareStatus, setFirmwareStatus] = useState<Record<FirmwareKind, FirmwareAvailability>>(
     DEFAULT_FIRMWARE_STATUS,
   );
@@ -185,8 +188,8 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
           return;
         }
         switch (parsed.type) {
-          case "devices":
-            setDevices(parsed.devices);
+          case "endpoints":
+            setDevices(parsed.endpoints);
             setFirmwareStatus(parsed.firmwareStatus);
             break;
           case "line":

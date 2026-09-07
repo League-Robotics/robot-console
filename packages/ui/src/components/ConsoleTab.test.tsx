@@ -15,7 +15,7 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DeviceListEntry } from "@robot-console/host/src/wsMessages.js";
+import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
 import { ConsoleTab, MAX_LINES_PER_DEVICE, classifyLine } from "./ConsoleTab";
 import { WsProvider, type WebSocketLike } from "../ws/WsProvider";
 
@@ -65,16 +65,27 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function baseDevice(overrides: Partial<DeviceListEntry> = {}): DeviceListEntry {
+/** Convenience shape for fixture construction: a flatter, pre-sprint-4
+ * -like set of fields (`id`/`linkOpen`) that {@link baseDevice}
+ * translates into the real, reshaped {@link EndpointListEntry} --
+ * mirrors `DevicesTab.test.tsx`'s own `BaseDeviceOverrides`. */
+interface BaseDeviceOverrides {
+  id?: string;
+  name?: string | null;
+  linkOpen?: boolean;
+}
+
+function baseDevice(overrides: BaseDeviceOverrides = {}): EndpointListEntry {
+  const id = overrides.id ?? "SERIAL-A";
   return {
-    id: "SERIAL-A",
-    serialNumber: "SERIAL-A-FULL",
-    displaySerial: "0002",
-    name: "zeguz",
+    endpointId: `usb-${id}`,
+    transport: "usb",
+    resourceKey: `usb-${id}`,
+    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
+    name: overrides.name ?? "zeguz",
     role: "NEZHA2",
-    port: "/dev/cu.usbmodemA",
-    linkOpen: true,
-    ...overrides,
+    sessionOpen: overrides.linkOpen ?? true,
+    usb: { serialNumber: `${id}-FULL`, displaySerial: "0002", port: "/dev/cu.usbmodemA" },
   };
 }
 
@@ -121,7 +132,7 @@ class FakeSocket implements WebSocketLike {
   }
 }
 
-function mountConsole(devices: DeviceListEntry[]): { el: HTMLDivElement; socket: FakeSocket } {
+function mountConsole(devices: EndpointListEntry[]): { el: HTMLDivElement; socket: FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
@@ -132,7 +143,7 @@ function mountConsole(devices: DeviceListEntry[]): { el: HTMLDivElement; socket:
     socket!.emitOpen();
   });
   act(() => {
-    socket!.emitMessage({ type: "devices", devices });
+    socket!.emitMessage({ type: "endpoints", endpoints: devices });
   });
   return { el, socket: socket! };
 }
@@ -168,13 +179,13 @@ describe("ConsoleTab", () => {
     ]);
 
     const select = el.querySelector<HTMLSelectElement>('[data-testid="console-device-select"]')!;
-    expect(select.value).toBe("SERIAL-A");
+    expect(select.value).toBe("usb-SERIAL-A");
     expect(el.textContent).toContain("zeguz");
     expect(el.textContent).toContain("kivon");
 
     act(() => {
-      socket.emitMessage({ type: "line", deviceId: "SERIAL-A", direction: "rx", line: "hello from A" });
-      socket.emitMessage({ type: "line", deviceId: "SERIAL-B", direction: "rx", line: "hello from B" });
+      socket.emitMessage({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: "hello from A" });
+      socket.emitMessage({ type: "line", endpointId: "usb-SERIAL-B", direction: "rx", line: "hello from B" });
     });
 
     // Device A is selected by default -- only its line shows.
@@ -184,7 +195,7 @@ describe("ConsoleTab", () => {
     // Switching devices reveals B's log and hides A's, without losing
     // either device's history.
     act(() => {
-      select.value = "SERIAL-B";
+      select.value = "usb-SERIAL-B";
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(el.textContent).toContain("hello from B");
@@ -195,8 +206,8 @@ describe("ConsoleTab", () => {
     const { el, socket } = mountConsole([baseDevice()]);
 
     act(() => {
-      socket.emitMessage({ type: "line", deviceId: "SERIAL-A", direction: "tx", line: "HELLO" });
-      socket.emitMessage({ type: "line", deviceId: "SERIAL-A", direction: "rx", line: "ack HELLO" });
+      socket.emitMessage({ type: "line", endpointId: "usb-SERIAL-A", direction: "tx", line: "HELLO" });
+      socket.emitMessage({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: "ack HELLO" });
     });
 
     const txLine = el.querySelector('[data-testid="console-line-tx"]');
@@ -222,7 +233,7 @@ describe("ConsoleTab", () => {
     expect(socket.sent).toHaveLength(1);
     expect(JSON.parse(socket.sent[0]!)).toEqual({
       type: "line",
-      deviceId: "SERIAL-A",
+      endpointId: "usb-SERIAL-A",
       direction: "tx",
       line: "STATUS",
     });
@@ -232,7 +243,7 @@ describe("ConsoleTab", () => {
     expect(el.querySelector('[data-testid="console-line-tx"]')).toBeNull();
 
     act(() => {
-      socket.emitMessage({ type: "line", deviceId: "SERIAL-A", direction: "tx", line: "STATUS" });
+      socket.emitMessage({ type: "line", endpointId: "usb-SERIAL-A", direction: "tx", line: "STATUS" });
     });
     expect(el.querySelector('[data-testid="console-line-tx"]')?.textContent).toContain("STATUS");
   });
@@ -298,8 +309,8 @@ describe("ConsoleTab", () => {
     ]);
 
     act(() => {
-      socket.emitMessage({ type: "line", deviceId: "SERIAL-A", direction: "rx", line: "line-a" });
-      socket.emitMessage({ type: "line", deviceId: "SERIAL-B", direction: "rx", line: "line-b" });
+      socket.emitMessage({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: "line-a" });
+      socket.emitMessage({ type: "line", endpointId: "usb-SERIAL-B", direction: "rx", line: "line-b" });
     });
     expect(el.textContent).toContain("line-a");
 
@@ -313,7 +324,7 @@ describe("ConsoleTab", () => {
 
     const select = el.querySelector<HTMLSelectElement>('[data-testid="console-device-select"]')!;
     act(() => {
-      select.value = "SERIAL-B";
+      select.value = "usb-SERIAL-B";
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(el.textContent).toContain("line-b");
@@ -324,7 +335,7 @@ describe("ConsoleTab", () => {
 
     act(() => {
       for (let i = 0; i < MAX_LINES_PER_DEVICE + 5; i++) {
-        socket.emitMessage({ type: "line", deviceId: "SERIAL-A", direction: "rx", line: `n${i}` });
+        socket.emitMessage({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: `n${i}` });
       }
     });
 

@@ -33,7 +33,7 @@
  * language for a non-technical reader.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { DeviceListEntry, LineMessage } from "@robot-console/host/src/wsMessages.js";
+import type { EndpointListEntry, LineMessage } from "@robot-console/host/src/wsMessages.js";
 import { useWs } from "../ws/WsProvider";
 import "./ConsoleTab.css";
 
@@ -82,7 +82,7 @@ export function classifyLine(line: string): LineKind {
   return "data";
 }
 
-function deviceLabel(device: DeviceListEntry): string {
+function deviceLabel(device: EndpointListEntry): string {
   if (device.name) {
     return device.name;
   }
@@ -108,7 +108,7 @@ export function ConsoleTab() {
   useEffect(() => {
     return onLine((message: LineMessage) => {
       setLogsByDevice((prev) => {
-        const existing = prev[message.deviceId] ?? [];
+        const existing = prev[message.endpointId] ?? [];
         const next = existing.concat({
           id: nextLogEntryId++,
           direction: message.direction,
@@ -117,7 +117,7 @@ export function ConsoleTab() {
         if (next.length > MAX_LINES_PER_DEVICE) {
           next.splice(0, next.length - MAX_LINES_PER_DEVICE);
         }
-        return { ...prev, [message.deviceId]: next };
+        return { ...prev, [message.endpointId]: next };
       });
     });
   }, [onLine]);
@@ -128,7 +128,7 @@ export function ConsoleTab() {
   useEffect(() => {
     const first = devices[0];
     if (selectedId === null && first) {
-      setSelectedId(first.id);
+      setSelectedId(first.endpointId);
     }
   }, [selectedId, devices]);
 
@@ -140,7 +140,7 @@ export function ConsoleTab() {
     };
   }, []);
 
-  const selectedDevice = devices.find((device) => device.id === selectedId) ?? null;
+  const selectedDevice = devices.find((device) => device.endpointId === selectedId) ?? null;
   const log = selectedId ? logsByDevice[selectedId] ?? [] : [];
 
   useEffect(() => {
@@ -149,7 +149,7 @@ export function ConsoleTab() {
     }
   }, [log, autoScroll]);
 
-  const linkOpen = selectedDevice?.linkOpen ?? false;
+  const linkOpen = selectedDevice?.sessionOpen ?? false;
   const sendDisabled = status !== "open" || !selectedId || !linkOpen || pending;
 
   const submitLine = useCallback(() => {
@@ -160,7 +160,7 @@ export function ConsoleTab() {
     if (line.length === 0) {
       return;
     }
-    send({ type: "line", deviceId: selectedId, direction: "tx", line });
+    send({ type: "line", endpointId: selectedId, direction: "tx", line });
     setDraft("");
     setPending(true);
     cooldownTimer.current = setTimeout(() => setPending(false), SEND_COOLDOWN_MS);
@@ -175,7 +175,7 @@ export function ConsoleTab() {
 
   const openLink = () => {
     if (selectedId) {
-      send({ type: "open", deviceId: selectedId });
+      send({ type: "session-open", endpointId: selectedId });
     }
   };
 
@@ -200,7 +200,7 @@ export function ConsoleTab() {
           >
             {devices.length === 0 && <option value="">No devices</option>}
             {devices.map((device) => (
-              <option key={device.id} value={device.id}>
+              <option key={device.endpointId} value={device.endpointId}>
                 {deviceLabel(device)}
                 {device.role ? ` — ${device.role}` : ""}
               </option>
@@ -221,7 +221,7 @@ export function ConsoleTab() {
         </button>
       </div>
 
-      {selectedDevice && !selectedDevice.linkOpen && (
+      {selectedDevice && !selectedDevice.sessionOpen && (
         <p className="console-hint" role="status">
           No link open to {deviceLabel(selectedDevice)} —{" "}
           <button type="button" className="console-link-button" onClick={openLink}>

@@ -5,7 +5,7 @@
  *
  * Two layers, matching the ticket's testing note:
  *  - `DevicesList` (presentational) is exercised directly against
- *    plain `DeviceListEntry` data shaped exactly like a `type:
+ *    plain `EndpointListEntry` data shaped exactly like a `type:
  *    'devices'` WebSocket message's payload -- normal row rendering,
  *    the unnamed/error flag, and the unresponsive-device case.
  *  - One test drives the real `WsProvider` against a fully synthetic
@@ -17,7 +17,7 @@ import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import type {
-  DeviceListEntry,
+  EndpointListEntry,
   FirmwareAvailability,
   FirmwareKind,
 } from "@robot-console/host/src/wsMessages.js";
@@ -50,22 +50,74 @@ afterEach(() => {
   }
 });
 
-function baseDevice(overrides: Partial<DeviceListEntry> = {}): DeviceListEntry {
-  return {
-    id: "SERIAL-A",
-    serialNumber: "SERIAL-A-FULL",
-    displaySerial: "0002",
-    name: "zeguz",
-    role: "NEZHA2",
-    port: "/dev/cu.usbmodemA",
-    linkOpen: true,
-    ...overrides,
-  };
+/** Convenience shape for fixture construction: a flatter, pre-sprint-4
+ * -like set of fields (`id`/`serialNumber`/`displaySerial`/`port`/
+ * `linkOpen`/`linkError`) that {@link baseDevice} translates into the
+ * real, reshaped {@link EndpointListEntry} -- so the ~20 call sites
+ * below didn't all need to learn the new nested `usb`/`sessionOpen`/
+ * `sessionError` shape individually. */
+interface BaseDeviceOverrides {
+  id?: string;
+  serialNumber?: string;
+  displaySerial?: string;
+  name?: string | null;
+  role?: string | null;
+  port?: string | null;
+  linkOpen?: boolean;
+  linkError?: string;
+  nameError?: { reason: string; message: string };
+  flashStatus?: EndpointListEntry["flashStatus"];
 }
 
-/** A failed-identify device -- `role: null`, `linkError` set -- the
+/** A device's classification, derived from `role` the same way
+ * `classifyBanner` would for these fixture roles -- good enough for
+ * fixtures that never assert on `classification` directly (every
+ * assertion in this file reads `role`/`sessionOpen`/`sessionError`, per
+ * `DevicesList`'s own rendering, which never branches on
+ * `classification`). */
+function classificationFor(role: string | null): EndpointListEntry["classification"] {
+  if (role === null) {
+    return { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none" };
+  }
+  if (role === "NEZHA2") {
+    return { type: "robot", role, commonName: "robot", dialect: "space", evidence: "role" };
+  }
+  return { type: "unknown", role, commonName: null, dialect: null, evidence: "unrecognized" };
+}
+
+function baseDevice(overrides: BaseDeviceOverrides = {}): EndpointListEntry {
+  const id = overrides.id ?? "SERIAL-A";
+  const role = "role" in overrides ? (overrides.role ?? null) : "NEZHA2";
+  const port = "port" in overrides ? (overrides.port ?? null) : "/dev/cu.usbmodemA";
+  const entry: EndpointListEntry = {
+    endpointId: `usb-${id}`,
+    transport: "usb",
+    resourceKey: `usb-${id}`,
+    classification: classificationFor(role),
+    name: "name" in overrides ? (overrides.name ?? null) : "zeguz",
+    role,
+    sessionOpen: overrides.linkOpen ?? true,
+    usb: {
+      serialNumber: overrides.serialNumber ?? "SERIAL-A-FULL",
+      displaySerial: overrides.displaySerial ?? "0002",
+      port,
+    },
+  };
+  if (overrides.nameError) {
+    entry.nameError = overrides.nameError;
+  }
+  if (overrides.linkError) {
+    entry.sessionError = overrides.linkError;
+  }
+  if (overrides.flashStatus) {
+    entry.flashStatus = overrides.flashStatus;
+  }
+  return entry;
+}
+
+/** A failed-identify device -- `role: null`, `sessionError` set -- the
  * only state per the sprint architecture that renders flash buttons. */
-function failedIdentifyDevice(overrides: Partial<DeviceListEntry> = {}): DeviceListEntry {
+function failedIdentifyDevice(overrides: BaseDeviceOverrides = {}): EndpointListEntry {
   return baseDevice({
     id: "SERIAL-UNRESPONSIVE",
     name: "zeguz",
@@ -139,7 +191,7 @@ describe("DevicesList", () => {
     expect(text).toContain("Unnamed device");
     expect(text).toContain("could not attach over SWD");
     // Never omitted: the row itself must still be present.
-    expect(el.querySelector('[data-testid="device-SERIAL-B"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="device-usb-SERIAL-B"]')).not.toBeNull();
   });
 
   it("shows a device that never replied to HELLO as unresponsive, not assigned a role", () => {
@@ -241,7 +293,7 @@ describe("DevicesList", () => {
     act(() => {
       button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(opened).toEqual(["SERIAL-E"]);
+    expect(opened).toEqual(["usb-SERIAL-E"]);
   });
 
   it("sends a close message when Disconnect is clicked on an open device", () => {
@@ -260,7 +312,7 @@ describe("DevicesList", () => {
     act(() => {
       button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(closed).toEqual(["SERIAL-F"]);
+    expect(closed).toEqual(["usb-SERIAL-F"]);
   });
 
   it("shows no flash buttons for an identified device", () => {
@@ -388,7 +440,7 @@ describe("DevicesList", () => {
   });
 
   it("sends a flash-start message when Flash relay firmware is clicked", () => {
-    const sent: Array<{ deviceId: string; firmware: FirmwareKind }> = [];
+    const sent: Array<{ endpointId: string; firmware: FirmwareKind }> = [];
     const el = mount(
       <DevicesList
         status="open"
@@ -396,7 +448,7 @@ describe("DevicesList", () => {
         firmwareStatus={firmwareStatusFixture()}
         onOpen={() => {}}
         onClose={() => {}}
-        onFlash={(deviceId, firmware) => sent.push({ deviceId, firmware })}
+        onFlash={(endpointId, firmware) => sent.push({ endpointId, firmware })}
       />,
     );
 
@@ -405,7 +457,7 @@ describe("DevicesList", () => {
     act(() => {
       relayButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(sent).toEqual([{ deviceId: "SERIAL-FLASH", firmware: "relay" }]);
+    expect(sent).toEqual([{ endpointId: "usb-SERIAL-FLASH", firmware: "relay" }]);
   });
 
   it("hides both flash buttons and shows phase-derived progress while flashStatus is set", () => {
@@ -435,7 +487,7 @@ describe("DevicesList", () => {
         status="open"
         devices={[failedIdentifyDevice()]}
         firmwareStatus={firmwareStatusFixture()}
-        flashErrors={{ "SERIAL-UNRESPONSIVE": "sha256 mismatch on downloaded hex" }}
+        flashErrors={{ "usb-SERIAL-UNRESPONSIVE": "sha256 mismatch on downloaded hex" }}
         onOpen={() => {}}
         onClose={() => {}}
       />,
@@ -505,8 +557,8 @@ describe("WsProvider end-to-end wiring", () => {
 
     act(() => {
       socket!.emitMessage({
-        type: "devices",
-        devices: [baseDevice({ id: "SERIAL-LIVE", name: "kivon" })],
+        type: "endpoints",
+        endpoints: [baseDevice({ id: "SERIAL-LIVE", name: "kivon" })],
       });
     });
 
@@ -526,8 +578,8 @@ describe("WsProvider end-to-end wiring", () => {
     });
     act(() => {
       socket!.emitMessage({
-        type: "devices",
-        devices: [
+        type: "endpoints",
+        endpoints: [
           baseDevice({
             id: "SERIAL-LIVE-FLASH",
             name: "kivon",
@@ -548,7 +600,11 @@ describe("WsProvider end-to-end wiring", () => {
     });
 
     expect(socket!.sent).toEqual([
-      JSON.stringify({ type: "flash-start", deviceId: "SERIAL-LIVE-FLASH", firmware: "relay" }),
+      JSON.stringify({
+        type: "flash-start",
+        endpointId: "usb-SERIAL-LIVE-FLASH",
+        source: { kind: "release", firmware: "relay" },
+      }),
     ]);
   });
 
@@ -565,8 +621,8 @@ describe("WsProvider end-to-end wiring", () => {
     });
     act(() => {
       socket!.emitMessage({
-        type: "devices",
-        devices: [
+        type: "endpoints",
+        endpoints: [
           baseDevice({
             id: "SERIAL-LIVE-ERROR",
             name: "kivon",
@@ -584,8 +640,8 @@ describe("WsProvider end-to-end wiring", () => {
     act(() => {
       socket!.emitMessage({
         type: "flash-result",
-        deviceId: "SERIAL-LIVE-ERROR",
-        firmware: "relay",
+        endpointId: "usb-SERIAL-LIVE-ERROR",
+        source: { kind: "release", firmware: "relay" },
         status: "error",
         message: "sha256 mismatch on downloaded hex",
       });

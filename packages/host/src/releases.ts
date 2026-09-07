@@ -380,7 +380,7 @@ export async function checkAvailability(
 const FIRMWARE_KINDS: readonly FirmwareKind[] = ["relay", "robot"];
 
 /** Full per-firmware availability snapshot, as `server.ts` merges into
- * every `DevicesMessage.firmwareStatus`. */
+ * every `EndpointsMessage.firmwareStatus`. */
 export type FirmwareStatusMap = Record<FirmwareKind, FirmwareAvailability>;
 
 export type FirmwareAvailabilityListener = (current: FirmwareStatusMap) => void;

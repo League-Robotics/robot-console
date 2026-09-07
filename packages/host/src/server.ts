@@ -1,22 +1,30 @@
 /**
  * server.ts — transport to the UI (`docs/design/specification.md` §4.7).
  *
- * Express + `ws`: one WebSocket carries device-list updates and line
+ * Express + `ws`: one WebSocket carries endpoint-list updates and line
  * traffic to and from the browser (telemetry frames join this same
- * channel in sprint 4, not this one). Express itself serves the built
- * `packages/ui` output as static files. Sprint 2 (ticket 006) adds
- * flash-start/flash-progress/flash-result traffic and merges the
- * `FirmwareAvailabilityCache`'s current status into every `devices`
- * broadcast, joining the same channel and the same "no logic of its
- * own" contract described below.
+ * channel in a later sprint). Express itself serves the built
+ * `packages/ui` output as static files. This module merges the
+ * `FirmwareAvailabilityCache`'s current status into every `endpoints`
+ * broadcast, and wires flash-start/flash-progress/flash-result traffic,
+ * all joining the same channel and the same "no logic of its own"
+ * contract described below.
  *
  * This module contains **no naming, framing, or sequencing logic of its
  * own** -- it only composes `deviceRegistry.ts` (itself a composition of
- * `devices.ts` + `swdName.ts` + `UsbSerialLink`) into
+ * `devices.ts` + `swdName.ts` + `classifyBanner` + `UsbSerialLink`) into
  * {@link ServerMessage}-shaped WebSocket traffic, per `wsMessages.ts`'s
  * shared contract. If a bug here looks like it needs new protocol
  * logic, that logic belongs in `@robot-console/protocol` or one of
  * `host`'s other modules instead -- see the ticket.
+ *
+ * Sprint 4 note: `flash-start`'s `source: FirmwareSourceRef` can name
+ * either a configured release build (`kind: "release"`, wired below the
+ * same way `firmware` was before the reshape) or a locally-uploaded hex
+ * (`kind: "local-hex"`). The local-hex upload handshake itself
+ * (`localHexUpload.ts`, the binary-frame handler) is a later ticket's
+ * scope -- this module reports a clear, non-crashing error for
+ * `kind: "local-hex"` today rather than pretending to flash it.
  *
  * **Localhost only.** This process can open serial ports, attach over
  * SWD, and (in later sprints) flash firmware and drive a physical
@@ -34,7 +42,12 @@ import { WebSocket, WebSocketServer } from "ws";
 import { DeviceRegistry } from "./deviceRegistry.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
 import { FirmwareAvailabilityCache } from "./releases.js";
-import { parseClientMessage, type DeviceListEntry, type DevicesMessage, type ServerMessage } from "./wsMessages.js";
+import {
+  parseClientMessage,
+  type EndpointListEntry,
+  type EndpointsMessage,
+  type ServerMessage,
+} from "./wsMessages.js";
 
 /** Default port `npx robot-console` listens on. Override via
  * {@link StartServerOptions.port} (the `cli.ts` entry point also
@@ -194,44 +207,50 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     }
   }
 
-  /** Merge an already-computed device snapshot with the availability
-   * cache's current status into one full-snapshot {@link DevicesMessage}
+  /** Merge an already-computed endpoint snapshot with the availability
+   * cache's current status into one full-snapshot {@link EndpointsMessage}
    * -- no new logic, per this module's own "composition only" contract. */
-  function buildDevicesMessage(devices: DeviceListEntry[]): DevicesMessage {
-    return { type: "devices", devices, firmwareStatus: availabilityCache.current() };
+  function buildEndpointsMessage(endpoints: EndpointListEntry[]): EndpointsMessage {
+    return { type: "endpoints", endpoints, firmwareStatus: availabilityCache.current() };
   }
 
-  const unsubscribeDevices = registry.onDevicesChanged((devices) => {
-    broadcast(buildDevicesMessage(devices));
+  const unsubscribeDevices = registry.onDevicesChanged((endpoints) => {
+    broadcast(buildEndpointsMessage(endpoints));
   });
-  const unsubscribeLine = registry.onLine((deviceId, direction, line) => {
-    broadcast({ type: "line", deviceId, direction, line });
+  const unsubscribeLine = registry.onLine((endpointId, direction, line) => {
+    broadcast({ type: "line", endpointId, direction, line });
   });
-  const unsubscribeError = registry.onError((deviceId, message) => {
-    broadcast(deviceId !== undefined ? { type: "error", deviceId, message } : { type: "error", message });
+  const unsubscribeError = registry.onError((endpointId, message) => {
+    broadcast(endpointId !== undefined ? { type: "error", endpointId, message } : { type: "error", message });
   });
-  const unsubscribeFlashProgress = registry.onFlashProgress((deviceId, firmware, phase) => {
-    broadcast({ type: "flash-progress", deviceId, firmware, phase });
+  // requestFlash (deviceRegistry.ts) does not yet know about
+  // FirmwareSourceRef -- it still only flashes a configured release
+  // build (see this module's own doc comment) -- so every progress/
+  // result event it emits is wrapped as a `"release"` source here. A
+  // later ticket teaches deviceRegistry.ts about local-hex sources
+  // directly, at which point this wrapping moves there.
+  const unsubscribeFlashProgress = registry.onFlashProgress((endpointId, firmware, phase) => {
+    broadcast({ type: "flash-progress", endpointId, source: { kind: "release", firmware }, phase });
   });
-  const unsubscribeFlashResult = registry.onFlashResult((deviceId, firmware, status, message) => {
+  const unsubscribeFlashResult = registry.onFlashResult((endpointId, firmware, status, message) => {
     broadcast(
       message !== undefined
-        ? { type: "flash-result", deviceId, firmware, status, message }
-        : { type: "flash-result", deviceId, firmware, status },
+        ? { type: "flash-result", endpointId, source: { kind: "release", firmware }, status, message }
+        : { type: "flash-result", endpointId, source: { kind: "release", firmware }, status },
     );
   });
   // The availability cache's own poll can change `firmwareStatus`
   // independently of any device attach/detach -- re-broadcast the
-  // current device snapshot so the robot-firmware button can flip to
+  // current endpoint snapshot so the robot-firmware button can flip to
   // enabled with no user action, per the ticket's self-healing
   // requirement.
   const unsubscribeAvailability = availabilityCache.onChange(() => {
-    broadcast(buildDevicesMessage(registry.snapshot()));
+    broadcast(buildEndpointsMessage(registry.snapshot()));
   });
 
   wss.on("connection", (ws) => {
     clients.add(ws);
-    ws.send(JSON.stringify(buildDevicesMessage(registry.snapshot()) satisfies ServerMessage));
+    ws.send(JSON.stringify(buildEndpointsMessage(registry.snapshot()) satisfies ServerMessage));
 
     ws.on("message", (data) => {
       let parsed: unknown;
@@ -254,17 +273,47 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
         return;
       }
       switch (message.type) {
-        case "open":
-          void registry.requestOpen(message.deviceId);
+        case "session-open":
+          // `robotName` (reserved for sprint 7) is ignored -- every
+          // endpoint this sprint is a direct USB device, so there is no
+          // robot to route to. See wsMessages.ts's SessionOpenMessage
+          // doc comment.
+          void registry.requestOpen(message.endpointId);
           break;
-        case "close":
-          void registry.requestClose(message.deviceId);
+        case "session-close":
+          void registry.requestClose(message.endpointId);
           break;
         case "line":
-          void registry.sendLine(message.deviceId, message.line);
+          void registry.sendLine(message.endpointId, message.line);
           break;
         case "flash-start":
-          void registry.requestFlash(message.deviceId, message.firmware);
+          if (message.source.kind === "release") {
+            void registry.requestFlash(message.endpointId, message.source.firmware);
+          } else {
+            // local-hex flashing is a later ticket's scope
+            // (`localHexUpload.ts` + the binary-frame handler) -- report
+            // a clear, non-crashing error rather than silently dropping
+            // the request or pretending to flash it.
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                endpointId: message.endpointId,
+                message: "flashing a local hex file is not yet supported",
+              } satisfies ServerMessage),
+            );
+          }
+          break;
+        case "flash-local-begin":
+          // The local-hex upload handshake itself is a later ticket's
+          // scope (see this module's own doc comment) -- report a
+          // clear, non-crashing error rather than silently dropping the
+          // request.
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              message: "local-hex uploads are not yet supported",
+            } satisfies ServerMessage),
+          );
           break;
       }
     });

@@ -12,12 +12,12 @@
  * presentational `DevicesList`/`DeviceCard` so the rendering rules for
  * each device state (normal, unnamed/error, unresponsive, HID-only,
  * reconnecting, flash buttons visible/disabled/in-progress) can be
- * exercised directly in tests against plain `DeviceListEntry` data,
+ * exercised directly in tests against plain `EndpointListEntry` data,
  * without needing a real or faked socket for every case.
  */
 import { useCallback, useEffect, useState } from "react";
 import type {
-  DeviceListEntry,
+  EndpointListEntry,
   FirmwareAvailability,
   FirmwareKind,
   FlashPhase,
@@ -35,34 +35,34 @@ export function DevicesTab() {
       onFlashResult((message) => {
         setFlashErrors((prev) => {
           if (message.status === "error") {
-            return { ...prev, [message.deviceId]: message.message ?? "Flash failed." };
+            return { ...prev, [message.endpointId]: message.message ?? "Flash failed." };
           }
-          if (!(message.deviceId in prev)) {
+          if (!(message.endpointId in prev)) {
             return prev;
           }
           const next = { ...prev };
-          delete next[message.deviceId];
+          delete next[message.endpointId];
           return next;
         });
       }),
     [onFlashResult],
   );
 
-  const openDevice = (deviceId: string) => send({ type: "open", deviceId });
-  const closeDevice = (deviceId: string) => send({ type: "close", deviceId });
+  const openDevice = (endpointId: string) => send({ type: "session-open", endpointId });
+  const closeDevice = (endpointId: string) => send({ type: "session-close", endpointId });
   const flashFirmware = useCallback(
-    (deviceId: string, firmware: FirmwareKind) => {
+    (endpointId: string, firmware: FirmwareKind) => {
       // A fresh click clears any stale error from a previous attempt --
       // the student is trying again, not still looking at the old one.
       setFlashErrors((prev) => {
-        if (!(deviceId in prev)) {
+        if (!(endpointId in prev)) {
           return prev;
         }
         const next = { ...prev };
-        delete next[deviceId];
+        delete next[endpointId];
         return next;
       });
-      send({ type: "flash-start", deviceId, firmware });
+      send({ type: "flash-start", endpointId, source: { kind: "release", firmware } });
     },
     [send],
   );
@@ -93,14 +93,14 @@ const DEFAULT_FIRMWARE_STATUS: Record<FirmwareKind, FirmwareAvailability> = {
 
 export interface DevicesListProps {
   status: ConnectionStatus;
-  devices: DeviceListEntry[];
+  devices: EndpointListEntry[];
   /** Optional so existing tests that only exercise Connect/Disconnect
    * rendering (unrelated to flashing) don't need to pass it. */
   firmwareStatus?: Record<FirmwareKind, FirmwareAvailability>;
   flashErrors?: Record<string, string>;
-  onOpen: (deviceId: string) => void;
-  onClose: (deviceId: string) => void;
-  onFlash?: (deviceId: string, firmware: FirmwareKind) => void;
+  onOpen: (endpointId: string) => void;
+  onClose: (endpointId: string) => void;
+  onFlash?: (endpointId: string, firmware: FirmwareKind) => void;
 }
 
 export function DevicesList({
@@ -128,11 +128,11 @@ export function DevicesList({
       ) : (
         <ul className="devices-list">
           {devices.map((device) => (
-            <li key={device.id}>
+            <li key={device.endpointId}>
               <DeviceCard
                 device={device}
                 firmwareStatus={firmwareStatus}
-                flashError={flashErrors[device.id]}
+                flashError={flashErrors[device.endpointId]}
                 onOpen={onOpen}
                 onClose={onClose}
                 onFlash={onFlash}
@@ -146,15 +146,15 @@ export function DevicesList({
 }
 
 interface DeviceCardProps {
-  device: DeviceListEntry;
+  device: EndpointListEntry;
   firmwareStatus: Record<FirmwareKind, FirmwareAvailability>;
   flashError: string | undefined;
-  onOpen: (deviceId: string) => void;
-  onClose: (deviceId: string) => void;
-  onFlash: (deviceId: string, firmware: FirmwareKind) => void;
+  onOpen: (endpointId: string) => void;
+  onClose: (endpointId: string) => void;
+  onFlash: (endpointId: string, firmware: FirmwareKind) => void;
 }
 
-function nameDisplay(device: DeviceListEntry): { text: string; flagged: boolean } {
+function nameDisplay(device: EndpointListEntry): { text: string; flagged: boolean } {
   if (device.name) {
     return { text: device.name, flagged: false };
   }
@@ -166,11 +166,11 @@ function nameDisplay(device: DeviceListEntry): { text: string; flagged: boolean 
   return { text: "Naming…", flagged: false };
 }
 
-function roleDisplay(device: DeviceListEntry): string {
+function roleDisplay(device: EndpointListEntry): string {
   if (device.role) {
     return device.role;
   }
-  if (device.linkError) {
+  if (device.sessionError) {
     // No banner reply ever arrived -- per UC-001's error flow, shown as
     // unresponsive rather than assigned a role.
     return "Unresponsive";
@@ -184,11 +184,11 @@ function roleDisplay(device: DeviceListEntry): string {
 /** Whether a device has been auto-probed and failed to identify --
  * exactly the state UC-001's error flow leaves it in (a `HELLO` reply
  * never arrived), and the only state that gets a recovery path. Per
- * the sprint architecture: `role === null && linkError !== undefined`
- * only -- never an unprobed device (no `linkError`, no `role`) and
+ * the sprint architecture: `role === null && sessionError !== undefined`
+ * only -- never an unprobed device (no `sessionError`, no `role`) and
  * never one that identified successfully (`role` set). */
-function isFailedIdentify(device: DeviceListEntry): boolean {
-  return device.role === null && device.linkError !== undefined;
+function isFailedIdentify(device: EndpointListEntry): boolean {
+  return device.role === null && device.sessionError !== undefined;
 }
 
 /** Turn one firmware's live availability into either `null` (button
@@ -233,6 +233,10 @@ const PHASE_LABEL: Record<FlashPhase, string> = {
   erasing: "erasing",
   writing: "writing",
   resetting: "resetting",
+  // Sprint 4: not yet reachable (deviceRegistry.ts doesn't report this
+  // phase until a later ticket implements post-flash re-identify), but
+  // required here so this map stays exhaustive over FlashPhase.
+  reidentifying: "waiting for the board to come back",
 };
 
 function flashProgressText(status: { firmware: FirmwareKind; phase: FlashPhase }): string {
@@ -247,13 +251,13 @@ function DeviceCard({ device, firmwareStatus, flashError, onOpen, onClose, onFla
   const robotReason = firmwareDisabledReason(firmwareStatus.robot);
 
   return (
-    <article className="device-card" data-testid={`device-${device.id}`}>
+    <article className="device-card" data-testid={`device-${device.endpointId}`}>
       <div className="device-card-header">
         <h3 className={name.flagged ? "device-name device-name-flagged" : "device-name"}>
           {name.text}
         </h3>
         {name.flagged && <span className="device-flag">Unnamed / naming failed</span>}
-        {device.linkOpen && <span className="device-linked-pill">Linked</span>}
+        {device.sessionOpen && <span className="device-linked-pill">Linked</span>}
       </div>
 
       {name.flagged && device.nameError && (
@@ -267,32 +271,32 @@ function DeviceCard({ device, firmwareStatus, flashError, onOpen, onClose, onFla
         </div>
         <div>
           <dt>Port</dt>
-          <dd>{device.port ?? "No serial port"}</dd>
+          <dd>{device.usb?.port ?? "No serial port"}</dd>
         </div>
         <div>
           <dt>Device ID</dt>
-          <dd title={device.serialNumber}>{device.displaySerial}</dd>
+          <dd title={device.usb?.serialNumber}>{device.usb?.displaySerial}</dd>
         </div>
       </dl>
 
-      {device.linkError && (
-        <p className="device-note">Link attempt: {device.linkError}</p>
+      {device.sessionError && (
+        <p className="device-note">Link attempt: {device.sessionError}</p>
       )}
 
       <div className="device-actions">
-        {device.linkOpen ? (
+        {device.sessionOpen ? (
           <button
             type="button"
             className="device-button"
-            onClick={() => onClose(device.id)}
+            onClick={() => onClose(device.endpointId)}
           >
             Disconnect
           </button>
-        ) : device.port ? (
+        ) : device.usb?.port ? (
           <button
             type="button"
             className="device-button device-button-primary"
-            onClick={() => onOpen(device.id)}
+            onClick={() => onOpen(device.endpointId)}
           >
             Connect
           </button>
@@ -312,7 +316,7 @@ function DeviceCard({ device, firmwareStatus, flashError, onOpen, onClose, onFla
                   type="button"
                   className="device-button"
                   disabled={relayReason !== null}
-                  onClick={() => onFlash(device.id, "relay")}
+                  onClick={() => onFlash(device.endpointId, "relay")}
                 >
                   Flash relay firmware
                 </button>
@@ -323,7 +327,7 @@ function DeviceCard({ device, firmwareStatus, flashError, onOpen, onClose, onFla
                   type="button"
                   className="device-button"
                   disabled={robotReason !== null}
-                  onClick={() => onFlash(device.id, "robot")}
+                  onClick={() => onFlash(device.endpointId, "robot")}
                 >
                   Flash robot firmware
                 </button>

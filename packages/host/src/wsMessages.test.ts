@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseClientMessage } from "./wsMessages.js";
+import type { DeviceListEntry } from "./wsMessages.js";
 
 describe("parseClientMessage", () => {
   it("accepts a well-formed open message", () => {
@@ -28,6 +29,22 @@ describe("parseClientMessage", () => {
     ).toBeUndefined();
   });
 
+  it("accepts a well-formed flash-start message for the relay firmware", () => {
+    expect(parseClientMessage({ type: "flash-start", deviceId: "abc", firmware: "relay" })).toEqual({
+      type: "flash-start",
+      deviceId: "abc",
+      firmware: "relay",
+    });
+  });
+
+  it("accepts a well-formed flash-start message for the robot firmware", () => {
+    expect(parseClientMessage({ type: "flash-start", deviceId: "abc", firmware: "robot" })).toEqual({
+      type: "flash-start",
+      deviceId: "abc",
+      firmware: "robot",
+    });
+  });
+
   it.each([
     ["not an object", "nope"],
     ["null", null],
@@ -38,7 +55,30 @@ describe("parseClientMessage", () => {
     ["open with non-string deviceId", { type: "open", deviceId: 5 }],
     ["line missing line field", { type: "line", deviceId: "abc", direction: "tx" }],
     ["line with non-string line field", { type: "line", deviceId: "abc", direction: "tx", line: 5 }],
+    ["flash-start with no deviceId", { type: "flash-start", firmware: "relay" }],
+    ["flash-start with empty deviceId", { type: "flash-start", deviceId: "", firmware: "relay" }],
+    ["flash-start with non-string deviceId", { type: "flash-start", deviceId: 5, firmware: "relay" }],
+    ["flash-start with no firmware", { type: "flash-start", deviceId: "abc" }],
+    ["flash-start with invalid firmware value", { type: "flash-start", deviceId: "abc", firmware: "relayx" }],
   ])("rejects: %s", (_label, value) => {
     expect(parseClientMessage(value)).toBeUndefined();
+  });
+});
+
+describe("DeviceListEntry", () => {
+  it("still round-trips as a valid DeviceListEntry when flashStatus is absent (pre-sprint-2 shape)", () => {
+    // Type-level fixture: this compiles only if `flashStatus` is optional,
+    // proving the new field is additive and doesn't break a snapshot that
+    // predates it -- see the ticket's testing plan.
+    const entry: DeviceListEntry = {
+      id: "SERIAL-A",
+      serialNumber: "SERIAL-A",
+      displaySerial: "SHORT-A",
+      name: "zeguz",
+      role: "NEZHA2",
+      port: "/dev/cu.usbmodemA",
+      linkOpen: true,
+    };
+    expect(entry.flashStatus).toBeUndefined();
   });
 });

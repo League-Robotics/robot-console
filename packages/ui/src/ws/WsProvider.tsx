@@ -9,10 +9,12 @@
  * after an unexpected close, teardown on unmount), keeps the latest
  * `devices` snapshot in React state (the server always sends a full
  * snapshot, never a delta -- see `wsMessages.ts`'s `DevicesMessage`
- * doc comment -- so consumers never need to diff), and offers a small
- * pub/sub surface for `line`/`error` messages that a future Console
- * tab can subscribe to without this module needing to know anything
- * about console-specific rendering.
+ * doc comment -- so consumers never need to diff), also keeps the
+ * snapshot's `firmwareStatus` (sprint 2) in state alongside `devices`,
+ * and offers a small pub/sub surface for `line`/`error`/`flash-result`
+ * messages that a future Console tab (or, for `flash-result`, the
+ * Devices tab itself) can subscribe to without this module needing to
+ * know anything about tab-specific rendering.
  *
  * Deliberately out of scope here (per this ticket's scope discipline):
  * anything about *what* the Console tab does with `line` traffic --
@@ -31,11 +33,25 @@ import type {
   ClientMessage,
   DeviceListEntry,
   ErrorMessage,
+  FirmwareAvailability,
+  FirmwareKind,
+  FlashResultMessage,
   LineMessage,
   ServerMessage,
 } from "@robot-console/host/src/wsMessages.js";
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
+
+/** Firmware availability before the first `devices` snapshot has ever
+ * arrived (e.g. the instant after this provider mounts). Treated the
+ * same as "not configured" -- disabled, no reason text -- rather than
+ * inventing a fourth, provider-only state; the real snapshot (sent by
+ * `server.ts` on every connection, per `wsMessages.ts`) replaces this
+ * within one round trip. */
+const DEFAULT_FIRMWARE_STATUS: Record<FirmwareKind, FirmwareAvailability> = {
+  relay: { configured: false },
+  robot: { configured: false },
+};
 
 /**
  * The slice of the browser `WebSocket` API this module actually uses.
@@ -57,9 +73,24 @@ const WEBSOCKET_OPEN = 1;
 interface WsContextValue {
   status: ConnectionStatus;
   devices: DeviceListEntry[];
+  /** Per-firmware availability from the most recent `devices` snapshot
+   * (sprint 2) -- see `wsMessages.ts`'s `DevicesMessage.firmwareStatus`
+   * doc comment. Drives the robot/relay flash buttons' disabled state
+   * in `DevicesTab`; never a hardcoded UI flag. */
+  firmwareStatus: Record<FirmwareKind, FirmwareAvailability>;
   send: (message: ClientMessage) => void;
   onLine: (handler: (message: LineMessage) => void) => () => void;
   onError: (handler: (message: ErrorMessage) => void) => () => void;
+  /** Subscribe to the terminal outcome of a flash (sprint 2). Per-phase
+   * progress does *not* need a matching subscription: `deviceRegistry.ts`
+   * re-emits a full `devices` snapshot on every `FlashPhase` change (see
+   * `server.ts`'s `onDevicesChanged` wiring), so `DeviceListEntry.flashStatus`
+   * alone already carries live progress. Only the terminal `flash-result`'s
+   * `message` (present on `status: "error"`) is not represented anywhere in
+   * the snapshot -- `flashStatus` is cleared, not replaced with an error --
+   * so that one event needs its own subscription, following the existing
+   * `onLine`/`onError` pattern rather than inventing a different shape. */
+  onFlashResult: (handler: (message: FlashResultMessage) => void) => () => void;
 }
 
 const WsContext = createContext<WsContextValue | undefined>(undefined);
@@ -110,9 +141,13 @@ export interface WsProviderProps {
 export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [devices, setDevices] = useState<DeviceListEntry[]>([]);
+  const [firmwareStatus, setFirmwareStatus] = useState<Record<FirmwareKind, FirmwareAvailability>>(
+    DEFAULT_FIRMWARE_STATUS,
+  );
   const socketRef = useRef<WebSocketLike | null>(null);
   const lineHandlers = useRef(new Set<(message: LineMessage) => void>());
   const errorHandlers = useRef(new Set<(message: ErrorMessage) => void>());
+  const flashResultHandlers = useRef(new Set<(message: FlashResultMessage) => void>());
 
   useEffect(() => {
     let cancelled = false;
@@ -152,6 +187,7 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
         switch (parsed.type) {
           case "devices":
             setDevices(parsed.devices);
+            setFirmwareStatus(parsed.firmwareStatus);
             break;
           case "line":
             for (const handler of lineHandlers.current) {
@@ -160,6 +196,11 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
             break;
           case "error":
             for (const handler of errorHandlers.current) {
+              handler(parsed);
+            }
+            break;
+          case "flash-result":
+            for (const handler of flashResultHandlers.current) {
               handler(parsed);
             }
             break;
@@ -220,7 +261,22 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
     };
   }, []);
 
-  const value: WsContextValue = { status, devices, send, onLine, onError };
+  const onFlashResult = useCallback((handler: (message: FlashResultMessage) => void) => {
+    flashResultHandlers.current.add(handler);
+    return () => {
+      flashResultHandlers.current.delete(handler);
+    };
+  }, []);
+
+  const value: WsContextValue = {
+    status,
+    devices,
+    firmwareStatus,
+    send,
+    onLine,
+    onError,
+    onFlashResult,
+  };
 
   return <WsContext.Provider value={value}>{children}</WsContext.Provider>;
 }

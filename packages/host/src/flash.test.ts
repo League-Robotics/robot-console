@@ -2,13 +2,17 @@ import { describe, expect, it, vi } from "vitest";
 import DapJs from "dapjs";
 import type { DAPLink } from "dapjs";
 import {
+  defaultResolveVolumePath,
   extractV2Hex,
+  findMatchingVolume,
   flash,
   flashOverSwd,
   flashViaMsd,
   isUniversalHex,
   isValidIntelHexText,
+  parseDetailsTxt,
 } from "./flash.js";
+import type { VolumeCandidate } from "./flash.js";
 import type { FlashPhase } from "./flash.js";
 import type { DaplinkDevice } from "./devices.js";
 
@@ -142,6 +146,191 @@ function device(overrides: Partial<DaplinkDevice> = {}): DaplinkDevice {
   };
 }
 
+// Real `DETAILS.TXT` content captured from an attached micro:bit --
+// its `Unique ID` is verified (against that same board's USB enumeration)
+// to be character-for-character identical to `DaplinkDevice.serialNumber`.
+const REAL_SERIAL_NUMBER = "99063602000528202e78ea8f7143163f000000006e052820";
+const REAL_DETAILS_TXT = `# DAPLink Firmware - see https://daplink.io
+Build ID: v0257-gc782a5ba (gcc)
+Unique ID: ${REAL_SERIAL_NUMBER}
+HIC ID: 6e052820
+Auto Reset: 1
+Automation allowed: 0
+Overflow detection: 0
+Incompatible image detection: 1
+Page erasing: 0
+Daplink Mode: Interface
+Interface Version: 0257
+Bootloader Version: 0257
+Git SHA: c782a5ba907377658bc28aa8d132a0fa44543687
+Local Mods: 0
+USB Interfaces: MSD, CDC, HID, WebUSB
+Bootloader CRC: 0x725bea7d
+Interface CRC: 0xe561f1de
+Remount count: 0
+URL: https://microbit.org/device/?id=9906&v=0257
+`;
+
+describe("parseDetailsTxt", () => {
+  it("parses real DETAILS.TXT content into a key/value map, ignoring the # comment line", () => {
+    const details = parseDetailsTxt(REAL_DETAILS_TXT);
+
+    expect(details["Unique ID"]).toBe(REAL_SERIAL_NUMBER);
+    expect(details["Build ID"]).toBe("v0257-gc782a5ba (gcc)");
+    expect(details["HIC ID"]).toBe("6e052820");
+    // Keys containing spaces parse correctly (split on the *first* colon).
+    expect(details["Daplink Mode"]).toBe("Interface");
+    expect(details["USB Interfaces"]).toBe("MSD, CDC, HID, WebUSB");
+    // The leading `#` comment line contributes no entry at all.
+    expect(Object.keys(details)).not.toContain("# DAPLink Firmware - see https://daplink.io");
+  });
+
+  it("ignores blank lines and lines with no colon", () => {
+    const details = parseDetailsTxt("\n\nnot a details line\nKey: value\n");
+    expect(details).toEqual({ Key: "value" });
+  });
+
+  it("returns an empty map for empty text", () => {
+    expect(parseDetailsTxt("")).toEqual({});
+  });
+});
+
+describe("findMatchingVolume", () => {
+  function candidate(volumePath: string, uniqueId: string | undefined): VolumeCandidate {
+    return {
+      volumePath,
+      details: uniqueId === undefined ? {} : { "Unique ID": uniqueId },
+    };
+  }
+
+  it("returns the one candidate whose Unique ID matches the serial number", () => {
+    const result = findMatchingVolume(
+      [candidate("/Volumes/MICROBIT", REAL_SERIAL_NUMBER)],
+      REAL_SERIAL_NUMBER,
+    );
+    expect(result).toBe("/Volumes/MICROBIT");
+  });
+
+  it("returns undefined when no candidate's Unique ID matches", () => {
+    const result = findMatchingVolume(
+      [candidate("/Volumes/MICROBIT", "some-other-unique-id")],
+      REAL_SERIAL_NUMBER,
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it("returns undefined when there are no candidates at all", () => {
+    expect(findMatchingVolume([], REAL_SERIAL_NUMBER)).toBeUndefined();
+  });
+
+  it("with several candidates, returns only the one that actually matches -- not the first one found", () => {
+    const result = findMatchingVolume(
+      [
+        candidate("/Volumes/MICROBIT", "not-this-one"),
+        candidate("/Volumes/MICROBIT 1", REAL_SERIAL_NUMBER),
+        candidate("/Volumes/MICROBIT 2", "not-this-one-either"),
+      ],
+      REAL_SERIAL_NUMBER,
+    );
+    expect(result).toBe("/Volumes/MICROBIT 1");
+  });
+
+  it("skips a candidate with no Unique ID field at all", () => {
+    const result = findMatchingVolume(
+      [candidate("/Volumes/MICROBIT", undefined)],
+      REAL_SERIAL_NUMBER,
+    );
+    expect(result).toBeUndefined();
+  });
+});
+
+describe("defaultResolveVolumePath", () => {
+  it("returns undefined when no MICROBIT* volumes are mounted at all", async () => {
+    const result = await defaultResolveVolumePath(device({ serialNumber: REAL_SERIAL_NUMBER }), {
+      listVolumeNames: async () => ["Macintosh HD", "SomeOtherDrive"],
+      readTextFile: vi.fn(),
+    });
+    expect(result).toBeUndefined();
+  });
+
+  it("returns undefined when the volume listing itself fails, mirroring the readdir try/catch", async () => {
+    const result = await defaultResolveVolumePath(device({ serialNumber: REAL_SERIAL_NUMBER }), {
+      listVolumeNames: async () => {
+        throw new Error("mock: ENOENT /Volumes");
+      },
+      readTextFile: vi.fn(),
+    });
+    expect(result).toBeUndefined();
+  });
+
+  it("resolves the single mounted candidate when its Unique ID matches", async () => {
+    const result = await defaultResolveVolumePath(device({ serialNumber: REAL_SERIAL_NUMBER }), {
+      listVolumeNames: async () => ["MICROBIT"],
+      readTextFile: async (filePath) => {
+        expect(filePath).toBe("/Volumes/MICROBIT/DETAILS.TXT");
+        return REAL_DETAILS_TXT;
+      },
+    });
+    expect(result).toBe("/Volumes/MICROBIT");
+  });
+
+  it("returns undefined when the single mounted candidate's Unique ID does not match", async () => {
+    const result = await defaultResolveVolumePath(device({ serialNumber: "not-the-real-serial" }), {
+      listVolumeNames: async () => ["MICROBIT"],
+      readTextFile: async () => REAL_DETAILS_TXT,
+    });
+    expect(result).toBeUndefined();
+  });
+
+  it("with several mounted candidates, returns the one whose Unique ID matches -- not just the first found", async () => {
+    const otherSerial = "9906360200052820ffffffffffffffff000000006e052820";
+    const readTextFile = async (filePath: string) => {
+      if (filePath === "/Volumes/MICROBIT/DETAILS.TXT") {
+        return REAL_DETAILS_TXT.replace(REAL_SERIAL_NUMBER, otherSerial);
+      }
+      if (filePath === "/Volumes/MICROBIT 1/DETAILS.TXT") {
+        return REAL_DETAILS_TXT;
+      }
+      throw new Error(`unexpected path: ${filePath}`);
+    };
+
+    const result = await defaultResolveVolumePath(device({ serialNumber: REAL_SERIAL_NUMBER }), {
+      listVolumeNames: async () => ["MICROBIT", "MICROBIT 1"],
+      readTextFile,
+    });
+    expect(result).toBe("/Volumes/MICROBIT 1");
+  });
+
+  it("skips a candidate volume whose DETAILS.TXT is missing or unreadable, rather than failing resolution", async () => {
+    const readTextFile = async (filePath: string) => {
+      if (filePath === "/Volumes/MICROBIT/DETAILS.TXT") {
+        throw new Error("mock: ENOENT DETAILS.TXT");
+      }
+      if (filePath === "/Volumes/MICROBIT 1/DETAILS.TXT") {
+        return REAL_DETAILS_TXT;
+      }
+      throw new Error(`unexpected path: ${filePath}`);
+    };
+
+    const result = await defaultResolveVolumePath(device({ serialNumber: REAL_SERIAL_NUMBER }), {
+      listVolumeNames: async () => ["MICROBIT", "MICROBIT 1"],
+      readTextFile,
+    });
+    expect(result).toBe("/Volumes/MICROBIT 1");
+  });
+
+  it("only inspects entries starting with MICROBIT, ignoring other mounted volumes", async () => {
+    const readTextFile = vi.fn(async () => REAL_DETAILS_TXT);
+    const result = await defaultResolveVolumePath(device({ serialNumber: REAL_SERIAL_NUMBER }), {
+      listVolumeNames: async () => ["Macintosh HD", "MICROBIT"],
+      readTextFile,
+    });
+    expect(result).toBe("/Volumes/MICROBIT");
+    expect(readTextFile).toHaveBeenCalledTimes(1);
+    expect(readTextFile).toHaveBeenCalledWith("/Volumes/MICROBIT/DETAILS.TXT");
+  });
+});
+
 describe("flashOverSwd", () => {
   // Seam-level only, per this ticket's explicit precedent (see this
   // file's top doc comment) -- mirrors `swdName.test.ts`'s own
@@ -194,14 +383,65 @@ describe("flashOverSwd", () => {
       }),
     ).resolves.toMatchObject({ status: "error" });
   });
+
+  it("resolves ok on a successful flash against a DAPLink object with no .off method (real dapjs runtime shape, bench-verified)", async () => {
+    // Regression test for a real bug sprint 003 ticket 005's bench
+    // session exposed: `dapjs`'s actual runtime `DAPLink` (as opposed
+    // to its `.d.ts`, which claims a Node `events.EventEmitter`) has no
+    // `.off` alias, only `on`/`removeListener`/`emit`. Calling `.off`
+    // in this function's cleanup `finally` block threw, and a throw
+    // from `finally` replaces whatever the `try` block already
+    // returned -- so a flash that had genuinely succeeded on the board
+    // came back as an uncaught rejection instead of `{ status: "ok" }`,
+    // which in turn meant `deviceRegistry.ts#runFlash` never reached
+    // its post-flash `openLink()` re-announce step. `createFakeDapLink`
+    // (see its own doc comment) deliberately has no `.off` either, so
+    // this test fails the same way the real hardware did if the
+    // cleanup code ever calls `.off` again.
+    const result = await flashOverSwd(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
+      createDapLink: () => createFakeDapLink(),
+    });
+    expect(result).toEqual({ status: "ok", method: "swd" });
+  });
+
+  it("still resolves the determined result even if removeListener itself throws during cleanup", async () => {
+    // Defense-in-depth companion to the test above: cleanup-step
+    // failures (removeListener, disconnect) must never mask or replace
+    // an already-determined outcome, matching the precedent already in
+    // place for `disconnect()`'s own try/catch in the same `finally`
+    // block.
+    const dapLink = createFakeDapLink();
+    (dapLink as unknown as { removeListener: () => void }).removeListener = () => {
+      throw new Error("mock: removeListener boom");
+    };
+    const result = await flashOverSwd(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
+      createDapLink: () => dapLink,
+    });
+    expect(result).toEqual({ status: "ok", method: "swd" });
+  });
 });
 
 /** A fake satisfying only the `DAPLink` surface `flashOverSwd` actually
- * calls (`connect`, `on`, `off`, `flash`, `disconnect`) -- not a
- * simulation of real `dapjs`/hardware behavior. The default `flash`
- * implementation fires one registered `EVENT_PROGRESS` listener before
- * resolving, so tests can observe the `"writing"` phase callback the
- * same way a real `DAPLink#flash()` call would trigger it. */
+ * calls (`connect`, `on`, `removeListener`, `flash`, `disconnect`) --
+ * not a simulation of real `dapjs`/hardware behavior. The default
+ * `flash` implementation fires one registered `EVENT_PROGRESS` listener
+ * before resolving, so tests can observe the `"writing"` phase callback
+ * the same way a real `DAPLink#flash()` call would trigger it.
+ *
+ * Deliberately has **no `.off` method** -- verified against real
+ * hardware (sprint 003 ticket 005's bench session), `dapjs`'s actual
+ * runtime `DAPLink` object (its bundled UMD event emitter, not the
+ * Node `events.EventEmitter` its own `.d.ts` types claim it extends)
+ * implements `on`/`removeListener`/`emit` but has no `.off` alias at
+ * all. An earlier version of this fake *did* implement a working `.off`
+ * (mirroring the type declaration, not the runtime), which is exactly
+ * why unit tests never caught `flashOverSwd` calling `daplink.off(...)`
+ * in its cleanup -- a real board is what exposed it: the SWD write
+ * completed successfully, but that `finally`-block throw replaced the
+ * already-determined `{ status: "ok" }` result with an uncaught
+ * rejection. This fake now matches the real object's shape instead of
+ * its type declaration, so a regression back to calling `.off` fails
+ * here, not only on a bench. */
 function createFakeDapLink(overrides?: {
   connect?: () => Promise<void>;
   disconnect?: () => Promise<void>;
@@ -217,7 +457,7 @@ function createFakeDapLink(overrides?: {
       }
       return fake;
     },
-    off(event: string, listener: () => void) {
+    removeListener(event: string, listener: () => void) {
       if (event === DapJs.DAPLink.EVENT_PROGRESS) {
         const index = progressListeners.indexOf(listener);
         if (index >= 0) {

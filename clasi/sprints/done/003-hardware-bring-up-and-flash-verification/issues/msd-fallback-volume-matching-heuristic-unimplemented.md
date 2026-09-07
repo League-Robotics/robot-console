@@ -44,6 +44,33 @@ whose unique id can be joined against the device's serial — that join,
 not a bare volume-name match, is what makes this correct with more than
 one board present.
 
+## Status after sprint 003 - the resolver is done; the end-to-end fallback is not
+
+**Implemented and verified against two real boards** (sprint 003, tickets 002
+and 006). `defaultResolveVolumePath` now joins `DETAILS.TXT`'s `Unique ID`
+against `DaplinkDevice.serialNumber` on an exact string match. With both boards
+attached:
+
+| device | serial | resolved volume |
+|---|---|---|
+| `vevav` | `99063602...6e052820` | `/Volumes/MICROBIT` |
+| `zapig` | `990636020005282007d057b7d6d99f53000000006e052820` | `/Volumes/MICROBIT 1` |
+
+Each board's own `DETAILS.TXT` `Unique ID` matched its own USB serial exactly.
+
+**The join decided it, not luck** - raw `readdir("/Volumes")` order put
+`MICROBIT` before `MICROBIT 1`, so a naive "first `MICROBIT*` match" would have
+returned `/Volumes/MICROBIT` for *both* devices. It did not. The space in
+`MICROBIT 1` also confirmed the `startsWith("MICROBIT")` discovery filter and
+produced no quoting bug.
+
+**What remains unverified:** no MSD *write* was attempted, and no SWD failure
+was forced to exercise the fallback branch. So `flash()` choosing MSD after a
+real SWD failure, writing the hex to the correct volume, and leaving the other
+board untouched is still only unit-tested with an injected resolver.
+
+That remainder is the whole of what this issue now covers.
+
 ## Verification
 
 With two micro:bits attached, a forced SWD failure on one of them falls

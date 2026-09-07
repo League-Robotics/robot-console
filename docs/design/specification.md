@@ -188,7 +188,15 @@ the serial port directly."
 ### 4.4 `mdns.ts` — discovery
 
 Browse `_mbrelay._tcp`, `_mbserial._tcp`, `_mbflash._tcp`, and the
-robot's own `_robotlink._udp`.
+robot's own WiFi service, advertised under **both** `_robotlink._tcp`
+*and* `_robotlink._udp` — the robot serves the same v6 line grammar over
+TCP on the same port, so a TCP link is a legitimate alternative to
+`WifiUdpLink` (§4.3), not just UDP. **Verified against live mDNS
+advertisements** from robots `vevov` and `gopiv` while planning sprint 3:
+both service types resolve to host `<name>.local.`, port `7654`, TXT
+`name=<name> role=robot link=v6 port=7654` — earlier drafts of this
+section said `_robotlink._udp` only with `link=v6-udp`, which is wrong
+and matches nothing a robot actually advertises. See §7 Sprint 9.
 
 ### 4.5 `flash.ts` — firmware flashing
 
@@ -236,11 +244,33 @@ discovered empirically per deployment:
   all — disconnect and reconnect instead.
 - **The radio is fire-and-forget, with no retransmit.** Keep every message
   in one frame: ≤16 bytes for MAKECODE mode, ≤247 bytes for RAW250 mode.
-- **A derived `(channel, group)` is a default, not an address.** 125
-  names share each channel. Ask mbrelay's registry (`GET /names/<name>`
-  on :8761) where a robot actually is, and fall back to the derived pair
-  only if the registry is unreachable — and never *silently*; the UI must
-  surface that the fallback was used.
+- **A derived `(channel, group)` is a default, not an address, and there
+  are three outcomes, not two.** 125 names share each channel, so ask
+  mbrelay's registry (`GET /names/<name>` on :8761) where a robot
+  actually is — but that call **mutates the shared registry and always
+  answers 200**. `httpapi.py:146` returns `registry.resolve(name)`, and
+  `resolve()` falls through to deriving the address locally
+  (`radioAddress.ts`'s Python port), writes the guess into `_learned`,
+  calls `save()`, and replies `source: derived`. So "the HTTP call
+  succeeded" is **not** the same as "the registry knew" — checking only
+  for success presents a locally-derivable guess as authoritative.
+  `registry.py` has a separate, **non-mutating `get()`** that the HTTP
+  route does not use. Distinguish three outcomes: **authoritative** (the
+  registry actually knew), **derived** (the registry only echoed its own
+  just-made guess — surface this as prominently as a fallback, because
+  the failure mode is identical to not knowing), and **local-derived**
+  (the registry was unreachable and the host derived the pair itself).
+  Never use a derived value *silently*, whichever kind.
+- **Looking a name up enrols it.** Because the GET mutates, resolution
+  must be **lazy — one name, at connect time** — never prefetched (e.g.
+  to populate a dropdown), which would inject an entry per robot into
+  shared classroom state.
+- **Registry discovery is mDNS, not a port convention.** An
+  `_mbrelay._tcp` advertisement carries the registry's port in its own
+  TXT record — verified live: instance `torture` at `torture.local.:8760`
+  advertises TXT `txtvers=1 version=0.20260831.1 node=torture
+  registry=8761`. Find the registry by browsing `_mbrelay._tcp` and
+  reading `registry` from its TXT record, not by assuming :8761.
 - **Nothing is unsolicited** except the boot banner, telemetry while
   subscribed, and `DBG:` lines. An idle link is completely silent — do
   not wait for a beacon as a liveness signal.
@@ -249,7 +279,14 @@ discovered empirically per deployment:
 
 ## 7. Sprints
 
-Six sprints. Sprint 1 is the foundation and is detail-planned first.
+Ten sprints. Sprints 1–2 are merged history. Sprint 3 begins the current
+roadmap and **splits** what was originally scoped as a single "Radio +
+control" sprint across new positions 6 and 7; the full rationale and
+dependency graph live in
+`clasi/issues/robot-console-two-level-ui-and-multi-transport-roadmap.md`'s
+"Proposed fix" section. This section is renumbered from an earlier
+six-sprint draft — do not trust cross-references to sprint numbers in
+material written before sprint 3.
 
 ### Sprint 1 — Connect, identify, console
 
@@ -267,31 +304,80 @@ flash with progress, universal-hex v2 extraction, MSD fallback.
 Calibration-firmware hex is **TBD — the stakeholder has not supplied
 it** (see §9, open question 1).
 
-### Sprint 3 — Radio + control
+### Sprint 3 — Hardware bring-up and flash verification
 
-`RelayRadioLink`, `MbrelayLink`, mDNS discovery. Robot control: drive,
-stop, estop, `STATUS`, `GET`/`SET`. Sequence/ack state visible in the UI.
+Turn the silent board into an announcing relay: run the sprint-2 flash
+path against real hardware and fix what breaks, implement
+`defaultResolveVolumePath` for real, fix the tty/cu device-list display
+path, and bump the `vendor/pxt-nezha-diffdrive` pin and re-run fixture
+tests. No new architecture — nothing here is meant to be thrown away by
+sprint 4. Detail-planned in its own sprint; see
+`clasi/sprints/003-hardware-bring-up-and-flash-verification/`.
 
-### Sprint 4 — Telemetry
+### Sprint 4 — Device model, device types, two-level navigation
+
+Keystone sprint — sprints 5 through 10 all depend on it. Introduces the
+`unknown | relay | robot` device-type union and the orthogonal
+type/transport/presence model; the `Link` abstraction split into
+`connect()` (transport only, throws on transport failure) and
+`identify()` (banner or null, never throws); the front-page-plus
+per-device-page navigation restructure; and local-hex flashing (an
+arbitrary hex picked off the local disk, for the case the calibration
+hex does not yet fill). Not yet detail-planned.
+
+### Sprint 5 — Persistence: the remembered-robot roster
+
+Introduces the project's first persistence layer: a roster of robot
+names seen over USB (keyed on name, not USB serial), used to populate the
+relay dropdown and to gate which mDNS advertisements are shown — a
+classroom is full of advertising robots, and only previously-seen ones
+should appear. Not yet detail-planned.
+
+### Sprint 6 — Robot page: drive and control over USB
+
+The control half of the original "Radio + control" sprint, built against
+USB only, where verification is cheap. Robot control: drive, stop, estop,
+`STATUS`, `GET`/`SET`. Sequence/ack state visible in the UI. Sprint 7
+reuses this page unchanged once a session is open over the relay.
+
+### Sprint 7 — Relay page, radio transport, network discovery
+
+The transport half of the original "Radio + control" sprint. Depends on
+sprint 4 (the resource-key model), sprint 5 (the roster), and sprint 6
+(the page it renders into). `RelayRadioLink`, `MbrelayLink`,
+`MbserialLink`, mDNS discovery for `_mbrelay._tcp`/`_mbserial._tcp`, and
+a registry client with three outcomes (see §6) rather than two.
+
+### Sprint 8 — Telemetry and trace
 
 `thdr`/`t` decoder, wheel-speed bars, time-series charts, path trace with
 clear. 20 Hz from the robot; the header auto-refreshes every 20 frames so
-a late listener recovers.
+a late listener recovers. Depends on sprint 4 and sprint 6 only, not
+sprint 7 — telemetry over USB is sufficient.
 
-### Sprint 5 — Calibration wizards
+### Sprint 9 — WiFi robots
+
+Discover the robot's WiFi service, advertised under **both**
+`_robotlink._tcp` and `_robotlink._udp` (instance `<name> robot link`,
+host `<name>.local`, port 7654, TXT record `name=<name> role=robot
+link=v6 port=7654`), and auto-switch a named robot from radio to WiFi
+when it appears. **Verified against live mDNS advertisements** from
+robots `vevov` and `gopiv` while planning sprint 3 — an earlier draft of
+this section said `_robotlink._udp` only with `link=v6-udp`, which
+matches nothing a robot actually advertises (see §4.4). Gate
+advertisements against the sprint 5 roster — the classroom requirement,
+and the only place gating applies.
+
+### Sprint 10 — Calibration wizards
 
 Distance calibration (robot inches up to a first black line, sets a
 counter, drives to a second line 90 cm away; report how far it thought it
 drove) and rotation calibration (beam pointer on the front, robot
 attempts a full 360°, on-screen nudge buttons walk it in until the
 wheelbase is dialled in). Both drive `RUN:` programs and end by emitting
-a MakeCode snippet the student pastes into their own program.
-
-### Sprint 6 — WiFi
-
-Discover `_robotlink._udp` (instance `<name> robot link`, host
-`<name>.local`, port 7654, TXT record `name= role=robot link=v6-udp
-port=`) and auto-switch a named robot from radio to WiFi when it appears.
+a MakeCode snippet the student pastes into their own program. Depends on
+sprint 6 and is gated on §9 open question 1 (the calibration firmware
+hex does not exist).
 
 ### Blocked on firmware — file as separate issues in `pxt-nezha-diffdrive`
 
@@ -319,7 +405,7 @@ The console feature-detects these and ships without them.
 
 ### Blocked on firmware — WiFi credentials have no runtime provisioning path
 
-See §9, open question 2. Sprint 6 as scoped only discovers and uses an
+See §9, open question 2. Sprint 9 as scoped only discovers and uses an
 already-provisioned robot.
 
 ## 8. Verification strategy
@@ -356,12 +442,20 @@ stakeholder input.
    `uBit.storage` record. Patching a compiled hex is fragile and not
    worth doing. This needs a firmware change (persist SSID/password via
    `SET` + `uBit.storage`) before anything can provision a robot at
-   runtime. Sprint 6 as scoped only discovers and uses an
+   runtime. Sprint 9 as scoped only discovers and uses an
    already-provisioned robot.
 3. **Four firmware extensions are needed in `pxt-nezha-diffdrive`**,
    listed in §7's "Blocked on firmware" section:
    (a) list runnable programs — no getter, no shim, no wire verb exists
-   today;
+   today (**note:** upstream commit `d4d8e4e` — "FUNCS lists the RUN
+   registry; RUN replaces the cleartext RUN: carve-out" — plus follow-up
+   `0056a64`, appears to add exactly this. Sprint 3's submodule-bump
+   ticket confirmed the `vendor/pxt-nezha-diffdrive` pin now includes
+   `d4d8e4e`, and this repo's `session.ts` already lists `RUN` in
+   `SEQUENCED_VERBS`, so this repo's model was already correct for the
+   post-`d4d8e4e` wire shape. **Likely closable, but left open here** —
+   closing needs explicit stakeholder confirmation that `d4d8e4e` is the
+   intended upstream direction, not a unilateral close by planning);
    (b) settable role in the banner — currently a hard-coded literal;
    (c) banner format convergence (space vs colon) — already filed
    upstream in `radio-robot-lib` as
@@ -369,10 +463,24 @@ stakeholder input.
    status pending; link rather than duplicate;
    (d) the v6 `RUN` verb is a stub, so the working path is the cleartext
    `RUN:name:arg` form with no sequence id — whether that is permanent is
-   unresolved, and the calibration UI depends on the answer.
+   unresolved, and the calibration UI depends on the answer (**note:**
+   the same `d4d8e4e`/`0056a64` evidence in (a) applies here — `RUN`
+   appears to become sequenced and acked upstream — but this is left
+   open for the same reason: pending explicit stakeholder confirmation).
    The console feature-detects all four and ships without them.
 4. **Whether a label maker / physical naming scheme is used** alongside
    the five-letter names.
+5. **No radio-enabled robot hex is currently obtainable.**
+   `pxt-nezha-diffdrive` publishes **zero** GitHub releases, and
+   `BOOT_RADIO_LINK = false` by default (`test/test.ts:48`), flipped only
+   by a `--radio-link` build. A stock robot build does not answer the
+   radio at all. This gates arc positions 6, 7, 8, and 10 (§7 Sprints
+   6–8, 10) — there is currently no confirmed way to obtain a hex that
+   would let any of that work be verified against real radio traffic.
+   Note the nuance: `vevov` and `gopiv` answer over **WiFi** right now
+   (§7 Sprint 9), which does not by itself prove radio is enabled on
+   those builds — WiFi and radio are separate transports, and a robot
+   can have one without the other.
 
 ## 10. Related
 

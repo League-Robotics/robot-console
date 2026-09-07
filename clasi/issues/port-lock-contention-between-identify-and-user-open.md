@@ -34,3 +34,17 @@ mutex to cover the port's actual release and retry the lock with backoff.
 
 Open a link from the Console tab immediately after the device appears,
 repeatedly, with no `Cannot lock port` failure.
+
+## Partial fix landed in sprint 003
+
+Ticket 005 found and fixed one real contributor while flashing a board:
+`deviceRegistry.ts#openLink`'s failure branch never closed a link whose
+underlying `SerialPort` was already open at the OS level, leaking the handle for
+the process's lifetime and producing `Cannot lock port` on every subsequent
+attempt. That is one concrete source of the symptom described above.
+
+It is **not** established that this was the only cause, so this issue stays
+open. The broader contention design - one link per device held for its lifetime,
+with readers multiplexed over it - is still the planned fix, and lands with the
+device/endpoint/session model in arc position 4.
+

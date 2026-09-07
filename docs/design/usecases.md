@@ -123,11 +123,22 @@ per UC-001.
 
 **Main flow:**
 1. Student selects the relay and target robot in the **Devices** tab.
-2. The host queries mbrelay's name registry (`GET /names/<name>` on
-   :8761) for the robot's actual `(channel, group)`. If the registry is
-   reachable, that is used; if not, the host falls back to the
-   locally-derived `(channel, group)` from `radioAddress.ts` and the UI
-   visibly flags that a fallback default is in use (never silently).
+2. The host resolves the robot's actual `(channel, group)` **lazily, for
+   this one name, at connect time** — never prefetched. It finds mbrelay's
+   name registry by browsing `_mbrelay._tcp`, whose TXT record advertises
+   the registry port (verified live: instance `torture` at
+   `torture.local.:8760`, TXT `registry=8761`), then calls `GET
+   /names/<name>` on that port. This call **mutates the registry**: on a
+   miss, the registry derives an address locally, persists it, and still
+   replies HTTP 200 with `source: derived` — so "the call succeeded" is
+   not the same as "the registry knew." There are **three outcomes, not
+   two**: **authoritative** (the registry actually knew), **derived** (the
+   registry only echoed its own just-made guess — surfaced as prominently
+   as a fallback, since the failure mode is identical to not knowing), and
+   **unreachable** (the host falls back to its own locally-derived
+   `(channel, group)` from `radioAddress.ts`). Whenever a derived address
+   (registry-derived or locally-derived) is in use, the UI visibly flags
+   it — never silently.
 3. The host configures the relay's command plane: `!ECHO OFF`,
    `!MODE RAW250`, `!CG <ch> <grp>`, `!P 7`, then `!GO` to enter the data
    plane (`RelayRadioLink`).
@@ -139,14 +150,23 @@ per UC-001.
    `!GO`; over TCP a break cannot be sent at all).
 
 **Postconditions:** The robot responds to commands relayed over radio,
-and the UI shows whether the registry-resolved or derived address was
-used.
+and the UI shows which of the three outcomes (authoritative, derived, or
+unreachable/local-derived) was used to resolve the address.
 
 **Error flows:**
 - If the registry lookup fails and the derived-address fallback is also
   wrong (robot on a different channel/group), commands appear to have no
   effect; the UI should make the fallback-in-use state visible so this is
   diagnosable rather than silent.
+- A `source: derived` reply from the registry is not proof the registry
+  knew the robot's address — it can be the registry's own just-derived
+  guess, returned with HTTP 200. Treat it as a fallback, not a hit, when
+  deciding how much to trust it over the locally-derived default.
+- Because the registry GET is mutating, the host must not prefetch or
+  batch-resolve names (e.g. to populate a robot-picker dropdown) — doing
+  so would enrol every prefetched name into the shared registry's
+  `_learned` state, an unwanted side effect on shared classroom
+  infrastructure.
 - If a message would exceed the frame size limit, the host refuses to
   send it as a single unsplittable frame rather than silently
   fragmenting (fragmentation is not supported by the radio).
@@ -312,14 +332,22 @@ the console itself has no runtime provisioning path) and is currently
 connected over radio (UC-004).
 
 **Main flow:**
-1. The host's `mdns.ts` browses for `_robotlink._udp`.
-2. A matching service appears: instance `<name> robot link`, host
-   `<name>.local`, port 7654, TXT record `name= role=robot link=v6-udp
-   port=`.
+1. The host's `mdns.ts` browses for **both** `_robotlink._tcp` and
+   `_robotlink._udp` — the robot advertises under both service types
+   simultaneously.
+2. A matching service appears on either type: instance `<name> robot
+   link`, host `<name>.local`, port 7654, TXT record `name=<name>
+   role=robot link=v6 port=7654`. (Verified against live advertisements
+   from robots `vevov` and `gopiv`; an earlier draft of this use case said
+   `_robotlink._udp` only with `link=v6-udp` in the TXT record, which is
+   wrong and would match nothing.)
 3. The host matches the advertised name against the currently-connected
    radio robot.
 4. The host opens a `WifiUdpLink` (UDP to the robot on :7654, bound
-   locally to :7655) and switches the active session to it.
+   locally to :7655) and switches the active session to it. The robot
+   serves the same line grammar over TCP on the same port, so a TCP link
+   is a legitimate alternative here — this use case describes the UDP
+   path as the one currently implemented (§4.3).
 5. The Devices/Console tabs reflect the robot as connected over WiFi
    rather than radio.
 
@@ -327,8 +355,8 @@ connected over radio (UC-004).
 longer in use for that robot.
 
 **Error flows:**
-- If no `_robotlink._udp` service appears, the robot continues on radio
-  indefinitely — WiFi is opportunistic, not required.
+- If neither `_robotlink._tcp` nor `_robotlink._udp` appears, the robot
+  continues on radio indefinitely — WiFi is opportunistic, not required.
 - Because the console has no runtime WiFi provisioning path, an
-  unprovisioned robot never advertises `_robotlink._udp` and this use
-  case does not apply to it; the console cannot provision it itself.
+  unprovisioned robot never advertises `_robotlink._tcp`/`._udp` and this
+  use case does not apply to it; the console cannot provision it itself.

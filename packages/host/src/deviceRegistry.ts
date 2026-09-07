@@ -650,6 +650,20 @@ export class DeviceRegistry {
       state.linkOpen = false;
       state.link = undefined;
       state.linkError = error instanceof Error ? error.message : String(error);
+      // Close the link we just created before giving up on it. By the
+      // time `link.open()`'s HELLO-banner-reply wait times out, its
+      // underlying `SerialPort` is already open at the OS level (see
+      // `UsbSerialLink.open()`'s own doc comment: the port-open wait
+      // resolves before the banner wait even starts) -- verified
+      // against real hardware (sprint 003 ticket 005): leaving this
+      // link unclosed here held that OS-level handle for the rest of
+      // the process's lifetime, permanently locking the port
+      // ("Cannot lock port") against every later open attempt on this
+      // device, including a manual retry and `requestFlash`'s own
+      // post-flash reopen. Best-effort -- a failed close must not mask
+      // the `linkError` already recorded above, same precedent as
+      // `teardownLink`'s and `flash.ts`'s own cleanup.
+      await link.close().catch(() => {});
     }
     this.emitDevices();
   }

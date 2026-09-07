@@ -2,8 +2,9 @@
 id: '004'
 title: Correct specification.md and usecases.md (numbering, WiFi facts, registry mutation,
   open question)
-status: open
-use-cases: [SUC-005]
+status: done
+use-cases:
+- SUC-005
 depends-on: []
 github-issue: ''
 issue: robot-console-two-level-ui-and-multi-transport-roadmap.md
@@ -28,7 +29,7 @@ is deliberate; that issue spans all 8 remaining arc positions.
 
 ## Acceptance Criteria
 
-- [ ] `specification.md` §7 is renumbered to match the roadmap issue's
+- [x] `specification.md` §7 is renumbered to match the roadmap issue's
       8-sprint-arc table (`clasi/issues/robot-console-two-level-ui-and-multi-transport-roadmap.md`'s
       "Proposed fix" section): sprints 1-2 unchanged (merged history); new
       3 = Hardware bring-up (this sprint); new 4 = Device model + navigation;
@@ -37,15 +38,15 @@ is deliberate; that issue spans all 8 remaining arc positions.
       half of today's Sprint 3); new 8 = Telemetry (today's Sprint 4); new
       9 = WiFi robots (today's Sprint 6); new 10 = Calibration wizards
       (today's Sprint 5).
-- [ ] `specification.md` §4.4 (line ~191) and the WiFi sprint subsection
+- [x] `specification.md` §4.4 (line ~191) and the WiFi sprint subsection
       under §7 (lines ~292-293) are corrected: the robot advertises under
       **both** `_robotlink._tcp` and `_robotlink._udp`; the TXT record
       carries `link=v6`, not `link=v6-udp`. Source:
       `vendor/radio-robot-lib`'s upstream `src/DESIGN.md:1284` and
       `wifi_link.cpp:953`.
-- [ ] `docs/design/usecases.md`'s UC-010 (lines ~315-333) is corrected to
+- [x] `docs/design/usecases.md`'s UC-010 (lines ~315-333) is corrected to
       match: both service types, `link=v6` in the TXT record example.
-- [ ] `specification.md` §6's registry bullet and `docs/design/usecases.md`'s
+- [x] `specification.md` §6's registry bullet and `docs/design/usecases.md`'s
       UC-004 (main flow step 2, error flows) record that mbrelay's `GET
       /names/<name>` **mutates** the shared registry (`httpapi.py:146`
       calls the creating `resolve()`, not the non-mutating `get()`; the
@@ -53,17 +54,17 @@ is deliberate; that issue spans all 8 remaining arc positions.
       successful-looking HTTP reply can be a locally-derived guess rather
       than authoritative knowledge — "the call succeeded" is not the same
       as "the registry knew."
-- [ ] A new item is added under `specification.md` §9 Open Questions
+- [x] A new item is added under `specification.md` §9 Open Questions
       recording that no radio-enabled robot hex is currently obtainable
       (`pxt-nezha-diffdrive` publishes zero releases; `BOOT_RADIO_LINK =
       false` by default per `test/test.ts:48`), noting it gates arc
       positions 6, 7, 8, and 10.
-- [ ] §9 Q3(a) and Q3(d) are **not** closed. They are annotated (e.g., a
+- [x] §9 Q3(a) and Q3(d) are **not** closed. They are annotated (e.g., a
       parenthetical or a sub-note) as likely closable once the submodule
       bump (ticket 003) is confirmed, pending explicit stakeholder
       confirmation that `d4d8e4e` is the intended upstream direction — per
       the roadmap issue's own instruction not to close them unilaterally.
-- [ ] The two documents remain internally consistent after all edits: every
+- [x] The two documents remain internally consistent after all edits: every
       cross-reference to a renumbered section, and every use-case citing a
       corrected fact, agrees with the correction.
 

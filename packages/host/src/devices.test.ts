@@ -6,6 +6,7 @@ import {
   filterDaplinkSerialPorts,
   joinDaplinkDevices,
   shortSerialDisplay,
+  toCalloutPath,
   type DaplinkDevice,
   type HidInterfaceInfo,
   type SerialPortInfo,
@@ -54,6 +55,36 @@ const SHARED_PREFIX = "9900000031864e45";
 const SHARED_SUFFIX = "0000000000000001";
 const SERIAL_BOARD_A = `${SHARED_PREFIX}1111111111111111${SHARED_SUFFIX}`;
 const SERIAL_BOARD_B = `${SHARED_PREFIX}2222222222222222${SHARED_SUFFIX}`;
+
+// ---------------------------------------------------------------------
+// toCalloutPath (moved here from `link/UsbSerialLink.test.ts` per
+// sprint 003 ticket 001 -- see this module's `toCalloutPath` doc
+// comment for why the translation now lives in `devices.ts`)
+// ---------------------------------------------------------------------
+
+describe("toCalloutPath", () => {
+  it("translates a macOS tty. path to its cu. counterpart", () => {
+    expect(toCalloutPath("/dev/tty.usbmodem2121102", "darwin")).toBe(
+      "/dev/cu.usbmodem2121102",
+    );
+  });
+
+  it("leaves an already-cu. path unchanged on darwin", () => {
+    expect(toCalloutPath("/dev/cu.usbmodem2121102", "darwin")).toBe(
+      "/dev/cu.usbmodem2121102",
+    );
+  });
+
+  it("leaves a Linux-shaped path unchanged", () => {
+    expect(toCalloutPath("/dev/ttyACM0", "linux")).toBe("/dev/ttyACM0");
+  });
+
+  it("leaves a non-serial path unchanged on darwin (no tty. prefix)", () => {
+    expect(toCalloutPath("/dev/something-else", "darwin")).toBe(
+      "/dev/something-else",
+    );
+  });
+});
 
 describe("filterDaplinkSerialPorts", () => {
   it("keeps only entries matching DAPLink's VID/PID (case-insensitive hex)", () => {
@@ -199,6 +230,30 @@ describe("joinDaplinkDevices", () => {
 
     expect(result).toHaveLength(1);
     expect(result[0]?.serialNumber).toBe(SERIAL_BOARD_A);
+  });
+
+  it("stores the translated cu. path, not the raw tty. path, for a darwin-shaped serial port", () => {
+    // Forces "darwin" on `toCalloutPath` for determinism regardless of
+    // the platform running the test (the ticket's acceptance criterion:
+    // `SerialPortInfo.path` must be the *translated* path, not whatever
+    // `serialport` reported verbatim).
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    try {
+      const port = fakeSerialPort({
+        path: "/dev/tty.usbmodemXXXX",
+        vendorId: "0d28",
+        productId: "0204",
+        serialNumber: SERIAL_BOARD_A,
+      });
+
+      const result = joinDaplinkDevices([port], []);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.serialPort?.path).toBe("/dev/cu.usbmodemXXXX");
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    }
   });
 
   it("cannot join, and excludes, a listing entry with no serial number", () => {

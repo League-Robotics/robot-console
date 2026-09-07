@@ -4,10 +4,10 @@ import {
   LineReassembler,
   UsbSerialLink,
   WritePacer,
-  toCalloutPath,
   type Scheduler,
   type SerialPortLike,
 } from "./UsbSerialLink.js";
+import { toCalloutPath } from "../devices.js";
 
 // Per the ticket's Testing section: the real `serialport` I/O is a thin
 // wrapper around real hardware and is not meaningfully unit-testable
@@ -98,32 +98,15 @@ function openedLink(overrides: { paceMs?: number; scheduler?: Scheduler } = {}):
 }
 
 // ---------------------------------------------------------------------
-// toCalloutPath (trap #1)
+// toCalloutPath (trap #1) -- the canonical test suite now lives in
+// `../devices.test.ts` alongside the function itself (moved there per
+// sprint 003 ticket 001). `toCalloutPath` is still imported here (see
+// the import above) because `UsbSerialLink.open()` still calls it
+// directly as defense-in-depth -- the "translates the tty. path to cu.
+// on darwin when opening" case further down in this file exercises that
+// call site specifically, not the pure function's translation logic
+// (already covered in `devices.test.ts`).
 // ---------------------------------------------------------------------
-
-describe("toCalloutPath", () => {
-  it("translates a macOS tty. path to its cu. counterpart", () => {
-    expect(toCalloutPath("/dev/tty.usbmodem2121102", "darwin")).toBe(
-      "/dev/cu.usbmodem2121102",
-    );
-  });
-
-  it("leaves an already-cu. path unchanged on darwin", () => {
-    expect(toCalloutPath("/dev/cu.usbmodem2121102", "darwin")).toBe(
-      "/dev/cu.usbmodem2121102",
-    );
-  });
-
-  it("leaves a Linux-shaped path unchanged", () => {
-    expect(toCalloutPath("/dev/ttyACM0", "linux")).toBe("/dev/ttyACM0");
-  });
-
-  it("leaves a non-serial path unchanged on darwin (no tty. prefix)", () => {
-    expect(toCalloutPath("/dev/something-else", "darwin")).toBe(
-      "/dev/something-else",
-    );
-  });
-});
 
 // ---------------------------------------------------------------------
 // LineReassembler (trap #6, #7)

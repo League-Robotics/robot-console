@@ -142,6 +142,47 @@ export function shortSerialDisplay(serialNumber: string): string {
   return serialNumber;
 }
 
+// ---------------------------------------------------------------------
+// Darwin tty./cu. path translation (moved here from `link/UsbSerialLink.ts`
+// per sprint 003 ticket 001 — this is the one canonical place the
+// translation happens now; every consumer of `SerialPortInfo.path`
+// agrees, not just the one call site that opens the port)
+// ---------------------------------------------------------------------
+
+const DARWIN_TTY_PREFIX = "/dev/tty.";
+const DARWIN_CU_PREFIX = "/dev/cu.";
+
+/**
+ * Translate a `serialport.list()`-reported path to its callout
+ * (`/dev/cu.*`) form.
+ *
+ * macOS reports DAPLink ports under their `/dev/tty.*` name. Opening a
+ * `tty.*` device on macOS **blocks waiting for DCD (carrier detect)**
+ * and can hang indefinitely — verified against real hardware in sprint
+ * 1. `/dev/cu.*` is the callout counterpart of the exact same device
+ * and opens immediately, without waiting for DCD. Every other platform
+ * (Linux, where `serialport.list()` already reports the port under one
+ * name) is returned unchanged.
+ *
+ * Applied here, in {@link joinDaplinkDevices}, so `SerialPortInfo.path`
+ * is always the open-safe path — not just at the one call site
+ * (`UsbSerialLink.open()`) that happens to open the port. A student who
+ * copies what's on screen into a serial terminal must see the same path
+ * the app itself uses to open the device.
+ */
+export function toCalloutPath(
+  path: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform !== "darwin") {
+    return path;
+  }
+  if (path.startsWith(DARWIN_TTY_PREFIX)) {
+    return DARWIN_CU_PREFIX + path.slice(DARWIN_TTY_PREFIX.length);
+  }
+  return path;
+}
+
 /** `serialport`'s `vendorId`/`productId` are lowercase-hex strings (or
  * undefined), not numbers — compare numerically rather than doing a
  * case-sensitive string match. */
@@ -234,7 +275,7 @@ export function joinDaplinkDevices(
       ...(entry.serialPort
         ? {
             serialPort: {
-              path: entry.serialPort.path,
+              path: toCalloutPath(entry.serialPort.path),
               ...(entry.serialPort.manufacturer !== undefined
                 ? { manufacturer: entry.serialPort.manufacturer }
                 : {}),

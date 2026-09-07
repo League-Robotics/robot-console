@@ -53,6 +53,7 @@ import {
   type AckNackEvent,
   type WireField,
 } from "@robot-console/protocol";
+import { toCalloutPath } from "../devices.js";
 
 /** DAPLink CDC serial ports always run at this fixed baud rate. */
 const BAUD_RATE = 115200;
@@ -70,36 +71,14 @@ const DEFAULT_OPEN_TIMEOUT_MS = 3000;
 
 // ---------------------------------------------------------------------
 // Darwin tty./cu. path translation (trap #1)
-// ---------------------------------------------------------------------
-
-const DARWIN_TTY_PREFIX = "/dev/tty.";
-const DARWIN_CU_PREFIX = "/dev/cu.";
-
-/**
- * Translate a `devices.ts`-reported serial port path for opening.
- *
- * `devices.ts` (and `serialport.list()` generally) reports macOS DAPLink
- * ports under their `/dev/tty.*` name. Opening a `tty.*` device on
- * macOS **blocks waiting for DCD (carrier detect)** and can hang
- * indefinitely — verified against real hardware for this ticket.
- * `/dev/cu.*` is the callout counterpart of the exact same device and
- * opens immediately, without waiting for DCD. Every other platform
- * (Linux, where `serialport.list()` already reports the port under one
- * name) is returned unchanged.
- */
-export function toCalloutPath(
-  path: string,
-  platform: NodeJS.Platform = process.platform,
-): string {
-  if (platform !== "darwin") {
-    return path;
-  }
-  if (path.startsWith(DARWIN_TTY_PREFIX)) {
-    return DARWIN_CU_PREFIX + path.slice(DARWIN_TTY_PREFIX.length);
-  }
-  return path;
-}
-
+//
+// `toCalloutPath` now lives in `../devices.ts` (sprint 003 ticket 001) —
+// `devices.ts` applies it when building `SerialPortInfo.path` so every
+// consumer (the Devices tab, `linkError` text) agrees on the open-safe
+// path, not just this one call site. It is imported above and still
+// called below in `open()`, as deliberate defense-in-depth: correct
+// even if a caller ever constructs a link directly from a raw path, not
+// the only correctness mechanism now.
 // ---------------------------------------------------------------------
 // Line reassembly (trap #6, #7)
 // ---------------------------------------------------------------------

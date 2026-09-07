@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: '003'
+tickets:
+- 003-005
 ---
 
 # Sprint 001 hardware criteria unverified: no announcing board available

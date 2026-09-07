@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: '003'
+tickets:
+- 003-005
 ---
 
 # Sprint 002 flash path is unverified against real hardware

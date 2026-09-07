@@ -1,5 +1,9 @@
 ---
-status: pending
+status: in-progress
+sprint: '003'
+tickets:
+- 003-002
+- 003-006
 ---
 
 # MSD flash fallback cannot find the volume: matching heuristic unimplemented

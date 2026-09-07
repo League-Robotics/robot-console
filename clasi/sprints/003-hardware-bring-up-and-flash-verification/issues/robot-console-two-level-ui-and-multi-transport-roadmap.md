@@ -1,5 +1,10 @@
 ---
-status: pending
+status: in-progress
+sprint: '003'
+tickets:
+- 003-003
+- 003-004
+- 003-006
 ---
 
 # Two-level UI and multi-transport device model

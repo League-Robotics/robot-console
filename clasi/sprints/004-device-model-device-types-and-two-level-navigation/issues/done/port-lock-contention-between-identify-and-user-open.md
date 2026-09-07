@@ -1,5 +1,8 @@
 ---
-status: pending
+status: done
+sprint: '004'
+tickets:
+- 004-002
 ---
 
 # Port lock contention between automatic identify and a user-initiated open

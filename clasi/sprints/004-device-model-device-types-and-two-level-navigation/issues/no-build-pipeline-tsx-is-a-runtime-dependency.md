@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: '004'
+tickets:
+- 004-009
 ---
 
 # No build pipeline: tsx is a production runtime dependency

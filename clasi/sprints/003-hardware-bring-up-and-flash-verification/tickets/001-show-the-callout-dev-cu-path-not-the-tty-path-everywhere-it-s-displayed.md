@@ -1,8 +1,9 @@
 ---
 id: '001'
 title: Show the callout (/dev/cu.*) path, not the tty path, everywhere it's displayed
-status: open
-use-cases: [SUC-003]
+status: in-progress
+use-cases:
+- SUC-003
 depends-on: []
 github-issue: ''
 issue: device-list-shows-tty-path-not-cu-path.md
@@ -30,16 +31,16 @@ rather than only the one call site that happens to open the port.
 
 ## Acceptance Criteria
 
-- [ ] provable-without-hardware: `toCalloutPath` (moved to `devices.ts`) is
+- [x] provable-without-hardware: `toCalloutPath` (moved to `devices.ts`) is
       unit-tested for: darwin tty→cu translation, darwin cu passthrough
       (already-correct path unchanged), darwin non-DAPLink-shaped path
       passthrough, and non-darwin (e.g. linux) passthrough — the same cases
       `UsbSerialLink.test.ts`'s existing `describe("toCalloutPath", ...)`
       suite already covers.
-- [ ] provable-without-hardware: `joinDaplinkDevices`'s unit tests confirm
+- [x] provable-without-hardware: `joinDaplinkDevices`'s unit tests confirm
       `SerialPortInfo.path` is the *translated* (cu) path on a synthetic
       darwin-shaped fixture, not the raw `serialport`-reported path.
-- [ ] provable-without-hardware: `UsbSerialLink.test.ts` still passes with
+- [x] provable-without-hardware: `UsbSerialLink.test.ts` still passes with
       `toCalloutPath` imported from `../devices.js`; `UsbSerialLink.open()`'s
       behavior is unchanged (it still calls `toCalloutPath(this.portPath)` —
       now a defensive no-op on an already-translated path, not the only
@@ -47,7 +48,10 @@ rather than only the one call site that happens to open the port.
 - [ ] needs-a-board: the Devices tab shows `/dev/cu.usbmodemXXXX` (not
       `/dev/tty.usbmodemXXXX`) for an attached board, confirmed against a
       real port path. Record pass/fail — do not infer from the unit tests.
-- [ ] `npm run build` passes (three workspaces, no type errors from the
+      NOT YET VERIFIED — no board attached in this session. Deferred to
+      ticket 005's bench session, which exercises this exact code path
+      with real hardware.
+- [x] `npm run build` passes (three workspaces, no type errors from the
       moved export).
 
 ## Implementation Plan

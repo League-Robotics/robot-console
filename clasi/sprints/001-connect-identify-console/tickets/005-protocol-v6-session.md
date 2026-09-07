@@ -1,7 +1,7 @@
 ---
 id: '005'
 title: 'protocol: v6/session.ts (ack/nack sequencing, retransmit)'
-status: pending
+status: done
 use-cases:
 - SUC-002
 depends-on:

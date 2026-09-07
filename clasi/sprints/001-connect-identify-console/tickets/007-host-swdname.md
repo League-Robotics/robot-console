@@ -159,3 +159,31 @@ the real verification, recorded in this ticket once run.
 attach mode with no halt/reset is required (the blank-micro:bit Success
 Criterion depends on it, and it is easy for a future editor to "improve"
 this into a halt/reset without realizing why it must not).
+
+
+## Verification update — non-announcing board case RESOLVED
+
+The board used for verification (`zeguz`, serial
+`9906360200052820aba2e384f40cfd6c000000006e052820`) was independently
+confirmed **silent on serial**: opened at 115200 on
+`/dev/cu.usbmodem2121102`, sent `HELLO` and `?`, waited 6s, received
+**zero bytes**. Confirmed three separate ways — through `UsbSerialLink`
+(ticket 008), through a raw `serialport` script bypassing all project
+code, and through a third independent probe by the team-lead.
+
+`readSwdName()` nonetheless returned `DEVICEID[1] = 0xfbfd96c9` ->
+`zeguz`, cross-checked against the published worked-example table in
+the relay protocol spec (`zeguz`, n=425, channel 25, group 19).
+
+This satisfies the blank/never-flashed acceptance criterion in
+substance: the criterion exists to prove the name comes from the target
+chip over SWD rather than from firmware output or the USB serial
+number. A board that emits nothing on serial and is still named
+correctly is exactly that proof. Whether the board is literally erased
+or running silent non-announcing code does not change what is
+demonstrated.
+
+Still unverified for want of hardware: a board that *does* announce, so
+the `role` field and the `HELLO`/`?`/`STATUS` reply path remain
+untested against real firmware. See the sprint's Hardware Verification
+Gap section.

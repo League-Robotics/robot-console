@@ -1,7 +1,7 @@
 ---
 id: '003'
 title: 'protocol: banner.ts (colon + space dialects)'
-status: pending
+status: done
 use-cases:
 - SUC-001
 depends-on:
@@ -41,21 +41,21 @@ dialect a given device speaks.
 
 ## Acceptance Criteria
 
-- [ ] `banner.ts` correctly parses the colon-form example
+- [x] `banner.ts` correctly parses the colon-form example
       `DEVICE:RADIOBRIDGE:relay:getez:1779042496`, with the serial
       number read as **decimal** (`RADIOBRIDGE`).
-- [ ] `banner.ts` correctly parses a legacy colon-form `RADIORELAY`
+- [x] `banner.ts` correctly parses a legacy colon-form `RADIORELAY`
       example with the serial number read as **hexadecimal**.
-- [ ] `banner.ts` correctly parses the space-form example
+- [x] `banner.ts` correctly parses the space-form example
       `device NEZHA2 robot vevov 1198504156`.
-- [ ] Both dialects produce the same shaped output type (role, name,
+- [x] Both dialects produce the same shaped output type (role, name,
       serial, and whatever device-type/kind field distinguishes them),
       so downstream code branches on the parsed result, not on which
       regex/grammar matched.
-- [ ] A line matching neither grammar returns a clear "not a banner"
+- [x] A line matching neither grammar returns a clear "not a banner"
       result (or throws a typed error) rather than a partial/garbage
       parse.
-- [ ] All tests run under `npm test` with no hardware attached.
+- [x] All tests run under `npm test` with no hardware attached.
 
 ## Testing
 

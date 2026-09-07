@@ -1,7 +1,7 @@
 ---
 id: '006'
 title: 'host: devices.ts (DAPLink USB enumeration)'
-status: pending
+status: done
 use-cases:
 - SUC-001
 depends-on:
@@ -47,18 +47,18 @@ page refresh.
 
 ## Acceptance Criteria
 
-- [ ] Enumerates only devices matching `VID 0x0D28 / PID 0x0204`,
+- [x] Enumerates only devices matching `VID 0x0D28 / PID 0x0204`,
       ignoring unrelated USB serial devices.
-- [ ] Each returned record includes the `serial_number`, the serial
+- [x] Each returned record includes the `serial_number`, the serial
       port path, and a reference/handle to the matching `node-hid`
       CMSIS-DAP interface, all joined on `serial_number`.
-- [ ] A device present in `serialport`'s list but with no matching
+- [x] A device present in `serialport`'s list but with no matching
       `node-hid` entry (or vice versa) is handled explicitly (surfaced
       as partially-available, not silently dropped or silently treated
       as fully available).
-- [ ] Plugging in or unplugging a device is observable by callers
+- [x] Plugging in or unplugging a device is observable by callers
       (event/callback or poll-and-diff) without restarting the process.
-- [ ] Unit-testable logic (the VID/PID filter and the join-by-
+- [x] Unit-testable logic (the VID/PID filter and the join-by-
       serial_number logic) is separated from the actual `serialport`/
       `node-hid` calls so it can be tested against fake device lists
       without real hardware attached; a hardware-dependent smoke test is

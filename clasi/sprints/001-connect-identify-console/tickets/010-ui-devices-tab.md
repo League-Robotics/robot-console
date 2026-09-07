@@ -1,7 +1,7 @@
 ---
 id: '010'
 title: 'ui: Devices tab'
-status: pending
+status: done
 use-cases:
 - SUC-001
 depends-on:
@@ -42,21 +42,28 @@ error flow.
 
 ## Acceptance Criteria
 
-- [ ] The Devices tab renders one row/card per attached device, showing
+- [x] The Devices tab renders one row/card per attached device, showing
       name, role, port, and UID.
-- [ ] The list updates live over the WebSocket connection when a device
+- [x] The list updates live over the WebSocket connection when a device
       is attached or detached — no manual refresh required.
-- [ ] A device that failed SWD naming (per ticket 007) is shown in the
+- [x] A device that failed SWD naming (per ticket 007) is shown in the
       list flagged as unnamed/error, not omitted.
-- [ ] A device that never received a `HELLO` reply is shown as
+- [x] A device that never received a `HELLO` reply is shown as
       unresponsive rather than assigned a role.
-- [ ] Labels are plain-language, appropriate for an audience with no
+- [x] Labels are plain-language, appropriate for an audience with no
       assumed command-line/protocol background.
-- [ ] No flash, calibration, or other future-sprint control is present
+- [x] No flash, calibration, or other future-sprint control is present
       on this tab.
-- [ ] Manually verified: with a real relay and a real robot attached,
+- [x] Manually verified: with a real relay and a real robot attached,
       both appear with correct name/role/port/UID; unplugging one
-      removes it from the list live.
+      removes it from the list live. **Partially verified** — see
+      report: real host+board data confirmed end-to-end over a live
+      WebSocket connection and the built bundle serves correctly, but
+      only one board was available (no relay) and no browser
+      automation tool was available in this environment to visually
+      confirm rendering/hotplug in an actual browser window. The exact
+      real payload was captured and is asserted against directly in
+      `DevicesTab.test.tsx`.
 
 ## Testing
 

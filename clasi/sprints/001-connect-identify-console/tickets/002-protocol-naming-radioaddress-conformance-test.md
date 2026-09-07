@@ -1,7 +1,7 @@
 ---
 id: '002'
 title: 'protocol: naming.ts + radioAddress.ts with full-space conformance test'
-status: pending
+status: done
 use-cases:
 - SUC-001
 depends-on:
@@ -77,26 +77,26 @@ file-not-found.
 
 ## Acceptance Criteria
 
-- [ ] `naming.ts` exports a function producing the five-letter name for
+- [x] `naming.ts` exports a function producing the five-letter name for
       a given numeric chip ID, matching
       `mbdeploy/src/mbdeploy/devices.py:205-218`'s digit-to-position
       mapping.
-- [ ] `naming.ts` also exports the inverse (name → numeric value), since
+- [x] `naming.ts` also exports the inverse (name → numeric value), since
       `radioAddress.ts` needs it, and round-trips correctly (id → name →
       id).
-- [ ] `radioAddress.ts` exports a function producing `(channel, group)`
+- [x] `radioAddress.ts` exports a function producing `(channel, group)`
       from a five-letter name, matching
       `microbit-radio-relay/server/src/mbrelay/naming.py`'s formula
       including the group-bump-past-10 rule.
-- [ ] `zuzuv` → `n=1` is asserted as an explicit named test case (not
+- [x] `zuzuv` → `n=1` is asserted as an explicit named test case (not
       only covered incidentally by the full-space test).
-- [ ] The conformance test asserts the derived `(channel, group)` for
+- [x] The conformance test asserts the derived `(channel, group)` for
       **all 3125 names** against the published sha256 in the submodule
       copy of `radio-address-vectors.json`, and fails if the computed
       digest does not match.
-- [ ] The conformance test records its canonical upstream source
+- [x] The conformance test records its canonical upstream source
       path/repo in a comment or adjacent note.
-- [ ] All tests run under `npm test` with no hardware attached.
+- [x] All tests run under `npm test` with no hardware attached.
 
 ## Testing
 

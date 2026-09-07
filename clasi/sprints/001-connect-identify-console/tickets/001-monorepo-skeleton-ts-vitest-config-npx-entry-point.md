@@ -1,7 +1,7 @@
 ---
 id: '001'
 title: Monorepo skeleton, TS/vitest config, npx entry point
-status: pending
+status: done
 use-cases: []
 depends-on: []
 github-issue: ''
@@ -55,25 +55,25 @@ logic here — that is every ticket after this one). It also creates:
 
 ## Acceptance Criteria
 
-- [ ] `npm install` succeeds from a clean checkout with no manual steps.
-- [ ] `packages/protocol`, `packages/host`, `packages/ui` each exist
+- [x] `npm install` succeeds from a clean checkout with no manual steps.
+- [x] `packages/protocol`, `packages/host`, `packages/ui` each exist
       with their own `package.json` and `tsconfig.json` extending a
       shared root config.
-- [ ] `npm test` runs (via `vitest`) across all three workspaces and
+- [x] `npm test` runs (via `vitest`) across all three workspaces and
       exits 0 with zero tests found (no test files exist yet).
-- [ ] `npm run build` (or equivalent per-package build script) type-
+- [x] `npm run build` (or equivalent per-package build script) type-
       checks all three packages with no errors.
-- [ ] `npx robot-console` (run locally via `npm link` or `npx --package
+- [x] `npx robot-console` (run locally via `npm link` or `npx --package
       . robot-console`) executes the entry point without crashing.
-- [ ] `vendor/pxt-nezha-diffdrive` and `vendor/radio-robot-lib` exist
+- [x] `vendor/pxt-nezha-diffdrive` and `vendor/radio-robot-lib` exist
       as git submodules with HTTPS URLs, `.gitmodules` is committed,
       and `vendor/pxt-nezha-diffdrive/docs/radio-address-vectors.json`
       and `vendor/radio-robot-lib/tests/protocol/golden_vectors.txt`
       are both readable after `git submodule update --init`.
-- [ ] `vendor/` is excluded from the TypeScript build and no package
+- [x] `vendor/` is excluded from the TypeScript build and no package
       imports source code from it.
-- [ ] `README.md` tells a fresh cloner how to initialize submodules.
-- [ ] No naming/banner/codec/session/devices/server/UI logic exists yet
+- [x] `README.md` tells a fresh cloner how to initialize submodules.
+- [x] No naming/banner/codec/session/devices/server/UI logic exists yet
       in any package — this ticket is scaffolding only.
 
 ## Testing

@@ -1,0 +1,59 @@
+/**
+ * theme.css — shared design tokens for the whole UI, loaded once from
+ * `main.tsx`. Light palette lives on `:root`; the dark palette
+ * redefines the same custom properties under a `prefers-color-scheme:
+ * dark` media query, per the ticket's "support light and dark
+ * rendering if that costs little" note. No explicit light/dark toggle
+ * exists in the UI, so system preference is the only input.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --rc-bg: #f5f6f8;
+  --rc-surface: #ffffff;
+  --rc-border: #d8dce1;
+  --rc-text: #1b1f24;
+  --rc-text-muted: #5b6470;
+  --rc-accent: #2563eb;
+  --rc-accent-contrast: #ffffff;
+  --rc-warn-bg: #fff6e5;
+  --rc-warn-border: #e8c37a;
+  --rc-warn-text: #7a5b12;
+  --rc-danger-text: #9a3412;
+  --rc-ok-bg: #e8f6ec;
+  --rc-ok-text: #1c6b34;
+
+  font-family:
+    system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --rc-bg: #14171c;
+    --rc-surface: #1c2027;
+    --rc-border: #2b313a;
+    --rc-text: #e7e9ec;
+    --rc-text-muted: #9aa3af;
+    --rc-accent: #5b8def;
+    --rc-accent-contrast: #0c1420;
+    --rc-warn-bg: #2c2410;
+    --rc-warn-border: #6b551d;
+    --rc-warn-text: #e8c37a;
+    --rc-danger-text: #f0a487;
+    --rc-ok-bg: #123321;
+    --rc-ok-text: #6fd28f;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--rc-bg);
+  color: var(--rc-text);
+}

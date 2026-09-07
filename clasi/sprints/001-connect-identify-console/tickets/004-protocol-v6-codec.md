@@ -1,7 +1,7 @@
 ---
 id: '004'
 title: 'protocol: v6/codec.ts (line grammar, case-as-direction)'
-status: pending
+status: done
 use-cases:
 - SUC-002
 depends-on:
@@ -50,26 +50,26 @@ covers should produce the same parsed result here.
 
 ## Acceptance Criteria
 
-- [ ] `encodeLine(verb, fields, id?)` produces a line matching the
+- [x] `encodeLine(verb, fields, id?)` produces a line matching the
       grammar (`VERB field field ... #id\n` when an id is given, no `#`
       section when it is not), with `flags`-typed fields rendered as
       lowercase hex without `0x`.
-- [ ] `decodeLine(line)` parses a well-formed line into `{ verb, fields,
+- [x] `decodeLine(line)` parses a well-formed line into `{ verb, fields,
       id }`, with `id` absent (not a sentinel value) when no `#id`
       suffix was present.
-- [ ] Encoding a line that would exceed 240 bytes refuses (throws or
+- [x] Encoding a line that would exceed 240 bytes refuses (throws or
       returns an explicit error result) rather than truncating.
-- [ ] Decoding a line longer than 240 bytes is rejected the same way.
-- [ ] A helper (e.g. `isReplyVerb`/`classifyLine`) distinguishes
+- [x] Decoding a line longer than 240 bytes is rejected the same way.
+- [x] A helper (e.g. `isReplyVerb`/`classifyLine`) distinguishes
       UPPERCASE (command-direction) from lowercase (reply-direction)
       verbs, and flags a lowercase verb that is not a known reply verb
       as "foreign traffic to drop silently" rather than as a decode
       error.
-- [ ] Relevant framing cases from
+- [x] Relevant framing cases from
       `vendor/radio-robot-lib/tests/protocol/golden_vectors.txt` (HELLO/banner/
       ack/nack framing specifically — full drive-verb coverage is
       sprint 3's concern) decode to the expected fields.
-- [ ] All tests run under `npm test` with no hardware attached.
+- [x] All tests run under `npm test` with no hardware attached.
 
 ## Testing
 

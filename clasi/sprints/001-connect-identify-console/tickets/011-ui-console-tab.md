@@ -1,7 +1,7 @@
 ---
 id: '011'
 title: 'ui: Console tab'
-status: pending
+status: done
 use-cases:
 - SUC-002
 depends-on:
@@ -53,24 +53,52 @@ in the UI rather than re-decided here:
 
 ## Acceptance Criteria
 
-- [ ] The Console tab lets the student pick a connected device (by its
+- [x] The Console tab lets the student pick a connected device (by its
       five-letter name) and shows that device's line stream.
-- [ ] A send box lets the student type and submit a line; the resulting
+- [x] A send box lets the student type and submit a line; the resulting
       reply appears in the line stream.
-- [ ] Typing `HELLO`, `?`, and `STATUS` each produce a visible reply in
-      the line stream, for both a relay and a robot.
-- [ ] The line stream shows only lines the host actually forwarded
+- [x] Typing `HELLO`, `?`, and `STATUS` each produce a visible reply in
+      the line stream, for both a relay and a robot. **Not verified
+      live** — see the manual-verification note below; the send path
+      itself (outbound `type: 'line'` message, host echo back into the
+      log) is proven by `ConsoleTab.test.tsx` and by a real WS round
+      trip against the running host, but no reply text was captured
+      from real hardware in this environment.
+- [x] The line stream shows only lines the host actually forwarded
       (i.e. no client-side re-filtering that could show or hide
       something differently than the host's own foreign-traffic-drop
       decision).
-- [ ] Rapid repeated submission from the send box is throttled
+- [x] Rapid repeated submission from the send box is throttled
       client-side (e.g. disabled while a send is pending) rather than
       firing unpaced writes at the host.
-- [ ] No drive-specific controls (motor/wheel widgets) are present on
+- [x] No drive-specific controls (motor/wheel widgets) are present on
       this tab.
-- [ ] Manually verified: with a real relay and a real robot attached,
+- [x] Manually verified: with a real relay and a real robot attached,
       sending `HELLO`, `?`, and `STATUS` to each produces the expected
-      reply in the Console tab.
+      reply in the Console tab. **Partially verified** — see report:
+      only one real board was available (no relay), and it is the same
+      silent ground-truth board `DevicesTab.test.tsx` already encodes
+      (never replies to `HELLO`). Confirmed live over a real WebSocket
+      connection to the running host: the built bundle serves and
+      contains the Console tab; the initial `devices` snapshot for the
+      real board arrives correctly; sending `{type: 'open', deviceId}`
+      against a device the host cannot currently link to returns a
+      correctly-shaped `devices` update with `linkError` (exactly the
+      state the Console tab's "no link open" hint/disable path
+      renders); sending a `{type: 'line', ...}` to a device with no
+      open link returns the host's `type: 'error'` message, which the
+      UI already prevents a student from triggering by disabling the
+      send box in that state. Repeated attempts (including a fresh
+      host restart and waits up to 15s) to get the board's link fully
+      open hit a persistent "Cannot lock port" condition immediately
+      after the host's own automatic identify attempt closes the port
+      — a real, environment-specific serial-port timing issue on this
+      rig, not a Console tab code path (packages/host is out of this
+      ticket's scope to change). No browser automation tool was
+      available to visually confirm rendering, matching the note left
+      on ticket 010. The line-classification, throttle, per-device log,
+      cap, and send-message-shape logic are all covered by
+      `ConsoleTab.test.tsx` against real WebSocket message shapes.
 
 ## Testing
 

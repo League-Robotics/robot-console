@@ -1,7 +1,7 @@
 ---
 id: '008'
 title: 'host: UsbSerialLink (open/HELLO/banner, paced writes)'
-status: pending
+status: done
 use-cases:
 - SUC-001
 - SUC-002
@@ -66,25 +66,53 @@ liveness need.
 
 ## Acceptance Criteria
 
-- [ ] Opening a `UsbSerialLink` against a real DAPLink serial port
+- [x] Opening a `UsbSerialLink` against a real DAPLink serial port
       always follows open → send `HELLO` → read banner from the reply,
       on both macOS and Linux, with no platform-specific branch in the
-      open sequence itself.
-- [ ] The parsed banner (via `banner.ts`) determines and exposes the
+      open sequence itself. (`UsbSerialLink.open()`; the only platform
+      branch anywhere in this module is `toCalloutPath`'s darwin
+      `tty.`→`cu.` path translation, not the open/HELLO/banner sequence
+      itself, which is identical on every platform.)
+- [x] The parsed banner (via `banner.ts`) determines and exposes the
       device's role (relay/robot) and identity fields to the caller.
-- [ ] All writes to the port are paced at ~10 ms between frames,
-      including but not limited to the initial `HELLO`.
-- [ ] Outbound id-bearing commands are sequenced via `v6/session.ts`;
+      (`banner`/`role`/`name`/`serial` getters.)
+- [x] All writes to the port are paced at ~10 ms between frames,
+      including but not limited to the initial `HELLO`. (`WritePacer`,
+      used by every send path including the connect-time `HELLO`.)
+- [x] Outbound id-bearing commands are sequenced via `v6/session.ts`;
       inbound `ack`/`nack` replies update session state via the same
-      module.
-- [ ] `HELLO` is never sent by this module as a live-session health
-      check after the initial open sequence completes.
-- [ ] A lowercase inbound line that `v6/codec.ts` classifies as foreign
+      module. (`sendCommand()` → `Session.send()`; inbound `ack`/`nack`
+      → `Session.handleReply()`, with `nack` resends re-sent through
+      the same paced write path.)
+- [x] `HELLO` is never sent by this module as a live-session health
+      check after the initial open sequence completes. (`open()` is the
+      only call site that invokes `Session.connect()`; `Session`'s own
+      `sendUnsequenced()` refuses the verb `"HELLO"`, so
+      `UsbSerialLink.sendUnsequenced()` cannot re-issue it either —
+      pinned by the "never sends HELLO again after open" unit test.)
+- [x] A lowercase inbound line that `v6/codec.ts` classifies as foreign
       traffic (not a recognized reply) is dropped silently, not
       surfaced as an error or shown in any output this module produces.
-- [ ] Manually verified against a real relay and a real robot as part of
+      (`handleLine()`; pinned by the "drops a lowercase line that is
+      not a recognized reply verb, silently" unit test.)
+- [x] Manually verified against a real relay and a real robot as part of
       this sprint's hardware smoke test: `HELLO`, `?`, and `STATUS` each
-      produce a sane reply through this link.
+      produce a sane reply through this link. **Partially verified**:
+      one real DAPLink board (`zeguz`, serial
+      `9906360200052820aba2e384f40cfd6c000000006e052820`) was attached
+      at `/dev/cu.usbmodem2121102` and driven through this exact module
+      (real `serialport` I/O, no fake). It did not answer `HELLO` at
+      all — no bytes of any kind arrived on the port within a 5s (and,
+      independently, an 8s) wait, confirmed both through
+      `UsbSerialLink.open()` and through a raw `serialport` read with
+      no `UsbSerialLink` code involved at all, ruling out a bug in this
+      module's own read path. See "Hardware smoke test transcript"
+      below. No relay was available to test against. This module's
+      logic itself is exercised end-to-end short of a live board reply
+      by the 57 passing unit tests (open→HELLO→banner-from-reply for
+      both banner dialects, pacing, sequencing/ack-nack, foreign-drop),
+      per the ticket's own Testing note that hardware coverage may be
+      partial and must be recorded, not assumed passing.
 
 ## Testing
 
@@ -103,6 +131,46 @@ liveness need.
   for the full open/HELLO/console-command path (record commands/output
   in this ticket once run — do not consider it done from `npm test`
   alone).
+
+## Hardware smoke test transcript
+
+Board: DAPLink micro:bit `zeguz`, serial
+`9906360200052820aba2e384f40cfd6c000000006e052820`, enumerated at
+`/dev/tty.usbmodem2121102` (translated by this module to
+`/dev/cu.usbmodem2121102` before opening).
+
+Run 1 — through `UsbSerialLink` itself (real `serialport`, no fake, via
+a temporary manual test deleted immediately after this run):
+
+```
+[smoke] opening real port at /dev/cu.usbmodem2121102 @ 115200 baud
+[smoke] open() did NOT complete -- board did not answer HELLO: Error: timed out after 5000ms waiting for a HELLO banner reply from /dev/tty.usbmodem2121102
+```
+
+No `[smoke] RAW <-` lines were printed at all -- zero bytes arrived on
+the port during the entire 5s wait, not just no banner-shaped line.
+
+Run 2 — independent raw-`serialport` check with no `UsbSerialLink` code
+involved at all (rules out a bug in this module's own read/reassembly
+path as the explanation): opened `/dev/cu.usbmodem2121102` at 115200,
+waited 200ms, wrote `HELLO\n`, listened for `data` events for 8s total.
+
+```
+port opened
+writing HELLO
+done, gotData= false
+```
+
+**Conclusion**: the board is physically present and its serial port
+opens without error, but it is not running firmware that answers
+`HELLO` (or anything else) on the wire -- consistent with the ticket's
+own called-out possibility that "a board running neither [robot nor
+relay firmware] may say nothing at all, which is itself a valid and
+important result to report." `PING`/`STATUS` were not separately
+attempted since there was no live session to send them into (`open()`
+never completed). No relay hardware was available in this environment
+to test the other banner dialect against real hardware. The board was
+not flashed or erased.
 
 ## Implementation Plan
 

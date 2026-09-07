@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AckNackEvent, DecodedLine, ParsedBanner } from "@robot-console/protocol";
 import { DeviceWatcher, type DaplinkDevice } from "./devices.js";
 import type { SwdNameResult } from "./swdName.js";
-import { DeviceRegistry } from "./deviceRegistry.js";
+import { DeviceRegistry, KeyedMutex } from "./deviceRegistry.js";
 import type { Link } from "./link/Link.js";
 import type { EndpointListEntry, FirmwareKind, FlashPhase } from "./wsMessages.js";
 import type { FirmwareConfigMap, FirmwareSource } from "./config.js";
@@ -190,6 +190,29 @@ describe("DeviceRegistry", () => {
     ]);
     // Some earlier snapshot showed the device before naming resolved.
     expect(seen.some((snap) => snap.length === 1 && snap[0]?.name === null)).toBe(true);
+
+    await registry.stop();
+  });
+
+  it("stamps resourceKey on every snapshot entry, equal to endpointId for every USB endpoint", async () => {
+    // Ticket 003's endpoint/session/resource-key model: resourceKey is
+    // always present, and always equal to endpointId for USB this
+    // sprint (see EndpointState.resourceKey's own doc comment) -- a
+    // relay in sprint 7 is what makes them diverge, not this ticket.
+    const devices = [device(), device({ serialNumber: "SERIAL-B", displaySerial: "SHORT-B" })];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("zeguz");
+    const createLink = () => new FakeLink(() => new Promise<ParsedBanner | null>(() => {}));
+
+    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    registry.start();
+
+    const snap = await waitForSnapshot(registry, (s) => s.length === 2);
+    expect(snap).toHaveLength(2);
+    for (const entry of snap) {
+      expect(entry.resourceKey).toBe(entry.endpointId);
+    }
+    expect(snap.map((e) => e.resourceKey).sort()).toEqual(["usb-SERIAL-A", "usb-SERIAL-B"]);
 
     await registry.stop();
   });
@@ -820,5 +843,71 @@ describe("DeviceRegistry — requestFlash", () => {
     expect(order).toEqual(["flash-resolve-start", "flash-resolve-end", "flash-done", "open-done"]);
 
     await registry.stop();
+  });
+});
+
+// ---------------------------------------------------------------------
+// KeyedMutex -- the mechanism sprint 7's relay (many endpoints, one
+// shared resourceKey) will lean on for real. No second transport exists
+// yet this sprint (see the ticket's own scope note), so this exercises
+// the mutex directly: two different "logical" callers issuing run()
+// under the *same* resourceKey string are still serialized against each
+// other, exactly as if one caller had issued both tasks -- the mutex
+// has no notion of which caller a task belongs to, only the key it was
+// queued under.
+// ---------------------------------------------------------------------
+
+describe("KeyedMutex", () => {
+  it("serializes two run() calls sharing one resourceKey regardless of which logical caller issued them", async () => {
+    const mutex = new KeyedMutex();
+    const order: string[] = [];
+    const RELAY_PORT_RESOURCE_KEY = "usb-RELAY-SERIAL";
+
+    // "robot-a" and "robot-b" stand in for two logical targets reached
+    // through one relay in sprint 7 -- both contend for the relay's one
+    // physical USB port, so both run() calls below share one
+    // resourceKey even though nothing else about them is related.
+    const robotATask = mutex.run(RELAY_PORT_RESOURCE_KEY, async () => {
+      order.push("robot-a-start");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      order.push("robot-a-end");
+    });
+    const robotBTask = mutex.run(RELAY_PORT_RESOURCE_KEY, async () => {
+      order.push("robot-b-start");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      order.push("robot-b-end");
+    });
+
+    await Promise.all([robotATask, robotBTask]);
+
+    // robot-b's task never starts until robot-a's fully finishes --
+    // "run() serialized under a shared resourceKey" is exactly the
+    // guarantee DeviceRegistry relies on for every one of its own
+    // per-endpoint operations today (requestOpen/requestClose/sendLine/
+    // requestFlash), and what a relay's several endpoints will rely on
+    // in sprint 7.
+    expect(order).toEqual(["robot-a-start", "robot-a-end", "robot-b-start", "robot-b-end"]);
+  });
+
+  it("runs tasks under different resourceKeys fully in parallel", async () => {
+    const mutex = new KeyedMutex();
+    const order: string[] = [];
+
+    const taskA = mutex.run("usb-SERIAL-A", async () => {
+      order.push("a-start");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      order.push("a-end");
+    });
+    const taskB = mutex.run("usb-SERIAL-B", async () => {
+      order.push("b-start");
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      order.push("b-end");
+    });
+
+    await Promise.all([taskA, taskB]);
+
+    // b (shorter delay, different key) finishes before a even though a
+    // started first -- proof the two keys never queue behind each other.
+    expect(order).toEqual(["a-start", "b-start", "b-end", "a-end"]);
   });
 });

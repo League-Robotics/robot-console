@@ -10,18 +10,27 @@
  * framing, or sequencing logic, all of which stays in the composed
  * modules.
  *
- * ## Sprint 4: endpoint ids, mapping only
+ * ## Sprint 4: endpoint/session/resource-key model
  *
  * `EndpointListEntry` replaced `DeviceListEntry` in sprint 4's wire
- * contract reshape (see `wsMessages.ts`'s own module doc comment). This
- * ticket only remaps `toEntry`'s *output* shape and mints the URL-safe
- * `usb-<serialNumber>` endpoint id ({@link usbEndpointId}) used as this
- * module's own internal key (the `states` map, the {@link KeyedMutex}
- * key, and every public method's `endpointId` parameter) -- it does
- * **not** yet implement the endpoint/session/resource-key *model*
- * (multiple endpoints sharing one contended resource) that a later
- * ticket introduces for relay-carried robots. For USB, one endpoint is
- * still exactly one physical device, one to one, as before.
+ * contract reshape (see `wsMessages.ts`'s own module doc comment).
+ * Ticket 001 remapped `toEntry`'s *output* shape and minted the
+ * URL-safe `usb-<serialNumber>` endpoint id ({@link usbEndpointId}) used
+ * as this module's own internal key (the `states` map, the
+ * {@link KeyedMutex} key, and every public method's `endpointId`
+ * parameter). Ticket 003 (this shape) restructures the *internal* state
+ * to match: {@link EndpointState} carries its own `resourceKey`
+ * (`=== endpointId` for every endpoint this sprint -- see that field's
+ * own doc comment for why it exists as a distinct field anyway) and a
+ * single optional `session` object (the open {@link Link} plus its line/
+ * error subscriptions) in place of the old flat `link` field. **One
+ * resource -> one key -> one queue -> one session**: every operation
+ * that touches a resource runs through {@link KeyedMutex.run} keyed by
+ * that resource's `resourceKey` -- today that key happens to equal the
+ * endpoint id one to one, but the routing is already through
+ * `resourceKey`, so sprint 7's relay (many endpoints, one shared
+ * resource key: the relay's own USB port) changes data, not control
+ * flow.
  *
  * ## The race this module exists to prevent
  *
@@ -37,37 +46,40 @@
  *
  * ## Attach flow
  *
- * On each `DeviceWatcher` diff, a newly-added device is registered
- * immediately (so it is visible, named `null`, right away -- the
- * endpoint list must never block on SWD/serial I/O) and its name/role
- * resolution is kicked off asynchronously, serialized per-endpoint as
- * above: resolve the five-letter name over SWD first (fast, no reset),
- * then {@link connectAndIdentify} the link -- `Link.connect()` opens the
- * port, then `Link.identify()` learns its role from the boot banner and
- * classifies it via `classifyBanner`. `connect()`/`identify()` fail
- * differently, and this module treats them differently (sprint 4 ticket
- * 002, folding in
+ * On each `DeviceWatcher` diff, a newly-added device is registered as
+ * an endpoint immediately (so it is visible, named `null`, right away
+ * -- the endpoint list must never block on SWD/serial I/O) and its
+ * name/role resolution is kicked off asynchronously, serialized per
+ * resource key (per endpoint this sprint) as above: resolve the
+ * five-letter name over SWD first (fast, no reset), then
+ * {@link connectAndIdentify} opens a session for it -- `Link.connect()`
+ * opens the port, then `Link.identify()` learns its role from the boot
+ * banner and classifies it via `classifyBanner`. `connect()`/
+ * `identify()` fail differently, and this module treats them
+ * differently (sprint 4 ticket 002, folding in
  * `port-lock-contention-between-identify-and-user-open.md`):
  *
  * - `connect()` throws only on a genuine transport failure (the port
  *   itself failing to open). That is still today's error state --
- *   `sessionOpen: false`, `sessionError` set -- and the link is closed.
+ *   `sessionOpen: false`, `sessionError` set, no {@link EndpointState.session}
+ *   -- and the link is closed.
  * - `identify()` never throws. A device that never replies to `HELLO`
  *   (a silently running board) resolves `null` and still ends up
  *   listed, named, with `role: null`, `classification.type: "unknown"`,
  *   `sessionOpen: true`, and **no** `sessionError` -- "connected,
  *   unresponsive" is a normal, representable state (the state a relay
- *   whose target robot never answers is in), not an error. The link
+ *   whose target robot never answers is in), not an error. The session
  *   stays open: it is never closed and reopened just because identify
  *   found nothing, which is what used to race the OS over the port
  *   handle (see the linked issue).
  *
  * ## Detach flow
  *
- * A removed device's link (if open) is closed best-effort and its
- * state discarded. A link-level error arriving after open (e.g. the
- * board is unplugged) is caught and turned into a state update plus an
- * {@link ErrorMessage}-shaped event -- never an uncaught exception that
+ * A removed device's endpoint session (if open) is closed best-effort
+ * and its endpoint state discarded. A link-level error arriving after
+ * a session is open (e.g. the board is unplugged) is caught and turned
+ * into a state update plus an {@link ErrorMessage}-shaped event --
+ * never an uncaught exception that
  * would take the whole server down over one board.
  *
  * ## Flash flow (sprint 2)
@@ -145,29 +157,45 @@ function defaultLinkFactory(spec: LinkSpec): Link {
 }
 
 // ---------------------------------------------------------------------
-// KeyedMutex -- serialize operations per endpoint, not globally
+// KeyedMutex -- serialize operations per resource key, not globally
 // ---------------------------------------------------------------------
 
 /**
- * Runs async tasks registered under the same `key` strictly one at a
- * time, in the order {@link run} was called, while tasks under
- * different keys run fully concurrently. A task that throws/rejects
- * does not wedge later tasks queued under the same key -- the chain
- * always advances regardless of the previous task's outcome; only the
- * caller of that specific {@link run} call observes its rejection.
+ * Runs async tasks registered under the same `resourceKey` strictly one
+ * at a time, in the order {@link run} was called, while tasks under
+ * different resource keys run fully concurrently. A task that throws/
+ * rejects does not wedge later tasks queued under the same key -- the
+ * chain always advances regardless of the previous task's outcome; only
+ * the caller of that specific {@link run} call observes its rejection.
+ *
+ * Named for the physical resource it serializes access to (a USB port,
+ * a relay's shared port in sprint 7), not for whatever logical caller
+ * happens to invoke it -- two different endpoints (e.g. two robots
+ * behind one relay, sprint 7) can share one `resourceKey` and will
+ * still be serialized against each other by this same mechanism, with
+ * no per-caller bookkeeping. This sprint every USB endpoint's
+ * `resourceKey` happens to equal its `endpointId` one to one (see
+ * {@link EndpointState.resourceKey}'s own doc comment), so that
+ * many-endpoints-one-key case isn't exercised by real callers yet --
+ * only by a direct test of this class.
+ *
+ * Note: `tails` is never pruned -- one entry persists per resource key
+ * for the process's lifetime. Fine at today's scale (a handful of USB
+ * ports); worth revisiting if the resource-key space ever grows
+ * unbounded (e.g. one entry per ephemeral remote session).
  */
-class KeyedMutex {
+export class KeyedMutex {
   private readonly tails = new Map<string, Promise<void>>();
 
-  run<T>(key: string, task: () => Promise<T>): Promise<T> {
-    const previous = this.tails.get(key) ?? Promise.resolve();
+  run<T>(resourceKey: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.tails.get(resourceKey) ?? Promise.resolve();
     const result = previous.then(task);
     // Store a variant that always resolves as the new chain tail, so a
     // rejection from this task never poisons the next queued task under
     // the same key -- only `result` (returned to this call's caller)
     // carries the rejection onward.
     this.tails.set(
-      key,
+      resourceKey,
       result.then(
         () => undefined,
         () => undefined,
@@ -181,31 +209,67 @@ class KeyedMutex {
 // Per-endpoint state
 // ---------------------------------------------------------------------
 
-interface DeviceState {
+/** The live state of one open {@link Link} against one `resourceKey` --
+ * everything a session needs in order to be torn down cleanly
+ * ({@link DeviceRegistry.teardownLink}) or read from
+ * ({@link DeviceRegistry.sendLine}). Absent whenever there is no open
+ * session for the endpoint (never connected, a `connect()` failure, or
+ * after teardown) -- see {@link EndpointState.sessionOpen}'s own doc
+ * comment for why "open" is tracked as its own field rather than
+ * derived from this object's presence. */
+interface EndpointSession {
+  link: Link;
+  unsubscribeLine: () => void;
+  unsubscribeError: () => void;
+}
+
+interface EndpointState {
   device: DaplinkDevice;
   /** This endpoint's stable, URL-safe id -- `usbEndpointId(device.serialNumber)`,
    * computed once when the state is created. Stored rather than
    * re-derived everywhere so a rename of the minting scheme only touches
    * one call site. */
   endpointId: string;
+  /** The physical resource this endpoint contends for exclusive access
+   * to -- the {@link KeyedMutex} key for every operation this module
+   * runs against it. Equals {@link endpointId} for every USB endpoint
+   * this sprint (one board, one port, one endpoint) -- this equality is
+   * intentional and documented, not dead code: sprint 7's relay makes
+   * them diverge (a relay's shared USB port is one `resourceKey` shared
+   * by several endpoints, one per robot behind it), and carrying the
+   * field now, unused-but-equal, means that sprint extends this model
+   * instead of redesigning `KeyedMutex`'s keying and every call site
+   * that reads it. See `sprint.md`'s Design Rationale. */
+  resourceKey: string;
   name: string | null;
   nameError?: { reason: string; message: string } | undefined;
-  role: string | null;
   /** This endpoint's device-type classification, derived from the most
    * recently seen banner via `classifyBanner`. Starts at
    * `classifyBanner(null)` (`type: "unknown"`, `evidence: "none"`)
-   * before any link has ever connected, stays there if `identify()`
-   * ever resolves `null` (connected, unresponsive -- see this module's
-   * own doc comment), and is kept in sync with {@link role} by every
-   * call site that sets `role` -- ticket 003 restructures this internal
-   * state further; this ticket only wires classification through the
-   * existing role-setting call sites. */
+   * before any session has ever connected, and stays there if
+   * `identify()` ever resolves `null` (connected, unresponsive -- see
+   * this module's own doc comment). `EndpointListEntry.role` is derived
+   * from `classification.role` directly by {@link toEntry} -- there is
+   * no separate `role` field on this state to keep in sync. */
   classification: DeviceClassification;
-  link?: Link | undefined;
-  linkOpen: boolean;
-  linkError?: string | undefined;
-  unsubscribeLine?: (() => void) | undefined;
-  unsubscribeError?: (() => void) | undefined;
+  /** The open session (link + its subscriptions), if any -- see
+   * {@link EndpointSession}'s own doc comment. */
+  session?: EndpointSession | undefined;
+  /** Whether `server.ts` currently considers a session open for this
+   * endpoint -- renamed from `linkOpen`, mirroring
+   * {@link EndpointListEntry.sessionOpen} one to one. Tracked as its own
+   * field rather than derived from {@link session}'s presence because a
+   * link-level error after open ({@link DeviceRegistry.handleLinkError})
+   * flips this to `false` immediately while deliberately leaving
+   * `session` itself in place -- the still-referenced {@link Link} is
+   * what a later {@link DeviceRegistry.teardownLink} call (from
+   * `requestClose` or a detach) closes and unsubscribes from; nothing
+   * else ever does. */
+  sessionOpen: boolean;
+  /** Present only when the most recent session-open attempt failed, or
+   * a post-open link error occurred -- renamed from `linkError`,
+   * mirroring {@link EndpointListEntry.sessionError} one to one. */
+  sessionError?: string | undefined;
   /** Present only while a flash is in flight for this device (sprint
    * 2) -- set at the start of {@link DeviceRegistry.requestFlash}'s
    * task and cleared (success or error) at its end. Reflected into
@@ -213,21 +277,15 @@ interface DeviceState {
   flashStatus?: { firmware: FirmwareKind; phase: FlashPhase } | undefined;
 }
 
-function toEntry(state: DeviceState): EndpointListEntry {
+function toEntry(state: EndpointState): EndpointListEntry {
   const entry: EndpointListEntry = {
     endpointId: state.endpointId,
     transport: "usb",
-    // Equal to endpointId for every endpoint this sprint -- USB is 1:1
-    // between endpoint and physical resource. Kept as its own field
-    // (not derived from endpointId by consumers) so sprint 7's
-    // relay-carries-many-robots case only has to make this value
-    // diverge, not add the field -- see wsMessages.ts's own doc
-    // comment.
-    resourceKey: state.endpointId,
+    resourceKey: state.resourceKey,
     classification: state.classification,
     name: state.name,
-    role: state.role,
-    sessionOpen: state.linkOpen,
+    role: state.classification.role,
+    sessionOpen: state.sessionOpen,
     usb: {
       serialNumber: state.device.serialNumber,
       displaySerial: state.device.displaySerial,
@@ -237,8 +295,8 @@ function toEntry(state: DeviceState): EndpointListEntry {
   if (state.nameError) {
     entry.nameError = state.nameError;
   }
-  if (state.linkError) {
-    entry.sessionError = state.linkError;
+  if (state.sessionError) {
+    entry.sessionError = state.sessionError;
   }
   if (state.flashStatus) {
     entry.flashStatus = state.flashStatus;
@@ -321,7 +379,7 @@ export interface DeviceRegistryOptions {
 
 /**
  * Live registry of attached devices, their resolved identity/
- * classification, and any open per-endpoint link -- the one stateful
+ * classification, and any open per-endpoint session -- the one stateful
  * object `server.ts` composes to turn `devices.ts`/`swdName.ts`/
  * `classifyBanner`/`UsbSerialLink` into WebSocket messages. See the
  * module doc comment for the attach/detach flows and the race this
@@ -336,7 +394,7 @@ export class DeviceRegistry {
   private readonly fetchAndVerifyHexFn: typeof fetchAndVerifyHex;
   private readonly flashFn: typeof flash;
   private readonly mutex = new KeyedMutex();
-  private readonly states = new Map<string, DeviceState>();
+  private readonly states = new Map<string, EndpointState>();
   private unsubscribeWatcher: (() => void) | undefined;
 
   private readonly devicesListeners = new Set<DevicesListener>();
@@ -428,15 +486,22 @@ export class DeviceRegistry {
     };
   }
 
-  /** (Re-)open a link to an endpoint, e.g. retrying after a `connect()`
-   * failure (a genuine transport error). No-op if a link is already
-   * open -- note that a "connected, unresponsive" endpoint (a
-   * successful `connect()` whose `identify()` resolved `null`) already
-   * has `linkOpen: true`, so this is a no-op for it too; retrying
-   * `identify()` on an already-open link is ticket 003's concern, not
-   * this one. Errors are reported via {@link onError} and reflected in
-   * the next {@link onDevicesChanged} snapshot -- never thrown to the
-   * caller. */
+  /** (Re-)open a session to an endpoint, e.g. retrying after a
+   * `connect()` failure (a genuine transport error). No-op if a session
+   * is already open -- note that a "connected, unresponsive" endpoint
+   * (a successful `connect()` whose `identify()` resolved `null`)
+   * already has `sessionOpen: true`, so this is a no-op for it too;
+   * retrying `identify()` on an already-open session is ticket 004's
+   * concern, not this one. Errors are reported via {@link onError} and
+   * reflected in the next {@link onDevicesChanged} snapshot -- never
+   * thrown to the caller.
+   *
+   * Keyed by `endpointId`, not a looked-up `resourceKey` -- the two are
+   * always equal for every endpoint this sprint (see
+   * {@link EndpointState.resourceKey}'s own doc comment), and this
+   * public API only ever receives an `endpointId` from a caller that
+   * has no other resource to name. Every other {@link KeyedMutex} call
+   * site in this class keys the same way, for the same reason. */
   async requestOpen(endpointId: string): Promise<void> {
     await this.mutex.run(endpointId, async () => {
       const state = this.states.get(endpointId);
@@ -444,14 +509,14 @@ export class DeviceRegistry {
         this.emitError(endpointId, `no such device: ${endpointId}`);
         return;
       }
-      if (state.linkOpen) {
+      if (state.sessionOpen) {
         return;
       }
       await this.connectAndIdentify(state);
     });
   }
 
-  /** Close an open link to an endpoint. No-op if not open. */
+  /** Close an open session to an endpoint. No-op if not open. */
   async requestClose(endpointId: string): Promise<void> {
     await this.mutex.run(endpointId, async () => {
       const state = this.states.get(endpointId);
@@ -464,20 +529,20 @@ export class DeviceRegistry {
     });
   }
 
-  /** Send a line to an endpoint's open link. Reports (via {@link onError})
-   * rather than throws if the endpoint is unknown, has no open link, or
-   * the underlying write itself fails. On success, also emits the sent
-   * line back out via {@link onLine} (`direction: "tx"`) so every
+  /** Send a line to an endpoint's open session. Reports (via {@link onError})
+   * rather than throws if the endpoint is unknown, has no open session,
+   * or the underlying write itself fails. On success, also emits the
+   * sent line back out via {@link onLine} (`direction: "tx"`) so every
    * connected client's console view reflects it, not just the sender. */
   async sendLine(endpointId: string, line: string): Promise<void> {
     await this.mutex.run(endpointId, async () => {
       const state = this.states.get(endpointId);
-      if (!state?.linkOpen || !state.link) {
+      if (!state?.sessionOpen || !state.session) {
         this.emitError(endpointId, `device ${endpointId} has no open link`);
         return;
       }
       try {
-        state.link.sendLine(line);
+        state.session.link.sendLine(line);
         this.emitLine(endpointId, "tx", line);
       } catch (error) {
         this.emitError(endpointId, error instanceof Error ? error.message : String(error));
@@ -511,12 +576,23 @@ export class DeviceRegistry {
    * identify retry. Holding the mutex for the fetch's duration instead
    * costs one thing: `requestOpen`/`requestClose`/`sendLine`/name
    * resolution on *this one device* (never other devices -- the mutex
-   * is per-device) queue behind the fetch until it completes. In
-   * practice this costs little: the flash buttons only ever render for
-   * a device that has already failed to identify (`role: null`,
-   * `linkError` set -- see `sprint.md`'s SUC-001 precondition), so
-   * there is normally no open link or console traffic on this device
-   * for the fetch to actually block.
+   * is per-resource-key, one per device this sprint) queue behind the
+   * fetch until it completes. In practice this costs little: the flash
+   * buttons only ever render for a device that has already failed to
+   * identify (`role: null`, `sessionError` set -- see `sprint.md`'s
+   * SUC-001 precondition), so there is normally no open session or
+   * console traffic on this device for the fetch to actually block.
+   *
+   * The fetch itself has no timeout of its own -- `releases.ts`'s
+   * network call can, in principle, hang indefinitely while holding
+   * this device's mutex slot. Harmless this sprint (one USB device per
+   * key, and a wedged fetch only ever blocks that one device); flagged
+   * here rather than fixed because sprint 7 shares this same mutex with
+   * TCP relay links, where a wedged connect could make a shared
+   * resource permanently unresponsive to every endpoint behind it --
+   * see this ticket's own notes and `sprint.md`'s Design Rationale for
+   * why a per-task timeout is deferred to that sprint rather than added
+   * speculatively here.
    *
    * ## Failure recovery
    *
@@ -525,10 +601,10 @@ export class DeviceRegistry {
    * from any injected step -- clears `flashStatus` and reports a
    * `flash-result` `status: "error"` event before returning. `flashStatus`
    * is never left set past the end of this task, and the registry never
-   * believes a link is open once {@link teardownLink} has already closed
-   * it: a failure after teardown simply leaves `linkOpen: false` (as
-   * teardown itself sets), the same state {@link requestClose} leaves
-   * behind, ready for a future {@link requestOpen} retry.
+   * believes a session is open once {@link teardownLink} has already
+   * closed it: a failure after teardown simply leaves `sessionOpen:
+   * false` (as teardown itself sets), the same state {@link requestClose}
+   * leaves behind, ready for a future {@link requestOpen} retry.
    */
   async requestFlash(endpointId: string, firmware: FirmwareKind): Promise<void> {
     await this.mutex.run(endpointId, async () => {
@@ -543,7 +619,7 @@ export class DeviceRegistry {
 
   /** The mutex-guarded body of {@link requestFlash} -- see that method's
    * doc comment for the mutex-scope and failure-recovery rationale. */
-  private async runFlash(state: DeviceState, firmware: FirmwareKind): Promise<void> {
+  private async runFlash(state: EndpointState, firmware: FirmwareKind): Promise<void> {
     const endpointId = state.endpointId;
     // Set at the very start (before teardown even) so a client that
     // observes the very next snapshot already sees flashStatus, per the
@@ -604,7 +680,7 @@ export class DeviceRegistry {
       // Pick up the newly-flashed firmware's banner without a separate
       // manual Connect click (SUC-001's postcondition).
       // connectAndIdentify() never throws and reports its own errors via
-      // linkError/onDevicesChanged rather than rejecting, so a failed
+      // sessionError/onDevicesChanged rather than rejecting, so a failed
       // re-connect here never turns an already-succeeded flash into a
       // reported failure.
       await this.connectAndIdentify(state);
@@ -620,7 +696,7 @@ export class DeviceRegistry {
   /** Advance an in-flight flash to `phase`: update `flashStatus`, emit a
    * {@link onFlashProgress} event, and emit an updated device snapshot
    * so a client that reconnects mid-flash sees the current phase. */
-  private setFlashPhase(state: DeviceState, endpointId: string, firmware: FirmwareKind, phase: FlashPhase): void {
+  private setFlashPhase(state: EndpointState, endpointId: string, firmware: FirmwareKind, phase: FlashPhase): void {
     state.flashStatus = { firmware, phase };
     this.emitFlashProgress(endpointId, firmware, phase);
     this.emitDevices();
@@ -628,7 +704,7 @@ export class DeviceRegistry {
 
   /** End an in-flight flash in failure: clear `flashStatus` and emit a
    * `flash-result` `status: "error"` event plus an updated snapshot. */
-  private failFlash(state: DeviceState, endpointId: string, firmware: FirmwareKind, message: string): void {
+  private failFlash(state: EndpointState, endpointId: string, firmware: FirmwareKind, message: string): void {
     state.flashStatus = undefined;
     this.emitFlashResult(endpointId, firmware, "error", message);
     this.emitDevices();
@@ -657,13 +733,15 @@ export class DeviceRegistry {
 
     for (const device of event.added) {
       const endpointId = usbEndpointId(device.serialNumber);
-      const state: DeviceState = {
+      const state: EndpointState = {
         device,
         endpointId,
+        // USB is 1:1 between endpoint and physical resource this sprint
+        // -- see EndpointState.resourceKey's own doc comment.
+        resourceKey: endpointId,
         name: null,
-        role: null,
         classification: classifyBanner(null),
-        linkOpen: false,
+        sessionOpen: false,
       };
       this.states.set(endpointId, state);
       void this.mutex.run(endpointId, async () => {
@@ -677,7 +755,7 @@ export class DeviceRegistry {
     this.emitDevices();
   }
 
-  private async resolveNameAndOpen(state: DeviceState): Promise<void> {
+  private async resolveNameAndOpen(state: EndpointState): Promise<void> {
     const result = await this.resolveName(state.device);
     // The device may have been removed (and even re-added under a new
     // state object) while the SWD read was in flight; only apply the
@@ -710,15 +788,15 @@ export class DeviceRegistry {
    * "connected, unresponsive", not an error -- update state
    * differently, per this module's own doc comment.
    */
-  private async connectAndIdentify(state: DeviceState): Promise<void> {
+  private async connectAndIdentify(state: EndpointState): Promise<void> {
     const portPath = state.device.serialPort?.path;
     if (!portPath) {
-      state.linkError = "no serial port available for this device";
+      state.sessionError = "no serial port available for this device";
       this.emitDevices();
       return;
     }
 
-    const link = this.createLink({ transport: "usb", resourceKey: state.endpointId, portPath });
+    const link = this.createLink({ transport: "usb", resourceKey: state.resourceKey, portPath });
 
     try {
       await link.connect();
@@ -728,11 +806,11 @@ export class DeviceRegistry {
       // sessionOpen: false, sessionError set. Degrade gracefully: the
       // device stays listed, named, with role still null and this
       // reason recorded.
-      state.linkOpen = false;
-      state.link = undefined;
-      state.linkError = error instanceof Error ? error.message : String(error);
+      state.sessionOpen = false;
+      state.session = undefined;
+      state.sessionError = error instanceof Error ? error.message : String(error);
       // Close the link we just created before giving up on it --
-      // best-effort, since a failed close must not mask the linkError
+      // best-effort, since a failed close must not mask the sessionError
       // already recorded above (same precedent as teardownLink's and
       // flash.ts's own cleanup). Whether the underlying transport is
       // actually open at the OS level at this point depends on where
@@ -760,52 +838,57 @@ export class DeviceRegistry {
     // no repeated open/close cycle on this physical port for the OS to
     // contend over, whether identify() succeeds, comes back null, or is
     // retried later.
-    state.link = link;
-    state.linkOpen = true;
-    state.linkError = undefined;
-    state.unsubscribeLine = link.onLine((decoded) => {
-      this.emitLine(state.endpointId, "rx", reconstructLineText(decoded));
-    });
-    state.unsubscribeError = link.onError((err) => {
-      this.handleLinkError(state, err);
-    });
+    state.session = {
+      link,
+      unsubscribeLine: link.onLine((decoded) => {
+        this.emitLine(state.endpointId, "rx", reconstructLineText(decoded));
+      }),
+      unsubscribeError: link.onError((err) => {
+        this.handleLinkError(state, err);
+      }),
+    };
+    state.sessionOpen = true;
+    state.sessionError = undefined;
     this.emitDevices();
 
     // identify() never throws -- a silent board (never replies to
     // HELLO) resolves null here rather than hanging or rejecting; the
-    // link above is already established either way.
+    // session above is already established either way.
     const banner = await link.identify();
     if (this.states.get(state.endpointId) !== state) {
       // Removed while identifying -- teardownLink (already run for the
       // now-orphaned state via the detach path) owns closing it.
       return;
     }
-    // classification is derived from the same banner role is read
-    // from, and kept in sync with it here -- see DeviceState's own doc
-    // comment. classifyBanner never throws (pure, no I/O) and accepts
-    // `null` directly: a null banner classifies exactly like "no banner
-    // yet" (type "unknown", evidence "none") -- a normal state, not an
+    // classification (and the role/type it carries) is derived from
+    // this banner alone -- see EndpointState's own doc comment for why
+    // there is no separate `role` field to keep in sync here.
+    // classifyBanner never throws (pure, no I/O) and accepts `null`
+    // directly: a null banner classifies exactly like "no banner yet"
+    // (type "unknown", evidence "none") -- a normal state, not an
     // error.
     state.classification = classifyBanner(banner);
-    state.role = state.classification.role;
     this.emitDevices();
   }
 
-  private handleLinkError(state: DeviceState, err: Error): void {
-    state.linkOpen = false;
-    state.linkError = err.message;
+  private handleLinkError(state: EndpointState, err: Error): void {
+    // Note: this deliberately leaves `state.session` in place even
+    // though `sessionOpen` flips false immediately -- see
+    // EndpointState.sessionOpen's own doc comment for why. Only
+    // teardownLink (via requestClose or a detach) actually disposes of
+    // the session's link and subscriptions.
+    state.sessionOpen = false;
+    state.sessionError = err.message;
     this.emitDevices();
     this.emitError(state.endpointId, err.message);
   }
 
-  private async teardownLink(state: DeviceState): Promise<void> {
-    state.unsubscribeLine?.();
-    state.unsubscribeError?.();
-    state.unsubscribeLine = undefined;
-    state.unsubscribeError = undefined;
-    const link = state.link;
-    state.link = undefined;
-    state.linkOpen = false;
+  private async teardownLink(state: EndpointState): Promise<void> {
+    state.session?.unsubscribeLine();
+    state.session?.unsubscribeError();
+    const link = state.session?.link;
+    state.session = undefined;
+    state.sessionOpen = false;
     if (link) {
       await link.close();
     }

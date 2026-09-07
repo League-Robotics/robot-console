@@ -1,9 +1,12 @@
 ---
 id: '003'
 title: Endpoint/session/resource-key model in deviceRegistry.ts
-status: open
-use-cases: ["SUC-001", "SUC-005"]
-depends-on: ["002"]
+status: done
+use-cases:
+- SUC-001
+- SUC-005
+depends-on:
+- '002'
 github-issue: ''
 issue: robot-console-two-level-ui-and-multi-transport-roadmap.md
 completes_issue: false
@@ -53,15 +56,15 @@ local-hex (ticket 005) here.
 
 ## Acceptance Criteria
 
-- [ ] `KeyedMutex` is keyed by `resourceKey` (renamed, not
+- [x] `KeyedMutex` is keyed by `resourceKey` (renamed, not
       behaviorally changed — verify existing concurrency tests, e.g.
       "two operations on the same device never run concurrently, two
       different devices proceed in parallel," still pass unmodified in
       substance).
-- [ ] `resourceKey` is present on every `EndpointListEntry` in a
+- [x] `resourceKey` is present on every `EndpointListEntry` in a
       snapshot and equals `endpointId` for every USB endpoint,
       asserted directly in a test (not just implied).
-- [ ] A new test exercises "two logical targets sharing one physical
+- [x] A new test exercises "two logical targets sharing one physical
       resource key" against a fake `Link` — since no second transport
       exists yet this sprint, simulate this by asserting the mutex
       itself serializes two `run()` calls issued under the same
@@ -69,16 +72,16 @@ local-hex (ticket 005) here.
       them (this is the shape sprint 7's relay will exercise for real;
       this sprint proves the mutex mechanism, not a real second
       transport).
-- [ ] `requestOpen`/`requestClose`/`sendLine`/`requestFlash` all still
+- [x] `requestOpen`/`requestClose`/`sendLine`/`requestFlash` all still
       behave exactly as before (same error messages for unknown
       endpoint, same no-op-if-already-open/closed semantics) —
       existing `deviceRegistry.test.ts` cases pass with only naming
       updates, no assertion changes.
-- [ ] Attach/detach/name-resolution timing and event emission order is
+- [x] Attach/detach/name-resolution timing and event emission order is
       unchanged (verified by the existing tests that assert emission
       order, e.g. "attached, name pending" emitted before SWD
       resolves).
-- [ ] `npm test` and `npm run build` pass in full.
+- [x] `npm test` and `npm run build` pass in full.
 
 ## Testing
 

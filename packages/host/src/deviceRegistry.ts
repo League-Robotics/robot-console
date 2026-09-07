@@ -40,6 +40,27 @@
  * board is unplugged) is caught and turned into a state update plus an
  * {@link ErrorMessage}-shaped event -- never an uncaught exception that
  * would take the whole server down over one board.
+ *
+ * ## Flash flow (sprint 2)
+ *
+ * {@link DeviceRegistry.requestFlash} is one more operation run through
+ * the same per-device {@link KeyedMutex} as name resolution/link open/
+ * close/send -- not a new synchronization mechanism. It composes
+ * `config.ts` (which firmware source) -> `releases.ts` (fetch+verify
+ * the hex) -> `flash.ts` (write it) as one mutex-guarded task: tear
+ * down any open link first (so `flash.ts`'s DAPjs session never
+ * contends with an open serial port over the same physical board),
+ * look up the configured `FirmwareSource`, fetch+verify the hex
+ * (reporting `"fetching"`/`"verifying"` progress), write it (reporting
+ * `"erasing"`/`"writing"`/`"resetting"` progress), and -- on success --
+ * re-open a link exactly the way the attach flow above already does, so
+ * the newly-flashed firmware's banner is picked up with no separate
+ * manual Connect click. See {@link DeviceRegistry.requestFlash}'s own
+ * doc comment for why this task holds the device's mutex slot across
+ * the network fetch rather than releasing and re-acquiring it. A
+ * failure at any stage clears `flashStatus` and reports a `flash-result`
+ * error -- it never leaves `flashStatus` stuck or the registry believing
+ * a link is open when {@link teardownLink} already closed it.
  */
 
 import type { DecodedLine, ParsedBanner } from "@robot-console/protocol";
@@ -51,7 +72,10 @@ import {
 } from "./devices.js";
 import { readSwdName, type SwdNameResult } from "./swdName.js";
 import { UsbSerialLink } from "./link/UsbSerialLink.js";
-import type { DeviceListEntry, LineDirection } from "./wsMessages.js";
+import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
+import { resolveRelease, fetchAndVerifyHex } from "./releases.js";
+import { flash } from "./flash.js";
+import type { DeviceListEntry, LineDirection, FirmwareKind, FlashPhase } from "./wsMessages.js";
 
 // ---------------------------------------------------------------------
 // Injectable seams (real implementations by default; fakes in tests)
@@ -124,6 +148,11 @@ interface DeviceState {
   linkError?: string | undefined;
   unsubscribeLine?: (() => void) | undefined;
   unsubscribeError?: (() => void) | undefined;
+  /** Present only while a flash is in flight for this device (sprint
+   * 2) -- set at the start of {@link DeviceRegistry.requestFlash}'s
+   * task and cleared (success or error) at its end. Reflected into
+   * {@link DeviceListEntry.flashStatus} by {@link toEntry}. */
+  flashStatus?: { firmware: FirmwareKind; phase: FlashPhase } | undefined;
 }
 
 function toEntry(state: DeviceState): DeviceListEntry {
@@ -141,6 +170,9 @@ function toEntry(state: DeviceState): DeviceListEntry {
   }
   if (state.linkError) {
     entry.linkError = state.linkError;
+  }
+  if (state.flashStatus) {
+    entry.flashStatus = state.flashStatus;
   }
   return entry;
 }
@@ -171,6 +203,20 @@ function reconstructLineText(decoded: DecodedLine): string {
 export type DevicesListener = (devices: DeviceListEntry[]) => void;
 export type LineListener = (deviceId: string, direction: LineDirection, line: string) => void;
 export type RegistryErrorListener = (deviceId: string | undefined, message: string) => void;
+/** Notified once per {@link FlashPhase} as a `requestFlash` task
+ * advances -- mirrors {@link LineListener}'s per-event shape rather
+ * than a bulk snapshot, since `server.ts` (ticket 006) forwards these
+ * directly as {@link FlashProgressMessage}-shaped broadcasts. */
+export type FlashProgressListener = (deviceId: string, firmware: FirmwareKind, phase: FlashPhase) => void;
+/** Notified exactly once per `requestFlash` call, with its terminal
+ * outcome -- `message` is present only on `status: "error"`, mirroring
+ * {@link FlashResultMessage}'s own shape. */
+export type FlashResultListener = (
+  deviceId: string,
+  firmware: FirmwareKind,
+  status: "ok" | "error",
+  message?: string,
+) => void;
 
 export interface DeviceRegistryOptions {
   /** Injectable device watcher; defaults to a real {@link DeviceWatcher}
@@ -182,6 +228,25 @@ export interface DeviceRegistryOptions {
   /** Injectable `UsbSerialLink` factory; defaults to real
    * `UsbSerialLink`. Tests substitute a fake {@link UsbSerialLinkLike}. */
   createLink?: LinkFactory;
+  /** Injectable firmware-source config accessor; defaults to a call to
+   * `config.ts`'s real {@link getFirmwareConfig} (real environment/
+   * dotconfig `.env` parsing). Tests substitute a function returning a
+   * fixture {@link FirmwareConfigMap}, following this file's existing
+   * `resolveName`/`createLink` injection pattern exactly -- no real
+   * environment setup needed to exercise `requestFlash`. */
+  getFirmwareConfig?: () => FirmwareConfigMap;
+  /** Injectable `releases.ts` release resolver; defaults to the real,
+   * network-backed {@link resolveRelease}. Tests substitute a fully
+   * synthetic fake, never a real GitHub call. */
+  resolveRelease?: typeof resolveRelease;
+  /** Injectable `releases.ts` hex fetch+verify; defaults to the real,
+   * network-backed {@link fetchAndVerifyHex}. Tests substitute a fully
+   * synthetic fake, never a real GitHub call. */
+  fetchAndVerifyHex?: typeof fetchAndVerifyHex;
+  /** Injectable `flash.ts` entry point; defaults to the real DAPjs/
+   * node-hid-backed {@link flash}. Tests substitute a fully synthetic
+   * fake, never real USB/SWD I/O. */
+  flash?: typeof flash;
 }
 
 /**
@@ -195,6 +260,10 @@ export class DeviceRegistry {
   private readonly watcher: DeviceWatcher;
   private readonly resolveName: NameResolver;
   private readonly createLink: LinkFactory;
+  private readonly getFirmwareConfigFn: () => FirmwareConfigMap;
+  private readonly resolveReleaseFn: typeof resolveRelease;
+  private readonly fetchAndVerifyHexFn: typeof fetchAndVerifyHex;
+  private readonly flashFn: typeof flash;
   private readonly mutex = new KeyedMutex();
   private readonly states = new Map<string, DeviceState>();
   private unsubscribeWatcher: (() => void) | undefined;
@@ -202,11 +271,17 @@ export class DeviceRegistry {
   private readonly devicesListeners = new Set<DevicesListener>();
   private readonly lineListeners = new Set<LineListener>();
   private readonly errorListeners = new Set<RegistryErrorListener>();
+  private readonly flashProgressListeners = new Set<FlashProgressListener>();
+  private readonly flashResultListeners = new Set<FlashResultListener>();
 
   constructor(options: DeviceRegistryOptions = {}) {
     this.watcher = options.watcher ?? new DeviceWatcher();
     this.resolveName = options.resolveName ?? readSwdName;
     this.createLink = options.createLink ?? defaultLinkFactory;
+    this.getFirmwareConfigFn = options.getFirmwareConfig ?? (() => getFirmwareConfig());
+    this.resolveReleaseFn = options.resolveRelease ?? resolveRelease;
+    this.fetchAndVerifyHexFn = options.fetchAndVerifyHex ?? fetchAndVerifyHex;
+    this.flashFn = options.flash ?? flash;
   }
 
   /** Start watching for devices. Idempotent-ish in practice (callers
@@ -264,6 +339,24 @@ export class DeviceRegistry {
     };
   }
 
+  /** Subscribe to per-phase progress events from an in-flight
+   * `requestFlash` task (sprint 2). Returns an unsubscribe function. */
+  onFlashProgress(listener: FlashProgressListener): () => void {
+    this.flashProgressListeners.add(listener);
+    return () => {
+      this.flashProgressListeners.delete(listener);
+    };
+  }
+
+  /** Subscribe to the terminal outcome of `requestFlash` tasks (sprint
+   * 2). Returns an unsubscribe function. */
+  onFlashResult(listener: FlashResultListener): () => void {
+    this.flashResultListeners.add(listener);
+    return () => {
+      this.flashResultListeners.delete(listener);
+    };
+  }
+
   /** (Re-)open a link to a device, e.g. retrying after a silent-board
    * timeout. No-op if already open. Errors are reported via
    * {@link onError} and reflected in the next {@link onDevicesChanged}
@@ -314,6 +407,154 @@ export class DeviceRegistry {
         this.emitError(deviceId, error instanceof Error ? error.message : String(error));
       }
     });
+  }
+
+  /**
+   * Flash `firmware` onto a device: orchestrates `config.ts` (which
+   * source) -> `releases.ts` (fetch+verify the hex) -> `flash.ts`
+   * (write it), run as one more task through the same per-device
+   * {@link KeyedMutex} as {@link requestOpen}/{@link requestClose}/
+   * {@link sendLine} -- no new synchronization primitive (see the
+   * module doc comment's "Flash flow" section). An unknown `deviceId`
+   * is reported via {@link onError}, matching {@link requestOpen}'s own
+   * handling -- never thrown to the caller.
+   *
+   * ## Mutex scope: the whole task, including `releases.ts`'s network fetch
+   *
+   * This is a deliberate choice, not an oversight. The alternative --
+   * release the mutex for the (slow, network-bound) fetch+verify step
+   * and re-acquire it only for teardown/write/reopen -- would open a
+   * window in which a `requestOpen`/`requestClose`/`sendLine` (or a
+   * second `requestFlash`) could run against *this same device* in
+   * between. When this task resumed and called {@link teardownLink}, it
+   * would then be racing whatever that interleaved operation left the
+   * link in -- reintroducing, for a destructive flash, exactly the OS
+   * port-lock race described in
+   * `port-lock-contention-between-identify-and-user-open.md`, except
+   * now the loser of the race is a firmware write instead of a benign
+   * identify retry. Holding the mutex for the fetch's duration instead
+   * costs one thing: `requestOpen`/`requestClose`/`sendLine`/name
+   * resolution on *this one device* (never other devices -- the mutex
+   * is per-device) queue behind the fetch until it completes. In
+   * practice this costs little: the flash buttons only ever render for
+   * a device that has already failed to identify (`role: null`,
+   * `linkError` set -- see `sprint.md`'s SUC-001 precondition), so
+   * there is normally no open link or console traffic on this device
+   * for the fetch to actually block.
+   *
+   * ## Failure recovery
+   *
+   * A failure at any stage -- an unconfigured firmware source, a
+   * `releases.ts` failure, a `flash.ts` failure, or an unexpected throw
+   * from any injected step -- clears `flashStatus` and reports a
+   * `flash-result` `status: "error"` event before returning. `flashStatus`
+   * is never left set past the end of this task, and the registry never
+   * believes a link is open once {@link teardownLink} has already closed
+   * it: a failure after teardown simply leaves `linkOpen: false` (as
+   * teardown itself sets), the same state {@link requestClose} leaves
+   * behind, ready for a future {@link requestOpen} retry.
+   */
+  async requestFlash(deviceId: string, firmware: FirmwareKind): Promise<void> {
+    await this.mutex.run(deviceId, async () => {
+      const state = this.states.get(deviceId);
+      if (!state) {
+        this.emitError(deviceId, `no such device: ${deviceId}`);
+        return;
+      }
+      await this.runFlash(state, firmware);
+    });
+  }
+
+  /** The mutex-guarded body of {@link requestFlash} -- see that method's
+   * doc comment for the mutex-scope and failure-recovery rationale. */
+  private async runFlash(state: DeviceState, firmware: FirmwareKind): Promise<void> {
+    const deviceId = state.device.serialNumber;
+    // Set at the very start (before teardown even) so a client that
+    // observes the very next snapshot already sees flashStatus, per the
+    // ticket's "set at the start of the flash task" requirement. There
+    // is no dedicated FlashPhase for "tearing down the old link", so
+    // this first phase is reported as "fetching" -- the next real
+    // progress event ("verifying", once releases.ts resolves) replaces
+    // it, same best-effort phase-reporting precedent flash.ts's own doc
+    // comment already accepts for DAPjs's coarser event surface.
+    this.setFlashPhase(state, deviceId, firmware, "fetching");
+
+    try {
+      // Tear down any open link before touching config/network/SWD --
+      // flash.ts's DAPjs session must never contend with an open serial
+      // port over the same physical board (see this class's own
+      // requestFlash doc comment, and sprint.md's Design Rationale). In
+      // the common case (a failed-identify device) there is nothing
+      // open here; this call is defensive for any other caller.
+      await this.teardownLink(state);
+      this.emitDevices();
+
+      const source = this.getFirmwareConfigFn()[firmware];
+      if (!source) {
+        this.failFlash(state, deviceId, firmware, `no firmware source configured for "${firmware}"`);
+        return;
+      }
+
+      const resolved = await this.resolveReleaseFn(source);
+      if ("reason" in resolved) {
+        this.failFlash(state, deviceId, firmware, resolved.message);
+        return;
+      }
+
+      // fetchAndVerifyHex both downloads and sha256-verifies in one
+      // call (releases.ts has no seam between the two) -- "verifying"
+      // is reported for the whole call, same best-effort phase mapping
+      // as flash.ts's own erase/write/reset reporting.
+      this.setFlashPhase(state, deviceId, firmware, "verifying");
+      const fetched = await this.fetchAndVerifyHexFn(resolved);
+      if ("error" in fetched) {
+        this.failFlash(state, deviceId, firmware, fetched.error);
+        return;
+      }
+
+      const onProgress = (phase: FlashPhase) => {
+        this.setFlashPhase(state, deviceId, firmware, phase);
+      };
+      const outcome = await this.flashFn(state.device, fetched.hex.toString("utf-8"), onProgress);
+      if (outcome.status === "error") {
+        this.failFlash(state, deviceId, firmware, outcome.error);
+        return;
+      }
+
+      state.flashStatus = undefined;
+      this.emitFlashResult(deviceId, firmware, "ok");
+      this.emitDevices();
+
+      // Pick up the newly-flashed firmware's banner without a separate
+      // manual Connect click (SUC-001's postcondition). openLink never
+      // throws and reports its own errors via linkError/onDevicesChanged
+      // rather than rejecting, so a failed re-open here never turns an
+      // already-succeeded flash into a reported failure.
+      await this.openLink(state);
+    } catch (error) {
+      // Defense in depth: every injected step here (config.ts,
+      // releases.ts, flash.ts) documents "never throws", but a flash
+      // must not leave flashStatus stuck even if that contract is ever
+      // violated -- by a future change, or by a test's own fake.
+      this.failFlash(state, deviceId, firmware, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /** Advance an in-flight flash to `phase`: update `flashStatus`, emit a
+   * {@link onFlashProgress} event, and emit an updated device snapshot
+   * so a client that reconnects mid-flash sees the current phase. */
+  private setFlashPhase(state: DeviceState, deviceId: string, firmware: FirmwareKind, phase: FlashPhase): void {
+    state.flashStatus = { firmware, phase };
+    this.emitFlashProgress(deviceId, firmware, phase);
+    this.emitDevices();
+  }
+
+  /** End an in-flight flash in failure: clear `flashStatus` and emit a
+   * `flash-result` `status: "error"` event plus an updated snapshot. */
+  private failFlash(state: DeviceState, deviceId: string, firmware: FirmwareKind, message: string): void {
+    state.flashStatus = undefined;
+    this.emitFlashResult(deviceId, firmware, "error", message);
+    this.emitDevices();
   }
 
   // ---- watcher-driven attach/detach ------------------------------------
@@ -451,6 +692,23 @@ export class DeviceRegistry {
   private emitError(deviceId: string | undefined, message: string): void {
     for (const listener of this.errorListeners) {
       listener(deviceId, message);
+    }
+  }
+
+  private emitFlashProgress(deviceId: string, firmware: FirmwareKind, phase: FlashPhase): void {
+    for (const listener of this.flashProgressListeners) {
+      listener(deviceId, firmware, phase);
+    }
+  }
+
+  private emitFlashResult(
+    deviceId: string,
+    firmware: FirmwareKind,
+    status: "ok" | "error",
+    message?: string,
+  ): void {
+    for (const listener of this.flashResultListeners) {
+      listener(deviceId, firmware, status, message);
     }
   }
 }

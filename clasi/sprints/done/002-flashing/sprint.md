@@ -1,7 +1,7 @@
 ---
 id: '002'
 title: Flashing
-status: executing
+status: done
 branch: sprint/002-flashing
 use-cases:
 - SUC-001

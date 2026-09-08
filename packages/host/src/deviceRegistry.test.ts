@@ -1,12 +1,15 @@
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Session, type AckNackEvent, type DecodedLine, type ParsedBanner } from "@robot-console/protocol";
+import { Session, type AckNackEvent, type DecodedLine, type ParsedBanner, type WireField } from "@robot-console/protocol";
 import { DeviceWatcher, type DaplinkDevice } from "./devices.js";
 import type { SwdNameResult } from "./swdName.js";
 import { DeviceRegistry, KeyedMutex } from "./deviceRegistry.js";
 import type { Link } from "./link/Link.js";
+import { UsbSerialLink, type SerialPortLike } from "./link/UsbSerialLink.js";
+import type { Scheduler } from "./link/pacing.js";
 import type { EndpointListEntry, FirmwareKind, FirmwareSourceRef, FlashPhase } from "./wsMessages.js";
 import type { FirmwareConfigMap, FirmwareSource } from "./config.js";
 import type { ResolvedRelease } from "./releases.js";
@@ -95,12 +98,21 @@ class FakeLink implements Link {
     this.sentLines.push(line);
   }
 
-  sendCommand(): string {
-    throw new Error("FakeLink.sendCommand is not exercised by DeviceRegistry");
+  /** Delegates to the fake's own real `Session` (sprint 6 ticket 003),
+   * so a sequenced send actually assigns an id, buffers it for
+   * retransmit, and advances `pendingCount` exactly as a real `Link`
+   * would -- ticket 003's own testing note asks for this real
+   * `Session` rather than a further-synthetic stub. */
+  sendCommand(verb: string, fields: readonly WireField[] = []): string {
+    const line = this.session.send(verb, fields);
+    this.sentLines.push(line);
+    return line;
   }
 
-  sendUnsequenced(): string {
-    throw new Error("FakeLink.sendUnsequenced is not exercised by DeviceRegistry");
+  sendUnsequenced(verb: string, fields: readonly WireField[] = []): string {
+    const line = this.session.sendUnsequenced(verb, fields);
+    this.sentLines.push(line);
+    return line;
   }
 
   checkLiveness(): void {
@@ -137,6 +149,22 @@ class FakeLink implements Link {
   emitError(err: Error): void {
     for (const listener of this.errorListeners) {
       listener(err);
+    }
+  }
+
+  /** Feed a decoded ack/nack reply through the fake's own real
+   * `Session` (updating `seq`/`pendingCount`/`lastDone` exactly as a
+   * real `Link`'s `LineRouter` would), then notify `onAckNack`
+   * subscribers with the resulting event -- lets a test simulate a
+   * robot's ack/nack reply with no real transport. A no-op (no
+   * listener notified) for any other reply verb, mirroring
+   * `Session.handleReply`'s own `null`-for-everything-else contract. */
+  receiveReply(reply: DecodedLine): void {
+    const event = this.session.handleReply(reply);
+    if (event) {
+      for (const listener of this.ackNackListeners) {
+        listener(event);
+      }
     }
   }
 }
@@ -514,6 +542,296 @@ describe("DeviceRegistry", () => {
     const snap = await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === false);
     expect(snap[0]?.sessionError).toBe("device unplugged");
     expect(errors).toContainEqual({ endpointId: "usb-SERIAL-A", message: "device unplugged" });
+
+    await registry.stop();
+  });
+});
+
+// ---------------------------------------------------------------------
+// sendCommand (sprint 6 ticket 003) -- routing sequenced vs unsequenced
+// verbs through Session, the HELLO guard, sequencing-state projection,
+// and (against a real UsbSerialLink + fake port/scheduler) the full
+// sendCommand -> Link.sendCommand -> WritePacer pacing path.
+// ---------------------------------------------------------------------
+
+/** A fully synthetic stand-in for `serialport`'s `SerialPort`, used only
+ * by the pacing test below where a real `UsbSerialLink` (not the
+ * `FakeLink` above) is needed to prove the *whole* path holds writes
+ * paced, not just `WritePacer` in isolation (which `pacing.test.ts`
+ * already covers) or `UsbSerialLink` in isolation (which
+ * `UsbSerialLink.test.ts` already covers). Mirrors that file's own
+ * `FakeSerialPort` fixture. */
+class FakeSerialPort extends EventEmitter implements SerialPortLike {
+  writes: string[] = [];
+
+  write(data: string, callback?: (err?: Error | null) => void): boolean {
+    this.writes.push(data);
+    callback?.(null);
+    return true;
+  }
+
+  close(callback?: (err?: Error | null) => void): void {
+    callback?.(null);
+    this.emit("close");
+  }
+}
+
+/** A scheduler that resolves `delay()` on a microtask (no real
+ * wall-clock wait) but records every call, so pacing is assertable
+ * without slowing the test down or needing fake timers. Mirrors
+ * `UsbSerialLink.test.ts`'s own `recordingScheduler`. */
+function recordingScheduler(): Scheduler & { calls: number[] } {
+  const calls: number[] = [];
+  return {
+    calls,
+    delay: (ms: number) => {
+      calls.push(ms);
+      return Promise.resolve();
+    },
+  };
+}
+
+describe("DeviceRegistry.sendCommand", () => {
+  it("routes a sequenced verb (GET) to link.sendCommand, assigning it an id via Session", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
+    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    registry.start();
+
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    await registry.sendCommand("usb-SERIAL-A", "GET", []);
+
+    expect(link.sentLines).toEqual(["GET #1\n"]);
+    expect(link.session.pendingCount).toBe(1);
+
+    await registry.stop();
+  });
+
+  it("routes an unsequenced verb (STATUS) to link.sendUnsequenced, never assigning it an id", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
+    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    registry.start();
+
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    await registry.sendCommand("usb-SERIAL-A", "STATUS", []);
+
+    expect(link.sentLines).toEqual(["STATUS\n"]);
+    expect(link.session.pendingCount).toBe(0);
+
+    await registry.stop();
+  });
+
+  it("also routes ESTOP and PING as unsequenced", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
+    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    registry.start();
+
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    await registry.sendCommand("usb-SERIAL-A", "ESTOP", []);
+    await registry.sendCommand("usb-SERIAL-A", "PING", []);
+
+    expect(link.sentLines).toEqual(["ESTOP\n", "PING\n"]);
+    expect(link.session.pendingCount).toBe(0);
+
+    await registry.stop();
+  });
+
+  it("rejects HELLO sent as a command via emitError, never forwarding it to Session in any form", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
+    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    const errors: Array<{ endpointId: string | undefined; message: string }> = [];
+    registry.onError((endpointId, message) => errors.push({ endpointId, message }));
+    registry.start();
+
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    await registry.sendCommand("usb-SERIAL-A", "HELLO", []);
+
+    expect(link.sentLines).toEqual([]);
+    expect(errors).toEqual([
+      expect.objectContaining({
+        endpointId: "usb-SERIAL-A",
+        message: expect.stringContaining("HELLO"),
+      }),
+    ]);
+    // Never reached Session at all -- not even to let
+    // sendUnsequenced()'s own refusal fire (which would also produce a
+    // SessionError, but this path must never get that far).
+    expect(link.session.pendingCount).toBe(0);
+
+    await registry.stop();
+  });
+
+  it("catches a thrown CodecError from an illegal verb and reports it via emitError, without crashing", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
+    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    const errors: Array<{ endpointId: string | undefined; message: string }> = [];
+    registry.onError((endpointId, message) => errors.push({ endpointId, message }));
+    registry.start();
+
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    // "bad verb" contains whitespace -- not a legal wire verb token
+    // (codec.ts's VERB_PATTERN), and not one of the 11 sequenced verbs,
+    // so this reaches sendUnsequenced() -> encodeLine(), which throws
+    // CodecError.
+    await expect(registry.sendCommand("usb-SERIAL-A", "bad verb", [])).resolves.toBeUndefined();
+
+    expect(errors).toEqual([
+      expect.objectContaining({ endpointId: "usb-SERIAL-A", message: expect.any(String) }),
+    ]);
+
+    await registry.stop();
+  });
+
+  it("reports emitError for an unknown endpoint or one with no open session, matching sendLine's pattern", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const link = new FakeLink(() => new Promise<ParsedBanner | null>(() => {}));
+    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    const errors: Array<{ endpointId: string | undefined; message: string }> = [];
+    registry.onError((endpointId, message) => errors.push({ endpointId, message }));
+    registry.start();
+
+    await registry.sendCommand("no-such-device", "STATUS", []);
+    expect(errors).toContainEqual({
+      endpointId: "no-such-device",
+      message: "device no-such-device has no open link",
+    });
+
+    await registry.stop();
+  });
+
+  it("omits sequencing entirely while no session is open (connect() never resolves)", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    // A connectImpl that never resolves keeps sessionOpen false (and
+    // state.session undefined) for the life of the test -- deterministic,
+    // unlike racing FakeLink's normal immediately-resolving connect().
+    const link = new FakeLink(
+      () => new Promise<ParsedBanner | null>(() => {}),
+      () => new Promise<void>(() => {}),
+    );
+    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    registry.start();
+
+    const snap = await waitForSnapshot(registry, (s) => s.length === 1);
+    expect(snap[0]?.sessionOpen).toBe(false);
+    expect(snap[0]?.sequencing).toBeUndefined();
+
+    await registry.stop();
+  });
+
+  it("projects sequencing into the snapshot after a send and after a simulated ack/nack", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
+    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    registry.start();
+
+    const opened = await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    expect(opened[0]?.sequencing).toEqual({ seq: 0, pendingCount: 0, lastDone: 0, lastDoneReason: "none" });
+
+    await registry.sendCommand("usb-SERIAL-A", "GET", []);
+    const afterSend = registry.snapshot();
+    expect(afterSend[0]?.sequencing).toEqual({ seq: 0, pendingCount: 1, lastDone: 0, lastDoneReason: "none" });
+
+    // Simulate the robot's ack reply -- this exercises the onAckNack
+    // subscription wired in connectAndIdentify, and its emitDevices()
+    // call, not just the direct-projection path above.
+    const snapshots: EndpointListEntry[][] = [];
+    registry.onDevicesChanged((s) => snapshots.push(s));
+    link.receiveReply({ kind: "line", verb: "ack", fields: ["1", "0", "none"] });
+
+    const afterAck = await waitForSnapshot(registry, (s) => s[0]?.sequencing?.seq === 1);
+    expect(afterAck[0]?.sequencing).toEqual({ seq: 1, pendingCount: 0, lastDone: 0, lastDoneReason: "none" });
+    expect(snapshots.length).toBeGreaterThan(0);
+
+    await registry.stop();
+  });
+
+  it("a client reading a fresh snapshot after connecting sees current sequencing immediately, no separate event needed", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
+    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    registry.start();
+
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    await registry.sendCommand("usb-SERIAL-A", "GET", []);
+    link.receiveReply({ kind: "line", verb: "ack", fields: ["1", "0", "none"] });
+
+    // A brand-new call to snapshot() -- as a freshly-connecting client's
+    // own initial read would be -- already reflects the post-ack state,
+    // with no event needed to resync (toEntry() reads live session
+    // state, never a cached copy).
+    await waitForSnapshot(registry, (s) => s[0]?.sequencing?.seq === 1);
+    const freshSnapshot = registry.snapshot();
+    expect(freshSnapshot[0]?.sequencing).toEqual({ seq: 1, pendingCount: 0, lastDone: 0, lastDoneReason: "none" });
+
+    await registry.stop();
+  });
+
+  it("paces a burst of sequenced sends through DeviceRegistry.sendCommand end-to-end (sendCommand -> Link.sendCommand -> WritePacer), against a real UsbSerialLink", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const port = new FakeSerialPort();
+    const scheduler = recordingScheduler();
+    const createLink = () =>
+      new UsbSerialLink("/dev/tty.usbmodemFAKE", {
+        createPort: () => port,
+        writePaceMs: 10,
+        scheduler,
+        openTimeoutMs: 200,
+      });
+
+    const registry = new DeviceRegistry({
+      watcher,
+      resolveName: async () => namedResult("zavaz"),
+      createLink,
+    });
+    registry.start();
+
+    // Let every microtask up through UsbSerialLink#connect()'s
+    // port.once("open", ...) registration run before emitting "open" --
+    // resolveName/connectAndIdentify/link.connect() are all promise
+    // chains with no real timers in between, so a single macrotask
+    // boundary drains them all (mirrors this file's own waitForSnapshot
+    // polling precedent, and UsbSerialLink.test.ts's identical-purpose
+    // "flush" helper).
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    port.emit("open");
+    // sessionOpen flips true as soon as connect() resolves -- before
+    // identify()'s own HELLO round trip settles (see
+    // connectAndIdentify's own doc comment) -- so sendCommand is already
+    // callable at this point.
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    // Drain the HELLO write's own paced delay (sent by identify(), which
+    // connectAndIdentify kicks off right after sessionOpen flips true)
+    // before measuring the burst below, so it doesn't get counted as
+    // part of it.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    scheduler.calls.length = 0;
+    port.writes.length = 0;
+
+    const BURST = 4;
+    for (let i = 0; i < BURST; i++) {
+      await registry.sendCommand("usb-SERIAL-A", "GET", []);
+    }
+    // Flush the WritePacer's chained promises so every scheduled write
+    // and its trailing pace delay has actually run.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(scheduler.calls).toEqual(Array(BURST).fill(10));
+    expect(port.writes).toHaveLength(BURST);
 
     await registry.stop();
   });

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
-import { Session, type AckNackEvent, type DecodedLine, type ParsedBanner } from "@robot-console/protocol";
+import { Session, type AckNackEvent, type DecodedLine, type ParsedBanner, type WireField } from "@robot-console/protocol";
 import { DeviceWatcher, type DaplinkDevice } from "./devices.js";
 import { DeviceRegistry, type DeviceRegistryOptions } from "./deviceRegistry.js";
 import type { Link } from "./link/Link.js";
@@ -72,12 +72,16 @@ class FakeLink implements Link {
     this.sentLines.push(line);
   }
 
-  sendCommand(): string {
-    throw new Error("FakeLink.sendCommand is not exercised by server.test.ts");
+  sendCommand(verb: string, fields: readonly WireField[] = []): string {
+    const line = this.session.send(verb, fields);
+    this.sentLines.push(line);
+    return line;
   }
 
-  sendUnsequenced(): string {
-    throw new Error("FakeLink.sendUnsequenced is not exercised by server.test.ts");
+  sendUnsequenced(verb: string, fields: readonly WireField[] = []): string {
+    const line = this.session.sendUnsequenced(verb, fields);
+    this.sentLines.push(line);
+    return line;
   }
 
   checkLiveness(): void {
@@ -362,6 +366,37 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
     link.emitLine({ kind: "line", verb: "status", fields: ["mode=idle"] });
     const reply = await connected.messages.waitFor((m) => m.type === "line" && m.direction === "rx");
     expect(reply).toEqual({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: "status mode=idle" });
+  });
+
+  it("routes a send-command message to registry.sendCommand: dispatches sequenced/unsequenced verbs and rejects HELLO (ticket 003)", async () => {
+    const link = new FakeLink(async () => banner());
+    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
+    const connected = await connect(server.url.replace("http://", "ws://"));
+    ws = connected.ws;
+
+    await connected.messages.waitFor((m) => m.type === "endpoints" && m.endpoints[0]?.sessionOpen === true);
+
+    ws.send(JSON.stringify({ type: "send-command", endpointId: "usb-SERIAL-A", verb: "GET", fields: [] }));
+    ws.send(JSON.stringify({ type: "send-command", endpointId: "usb-SERIAL-A", verb: "STATUS" }));
+    // Sent last, per this same client's own message order -- the
+    // per-endpoint mutex `deviceRegistry.ts` already serializes every
+    // operation through guarantees GET/STATUS above are fully applied to
+    // the fake link before this one's rejection is even considered,
+    // exactly as `sendLine`'s own ordering already relies on.
+    ws.send(JSON.stringify({ type: "send-command", endpointId: "usb-SERIAL-A", verb: "HELLO" }));
+
+    const error = await connected.messages.waitFor((m) => m.type === "error");
+    expect(error).toEqual({
+      type: "error",
+      endpointId: "usb-SERIAL-A",
+      message: expect.stringContaining("HELLO"),
+    });
+
+    // GET is sequenced (id-assigned via Session.send); STATUS is
+    // unsequenced (protocol.md's verb table, not sprint.md's looser
+    // phrasing) -- both already reached the link, and HELLO reached
+    // neither `sendCommand` nor `sendUnsequenced` on it at all.
+    expect(link.sentLines).toEqual(["GET #1\n", "STATUS\n"]);
   });
 
   it("reports a graceful error, not a crash, for a line sent to a device with no open link", async () => {

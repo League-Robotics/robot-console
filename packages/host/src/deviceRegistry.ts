@@ -194,10 +194,42 @@
  * object against this method's own reidentify is a known, narrower
  * follow-on gap this ticket does not close -- see
  * {@link reidentifyAfterFlash}'s own doc comment.)
+ *
+ * ## Command routing and sequencing-state projection (sprint 6 ticket 003)
+ *
+ * {@link DeviceRegistry.sendCommand} is the second, structured
+ * client -> server verb-sending path alongside {@link
+ * DeviceRegistry.sendLine}'s raw text (see `wsMessages.ts`'s own
+ * "Sprint 6 addition" doc comment). It runs through the same
+ * per-endpoint {@link KeyedMutex} as every other operation this module
+ * serializes -- no new synchronization primitive -- and dispatches on
+ * `@robot-console/protocol`'s `isSequencedVerb`, the single owner of
+ * sequenced-vs-unsequenced classification, never re-derived here: a
+ * sequenced verb reaches `Link.sendCommand`, everything else
+ * (`STATUS` included -- protocol.md's verb table is the authority, not
+ * this sprint's looser roadmap phrasing) reaches `Link.sendUnsequenced`.
+ * `HELLO` is rejected via {@link emitError} before it ever reaches
+ * `Session` in any form -- see {@link DeviceRegistry.sendCommand}'s own
+ * doc comment for why.
+ *
+ * {@link toEntry} projects the open session's live `Session` state
+ * (`seq`/`pendingCount`/`lastDone`/`lastDoneReason`, read straight off
+ * `Link.session`) into {@link EndpointListEntry.sequencing} on every
+ * {@link DeviceRegistry.snapshot} call -- present only while a session
+ * is open, `undefined` otherwise. Both {@link connectAndIdentify} and
+ * {@link reidentifyAfterFlash} subscribe `Link.onAckNack` alongside
+ * their existing `onLine`/`onError` subscriptions, calling
+ * {@link DeviceRegistry.emitDevices} on every ack/nack event so a
+ * corrected `seq` (or a growing `pendingCount`) reaches connected
+ * clients promptly. Deliberately *not* wired to fire on every
+ * `sendCommand` call too -- see that method's own doc comment for why a
+ * burst of sends (a held drive control) must not storm every client
+ * with one broadcast per send on top of the pacing already governing
+ * the writes themselves.
  */
 
-import type { DecodedLine, DeviceClassification, ParsedBanner } from "@robot-console/protocol";
-import { classifyBanner, encodeLine } from "@robot-console/protocol";
+import type { DecodedLine, DeviceClassification, ParsedBanner, WireField } from "@robot-console/protocol";
+import { classifyBanner, encodeLine, isSequencedVerb } from "@robot-console/protocol";
 import {
   DeviceWatcher,
   type DaplinkDevice,
@@ -338,14 +370,19 @@ export class KeyedMutex {
 /** The live state of one open {@link Link} against one `resourceKey` --
  * everything a session needs in order to be torn down cleanly
  * ({@link DeviceRegistry.teardownLink}) or read from
- * ({@link DeviceRegistry.sendLine}). Absent whenever there is no open
- * session for the endpoint (never connected, a `connect()` failure, or
- * after teardown) -- see {@link EndpointState.sessionOpen}'s own doc
- * comment for why "open" is tracked as its own field rather than
- * derived from this object's presence. */
+ * ({@link DeviceRegistry.sendLine}/{@link DeviceRegistry.sendCommand}).
+ * Absent whenever there is no open session for the endpoint (never
+ * connected, a `connect()` failure, or after teardown) -- see
+ * {@link EndpointState.sessionOpen}'s own doc comment for why "open" is
+ * tracked as its own field rather than derived from this object's
+ * presence. `unsubscribeAckNack` (sprint 6 ticket 003) feeds
+ * {@link toEntry}'s `sequencing` projection -- see the module doc
+ * comment's own "Command routing and sequencing-state projection"
+ * section. */
 interface EndpointSession {
   link: Link;
   unsubscribeLine: () => void;
+  unsubscribeAckNack: () => void;
   unsubscribeError: () => void;
 }
 
@@ -423,6 +460,22 @@ function toEntry(state: EndpointState): EndpointListEntry {
   }
   if (state.sessionError) {
     entry.sessionError = state.sessionError;
+  }
+  // Sprint 6 ticket 003: project the open session's live `Session`
+  // state -- read fresh off `Link.session` on every call, never cached
+  // -- so a client reading any snapshot (the very next one after a
+  // send, or the first one after reconnecting) sees current
+  // seq/pendingCount with no separate resync event needed. Present
+  // only while a session is open, mirroring `sessionError`'s own
+  // present-only-when-relevant shape.
+  if (state.sessionOpen && state.session) {
+    const session = state.session.link.session;
+    entry.sequencing = {
+      seq: session.seq,
+      pendingCount: session.pendingCount,
+      lastDone: session.lastDone,
+      lastDoneReason: session.lastDoneReason,
+    };
   }
   if (state.flashStatus) {
     entry.flashStatus = state.flashStatus;
@@ -821,6 +874,81 @@ export class DeviceRegistry {
   }
 
   /**
+   * Send one verb (with optional fields) to an endpoint's open session,
+   * dispatching through `@robot-console/protocol`'s `Session` rather
+   * than {@link sendLine}'s raw, undisciplined text path (sprint 6
+   * ticket 003 -- see the module doc comment's own "Command routing and
+   * sequencing-state projection" section, and `wsMessages.ts`'s "Sprint
+   * 6 addition" doc comment). Runs through the same per-endpoint
+   * {@link KeyedMutex} as {@link sendLine}/{@link requestOpen}/
+   * {@link requestClose}/{@link requestFlash} -- no new synchronization
+   * primitive.
+   *
+   * Verb classification is never re-derived here -- `isSequencedVerb`
+   * (`@robot-console/protocol`'s own allowlist) is the single source of
+   * truth:
+   *
+   * - `"HELLO"` is rejected via {@link emitError} before it ever reaches
+   *   `Session` in any form -- not even to let `Session.sendUnsequenced`'s
+   *   own refusal fire. `HELLO` resets the robot's sequence state
+   *   (protocol.md S8.3) and must never be issued as a live command;
+   *   closing and reopening the session is the supported way to reset.
+   * - Every verb `isSequencedVerb` recognizes (`GET`, `SET`, `TLM`,
+   *   `STOP`, `RUN`, `WHEELS_X`, `WHEELS_V`, `MOVE_X`, `MOVE_V`,
+   *   `GO_TO_R`, `GO_TO_W`) dispatches to `Link.sendCommand` (id-assigned
+   *   via `Session.send`).
+   * - Everything else (`STATUS`, `PING`, `ESTOP`, ...) dispatches to
+   *   `Link.sendUnsequenced` -- `STATUS` included, despite sitting next
+   *   to the sequenced verbs on the robot page (protocol.md's verb
+   *   table is the authority, not this sprint's looser roadmap
+   *   phrasing).
+   *
+   * Reports (via {@link emitError}), rather than throws, for an unknown
+   * endpoint or no open session (matching {@link sendLine}'s own
+   * pattern exactly), and for a thrown `SessionError`/`CodecError` from
+   * either dispatch call -- mirrors {@link sendLine}'s existing
+   * try/catch exactly, so a malformed verb or illegal field can never
+   * crash the process.
+   *
+   * Deliberately does **not** call {@link emitDevices} on a successful
+   * send: {@link toEntry} reads `pendingCount`/`seq` fresh off the open
+   * session on every {@link snapshot} call, so a caller reading the very
+   * next snapshot already sees the updated count with no event needed --
+   * only a genuine state change (an ack/nack arriving, subscribed in
+   * {@link connectAndIdentify}/{@link reidentifyAfterFlash}) triggers a
+   * broadcast. A burst of held-drive-control sends (see this ticket's
+   * own pacing test) would otherwise storm every connected client with
+   * one snapshot per send, on top of the pacing already governing the
+   * writes themselves.
+   */
+  async sendCommand(endpointId: string, verb: string, fields: readonly WireField[] = []): Promise<void> {
+    await this.mutex.run(endpointId, async () => {
+      const state = this.states.get(endpointId);
+      if (!state?.sessionOpen || !state.session) {
+        this.emitError(endpointId, `device ${endpointId} has no open link`);
+        return;
+      }
+      if (verb === "HELLO") {
+        this.emitError(
+          endpointId,
+          '"HELLO" cannot be sent as a live command -- it resets the robot\'s sequence state ' +
+            "(protocol.md S8.3); close and reopen the session instead of resending HELLO",
+        );
+        return;
+      }
+      try {
+        if (isSequencedVerb(verb)) {
+          state.session.link.sendCommand(verb, fields);
+        } else {
+          state.session.link.sendUnsequenced(verb, fields);
+        }
+      } catch (error) {
+        this.emitError(endpointId, error instanceof Error ? error.message : String(error));
+      }
+    });
+  }
+
+  /**
    * Flash `source` onto an endpoint: for `source.kind === "release"`,
    * orchestrates `config.ts` (which source) -> `releases.ts`
    * (fetch+verify the hex); for `"local-hex"`, retrieves the bytes a
@@ -1155,6 +1283,14 @@ export class DeviceRegistry {
       unsubscribeLine: link.onLine((decoded) => {
         this.emitLine(state.endpointId, "rx", reconstructLineText(decoded));
       }),
+      // Sprint 6 ticket 003: re-emit a snapshot on every ack/nack so a
+      // corrected seq/pendingCount reaches connected clients promptly --
+      // see the module doc comment's own "Command routing and
+      // sequencing-state projection" section for why this is bounded to
+      // ack/nack events, not fired per send or per inbound line.
+      unsubscribeAckNack: link.onAckNack(() => {
+        this.emitDevices();
+      }),
       unsubscribeError: link.onError((err) => {
         this.handleLinkError(state, err);
       }),
@@ -1317,6 +1453,14 @@ export class DeviceRegistry {
       unsubscribeLine: link.onLine((decoded) => {
         this.emitLine(state.endpointId, "rx", reconstructLineText(decoded));
       }),
+      // Sprint 6 ticket 003: re-emit a snapshot on every ack/nack so a
+      // corrected seq/pendingCount reaches connected clients promptly --
+      // see the module doc comment's own "Command routing and
+      // sequencing-state projection" section for why this is bounded to
+      // ack/nack events, not fired per send or per inbound line.
+      unsubscribeAckNack: link.onAckNack(() => {
+        this.emitDevices();
+      }),
       unsubscribeError: link.onError((err) => {
         this.handleLinkError(state, err);
       }),
@@ -1367,6 +1511,7 @@ export class DeviceRegistry {
 
   private async teardownLink(state: EndpointState): Promise<void> {
     state.session?.unsubscribeLine();
+    state.session?.unsubscribeAckNack();
     state.session?.unsubscribeError();
     const link = state.session?.link;
     state.session = undefined;

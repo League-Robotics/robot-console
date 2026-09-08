@@ -1,7 +1,7 @@
 ---
 id: '007'
 title: Relay page, radio transport, network discovery
-status: executing
+status: done
 branch: sprint/007-relay-page-radio-transport-network-discovery
 use-cases:
 - SUC-001

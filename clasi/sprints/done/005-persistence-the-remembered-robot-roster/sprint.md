@@ -1,7 +1,7 @@
 ---
 id: '005'
 title: 'Persistence: the remembered-robot roster'
-status: executing
+status: done
 branch: sprint/005-persistence-the-remembered-robot-roster
 use-cases:
 - SUC-001

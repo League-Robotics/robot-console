@@ -1,15 +1,15 @@
 ---
-id: 009
+id: '010'
 title: WiFi robots
 status: roadmap
-branch: sprint/009-wifi-robots
+branch: sprint/010-wifi-robots
 use-cases: []
 issues:
 - robot-console-two-level-ui-and-multi-transport-roadmap.md
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
-# Sprint 009: WiFi robots
+# Sprint 010: WiFi robots
 
 ## Goals
 

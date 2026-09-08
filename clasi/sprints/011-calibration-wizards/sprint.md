@@ -1,15 +1,16 @@
 ---
-id: '010'
+id: '011'
 title: Calibration wizards
 status: roadmap
-branch: sprint/010-calibration-wizards
+branch: sprint/011-calibration-wizards
 use-cases: []
 issues:
 - robot-console-two-level-ui-and-multi-transport-roadmap.md
+- id-verb-distinguishes-calibration-from-student-robots.md
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
-# Sprint 010: Calibration wizards
+# Sprint 011: Calibration wizards
 
 ## Goals
 

@@ -226,6 +226,9 @@ describe("FrontPage navigation", () => {
     });
 
     expect(el.querySelector('[data-testid="location"]')?.textContent).toBe("/d/usb-SERIAL-NAV");
-    expect(el.textContent).toContain("Device found: kivon");
+    // The default fixture classifies as "robot" (role "NEZHA2") -- ticket
+    // 008 replaced ticket 007's "Device found: ..." placeholder with the
+    // real per-type page content, so this now lands on `RobotPage`.
+    expect(el.textContent).toContain("kivon");
   });
 });

@@ -8,30 +8,35 @@
  * `react-router` `Link`, so middle-click/keyboard/screen-reader
  * navigation all work, not a `<div onClick>`.
  *
- * Rendering carries over `DevicesTab.tsx`'s `DeviceCard` states
+ * Rendering carries over the old flat Devices tab's `DeviceCard` states
  * verbatim (naming pending, flagged/unnamed, unresponsive, HID-only/no
- * serial port, linked pill) via its exported `nameDisplay`/
- * `roleDisplay` helpers -- this is a presentation move, not a
+ * serial port, linked pill) via the shared `nameDisplay`/`roleDisplay`
+ * helpers (`../deviceDisplay.ts`) -- this is a presentation move, not a
  * redesign of what's shown. What's dropped: the inline
- * Connect/Disconnect and flash-firmware controls `DeviceCard` owns
- * today. Those are per-device actions and move to the per-device page
- * in ticket 008 (see `sprint.md`'s "click a device, get its page"
- * framing) -- this component takes no `onOpen`/`onClose`/`onFlash`
- * callbacks because the front page no longer performs those actions
- * itself. `DevicesTab.tsx` is left in place (unrouted from `App.tsx`)
- * rather than deleted, since it still owns that logic until ticket 008
- * redistributes it.
+ * Connect/Disconnect and flash-firmware controls `DeviceCard` owned
+ * before this sprint. Flash moved to the per-device page
+ * (`UnknownDevicePage.tsx`, ticket 008); a manual Connect/Disconnect
+ * did **not** move anywhere -- `deviceRegistry.ts` already opens a
+ * session automatically on attach (`resolveNameAndOpen`), and
+ * `DeviceConsole`'s "open a link" hint (ticket 008) covers the one
+ * remaining case that matters, reopening a session that failed to
+ * identify, right where the student is already looking to send a
+ * line. This component takes no `onOpen`/`onClose`/`onFlash` callbacks
+ * because the front page never performed those actions directly
+ * itself (`DeviceCard` did). The old `DevicesTab.tsx`/`ConsoleTab.tsx`
+ * components ticket 008 redistributed from are deleted, not kept
+ * around unrouted.
  *
  * Split into a connected `FrontPage` (reads `WsProvider`'s selectors)
- * and a presentational `EndpointsList`/`EndpointCard`, mirroring
- * `DevicesTab.tsx`'s own split, so the list states can be exercised
+ * and a presentational `EndpointsList`/`EndpointCard`, mirroring the
+ * old Devices tab's own split, so the list states can be exercised
  * directly in tests against plain `EndpointListEntry` fixtures.
  */
 import { Link } from "react-router";
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
 import type { ConnectionStatus } from "../ws/WsProvider";
 import { useConnectionStatus, useEndpoints } from "../ws/WsProvider";
-import { nameDisplay, roleDisplay } from "../components/DevicesTab";
+import { nameDisplay, roleDisplay } from "../deviceDisplay";
 import "./FrontPage.css";
 
 export function FrontPage() {

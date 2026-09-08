@@ -1,9 +1,15 @@
 ---
-id: '008'
+id: 008
 title: Per-device pages (unknown/relay/robot) and post-flash navigation
-status: open
-use-cases: ["SUC-002", "SUC-003", "SUC-006", "SUC-007"]
-depends-on: ["007", "005"]
+status: done
+use-cases:
+- SUC-002
+- SUC-003
+- SUC-006
+- SUC-007
+depends-on:
+- '007'
+- '005'
 github-issue: ''
 issue: robot-console-two-level-ui-and-multi-transport-roadmap.md
 completes_issue: false
@@ -65,37 +71,39 @@ who has already clicked elsewhere must not be yanked away).
 
 ## Acceptance Criteria
 
-- [ ] `DevicePage` dispatches to `UnknownDevicePage`/`RelayPage`/
+- [x] `DevicePage` dispatches to `UnknownDevicePage`/`RelayPage`/
       `RobotPage` correctly per `classification.type`, including the
       `default` arm for a fixture entry carrying an unrecognized type
       string.
-- [ ] `UnknownDevicePage`'s release-flash controls match `DeviceCard`'s
+- [x] `UnknownDevicePage`'s release-flash controls match `DeviceCard`'s
       existing gating/disabled-reason behavior exactly (moved, not
       redesigned) — verified by porting the relevant existing
       `DevicesTab.test.tsx` assertions.
-- [ ] Local-hex flow: selecting a file computes and sends
+- [x] Local-hex flow: selecting a file computes and sends
       `flash-local-begin` with correct `fileName`/`byteLength`/`sha256`;
       on `flash-local-ready`, sends one binary frame with the
       `uploadId` prefix followed by the file bytes; "Flash this file"
       sends `flash-start` with the right `source` shape — verified
-      against a fake socket capturing sent frames.
-- [ ] `RelayPage` renders its dropdown present-but-empty (not hidden,
+      against a fake socket capturing sent frames, and independently
+      against the real host over a raw WebSocket driving a real board
+      (see report).
+- [x] `RelayPage` renders its dropdown present-but-empty (not hidden,
       not an error state) for a `relay`-classified fixture entry.
       `RobotPage` renders its shell for a `robot`-classified fixture
       entry.
-- [ ] `DeviceConsole` embedded in all three page types shows the
+- [x] `DeviceConsole` embedded in all three page types shows the
       correct per-endpoint log (via `useEndpointLog`) and preserves
       every existing `ConsoleTab` behavior listed above — ported
       `ConsoleTab.test.tsx` assertions pass against the new component.
-- [ ] Post-flash navigation: a `flash-result ok` for the currently
+- [x] Post-flash navigation: a `flash-result ok` for the currently
       viewed endpoint navigates to `/`; a `flash-result` for a
       *different* endpoint (e.g. arriving after the student already
       navigated away) does **not** navigate anywhere.
-- [ ] `ConsoleTab.tsx`/`ConsoleTab.test.tsx` and any remaining
+- [x] `ConsoleTab.tsx`/`ConsoleTab.test.tsx` and any remaining
       `DevicesTab.tsx`/`DevicesTab.test.tsx` content not already
       retired by ticket 007 are removed once `DeviceConsole`/
       `UnknownDevicePage` fully cover their behavior.
-- [ ] `npm test` and `npm run build` pass in full.
+- [x] `npm test` and `npm run build` pass in full.
 
 ## Testing
 

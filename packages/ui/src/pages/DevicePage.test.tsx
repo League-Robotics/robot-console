@@ -127,3 +127,85 @@ describe("DevicePage deep-linking", () => {
     expect(el.textContent).toContain("isn't connected");
   });
 });
+
+describe("DevicePage per-type dispatch", () => {
+  it("dispatches a relay-classified endpoint to RelayPage", () => {
+    const { el, socket } = mountAt("/d/usb-SERIAL-A");
+    act(() => {
+      socket().emitOpen();
+    });
+    act(() => {
+      socket().emitMessage({
+        type: "endpoints",
+        endpoints: [
+          endpoint({
+            classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role" },
+          }),
+        ],
+      });
+    });
+
+    expect(el.querySelector('[aria-label="Relay device"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="relay-robot-select"]')).not.toBeNull();
+  });
+
+  it("dispatches a robot-classified endpoint to RobotPage", () => {
+    const { el, socket } = mountAt("/d/usb-SERIAL-A");
+    act(() => {
+      socket().emitOpen();
+    });
+    act(() => {
+      socket().emitMessage({
+        type: "endpoints",
+        endpoints: [
+          endpoint({
+            classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
+          }),
+        ],
+      });
+    });
+
+    expect(el.querySelector('[aria-label="Robot device"]')).not.toBeNull();
+  });
+
+  it("dispatches an unknown-classified endpoint to UnknownDevicePage", () => {
+    const { el, socket } = mountAt("/d/usb-SERIAL-A");
+    act(() => {
+      socket().emitOpen();
+    });
+    act(() => {
+      socket().emitMessage({ type: "endpoints", endpoints: [endpoint()] });
+    });
+
+    expect(el.querySelector('[aria-label="Unknown device"]')).not.toBeNull();
+  });
+
+  it("dispatches an unrecognized classification.type to UnknownDevicePage via the default arm", () => {
+    // The "a fourth device type is purely additive" contract
+    // (`wsMessages.ts`'s module doc comment): a client built against
+    // today's two-type union must treat any value it doesn't recognize
+    // as unknown, not crash or render nothing.
+    const { el, socket } = mountAt("/d/usb-SERIAL-A");
+    act(() => {
+      socket().emitOpen();
+    });
+    act(() => {
+      socket().emitMessage({
+        type: "endpoints",
+        endpoints: [
+          endpoint({
+            classification: {
+              type: "calibration" as unknown as EndpointListEntry["classification"]["type"],
+              role: "SOMETHING_NEW",
+              commonName: null,
+              dialect: null,
+              evidence: "role",
+            },
+          }),
+        ],
+      });
+    });
+
+    expect(el.querySelector('[aria-label="Unknown device"]')).not.toBeNull();
+  });
+});

@@ -7,12 +7,18 @@
  * `ConsoleTab.test.tsx`. Routing (ticket 007) adds more test files that
  * need the exact same fake, so this is the one shared copy every
  * `WsProvider`-driving test imports instead of re-declaring its own.
+ *
+ * Ticket 008 adds `sentBinary`: the local-hex upload's one binary frame
+ * (`sendBinary` on `WsActions`) is captured separately from `sent` so
+ * every existing string-equality assertion against `sent` (a JSON
+ * message per entry) is unaffected by this addition.
  */
 import type { WebSocketLike } from "../ws/WsProvider";
 
 export class FakeSocket implements WebSocketLike {
   readyState = 0;
   sent: string[] = [];
+  sentBinary: Uint8Array[] = [];
   private listeners = new Map<string, Set<(event: unknown) => void>>();
 
   addEventListener(type: string, listener: (event: unknown) => void): void {
@@ -25,8 +31,15 @@ export class FakeSocket implements WebSocketLike {
     this.listeners.get(type)?.delete(listener);
   }
 
-  send(data: string): void {
-    this.sent.push(data);
+  send(data: string | ArrayBufferLike | ArrayBufferView): void {
+    if (typeof data === "string") {
+      this.sent.push(data);
+      return;
+    }
+    const bytes = ArrayBuffer.isView(data)
+      ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+      : new Uint8Array(data);
+    this.sentBinary.push(bytes);
   }
 
   close(): void {

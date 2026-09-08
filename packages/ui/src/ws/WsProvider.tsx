@@ -95,6 +95,7 @@ import type {
   FirmwareAvailability,
   FirmwareKind,
   FirmwareSourceRef,
+  FlashLocalReadyMessage,
   FlashPhase,
   FlashResultMessage,
   LineMessage,
@@ -165,7 +166,13 @@ const DEFAULT_FIRMWARE_STATUS: Record<FirmwareKind, FirmwareAvailability> = {
  */
 export interface WebSocketLike {
   readonly readyState: number;
-  send(data: string): void;
+  /** `string` for every JSON control message this module sends; a raw
+   * binary payload only for the local-hex upload's one binary frame
+   * (ticket 008's `sendBinary` action) -- never a `Blob`, since this
+   * client always has the bytes in hand already (`File.arrayBuffer()`)
+   * and has no reason to hand the browser a lazy-read wrapper around
+   * them. */
+  send(data: string | ArrayBufferLike | ArrayBufferView): void;
   close(): void;
   addEventListener(type: string, listener: (event: unknown) => void): void;
   removeEventListener(type: string, listener: (event: unknown) => void): void;
@@ -239,6 +246,13 @@ interface Store {
   logOrder: string[];
   flashProgressByEndpoint: Map<string, FlashProgressState>;
   flashResultHandlers: Set<(message: FlashResultMessage) => void>;
+  /** Subscribers to the local-hex upload handshake's `flash-local-ready`
+   * reply (ticket 008) -- see `WsActions.onFlashLocalReady`'s own doc
+   * comment. Not store-backed state (no `endpoints`/log-buffer slice
+   * changes because of this message), so firing these handlers never
+   * needs a matching `notify(store)` call the way `flash-result`'s
+   * handling does. */
+  flashLocalReadyHandlers: Set<(message: FlashLocalReadyMessage) => void>;
   listeners: Set<() => void>;
   /** `useSyncExternalStore`'s subscribe half -- registers `cb` to be
    * called after any store mutation, returns the unsubscribe function.
@@ -260,7 +274,25 @@ interface Store {
 
 export interface WsActions {
   send: (message: ClientMessage) => void;
+  /** Send one raw binary WebSocket frame -- the local-hex upload
+   * handshake's binary half (ticket 005's convention, frozen in
+   * `wsMessages.ts`'s module doc comment): `uploadId` (ASCII,
+   * `UPLOAD_ID_BYTE_LENGTH` bytes) immediately followed by the file's
+   * raw bytes, no JSON envelope, no length prefix. Building that exact
+   * layout is the caller's job (`UnknownDevicePage`, ticket 008); this
+   * action only forwards the finished frame to the socket, mirroring
+   * `send`'s own readyState guard -- a frame sent while disconnected is
+   * silently dropped rather than queued, same as every other outbound
+   * message this module sends. */
+  sendBinary: (data: Uint8Array) => void;
   onFlashResult: (handler: (message: FlashResultMessage) => void) => () => void;
+  /** Subscribe to the local-hex upload handshake's `flash-local-ready`
+   * reply -- the server's go-ahead to send the binary frame, carrying
+   * the `uploadId` the client must prefix that frame with and later
+   * reference in `flash-start`'s `source`. Mirrors `onFlashResult`'s
+   * pub/sub shape; `UnknownDevicePage` (ticket 008) is this sprint's
+   * only subscriber. */
+  onFlashLocalReady: (handler: (message: FlashLocalReadyMessage) => void) => () => void;
   /** Empty one endpoint's log buffer -- `ConsoleTab`'s "Clear log"
    * button used to do this directly via its own `setLogsByDevice`
    * before the buffer was hoisted into this store; now that the store
@@ -308,7 +340,17 @@ function appendLine(store: Store, message: LineMessage): void {
 function applySnapshot(
   store: Store,
   endpoints: EndpointListEntry[],
-  firmwareStatus: Record<FirmwareKind, FirmwareAvailability>,
+  // `server.ts` always populates this field on a real `endpoints`
+  // message (`EndpointsMessage.firmwareStatus` is required); typed as
+  // possibly `undefined` here only because nothing on this client-side
+  // parse path (`isServerMessage`, per this module's own doc comment)
+  // actually validates an incoming message's shape against the wire
+  // contract the way `parseClientMessage` does for the other
+  // direction. Guarded below so a message missing it (also a common
+  // shorthand in tests that don't care about firmware gating) can
+  // never clobber a previously-good `store.firmwareStatus` with
+  // `undefined`.
+  firmwareStatus: Record<FirmwareKind, FirmwareAvailability> | undefined,
 ): void {
   const nextIds: string[] = [];
   const nextMap = new Map<string, EndpointListEntry>();
@@ -330,7 +372,7 @@ function applySnapshot(
     store.endpointsArray = nextIds.map((id) => nextMap.get(id)!);
   }
 
-  if (!deepEqual(store.firmwareStatus, firmwareStatus)) {
+  if (firmwareStatus && !deepEqual(store.firmwareStatus, firmwareStatus)) {
     store.firmwareStatus = firmwareStatus;
   }
 
@@ -360,6 +402,7 @@ function createStore(): Store {
     logOrder: [],
     flashProgressByEndpoint: new Map(),
     flashResultHandlers: new Set(),
+    flashLocalReadyHandlers: new Set(),
     listeners,
     subscribe: (cb: () => void) => {
       listeners.add(cb);
@@ -437,10 +480,22 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
           socket.send(JSON.stringify(message));
         }
       },
+      sendBinary: (data: Uint8Array) => {
+        const socket = socketRef.current;
+        if (socket && socket.readyState === WEBSOCKET_OPEN) {
+          socket.send(data);
+        }
+      },
       onFlashResult: (handler: (message: FlashResultMessage) => void) => {
         store.flashResultHandlers.add(handler);
         return () => {
           store.flashResultHandlers.delete(handler);
+        };
+      },
+      onFlashLocalReady: (handler: (message: FlashLocalReadyMessage) => void) => {
+        store.flashLocalReadyHandlers.add(handler);
+        return () => {
+          store.flashLocalReadyHandlers.delete(handler);
         };
       },
       clearEndpointLog: (endpointId: string) => {
@@ -520,10 +575,14 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
             notify(store);
             break;
           case "flash-local-ready":
-            // Local-hex upload handshake (ticket 005) -- no store slice
-            // consumes this yet; a later ticket wires the upload UI to
-            // it. Explicit no-op for the same exhaustiveness reason as
-            // "error" above.
+            // Local-hex upload handshake (ticket 005's JSON half, wired
+            // to the UI by ticket 008): fan out to whoever is waiting to
+            // send the binary frame this unlocks (`UnknownDevicePage`).
+            // Not store-backed state -- no `notify(store)` needed, per
+            // `flashLocalReadyHandlers`'s own doc comment.
+            for (const handler of store.flashLocalReadyHandlers) {
+              handler(parsed);
+            }
             break;
         }
       });
@@ -641,18 +700,21 @@ export function useFlashProgress(endpointId: string): FlashProgressState | undef
   );
 }
 
-/** The imperative surface: send a client message, and subscribe to the
- * terminal outcome of a flash. Per-phase progress does *not* need a
- * matching subscription here: `useFlashProgress` (this ticket) and
+/** The imperative surface: send a client message (`send`/`sendBinary`),
+ * and subscribe to the terminal outcome of a flash (`onFlashResult`) or
+ * the local-hex upload handshake's go-ahead (`onFlashLocalReady`,
+ * ticket 008). Per-phase progress does *not* need a matching
+ * subscription here: `useFlashProgress` (ticket 006) and
  * `EndpointListEntry.flashStatus` already carry live progress; only the
- * terminal `flash-result`'s `message` (present on `status: "error"`) is
- * not represented anywhere in the snapshot, so that one event keeps its
- * own subscription. `onLine`/`onError` from the pre-ticket-006 context
- * are gone: log population is now internal store logic
- * (`useEndpointLog`), and nothing outside this module ever consumed
- * `onError`. Returns a stable object for this store's whole lifetime,
- * so `useEffect(() => onFlashResult(...), [onFlashResult])` never
- * re-runs on an unrelated render. */
+ * terminal `flash-result`'s `message` (present on `status: "error"`)
+ * and `flash-local-ready`'s `uploadId` are not represented anywhere in
+ * the snapshot, so those two events keep their own subscriptions.
+ * `onLine`/`onError` from the pre-ticket-006 context are gone: log
+ * population is now internal store logic (`useEndpointLog`), and
+ * nothing outside this module ever consumed `onError`. Returns a
+ * stable object for this store's whole lifetime, so
+ * `useEffect(() => onFlashResult(...), [onFlashResult])` never re-runs
+ * on an unrelated render. */
 export function useWsActions(): WsActions {
   const store = useStore();
   return store.actions;

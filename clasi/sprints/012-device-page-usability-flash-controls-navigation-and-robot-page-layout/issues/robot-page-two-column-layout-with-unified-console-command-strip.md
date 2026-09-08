@@ -1,5 +1,10 @@
 ---
-status: pending
+status: in-progress
+sprint: '012'
+tickets:
+- 012-003
+- 012-005
+- 012-006
 ---
 
 # Rebuild the robot page as a two-column layout with one console and a command strip beneath it

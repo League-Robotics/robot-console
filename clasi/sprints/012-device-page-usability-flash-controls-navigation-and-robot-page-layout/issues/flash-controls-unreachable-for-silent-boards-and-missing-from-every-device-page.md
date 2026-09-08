@@ -1,5 +1,10 @@
 ---
-status: pending
+status: in-progress
+sprint: '012'
+tickets:
+- 012-001
+- 012-002
+- 012-004
 ---
 
 # Flash controls are unreachable for a silent board, gone from the front page, and absent from every identified device page

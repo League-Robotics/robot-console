@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: '012'
+tickets:
+- 012-004
 ---
 
 # The device page needs a back button to the device list

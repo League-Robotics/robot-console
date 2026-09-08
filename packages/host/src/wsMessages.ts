@@ -88,7 +88,8 @@
  * Direction:
  *   - client -> server: {@link SessionOpenMessage}, {@link SessionCloseMessage},
  *     {@link LineMessage} (always `direction: "tx"` in this direction),
- *     {@link FlashStartMessage}, {@link FlashLocalBeginMessage}.
+ *     {@link FlashStartMessage}, {@link FlashLocalBeginMessage},
+ *     {@link ForgetKnownRobotMessage}.
  *   - server -> client: {@link EndpointsMessage}, {@link LineMessage}
  *     (always `direction: "rx"` in this direction -- an inbound line
  *     from the device), {@link ErrorMessage}, {@link FlashProgressMessage},
@@ -253,6 +254,28 @@ export type FirmwareAvailability =
   | { configured: false }
   | { configured: true; repoUrl: string; tag: string; available: boolean; reason?: string };
 
+/** The wire projection of sprint 5's `KnownRobotRecord`
+ * (`store/knownRobots.ts`) -- a name the host has seen before over USB
+ * and might reach again, **not** a routable {@link EndpointListEntry}.
+ * Deliberately a separate, independent shape rather than a field
+ * folded into `EndpointListEntry`: an entry models something with a
+ * `resourceKey` that can hold a session and be flashed, and a
+ * remembered robot has none of those things -- it is just a name and a
+ * last-seen time. Only the fields a consumer needs this sprint are
+ * carried; `firstSeenAt`/`lastType` from `KnownRobotRecord` are
+ * deliberately omitted (see this ticket) as speculative generality with
+ * no reader yet. `lastUsbSerial` is a display hint only, exactly as in
+ * `KnownRobotRecord` -- never authoritative for matching an incoming
+ * device to this entry, since the name and the USB serial come from
+ * different chips and can drift apart. */
+export interface RememberedRobotEntry {
+  name: string;
+  lastSeenAt: string;
+  lastSeenVia: "usb";
+  lastRole: string | null;
+  lastUsbSerial: string;
+}
+
 /** Server -> client: the full current endpoint list. Sent once on
  * connect and again on every live attach/detach/state change -- always
  * a full snapshot, never a delta, so a client that missed an update
@@ -265,11 +288,22 @@ export type FirmwareAvailability =
  * connects or reconnects after an availability change gets it on the
  * very next `endpoints` message with no separate discovery step.
  * Renamed from `DevicesMessage`/`type: "devices"` -- see the module doc
- * comment. */
+ * comment.
+ *
+ * `rememberedRobots` (sprint 5) is a second, independent top-level
+ * snapshot list, not folded into `endpoints` -- see
+ * {@link RememberedRobotEntry}'s own doc comment for why a remembered
+ * robot isn't an `EndpointListEntry`. It upholds the same full-snapshot
+ * property as the rest of this message: always the complete remembered
+ * roster, always present (an empty array when there is nothing
+ * remembered, never an omitted field, so a client can tell "no
+ * remembered robots" apart from "talking to a server old enough not to
+ * send this field"). */
 export interface EndpointsMessage {
   type: "endpoints";
   endpoints: EndpointListEntry[];
   firmwareStatus: Record<FirmwareKind, FirmwareAvailability>;
+  rememberedRobots: RememberedRobotEntry[];
 }
 
 /** Client -> server: open (or re-open, e.g. after a failed attempt) a
@@ -391,6 +425,17 @@ export interface FlashLocalReadyMessage {
  * split using this constant; this module only documents the shape. */
 export const UPLOAD_ID_BYTE_LENGTH = 36;
 
+/** Client -> server: forget a remembered robot -- `deviceRegistry.ts`
+ * (ticket 003) is the write gate that removes it from
+ * `KnownRobotsStore` and, in turn, the next `EndpointsMessage.rememberedRobots`
+ * snapshot no longer carries it. `name` mirrors
+ * {@link RememberedRobotEntry.name}, matching {@link SessionCloseMessage}'s
+ * shape exactly: a single required string field, no optional fields. */
+export interface ForgetKnownRobotMessage {
+  type: "forget-known-robot";
+  name: string;
+}
+
 /** Server -> client: something went wrong. `endpointId` is present when
  * the error is scoped to one endpoint (a failed session open, a send to
  * an endpoint with no open session); absent for a connection-level
@@ -409,7 +454,8 @@ export type ClientMessage =
   | SessionCloseMessage
   | LineMessage
   | FlashStartMessage
-  | FlashLocalBeginMessage;
+  | FlashLocalBeginMessage
+  | ForgetKnownRobotMessage;
 
 /** Every message shape the server may send. */
 export type ServerMessage =
@@ -499,6 +545,10 @@ export function parseClientMessage(value: unknown): ClientMessage | undefined {
             byteLength: value.byteLength,
             sha256: value.sha256,
           }
+        : undefined;
+    case "forget-known-robot":
+      return isNonEmptyString(value.name)
+        ? { type: "forget-known-robot", name: value.name }
         : undefined;
     default:
       return undefined;

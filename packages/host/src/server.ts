@@ -259,9 +259,15 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 
   /** Merge an already-computed endpoint snapshot with the availability
    * cache's current status into one full-snapshot {@link EndpointsMessage}
-   * -- no new logic, per this module's own "composition only" contract. */
+   * -- no new logic, per this module's own "composition only" contract.
+   *
+   * `rememberedRobots` is hardcoded empty here -- ticket 002 (wire
+   * contract only) added the required field to keep this compiling;
+   * ticket 004 is what reads the real roster from `KnownRobotsStore`
+   * (via `deviceRegistry.ts`, ticket 003's write gate) and populates it
+   * for real. */
   function buildEndpointsMessage(endpoints: EndpointListEntry[]): EndpointsMessage {
-    return { type: "endpoints", endpoints, firmwareStatus: availabilityCache.current() };
+    return { type: "endpoints", endpoints, firmwareStatus: availabilityCache.current(), rememberedRobots: [] };
   }
 
   const unsubscribeDevices = registry.onDevicesChanged((endpoints) => {

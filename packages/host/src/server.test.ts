@@ -280,6 +280,7 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
         relay: { configured: false },
         robot: { configured: false },
       },
+      rememberedRobots: [],
     });
   });
 

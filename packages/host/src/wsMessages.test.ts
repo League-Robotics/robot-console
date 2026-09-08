@@ -69,6 +69,25 @@ describe("parseClientMessage", () => {
     });
   });
 
+  it("accepts a well-formed forget-known-robot message", () => {
+    expect(parseClientMessage({ type: "forget-known-robot", name: "zeguz" })).toEqual({
+      type: "forget-known-robot",
+      name: "zeguz",
+    });
+  });
+
+  it("rejects a forget-known-robot message with no name", () => {
+    expect(parseClientMessage({ type: "forget-known-robot" })).toBeUndefined();
+  });
+
+  it("rejects a forget-known-robot message with an empty name", () => {
+    expect(parseClientMessage({ type: "forget-known-robot", name: "" })).toBeUndefined();
+  });
+
+  it("rejects a forget-known-robot message with a non-string name", () => {
+    expect(parseClientMessage({ type: "forget-known-robot", name: 5 })).toBeUndefined();
+  });
+
   it("accepts a well-formed flash-local-begin message", () => {
     expect(
       parseClientMessage({

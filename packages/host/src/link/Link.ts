@@ -176,14 +176,39 @@ export interface MbrelayLinkSpec {
 }
 
 /**
+ * The direct-to-robot TCP transport variant of {@link LinkSpec} (sprint
+ * 7 ticket 004) — pure data. **Deliberately no `channel`/`group`
+ * fields**, unlike {@link RelayLinkSpec}/{@link MbrelayLinkSpec}:
+ * `_mbserial._tcp` (mbdeploy `serve`) addresses one specific robot's
+ * serial port directly, not a shared radio channel a relay must be told
+ * how to bridge — there is no `!CG` step and nothing to configure. See
+ * `MbserialLink.ts`'s own doc comment and `sprint.md`'s Design
+ * Rationale ("`MbserialLink` has no command plane") for why this is a
+ * correct asymmetry with the other two remote transports, not an
+ * oversight. `host`/`port` name a TCP endpoint discovered via
+ * `_mbserial._tcp` mDNS discovery — the discovery itself is sprint 8's
+ * job, per this ticket's own Description; this spec only defines the
+ * shape.
+ */
+export interface MbserialLinkSpec {
+  transport: "mbserial";
+  resourceKey: string;
+  /** TCP host of the remote mbserial endpoint, e.g. an IP address or
+   * hostname resolved from `_mbserial._tcp` mDNS discovery (sprint 8). */
+  host: string;
+  /** TCP port of the remote mbserial endpoint. */
+  port: number;
+}
+
+/**
  * Pure data describing which transport to open and how — one variant
  * per transport. {@link UsbLinkSpec} exists since sprint 4; {@link
  * RelayLinkSpec} is added sprint 7 ticket 002, {@link MbrelayLinkSpec}
- * sprint 7 ticket 003. `MbserialLinkSpec` follows in ticket 004. Being
- * pure data (not a link instance) makes a spec loggable, comparable by
- * value, and testable with no I/O at all.
+ * sprint 7 ticket 003, {@link MbserialLinkSpec} sprint 7 ticket 004.
+ * Being pure data (not a link instance) makes a spec loggable,
+ * comparable by value, and testable with no I/O at all.
  */
-export type LinkSpec = UsbLinkSpec | RelayLinkSpec | MbrelayLinkSpec;
+export type LinkSpec = UsbLinkSpec | RelayLinkSpec | MbrelayLinkSpec | MbserialLinkSpec;
 
 /** Builds a {@link Link} for a given {@link LinkSpec}. Replaces the
  * previous `(portPath: string) => UsbSerialLinkLike` shape — a pure

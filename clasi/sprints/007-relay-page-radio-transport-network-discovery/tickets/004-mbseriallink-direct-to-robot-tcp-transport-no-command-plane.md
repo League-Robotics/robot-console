@@ -1,7 +1,7 @@
 ---
 id: '004'
 title: MbserialLink (direct-to-robot TCP transport, no command plane)
-status: open
+status: done
 use-cases:
 - SUC-005
 depends-on:
@@ -44,24 +44,24 @@ most likely way this could regress.
 
 ## Acceptance Criteria
 
-- [ ] `MbserialLinkSpec` added to `LinkSpec` (no `channel`/`group`
+- [x] `MbserialLinkSpec` added to `LinkSpec` (no `channel`/`group`
       fields); `LinkFactory` dispatches to `MbserialLink` for it.
-- [ ] `connect()` opens a TCP socket to the given host/port with no
+- [x] `connect()` opens a TCP socket to the given host/port with no
       handshake step of any kind — `identify()` is the very next call
       that sends anything (`HELLO`).
-- [ ] `identify()`/`sendCommand()`/`sendUnsequenced()`/`checkLiveness()`
+- [x] `identify()`/`sendCommand()`/`sendUnsequenced()`/`checkLiveness()`
       behave identically to `UsbSerialLink`'s (same test technique, fake
       TCP socket standing in for the serial port).
-- [ ] A negative test asserts no line matching the relay command-plane
+- [x] A negative test asserts no line matching the relay command-plane
       grammar (`!CG`, `!MODE`, `!ECHO`, `!GO`, `!P`) is ever sent by
       this transport.
-- [ ] `MbserialLink.ts` has no import from `RelayCommandPlane.ts` or
+- [x] `MbserialLink.ts` has no import from `RelayCommandPlane.ts` or
       `protocol/relay/commands.ts` — enforced by the negative test above
       plus a plain source-level check (grep or an explicit assertion in
       the test file), following the precedent
       `RobotPage.transportBlind.test.ts` set for checking a structural
       property directly rather than trusting review alone.
-- [ ] `npm test` and `npm run build` pass.
+- [x] `npm test` and `npm run build` pass.
 
 ## Testing
 

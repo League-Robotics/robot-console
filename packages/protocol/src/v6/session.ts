@@ -62,6 +62,25 @@
  * the caller. There is no way to construct a retransmit for an id this
  * class did not itself send and still consider outstanding.
  *
+ * ---- A `nack` the host cannot possibly satisfy is a desync, not a retry ----
+ *
+ * "Resend from next forward, in order" (protocol.md §8.1) implicitly
+ * assumes the host is still holding *something* at the id the robot
+ * asked for. That assumption breaks when the robot's own `expectedNext_`
+ * resets (a reflash, a power cycle, or a stray `HELLO`) to a value BELOW
+ * every id the host currently has pending: every retransmit the host
+ * sends is still numerically ahead of what the reset robot now expects,
+ * so it gets discarded and re-nacked with the identical id, forever —
+ * a real reported bug, not a hypothetical. {@link Session.handleReply}
+ * detects exactly this case (the lowest pending id is `>` the nacked
+ * id) and reports it via {@link AckNackEvent.desynced} with an empty
+ * {@link AckNackEvent.resend} rather than manufacturing that loop — see
+ * that field's own doc comment for the full reasoning. This is a
+ * distinct failure mode from the ordinary "lost frame, still pending,
+ * keep resending it" case worked through in the synthetic sequencing
+ * tests, which is NOT touched by this check and keeps retransmitting
+ * for as long as the robot keeps asking.
+ *
  * ---- The 11 id-bearing verbs (protocol.md §8.3) ----
  *
  * Only `GET SET TLM STOP RUN WHEELS_X WHEELS_V MOVE_X MOVE_V GO_TO_R
@@ -131,9 +150,18 @@ export const SEQUENCED_VERBS: ReadonlySet<string> = new Set([
   "GO_TO_W",
 ]);
 
-/** Is `verb` one of the 11 id-bearing verbs ({@link SEQUENCED_VERBS})? */
+/** Is `verb` one of the 11 id-bearing verbs ({@link SEQUENCED_VERBS})?
+ * Case-folded before the lookup: protocol.md §2.1's "case is direction"
+ * rule is about what a line looks like ON THE WIRE (this library only
+ * ever emits sequenced verbs uppercase), not a license for a caller-
+ * supplied verb spelling to silently pick a different code path just
+ * because it arrived lowercase. A caller one layer up asking "is `get`
+ * sequenced?" should get the same answer as "is `GET` sequenced?" --
+ * see {@link Session.send}/{@link Session.sendUnsequenced}, which fold
+ * case the same way before both classifying AND encoding, so the two
+ * never disagree with each other. */
 export function isSequencedVerb(verb: string): boolean {
-  return SEQUENCED_VERBS.has(verb);
+  return SEQUENCED_VERBS.has(verb.toUpperCase());
 }
 
 /** One sequenced command this session has sent and is still holding in
@@ -164,6 +192,32 @@ export interface AckNackEvent {
   readonly lastDone: number;
   readonly lastDoneReason: string;
   readonly resend: readonly string[];
+  /**
+   * `true` only for a `nack` this session cannot possibly resolve by
+   * retransmitting — always `false` for `ack`. A `nack N` asks the host
+   * to resend starting at id `N`; that is only satisfiable if the host
+   * is still holding something at or below `N` (i.e. its lowest pending
+   * id is `<= N`). When the host's lowest pending id is instead `> N`,
+   * the robot is asking for an id the host will never produce again
+   * (ids only ever increase) — the robot's own `expectedNext_` fell
+   * BEHIND everything the host has sent, which only happens when the
+   * robot's sequence state reset out from under the host (a reflash, a
+   * power cycle, or an out-of-band `HELLO`), not from an ordinary lost
+   * frame.
+   *
+   * This is the fix for a real reported bug: retransmitting into this
+   * case cannot converge — every resent frame is still `> ` the robot's
+   * freshly-reset `expectedNext_`, so it gets discarded and re-nacked
+   * with the identical `N`, forever. When `desynced` is `true`,
+   * {@link resend} is always empty (this class refuses to manufacture
+   * that loop) and the doomed pending table is cleared — there is
+   * nothing left worth holding onto for a future retransmit, since none
+   * of it will ever be honored by a robot that has moved on. Recovery
+   * from this state is `connect()` (a fresh `HELLO`), not more
+   * retransmitting — a caller should surface this to the user as
+   * "resync needed", not silently retry.
+   */
+  readonly desynced: boolean;
 }
 
 function parseAckNackFields(
@@ -238,14 +292,21 @@ export class Session {
    * {@link sendUnsequenced} for everything else.
    */
   send(verb: string, fields: readonly WireField[] = []): string {
-    if (!isSequencedVerb(verb)) {
+    // Fold case ONCE, before both the classification check and the
+    // encode -- see isSequencedVerb's own doc comment for why. Using the
+    // same normalized spelling for both means a lowercase "get" can
+    // never classify as sequenced here while encoding lowercase onto the
+    // wire (which would look like reply-direction traffic to the robot,
+    // protocol.md S2.1) -- it always ends up as the canonical "GET".
+    const normalized = verb.toUpperCase();
+    if (!isSequencedVerb(normalized)) {
       throw new SessionError(
         `"${verb}" is not one of the 11 id-bearing verbs (${[...SEQUENCED_VERBS].join(" ")}) -- use sendUnsequenced() instead`,
       );
     }
     const id = this.nextId++;
-    const line = encodeLine(verb, fields, id);
-    this.pending.set(id, { id, verb, fields, line });
+    const line = encodeLine(normalized, fields, id);
+    this.pending.set(id, { id, verb: normalized, fields, line });
     return line;
   }
 
@@ -266,17 +327,23 @@ export class Session {
    * {@link checkLiveness} for the liveness-probe alternative.
    */
   sendUnsequenced(verb: string, fields: readonly WireField[] = []): string {
-    if (isSequencedVerb(verb)) {
+    // Same fold-once discipline as send() -- see isSequencedVerb's doc
+    // comment. Without this, a caller-supplied "hello" would sail past
+    // both guards below (neither string-equals its uppercase spelling)
+    // and get encoded verbatim, lowercase, onto the wire -- exactly the
+    // silent-desync hole a sibling bug report pinned this on.
+    const normalized = verb.toUpperCase();
+    if (isSequencedVerb(normalized)) {
       throw new SessionError(
         `"${verb}" is one of the 11 id-bearing verbs -- use send() instead`,
       );
     }
-    if (verb === "HELLO") {
+    if (normalized === "HELLO") {
       throw new SessionError(
         'HELLO must not be sent via sendUnsequenced() -- it resets the session sequence and must never be used as a mid-session health check (protocol.md S8.3: "a probe that manufactures the wedge it was checking for"). Use connect() for the initial connect-time HELLO, or checkLiveness() (PING) for an ongoing liveness check.',
       );
     }
-    return encodeLine(verb, fields);
+    return encodeLine(normalized, fields);
   }
 
   /**
@@ -370,7 +437,7 @@ export class Session {
     this.lastDone = lastDone;
     this.lastDoneReason = reason;
     this.retireThrough(n);
-    return { kind: "ack", n, seq: this.seq, lastDone, lastDoneReason: reason, resend: [] };
+    return { kind: "ack", n, seq: this.seq, lastDone, lastDoneReason: reason, resend: [], desynced: false };
   }
 
   private handleNack(fields: readonly string[]): AckNackEvent {
@@ -386,8 +453,28 @@ export class Session {
     // session ever saw its own ack for it -- a lost ack self-heals
     // exactly here) and no longer needs to be held for a retransmit.
     this.retireThrough(this.seq);
-    const resend = this.retransmitFrom(n);
-    return { kind: "nack", n, seq: this.seq, lastDone, lastDoneReason: reason, resend };
+
+    // What survived that retirement is exactly the candidate set for
+    // retransmitFrom(n) (everything still pending is, by construction,
+    // >= n at this point). If the lowest surviving id is still > n, the
+    // robot is asking for an id this session will never hold again --
+    // see AckNackEvent.desynced's own doc comment for the full
+    // reasoning. Retransmitting the survivors in that case cannot
+    // converge, so this deliberately does NOT call retransmitFrom(n)
+    // (which would happily hand back every id >= n and re-trigger the
+    // exact runaway loop this guards against) -- it clears them instead.
+    const remaining = this.pendingIds();
+    const desynced = remaining.length > 0 && remaining[0]! > n;
+
+    let resend: string[];
+    if (desynced) {
+      this.pending.clear();
+      resend = [];
+    } else {
+      resend = this.retransmitFrom(n);
+    }
+
+    return { kind: "nack", n, seq: this.seq, lastDone, lastDoneReason: reason, resend, desynced };
   }
 
   /** One `ack` covers every earlier id too (protocol.md §8.1) -- drop

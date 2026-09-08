@@ -355,12 +355,15 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
 
     await connected.messages.waitFor((m) => m.type === "endpoints" && m.endpoints[0]?.sessionOpen === true);
 
-    ws.send(JSON.stringify({ type: "line", endpointId: "usb-SERIAL-A", direction: "tx", line: "HELLO" }));
+    // Any raw line other than HELLO -- see the dedicated raw-HELLO
+    // resync test below for why HELLO itself is intercepted rather than
+    // written verbatim (deviceRegistry.ts's own `sendLine` doc comment).
+    ws.send(JSON.stringify({ type: "line", endpointId: "usb-SERIAL-A", direction: "tx", line: "STATUS" }));
 
     // Server echoes the sent line back to every client...
     const echoed = await connected.messages.waitFor((m) => m.type === "line" && m.direction === "tx");
-    expect(echoed).toEqual({ type: "line", endpointId: "usb-SERIAL-A", direction: "tx", line: "HELLO" });
-    expect(link.sentLines).toEqual(["HELLO"]);
+    expect(echoed).toEqual({ type: "line", endpointId: "usb-SERIAL-A", direction: "tx", line: "STATUS" });
+    expect(link.sentLines).toEqual(["STATUS"]);
 
     // ...and once the fake device "replies", the client sees that too.
     link.emitLine({ kind: "line", verb: "status", fields: ["mode=idle"] });
@@ -368,8 +371,17 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
     expect(reply).toEqual({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: "status mode=idle" });
   });
 
-  it("routes a send-command message to registry.sendCommand: dispatches sequenced/unsequenced verbs and rejects HELLO (ticket 003)", async () => {
-    const link = new FakeLink(async () => banner());
+  it("routes a send-command message to registry.sendCommand: dispatches sequenced/unsequenced verbs and resyncs HELLO (OOP fix, defect 2)", async () => {
+    // HELLO used to be flatly rejected here (sprint 6). It is now routed
+    // through Link.identify() -- the disciplined resync path -- instead;
+    // configuring identify() to fail on this second call (the resync)
+    // gives this test a deterministic `error` message to wait on, same
+    // as the old rejection did, while proving the new dispatch target.
+    let identifyCalls = 0;
+    const link = new FakeLink(async () => {
+      identifyCalls++;
+      return identifyCalls === 1 ? banner() : null;
+    });
     server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
     const connected = await connect(server.url.replace("http://", "ws://"));
     ws = connected.ws;
@@ -381,22 +393,25 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
     // Sent last, per this same client's own message order -- the
     // per-endpoint mutex `deviceRegistry.ts` already serializes every
     // operation through guarantees GET/STATUS above are fully applied to
-    // the fake link before this one's rejection is even considered,
-    // exactly as `sendLine`'s own ordering already relies on.
+    // the fake link before this one's resync is even attempted, exactly
+    // as `sendLine`'s own ordering already relies on.
     ws.send(JSON.stringify({ type: "send-command", endpointId: "usb-SERIAL-A", verb: "HELLO" }));
 
     const error = await connected.messages.waitFor((m) => m.type === "error");
     expect(error).toEqual({
       type: "error",
       endpointId: "usb-SERIAL-A",
-      message: expect.stringContaining("HELLO"),
+      message: expect.stringMatching(/didn't answer|no reply|check the connection/i),
     });
 
     // GET is sequenced (id-assigned via Session.send); STATUS is
     // unsequenced (protocol.md's verb table, not sprint.md's looser
     // phrasing) -- both already reached the link, and HELLO reached
-    // neither `sendCommand` nor `sendUnsequenced` on it at all.
+    // neither `sendCommand` nor `sendUnsequenced` on it at all (it went
+    // through identify() instead, called twice: the initial connect and
+    // this resync).
     expect(link.sentLines).toEqual(["GET #1\n", "STATUS\n"]);
+    expect(identifyCalls).toBe(2);
   });
 
   it("reports a graceful error, not a crash, for a line sent to a device with no open link", async () => {

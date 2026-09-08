@@ -22,16 +22,17 @@
  *    (`@robot-console/protocol`'s `v6/session.ts:120-132`), so all four
  *    go through plain `sendCommand(endpointId, verb)` with no fields --
  *    the same unsequenced path `EstopControl` and the old status-request
- *    panel already used. **`HELLO` is not special-cased on the client.** It
- *    is sent exactly like the other three; `deviceRegistry.ts:945-951`
- *    deliberately intercepts a live `"HELLO"` *host-side*, before it
- *    ever reaches `Session`, and reports the refusal via a `type:
- *    "error"` message carrying this endpoint's id (a deliberate,
- *    unchanged sprint 006 safety rule -- `HELLO` resets the robot's
- *    sequence state). Ticket 012-003 is what makes that refusal land in
- *    `DeviceConsole`'s log instead of being silently dropped; this
- *    ticket's only job is to send the command and let that existing
- *    pipe carry the answer.
+ *    panel already used. **`HELLO` is not special-cased on the client.**
+ *    It is sent exactly like the other three; `deviceRegistry.ts`'s
+ *    `sendCommand` deliberately intercepts a live `"HELLO"` *host-side*,
+ *    before it ever reaches `Session`, and routes it through
+ *    `resyncSession` -- the disciplined resync path (`Link.identify()`,
+ *    which sends `HELLO` and resets this session's own sequencing state
+ *    to match) rather than the flat refusal an earlier sprint shipped.
+ *    A resync that gets no reply still reports a `type: "error"` message
+ *    carrying this endpoint's id, landing in `DeviceConsole`'s log the
+ *    same way that refusal used to; this component's only job is to
+ *    send the command and let that existing pipe carry the answer.
  *  - `GET`/`SET` remain sequenced (`SEQUENCED_VERBS`), dispatched the
  *    same way the retired Get/Set panel did: bare `GET` (no fields)
  *    when the name field is empty, `GET <name>` when a name is entered,

@@ -487,15 +487,45 @@ describe("DeviceRegistry", () => {
     registry.start();
 
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
-    await registry.sendLine("usb-SERIAL-A", "HELLO");
-    expect(link.sentLines).toEqual(["HELLO"]);
-    expect(lines).toContainEqual({ endpointId: "usb-SERIAL-A", direction: "tx", line: "HELLO" });
+    // Any raw line other than HELLO (see the dedicated HELLO-interception
+    // tests below) goes to the wire verbatim.
+    await registry.sendLine("usb-SERIAL-A", "STATUS");
+    expect(link.sentLines).toEqual(["STATUS"]);
+    expect(lines).toContainEqual({ endpointId: "usb-SERIAL-A", direction: "tx", line: "STATUS" });
 
-    await registry.sendLine("no-such-device", "HELLO");
+    await registry.sendLine("no-such-device", "STATUS");
     expect(errors).toContainEqual({
       endpointId: "no-such-device",
       message: "device no-such-device has no open link",
     });
+
+    await registry.stop();
+  });
+
+  it("sendLine intercepts a raw-typed HELLO (any case) and resyncs instead of writing it to the wire", async () => {
+    // OOP fix (defect 3): typing "hello" into the console used to sail
+    // straight through as raw text, resetting the robot's sequence with
+    // none of the host-side bookkeeping reset to match -- a silent
+    // desync. It must now be detected regardless of case and routed
+    // through the same resync path as the structured HELLO command.
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("zeguz");
+    const link = new FakeLink(async () => banner());
+    const createLink = () => link;
+
+    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    registry.start();
+
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    expect(link.identifyCalls).toBe(1); // the initial connect-time identify()
+
+    await registry.sendLine("usb-SERIAL-A", "hello");
+
+    // Routed through Link.identify(), never written to the wire as raw
+    // text -- sendLine's own `link.sendLine()` call never fires for it.
+    expect(link.identifyCalls).toBe(2);
+    expect(link.sentLines).toEqual([]);
 
     await registry.stop();
   });
@@ -641,7 +671,17 @@ describe("DeviceRegistry.sendCommand", () => {
     await registry.stop();
   });
 
-  it("rejects HELLO sent as a command via emitError, never forwarding it to Session in any form", async () => {
+  it("routes HELLO sent as a command through the resync path (Link.identify()), never through Session.send/sendUnsequenced", async () => {
+    // OOP fix (defect 2): HELLO used to be flatly refused here ("close
+    // and reopen the session instead"). It is now the button's real
+    // recovery action -- Link.identify() is the disciplined way to
+    // (re)send HELLO. (The actual session-state reset this causes --
+    // Session.connect()'s fresh id counter/empty pending table/seq=1 --
+    // lives inside a real Link's identify() implementation, e.g.
+    // UsbSerialLink's own doc comment; FakeLink here is deliberately a
+    // thinner double that only proves DeviceRegistry calls identify()
+    // and nothing else for HELLO, not that identify() itself resets
+    // state, which is that other layer's contract, not this one's.)
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
@@ -651,19 +691,70 @@ describe("DeviceRegistry.sendCommand", () => {
     registry.start();
 
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    expect(link.identifyCalls).toBe(1); // the initial connect-time identify()
+
+    await registry.sendCommand("usb-SERIAL-A", "GET", []);
+    expect(link.session.pendingCount).toBe(1);
+
     await registry.sendCommand("usb-SERIAL-A", "HELLO", []);
 
-    expect(link.sentLines).toEqual([]);
+    expect(link.identifyCalls).toBe(2);
+    // Never reached Session.send/sendUnsequenced -- no raw "HELLO" line
+    // and no SessionError from sendUnsequenced()'s own refusal. The
+    // pending GET from before the resync is untouched by this fake
+    // (see the note above) -- it not throwing/erroring is the point.
+    expect(link.sentLines).toEqual(["GET #1\n"]);
+    expect(errors).toEqual([]);
+
+    await registry.stop();
+  });
+
+  it("reports an error (but still resets local state) when HELLO gets no reply", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    let identifyCount = 0;
+    const link = new FakeLink(async () => {
+      identifyCount++;
+      // The initial connect-time identify() succeeds; a later resync
+      // attempt (from the HELLO command below) gets no reply.
+      return identifyCount === 1 ? banner({ role: "NEZHA2" }) : null;
+    });
+    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    const errors: Array<{ endpointId: string | undefined; message: string }> = [];
+    registry.onError((endpointId, message) => errors.push({ endpointId, message }));
+    registry.start();
+
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    await registry.sendCommand("usb-SERIAL-A", "HELLO", []);
+
     expect(errors).toEqual([
       expect.objectContaining({
         endpointId: "usb-SERIAL-A",
-        message: expect.stringContaining("HELLO"),
+        message: expect.stringMatching(/didn't answer|no reply|check the connection/i),
       }),
     ]);
-    // Never reached Session at all -- not even to let
-    // sendUnsequenced()'s own refusal fire (which would also produce a
-    // SessionError, but this path must never get that far).
-    expect(link.session.pendingCount).toBe(0);
+    // Still went through identify() (twice: initial connect + resync),
+    // never a raw sendUnsequenced("HELLO") -- a null banner is a normal
+    // outcome here, not a thrown SessionError.
+    expect(link.identifyCalls).toBe(2);
+    expect(link.sentLines).toEqual([]);
+
+    await registry.stop();
+  });
+
+  it("HELLO sent lowercase via sendCommand still resyncs -- case cannot select a different behavior", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
+    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    registry.start();
+
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    expect(link.identifyCalls).toBe(1);
+
+    await registry.sendCommand("usb-SERIAL-A", "hello", []);
+    expect(link.identifyCalls).toBe(2);
+    expect(link.sentLines).toEqual([]);
 
     await registry.stop();
   });
@@ -753,6 +844,38 @@ describe("DeviceRegistry.sendCommand", () => {
     const afterAck = await waitForSnapshot(registry, (s) => s[0]?.sequencing?.seq === 1);
     expect(afterAck[0]?.sequencing).toEqual({ seq: 1, pendingCount: 0, lastDone: 0, lastDoneReason: "none" });
     expect(snapshots.length).toBeGreaterThan(0);
+
+    await registry.stop();
+  });
+
+  it("surfaces a desynced nack (defect 1) as a one-time 'press HELLO to resync' error, not once per subsequent send", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
+    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    const errors: Array<{ endpointId: string | undefined; message: string }> = [];
+    registry.onError((endpointId, message) => errors.push({ endpointId, message }));
+    registry.start();
+
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    // Confirm #1, then send #2 -- simulating the robot's own sequence
+    // having since reset below everything the host now holds pending.
+    await registry.sendCommand("usb-SERIAL-A", "GET", []); // #1
+    link.receiveReply({ kind: "line", verb: "ack", fields: ["1", "0", "none"] });
+    await registry.sendCommand("usb-SERIAL-A", "GET", []); // #2
+
+    link.receiveReply({ kind: "line", verb: "nack", fields: ["1", "0", "none"] });
+    // A held-button style second send/nack round trip while still
+    // desynced -- must not produce a second error.
+    await registry.sendCommand("usb-SERIAL-A", "GET", []); // #3
+    link.receiveReply({ kind: "line", verb: "nack", fields: ["1", "0", "none"] });
+
+    const resyncErrors = errors.filter((e) => e.message.toLowerCase().includes("hello"));
+    expect(resyncErrors).toEqual([
+      expect.objectContaining({ endpointId: "usb-SERIAL-A" }),
+    ]);
+    expect(resyncErrors).toHaveLength(1);
 
     await registry.stop();
   });

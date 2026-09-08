@@ -208,9 +208,16 @@
  * sequenced verb reaches `Link.sendCommand`, everything else
  * (`STATUS` included -- protocol.md's verb table is the authority, not
  * this sprint's looser roadmap phrasing) reaches `Link.sendUnsequenced`.
- * `HELLO` is rejected via {@link emitError} before it ever reaches
- * `Session` in any form -- see {@link DeviceRegistry.sendCommand}'s own
- * doc comment for why.
+ * `HELLO` (matched case-insensitively) is routed to
+ * {@link DeviceRegistry.resyncSession} instead of either of those --
+ * see that method's and {@link DeviceRegistry.sendCommand}'s own doc
+ * comments for why an outright refusal (this module's original sprint 6
+ * rule) was actively wrong: `HELLO` is the supported recovery for a
+ * desynced session (see {@link DeviceRegistry.reportDesyncIfNeeded}),
+ * and refusing it left the user with no in-band way to do that recovery
+ * at all. {@link DeviceRegistry.sendLine}'s raw text path gets the same
+ * HELLO interception, since it bypasses `Session` (and therefore this
+ * classification) entirely otherwise -- see its own doc comment.
  *
  * {@link toEntry} projects the open session's live `Session` state
  * (`seq`/`pendingCount`/`lastDone`/`lastDoneReason`, read straight off
@@ -228,7 +235,7 @@
  * the writes themselves.
  */
 
-import type { DecodedLine, DeviceClassification, ParsedBanner, WireField } from "@robot-console/protocol";
+import type { AckNackEvent, DecodedLine, DeviceClassification, ParsedBanner, WireField } from "@robot-console/protocol";
 import { classifyBanner, encodeLine, isSequencedVerb } from "@robot-console/protocol";
 import {
   DeviceWatcher,
@@ -447,6 +454,15 @@ interface EndpointState {
    * a post-open link error occurred -- renamed from `linkError`,
    * mirroring {@link EndpointListEntry.sessionError} one to one. */
   sessionError?: string | undefined;
+  /** Set once a desynced `nack` (`@robot-console/protocol`'s
+   * `AckNackEvent.desynced`) has already been reported via
+   * {@link DeviceRegistry.emitError} for the CURRENT session, so a
+   * held-button burst of sends against an already-desynced session
+   * reports the "press HELLO to resync" prompt once, not once per send.
+   * Reset to `false` whenever a session (re)opens and whenever
+   * {@link DeviceRegistry.resyncSession} completes -- both are points
+   * where the underlying condition genuinely might have changed. */
+  desyncNotified?: boolean;
   /** Present only while a flash is in flight for this device (sprint
    * 2) -- set at the start of {@link DeviceRegistry.requestFlash}'s
    * task and cleared (success or error) at its end. Reflected into
@@ -866,16 +882,37 @@ export class DeviceRegistry {
     });
   }
 
-  /** Send a line to an endpoint's open session. Reports (via {@link onError})
+  /**
+   * Send a line to an endpoint's open session. Reports (via {@link onError})
    * rather than throws if the endpoint is unknown, has no open session,
    * or the underlying write itself fails. On success, also emits the
    * sent line back out via {@link onLine} (`direction: "tx"`) so every
-   * connected client's console view reflects it, not just the sender. */
+   * connected client's console view reflects it, not just the sender.
+   *
+   * This is a raw, undisciplined text path deliberately -- unlike
+   * {@link sendCommand}, whatever text is typed here goes to the wire
+   * verbatim, bypassing `Session` entirely (no id, no pending
+   * bookkeeping). `HELLO` is the one verb that cannot be allowed through
+   * that door: it silently resets the robot's sequence state with none
+   * of the host-side bookkeeping reset to match, which is exactly the
+   * silent desync a real bug report traced to a lowercase `hello` typed
+   * here (case folded before comparison for the same reason
+   * `sendCommand`'s own HELLO check does -- see this module's own OOP
+   * fix notes). Detected here as the raw line's own leading token,
+   * case-insensitively, and routed through {@link resyncSession} instead
+   * of {@link Link.sendLine} -- any trailing text on the line is
+   * ignored, matching `HELLO`'s own no-fields wire shape.
+   */
   async sendLine(endpointId: string, line: string): Promise<void> {
     await this.mutex.run(endpointId, async () => {
       const state = this.states.get(endpointId);
       if (!state?.sessionOpen || !state.session) {
         this.emitError(endpointId, `device ${endpointId} has no open link`);
+        return;
+      }
+      const verb = line.trim().split(/\s+/)[0];
+      if (verb !== undefined && verb.toUpperCase() === "HELLO") {
+        await this.resyncSession(state, endpointId);
         return;
       }
       try {
@@ -900,17 +937,23 @@ export class DeviceRegistry {
    *
    * Verb classification is never re-derived here -- `isSequencedVerb`
    * (`@robot-console/protocol`'s own allowlist) is the single source of
-   * truth:
+   * truth, and it folds case before checking membership, so a caller-
+   * supplied verb spelling can never pick a different code path just by
+   * arriving in a different case (see that function's own doc comment):
    *
-   * - `"HELLO"` is rejected via {@link emitError} before it ever reaches
-   *   `Session` in any form -- not even to let `Session.sendUnsequenced`'s
-   *   own refusal fire. `HELLO` resets the robot's sequence state
-   *   (protocol.md S8.3) and must never be issued as a live command;
-   *   closing and reopening the session is the supported way to reset.
+   * - `"HELLO"` (matched case-insensitively, for the same reason) is
+   *   routed to {@link resyncSession} rather than reaching `Session` in
+   *   either form -- see that method's own doc comment. This used to be
+   *   an outright refusal ("close and reopen the session instead"), but
+   *   `Link.identify()` already IS the correct, disciplined way to
+   *   (re)send `HELLO`, and refusing it left a genuinely desynced session
+   *   with no in-band recovery at all.
    * - Every verb `isSequencedVerb` recognizes (`GET`, `SET`, `TLM`,
    *   `STOP`, `RUN`, `WHEELS_X`, `WHEELS_V`, `MOVE_X`, `MOVE_V`,
    *   `GO_TO_R`, `GO_TO_W`) dispatches to `Link.sendCommand` (id-assigned
-   *   via `Session.send`).
+   *   via `Session.send`, which also folds and encodes the verb
+   *   canonically uppercase regardless of the case this was called
+   *   with).
    * - Everything else (`STATUS`, `PING`, `ESTOP`, ...) dispatches to
    *   `Link.sendUnsequenced` -- `STATUS` included, despite sitting next
    *   to the sequenced verbs on the robot page (protocol.md's verb
@@ -933,7 +976,9 @@ export class DeviceRegistry {
    * broadcast. A burst of held-drive-control sends (see this ticket's
    * own pacing test) would otherwise storm every connected client with
    * one snapshot per send, on top of the pacing already governing the
-   * writes themselves.
+   * writes themselves. `resyncSession` is the one exception -- it calls
+   * {@link emitDevices} itself once the resync settles, since a `HELLO`
+   * always changes `seq`/`pendingCount`.
    */
   async sendCommand(endpointId: string, verb: string, fields: readonly WireField[] = []): Promise<void> {
     await this.mutex.run(endpointId, async () => {
@@ -942,12 +987,8 @@ export class DeviceRegistry {
         this.emitError(endpointId, `device ${endpointId} has no open link`);
         return;
       }
-      if (verb === "HELLO") {
-        this.emitError(
-          endpointId,
-          '"HELLO" cannot be sent as a live command -- it resets the robot\'s sequence state ' +
-            "(protocol.md S8.3); close and reopen the session instead of resending HELLO",
-        );
+      if (verb.toUpperCase() === "HELLO") {
+        await this.resyncSession(state, endpointId);
         return;
       }
       try {
@@ -1302,8 +1343,12 @@ export class DeviceRegistry {
       // see the module doc comment's own "Command routing and
       // sequencing-state projection" section for why this is bounded to
       // ack/nack events, not fired per send or per inbound line.
-      unsubscribeAckNack: link.onAckNack(() => {
+      // OOP fix (defect 1): also surface a desynced nack as a one-time
+      // "resync needed" error -- see reportDesyncIfNeeded's own doc
+      // comment.
+      unsubscribeAckNack: link.onAckNack((event) => {
         this.emitDevices();
+        this.reportDesyncIfNeeded(state, event);
       }),
       unsubscribeError: link.onError((err) => {
         this.handleLinkError(state, err);
@@ -1311,6 +1356,7 @@ export class DeviceRegistry {
     };
     state.sessionOpen = true;
     state.sessionError = undefined;
+    state.desyncNotified = false;
     this.emitDevices();
 
     // One retry on a null identify, per the ticket's acceptance
@@ -1472,8 +1518,12 @@ export class DeviceRegistry {
       // see the module doc comment's own "Command routing and
       // sequencing-state projection" section for why this is bounded to
       // ack/nack events, not fired per send or per inbound line.
-      unsubscribeAckNack: link.onAckNack(() => {
+      // OOP fix (defect 1): also surface a desynced nack as a one-time
+      // "resync needed" error -- see reportDesyncIfNeeded's own doc
+      // comment.
+      unsubscribeAckNack: link.onAckNack((event) => {
         this.emitDevices();
+        this.reportDesyncIfNeeded(state, event);
       }),
       unsubscribeError: link.onError((err) => {
         this.handleLinkError(state, err);
@@ -1481,6 +1531,7 @@ export class DeviceRegistry {
     };
     state.sessionOpen = true;
     state.sessionError = undefined;
+    state.desyncNotified = false;
     this.emitDevices();
 
     // identify() never throws -- a silent board (never replies to
@@ -1509,6 +1560,69 @@ export class DeviceRegistry {
     // relay-mediated identify (neither exists yet this sprint).
     this.maybeRecordKnownRobot(state);
     this.emitDevices();
+  }
+
+  /**
+   * OOP fix (defect 1): a desynced `nack` (`AckNackEvent.desynced`,
+   * `@robot-console/protocol`'s `Session`) means the robot's own
+   * sequence reset out from under this session -- Session itself already
+   * refuses to retransmit into that dead end (see its own doc comment),
+   * so there is no resend flood to worry about here. What is still
+   * missing without this method is telling the human at the bench: a
+   * held drive-control button that keeps sending into an already-
+   * desynced session would otherwise just go quiet with no visible sign
+   * anything is wrong. Reported once per session (via
+   * {@link EndpointState.desyncNotified}) rather than once per send, so
+   * a held button does not flood the console with the same line.
+   */
+  private reportDesyncIfNeeded(state: EndpointState, event: AckNackEvent): void {
+    if (event.kind !== "nack" || !event.desynced || state.desyncNotified) {
+      return;
+    }
+    state.desyncNotified = true;
+    this.emitError(
+      state.endpointId,
+      "The robot restarted its command counter -- press HELLO to resync.",
+    );
+  }
+
+  /**
+   * OOP fix (defect 2): the HELLO button's real recovery action, and the
+   * only place besides the initial attach flow that this module ever
+   * lets a live session send `HELLO`. Previously `sendCommand` refused
+   * `HELLO` outright and told the user to close and reopen the session
+   * instead -- but `Link.identify()` (via `@robot-console/protocol`'s
+   * `Session.connect()`) already IS that "close and reopen" done right:
+   * it sends `HELLO` and resets this session's own local sequencing
+   * state (fresh id counter, empty pending table, `seq = 1`) in lockstep
+   * with the reset `HELLO` causes on the robot side. Refusing to call it
+   * left the user with no in-band way to recover from exactly the
+   * desync {@link reportDesyncIfNeeded} above now warns about.
+   *
+   * Runs from inside `sendCommand`/`sendLine`'s existing per-endpoint
+   * mutex, so no other send for this endpoint can interleave while this
+   * awaits the banner reply -- unlike every other verb `sendCommand`
+   * dispatches, which never await anything past the paced write.
+   */
+  private async resyncSession(state: EndpointState, endpointId: string): Promise<void> {
+    const link = state.session?.link;
+    if (!link) {
+      return;
+    }
+    const banner = await link.identify();
+    if (!this.isLive(state) || !state.session) {
+      // Device removed, or its session torn down, while the resync was
+      // in flight -- nothing left here to update.
+      return;
+    }
+    state.desyncNotified = false;
+    this.emitDevices();
+    if (!banner) {
+      this.emitError(
+        endpointId,
+        "Sent HELLO but the robot didn't answer -- check the connection and try again.",
+      );
+    }
   }
 
   private handleLinkError(state: EndpointState, err: Error): void {

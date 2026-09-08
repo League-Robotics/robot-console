@@ -430,6 +430,158 @@ describe("trailing nack after an unsequenced verb's own reply (protocol.md S8.3'
   });
 });
 
+// ---------------------------------------------------------------------
+// Desync detection: a nack the host cannot possibly satisfy by
+// retransmitting (the robot's own sequence reset below everything the
+// host is holding) must not produce an unbounded resend stream. See
+// AckNackEvent.desynced's own doc comment for the full reasoning.
+// ---------------------------------------------------------------------
+
+describe("a robot whose sequence reset below every pending id is a desync, not a lost frame", () => {
+  it("nack 1 with every pending id above 1 does not retransmit, and is flagged desynced", () => {
+    const session = new Session();
+    session.send("WHEELS_V", [100, 100, 1000]); // #1
+    session.handleReply(decodeLine("ack 1 0 none") as DecodedLine); // confirm #1 -- seq=1
+    session.send("WHEELS_V", [100, 100, 1000]); // #2
+    session.send("WHEELS_V", [100, 100, 1000]); // #3
+    expect(session.pendingCount).toBe(2);
+
+    // The robot rebooted mid-session: its own expectedNext_ reset to 1.
+    // The host holds nothing at id 1 anymore (already confirmed
+    // pre-reset) -- #2/#3 can never satisfy a robot asking for #1, and
+    // retransmitting them would just re-trigger the identical nack
+    // forever (the reported bug).
+    const event = session.handleReply(
+      decodeLine("nack 1 0 none") as DecodedLine,
+    ) as AckNackEvent;
+    expect(event.kind).toBe("nack");
+    expect(event.desynced).toBe(true);
+    expect(event.resend).toEqual([]);
+    // Nothing worth holding onto -- none of it will ever be honored.
+    expect(session.pendingCount).toBe(0);
+  });
+
+  it("a held-button style repeat: each new send while still desynced is flagged again, and none of them are ever resent", () => {
+    // Mirrors the actual bug's traffic pattern more closely than a bare
+    // repeated nack with nothing sent in between (see the next test for
+    // that narrower case): a drive button held down keeps sending one
+    // command at a time into an already-desynced session. Each single
+    // send/nack round trip must independently detect the desync and
+    // resend nothing -- this is what "does not produce an unbounded
+    // resend stream" means in practice, not just "not on the very first
+    // call".
+    const session = new Session();
+    session.send("WHEELS_V", [100, 100, 1000]); // #1
+    session.handleReply(decodeLine("ack 1 0 none") as DecodedLine); // confirm #1 -- seq=1
+
+    session.send("WHEELS_V", [100, 100, 1000]); // #2 -- robot has since reset
+    let event = session.handleReply(decodeLine("nack 1 0 none") as DecodedLine) as AckNackEvent;
+    expect(event.resend).toEqual([]);
+    expect(event.desynced).toBe(true);
+
+    session.send("WHEELS_V", [100, 100, 1000]); // #3 -- still desynced
+    event = session.handleReply(decodeLine("nack 1 0 none") as DecodedLine) as AckNackEvent;
+    expect(event.resend).toEqual([]);
+    expect(event.desynced).toBe(true);
+  });
+
+  it("once the doomed pending table is cleared, a bare repeated nack with nothing newly sent is not re-flagged (nothing left to protect)", () => {
+    // Documents a deliberate edge case: desynced-and-therefore-cleared
+    // pending means a nack with nothing outstanding at all has nothing
+    // it could fail to resolve -- resend is (harmlessly) empty either
+    // way, so this is not re-flagged as a fresh desync. In practice a
+    // caller always sends something new before the next nack can arrive
+    // (see the previous test); this pins the narrower synthetic case.
+    const session = new Session();
+    session.send("WHEELS_V", [100, 100, 1000]); // #1
+    session.handleReply(decodeLine("ack 1 0 none") as DecodedLine);
+    session.send("WHEELS_V", [100, 100, 1000]); // #2
+
+    const first = session.handleReply(decodeLine("nack 1 0 none") as DecodedLine) as AckNackEvent;
+    expect(first.desynced).toBe(true);
+    expect(session.pendingCount).toBe(0);
+
+    const second = session.handleReply(decodeLine("nack 1 0 none") as DecodedLine) as AckNackEvent;
+    expect(second.resend).toEqual([]);
+    expect(second.desynced).toBe(false);
+  });
+
+  it("does NOT regress the legitimate case: a nack for an id the host still holds is not desynced, and resends normally", () => {
+    const session = new Session();
+    const original = session.send("WHEELS_V", [100, 100, 1000]); // #1
+    const event = session.handleReply(decodeLine("nack 1 0 none") as DecodedLine) as AckNackEvent;
+    expect(event.desynced).toBe(false);
+    expect(event.resend).toEqual([original]);
+  });
+
+  it("does NOT regress the golden-vector gap-and-recovery scenario's repeated identical nack", () => {
+    // Mirrors the "a gap stalls the stream" describe block above:
+    // pending = {#1, #2, #3}, nack 1 arrives twice in a row -- both
+    // times the host DOES hold #1, so this must keep resending the
+    // whole backlog both times, not just once.
+    const session = new Session();
+    const l1 = session.send("MOVE_X", [400, 1571, 200, 5000]);
+    const l2 = session.send("MOVE_X", [400, 0, 200, 5000]);
+    const l3 = session.send("STOP", []);
+
+    let event = session.handleReply(decodeLine("nack 1 0 none") as DecodedLine) as AckNackEvent;
+    expect(event.desynced).toBe(false);
+    expect(event.resend).toEqual([l1, l2, l3]);
+
+    event = session.handleReply(decodeLine("nack 1 0 none") as DecodedLine) as AckNackEvent;
+    expect(event.desynced).toBe(false);
+    expect(event.resend).toEqual([l1, l2, l3]);
+  });
+
+  it("ack events are never desynced", () => {
+    const session = new Session();
+    session.send("GET", ["foo"]);
+    const event = session.handleReply(decodeLine("ack 1 0 none") as DecodedLine) as AckNackEvent;
+    expect(event.desynced).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------
+// Case folding: a caller-supplied verb spelling must never select a
+// different classification or wire-cased output depending on its case
+// -- protocol.md S2.1's case-as-direction rule governs what a line
+// looks like ON THE WIRE, not how a caller's own verb text is
+// classified before this class ever encodes it.
+// ---------------------------------------------------------------------
+
+describe("verb comparisons fold case -- lowercase input never silently switches behavior", () => {
+  it("isSequencedVerb is case-insensitive", () => {
+    expect(isSequencedVerb("get")).toBe(true);
+    expect(isSequencedVerb("Get")).toBe(true);
+    expect(isSequencedVerb("GET")).toBe(true);
+    expect(isSequencedVerb("hello")).toBe(false);
+  });
+
+  it("send() accepts a lowercase spelling of a sequenced verb and encodes it canonically uppercase", () => {
+    const session = new Session();
+    const line = session.send("get", ["foo"]);
+    expect(line).toBe("GET foo #1\n");
+  });
+
+  it("sendUnsequenced() accepts a lowercase spelling and encodes it canonically uppercase", () => {
+    const session = new Session();
+    const line = session.sendUnsequenced("ping");
+    expect(line).toBe("PING\n");
+  });
+
+  it("sendUnsequenced('hello') is refused exactly like sendUnsequenced('HELLO') -- case cannot pick a different code path", () => {
+    const session = new Session();
+    for (const spelling of ["hello", "Hello", "HELLO", "hElLo"]) {
+      expect(() => session.sendUnsequenced(spelling, [])).toThrow(SessionError);
+    }
+  });
+
+  it("send() refuses a lowercase non-sequenced verb exactly like its uppercase spelling", () => {
+    const session = new Session();
+    expect(() => session.send("ping", [])).toThrow(SessionError);
+  });
+});
+
 describe("malformed ack/nack replies raise SessionError rather than silently mis-tracking", () => {
   it("too few fields", () => {
     const session = new Session();

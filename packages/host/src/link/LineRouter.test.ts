@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Session } from "@robot-console/protocol";
+import { decodeLine, Session, type DecodedLine } from "@robot-console/protocol";
 import { LineRouter } from "./LineRouter.js";
 
 // Exercises the decode -> classify -> ack/nack -> resend -> dispatch
@@ -87,5 +87,35 @@ describe("LineRouter", () => {
     lineRouter.handleLine("nack 1 0 none");
 
     expect(resends).toEqual([first, second]);
+  });
+
+  it("never resends when the robot's sequence has desynced below every pending id -- no unbounded resend stream", () => {
+    // Regression coverage for a real reported bug: the robot's own
+    // expectedNext_ resets (reflash/power-cycle/stray HELLO) to a value
+    // below every id the host is still holding pending. Every id the
+    // host could resend is still numerically ahead of what the
+    // just-reset robot expects, so it would be discarded and re-nacked
+    // with the identical id -- forever, if this class ever called
+    // `resend` for it. It must not.
+    const session = new Session();
+    session.connect();
+    session.send("STOP"); // id 1
+    session.handleReply(decodeLine("ack 1 0 none") as DecodedLine); // confirm #1
+    session.send("STOP"); // id 2
+    session.send("RUN"); // id 3
+    const { lineRouter, resends, ackNacks } = router(session);
+
+    lineRouter.handleLine("nack 1 0 none");
+    expect(resends).toEqual([]);
+    expect(ackNacks).toEqual([
+      expect.objectContaining({ kind: "nack", n: 1, desynced: true, resend: [] }),
+    ]);
+
+    // A second identical nack -- as an unresynced session would keep
+    // producing -- still resends nothing. This is the "unbounded resend
+    // stream" the bug report described; asserting it does not happen
+    // twice in a row is the point, not just once.
+    lineRouter.handleLine("nack 1 0 none");
+    expect(resends).toEqual([]);
   });
 });

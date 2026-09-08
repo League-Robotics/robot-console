@@ -40,17 +40,45 @@
  *    (`isSequencedVerb`); this component never re-derives that
  *    classification.
  *
- * **Field-name auto-discovery is ticket 006, not this one.** The name
- * field here is a plain free-text `<input>`, matching the retired
- * Get/Set panel's own documented reasoning: `protocol.md` holds no
- * config field table, so there is no enumerable list of legal
- * `GET`/`SET` names to build a picker from without inventing vocabulary
- * the firmware never promised.
+ * **Field-name auto-discovery (ticket 006, SUC-007).** The codebase has
+ * no enumerable list of legal `GET`/`SET` field names to build a picker
+ * from -- per protocol.md, "no config field table lives in this
+ * library", and the vocabulary is owned by whatever firmware build is
+ * on the device, not by this project. The one mechanism protocol.md
+ * does promise: a bare `GET` (no name) returns one `get <name> <value>`
+ * line per known field. This component fires that bare `GET` itself --
+ * on mount if a session is already open, otherwise on the session's
+ * first open, and again on every subsequent reopen (a false→true
+ * transition of `device.sessionOpen`, tracked with a ref so a
+ * reconnected session's discovered-names set does not silently go
+ * stale forever). It is a one-shot probe per open transition, never a
+ * retry loop -- a device that never answers just leaves the discovered
+ * set empty; there is no spinner or loading state to get stuck, because
+ * this component renders none.
+ *
+ * `get <name> <value>` reply lines are harvested with the same "loose
+ * prefix match, no invented grammar" discipline `classifyLine` and the
+ * retired Get/Set panel's `ERROR_REPLY_PATTERN` used -- `GET_REPLY_PATTERN`
+ * below only pulls the first token after `get`, so an unrecognized or
+ * unexpected reply shape is silently ignored (harvested as nothing new)
+ * rather than treated as an error. Discovered names populate the name
+ * field's `<datalist>`, making it an editable combo box -- **never a
+ * closed `<select>`** -- so a field the device didn't report (or
+ * hasn't reported yet) can still be typed and sent via GET or SET.
+ * Host `type: "error"` log entries (`origin: "host"`) are excluded from
+ * harvesting; they are not device-sourced `get` replies.
  */
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
-import { useWsActions } from "../ws/WsProvider";
+import { useEndpointLog, useWsActions } from "../ws/WsProvider";
 import "./CommandStrip.css";
+
+/** Matches a `get <name> ...` reply line and captures `<name>`.
+ * Mirrors `DeviceConsole.classifyLine`'s loose prefix-match discipline
+ * (`/^(err|nack)\b/i`) rather than parsing to a fixed reply grammar --
+ * protocol.md promises only "one `get <name> <value>` line per known
+ * field", nothing stricter. */
+const GET_REPLY_PATTERN = /^get\s+(\S+)/i;
 
 export interface CommandStripProps {
   device: EndpointListEntry;
@@ -60,9 +88,46 @@ export function CommandStrip({ device }: CommandStripProps) {
   const endpointId = device.endpointId;
   const linkOpen = device.sessionOpen;
   const { sendCommand } = useWsActions();
+  const log = useEndpointLog(endpointId);
 
   const [nameDraft, setNameDraft] = useState("");
   const [valueDraft, setValueDraft] = useState("");
+
+  // Fires a bare GET on mount (if already open) and again on every
+  // false->true transition of `linkOpen` -- see the doc comment above.
+  // The ref, not state, tracks "was open last render" so this effect
+  // never re-fires just because the log or draft fields changed.
+  const wasOpenRef = useRef(false);
+  useEffect(() => {
+    const wasOpen = wasOpenRef.current;
+    wasOpenRef.current = linkOpen;
+    if (linkOpen && !wasOpen) {
+      sendCommand(endpointId, "GET");
+    }
+  }, [linkOpen, endpointId, sendCommand]);
+
+  // Discovered field names, derived from the endpoint's log rather than
+  // held as separately-mutated state -- recomputing from `log` on every
+  // change keeps this in sync with `DeviceConsole`'s clear-log action
+  // too (a cleared log naturally clears discovery, since there is
+  // nothing left to derive names from) instead of needing its own reset
+  // path.
+  const discoveredNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const entry of log) {
+      if (entry.direction !== "rx" || entry.origin === "host") {
+        continue;
+      }
+      const match = GET_REPLY_PATTERN.exec(entry.line.trimStart());
+      const name = match?.[1];
+      if (name !== undefined) {
+        names.add(name);
+      }
+    }
+    return Array.from(names).sort();
+  }, [log]);
+
+  const nameListId = `command-strip-name-options-${endpointId}`;
 
   function handleGet(): void {
     if (!linkOpen) {
@@ -145,12 +210,21 @@ export function CommandStrip({ device }: CommandStripProps) {
           <span>Name</span>
           <input
             type="text"
+            list={nameListId}
             data-testid="command-strip-name"
             value={nameDraft}
             onChange={(event) => setNameDraft(event.target.value)}
             placeholder="(empty = every field)"
             disabled={!linkOpen}
           />
+          {/* Editable combo box, never a closed <select> -- a name the
+              device didn't report (or hasn't reported yet) is still
+              typeable and sendable; see the doc comment above. */}
+          <datalist id={nameListId} data-testid="command-strip-name-options">
+            {discoveredNames.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
         </label>
         <label className="command-strip-field">
           <span>Value</span>

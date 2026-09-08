@@ -1,7 +1,7 @@
 ---
 id: '006'
 title: Command strip Get/Set field auto-discovery
-status: open
+status: done
 use-cases:
 - SUC-007
 depends-on:
@@ -40,25 +40,25 @@ and needs the base strip's GET/SET free-text fields already in place.
 
 ## Acceptance Criteria
 
-- [ ] `CommandStrip` fires a bare `GET` (`sendCommand(endpointId,
+- [x] `CommandStrip` fires a bare `GET` (`sendCommand(endpointId,
       "GET")`, no fields) when the page/session becomes ready — document
       exactly when (mount vs. first open) in the component's own doc
       comment.
-- [ ] `get <name> <value>` reply lines (matching the existing
+- [x] `get <name> <value>` reply lines (matching the existing
       `err`/`nack`/`ack` classification conventions used elsewhere, e.g.
       `GetSetPanel`'s old `ERROR_REPLY_PATTERN`/`DeviceConsole`'s
       `classifyLine`) are parsed for `<name>` and added to a discovered-
       names set.
-- [ ] The GET/SET name field is an editable combo box populated with
+- [x] The GET/SET name field is an editable combo box populated with
       discovered names.
-- [ ] A name not among the discovered options can still be typed into
+- [x] A name not among the discovered options can still be typed into
       the field and sent via GET or SET — the field is never a closed
       `<select>`.
-- [ ] Discovery re-fires appropriately if the session reopens (a
+- [x] Discovery re-fires appropriately if the session reopens (a
       reconnected session's discovered-names set should not silently go
       stale forever — document the chosen refresh trigger, e.g. on
       `sessionOpen` transitioning false→true again).
-- [ ] `RobotPage.transportBlind.test.ts` still passes against
+- [x] `RobotPage.transportBlind.test.ts` still passes against
       `CommandStrip.tsx` with this addition (no transport-specific
       reference introduced by the discovery logic).
 

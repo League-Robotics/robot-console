@@ -123,14 +123,92 @@ export interface UsbLinkSpec {
 }
 
 /**
- * Pure data describing which transport to open and how — one variant
- * per transport. Only {@link UsbLinkSpec} exists this sprint;
- * `RelayLinkSpec`/`MbrelayLinkSpec` are added in sprint 7 (no new
- * transport is implemented this ticket, see `sprint.md`'s Scope). Being
- * pure data (not a link instance) makes a spec loggable, comparable by
- * value, and testable with no I/O at all.
+ * The local USB relay transport variant of {@link LinkSpec} (sprint 7
+ * ticket 002) — pure data, mirroring {@link UsbLinkSpec}'s own shape and
+ * discipline exactly. `resourceKey` **is** the relay's own `usb-<serial>`
+ * (sprint 4's model): driving through the relay and flashing the relay
+ * are mutually exclusive through the existing `KeyedMutex`, with no new
+ * locking mechanism (`sprint.md`'s Resource keying section). `channel`/
+ * `group` are the radio address `RelayCommandPlane`'s `!CG` step tunes
+ * the relay to — this ticket takes no position on how they get chosen
+ * (a default derivation or a registry lookup); that is sprint 8's job,
+ * per this ticket's own Description.
  */
-export type LinkSpec = UsbLinkSpec;
+export interface RelayLinkSpec {
+  transport: "relay-radio";
+  resourceKey: string;
+  /** OS device path of the local USB relay, e.g.
+   * `/dev/tty.usbmodemXXXX` — translated to the platform's open-safe
+   * callout path by {@link RelayRadioLink}, exactly as {@link
+   * UsbLinkSpec.portPath} is by `UsbSerialLink`. */
+  portPath: string;
+  /** Radio channel to tune the relay to via `!CG <channel> <group>`. */
+  channel: number;
+  /** Radio group to tune the relay to via `!CG <channel> <group>`. */
+  group: number;
+}
+
+/**
+ * The remote TCP relay transport variant of {@link LinkSpec} (sprint 7
+ * ticket 003) — pure data, mirroring {@link RelayLinkSpec}'s own shape:
+ * `channel`/`group` are the same `!CG <channel> <group>` radio address,
+ * tuned by the same `RelayCommandPlane` handshake `MbrelayLink` shares
+ * with `RelayRadioLink`. `host`/`port` are the only fields that differ —
+ * where a `RelayLinkSpec` names a local serial port, an `MbrelayLinkSpec`
+ * names a TCP endpoint (discovered via `_mbrelay._tcp` — the discovery
+ * itself is sprint 8's job; this ticket only implements the transport
+ * given a host/port, per this ticket's own Description). This ticket
+ * takes no position on `resourceKey`'s exact value (sprint.md's Open
+ * Questions), mirroring {@link RelayLinkSpec}'s own deferral.
+ */
+export interface MbrelayLinkSpec {
+  transport: "mbrelay";
+  resourceKey: string;
+  /** TCP host of the remote mbrelay, e.g. an IP address or hostname
+   * resolved from `_mbrelay._tcp` mDNS discovery (sprint 8). */
+  host: string;
+  /** TCP port of the remote mbrelay. */
+  port: number;
+  /** Radio channel to tune the relay to via `!CG <channel> <group>`. */
+  channel: number;
+  /** Radio group to tune the relay to via `!CG <channel> <group>`. */
+  group: number;
+}
+
+/**
+ * The direct-to-robot TCP transport variant of {@link LinkSpec} (sprint
+ * 7 ticket 004) — pure data. **Deliberately no `channel`/`group`
+ * fields**, unlike {@link RelayLinkSpec}/{@link MbrelayLinkSpec}:
+ * `_mbserial._tcp` (mbdeploy `serve`) addresses one specific robot's
+ * serial port directly, not a shared radio channel a relay must be told
+ * how to bridge — there is no `!CG` step and nothing to configure. See
+ * `MbserialLink.ts`'s own doc comment and `sprint.md`'s Design
+ * Rationale ("`MbserialLink` has no command plane") for why this is a
+ * correct asymmetry with the other two remote transports, not an
+ * oversight. `host`/`port` name a TCP endpoint discovered via
+ * `_mbserial._tcp` mDNS discovery — the discovery itself is sprint 8's
+ * job, per this ticket's own Description; this spec only defines the
+ * shape.
+ */
+export interface MbserialLinkSpec {
+  transport: "mbserial";
+  resourceKey: string;
+  /** TCP host of the remote mbserial endpoint, e.g. an IP address or
+   * hostname resolved from `_mbserial._tcp` mDNS discovery (sprint 8). */
+  host: string;
+  /** TCP port of the remote mbserial endpoint. */
+  port: number;
+}
+
+/**
+ * Pure data describing which transport to open and how — one variant
+ * per transport. {@link UsbLinkSpec} exists since sprint 4; {@link
+ * RelayLinkSpec} is added sprint 7 ticket 002, {@link MbrelayLinkSpec}
+ * sprint 7 ticket 003, {@link MbserialLinkSpec} sprint 7 ticket 004.
+ * Being pure data (not a link instance) makes a spec loggable,
+ * comparable by value, and testable with no I/O at all.
+ */
+export type LinkSpec = UsbLinkSpec | RelayLinkSpec | MbrelayLinkSpec | MbserialLinkSpec;
 
 /** Builds a {@link Link} for a given {@link LinkSpec}. Replaces the
  * previous `(portPath: string) => UsbSerialLinkLike` shape — a pure

@@ -1,5 +1,18 @@
 ---
-status: pending
+status: in-progress
+sprint: 008
+tickets:
+- 007-001
+- 007-002
+- 007-003
+- 007-004
+- 008-001
+- 008-002
+- 008-003
+- 008-004
+- 008-005
+- 008-006
+- 008-007
 ---
 
 # robot-console — architecture and roadmap

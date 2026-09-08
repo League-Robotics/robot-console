@@ -237,6 +237,9 @@ import {
 } from "./devices.js";
 import { readSwdName, type SwdNameResult } from "./swdName.js";
 import { UsbSerialLink } from "./link/UsbSerialLink.js";
+import { RelayRadioLink } from "./link/RelayRadioLink.js";
+import { MbrelayLink } from "./link/MbrelayLink.js";
+import { MbserialLink } from "./link/MbserialLink.js";
 import type { Link, LinkFactory, LinkSpec } from "./link/Link.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
 import { resolveRelease, fetchAndVerifyHex } from "./releases.js";
@@ -269,14 +272,25 @@ function usbEndpointId(serialNumber: string): string {
 
 export type NameResolver = (device: DaplinkDevice) => Promise<SwdNameResult>;
 
-/** Real `Link` factory: builds a {@link UsbSerialLink} from a
- * {@link LinkSpec} (only the `"usb"` variant exists this sprint --
- * see `link/Link.ts`'s own doc comment). Tests substitute a fake
- * {@link LinkFactory} returning a fully synthetic {@link Link}, without
- * any real `serialport` I/O -- the ticket's own testing note asks for
- * exactly this. */
+/** Real `Link` factory: builds a {@link UsbSerialLink}, {@link
+ * RelayRadioLink}, {@link MbrelayLink}, or {@link MbserialLink} from a
+ * {@link LinkSpec}, dispatching on `spec.transport` (sprint 7 ticket 002
+ * adds the `"relay-radio"` branch, ticket 003 adds `"mbrelay"`, ticket
+ * 004 adds `"mbserial"` -- see `link/Link.ts`'s own doc comment). Tests
+ * substitute a fake {@link LinkFactory} returning a fully synthetic
+ * {@link Link}, without any real `serialport`/`net` I/O -- the ticket's
+ * own testing note asks for exactly this. */
 function defaultLinkFactory(spec: LinkSpec): Link {
-  return new UsbSerialLink(spec.portPath);
+  switch (spec.transport) {
+    case "usb":
+      return new UsbSerialLink(spec.portPath);
+    case "relay-radio":
+      return new RelayRadioLink(spec.portPath, spec.channel, spec.group);
+    case "mbrelay":
+      return new MbrelayLink(spec.host, spec.port, spec.channel, spec.group);
+    case "mbserial":
+      return new MbserialLink(spec.host, spec.port);
+  }
 }
 
 /** Default budget for a single post-flash reidentify attempt (ticket

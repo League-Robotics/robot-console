@@ -1,15 +1,15 @@
 ---
-id: 008
+id: 009
 title: Telemetry and trace
 status: roadmap
-branch: sprint/008-telemetry-and-trace
+branch: sprint/009-telemetry-and-trace
 use-cases: []
 issues:
 - robot-console-two-level-ui-and-multi-transport-roadmap.md
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
-# Sprint 008: Telemetry and trace
+# Sprint 009: Telemetry and trace
 
 ## Goals
 

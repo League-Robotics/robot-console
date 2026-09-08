@@ -1,7 +1,7 @@
 {
   "name": "robot-console",
   "private": true,
-  "version": "0.20260907.6",
+  "version": "0.20260908.1",
   "type": "module",
   "description": "GUI for managing micro:bit robots built on the Elecfreaks Nezha differential-drive board.",
   "bin": {

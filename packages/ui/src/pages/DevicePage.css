@@ -10,9 +10,3 @@
   color: var(--rc-text-muted);
   font-size: 0.95rem;
 }
-
-.device-page-back {
-  align-self: flex-start;
-  color: var(--rc-accent);
-  font-size: 0.9rem;
-}

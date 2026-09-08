@@ -9,9 +9,16 @@
  * navigation design and Step 6's router decision. `server.ts` already
  * serves `index.html` for any unmatched GET, so no host change is
  * needed for client-side routes to be bookmarkable/refreshable.
+ *
+ * Ticket 012-004 replaces the static `<h1>`-only header with the
+ * route-aware `AppHeader` (back-to-devices link + Flash menu, see its
+ * own doc comment), mounted here as a sibling of `<AppRoutes />` so it
+ * renders above every route, including states `<AppRoutes />` itself
+ * never reaches (e.g. an unmatched path).
  */
 import { BrowserRouter } from "react-router";
 import { WsProvider } from "./ws/WsProvider";
+import { AppHeader } from "./components/AppHeader";
 import { AppRoutes } from "./router";
 import "./App.css";
 
@@ -20,9 +27,7 @@ export function App() {
     <WsProvider>
       <BrowserRouter>
         <div className="app">
-          <header className="app-header">
-            <h1>robot-console</h1>
-          </header>
+          <AppHeader />
           <main className="app-main">
             <AppRoutes />
           </main>

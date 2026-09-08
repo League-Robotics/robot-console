@@ -18,12 +18,17 @@
  *    (`WsProvider`'s `hasSnapshot`, ticket 006) -- a bookmark opened
  *    before it arrives must not flash "not connected" for a device
  *    that is, in fact, attached.
- *  - `hasSnapshot && !endpoint` -> "This device isn't connected",
- *    with an explicit link back to `/`. Deliberately **not** an
- *    auto-redirect: yanking the student away mid-look is worse than a
- *    dead end with a way back (see `sprint.md`'s Scope boundary --
- *    the one exception, post-flash navigation, is `UnknownDevicePage`'s
- *    own call, not this module's).
+ *  - `hasSnapshot && !endpoint` -> "This device isn't connected".
+ *    Deliberately **not** an auto-redirect: yanking the student away
+ *    mid-look is worse than a dead end with a way back (see
+ *    `sprint.md`'s Scope boundary -- the one exception, post-flash
+ *    navigation, is `FlashControls`' own call (mounted from
+ *    `UnknownDevicePage`, and from `FrontPage.tsx`'s card, ticket
+ *    012-002), not this module's). The way back itself is no longer
+ *    rendered here -- ticket 012-004's route-aware `AppHeader` is now
+ *    the single source of the back-to-devices control for every
+ *    device-page state, this one included, so this branch renders
+ *    only its own status text.
  *  - `hasSnapshot && endpoint` -> dispatch to the matching per-type
  *    page below.
  *
@@ -32,7 +37,7 @@
  * student -- there is no effect here that reacts to `endpoint` going
  * from present to absent by navigating anywhere.
  */
-import { Link, useParams } from "react-router";
+import { useParams } from "react-router";
 import { useEndpoint, useHasSnapshot } from "../ws/WsProvider";
 import { UnknownDevicePage } from "./UnknownDevicePage";
 import { RelayPage } from "./RelayPage";
@@ -60,9 +65,6 @@ export function DevicePage() {
         <p className="device-page-status" role="status">
           This device isn't connected.
         </p>
-        <Link to="/" className="device-page-back">
-          Back to devices
-        </Link>
       </section>
     );
   }

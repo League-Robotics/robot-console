@@ -13,19 +13,24 @@
  * serial port, linked pill) via the shared `nameDisplay`/`roleDisplay`
  * helpers (`../deviceDisplay.ts`) -- this is a presentation move, not a
  * redesign of what's shown. What's dropped: the inline
- * Connect/Disconnect and flash-firmware controls `DeviceCard` owned
- * before this sprint. Flash moved to the per-device page
- * (`UnknownDevicePage.tsx`, ticket 008); a manual Connect/Disconnect
- * did **not** move anywhere -- `deviceRegistry.ts` already opens a
- * session automatically on attach (`resolveNameAndOpen`), and
- * `DeviceConsole`'s "open a link" hint (ticket 008) covers the one
- * remaining case that matters, reopening a session that failed to
- * identify, right where the student is already looking to send a
- * line. This component takes no `onOpen`/`onClose`/`onFlash` callbacks
- * because the front page never performed those actions directly
- * itself (`DeviceCard` did). The old `DevicesTab.tsx`/`ConsoleTab.tsx`
- * components ticket 008 redistributed from are deleted, not kept
- * around unrouted.
+ * Connect/Disconnect control `DeviceCard` owned before sprint 004. A
+ * manual Connect/Disconnect did **not** move anywhere -- `deviceRegistry.ts`
+ * already opens a session automatically on attach
+ * (`resolveNameAndOpen`), and `DeviceConsole`'s "open a link" hint
+ * (ticket 008) covers the one remaining case that matters, reopening a
+ * session that failed to identify, right where the student is already
+ * looking to send a line. Flash controls, by contrast, moved to the
+ * per-device page in sprint 004 and then back here (ticket 012-002):
+ * `EndpointCard` renders the shared `FlashControls` (`../components/
+ * FlashControls.tsx`) for a `canBeFlashed` device, as a sibling of the
+ * card's `Link` rather than nested inside it -- an interactive element
+ * inside an `<a>` is invalid markup that would fight the router's click
+ * handling, so the `Link` wraps only the informational region and the
+ * action row sits beside it, inside the `<li>`. This component takes no
+ * `onOpen`/`onClose` callbacks because the front page never performed
+ * those actions directly itself (`DeviceCard` did). The old
+ * `DevicesTab.tsx`/`ConsoleTab.tsx` components ticket 008 redistributed
+ * from are deleted, not kept around unrouted.
  *
  * Split into a connected `FrontPage` (reads `WsProvider`'s selectors)
  * and a presentational `EndpointsList`/`EndpointCard`, mirroring the
@@ -52,7 +57,8 @@ import { Link } from "react-router";
 import type { EndpointListEntry, RememberedRobotEntry } from "@robot-console/host/src/wsMessages.js";
 import type { ConnectionStatus } from "../ws/WsProvider";
 import { useConnectionStatus, useEndpoints, useRememberedRobots, useWsActions } from "../ws/WsProvider";
-import { nameDisplay, roleDisplay } from "../deviceDisplay";
+import { canBeFlashed, nameDisplay, roleDisplay } from "../deviceDisplay";
+import { FlashControls } from "../components/FlashControls";
 import "./FrontPage.css";
 
 export function FrontPage() {
@@ -116,51 +122,63 @@ export function EndpointsList({
   );
 }
 
-/** One endpoint's card -- the whole card is a `Link` to its device
- * page, per the "an arrow on the box, or maybe you just click the
- * box" stakeholder note (`sprint.md`'s SUC-001): the student can click
- * anywhere on it, not just a small affordance inside it. */
+/** One endpoint's card -- the informational region is a `Link` to its
+ * device page, per the "an arrow on the box, or maybe you just click
+ * the box" stakeholder note (`sprint.md`'s SUC-001): the student can
+ * click anywhere in that region, not just a small affordance inside
+ * it. A flash action row (ticket 012-002) is a sibling of the `Link`,
+ * inside the same `<li>` -- not nested inside the `<a>`, which would
+ * put a `<button>`/`<input>` inside an anchor (invalid HTML that would
+ * also fight the router's own click handling). */
 function EndpointCard({ device }: { device: EndpointListEntry }) {
   const name = nameDisplay(device);
   const role = roleDisplay(device);
 
   return (
-    <Link
-      to={`/d/${device.endpointId}`}
-      className="device-card"
-      data-testid={`device-${device.endpointId}`}
-    >
-      <div className="device-card-header">
-        <h3 className={name.flagged ? "device-name device-name-flagged" : "device-name"}>
-          {name.text}
-        </h3>
-        {name.flagged && <span className="device-flag">Unnamed / naming failed</span>}
-        {device.sessionOpen && <span className="device-linked-pill">Linked</span>}
-      </div>
+    <>
+      <Link
+        to={`/d/${device.endpointId}`}
+        className="device-card"
+        data-testid={`device-${device.endpointId}`}
+      >
+        <div className="device-card-header">
+          <h3 className={name.flagged ? "device-name device-name-flagged" : "device-name"}>
+            {name.text}
+          </h3>
+          {name.flagged && <span className="device-flag">Unnamed / naming failed</span>}
+          {device.sessionOpen && <span className="device-linked-pill">Linked</span>}
+        </div>
 
-      {name.flagged && device.nameError && (
-        <p className="device-note">{device.nameError.message}</p>
+        {name.flagged && device.nameError && (
+          <p className="device-note">{device.nameError.message}</p>
+        )}
+
+        <dl className="device-fields">
+          <div>
+            <dt>Role</dt>
+            <dd>{role}</dd>
+          </div>
+          <div>
+            <dt>Port</dt>
+            <dd>{device.usb?.port ?? "No serial port"}</dd>
+          </div>
+          <div>
+            <dt>Device ID</dt>
+            <dd title={device.usb?.serialNumber}>{device.usb?.displaySerial}</dd>
+          </div>
+        </dl>
+
+        {device.sessionError && (
+          <p className="device-note">Link attempt: {device.sessionError}</p>
+        )}
+      </Link>
+
+      {canBeFlashed(device) && (
+        <div className="device-card-actions" data-testid={`device-actions-${device.endpointId}`}>
+          <FlashControls endpoint={device} />
+        </div>
       )}
-
-      <dl className="device-fields">
-        <div>
-          <dt>Role</dt>
-          <dd>{role}</dd>
-        </div>
-        <div>
-          <dt>Port</dt>
-          <dd>{device.usb?.port ?? "No serial port"}</dd>
-        </div>
-        <div>
-          <dt>Device ID</dt>
-          <dd title={device.usb?.serialNumber}>{device.usb?.displaySerial}</dd>
-        </div>
-      </dl>
-
-      {device.sessionError && (
-        <p className="device-note">Link attempt: {device.sessionError}</p>
-      )}
-    </Link>
+    </>
   );
 }
 

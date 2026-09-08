@@ -1,47 +1,73 @@
 /**
  * RobotPage.tsx — `/d/:endpointId` for a `robot`-classified endpoint
- * (SUC-001, SUC-003, SUC-004, SUC-006).
+ * (SUC-001, SUC-003, SUC-004, SUC-006, SUC-007).
  *
- * Sprint 4 shipped a placeholder shell here ("drive controls and live
- * telemetry aren't built yet"). This ticket (006/005) replaces it with
- * the real control surface: `DriveControls` (`WHEELS_V`-only, per
- * `vendor/radio-robot-lib/docs/design/motion-api.md` — see that
- * component's own doc comment for why), `StatusPanel` (unsequenced
- * `STATUS`), `GetSetPanel` (raw `GET`/`SET`, no named presets — no
- * config field table exists to build one from), and
- * `SequencingIndicator` (read-only view of `Session`'s reliability
- * state, unit-tested since sprint 1 but never before wired to a UI).
- * `DeviceConsole` stays embedded exactly as sprint 4 left it — this
- * ticket adds structured controls above it, it does not replace the
- * raw line console.
+ * Sprint 4 shipped a placeholder shell here. Sprint 006 stacked
+ * `EstopControl`, `SequencingIndicator`, `DriveControls`, and two other
+ * now-retired panels (a status-request button and a raw Get/Set form)
+ * alongside `DeviceConsole` into one `max-width: 46rem` column -- three
+ * of those (the two retired panels and `DeviceConsole` itself) rendered
+ * separate response areas reading the same underlying rx log, producing
+ * a "two consoles" effect a stakeholder reported hands-on, and the
+ * retired Get/Set panel had a real bug on top of that: its `-1` initial
+ * reply watermark matched the endpoint's *entire* rx history before
+ * anything was ever sent. Sprint 012's ticket 005 (this revision)
+ * replaces that layout:
  *
- * `EstopControl` (ticket 006) is mounted here unconditionally, directly
- * under the header and above every other panel — not nested inside
- * `DriveControls` or any panel that could hide it. It renders
- * regardless of which panel below it is open or mid-interaction, and
- * its own CSS keeps it pinned to the top of the viewport as the page
- * scrolls, so it stays visible even once `DeviceConsole`'s log has
- * grown past a screenful. See `EstopControl.tsx`'s own doc comment for
- * why sending it is never gated on `sequencing`/pending state, and why
- * "a real robot stops" is a hardware-deferred claim its tests do not
- * make.
+ * - **Left column**: `DriveControls` (unchanged, `WHEELS_V`-only per
+ *   `vendor/radio-robot-lib/docs/design/motion-api.md`),
+ *   `SequencingIndicator` (unchanged, read-only view of `Session`'s
+ *   reliability state), and a stubbed, empty charts placeholder --
+ *   charts themselves are future work (`sprint.md`'s Scope), this
+ *   column only reserves and labels their eventual spot.
+ * - **Right column**: exactly one `DeviceConsole`, sized to fill the
+ *   column's available height (`RobotPage.css` overrides
+ *   `DeviceConsole`'s own fixed `max-height` scoped to this column
+ *   only -- every other page embedding `DeviceConsole` is unaffected),
+ *   with `CommandStrip` beneath it. `CommandStrip` offers
+ *   HELLO/ID/VER/STATUS (unsequenced, dispatched via plain
+ *   `sendCommand`) and a free-text GET/SET pair (sequenced, dispatched
+ *   the same way the retired Get/Set panel did). **No panel renders a
+ *   reply area of its own** -- every reply, including `HELLO`'s
+ *   host-side refusal (`deviceRegistry.ts:945-951`, surfaced via ticket
+ *   012-003's error-routing into this same log), lands in this one
+ *   `DeviceConsole`.
+ * - Sprint 006's separate status-request panel and Get/Set panel, along
+ *   with their separate reply areas, are retired outright (deleted, not
+ *   deprecated -- both are fully superseded by `CommandStrip` + the
+ *   unified console).
+ *
+ * **`EstopControl` is mounted here unconditionally, directly under the
+ * page's `h2`, and -- critically -- as a sibling of the two-column grid
+ * below, not nested inside either column.** This is structural, not
+ * cosmetic: `EstopControl.css` pins it via
+ * `position: sticky; top: 0`, which depends on the *document* being its
+ * nearest scrolling ancestor (per that file's own doc comment). The
+ * right column now scrolls independently to hold `DeviceConsole` to a
+ * bounded height (see `RobotPage.css`) -- if `EstopControl` were nested
+ * inside that column, its nearest scrolling ancestor would silently
+ * become the column instead of the document, breaking the sticky
+ * pinning sprint 006 built this control to have. Keeping it a sibling
+ * of `.robot-page-columns` (never a descendant of either column's own
+ * scroll container) is what keeps `EstopControl.css` needing no change
+ * at all, and is asserted structurally, not just visually, by
+ * `RobotPage.test.tsx`.
  *
  * **Transport-blindness is load-bearing, not incidental**: this page
  * and every component it mounts render off `WsProvider`'s hooks/
  * actions only — never a transport-specific link type, a hardcoded
  * transport-kind string, or the endpoint's own transport field.
  * `RobotPage.transportBlind.test.ts` enforces this with a source scan
- * over this file and its ticket-005 children rather than leaving it to
- * review alone, because sprint 7's "same page, no rewrite" claim for a
+ * over this file and its children rather than leaving it to review
+ * alone, because sprint 7's "same page, no rewrite" claim for a
  * relay-connected robot depends entirely on this property holding.
  */
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import { CommandStrip } from "../components/CommandStrip";
 import { DeviceConsole } from "../components/DeviceConsole";
 import { DriveControls } from "../components/DriveControls";
 import { EstopControl } from "../components/EstopControl";
-import { GetSetPanel } from "../components/GetSetPanel";
 import { SequencingIndicator } from "../components/SequencingIndicator";
-import { StatusPanel } from "../components/StatusPanel";
 import "./RobotPage.css";
 
 export interface RobotPageProps {
@@ -55,25 +81,30 @@ export function RobotPage({ endpoint }: RobotPageProps) {
 
       <EstopControl device={endpoint} />
 
-      <SequencingIndicator endpointId={endpoint.endpointId} />
+      <div className="robot-page-columns">
+        <div className="robot-page-column robot-page-column-left">
+          <div className="robot-page-panel">
+            <h3>Drive</h3>
+            <DriveControls device={endpoint} />
+          </div>
 
-      <div className="robot-page-panel">
-        <h3>Drive</h3>
-        <DriveControls device={endpoint} />
-      </div>
+          <div className="robot-page-panel">
+            <h3>Sequencing</h3>
+            <SequencingIndicator endpointId={endpoint.endpointId} />
+          </div>
 
-      <div className="robot-page-panel">
-        <h3>Status</h3>
-        <StatusPanel device={endpoint} />
-      </div>
+          <div className="robot-page-panel robot-page-charts-placeholder" aria-label="Charts">
+            <h3>Charts</h3>
+            <p className="robot-page-charts-placeholder-text">
+              Telemetry charts are not built yet -- this space is reserved for a future sprint.
+            </p>
+          </div>
+        </div>
 
-      <div className="robot-page-panel">
-        <h3>Get / Set</h3>
-        <GetSetPanel device={endpoint} />
-      </div>
-
-      <div className="robot-page-panel">
-        <DeviceConsole device={endpoint} />
+        <div className="robot-page-column robot-page-column-right">
+          <DeviceConsole device={endpoint} />
+          <CommandStrip device={endpoint} />
+        </div>
       </div>
     </section>
   );

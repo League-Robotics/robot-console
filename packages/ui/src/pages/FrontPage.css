@@ -123,6 +123,14 @@
   color: var(--rc-text-muted);
 }
 
+/* Sibling of the card's `<a>` (ticket 012-002), not nested inside it --
+   `FlashControls` renders `null` for a non-flashable device, so this
+   wrapper only ever appears with content in it; no border/background
+   of its own so an already-identified card looks exactly as before. */
+.device-card-actions {
+  margin-top: 0.6rem;
+}
+
 /* Remembered-robot roster (sprint 5) -- visually secondary to the
    attached-endpoint list above it: muted, no hover/focus affordance
    (there is nothing to navigate to), so it never reads as a clickable

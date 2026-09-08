@@ -50,15 +50,19 @@ export function roleDisplay(device: EndpointListEntry): string {
   return "No role announced";
 }
 
-/** Whether a device has been auto-probed and failed to identify --
- * exactly the state UC-001's error flow leaves it in (a `HELLO` reply
- * never arrived), and the only state that gets a recovery path (the
- * flash controls on `UnknownDevicePage`). Per the sprint architecture:
- * `role === null && sessionError !== undefined` only -- never an
- * unprobed device (no `sessionError`, no `role`) and never one that
- * identified successfully (`role` set). */
-export function isFailedIdentify(device: EndpointListEntry): boolean {
-  return device.role === null && device.sessionError !== undefined;
+/** Whether a device is eligible for the flash controls on
+ * `UnknownDevicePage` -- any device that hasn't identified with a role
+ * yet, regardless of whether it announced an explicit `sessionError`.
+ * This deliberately covers both the "auto-probed and failed to
+ * identify" case (UC-001's error flow: a `HELLO` reply never arrived,
+ * `sessionError` set) *and* the common, unalarming "silent, unflashed
+ * board" case -- a session that opened fine and whose `identify()`
+ * simply resolved `null` without ever setting `sessionError`. Both are
+ * boards a student needs to be able to flash from this page, so both
+ * get the recovery path. Only a device that has identified successfully
+ * (`role` set) is excluded. */
+export function canBeFlashed(device: EndpointListEntry): boolean {
+  return device.role === null;
 }
 
 /** Turn one firmware's live availability into either `null` (button

@@ -137,22 +137,32 @@ describe("EndpointsList", () => {
     expect(text).toContain("0002");
   });
 
+  // `role: null` makes this device `canBeFlashed`, so its card now
+  // mounts `FlashControls` (ticket 012-002), which reads `WsProvider`'s
+  // hooks -- unlike every other `EndpointsList`-only test in this
+  // block, this fixture needs a real provider around it.
   it("flags a device that failed SWD naming as unnamed/error, not omitted", () => {
+    let socket: FakeSocket | null = null;
     const el = mount(
       withRouter(
-        <EndpointsList
-          status="open"
-          devices={[
-            baseDevice({
-              id: "SERIAL-B",
-              name: null,
-              role: null,
-              nameError: { reason: "swd-attach-failed", message: "could not attach over SWD" },
-            }),
-          ]}
-        />,
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <EndpointsList
+            status="open"
+            devices={[
+              baseDevice({
+                id: "SERIAL-B",
+                name: null,
+                role: null,
+                nameError: { reason: "swd-attach-failed", message: "could not attach over SWD" },
+              }),
+            ]}
+          />
+        </WsProvider>,
       ),
     );
+    act(() => {
+      socket!.emitOpen();
+    });
 
     const text = el.textContent ?? "";
     expect(text).toContain("Unnamed device");
@@ -160,22 +170,29 @@ describe("EndpointsList", () => {
     expect(el.querySelector('[data-testid="device-usb-SERIAL-B"]')).not.toBeNull();
   });
 
+  // Same `role: null` / `WsProvider` note as above.
   it("shows a device that never replied to HELLO as unresponsive, not assigned a role", () => {
+    let socket: FakeSocket | null = null;
     const el = mount(
       withRouter(
-        <EndpointsList
-          status="open"
-          devices={[
-            baseDevice({
-              id: "SERIAL-C",
-              role: null,
-              linkOpen: false,
-              linkError: "HELLO reply timed out after 2000ms",
-            }),
-          ]}
-        />,
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <EndpointsList
+            status="open"
+            devices={[
+              baseDevice({
+                id: "SERIAL-C",
+                role: null,
+                linkOpen: false,
+                linkError: "HELLO reply timed out after 2000ms",
+              }),
+            ]}
+          />
+        </WsProvider>,
       ),
     );
+    act(() => {
+      socket!.emitOpen();
+    });
 
     const text = el.textContent ?? "";
     expect(text).toContain("Unresponsive");
@@ -248,6 +265,105 @@ describe("FrontPage navigation", () => {
     // 008 replaced ticket 007's "Device found: ..." placeholder with the
     // real per-type page content, so this now lands on `RobotPage`.
     expect(el.textContent).toContain("kivon");
+  });
+});
+
+describe("EndpointCard flash affordance (ticket 012-002)", () => {
+  const FIRMWARE_STATUS_FIXTURE = {
+    relay: { configured: true as const, repoUrl: "https://example.test/relay", tag: "v1", available: true },
+    robot: { configured: true as const, repoUrl: "https://example.test/robot", tag: "v1", available: true },
+  };
+
+  function mountFrontPage(device: EndpointListEntry): { el: HTMLDivElement; socket: () => FakeSocket } {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <AppRoutes />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage({
+        type: "endpoints",
+        endpoints: [device],
+        firmwareStatus: FIRMWARE_STATUS_FIXTURE,
+      });
+    });
+    return { el, socket: () => socket! };
+  }
+
+  it("shows FlashControls, as a sibling of the card's Link, for a canBeFlashed device", () => {
+    const device = baseDevice({ id: "SERIAL-FLASH", role: null });
+    const { el } = mountFrontPage(device);
+
+    const card = el.querySelector('[data-testid="device-usb-SERIAL-FLASH"]');
+    const actions = el.querySelector('[data-testid="device-actions-usb-SERIAL-FLASH"]');
+    expect(card).not.toBeNull();
+    expect(actions).not.toBeNull();
+    // Siblings inside the same `<li>`, not one nested inside the other.
+    expect(actions?.parentElement).toBe(card?.parentElement);
+    expect(actions?.contains(card)).toBe(false);
+    expect(card?.contains(actions)).toBe(false);
+    expect(actions?.textContent).toContain("Flash relay firmware");
+  });
+
+  it("shows no flash action row for an identified (not canBeFlashed) device -- no visual regression", () => {
+    const device = baseDevice({ id: "SERIAL-IDENT" }); // default role "NEZHA2"
+    const { el } = mountFrontPage(device);
+
+    expect(el.querySelector('[data-testid="device-actions-usb-SERIAL-IDENT"]')).toBeNull();
+    expect(el.textContent).not.toContain("Flash relay firmware");
+    expect(el.textContent).not.toContain("Flash robot firmware");
+  });
+
+  it("the card's <a> contains no <button>/<input> descendant (invalid-nesting regression)", () => {
+    const device = baseDevice({ id: "SERIAL-NEST", role: null });
+    const { el } = mountFrontPage(device);
+
+    const link = el.querySelector('[data-testid="device-usb-SERIAL-NEST"]');
+    expect(link?.tagName).toBe("A");
+    expect(link?.querySelector("button")).toBeNull();
+    expect(link?.querySelector("input")).toBeNull();
+  });
+
+  it("clicking the informational region still navigates to /d/:endpointId on a flash-eligible card", () => {
+    const device = baseDevice({ id: "SERIAL-NAV2", role: null, name: "kivon" });
+    const { el } = mountFrontPage(device);
+
+    const nameHeading = el.querySelector('[data-testid="device-usb-SERIAL-NAV2"] .device-name');
+    expect(nameHeading).not.toBeNull();
+    act(() => {
+      nameHeading!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+
+    expect(el.querySelector('[data-testid="location"]')?.textContent).toBe("/d/usb-SERIAL-NAV2");
+  });
+
+  it("clicking a flash button in the action row sends flash-start without navigating away", () => {
+    const device = baseDevice({ id: "SERIAL-NONAV", role: null });
+    const { el, socket } = mountFrontPage(device);
+
+    const actions = el.querySelector('[data-testid="device-actions-usb-SERIAL-NONAV"]');
+    const relayButton = Array.from(actions?.querySelectorAll("button") ?? []).find(
+      (b) => b.textContent === "Flash relay firmware",
+    );
+    expect(relayButton).toBeDefined();
+    act(() => {
+      relayButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(el.querySelector('[data-testid="location"]')?.textContent).toBe("/");
+    expect(socket().sent).toEqual([
+      JSON.stringify({
+        type: "flash-start",
+        endpointId: "usb-SERIAL-NONAV",
+        source: { kind: "release", firmware: "relay" },
+      }),
+    ]);
   });
 });
 

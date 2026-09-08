@@ -4,20 +4,8 @@
   flex-direction: column;
 }
 
-.app-header {
-  display: flex;
-  align-items: center;
-  gap: 1.5rem;
-  padding: 0.75rem 1.25rem;
-  border-bottom: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-}
-
-.app-header h1 {
-  font-size: 1.05rem;
-  font-weight: 600;
-  margin: 0;
-}
+/* .app-header* rules moved to components/AppHeader.css (ticket
+   012-004) -- AppHeader.tsx is now the sole owner of that markup. */
 
 .app-main {
   flex: 1;

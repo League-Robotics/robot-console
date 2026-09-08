@@ -542,6 +542,105 @@ describe("sendCommand", () => {
   });
 });
 
+describe("host error messages (ticket 012-003)", () => {
+  it("appends a type: 'error' message with an endpointId to that endpoint's log, not any other endpoint's", () => {
+    const logsA: LogEntry[][] = [];
+    const logsB: LogEntry[][] = [];
+
+    function ProbeA() {
+      logsA.push(useEndpointLog("usb-A"));
+      return null;
+    }
+    function ProbeB() {
+      logsB.push(useEndpointLog("usb-B"));
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(
+      <>
+        <ProbeA />
+        <ProbeB />
+      </>,
+    );
+
+    act(() => {
+      getSocket().emitMessage({ type: "error", endpointId: "usb-A", message: "device usb-A has no open link" });
+    });
+
+    const finalA = logsA[logsA.length - 1]!;
+    const finalB = logsB[logsB.length - 1]!;
+    expect(finalA).toHaveLength(1);
+    expect(finalA[0]).toMatchObject({
+      direction: "rx",
+      line: "device usb-A has no open link",
+      origin: "host",
+    });
+    // The other endpoint's log is untouched -- this is not a global
+    // error banner.
+    expect(finalB).toEqual([]);
+  });
+
+  it("drops a type: 'error' message with no endpointId rather than attaching it to any endpoint's log", () => {
+    const logsA: LogEntry[][] = [];
+
+    function ProbeA() {
+      logsA.push(useEndpointLog("usb-A"));
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<ProbeA />);
+
+    act(() => {
+      getSocket().emitMessage({ type: "error", message: "malformed message" });
+    });
+
+    // No endpoint to attach it to, and this store has no global banner
+    // surface -- see `appendHostError`'s own doc comment. Nothing
+    // appended, and no crash.
+    expect(logsA[logsA.length - 1]).toEqual([]);
+  });
+
+  it("routes the host's live-HELLO refusal into the endpoint's log via sendCommand end-to-end -- the scenario ticket 005's Hello button depends on", () => {
+    let actions: ReturnType<typeof useWsActions> | undefined;
+    const logs: LogEntry[][] = [];
+
+    function Probe() {
+      actions = useWsActions();
+      logs.push(useEndpointLog("usb-SERIAL-A"));
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+
+    act(() => {
+      actions!.sendCommand("usb-SERIAL-A", "HELLO");
+    });
+    // The client-side send always goes out -- deviceRegistry.ts is the
+    // one place that refuses it, not this module.
+    expect(JSON.parse(getSocket().sent[0]!)).toEqual({
+      type: "send-command",
+      endpointId: "usb-SERIAL-A",
+      verb: "HELLO",
+    });
+
+    // The host's actual reply, mirroring deviceRegistry.ts's sendCommand
+    // HELLO guard verbatim (see that method's own doc comment) -- pins
+    // the concrete bug this ticket exists to fix: before this ticket,
+    // this message was dropped and the Hello button would appear to do
+    // nothing.
+    const refusal =
+      '"HELLO" cannot be sent as a live command -- it resets the robot\'s sequence state ' +
+      "(protocol.md S8.3); close and reopen the session instead of resending HELLO";
+    act(() => {
+      getSocket().emitMessage({ type: "error", endpointId: "usb-SERIAL-A", message: refusal });
+    });
+
+    const finalLog = logs[logs.length - 1]!;
+    expect(finalLog).toHaveLength(1);
+    expect(finalLog[0]).toMatchObject({ direction: "rx", line: refusal, origin: "host" });
+  });
+});
+
 describe("useSequencing", () => {
   it("is undefined before any snapshot, and reflects the endpoint's sequencing field once one arrives", () => {
     const values: Array<ReturnType<typeof useSequencing>> = [];

@@ -22,7 +22,7 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import type { EndpointListEntry, RememberedRobotEntry } from "@robot-console/host/src/wsMessages.js";
 import { FakeSocket } from "../testing/FakeSocket";
 import {
   MAX_LINES_PER_DEVICE,
@@ -32,6 +32,7 @@ import {
   useEndpointLog,
   useFlashProgress,
   useHasSnapshot,
+  useRememberedRobots,
   type LogEntry,
 } from "./WsProvider";
 
@@ -83,6 +84,17 @@ const NO_FIRMWARE_STATUS = {
   relay: { configured: false as const },
   robot: { configured: false as const },
 };
+
+function rememberedRobotFixture(name: string, overrides: Partial<RememberedRobotEntry> = {}): RememberedRobotEntry {
+  return {
+    name,
+    lastSeenAt: "2026-01-01T00:00:00.000Z",
+    lastSeenVia: "usb",
+    lastRole: overrides.lastRole ?? null,
+    lastUsbSerial: overrides.lastUsbSerial ?? `${name}-SERIAL`,
+    ...overrides,
+  };
+}
 
 function mountWithSocket(children: ReactElement): { el: HTMLDivElement; getSocket: () => FakeSocket } {
   let socket: FakeSocket | null = null;
@@ -377,5 +389,79 @@ describe("useFlashProgress", () => {
       source: { kind: "local-hex", uploadId: "u1", fileName: "custom.hex", sha256: "abc" },
       phase: "erasing",
     });
+  });
+});
+
+describe("useRememberedRobots", () => {
+  it("is [] before any endpoints message, and the parsed rememberedRobots array after one", () => {
+    const values: RememberedRobotEntry[][] = [];
+
+    function Probe() {
+      values.push(useRememberedRobots());
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+    expect(values[values.length - 1]).toEqual([]);
+
+    const roster = [rememberedRobotFixture("alpha"), rememberedRobotFixture("bravo")];
+    act(() => {
+      getSocket().emitMessage({
+        type: "endpoints",
+        endpoints: [],
+        firmwareStatus: NO_FIRMWARE_STATUS,
+        rememberedRobots: roster,
+      });
+    });
+    expect(values[values.length - 1]).toEqual(roster);
+  });
+
+  it("stays at the [] default (never undefined) when the very first endpoints message omits rememberedRobots", () => {
+    const values: RememberedRobotEntry[][] = [];
+
+    function Probe() {
+      values.push(useRememberedRobots());
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+    act(() => {
+      getSocket().emitMessage({ type: "endpoints", endpoints: [], firmwareStatus: NO_FIRMWARE_STATUS });
+    });
+    expect(values[values.length - 1]).toEqual([]);
+  });
+
+  it("keeps the previous value when a later endpoints message omits rememberedRobots entirely (an old-shaped host)", () => {
+    const values: RememberedRobotEntry[][] = [];
+
+    function Probe() {
+      values.push(useRememberedRobots());
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+
+    const roster = [rememberedRobotFixture("alpha")];
+    act(() => {
+      getSocket().emitMessage({
+        type: "endpoints",
+        endpoints: [],
+        firmwareStatus: NO_FIRMWARE_STATUS,
+        rememberedRobots: roster,
+      });
+    });
+    expect(values[values.length - 1]).toEqual(roster);
+
+    // Simulate an old host (or a bare test fixture) that never sends
+    // this field at all -- must not clobber the previous value with
+    // `undefined`, and must not throw.
+    act(() => {
+      getSocket().emitMessage({
+        type: "endpoints",
+        endpoints: [],
+        firmwareStatus: NO_FIRMWARE_STATUS,
+      });
+    });
+    expect(values[values.length - 1]).toEqual(roster);
   });
 });

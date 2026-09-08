@@ -31,26 +31,62 @@
  * and a presentational `EndpointsList`/`EndpointCard`, mirroring the
  * old Devices tab's own split, so the list states can be exercised
  * directly in tests against plain `EndpointListEntry` fixtures.
+ *
+ * **Sprint 5's remembered-robot roster:** a second, visually secondary
+ * section, `RememberedRobotsSection`, rendered below the attached-
+ * endpoint list -- robots this host has seen over USB before but are
+ * not plugged in right now (the host already excludes currently-
+ * attached names from `rememberedRobots`, so this component never
+ * filters against `devices` itself). Per `sprint.md`'s Design
+ * Rationale, a remembered robot is deliberately **not** a
+ * `react-router` `Link` and not wrapped in one -- there is nothing to
+ * navigate to this sprint (no endpoint, no session, no `/d/:endpointId`
+ * route that would resolve), so it renders as plain, muted text with a
+ * "Forget" button instead of a dead-ending link. Only rendered when
+ * `rememberedRobots.length > 0`; the existing "No devices detected
+ * yet" copy already covers the whole-page-empty case, and this sprint
+ * deliberately ships no separate empty-state copy for an empty roster
+ * (see the ticket).
  */
 import { Link } from "react-router";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import type { EndpointListEntry, RememberedRobotEntry } from "@robot-console/host/src/wsMessages.js";
 import type { ConnectionStatus } from "../ws/WsProvider";
-import { useConnectionStatus, useEndpoints } from "../ws/WsProvider";
+import { useConnectionStatus, useEndpoints, useRememberedRobots, useWsActions } from "../ws/WsProvider";
 import { nameDisplay, roleDisplay } from "../deviceDisplay";
 import "./FrontPage.css";
 
 export function FrontPage() {
   const status = useConnectionStatus();
   const devices = useEndpoints();
-  return <EndpointsList status={status} devices={devices} />;
+  const rememberedRobots = useRememberedRobots();
+  const { send } = useWsActions();
+  return (
+    <EndpointsList
+      status={status}
+      devices={devices}
+      rememberedRobots={rememberedRobots}
+      onForgetRememberedRobot={(name) => send({ type: "forget-known-robot", name })}
+    />
+  );
 }
 
 export interface EndpointsListProps {
   status: ConnectionStatus;
   devices: EndpointListEntry[];
+  /** Defaults to `[]` so existing call sites (and tests) that don't
+   * care about the remembered-robot roster don't have to pass it. */
+  rememberedRobots?: RememberedRobotEntry[];
+  /** Defaults to a no-op so `rememberedRobots`-less call sites never
+   * need to pass a handler that will never fire. */
+  onForgetRememberedRobot?: (name: string) => void;
 }
 
-export function EndpointsList({ status, devices }: EndpointsListProps) {
+export function EndpointsList({
+  status,
+  devices,
+  rememberedRobots = [],
+  onForgetRememberedRobot = () => {},
+}: EndpointsListProps) {
   return (
     <section className="front-page" aria-label="Devices">
       {status !== "open" && (
@@ -72,6 +108,9 @@ export function EndpointsList({ status, devices }: EndpointsListProps) {
             </li>
           ))}
         </ul>
+      )}
+      {rememberedRobots.length > 0 && (
+        <RememberedRobotsSection robots={rememberedRobots} onForget={onForgetRememberedRobot} />
       )}
     </section>
   );
@@ -122,5 +161,65 @@ function EndpointCard({ device }: { device: EndpointListEntry }) {
         <p className="device-note">Link attempt: {device.sessionError}</p>
       )}
     </Link>
+  );
+}
+
+/** The remembered-robot roster, rendered only when non-empty (see this
+ * module's doc comment). Visually secondary to the attached-endpoint
+ * list above it -- muted text, no `Link`, a plain "Forget" button --
+ * since these are robots that are not reachable right now, only
+ * remembered by name for later. */
+function RememberedRobotsSection({
+  robots,
+  onForget,
+}: {
+  robots: RememberedRobotEntry[];
+  onForget: (name: string) => void;
+}) {
+  return (
+    <section className="remembered-robots" aria-label="Remembered robots">
+      <h2 className="remembered-robots-heading">Robots remembered from before</h2>
+      <p className="remembered-robots-hint">
+        These are robots this computer has seen plugged in before. They
+        aren&apos;t plugged in right now, but their names are remembered so
+        you can reach them again later, over a relay or the network.
+      </p>
+      <ul className="remembered-robots-list">
+        {robots.map((robot) => (
+          <li key={robot.name}>
+            <RememberedRobotCard robot={robot} onForget={onForget} />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** One remembered robot -- name, when it was last seen, and a "Forget"
+ * button. Deliberately plain markup, not a `Link`: there is nothing to
+ * navigate to (see this module's doc comment). */
+function RememberedRobotCard({
+  robot,
+  onForget,
+}: {
+  robot: RememberedRobotEntry;
+  onForget: (name: string) => void;
+}) {
+  return (
+    <div className="remembered-robot-card" data-testid={`remembered-robot-${robot.name}`}>
+      <div className="remembered-robot-header">
+        <h3 className="remembered-robot-name">{robot.name}</h3>
+      </div>
+      <p className="remembered-robot-note">
+        Last seen {new Date(robot.lastSeenAt).toLocaleString()}
+      </p>
+      <button
+        type="button"
+        className="remembered-robot-forget"
+        onClick={() => onForget(robot.name)}
+      >
+        Forget
+      </button>
+    </div>
   );
 }

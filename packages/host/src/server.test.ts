@@ -9,6 +9,7 @@ import type { FirmwareConfigMap, FirmwareSource } from "./config.js";
 import { LocalHexUploadManager } from "./localHexUpload.js";
 import { FirmwareAvailabilityCache, type ResolvedRelease } from "./releases.js";
 import { startServer, type RunningServer } from "./server.js";
+import { KnownRobotsStore, type KnownRobotRecord } from "./store/knownRobots.js";
 import { UPLOAD_ID_BYTE_LENGTH, type FlashPhase, type ServerMessage } from "./wsMessages.js";
 
 // Per the ticket's Testing section: a full end-to-end WebSocket round
@@ -110,6 +111,47 @@ class FakeLink implements Link {
   }
 }
 
+/** A fixture {@link KnownRobotRecord}, following this file's own
+ * `device()`/`banner()` "sensible defaults, override what a test cares
+ * about" pattern. `name` deliberately differs from `banner()`'s
+ * "zeguz" -- a remembered-robot fixture and the live-attached device in
+ * these tests must never collide, since `DeviceRegistry.rememberedRobots()`
+ * (ticket 003) excludes whatever is currently attached. */
+function knownRobotRecord(overrides: Partial<KnownRobotRecord> = {}): KnownRobotRecord {
+  return {
+    name: "kwazi",
+    firstSeenAt: "2024-01-01T00:00:00.000Z",
+    lastSeenAt: "2024-01-01T00:00:00.000Z",
+    lastSeenVia: "usb",
+    lastUsbSerial: "SERIAL-REMEMBERED",
+    lastRole: "NEZHA2",
+    lastType: "robot",
+    ...overrides,
+  };
+}
+
+/** An in-memory fake {@link KnownRobotsStore}, mirroring
+ * `deviceRegistry.test.ts`'s own "records the exact recordSighting call
+ * shape (fake store)" fixture (`as unknown as KnownRobotsStore`) rather
+ * than a real, temp-directory-backed one -- `knownRobots.test.ts`
+ * already covers the real store's own persistence/atomic-write
+ * behavior in isolation, so nothing here needs real filesystem I/O.
+ * `forget` is a real, mutating no-op-on-unknown-name implementation
+ * (matching {@link KnownRobotsStore.forget}'s own contract) since these
+ * tests care about the observable effect of a forget round-tripping
+ * through `server.ts`. */
+function fakeKnownRobotsStore(initial: KnownRobotRecord[] = []): KnownRobotsStore {
+  const records = new Map(initial.map((record) => [record.name, record]));
+  return {
+    list: () => [...records.values()],
+    get: (name: string) => records.get(name),
+    recordSighting: () => {},
+    forget: (name: string) => records.delete(name),
+    flush: async () => {},
+    isReadOnly: false,
+  } as unknown as KnownRobotsStore;
+}
+
 function buildRegistry(link: FakeLink, overrides: DeviceRegistryOptions = {}): DeviceRegistry {
   const watcher = new DeviceWatcher({
     listDevices: () => Promise.resolve([device()]),
@@ -119,6 +161,15 @@ function buildRegistry(link: FakeLink, overrides: DeviceRegistryOptions = {}): D
     watcher,
     resolveName: async () => ({ status: "named", name: "zeguz", deviceId: 1 }),
     createLink: () => link,
+    // Sprint 5: default to an empty, in-memory fake store rather than
+    // DeviceRegistry's own default (a real KnownRobotsStore reading
+    // this machine's actual ~/.local/state roster) -- without this
+    // override, every test's `rememberedRobots` assertion would depend
+    // on whatever roster happens to exist on the machine running the
+    // suite, exactly the kind of environment leak `NO_FIRMWARE` (below)
+    // already guards against for firmwareConfig. A test that cares
+    // about a non-empty roster overrides `knownRobotsStore` itself.
+    knownRobotsStore: fakeKnownRobotsStore(),
     ...overrides,
   });
 }
@@ -177,6 +228,13 @@ class MessageCollector {
         waiter?.resolve(message);
       }
     });
+  }
+
+  /** Every message received so far, for a test that needs to assert an
+   * absence (e.g. "no error was ever sent") rather than wait for a
+   * presence -- {@link waitFor} alone cannot express that. */
+  get all(): readonly ServerMessage[] {
+    return this.received;
   }
 
   waitFor(predicate: (message: ServerMessage) => boolean, timeoutMs = 5000): Promise<ServerMessage> {
@@ -280,6 +338,7 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
         relay: { configured: false },
         robot: { configured: false },
       },
+      rememberedRobots: [],
     });
   });
 
@@ -365,6 +424,115 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
         firmwareConfig: NO_FIRMWARE,
       }),
     ).rejects.toThrow(/already in use/);
+  });
+});
+
+describe("server.ts rememberedRobots and forget-known-robot (sprint 5, ticket 004)", () => {
+  let server: RunningServer | undefined;
+  let ws: WebSocket | undefined;
+
+  afterEach(async () => {
+    ws?.close();
+    ws = undefined;
+    await server?.close();
+    server = undefined;
+  });
+
+  it("includes a pre-seeded remembered robot on the initial connect snapshot", async () => {
+    const link = new FakeLink(async () => banner());
+    const knownRobotsStore = fakeKnownRobotsStore([knownRobotRecord()]);
+    server = await startServer({
+      port: 0,
+      registry: buildRegistry(link, { knownRobotsStore }),
+      firmwareConfig: NO_FIRMWARE,
+    });
+    const connected = await connect(server.url.replace("http://", "ws://"));
+    ws = connected.ws;
+
+    const initial = await connected.messages.waitFor((m) => m.type === "endpoints");
+    expect(initial).toMatchObject({
+      type: "endpoints",
+      rememberedRobots: [
+        {
+          name: "kwazi",
+          lastSeenAt: "2024-01-01T00:00:00.000Z",
+          lastSeenVia: "usb",
+          lastRole: "NEZHA2",
+          lastUsbSerial: "SERIAL-REMEMBERED",
+        },
+      ],
+    });
+  });
+
+  it("drops a forgotten robot from the next broadcast endpoints message", async () => {
+    const link = new FakeLink(async () => banner());
+    const knownRobotsStore = fakeKnownRobotsStore([knownRobotRecord()]);
+    server = await startServer({
+      port: 0,
+      registry: buildRegistry(link, { knownRobotsStore }),
+      firmwareConfig: NO_FIRMWARE,
+    });
+    const connected = await connect(server.url.replace("http://", "ws://"));
+    ws = connected.ws;
+
+    await connected.messages.waitFor(
+      (m) => m.type === "endpoints" && m.rememberedRobots.some((r) => r.name === "kwazi"),
+    );
+
+    ws.send(JSON.stringify({ type: "forget-known-robot", name: "kwazi" }));
+
+    // requestForgetKnownRobot (ticket 003) removes it from the store and
+    // calls its own emitDevices() -- picked up here by the existing
+    // onDevicesChanged -> broadcast(buildEndpointsMessage(...)) path,
+    // with no new event type.
+    const updated = await connected.messages.waitFor(
+      (m) => m.type === "endpoints" && !m.rememberedRobots.some((r) => r.name === "kwazi"),
+    );
+    expect(updated).toMatchObject({ rememberedRobots: [] });
+  });
+
+  it("silently no-ops forgetting a name that isn't on the roster, without crashing or erroring", async () => {
+    const link = new FakeLink(async () => banner());
+    const knownRobotsStore = fakeKnownRobotsStore([knownRobotRecord()]);
+    server = await startServer({
+      port: 0,
+      registry: buildRegistry(link, { knownRobotsStore }),
+      firmwareConfig: NO_FIRMWARE,
+    });
+    const connected = await connect(server.url.replace("http://", "ws://"));
+    ws = connected.ws;
+
+    await connected.messages.waitFor(
+      (m) => m.type === "endpoints" && m.rememberedRobots.some((r) => r.name === "kwazi"),
+    );
+
+    // An unknown name is a silent no-op per KnownRobotsStore.forget's own
+    // contract -- send it, then send a real forget for "kwazi" and
+    // confirm *that* still succeeds, proving the server kept processing
+    // messages on this connection rather than crashing on the first one.
+    ws.send(JSON.stringify({ type: "forget-known-robot", name: "not-a-known-robot" }));
+    ws.send(JSON.stringify({ type: "forget-known-robot", name: "kwazi" }));
+
+    const updated = await connected.messages.waitFor(
+      (m) => m.type === "endpoints" && !m.rememberedRobots.some((r) => r.name === "kwazi"),
+    );
+    expect(updated).toMatchObject({ rememberedRobots: [] });
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    expect(connected.messages.all.some((m) => m.type === "error")).toBe(false);
+  });
+
+  it("rejects a malformed forget-known-robot (missing name) with the existing generic parse error", async () => {
+    const link = new FakeLink(async () => banner());
+    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
+    const connected = await connect(server.url.replace("http://", "ws://"));
+    ws = connected.ws;
+
+    await connected.messages.waitFor((m) => m.type === "endpoints");
+    ws.send(JSON.stringify({ type: "forget-known-robot" }));
+
+    const error = await connected.messages.waitFor((m) => m.type === "error");
+    expect(error).toEqual({ type: "error", message: "unrecognized message shape" });
+    expect(ws.readyState).toBe(WebSocket.OPEN);
   });
 });
 

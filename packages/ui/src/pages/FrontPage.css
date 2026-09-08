@@ -122,3 +122,83 @@
   font-size: 0.82rem;
   color: var(--rc-text-muted);
 }
+
+/* Remembered-robot roster (sprint 5) -- visually secondary to the
+   attached-endpoint list above it: muted, no hover/focus affordance
+   (there is nothing to navigate to), so it never reads as a clickable
+   card the way `.device-card` does. */
+.remembered-robots {
+  margin-top: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--rc-border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.remembered-robots-heading {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--rc-text-muted);
+}
+
+.remembered-robots-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--rc-text-muted);
+}
+
+.remembered-robots-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.remembered-robot-card {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.9rem;
+  border: 1px dashed var(--rc-border);
+  border-radius: 0.6rem;
+  padding: 0.6rem 0.9rem;
+  color: var(--rc-text-muted);
+}
+
+.remembered-robot-header {
+  display: flex;
+  align-items: baseline;
+}
+
+.remembered-robot-name {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--rc-text-muted);
+}
+
+.remembered-robot-note {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--rc-text-muted);
+}
+
+.remembered-robot-forget {
+  margin-left: auto;
+  font-size: 0.82rem;
+  padding: 0.25rem 0.7rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: inherit;
+  cursor: pointer;
+}
+
+.remembered-robot-forget:hover,
+.remembered-robot-forget:focus-visible {
+  border-color: var(--rc-accent);
+}

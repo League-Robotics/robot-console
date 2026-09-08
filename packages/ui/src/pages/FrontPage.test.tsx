@@ -24,8 +24,8 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
-import { EndpointsList } from "./FrontPage";
+import type { EndpointListEntry, RememberedRobotEntry } from "@robot-console/host/src/wsMessages.js";
+import { EndpointsList, FrontPage } from "./FrontPage";
 import { AppRoutes } from "../router";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
@@ -106,6 +106,24 @@ function baseDevice(overrides: BaseDeviceOverrides = {}): EndpointListEntry {
     entry.sessionError = overrides.linkError;
   }
   return entry;
+}
+
+const NO_FIRMWARE_STATUS = {
+  relay: { configured: false as const },
+  robot: { configured: false as const },
+};
+
+/** Convenience fixture for `RememberedRobotEntry` -- mirrors
+ * `baseDevice`'s role in this file. */
+function rememberedRobotFixture(name: string, overrides: Partial<RememberedRobotEntry> = {}): RememberedRobotEntry {
+  return {
+    name,
+    lastSeenAt: "2026-01-01T12:34:00.000Z",
+    lastSeenVia: "usb",
+    lastRole: null,
+    lastUsbSerial: `${name}-SERIAL`,
+    ...overrides,
+  };
 }
 
 describe("EndpointsList", () => {
@@ -230,5 +248,112 @@ describe("FrontPage navigation", () => {
     // 008 replaced ticket 007's "Device found: ..." placeholder with the
     // real per-type page content, so this now lands on `RobotPage`.
     expect(el.textContent).toContain("kivon");
+  });
+});
+
+describe("RememberedRobotsSection (ticket 005)", () => {
+  it("renders a remembered robot's name and lastSeenAt, with no Link for that card", () => {
+    const robot = rememberedRobotFixture("wobin");
+    const el = mount(withRouter(<EndpointsList status="open" devices={[]} rememberedRobots={[robot]} />));
+
+    const text = el.textContent ?? "";
+    expect(text).toContain("wobin");
+    expect(text).toContain(new Date(robot.lastSeenAt).toLocaleString());
+
+    const card = el.querySelector('[data-testid="remembered-robot-wobin"]');
+    expect(card).not.toBeNull();
+    expect(card?.tagName).not.toBe("A");
+    expect(card?.querySelector("a")).toBeNull();
+  });
+
+  it("renders exactly one card each for an attached endpoint and a remembered robot with a different name", () => {
+    const el = mount(
+      withRouter(
+        <EndpointsList
+          status="open"
+          devices={[baseDevice({ id: "SERIAL-E" })]}
+          rememberedRobots={[rememberedRobotFixture("dorix")]}
+        />,
+      ),
+    );
+
+    expect(el.querySelectorAll('[data-testid^="device-"]')).toHaveLength(1);
+    expect(el.querySelectorAll('[data-testid^="remembered-robot-"]')).toHaveLength(1);
+    expect(el.querySelector('[data-testid="device-usb-SERIAL-E"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="remembered-robot-dorix"]')).not.toBeNull();
+  });
+
+  it("renders no remembered-robot section (and no empty-state copy for it) when rememberedRobots is empty", () => {
+    const el = mount(
+      withRouter(<EndpointsList status="open" devices={[baseDevice()]} rememberedRobots={[]} />),
+    );
+
+    expect(el.querySelector(".remembered-robots")).toBeNull();
+    expect(el.textContent ?? "").not.toContain("Robots remembered from before");
+  });
+
+  it("clicking Forget sends exactly { type: 'forget-known-robot', name } over the socket", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage({
+        type: "endpoints",
+        endpoints: [],
+        firmwareStatus: NO_FIRMWARE_STATUS,
+        rememberedRobots: [rememberedRobotFixture("nuvek")],
+      });
+    });
+
+    const button = el.querySelector('[data-testid="remembered-robot-nuvek"] button');
+    expect(button).not.toBeNull();
+    act(() => {
+      button!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(socket!.sent).toEqual([JSON.stringify({ type: "forget-known-robot", name: "nuvek" })]);
+  });
+
+  it("the row disappears once the next snapshot omits it (no optimistic local removal needed)", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage({
+        type: "endpoints",
+        endpoints: [],
+        firmwareStatus: NO_FIRMWARE_STATUS,
+        rememberedRobots: [rememberedRobotFixture("nuvek")],
+      });
+    });
+    expect(el.querySelector('[data-testid="remembered-robot-nuvek"]')).not.toBeNull();
+
+    act(() => {
+      socket!.emitMessage({
+        type: "endpoints",
+        endpoints: [],
+        firmwareStatus: NO_FIRMWARE_STATUS,
+        rememberedRobots: [],
+      });
+    });
+    expect(el.querySelector('[data-testid="remembered-robot-nuvek"]')).toBeNull();
   });
 });

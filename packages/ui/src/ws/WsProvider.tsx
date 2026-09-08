@@ -99,6 +99,7 @@ import type {
   FlashPhase,
   FlashResultMessage,
   LineMessage,
+  RememberedRobotEntry,
   ServerMessage,
 } from "@robot-console/host/src/wsMessages.js";
 
@@ -240,6 +241,14 @@ interface Store {
    * was added, removed, or reordered -- see `applySnapshot`. */
   endpointsArray: EndpointListEntry[];
   firmwareStatus: Record<FirmwareKind, FirmwareAvailability>;
+  /** The full remembered-robot roster from the most recent `endpoints`
+   * snapshot (sprint 5) -- see `wsMessages.ts`'s
+   * `EndpointsMessage.rememberedRobots` doc comment. Starts at `[]`
+   * before any snapshot arrives, and is only ever replaced (not
+   * mutated in place) by `applySnapshot`, which also guards against an
+   * old-shaped/test-fixture message that omits the field entirely --
+   * see that function's own doc comment. */
+  rememberedRobots: RememberedRobotEntry[];
   logsByEndpoint: Map<string, LogEntry[]>;
   /** LRU order for `logsByEndpoint`, oldest-touched first. See
    * `touchLog`. */
@@ -351,6 +360,13 @@ function applySnapshot(
   // never clobber a previously-good `store.firmwareStatus` with
   // `undefined`.
   firmwareStatus: Record<FirmwareKind, FirmwareAvailability> | undefined,
+  // Same shorthand as `firmwareStatus` above: `EndpointsMessage.rememberedRobots`
+  // is required on a real message, but typed as possibly `undefined`
+  // here so an old-shaped message (or a test fixture built before this
+  // field existed) never clobbers a previously-good
+  // `store.rememberedRobots` with `undefined` -- it just keeps whatever
+  // the store already had.
+  rememberedRobots: RememberedRobotEntry[] | undefined,
 ): void {
   const nextIds: string[] = [];
   const nextMap = new Map<string, EndpointListEntry>();
@@ -376,6 +392,10 @@ function applySnapshot(
     store.firmwareStatus = firmwareStatus;
   }
 
+  if (rememberedRobots !== undefined && !deepEqual(store.rememberedRobots, rememberedRobots)) {
+    store.rememberedRobots = rememberedRobots;
+  }
+
   // A flash's terminal `flash-result` clears `flashStatus` from the
   // snapshot; mirror that into our own progress map for any endpoint
   // this client has been tracking, so a stale bar never lingers past
@@ -398,6 +418,7 @@ function createStore(): Store {
     endpointsById: new Map(),
     endpointsArray: [],
     firmwareStatus: DEFAULT_FIRMWARE_STATUS,
+    rememberedRobots: [],
     logsByEndpoint: new Map(),
     logOrder: [],
     flashProgressByEndpoint: new Map(),
@@ -544,7 +565,7 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
         }
         switch (parsed.type) {
           case "endpoints":
-            applySnapshot(store, parsed.endpoints, parsed.firmwareStatus);
+            applySnapshot(store, parsed.endpoints, parsed.firmwareStatus, parsed.rememberedRobots);
             notify(store);
             break;
           case "line":
@@ -684,6 +705,18 @@ export function useEndpointLog(endpointId: string): LogEntry[] {
 export function useFirmwareStatus(): Record<FirmwareKind, FirmwareAvailability> {
   const store = useStore();
   return useSyncExternalStore(store.subscribe, () => store.firmwareStatus);
+}
+
+/** The full remembered-robot roster from the most recent `endpoints`
+ * snapshot (sprint 5) -- robots this host has seen over USB before but
+ * are not currently attached (the host already excludes currently-
+ * attached names from this list, so a consumer never needs to filter
+ * against `useEndpoints()` itself). `[]` before the first snapshot
+ * arrives. No new action is needed to forget one -- send
+ * `{ type: "forget-known-robot", name }` via `useWsActions().send`. */
+export function useRememberedRobots(): RememberedRobotEntry[] {
+  const store = useStore();
+  return useSyncExternalStore(store.subscribe, () => store.rememberedRobots);
 }
 
 /** Live progress of an in-flight flash for one endpoint, populated

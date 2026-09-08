@@ -49,9 +49,24 @@
  * become the column instead of the document, breaking the sticky
  * pinning sprint 006 built this control to have. Keeping it a sibling
  * of `.robot-page-columns` (never a descendant of either column's own
- * scroll container) is what keeps `EstopControl.css` needing no change
- * at all, and is asserted structurally, not just visually, by
- * `RobotPage.test.tsx`.
+ * scroll container) is what keeps `EstopControl.css` needing no
+ * *layout* change to stay pinned, and is asserted structurally, not
+ * just visually, by `RobotPage.test.tsx`.
+ *
+ * **Sized and positioned per stakeholder feedback (2026-09-08):** a
+ * full-width e-stop bar read as disproportionate once the page was in
+ * real use ("it's ridiculous"). `EstopControl.css` now sizes the
+ * control to its own content and left-aligns it (`align-self:
+ * flex-start`), so it renders as a small control sitting just above
+ * `DriveControls` in the left column rather than spanning the page.
+ * It stays a DOM sibling of `.robot-page-columns` -- moving it into the
+ * left column's own markup was considered and rejected, since that
+ * column is a bounded, internally-scrolling container (see
+ * `RobotPage.css`) and would silently break the sticky pinning above.
+ * Smaller and visually adjacent to the drive controls, still
+ * unconditionally reachable with no scrolling: that combination is the
+ * point of keeping the DOM position and the CSS sizing as two
+ * independent decisions.
  *
  * **Transport-blindness is load-bearing, not incidental**: this page
  * and every component it mounts render off `WsProvider`'s hooks/

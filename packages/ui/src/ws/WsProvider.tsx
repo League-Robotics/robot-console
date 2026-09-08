@@ -79,6 +79,21 @@
  * `flashStatus` from, and so will not see progress until the next
  * `flash-progress` event arrives -- release-kind flashes are unaffected
  * since `flashStatus` already self-heals those via the snapshot.
+ *
+ * **Host errors surfaced in the console log (ticket 012-003):** a host
+ * `type: "error"` message (e.g. `deviceRegistry.ts` refusing a live
+ * `"HELLO"` command, or "no open link") used to be dropped here as an
+ * explicit no-op -- nothing ever subscribed to it, so it vanished with
+ * no trace. `appendHostError` now appends it to the firing endpoint's
+ * existing console log (`logsByEndpoint`, the same store `line`
+ * messages populate) as a `LogEntry` with `origin: "host"`, which
+ * `DeviceConsole` renders with the same "error" kind styling as a
+ * device-sent `err`/`nack` line rather than a new fourth `direction`
+ * value -- see `LogEntry`'s own doc comment. This is this sprint's only
+ * consumer of `type: "error"`; an error with no `endpointId` (no
+ * current caller produces one) is deliberately dropped rather than
+ * shown as a global banner, since this store owns no UI surface outside
+ * the per-endpoint log -- see `appendHostError`'s own doc comment.
  */
 import {
   createContext,
@@ -92,6 +107,7 @@ import {
 import type {
   ClientMessage,
   EndpointListEntry,
+  ErrorMessage,
   FirmwareAvailability,
   FirmwareKind,
   FirmwareSourceRef,
@@ -114,6 +130,17 @@ export interface LogEntry {
   id: number;
   direction: "tx" | "rx";
   line: string;
+  /** Present (`"host"`) only for an entry synthesized from a host
+   * `type: "error"` message (ticket 012-003) -- absent for an ordinary
+   * `line` message, device- or user-originated alike. `direction` is
+   * still `"rx"` for a host error (it arrives at the client, same as a
+   * device reply, and no fourth `direction` value is warranted just for
+   * this), so `origin` is what `DeviceConsole` checks to force the
+   * "error" kind styling regardless of the message text -- a host
+   * error's wording (e.g. "no open link") does not necessarily start
+   * with "err"/"nack", so relying on `classifyLine`'s text sniffing
+   * alone would misclassify most of them as ordinary `data`. */
+  origin?: "host";
 }
 
 /** Maximum lines retained per endpoint in the in-memory log. Oldest
@@ -345,18 +372,42 @@ function touchLog(store: Store, endpointId: string): void {
   }
 }
 
-function appendLine(store: Store, message: LineMessage): void {
-  const existing = store.logsByEndpoint.get(message.endpointId) ?? [];
-  const next = existing.concat({
-    id: nextLogEntryId++,
-    direction: message.direction,
-    line: message.line,
-  });
+/** Shared tail of `appendLine`/`appendHostError`: append one entry to
+ * `endpointId`'s log, enforce `MAX_LINES_PER_DEVICE`, and mark the
+ * endpoint as recently active for the LRU tracked set. `entry` omits
+ * `id`, minted here so every appender gets a unique, ordered one
+ * without duplicating that bookkeeping. */
+function pushLogEntry(store: Store, endpointId: string, entry: Omit<LogEntry, "id">): void {
+  const existing = store.logsByEndpoint.get(endpointId) ?? [];
+  const next = existing.concat({ id: nextLogEntryId++, ...entry });
   if (next.length > MAX_LINES_PER_DEVICE) {
     next.splice(0, next.length - MAX_LINES_PER_DEVICE);
   }
-  store.logsByEndpoint.set(message.endpointId, next);
-  touchLog(store, message.endpointId);
+  store.logsByEndpoint.set(endpointId, next);
+  touchLog(store, endpointId);
+}
+
+function appendLine(store: Store, message: LineMessage): void {
+  pushLogEntry(store, message.endpointId, { direction: message.direction, line: message.line });
+}
+
+/** Append a synthesized log entry for a host `type: "error"` message
+ * to its firing endpoint's log -- see this module's doc comment ("Host
+ * errors surfaced in the console log"). `deviceRegistry.ts`'s two
+ * `emitError` call sites (`sendLine`/`sendCommand`'s "no open link"
+ * cases, and `sendCommand`'s live-`"HELLO"` refusal) always carry an
+ * `endpointId`; a hypothetical error with none is dropped rather than
+ * shown as a global banner -- this store has no UI surface outside the
+ * per-endpoint log, and inventing one for a case nothing currently
+ * triggers would be speculative generality ahead of an actual caller.
+ * Returns whether an entry was actually appended, so the caller can
+ * skip an unnecessary `notify(store)` when nothing changed. */
+function appendHostError(store: Store, message: ErrorMessage): boolean {
+  if (!message.endpointId) {
+    return false;
+  }
+  pushLogEntry(store, message.endpointId, { direction: "rx", line: message.message, origin: "host" });
+  return true;
 }
 
 function applySnapshot(
@@ -596,13 +647,15 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
             notify(store);
             break;
           case "error":
-            // Pre-ticket-006 exposed an `onError` pub/sub, but no
-            // component ever subscribed to it -- dropped here rather
-            // than carried forward unused (see this module's doc
-            // comment on `useWsActions`). Kept as an explicit no-op
-            // case (rather than falling through) so this switch stays
-            // exhaustive over `ServerMessage.type` and a future ticket
-            // adding error handling has an obvious place to put it.
+            // Ticket 012-003: a host error now lands in the firing
+            // endpoint's console log via `appendHostError`, rendered by
+            // `DeviceConsole` with the same "error" kind styling as a
+            // device-sent `err`/`nack` line (`LogEntry.origin: "host"`
+            // forces that classification -- see `appendHostError`'s own
+            // doc comment for the no-`endpointId` case).
+            if (appendHostError(store, parsed)) {
+              notify(store);
+            }
             break;
           case "flash-progress":
             store.flashProgressByEndpoint.set(parsed.endpointId, {

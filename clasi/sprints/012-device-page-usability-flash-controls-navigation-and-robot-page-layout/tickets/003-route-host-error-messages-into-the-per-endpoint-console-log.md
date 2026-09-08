@@ -1,7 +1,7 @@
 ---
 id: '003'
 title: Route host error messages into the per-endpoint console log
-status: open
+status: done
 use-cases:
 - SUC-005
 depends-on: []
@@ -51,25 +51,45 @@ consuming it).
 
 ## Acceptance Criteria
 
-- [ ] `WsProvider.tsx`'s `case "error":` branch appends the message text
+- [x] `WsProvider.tsx`'s `case "error":` branch appends the message text
       to the firing endpoint's per-endpoint log when `endpointId` is
       present, visible via `useEndpointLog(endpointId)` exactly like an
       ordinary `line` entry.
-- [ ] The appended entry is visually distinguishable in `DeviceConsole`
+- [x] The appended entry is visually distinguishable in `DeviceConsole`
       as a host-side note, not mistaken for a line the device itself
       sent (e.g. reuse or extend `classifyLine`'s existing "error"
       styling — do not invent a fourth `direction` value if `rx`/`tx`
       is not a good fit; document whichever representation is chosen).
-- [ ] The no-`endpointId` case is given one deliberate, tested behavior
+- [x] The no-`endpointId` case is given one deliberate, tested behavior
       (global banner or drop) rather than left as an implicit fallback.
-- [ ] A test proves: sending `sendCommand(endpointId, "HELLO")` against
+- [x] A test proves: sending `sendCommand(endpointId, "HELLO")` against
       a fake link with an open session results in the host's refusal
       text appearing in that endpoint's log (this is the concrete
       scenario ticket 005's Hello button depends on).
-- [ ] `WsProvider.tsx`'s doc comment noting the drop as a documented gap
+- [x] `WsProvider.tsx`'s doc comment noting the drop as a documented gap
       ("a future ticket adding error handling has an obvious place to
       put it") is updated to reflect that this is now handled, not left
       stale.
+
+## Implementation Notes
+
+Implemented via a new `LogEntry.origin?: "host"` field (kept `direction`
+at `"tx" | "rx"` — no fourth value) and a shared `pushLogEntry` helper
+factored out of `appendLine`. `appendHostError(store, message)` appends
+a `direction: "rx", origin: "host"` entry to the firing endpoint's log
+when `endpointId` is present; with no `endpointId` it is a deliberate,
+tested drop (this store owns no UI surface outside the per-endpoint
+log — no global banner was added). `DeviceConsole` forces the existing
+`"error"` kind styling (`console-line-kind-error`) whenever
+`entry.origin === "host"`, bypassing `classifyLine`'s text-based
+sniffing (a host error's wording does not reliably start with
+"err"/"nack"), and additionally swaps the direction glyph to "⚠" and
+sets `data-host-error="true"` for extra distinguishability from a
+device-sent line. Tests: `WsProvider.test.tsx`'s new "host error
+messages (ticket 012-003)" block (per-endpoint routing, no-`endpointId`
+drop, and an end-to-end `sendCommand(..., "HELLO")` → host refusal →
+log scenario pinning the concrete bug), plus `DeviceConsole.test.tsx`'s
+matching block for the rendered styling/attributes.
 
 ## Testing
 

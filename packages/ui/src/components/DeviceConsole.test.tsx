@@ -284,4 +284,60 @@ describe("DeviceConsole", () => {
     const { el } = mountConsole(baseDevice());
     expect(el.textContent).not.toMatch(/WHEELS_X|WHEELS_V/);
   });
+
+  describe("host error messages (ticket 012-003)", () => {
+    it("renders a host type: 'error' message in this device's log with the error kind styling, distinct from ordinary rx traffic", () => {
+      const { el, socket } = mountConsole(baseDevice());
+
+      act(() => {
+        // Plain text with no "err"/"nack" prefix -- `classifyLine` alone
+        // would classify this as ordinary `data`, indistinguishable from
+        // a device reply. The point of this ticket is that it isn't.
+        socket.emitMessage({
+          type: "error",
+          endpointId: "usb-SERIAL-A",
+          message: "device usb-SERIAL-A has no open link",
+        });
+      });
+
+      const rxLines = el.querySelectorAll('[data-testid="console-line-rx"]');
+      expect(rxLines).toHaveLength(1);
+      const errorLine = rxLines[0]!;
+      expect(errorLine.textContent).toContain("device usb-SERIAL-A has no open link");
+      expect(errorLine.className).toContain("console-line-kind-error");
+      expect(errorLine.getAttribute("data-host-error")).toBe("true");
+    });
+
+    it("does not attach a host error meant for a different endpoint to this device's log", () => {
+      const { el, socket } = mountConsole(baseDevice());
+
+      act(() => {
+        socket.emitMessage({ type: "error", endpointId: "usb-OTHER", message: "not mine" });
+      });
+
+      expect(el.textContent).not.toContain("not mine");
+      expect(el.textContent).toContain("No traffic yet for this device");
+    });
+
+    it("distinguishes a host error from a device-classified err/nack line: both get error styling, only the host one is flagged data-host-error", () => {
+      const { el, socket } = mountConsole(baseDevice());
+
+      act(() => {
+        socket.emitMessage({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: "err 3 bad-arg" });
+        socket.emitMessage({
+          type: "error",
+          endpointId: "usb-SERIAL-A",
+          message: '"HELLO" cannot be sent as a live command',
+        });
+      });
+
+      const rxLines = el.querySelectorAll('[data-testid="console-line-rx"]');
+      expect(rxLines).toHaveLength(2);
+      for (const line of rxLines) {
+        expect(line.className).toContain("console-line-kind-error");
+      }
+      expect(rxLines[0]!.getAttribute("data-host-error")).toBeNull();
+      expect(rxLines[1]!.getAttribute("data-host-error")).toBe("true");
+    });
+  });
 });

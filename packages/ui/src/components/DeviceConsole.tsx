@@ -29,6 +29,13 @@
  * the old Devices tab), and every per-device page here already gates
  * on `WsProvider`'s `hasSnapshot`/`endpoint` presence before this
  * component is ever mounted (`DevicePage.tsx`).
+ *
+ * Ticket 012-003: a host `type: "error"` message (routed into this
+ * endpoint's log by `WsProvider`'s `appendHostError`, as a `LogEntry`
+ * with `origin: "host"`) renders here with the same "error" kind
+ * styling as a device-sent `err`/`nack` line, forced regardless of the
+ * message text -- see the render loop below and `LogEntry`'s own doc
+ * comment.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
@@ -165,15 +172,25 @@ export function DeviceConsole({ device }: DeviceConsoleProps) {
           </p>
         ) : (
           log.map((entry) => {
-            const kind = classifyLine(entry.line);
+            // `entry.origin === "host"` (ticket 012-003: a host
+            // `type: "error"` message routed into this log) forces the
+            // existing "error" kind styling instead of running it
+            // through `classifyLine`'s text sniffing -- a host error's
+            // wording ("no open link", the "HELLO" refusal, ...) does
+            // not necessarily start with "err"/"nack", so leaving this
+            // to `classifyLine` would silently misclassify most of them
+            // as ordinary `data` and make them indistinguishable from a
+            // line the device itself sent.
+            const kind = entry.origin === "host" ? "error" : classifyLine(entry.line);
             return (
               <div
                 key={entry.id}
                 className={`console-line console-line-${entry.direction} console-line-kind-${kind}`}
                 data-testid={`console-line-${entry.direction}`}
+                data-host-error={entry.origin === "host" ? "true" : undefined}
               >
                 <span className="console-line-direction" aria-hidden="true">
-                  {entry.direction === "tx" ? "»" : "«"}
+                  {entry.origin === "host" ? "⚠" : entry.direction === "tx" ? "»" : "«"}
                 </span>
                 <span className="console-line-text">{entry.line}</span>
               </div>

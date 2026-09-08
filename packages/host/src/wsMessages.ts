@@ -160,12 +160,20 @@ export type FirmwareSourceRef =
  * ordering. */
 export type FlashPhase = "fetching" | "verifying" | "erasing" | "writing" | "resetting" | "reidentifying";
 
-/** Which transport an endpoint is reachable over. `"usb"` is the only
- * value that exists this sprint (a board plugged directly into this
- * machine); remote transports (a relay's radio link, mDNS-discovered
- * mbrelay) arrive in sprint 7 and will extend this union rather than
- * replace it. */
-export type EndpointTransport = "usb";
+/** Which transport an endpoint is reachable over. `"usb"` was the only
+ * value through sprint 6 (a board plugged directly into this machine).
+ * Sprint 7 ticket 002 extends this union for the three relay/remote
+ * transports its architecture defines: `"relay-radio"` (a local USB
+ * relay, `RelayRadioLink`), `"mbrelay"` (a remote TCP relay,
+ * `MbrelayLink`, ticket 003), and `"mbserial"` (a remote TCP link
+ * straight to one robot's serial port, `MbserialLink`, ticket 004).
+ * This is a type-only extension, per this module's "no logic of its
+ * own" contract (see the module doc comment) -- only `"relay-radio"`
+ * has a concrete `LinkSpec`/`Link` as of ticket 002; nothing in
+ * `packages/host`/`packages/ui` constructs an endpoint carrying any of
+ * these three new values yet (sprint 8's job -- endpoint synthesis from
+ * discovery). */
+export type EndpointTransport = "usb" | "relay-radio" | "mbrelay" | "mbserial";
 
 /** USB-specific identity fields, present on {@link EndpointListEntry}
  * only when {@link EndpointListEntry.transport} is `"usb"`. Nested

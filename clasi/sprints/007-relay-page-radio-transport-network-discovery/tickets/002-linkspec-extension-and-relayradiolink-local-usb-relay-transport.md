@@ -1,7 +1,7 @@
 ---
 id: '002'
 title: LinkSpec extension and RelayRadioLink (local USB relay transport)
-status: open
+status: done
 use-cases:
 - SUC-001
 - SUC-002
@@ -66,34 +66,34 @@ extra handshake in `connect()`.
 
 ## Acceptance Criteria
 
-- [ ] `LinkSpec` gains `RelayLinkSpec` (`transport: "relay-radio"`,
+- [x] `LinkSpec` gains `RelayLinkSpec` (`transport: "relay-radio"`,
       `resourceKey`, `portPath`, `channel`, `group`); `LinkFactory`'s
       default implementation dispatches to a new `RelayRadioLink` for
       it.
-- [ ] `EndpointTransport` extended to `"usb" | "relay-radio" | "mbrelay"
+- [x] `EndpointTransport` extended to `"usb" | "relay-radio" | "mbrelay"
       | "mbserial"` in `wsMessages.ts` — type-only, no behavior change,
       `npm run build` passes across `packages/host`/`packages/ui`.
-- [ ] `RelayCommandPlane` sends the full preamble in order against a
+- [x] `RelayCommandPlane` sends the full preamble in order against a
       fake write/subscribe pair, and transitions to "data plane ready"
       only after `!GO` confirms.
-- [ ] A fake relay that rejects `!CG` produces a rejection with no `!GO`
+- [x] A fake relay that rejects `!CG` produces a rejection with no `!GO`
       ever sent (assert on the fake's received-lines list).
-- [ ] A fake relay that never confirms `!GO` produces a timeout
+- [x] A fake relay that never confirms `!GO` produces a timeout
       rejection under a fake scheduler (no real wall-clock delay in the
       test).
-- [ ] `RelayRadioLink.connect()` opens the port then runs
+- [x] `RelayRadioLink.connect()` opens the port then runs
       `RelayCommandPlane`; a handshake failure rejects `connect()`
       (never partially succeeds into a placeholder "connected" state).
-- [ ] Once in the data plane, `RelayRadioLink.identify()` behaves
+- [x] Once in the data plane, `RelayRadioLink.identify()` behaves
       identically to `UsbSerialLink.identify()` against the same kind of
       fake serial port (same test technique as
       `UsbSerialLink.test.ts`) — `HELLO`/banner round-trip, `null` on
       timeout, never throws.
-- [ ] `RelayRadioLink.sendCommand()`/`sendUnsequenced()`/
+- [x] `RelayRadioLink.sendCommand()`/`sendUnsequenced()`/
       `checkLiveness()` delegate to the same `Session`/`LineRouter`/
       `WritePacer` composition `UsbSerialLink` uses — no duplicated
       sequencing logic.
-- [ ] `npm test` and `npm run build` pass.
+- [x] `npm test` and `npm run build` pass.
 
 ## Testing
 

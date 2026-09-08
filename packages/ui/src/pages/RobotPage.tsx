@@ -15,9 +15,16 @@
  * ticket adds structured controls above it, it does not replace the
  * raw line console.
  *
- * `EstopControl` (ticket 006, a parallel ticket) is *not* mounted by
- * this file's own change — see that ticket for the always-reachable
- * e-stop control and its placement in this page.
+ * `EstopControl` (ticket 006) is mounted here unconditionally, directly
+ * under the header and above every other panel — not nested inside
+ * `DriveControls` or any panel that could hide it. It renders
+ * regardless of which panel below it is open or mid-interaction, and
+ * its own CSS keeps it pinned to the top of the viewport as the page
+ * scrolls, so it stays visible even once `DeviceConsole`'s log has
+ * grown past a screenful. See `EstopControl.tsx`'s own doc comment for
+ * why sending it is never gated on `sequencing`/pending state, and why
+ * "a real robot stops" is a hardware-deferred claim its tests do not
+ * make.
  *
  * **Transport-blindness is load-bearing, not incidental**: this page
  * and every component it mounts render off `WsProvider`'s hooks/
@@ -31,6 +38,7 @@
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
 import { DeviceConsole } from "../components/DeviceConsole";
 import { DriveControls } from "../components/DriveControls";
+import { EstopControl } from "../components/EstopControl";
 import { GetSetPanel } from "../components/GetSetPanel";
 import { SequencingIndicator } from "../components/SequencingIndicator";
 import { StatusPanel } from "../components/StatusPanel";
@@ -44,6 +52,8 @@ export function RobotPage({ endpoint }: RobotPageProps) {
   return (
     <section className="robot-page" aria-label="Robot device">
       <h2>{endpoint.name ?? endpoint.endpointId}</h2>
+
+      <EstopControl device={endpoint} />
 
       <SequencingIndicator endpointId={endpoint.endpointId} />
 

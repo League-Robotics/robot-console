@@ -77,12 +77,13 @@ describe("RobotPage", () => {
     expect(el.textContent).toContain("vevav");
   });
 
-  it("renders drive controls, status, get/set, and a sequencing indicator", () => {
+  it("renders drive controls, status, get/set, an e-stop control, and a sequencing indicator", () => {
     const el = mountRobotPage(robotFixture());
 
     expect(el.querySelector('[aria-label="Drive controls"]')).not.toBeNull();
     expect(el.querySelector('[aria-label="Status"]')).not.toBeNull();
     expect(el.querySelector('[aria-label="Get/Set"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Emergency stop"]')).not.toBeNull();
     expect(el.querySelector('[aria-label="Sequencing state"]')).not.toBeNull();
   });
 

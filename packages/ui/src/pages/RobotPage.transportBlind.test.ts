@@ -8,12 +8,12 @@
  * so it is enforced here with a source scan rather than left to review
  * alone.
  *
- * Scoped to `RobotPage.tsx` and the components it mounts that this
- * ticket introduces (`DriveControls`, `StatusPanel`, `GetSetPanel`,
- * `SequencingIndicator`) -- `DeviceConsole` predates this ticket and is
- * shared with every other per-device page, so it is out of this
- * ticket's scope to re-certify, though it happens to already satisfy
- * the same property.
+ * Scoped to `RobotPage.tsx` and the components it mounts that ticket
+ * 005/006 introduced (`DriveControls`, `StatusPanel`, `GetSetPanel`,
+ * `SequencingIndicator`, `EstopControl`) -- `DeviceConsole` predates
+ * this ticket and is shared with every other per-device page, so it is
+ * out of this ticket's scope to re-certify, though it happens to
+ * already satisfy the same property.
  *
  * Each file's source is pulled in via Vite's `?raw` import suffix
  * (typed by `vite/client`, already this package's one ambient `types`
@@ -27,6 +27,7 @@ import driveControlsSource from "../components/DriveControls.tsx?raw";
 import statusPanelSource from "../components/StatusPanel.tsx?raw";
 import getSetPanelSource from "../components/GetSetPanel.tsx?raw";
 import sequencingIndicatorSource from "../components/SequencingIndicator.tsx?raw";
+import estopControlSource from "../components/EstopControl.tsx?raw";
 
 const FILES_UNDER_TEST: Record<string, string> = {
   "pages/RobotPage.tsx": robotPageSource,
@@ -34,6 +35,7 @@ const FILES_UNDER_TEST: Record<string, string> = {
   "components/StatusPanel.tsx": statusPanelSource,
   "components/GetSetPanel.tsx": getSetPanelSource,
   "components/SequencingIndicator.tsx": sequencingIndicatorSource,
+  "components/EstopControl.tsx": estopControlSource,
 };
 
 /** Matches a quoted `"usb"` literal (either quote style), not merely

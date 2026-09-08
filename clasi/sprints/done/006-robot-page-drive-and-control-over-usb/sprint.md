@@ -1,7 +1,7 @@
 ---
 id: '006'
 title: 'Robot page: drive and control over USB'
-status: executing
+status: done
 branch: sprint/006-robot-page-drive-and-control-over-usb
 use-cases: []
 issues:

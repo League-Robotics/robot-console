@@ -258,16 +258,22 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   }
 
   /** Merge an already-computed endpoint snapshot with the availability
-   * cache's current status into one full-snapshot {@link EndpointsMessage}
-   * -- no new logic, per this module's own "composition only" contract.
-   *
-   * `rememberedRobots` is hardcoded empty here -- ticket 002 (wire
-   * contract only) added the required field to keep this compiling;
-   * ticket 004 is what reads the real roster from `KnownRobotsStore`
-   * (via `deviceRegistry.ts`, ticket 003's write gate) and populates it
-   * for real. */
+   * cache's current status and the current remembered-robot roster into
+   * one full-snapshot {@link EndpointsMessage} -- no new logic, per this
+   * module's own "composition only" contract. `registry.rememberedRobots()`
+   * (ticket 003) already excludes anything currently attached, so this
+   * is a straight pass-through, same as `firmwareStatus` just above it.
+   * Every call site below re-runs this function on every broadcast, so a
+   * roster change from `requestForgetKnownRobot` (ticket 003's own
+   * `emitDevices()` call) reaches every connected client on the very
+   * next `onDevicesChanged` firing -- no separate event type needed. */
   function buildEndpointsMessage(endpoints: EndpointListEntry[]): EndpointsMessage {
-    return { type: "endpoints", endpoints, firmwareStatus: availabilityCache.current(), rememberedRobots: [] };
+    return {
+      type: "endpoints",
+      endpoints,
+      firmwareStatus: availabilityCache.current(),
+      rememberedRobots: registry.rememberedRobots(),
+    };
   }
 
   const unsubscribeDevices = registry.onDevicesChanged((endpoints) => {
@@ -378,6 +384,13 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
           // -- deviceRegistry.ts#runFlash is what branches on
           // source.kind (see this module's own doc comment).
           void registry.requestFlash(message.endpointId, message.source);
+          break;
+        case "forget-known-robot":
+          // Synchronous, and itself calls emitDevices() (ticket 003) --
+          // the resulting broadcast picks up the updated
+          // rememberedRobots roster via buildEndpointsMessage above, no
+          // separate event type needed.
+          registry.requestForgetKnownRobot(message.name);
           break;
         case "flash-local-begin": {
           const result = localHexUpload.beginUpload({

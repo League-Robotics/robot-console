@@ -1,7 +1,7 @@
 ---
 id: '003'
 title: MbrelayLink (remote TCP relay transport, TCP_NODELAY)
-status: open
+status: done
 use-cases:
 - SUC-004
 - SUC-006
@@ -45,23 +45,23 @@ is reached is identical in shape to both.
 
 ## Acceptance Criteria
 
-- [ ] `MbrelayLinkSpec` added to `LinkSpec`; `LinkFactory` dispatches to
+- [x] `MbrelayLinkSpec` added to `LinkSpec`; `LinkFactory` dispatches to
       `MbrelayLink` for it.
-- [ ] `connect()` opens a TCP socket to the given host/port and calls
+- [x] `connect()` opens a TCP socket to the given host/port and calls
       the fake socket's `setNoDelay(true)`-equivalent immediately after
       connect, before any write (assert call order against the fake).
-- [ ] The same `RelayCommandPlane` handshake success/`!CG`-rejection/
+- [x] The same `RelayCommandPlane` handshake success/`!CG`-rejection/
       `!GO`-timeout tests from ticket 002 pass against `MbrelayLink`
       with a fake TCP socket substituted for the fake serial port,
       proving the shared runner behaves identically across both
       transports (parametrize or duplicate ticket 002's test suite
       against this fake, whichever keeps the two test files most
       readable).
-- [ ] Once in the data plane, `identify()`/`sendCommand()`/
+- [x] Once in the data plane, `identify()`/`sendCommand()`/
       `sendUnsequenced()`/`checkLiveness()` behave identically to
       `RelayRadioLink`'s (same test technique, fake TCP socket instead
       of fake serial port).
-- [ ] `npm test` and `npm run build` pass.
+- [x] `npm test` and `npm run build` pass.
 
 ## Testing
 

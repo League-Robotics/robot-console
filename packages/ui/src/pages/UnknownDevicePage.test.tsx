@@ -154,10 +154,15 @@ describe("UnknownDevicePage release-flash gating", () => {
     expect(el.textContent).not.toContain("Flash robot firmware");
   });
 
-  it("shows no flash controls for an unprobed device (no role, no sessionError)", () => {
+  // Regression test for the bug this ticket fixes: a silent, unflashed
+  // board's session opens fine and `identify()` resolves `null` without
+  // throwing, so `sessionError` is never set. This is the most common
+  // bench state, and it must still get flash controls -- `canBeFlashed`
+  // depends only on `role`, not `sessionError`.
+  it("shows both flash buttons for an unprobed device (no role, no sessionError)", () => {
     const { el } = mountUnknownPage(baseDevice({ role: null }), { firmwareStatus: firmwareStatusFixture() });
-    expect(el.textContent).not.toContain("Flash relay firmware");
-    expect(el.textContent).not.toContain("Flash robot firmware");
+    expect(el.textContent).toContain("Flash relay firmware");
+    expect(el.textContent).toContain("Flash robot firmware");
   });
 
   it("shows both flash buttons for a failed-identify device", () => {

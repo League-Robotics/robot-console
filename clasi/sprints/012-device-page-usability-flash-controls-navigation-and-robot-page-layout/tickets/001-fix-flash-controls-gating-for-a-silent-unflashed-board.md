@@ -1,7 +1,7 @@
 ---
 id: '001'
 title: Fix flash-controls gating for a silent, unflashed board
-status: open
+status: done
 use-cases:
 - SUC-001
 depends-on: []
@@ -50,26 +50,26 @@ waiting on the shared-component extraction).
 
 ## Acceptance Criteria
 
-- [ ] `deviceDisplay.ts` exports `canBeFlashed(device: EndpointListEntry):
+- [x] `deviceDisplay.ts` exports `canBeFlashed(device: EndpointListEntry):
       boolean` returning `device.role === null`, independent of
       `sessionError`.
-- [ ] `isFailedIdentify` is removed from `deviceDisplay.ts` (confirmed
+- [x] `isFailedIdentify` is removed from `deviceDisplay.ts` (confirmed
       via grep: no remaining references anywhere in `packages/ui/src`).
-- [ ] `UnknownDevicePage.tsx:230`'s `showFlashControls` uses
+- [x] `UnknownDevicePage.tsx:230`'s `showFlashControls` uses
       `canBeFlashed` in place of `isFailedIdentify`.
-- [ ] `deviceDisplay.ts`'s doc comment above the predicate is rewritten
+- [x] `deviceDisplay.ts`'s doc comment above the predicate is rewritten
       to describe the actual rule (role-based, not
       probed-vs-unprobed-based), removing the now-false "never an
       unprobed device" claim.
-- [ ] A pinned regression test: an `EndpointListEntry` fixture with
+- [x] A pinned regression test: an `EndpointListEntry` fixture with
       `role: null, sessionError: undefined` (the silent-board case)
       renders flash controls on `UnknownDevicePage`.
-- [ ] Existing `isFailedIdentify`-gating tests in
+- [x] Existing `isFailedIdentify`-gating tests in
       `UnknownDevicePage.test.tsx` (the failed-identify case, e.g.
       `role: null, sessionError: "..."`) still show flash controls —
       `canBeFlashed`'s `role === null` rule is a strict superset of the
       old gate, not a replacement with different coverage.
-- [ ] An identified device (`role` set, e.g. `"RADIORELAY"` or
+- [x] An identified device (`role` set, e.g. `"RADIORELAY"` or
       `"NEZHA2"`) still shows no flash controls on `UnknownDevicePage`
       (not reachable in practice — `DevicePage` dispatches identified
       types elsewhere — but `canBeFlashed` itself is asserted false for

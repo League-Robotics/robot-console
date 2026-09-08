@@ -15,9 +15,11 @@
  * `DeviceCard` (moved, not redesigned) plus one new one:
  *
  *  - **Release flash** (existing flow, SUC-002): relay/robot buttons,
- *    shown only for a failed-identify device (`isFailedIdentify`) and
- *    gated per-firmware on live `firmwareStatus` (`firmwareDisabledReason`)
- *    -- verbatim from `DeviceCard`, just relocated here.
+ *    shown for any device that hasn't identified with a role yet
+ *    (`canBeFlashed`, which covers both a failed-identify device and a
+ *    silent, unflashed board) and gated per-firmware on live
+ *    `firmwareStatus` (`firmwareDisabledReason`) -- verbatim from
+ *    `DeviceCard`, just relocated here.
  *  - **Local-hex flash** (new, SUC-003): a file input drives the
  *    `flash-local-begin` -> `flash-local-ready` -> one binary frame
  *    handshake `wsMessages.ts`/`localHexUpload.ts` (ticket 005) define.
@@ -78,7 +80,7 @@ import type {
   FlashLocalReadyMessage,
 } from "@robot-console/host/src/wsMessages.js";
 import { useFirmwareStatus, useFlashProgress, useWsActions, type FlashProgressState } from "../ws/WsProvider";
-import { FIRMWARE_LABEL, PHASE_LABEL, firmwareDisabledReason, isFailedIdentify } from "../deviceDisplay";
+import { FIRMWARE_LABEL, PHASE_LABEL, canBeFlashed, firmwareDisabledReason } from "../deviceDisplay";
 import { DeviceConsole } from "../components/DeviceConsole";
 import "./UnknownDevicePage.css";
 
@@ -227,7 +229,7 @@ export function UnknownDevicePage({ endpoint }: UnknownDevicePageProps) {
     setLocalHex({ phase: "idle" });
   }, [endpoint.endpointId, localHex, send]);
 
-  const showFlashControls = isFailedIdentify(endpoint);
+  const showFlashControls = canBeFlashed(endpoint);
   const relayReason = firmwareDisabledReason(firmwareStatus.relay);
   const robotReason = firmwareDisabledReason(firmwareStatus.robot);
   const localHexBusy = localHex.phase === "awaiting-ready";

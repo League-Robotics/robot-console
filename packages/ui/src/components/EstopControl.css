@@ -21,9 +21,9 @@
 }
 
 /* Visually distinct from every ordinary button on this page (which use
- * `--rc-surface`/`--rc-border`, per DriveControls/StatusPanel/
- * GetSetPanel) so it reads as "different in kind", not just "another
- * button", under stress. */
+ * `--rc-surface`/`--rc-border`, per DriveControls/CommandStrip) so it
+ * reads as "different in kind", not just "another button", under
+ * stress. */
 .estop-control-button {
   border: none;
   background: var(--rc-danger-bg);

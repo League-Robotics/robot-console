@@ -2,9 +2,9 @@
  * EstopControl.tsx — always-reachable emergency-stop control for
  * `RobotPage` (ticket 006 / SUC-002).
  *
- * Kept separate from ticket 005's `DriveControls`/`StatusPanel`/
- * `GetSetPanel` deliberately: those panels model ordinary command
- * plumbing, but e-stop is a safety affordance a student reaches for
+ * Kept separate from ticket 005's `DriveControls`/`CommandStrip`
+ * deliberately: those components model ordinary command plumbing, but
+ * e-stop is a safety affordance a student reaches for
  * when something is *already* going wrong, so this component's own
  * reachability cannot depend on any of them. It is a fully standalone
  * component — `RobotPage` mounts it directly, not nested inside another

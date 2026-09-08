@@ -9,11 +9,16 @@
  * alone.
  *
  * Scoped to `RobotPage.tsx` and the components it mounts that ticket
- * 005/006 introduced (`DriveControls`, `StatusPanel`, `GetSetPanel`,
+ * 005/006 introduced or still mount (`DriveControls`, `CommandStrip`,
  * `SequencingIndicator`, `EstopControl`) -- `DeviceConsole` predates
  * this ticket and is shared with every other per-device page, so it is
  * out of this ticket's scope to re-certify, though it happens to
- * already satisfy the same property.
+ * already satisfy the same property. Sprint 006's separate
+ * status-request panel and Get/Set panel are retired this ticket
+ * (deleted outright, superseded by `CommandStrip` + the unified
+ * console) and dropped from this list; `CommandStrip.tsx` (new) is
+ * added so the scan actually certifies the new file, not just continues
+ * passing on a stale list.
  *
  * Each file's source is pulled in via Vite's `?raw` import suffix
  * (typed by `vite/client`, already this package's one ambient `types`
@@ -24,16 +29,14 @@
 import { describe, expect, it } from "vitest";
 import robotPageSource from "./RobotPage.tsx?raw";
 import driveControlsSource from "../components/DriveControls.tsx?raw";
-import statusPanelSource from "../components/StatusPanel.tsx?raw";
-import getSetPanelSource from "../components/GetSetPanel.tsx?raw";
+import commandStripSource from "../components/CommandStrip.tsx?raw";
 import sequencingIndicatorSource from "../components/SequencingIndicator.tsx?raw";
 import estopControlSource from "../components/EstopControl.tsx?raw";
 
 const FILES_UNDER_TEST: Record<string, string> = {
   "pages/RobotPage.tsx": robotPageSource,
   "components/DriveControls.tsx": driveControlsSource,
-  "components/StatusPanel.tsx": statusPanelSource,
-  "components/GetSetPanel.tsx": getSetPanelSource,
+  "components/CommandStrip.tsx": commandStripSource,
   "components/SequencingIndicator.tsx": sequencingIndicatorSource,
   "components/EstopControl.tsx": estopControlSource,
 };

@@ -1,8 +1,62 @@
+/* RobotPage.css — two-column relayout (ticket 012-005 / SUC-006).
+ *
+ * `max-width: 46rem` (sprint 006's single-column shell) is gone -- the
+ * page now uses the full window width, split roughly in half between
+ * `.robot-page-column-left` (DriveControls, SequencingIndicator, a
+ * stubbed charts placeholder) and `.robot-page-column-right`
+ * (DeviceConsole + CommandStrip).
+ *
+ * `EstopControl` (mounted by RobotPage.tsx directly under the `h2`, as
+ * a sibling of `.robot-page-columns`) gets no rule here at all -- it is
+ * intentionally outside every selector in this file, so its own
+ * `position: sticky; top: 0` (EstopControl.css) keeps the *document* as
+ * its nearest scrolling ancestor, exactly as sprint 006 built it. That
+ * only holds if nothing below scopes an `overflow` onto an ancestor of
+ * `EstopControl` itself -- `.robot-page` and `.robot-page-columns`
+ * (both ancestors of EstopControl's *sibling* subtree, not of
+ * EstopControl) stay in normal flow with no `overflow` set, so this
+ * file's independently-scrolling right column (below) never becomes
+ * EstopControl's scrolling ancestor.
+ */
 .robot-page {
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  max-width: 46rem;
+}
+
+.robot-page-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+@media (max-width: 60rem) {
+  .robot-page-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+.robot-page-column {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+}
+
+/* The right column is given a bounded, viewport-relative height (not a
+ * flat constant like the old `32rem`) so DeviceConsole's log can grow
+ * to fill whatever room the viewport actually has and then scroll
+ * internally -- "the consoles need to scroll" (stakeholder issue),
+ * rather than leaving dead space below a short fixed max-height or
+ * growing the whole document unboundedly. The `14rem` deduction is an
+ * approximation for the app header, this page's own heading, the
+ * e-stop bar, and CommandStrip's own height below the console -- it
+ * does not need to be exact, only to keep the column from overflowing
+ * the viewport on ordinary window sizes. */
+.robot-page-column-right {
+  height: calc(100vh - 14rem);
+  min-height: 24rem;
 }
 
 .robot-page-panel {
@@ -14,4 +68,29 @@
 .robot-page-panel h3 {
   margin: 0;
   font-size: 1rem;
+}
+
+.robot-page-charts-placeholder-text {
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px dashed var(--rc-border);
+  border-radius: 0.4rem;
+  color: var(--rc-text-muted);
+  font-size: 0.85rem;
+}
+
+/* DeviceConsole fills the right column and scrolls within it -- scoped
+ * to this column only (via descendant selectors against DeviceConsole's
+ * own classes) so RelayPage/UnknownDevicePage, which embed the same
+ * component in normal document flow, are completely unaffected. */
+.robot-page-column-right .device-console {
+  flex: 1;
+  min-height: 0;
+  max-width: none;
+}
+
+.robot-page-column-right .console-log {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
 }

@@ -1,7 +1,7 @@
 ---
 id: '005'
 title: RobotPage two-column layout, unified console, and command strip
-status: open
+status: done
 use-cases:
 - SUC-006
 depends-on:
@@ -73,32 +73,32 @@ Relay out the page:
 
 ## Acceptance Criteria
 
-- [ ] `RobotPage` renders a two-column layout; `EstopControl` is
+- [x] `RobotPage` renders a two-column layout; `EstopControl` is
       mounted above both columns (asserted structurally: not a
       descendant of either column's scroll container), left column has
       `DriveControls` + a stubbed charts placeholder, right column has
       `DeviceConsole` + `CommandStrip`.
-- [ ] `RobotPage.css`'s `max-width: 46rem` is removed.
-- [ ] `DeviceConsole`'s log fills the right column's available height
+- [x] `RobotPage.css`'s `max-width: 46rem` is removed.
+- [x] `DeviceConsole`'s log fills the right column's available height
       (no fixed `max-height` leaving dead space).
-- [ ] `CommandStrip` sends HELLO/ID/VER/STATUS via `sendCommand`
+- [x] `CommandStrip` sends HELLO/ID/VER/STATUS via `sendCommand`
       (unsequenced except HELLO's special host-side rejection) and
       GET/SET via `sendCommand` (sequenced), with a free-text name/value
       pair.
-- [ ] Pressing Hello against an open session shows the host's rejection
+- [x] Pressing Hello against an open session shows the host's rejection
       text in the console (depends on ticket 003).
-- [ ] A regression test: a populated rx log with nothing sent produces
+- [x] A regression test: a populated rx log with nothing sent produces
       no second echoed region anywhere on the page (the `GetSetPanel`
       bug's absence, asserted against the page as a whole).
-- [ ] `StatusPanel.tsx`/`.css`/`.test.tsx` and
+- [x] `StatusPanel.tsx`/`.css`/`.test.tsx` and
       `GetSetPanel.tsx`/`.css`/`.test.tsx` are deleted; `grep -rn
       "StatusPanel\|GetSetPanel" packages/ui/src` returns no remaining
       references.
-- [ ] `RobotPage.transportBlind.test.ts`'s `FILES_UNDER_TEST` drops the
+- [x] `RobotPage.transportBlind.test.ts`'s `FILES_UNDER_TEST` drops the
       two deleted files and adds `CommandStrip.tsx`; all three
       transport-blindness assertions (`UsbSerialLink`, quoted `"usb"`,
       `endpoint.transport`) pass against the new file.
-- [ ] `RobotPage.test.tsx` updated for the new structure end to end.
+- [x] `RobotPage.test.tsx` updated for the new structure end to end.
 
 ## Testing
 

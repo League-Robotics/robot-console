@@ -1,7 +1,7 @@
 ---
 id: '012'
 title: 'Device page usability: flash controls, navigation, and robot page layout'
-status: executing
+status: done
 branch: sprint/012-device-page-usability-flash-controls-navigation-and-robot-page-layout
 use-cases:
 - SUC-001

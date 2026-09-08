@@ -22,8 +22,9 @@
  *    with an explicit link back to `/`. Deliberately **not** an
  *    auto-redirect: yanking the student away mid-look is worse than a
  *    dead end with a way back (see `sprint.md`'s Scope boundary --
- *    the one exception, post-flash navigation, is `UnknownDevicePage`'s
- *    own call, not this module's).
+ *    the one exception, post-flash navigation, is `FlashControls`'
+ *    own call (mounted from `UnknownDevicePage`, and from
+ *    `FrontPage.tsx`'s card, ticket 012-002), not this module's).
  *  - `hasSnapshot && endpoint` -> dispatch to the matching per-type
  *    page below.
  *

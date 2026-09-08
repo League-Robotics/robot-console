@@ -1,7 +1,7 @@
 ---
 id: '002'
 title: Extract shared FlashControls component and restore front-page flash affordance
-status: open
+status: done
 use-cases:
 - SUC-002
 depends-on:
@@ -56,30 +56,30 @@ criterion met — a single green run does not prove a flake is fixed.
 
 ## Acceptance Criteria
 
-- [ ] New `packages/ui/src/components/FlashControls.tsx` (+ `.css`)
+- [x] New `packages/ui/src/components/FlashControls.tsx` (+ `.css`)
       owns the release-flash buttons, local-hex handshake, progress
       rendering, and `onFlashResult`/`onFlashLocalReady` subscriptions,
       parameterized on an `endpoint` prop — moved from
       `UnknownDevicePage.tsx`, not duplicated.
-- [ ] `UnknownDevicePage.tsx` is reduced to a thin wrapper: header +
+- [x] `UnknownDevicePage.tsx` is reduced to a thin wrapper: header +
       `FlashControls` (gated on `canBeFlashed`) + `DeviceConsole`, with
       no independent flash logic of its own.
-- [ ] `FrontPage.tsx`'s `EndpointCard` renders `FlashControls` for a
+- [x] `FrontPage.tsx`'s `EndpointCard` renders `FlashControls` for a
       `canBeFlashed` device, as a sibling of the card's `<Link>` — not
       nested inside it.
-- [ ] A DOM-structure assertion (not just visual placement) confirms
+- [x] A DOM-structure assertion (not just visual placement) confirms
       the card's `<a>` contains no `<button>`/`<input>` descendant.
-- [ ] The card's navigation (click on the informational region,
+- [x] The card's navigation (click on the informational region,
       middle-click, keyboard activation) still reaches `/d/:endpointId`
       with the restructured markup.
-- [ ] A `canBeFlashed` device's front-page card shows flash controls; a
+- [x] A `canBeFlashed` device's front-page card shows flash controls; a
       device that is not `canBeFlashed` shows none (no visual regression
       for the common "already identified" card).
-- [ ] `UnknownDevicePage.test.tsx`'s release/local-hex/progress/
+- [x] `UnknownDevicePage.test.tsx`'s release/local-hex/progress/
       post-flash-navigation assertions are migrated to
       `FlashControls.test.tsx`, exercised against the standalone
       component.
-- [ ] The known intermittent flake is root-caused and fixed (or the
+- [x] The known intermittent flake is root-caused and fixed (or the
       missing await/isolation is added); the migrated suite is run
       repeatedly to confirm stability, not just once.
 

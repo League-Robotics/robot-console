@@ -1,0 +1,87 @@
+/**
+ * LineRouter.ts — the transport-agnostic receive-path glue every
+ * connected link runs an already-reassembled, already-normalized
+ * inbound line (see `lineStream.ts`'s `LineReassembler` for what
+ * "normalized" means) through: decode via `v6/codec.ts`'s
+ * `decodeLine`, classify its verb's direction via `classifyLine`, and
+ * — for `ack`/`nack` replies — feed it to `v6/session.ts`'s `Session`
+ * for sequencing bookkeeping, re-sending whatever it asks for through
+ * the caller's own paced write path.
+ *
+ * Extracted out of `UsbSerialLink#handleLine` (sprint 4 ticket 002, per
+ * the roadmap issue's "four links must not each reimplement the nack
+ * arithmetic") so a future relay/TCP/UDP link (sprint 7) composes this
+ * instead of reimplementing it. The specific risk this centralizes:
+ * `nack N` carries the *next-expected* sequence id, not the last-good
+ * one, so the correct update is `seq = N - 1` — `Session.handleReply`
+ * (this class's only call into the protocol package) already gets that
+ * arithmetic right and is exercised by its own tests, but a transport
+ * that hand-rolls the surrounding call sequence itself (decode, then
+ * classify, then call `handleReply`, then resend, then dispatch, in
+ * that order) risks getting the *sequence of calls* wrong even while
+ * correctly delegating the arithmetic — e.g. dispatching before a
+ * resend goes out, or skipping the classify step and treating a
+ * foreign line as a protocol reply. That was a real logged bug in a
+ * sibling project. Four transports must not each take on that risk
+ * independently; they all use this one class instead.
+ *
+ * Only `"reply"`-direction lines are ever surfaced to a caller's
+ * `onLine` callback — a blank line, an over-length line, a foreign
+ * (unrecognized lowercase) line, and an unexpected command-direction
+ * line are all dropped here silently, never surfaced as an error.
+ */
+import {
+  decodeLine,
+  classifyLine,
+  type AckNackEvent,
+  type DecodedLine,
+  type Session,
+} from "@robot-console/protocol";
+
+export interface LineRouterCallbacks {
+  /** Every `"reply"`-direction decoded line, `ack`/`nack` included. */
+  onLine: (line: DecodedLine) => void;
+  /** An `ack`/`nack` event, after it has already been applied to the
+   * session — mirrors `Session.handleReply`'s own return value. */
+  onAckNack: (event: AckNackEvent) => void;
+  /** One resend line a `nack` requires, already formatted wire text —
+   * the caller is expected to pass this through the same paced write
+   * path as every other write. */
+  resend: (line: string) => void;
+}
+
+/**
+ * Runs one already-reassembled, already-normalized inbound line through
+ * decode -> classify -> (ack/nack -> session -> resend) -> dispatch.
+ * See the module doc comment for why this exists as its own class
+ * rather than being inlined per transport.
+ */
+export class LineRouter {
+  constructor(
+    private readonly session: Session,
+    private readonly callbacks: LineRouterCallbacks,
+  ) {}
+
+  handleLine(raw: string): void {
+    const decoded = decodeLine(raw);
+    if (decoded.kind !== "line") {
+      return;
+    }
+
+    if (classifyLine(decoded.verb) !== "reply") {
+      return;
+    }
+
+    if (decoded.verb === "ack" || decoded.verb === "nack") {
+      const event = this.session.handleReply(decoded);
+      if (event) {
+        for (const resendLine of event.resend) {
+          this.callbacks.resend(resendLine);
+        }
+        this.callbacks.onAckNack(event);
+      }
+    }
+
+    this.callbacks.onLine(decoded);
+  }
+}

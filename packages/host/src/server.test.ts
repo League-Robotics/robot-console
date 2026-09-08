@@ -1,12 +1,15 @@
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
-import type { DecodedLine, ParsedBanner } from "@robot-console/protocol";
+import type { AckNackEvent, DecodedLine, ParsedBanner } from "@robot-console/protocol";
 import { DeviceWatcher, type DaplinkDevice } from "./devices.js";
-import { DeviceRegistry, type DeviceRegistryOptions, type UsbSerialLinkLike } from "./deviceRegistry.js";
+import { DeviceRegistry, type DeviceRegistryOptions } from "./deviceRegistry.js";
+import type { Link } from "./link/Link.js";
 import type { FirmwareConfigMap, FirmwareSource } from "./config.js";
+import { LocalHexUploadManager } from "./localHexUpload.js";
 import { FirmwareAvailabilityCache, type ResolvedRelease } from "./releases.js";
 import { startServer, type RunningServer } from "./server.js";
-import type { FlashPhase, ServerMessage } from "./wsMessages.js";
+import { UPLOAD_ID_BYTE_LENGTH, type FlashPhase, type ServerMessage } from "./wsMessages.js";
 
 // Per the ticket's Testing section: a full end-to-end WebSocket round
 // trip -- a real Express/`ws` server, a real WebSocket client, and fake
@@ -35,15 +38,28 @@ function banner(overrides: Partial<ParsedBanner> = {}): ParsedBanner {
   };
 }
 
-class FakeLink implements UsbSerialLinkLike {
+/** See `deviceRegistry.test.ts`'s own `FakeLink` for the full doc
+ * comment on the `connect()`/`identify()` split this implements --
+ * `connectImpl` defaults to an immediately-succeeding transport since
+ * every test here except the "no open link" one below cares only about
+ * `identify()`'s outcome. */
+class FakeLink implements Link {
   sentLines: string[] = [];
   private lineListeners = new Set<(line: DecodedLine) => void>();
+  private ackNackListeners = new Set<(event: AckNackEvent) => void>();
   private errorListeners = new Set<(err: Error) => void>();
 
-  constructor(private readonly openImpl: () => Promise<ParsedBanner>) {}
+  constructor(
+    private readonly identifyImpl: () => Promise<ParsedBanner | null>,
+    private readonly connectImpl: () => Promise<void> = () => Promise.resolve(),
+  ) {}
 
-  open(): Promise<ParsedBanner> {
-    return this.openImpl();
+  connect(): Promise<void> {
+    return this.connectImpl();
+  }
+
+  identify(): Promise<ParsedBanner | null> {
+    return this.identifyImpl();
   }
 
   close(): Promise<void> {
@@ -54,10 +70,29 @@ class FakeLink implements UsbSerialLinkLike {
     this.sentLines.push(line);
   }
 
+  sendCommand(): string {
+    throw new Error("FakeLink.sendCommand is not exercised by server.test.ts");
+  }
+
+  sendUnsequenced(): string {
+    throw new Error("FakeLink.sendUnsequenced is not exercised by server.test.ts");
+  }
+
+  checkLiveness(): void {
+    // Not exercised here -- no-op.
+  }
+
   onLine(listener: (line: DecodedLine) => void): () => void {
     this.lineListeners.add(listener);
     return () => {
       this.lineListeners.delete(listener);
+    };
+  }
+
+  onAckNack(listener: (event: AckNackEvent) => void): () => void {
+    this.ackNackListeners.add(listener);
+    return () => {
+      this.ackNackListeners.delete(listener);
     };
   }
 
@@ -207,30 +242,35 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
     expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
   });
 
-  it("sends a devices snapshot on connect, then a live-updated one with name/role resolved", async () => {
+  it("sends an endpoints snapshot on connect, then a live-updated one with name/role resolved", async () => {
     const link = new FakeLink(async () => banner());
     server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
     const connected = await connect(server.url.replace("http://", "ws://"));
     ws = connected.ws;
 
     const resolved = await connected.messages.waitFor(
-      (m) => m.type === "devices" && m.devices[0]?.role === "NEZHA2",
+      (m) => m.type === "endpoints" && m.endpoints[0]?.role === "NEZHA2",
     );
     expect(resolved).toEqual({
-      type: "devices",
-      devices: [
+      type: "endpoints",
+      endpoints: [
         expect.objectContaining({
-          id: "SERIAL-A",
-          serialNumber: "SERIAL-A",
-          displaySerial: "SHORT-A",
+          endpointId: "usb-SERIAL-A",
+          transport: "usb",
+          resourceKey: "usb-SERIAL-A",
+          classification: expect.objectContaining({ type: "robot" }),
           name: "zeguz",
           role: "NEZHA2",
-          port: "/dev/cu.usbmodemA",
-          linkOpen: true,
+          sessionOpen: true,
+          usb: {
+            serialNumber: "SERIAL-A",
+            displaySerial: "SHORT-A",
+            port: "/dev/cu.usbmodemA",
+          },
         }),
       ],
-      // Ticket 006: every `devices` broadcast carries `firmwareStatus`,
-      // built from the availability cache -- no `firmwareConfig`/
+      // Every `endpoints` broadcast carries `firmwareStatus`, built from
+      // the availability cache -- no `firmwareConfig`/
       // `availabilityCache` override was passed to `startServer` here,
       // so this exercises the real default (`getFirmwareConfig()` off
       // this test process's real, firmware-var-free environment) rather
@@ -249,47 +289,54 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
     const connected = await connect(server.url.replace("http://", "ws://"));
     ws = connected.ws;
 
-    await connected.messages.waitFor((m) => m.type === "devices" && m.devices[0]?.linkOpen === true);
+    await connected.messages.waitFor((m) => m.type === "endpoints" && m.endpoints[0]?.sessionOpen === true);
 
-    ws.send(JSON.stringify({ type: "line", deviceId: "SERIAL-A", direction: "tx", line: "HELLO" }));
+    ws.send(JSON.stringify({ type: "line", endpointId: "usb-SERIAL-A", direction: "tx", line: "HELLO" }));
 
     // Server echoes the sent line back to every client...
     const echoed = await connected.messages.waitFor((m) => m.type === "line" && m.direction === "tx");
-    expect(echoed).toEqual({ type: "line", deviceId: "SERIAL-A", direction: "tx", line: "HELLO" });
+    expect(echoed).toEqual({ type: "line", endpointId: "usb-SERIAL-A", direction: "tx", line: "HELLO" });
     expect(link.sentLines).toEqual(["HELLO"]);
 
     // ...and once the fake device "replies", the client sees that too.
     link.emitLine({ kind: "line", verb: "status", fields: ["mode=idle"] });
     const reply = await connected.messages.waitFor((m) => m.type === "line" && m.direction === "rx");
-    expect(reply).toEqual({ type: "line", deviceId: "SERIAL-A", direction: "rx", line: "status mode=idle" });
+    expect(reply).toEqual({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: "status mode=idle" });
   });
 
   it("reports a graceful error, not a crash, for a line sent to a device with no open link", async () => {
-    // Mirrors the real UsbSerialLink against a silent board: open()
-    // eventually rejects (a bounded timeout in production; a short
-    // delay here) rather than ever resolving. DeviceRegistry serializes
-    // open/send per device, so sendLine() sent while this is still in
-    // flight is queued behind it and observes the settled (failed)
-    // state -- see deviceRegistry.ts's "serializes name-read and
-    // link-open" test for the same guarantee in isolation.
+    // Mirrors the real UsbSerialLink against a genuine transport
+    // failure: connect() eventually rejects (a bounded timeout in
+    // production; a short delay here) rather than ever resolving. Under
+    // sprint 4 ticket 002's connect()/identify() split, only a
+    // connect() failure leaves the endpoint with no open link
+    // (sessionOpen: false) -- an identify() timeout (a silent board) no
+    // longer does, since that link stays open (see
+    // deviceRegistry.test.ts's "connected-but-unresponsive" test).
+    // DeviceRegistry serializes connect/send per device, so sendLine()
+    // sent while this is still in flight is queued behind it and
+    // observes the settled (failed) state -- see deviceRegistry.ts's
+    // "serializes name-read and link-open" test for the same guarantee
+    // in isolation.
     const link = new FakeLink(
+      async () => banner(), // never reached -- connect() fails first
       () =>
-        new Promise<ParsedBanner>((_resolve, reject) => {
-          setTimeout(() => reject(new Error("timed out waiting for a HELLO banner reply")), 20);
+        new Promise<void>((_resolve, reject) => {
+          setTimeout(() => reject(new Error("permission denied opening port")), 20);
         }),
     );
     server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
     const connected = await connect(server.url.replace("http://", "ws://"));
     ws = connected.ws;
 
-    await connected.messages.waitFor((m) => m.type === "devices" && m.devices.length === 1);
-    ws.send(JSON.stringify({ type: "line", deviceId: "SERIAL-A", direction: "tx", line: "HELLO" }));
+    await connected.messages.waitFor((m) => m.type === "endpoints" && m.endpoints.length === 1);
+    ws.send(JSON.stringify({ type: "line", endpointId: "usb-SERIAL-A", direction: "tx", line: "HELLO" }));
 
     const error = await connected.messages.waitFor((m) => m.type === "error");
     expect(error).toEqual({
       type: "error",
-      deviceId: "SERIAL-A",
-      message: "device SERIAL-A has no open link",
+      endpointId: "usb-SERIAL-A",
+      message: "device usb-SERIAL-A has no open link",
     });
   });
 
@@ -299,7 +346,7 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
     const connected = await connect(server.url.replace("http://", "ws://"));
     ws = connected.ws;
 
-    await connected.messages.waitFor((m) => m.type === "devices");
+    await connected.messages.waitFor((m) => m.type === "endpoints");
     ws.send("not json");
 
     const error = await connected.messages.waitFor((m) => m.type === "error");
@@ -371,38 +418,181 @@ describe("server.ts flash wiring (sprint 2, ticket 006)", () => {
     // tab too" requirement).
     const second = await connectTracked(server.url.replace("http://", "ws://"));
 
-    await first.messages.waitFor((m) => m.type === "devices" && m.devices[0]?.linkOpen === true);
+    await first.messages.waitFor((m) => m.type === "endpoints" && m.endpoints[0]?.sessionOpen === true);
 
-    first.ws.send(JSON.stringify({ type: "flash-start", deviceId: "SERIAL-A", firmware: "relay" }));
+    first.ws.send(
+      JSON.stringify({
+        type: "flash-start",
+        endpointId: "usb-SERIAL-A",
+        source: { kind: "release", firmware: "relay" },
+      }),
+    );
 
     const progressOnFirst = await first.messages.waitFor((m) => m.type === "flash-progress");
     expect(progressOnFirst).toEqual({
       type: "flash-progress",
-      deviceId: "SERIAL-A",
-      firmware: "relay",
+      endpointId: "usb-SERIAL-A",
+      source: { kind: "release", firmware: "relay" },
       phase: "fetching",
     });
 
-    const resultOnFirst = await first.messages.waitFor((m) => m.type === "flash-result");
-    expect(resultOnFirst).toEqual({
+    // ticket 004: the terminal flash-result waits for the post-flash
+    // reidentify to settle and carries its classification/name --
+    // FakeLink's identify() resolves the same banner() both times here
+    // (createLink returns the one shared `link` fake), so the endpoint's
+    // classification survives the round trip unchanged, but the field is
+    // now populated end to end over the wire.
+    const expectedResult = {
       type: "flash-result",
-      deviceId: "SERIAL-A",
-      firmware: "relay",
+      endpointId: "usb-SERIAL-A",
+      source: { kind: "release", firmware: "relay" },
       status: "ok",
-    });
+      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "common-name" },
+      name: "zeguz",
+    };
+    const resultOnFirst = await first.messages.waitFor((m) => m.type === "flash-result");
+    expect(resultOnFirst).toEqual(expectedResult);
 
     // The requester's own client saw it; confirm the *other* connected
     // client did too.
     const resultOnSecond = await second.messages.waitFor((m) => m.type === "flash-result");
-    expect(resultOnSecond).toEqual({
-      type: "flash-result",
-      deviceId: "SERIAL-A",
-      firmware: "relay",
-      status: "ok",
-    });
+    expect(resultOnSecond).toEqual(expectedResult);
 
     expect(resolveReleaseFn).toHaveBeenCalledTimes(1);
     expect(fetchAndVerifyHexFn).toHaveBeenCalledTimes(1);
+    expect(flashFn).toHaveBeenCalledTimes(1);
+  });
+});
+
+function sha256Hex(payload: Buffer): string {
+  return createHash("sha256").update(payload).digest("hex");
+}
+
+describe("server.ts local-hex upload handshake (sprint 4 ticket 005)", () => {
+  let server: RunningServer | undefined;
+  let sockets: WebSocket[] = [];
+
+  afterEach(async () => {
+    for (const socket of sockets) {
+      socket.close();
+    }
+    sockets = [];
+    await server?.close();
+    server = undefined;
+  });
+
+  async function connectTracked(url: string): Promise<{ ws: WebSocket; messages: MessageCollector }> {
+    const connected = await connect(url);
+    sockets.push(connected.ws);
+    return connected;
+  }
+
+  it("routes a binary frame to localHexUpload (isBinary branch), distinct from the JSON text path", async () => {
+    const link = new FakeLink(async () => banner());
+    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
+    const connected = await connectTracked(server.url.replace("http://", "ws://"));
+    await connected.messages.waitFor((m) => m.type === "endpoints");
+
+    // A text message that isn't valid JSON goes through the JSON/
+    // parseClientMessage path and reports the "malformed JSON message"
+    // error -- confirms the baseline (non-binary) behavior first.
+    connected.ws.send("not json");
+    const textError = await connected.messages.waitFor((m) => m.type === "error");
+    expect(textError).toEqual({ type: "error", message: "malformed JSON message" });
+
+    // A binary frame carrying a well-formed-length but unknown uploadId
+    // prefix goes through localHexUpload.receiveFrame instead -- a
+    // distinctly different error message proves the isBinary branch
+    // actually dispatched to it rather than falling through to
+    // JSON.parse (which would report "malformed JSON message" again for
+    // this same garbage bytes).
+    const unknownUploadId = "00000000-0000-0000-0000-000000000000";
+    expect(unknownUploadId).toHaveLength(UPLOAD_ID_BYTE_LENGTH);
+    const frame = Buffer.concat([Buffer.from(unknownUploadId, "ascii"), Buffer.from("payload", "utf-8")]);
+    connected.ws.send(frame);
+
+    const binaryError = await connected.messages.waitFor(
+      (m) => m.type === "error" && m.message !== "malformed JSON message",
+    );
+    expect(binaryError).toEqual({
+      type: "error",
+      message: expect.stringContaining(unknownUploadId),
+    });
+
+    // The connection survives both -- a bad message is never a reason to
+    // close the socket.
+    expect(connected.ws.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it("round-trips the full handshake: flash-local-begin -> flash-local-ready -> binary frame -> flash-start -> successful flash", async () => {
+    const link = new FakeLink(async () => banner());
+    const localHexUpload = new LocalHexUploadManager();
+
+    let observedHexText: string | undefined;
+    const flashFn = vi.fn(
+      async (
+        _device: DaplinkDevice,
+        hexText: string,
+        onProgress: (phase: FlashPhase) => void,
+      ) => {
+        observedHexText = hexText;
+        onProgress("erasing");
+        onProgress("writing");
+        onProgress("resetting");
+        return { status: "ok" as const, method: "swd" as const };
+      },
+    );
+    const registry = buildRegistry(link, {
+      // The same LocalHexUploadManager instance server.ts uses for the
+      // JSON/binary handling below -- see StartServerOptions
+      // .localHexUpload's own doc comment for why a caller-supplied
+      // registry must wire this itself.
+      consumeUpload: (uploadId) => localHexUpload.consumeUpload(uploadId),
+      flash: flashFn,
+    });
+
+    server = await startServer({
+      port: 0,
+      registry,
+      firmwareConfig: NO_FIRMWARE,
+      localHexUpload,
+    });
+    const connected = await connectTracked(server.url.replace("http://", "ws://"));
+    await connected.messages.waitFor((m) => m.type === "endpoints" && m.endpoints[0]?.sessionOpen === true);
+
+    const payload = Buffer.from(":10000000AABBCCDD00000000000000000000005A\n:00000001FF\n", "utf-8");
+    const fileName = "my-firmware.hex";
+    const sha256 = sha256Hex(payload);
+
+    connected.ws.send(
+      JSON.stringify({ type: "flash-local-begin", fileName, byteLength: payload.length, sha256 }),
+    );
+    const ready = await connected.messages.waitFor((m) => m.type === "flash-local-ready");
+    expect(ready).toEqual({ type: "flash-local-ready", uploadId: expect.any(String) });
+    const uploadId = (ready as { uploadId: string }).uploadId;
+    expect(uploadId).toHaveLength(UPLOAD_ID_BYTE_LENGTH);
+
+    connected.ws.send(Buffer.concat([Buffer.from(uploadId, "ascii"), payload]));
+
+    const source = { kind: "local-hex" as const, uploadId, fileName, sha256 };
+    connected.ws.send(
+      JSON.stringify({ type: "flash-start", endpointId: "usb-SERIAL-A", source }),
+    );
+
+    const progress = await connected.messages.waitFor((m) => m.type === "flash-progress");
+    expect(progress).toEqual({ type: "flash-progress", endpointId: "usb-SERIAL-A", source, phase: "verifying" });
+
+    const result = await connected.messages.waitFor((m) => m.type === "flash-result");
+    expect(result).toEqual({
+      type: "flash-result",
+      endpointId: "usb-SERIAL-A",
+      source,
+      status: "ok",
+      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "common-name" },
+      name: "zeguz",
+    });
+
+    expect(observedHexText).toBe(payload.toString("utf-8"));
     expect(flashFn).toHaveBeenCalledTimes(1);
   });
 });
@@ -434,9 +624,9 @@ describe("server.ts firmwareStatus (sprint 2, ticket 006)", () => {
     const connected = await connect(server.url.replace("http://", "ws://"));
     ws = connected.ws;
 
-    const initial = await connected.messages.waitFor((m) => m.type === "devices");
+    const initial = await connected.messages.waitFor((m) => m.type === "endpoints");
     expect(initial).toMatchObject({
-      type: "devices",
+      type: "endpoints",
       firmwareStatus: {
         relay: { configured: true, repoUrl: firmwareSource().repoUrl, tag: "latest", available: true },
         robot: { configured: false },
@@ -465,7 +655,7 @@ describe("server.ts firmwareStatus (sprint 2, ticket 006)", () => {
     const connected = await connect(server.url.replace("http://", "ws://"));
     ws = connected.ws;
 
-    const initial = await connected.messages.waitFor((m) => m.type === "devices");
+    const initial = await connected.messages.waitFor((m) => m.type === "endpoints");
     expect(initial).toMatchObject({ firmwareStatus: { robot: { configured: true, available: false } } });
 
     // The poll (not any client message) is what flips this -- simulating
@@ -475,12 +665,12 @@ describe("server.ts firmwareStatus (sprint 2, ticket 006)", () => {
 
     const updated = await connected.messages.waitFor(
       (m) =>
-        m.type === "devices" &&
+        m.type === "endpoints" &&
         m.firmwareStatus.robot.configured === true &&
         m.firmwareStatus.robot.available === true,
     );
     expect(updated).toMatchObject({
-      type: "devices",
+      type: "endpoints",
       firmwareStatus: {
         relay: { configured: false },
         robot: {

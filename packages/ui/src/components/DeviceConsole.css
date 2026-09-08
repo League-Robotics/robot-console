@@ -1,9 +1,8 @@
-.console-tab {
+.device-console {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
   max-width: 60rem;
-  height: 100%;
 }
 
 .console-toolbar {
@@ -11,23 +10,6 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 0.6rem;
-}
-
-.console-device-picker {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.85rem;
-  color: var(--rc-text-muted);
-}
-
-.console-device-picker select {
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.3rem 0.6rem;
-  border-radius: 0.4rem;
-  font-size: 0.9rem;
 }
 
 .console-button {

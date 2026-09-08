@@ -1,30 +1,30 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
-import {
-  LineReassembler,
-  UsbSerialLink,
-  WritePacer,
-  type Scheduler,
-  type SerialPortLike,
-} from "./UsbSerialLink.js";
+import { UsbSerialLink, type SerialPortLike } from "./UsbSerialLink.js";
+import type { Scheduler } from "./pacing.js";
 import { toCalloutPath } from "../devices.js";
 
 // Per the ticket's Testing section: the real `serialport` I/O is a thin
 // wrapper around real hardware and is not meaningfully unit-testable
-// without either real hardware or a fairly elaborate fake. What IS
-// unit-tested here, against a fully synthetic `FakeSerialPort`, is
-// everything this module actually owns: the open->HELLO->banner-from-
-// reply sequence, write pacing, ack/nack wiring into `Session`, and
-// silently dropping foreign traffic. The real open/HELLO/console-command
-// path against actual hardware is covered by this sprint's recorded
-// hardware smoke test instead (see the ticket).
+// without either real hardware or a fairly elaborate serial-port fake.
+// What IS unit-tested here, against a fully synthetic `FakeSerialPort`,
+// is everything this class actually owns: the connect()/identify()
+// split, write pacing wired through to the port, and the port-lock-
+// contention regression (identify() retried without re-opening the
+// port). `LineReassembler`/`WritePacer` have their own test files
+// (`lineStream.test.ts`/`pacing.test.ts`) and `LineRouter`'s decode/
+// classify/ack-nack/resend logic has its own (`LineRouter.test.ts`) --
+// this file only asserts that `UsbSerialLink` wires them together
+// correctly. The real connect/identify/console-command path against
+// actual hardware is covered by this sprint's recorded hardware smoke
+// test instead (see the ticket).
 
 /** A fully synthetic stand-in for `serialport`'s `SerialPort`, recording
  * every write and letting a test drive `data`/`open`/`error`/`close`
  * events directly. */
 class FakeSerialPort extends EventEmitter implements SerialPortLike {
   writes: string[] = [];
-  closed = false;
+  closeCalls = 0;
 
   // `on`/`once` are inherited unmodified from `EventEmitter` -- its own
   // `(event: string, listener: (...args: any[]) => void)` signature is
@@ -39,7 +39,7 @@ class FakeSerialPort extends EventEmitter implements SerialPortLike {
   }
 
   close(callback?: (err?: Error | null) => void): void {
-    this.closed = true;
+    this.closeCalls++;
     callback?.(null);
     this.emit("close");
   }
@@ -70,194 +70,59 @@ async function flush(): Promise<void> {
 }
 
 /** Real pacing behavior (the actual 10ms gap) is covered separately by
- * the "UsbSerialLink write pacing" / "WritePacer" suites below, each
- * with an explicit `recordingScheduler()`. Every other test in this
- * file cares about wiring/sequencing correctness, not real elapsed
- * time, so it defaults to a scheduler whose `delay()` resolves on the
- * next microtask instead of a real wall-clock wait -- otherwise every
- * such test would need to actually wait out real pacing delays (or
- * fake timers) just to observe a write that has nothing to do with
- * pacing itself. */
+ * the "UsbSerialLink write pacing" suite below, with an explicit
+ * `recordingScheduler()`. Every other test in this file cares about
+ * wiring/sequencing correctness, not real elapsed time, so it defaults
+ * to a scheduler whose `delay()` resolves on the next microtask instead
+ * of a real wall-clock wait. */
 const immediateScheduler: Scheduler = { delay: () => Promise.resolve() };
 
-function openedLink(overrides: { paceMs?: number; scheduler?: Scheduler } = {}): {
+/** Build a link and drive it through `connect()`, emitting the fake
+ * port's `open` event so the returned promise settles. */
+function connectedLink(overrides: { paceMs?: number; scheduler?: Scheduler; openTimeoutMs?: number } = {}): {
   link: UsbSerialLink;
   port: FakeSerialPort;
-  openPromise: Promise<import("@robot-console/protocol").ParsedBanner>;
+  connectPromise: Promise<void>;
 } {
   const port = new FakeSerialPort();
   const link = new UsbSerialLink("/dev/tty.usbmodemFAKE", {
     createPort: () => port,
     writePaceMs: overrides.paceMs ?? 10,
     scheduler: overrides.scheduler ?? immediateScheduler,
-    openTimeoutMs: 200,
+    openTimeoutMs: overrides.openTimeoutMs ?? 200,
   });
-  const openPromise = link.open();
+  const connectPromise = link.connect();
   port.emit("open");
-  return { link, port, openPromise };
+  return { link, port, connectPromise };
+}
+
+/** `connect()` then `identify()`, emitting `bannerLine` as the HELLO
+ * reply once the HELLO write has gone out. */
+async function identifiedLink(
+  bannerLine: string,
+  overrides: { paceMs?: number; scheduler?: Scheduler } = {},
+): Promise<{ link: UsbSerialLink; port: FakeSerialPort }> {
+  const { link, port, connectPromise } = connectedLink(overrides);
+  await connectPromise;
+  const identifyPromise = link.identify();
+  await flush();
+  port.emit("data", Buffer.from(`${bannerLine}\n`));
+  await identifyPromise;
+  return { link, port };
 }
 
 // ---------------------------------------------------------------------
-// toCalloutPath (trap #1) -- the canonical test suite now lives in
-// `../devices.test.ts` alongside the function itself (moved there per
-// sprint 003 ticket 001). `toCalloutPath` is still imported here (see
-// the import above) because `UsbSerialLink.open()` still calls it
-// directly as defense-in-depth -- the "translates the tty. path to cu.
-// on darwin when opening" case further down in this file exercises that
-// call site specifically, not the pure function's translation logic
-// (already covered in `devices.test.ts`).
+// UsbSerialLink.connect() -- transport-only, no HELLO
 // ---------------------------------------------------------------------
 
-// ---------------------------------------------------------------------
-// LineReassembler (trap #6, #7)
-// ---------------------------------------------------------------------
-
-describe("LineReassembler", () => {
-  it("returns nothing until a newline arrives, then the complete line", () => {
-    const r = new LineReassembler();
-    expect(r.push("ack 1 0 n")).toEqual([]);
-    expect(r.push("one\n")).toEqual(["ack 1 0 none"]);
+describe("UsbSerialLink.connect", () => {
+  it("opens the port and resolves without sending anything", async () => {
+    const { port, connectPromise } = connectedLink();
+    await connectPromise;
+    expect(port.writes).toEqual([]);
   });
 
-  it("splits a single chunk carrying multiple lines", () => {
-    const r = new LineReassembler();
-    expect(r.push("pong\nack 1 0 none\n")).toEqual(["pong", "ack 1 0 none"]);
-  });
-
-  it("strips a trailing \\r", () => {
-    const r = new LineReassembler();
-    expect(r.push("pong\r\n")).toEqual(["pong"]);
-  });
-
-  it("strips a leading '< ' prefix unconditionally", () => {
-    const r = new LineReassembler();
-    expect(r.push("< pong\n")).toEqual(["pong"]);
-  });
-
-  it("strips both '< ' and a trailing \\r on the same line", () => {
-    const r = new LineReassembler();
-    expect(r.push("< ack 1 0 none\r\n")).toEqual(["ack 1 0 none"]);
-  });
-
-  it("does not strip '< ' if it is not a leading prefix", () => {
-    const r = new LineReassembler();
-    expect(r.push("ret 1 < 2\n")).toEqual(["ret 1 < 2"]);
-  });
-});
-
-// ---------------------------------------------------------------------
-// WritePacer (trap #5) -- pacing logic in isolation
-// ---------------------------------------------------------------------
-
-describe("WritePacer", () => {
-  it("runs writes in order, delaying by paceMs between each", async () => {
-    const scheduler = recordingScheduler();
-    const pacer = new WritePacer(10, scheduler);
-    const order: string[] = [];
-
-    pacer.schedule(() => order.push("a"));
-    pacer.schedule(() => order.push("b"));
-    pacer.schedule(() => order.push("c"));
-
-    await flush();
-
-    expect(order).toEqual(["a", "b", "c"]);
-    expect(scheduler.calls).toEqual([10, 10, 10]);
-  });
-
-  it("a throwing write does not wedge later scheduled writes", async () => {
-    const scheduler = recordingScheduler();
-    const pacer = new WritePacer(10, scheduler);
-    const order: string[] = [];
-
-    pacer.schedule(() => {
-      throw new Error("boom");
-    });
-    pacer.schedule(() => order.push("still runs"));
-
-    await flush();
-
-    expect(order).toEqual(["still runs"]);
-  });
-});
-
-// ---------------------------------------------------------------------
-// UsbSerialLink.open() -- open -> HELLO -> read banner from reply
-// ---------------------------------------------------------------------
-
-describe("UsbSerialLink.open", () => {
-  it("sends HELLO (paced) and resolves with the banner parsed from its reply (colon dialect)", async () => {
-    const { port, openPromise } = openedLink();
-    await flush();
-
-    // HELLO must have been written before the reply arrives.
-    expect(port.writes).toEqual(["HELLO\n"]);
-
-    port.emit("data", Buffer.from("DEVICE:RADIOBRIDGE:relay:getez:1779042496\n"));
-    const banner = await openPromise;
-
-    expect(banner).toEqual({
-      role: "RADIOBRIDGE",
-      commonName: "relay",
-      name: "getez",
-      serial: 1779042496,
-      dialect: "colon",
-    });
-  });
-
-  it("resolves with the banner parsed from a space-dialect robot reply", async () => {
-    const { port, openPromise } = openedLink();
-    await flush();
-    port.emit("data", Buffer.from("device NEZHA2 robot vevov 1198504156\n"));
-    const banner = await openPromise;
-    expect(banner.role).toBe("NEZHA2");
-    expect(banner.name).toBe("vevov");
-    expect(banner.dialect).toBe("space");
-  });
-
-  it("exposes role/name/serial getters once open", async () => {
-    const { link, port, openPromise } = openedLink();
-    await flush();
-    port.emit("data", Buffer.from("DEVICE:RADIOBRIDGE:relay:getez:1779042496\n"));
-    await openPromise;
-
-    expect(link.role).toBe("RADIOBRIDGE");
-    expect(link.name).toBe("getez");
-    expect(link.serial).toBe(1779042496);
-    expect(link.isOpen).toBe(true);
-  });
-
-  it("ignores noise arriving before the actual banner during the open wait", async () => {
-    const { port, openPromise } = openedLink();
-    await flush();
-    port.emit("data", Buffer.from("not a banner\n"));
-    port.emit("data", Buffer.from("DEVICE:RADIOBRIDGE:relay:getez:1779042496\n"));
-    const banner = await openPromise;
-    expect(banner.name).toBe("getez");
-  });
-
-  it("rejects if no banner arrives within openTimeoutMs", async () => {
-    const port = new FakeSerialPort();
-    const link = new UsbSerialLink("/dev/tty.usbmodemFAKE", {
-      createPort: () => port,
-      openTimeoutMs: 20,
-    });
-    const openPromise = link.open();
-    port.emit("open");
-    await expect(openPromise).rejects.toThrow(/timed out/i);
-  });
-
-  it("rejects if the port errors before opening", async () => {
-    const port = new FakeSerialPort();
-    const link = new UsbSerialLink("/dev/tty.usbmodemFAKE", {
-      createPort: () => port,
-    });
-    const openPromise = link.open();
-    port.emit("error", new Error("permission denied"));
-    await expect(openPromise).rejects.toThrow(/permission denied/);
-  });
-
-  it("translates the tty. path to cu. on darwin when opening", () => {
+  it("translates the tty. path to cu. on darwin when connecting", () => {
     let requestedPath: string | undefined;
     const port = new FakeSerialPort();
     const link = new UsbSerialLink("/dev/tty.usbmodem2121102", {
@@ -267,16 +132,136 @@ describe("UsbSerialLink.open", () => {
       },
     });
     // Not awaited -- only the synchronous createPort() call matters here.
-    void link.open();
+    void link.connect();
     expect(requestedPath).toBe(toCalloutPath("/dev/tty.usbmodem2121102", "darwin"));
   });
 
-  it("refuses to be opened a second time", async () => {
-    const { link, port, openPromise } = openedLink();
+  it("rejects if the port errors before opening", async () => {
+    const port = new FakeSerialPort();
+    const link = new UsbSerialLink("/dev/tty.usbmodemFAKE", {
+      createPort: () => port,
+    });
+    const connectPromise = link.connect();
+    port.emit("error", new Error("permission denied"));
+    await expect(connectPromise).rejects.toThrow(/permission denied/);
+  });
+
+  it("refuses to be connected a second time", async () => {
+    const { link, connectPromise } = connectedLink();
+    await connectPromise;
+    await expect(link.connect()).rejects.toThrow(/already|once|"connect"|connected/i);
+  });
+
+  it("isOpen is true once connected, even before identify() is ever called", async () => {
+    const { link, connectPromise } = connectedLink();
+    await connectPromise;
+    expect(link.isOpen).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------
+// UsbSerialLink.identify() -- HELLO -> banner-from-reply, or null
+// ---------------------------------------------------------------------
+
+describe("UsbSerialLink.identify", () => {
+  it("sends HELLO (paced) and resolves with the banner parsed from its reply (colon dialect)", async () => {
+    const { link, port } = await identifiedLink("DEVICE:RADIOBRIDGE:relay:getez:1779042496");
+
+    expect(port.writes).toEqual(["HELLO\n"]);
+    expect(link.banner).toEqual({
+      role: "RADIOBRIDGE",
+      commonName: "relay",
+      name: "getez",
+      serial: 1779042496,
+      dialect: "colon",
+    });
+  });
+
+  it("resolves with the banner parsed from a space-dialect robot reply", async () => {
+    const { link } = await identifiedLink("device NEZHA2 robot vevov 1198504156");
+    expect(link.role).toBe("NEZHA2");
+    expect(link.name).toBe("vevov");
+  });
+
+  it("exposes role/name/serial getters once identified", async () => {
+    const { link } = await identifiedLink("DEVICE:RADIOBRIDGE:relay:getez:1779042496");
+    expect(link.role).toBe("RADIOBRIDGE");
+    expect(link.name).toBe("getez");
+    expect(link.serial).toBe(1779042496);
+  });
+
+  it("ignores noise arriving before the actual banner during the identify wait", async () => {
+    const { link, connectPromise, port } = connectedLink();
+    await connectPromise;
+    const identifyPromise = link.identify();
+    await flush();
+    port.emit("data", Buffer.from("not a banner\n"));
+    port.emit("data", Buffer.from("DEVICE:RADIOBRIDGE:relay:getez:1779042496\n"));
+    const banner = await identifyPromise;
+    expect(banner?.name).toBe("getez");
+  });
+
+  it("resolves null (never rejects) if no banner arrives within openTimeoutMs", async () => {
+    const port = new FakeSerialPort();
+    const link = new UsbSerialLink("/dev/tty.usbmodemFAKE", {
+      createPort: () => port,
+      openTimeoutMs: 20,
+    });
+    const connectPromise = link.connect();
+    port.emit("open");
+    await connectPromise;
+    const banner = await link.identify();
+    expect(banner).toBeNull();
+    expect(link.isOpen).toBe(true); // the transport itself is untouched
+  });
+
+  it("throws if called before connect() has succeeded", async () => {
+    const port = new FakeSerialPort();
+    const link = new UsbSerialLink("/dev/tty.usbmodemFAKE", { createPort: () => port });
+    await expect(link.identify()).rejects.toThrow(/not connected|connect\(\)/i);
+  });
+
+  // ---- the port-lock-contention regression --------------------------
+  //
+  // port-lock-contention-between-identify-and-user-open.md: before this
+  // ticket, a failed identify (a silent board) rejected UsbSerialLink's
+  // old open(), whose caller (deviceRegistry.ts's openLink) then closed
+  // the link -- so a later retry opened a brand-new port, racing the OS
+  // over the handle the previous attempt had only just released. After
+  // this split, identify() alone times out (resolving null) while the
+  // port connect() opened stays untouched, so a retry re-sends HELLO on
+  // the SAME already-open port -- no close, no reopen, nothing for the
+  // OS to contend over.
+  it("calling identify() again after a null resolution re-sends HELLO without re-opening or closing the port", async () => {
+    const port = new FakeSerialPort();
+    let createPortCalls = 0;
+    const link = new UsbSerialLink("/dev/tty.usbmodemFAKE", {
+      createPort: () => {
+        createPortCalls++;
+        return port;
+      },
+      openTimeoutMs: 20,
+    });
+    const connectPromise = link.connect();
+    port.emit("open");
+    await connectPromise;
+    expect(createPortCalls).toBe(1);
+
+    const first = await link.identify();
+    expect(first).toBeNull();
+
+    const identifyPromise = link.identify();
     await flush();
     port.emit("data", Buffer.from("DEVICE:RADIOBRIDGE:relay:getez:1779042496\n"));
-    await openPromise;
-    await expect(link.open()).rejects.toThrow(/already|once|"open"/i);
+    const second = await identifyPromise;
+
+    expect(second?.name).toBe("getez");
+    expect(port.writes).toEqual(["HELLO\n", "HELLO\n"]);
+    // The port is opened exactly once across both identify() attempts,
+    // and never closed in between -- this is the fix for
+    // port-lock-contention-between-identify-and-user-open.md.
+    expect(createPortCalls).toBe(1);
+    expect(port.closeCalls).toBe(0);
   });
 });
 
@@ -287,10 +272,7 @@ describe("UsbSerialLink.open", () => {
 describe("UsbSerialLink write pacing", () => {
   it("paces every write, including the initial HELLO", async () => {
     const scheduler = recordingScheduler();
-    const { port, openPromise } = openedLink({ paceMs: 10, scheduler });
-    await flush();
-    port.emit("data", Buffer.from("DEVICE:RADIOBRIDGE:relay:getez:1779042496\n"));
-    await openPromise;
+    const { port } = await identifiedLink("DEVICE:RADIOBRIDGE:relay:getez:1779042496", { paceMs: 10, scheduler });
 
     // One write so far (HELLO), one pace delay recorded for it.
     expect(port.writes).toEqual(["HELLO\n"]);
@@ -299,10 +281,7 @@ describe("UsbSerialLink write pacing", () => {
 
   it("paces console-sent lines the same way as HELLO", async () => {
     const scheduler = recordingScheduler();
-    const { link, port, openPromise } = openedLink({ paceMs: 10, scheduler });
-    await flush();
-    port.emit("data", Buffer.from("DEVICE:RADIOBRIDGE:relay:getez:1779042496\n"));
-    await openPromise;
+    const { link, port } = await identifiedLink("DEVICE:RADIOBRIDGE:relay:getez:1779042496", { paceMs: 10, scheduler });
 
     link.checkLiveness();
     link.sendUnsequenced("STATUS");
@@ -314,15 +293,12 @@ describe("UsbSerialLink write pacing", () => {
 });
 
 // ---------------------------------------------------------------------
-// Sequencing / ack-nack wiring via v6/session.ts
+// Sequencing / ack-nack wiring via v6/session.ts, through the link
 // ---------------------------------------------------------------------
 
 describe("UsbSerialLink sequencing", () => {
   async function openedRobotLink() {
-    const { link, port, openPromise } = openedLink();
-    await flush();
-    port.emit("data", Buffer.from("device NEZHA2 robot vevov 1198504156\n"));
-    await openPromise;
+    const { link, port } = await identifiedLink("device NEZHA2 robot vevov 1198504156");
     port.writes.length = 0; // drop the recorded HELLO write
     return { link, port };
   }
@@ -369,22 +345,19 @@ describe("UsbSerialLink sequencing", () => {
     expect(() => link.sendCommand("PING")).toThrow();
   });
 
-  it("never sends HELLO again after open -- sendUnsequenced refuses it", async () => {
+  it("never sends HELLO again through sendUnsequenced -- it refuses it", async () => {
     const { link } = await openedRobotLink();
     expect(() => link.sendUnsequenced("HELLO")).toThrow(/HELLO/);
   });
 });
 
 // ---------------------------------------------------------------------
-// Foreign-traffic drop (acceptance criterion)
+// Foreign-traffic drop (acceptance criterion), once connected
 // ---------------------------------------------------------------------
 
 describe("UsbSerialLink foreign traffic", () => {
   it("drops a lowercase line that is not a recognized reply verb, silently", async () => {
-    const { link, port, openPromise } = openedLink();
-    await flush();
-    port.emit("data", Buffer.from("DEVICE:RADIOBRIDGE:relay:getez:1779042496\n"));
-    await openPromise;
+    const { link, port } = await identifiedLink("DEVICE:RADIOBRIDGE:relay:getez:1779042496");
 
     const lines: unknown[] = [];
     const errors: unknown[] = [];
@@ -401,10 +374,7 @@ describe("UsbSerialLink foreign traffic", () => {
   });
 
   it("still delivers a recognized lowercase reply verb to onLine", async () => {
-    const { link, port, openPromise } = openedLink();
-    await flush();
-    port.emit("data", Buffer.from("DEVICE:RADIOBRIDGE:relay:getez:1779042496\n"));
-    await openPromise;
+    const { link, port } = await identifiedLink("DEVICE:RADIOBRIDGE:relay:getez:1779042496");
 
     const lines: Array<{ verb: string }> = [];
     link.onLine((l) => lines.push(l));
@@ -415,35 +385,41 @@ describe("UsbSerialLink foreign traffic", () => {
     expect(lines).toEqual([{ kind: "line", verb: "pong", fields: [] }]);
   });
 
-  it("drops a blank line silently", async () => {
-    const { link, port, openPromise } = openedLink();
-    await flush();
-    port.emit("data", Buffer.from("DEVICE:RADIOBRIDGE:relay:getez:1779042496\n"));
-    await openPromise;
+  it("still routes ordinary traffic after identify() times out (connected, unresponsive is not a dead link)", async () => {
+    const port = new FakeSerialPort();
+    const link = new UsbSerialLink("/dev/tty.usbmodemFAKE", {
+      createPort: () => port,
+      openTimeoutMs: 20,
+    });
+    const connectPromise = link.connect();
+    port.emit("open");
+    await connectPromise;
+    const banner = await link.identify();
+    expect(banner).toBeNull();
 
-    const lines: unknown[] = [];
+    const lines: Array<{ verb: string }> = [];
     link.onLine((l) => lines.push(l));
-    port.emit("data", Buffer.from("   \n"));
+    port.emit("data", Buffer.from("pong\n"));
     await flush();
 
-    expect(lines).toEqual([]);
+    expect(lines).toEqual([{ kind: "line", verb: "pong", fields: [] }]);
   });
 });
 
 // ---------------------------------------------------------------------
-// Calling send*/checkLiveness before open
+// Calling send*/checkLiveness before connect()
 // ---------------------------------------------------------------------
 
-describe("UsbSerialLink guards against use before open", () => {
-  it("sendLine throws before open()", () => {
+describe("UsbSerialLink guards against use before connect", () => {
+  it("sendLine throws before connect()", () => {
     const port = new FakeSerialPort();
     const link = new UsbSerialLink("/dev/tty.usbmodemFAKE", { createPort: () => port });
-    expect(() => link.sendLine("STATUS")).toThrow(/not open/i);
+    expect(() => link.sendLine("STATUS")).toThrow(/not connected/i);
   });
 
-  it("checkLiveness throws before open()", () => {
+  it("checkLiveness throws before connect()", () => {
     const port = new FakeSerialPort();
     const link = new UsbSerialLink("/dev/tty.usbmodemFAKE", { createPort: () => port });
-    expect(() => link.checkLiveness()).toThrow(/not open/i);
+    expect(() => link.checkLiveness()).toThrow(/not connected/i);
   });
 });

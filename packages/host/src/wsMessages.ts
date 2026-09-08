@@ -1,12 +1,11 @@
 /**
  * wsMessages.ts — the one WebSocket message contract between `server.ts`
- * and the browser UI (`packages/ui`, tickets 010/011, and every later
- * sprint that extends this same channel).
+ * and the browser UI (`packages/ui`).
  *
  * Per `docs/design/specification.md` §4.7: one WebSocket carries
- * device-list updates and line traffic (telemetry frames join this same
- * channel in sprint 4, not this one). Per this ticket: the shape is
- * `type`-discriminated so both the Devices tab and the Console tab can
+ * endpoint-list updates and line traffic (telemetry frames join this
+ * same channel in a later sprint). Per sprint 4's reshape (this
+ * ticket): the shape is `type`-discriminated so every consumer can
  * share one connection and dispatch on `type`, and it lives in exactly
  * one place so both sides of the socket agree on it.
  *
@@ -16,50 +15,186 @@
  * framing, or sequencing logic of its own -- see `server.ts`'s own doc
  * comment for why that boundary matters.
  *
+ * ## Sprint 4 reshape -- endpoint/session vocabulary, frozen here
+ *
+ * Every message and type below was reshaped once, deliberately, in this
+ * one ticket rather than incrementally across the sprint (see
+ * `sprint.md`'s Design Rationale: "Freeze the wire contract entirely in
+ * ticket 001") so every later ticket builds against one stable shape
+ * instead of a moving target. The renames, in one place for the next
+ * reader:
+ *
+ *   - `DeviceListEntry` -> {@link EndpointListEntry}: a device (a
+ *     physical USB board) and an endpoint (a listable, routable thing)
+ *     are different concepts that happen to coincide 1:1 for USB this
+ *     sprint, but won't once a relay fronts several robots (sprint 7).
+ *     Gains `endpointId` (URL-safe: `usb-<serial>`, since sprint 4's
+ *     router puts it in a path segment), `transport`, `resourceKey`
+ *     (see below), and `classification`. `linkOpen`/`linkError` ->
+ *     `sessionOpen`/`sessionError`, since "session" (one open logical
+ *     link) is the concept that generalizes across transports, where
+ *     "link" implied a single physical connection.
+ *   - `resourceKey` is a distinct field from `endpointId`, even though
+ *     they are equal for every endpoint this sprint (USB is 1:1). It
+ *     exists now, unused-but-equal, so sprint 7's relay-carries-many-
+ *     robots case (one contended physical resource serving several
+ *     routable endpoints) extends this model instead of requiring a
+ *     second redesign of every call site that reads a key. This is
+ *     intentional, not dead code.
+ *   - `DevicesMessage` -> {@link EndpointsMessage} (`type: "devices"` ->
+ *     `"endpoints"`); still always a full snapshot, never a delta (see
+ *     that type's own doc comment) -- nothing in this reshape changes
+ *     that self-healing property.
+ *   - `open`/`close` client messages -> {@link SessionOpenMessage}/
+ *     {@link SessionCloseMessage} (`type: "session-open"`/
+ *     `"session-close"`), matching the `sessionOpen`/`sessionError`
+ *     rename above. `SessionOpenMessage` gains an optional `robotName`,
+ *     reserved for sprint 7 (a relay routing to one of several named
+ *     robots) -- always absent and unused this sprint.
+ *   - `LineMessage`/`ErrorMessage`'s `deviceId` -> `endpointId`, for the
+ *     same device/endpoint distinction as above.
+ *   - `FlashStartMessage`/`FlashProgressMessage`/`FlashResultMessage`
+ *     carry a {@link FirmwareSourceRef} (`source`) instead of a bare
+ *     {@link FirmwareKind} (`firmware`), so a flash can name either a
+ *     configured release build or a locally-uploaded hex file
+ *     (`flash-local-*`, new this sprint -- see below) through the same
+ *     message shape.
+ *   - {@link FlashPhase} gains `"reidentifying"`, after `"resetting"`:
+ *     the stage where the server waits for the freshly-flashed board to
+ *     announce itself again before reporting the terminal result (a
+ *     later ticket -- see {@link FlashResultMessage}'s doc comment).
+ *   - New {@link FlashLocalBeginMessage} (client -> server) and
+ *     {@link FlashLocalReadyMessage} (server -> client): the JSON half
+ *     of the local-hex upload handshake. The binary half is one raw
+ *     WebSocket frame -- `uploadId` (ASCII, exactly
+ *     {@link UPLOAD_ID_BYTE_LENGTH} bytes) immediately followed by the
+ *     raw file bytes, with no length prefix or delimiter (the socket
+ *     frame boundary *is* the message boundary) -- documented here as a
+ *     convention; `localHexUpload.ts` (ticket 005) is the concrete
+ *     handler that splits, verifies, and holds the frame's bytes, and
+ *     `server.ts`'s `isBinary` branch is what routes a binary frame to
+ *     it.
+ *
+ * ## Forward compatibility: an unrecognized `classification.type`
+ *
+ * `EndpointListEntry.classification.type` is a {@link DeviceType}
+ * (`"unknown" | "relay" | "robot"`). A future fourth type is designed
+ * to be purely additive on the wire (see `@robot-console/protocol`'s
+ * `deviceType.ts` module doc comment) -- a client built against
+ * *today's* two-type union that receives a `type` value it does not
+ * recognize from a newer host **must** treat it as `"unknown"` (via
+ * `normalizeDeviceType`) rather than crashing or rendering nothing.
+ *
  * Direction:
- *   - client -> server: {@link OpenDeviceMessage}, {@link CloseDeviceMessage},
+ *   - client -> server: {@link SessionOpenMessage}, {@link SessionCloseMessage},
  *     {@link LineMessage} (always `direction: "tx"` in this direction),
- *     {@link FlashStartMessage} (sprint 2: request a firmware flash).
- *   - server -> client: {@link DevicesMessage}, {@link LineMessage}
+ *     {@link FlashStartMessage}, {@link FlashLocalBeginMessage}.
+ *   - server -> client: {@link EndpointsMessage}, {@link LineMessage}
  *     (always `direction: "rx"` in this direction -- an inbound line
- *     from the device), {@link ErrorMessage}, {@link FlashProgressMessage}
- *     and {@link FlashResultMessage} (sprint 2: flash-in-progress phase
- *     updates and the terminal outcome).
+ *     from the device), {@link ErrorMessage}, {@link FlashProgressMessage},
+ *     {@link FlashResultMessage}, {@link FlashLocalReadyMessage}.
  *   `LineMessage` is one shared shape used in both directions,
- *   discriminated further by its own `direction` field, per the
- *   ticket's own example (`{ type: 'line', deviceId, direction, line }`).
+ *   discriminated further by its own `direction` field.
  */
 
-/** Which firmware a flash operation targets. `"relay"` is the
- * radio-relay board's firmware, `"robot"` the diff-drive robot's --
- * see `config.ts`'s `FirmwareConfigMap` (sprint 2) for how each maps to
- * a configured `<repo-url>:<tag>` source. */
+import type { DeviceClassification } from "@robot-console/protocol";
+
+/** Which firmware a flash operation targets, when the source is a
+ * configured release build. `"relay"` is the radio-relay board's
+ * firmware, `"robot"` the diff-drive robot's -- see `config.ts`'s
+ * `FirmwareConfigMap` for how each maps to a configured
+ * `<repo-url>:<tag>` source. */
 export type FirmwareKind = "relay" | "robot";
 
-/** Stage of an in-flight flash, in the order `deviceRegistry.ts`
- * (sprint 2) reports them: `"fetching"`/`"verifying"` come from
- * `releases.ts` resolving and checking the hex; `"erasing"`/
- * `"writing"`/`"resetting"` come from `flash.ts` writing it to the
- * board. Purely informational for the UI's progress text -- nothing in
- * this module depends on the ordering. */
-export type FlashPhase = "fetching" | "verifying" | "erasing" | "writing" | "resetting";
+/** Where the hex a flash operation writes comes from: a configured
+ * release build (`config.ts`/`releases.ts`, the only source that
+ * exists before this sprint), or a file the student picked from their
+ * own machine and uploaded over the socket (`local-hex`, new this
+ * sprint -- the local-hex upload handshake itself, per the module doc
+ * comment, is not implemented by this ticket). `local-hex`'s
+ * `fileName`/`sha256` are carried here (not just the `uploadId`) so a
+ * client that reconnects mid-flash can still show what's being
+ * flashed. */
+export type FirmwareSourceRef =
+  | { kind: "release"; firmware: FirmwareKind }
+  | { kind: "local-hex"; uploadId: string; fileName: string; sha256: string };
 
-/** One device as shown in the Devices tab. Keyed by {@link id} (the USB
- * serial number -- `devices.ts`'s join key -- not the OS port path,
- * which renumbers across replugs). */
-export interface DeviceListEntry {
-  /** Stable id for this device across snapshots: the USB serial number
-   * of the DAPLink interface chip (same value as {@link serialNumber}). */
-  id: string;
-  /** Full USB serial number of the DAPLink interface chip -- the UID
-   * the ticket calls for, shown *alongside* {@link name}, never instead
-   * of it (they are different values from different chips). */
+/** Stage of an in-flight flash, in the order `deviceRegistry.ts`
+ * reports them: `"fetching"`/`"verifying"` come from `releases.ts`
+ * resolving and checking the hex; `"erasing"`/`"writing"`/`"resetting"`
+ * come from `flash.ts` writing it to the board; `"reidentifying"` (new
+ * this sprint) is the server waiting for the freshly-flashed board to
+ * announce itself again before the terminal {@link FlashResultMessage}
+ * is sent -- see that type's own doc comment. Purely informational for
+ * the UI's progress text -- nothing in this module depends on the
+ * ordering. */
+export type FlashPhase = "fetching" | "verifying" | "erasing" | "writing" | "resetting" | "reidentifying";
+
+/** Which transport an endpoint is reachable over. `"usb"` is the only
+ * value that exists this sprint (a board plugged directly into this
+ * machine); remote transports (a relay's radio link, mDNS-discovered
+ * mbrelay) arrive in sprint 7 and will extend this union rather than
+ * replace it. */
+export type EndpointTransport = "usb";
+
+/** USB-specific identity fields, present on {@link EndpointListEntry}
+ * only when {@link EndpointListEntry.transport} is `"usb"`. Nested
+ * (rather than flattened onto the entry) so a future remote endpoint
+ * (no local serial number, no OS port path) does not carry meaningless
+ * nulls for fields that only make sense for a physically-attached
+ * board -- and so a consumer can tell "no port because this endpoint
+ * is remote" apart from "no port because this USB device is HID-only"
+ * (`devices.ts`'s `DeviceAvailability` already models that third
+ * state) instead of both collapsing to the same `null`. */
+export interface UsbEndpointIdentity {
+  /** Full USB serial number of the DAPLink interface chip -- the same
+   * value `endpointId` is derived from (`usb-<serialNumber>`). */
   serialNumber: string;
   /** Short display form of {@link serialNumber}, sliced from its
    * board-unique middle field (`devices.ts`'s `shortSerialDisplay`) --
    * safe to show next to two boards that share an interface-chip
    * build's prefix/suffix. */
   displaySerial: string;
+  /** OS serial port path, or `null` if this device was only found on
+   * its HID persona (`devices.ts`'s `DeviceAvailability`). */
+  port: string | null;
+}
+
+/** One endpoint as shown on the front page: a listable, routable
+ * thing, distinct from the physical device or the session backing it
+ * (see the module doc comment's "Sprint 4 reshape" section, and
+ * `sprint.md`'s Step 1). Keyed by {@link endpointId} across snapshots. */
+export interface EndpointListEntry {
+  /** Stable, URL-safe id for this endpoint across snapshots -- minted
+   * as `usb-<serialNumber>` for a USB endpoint so it can be used
+   * directly as a router path segment (`/d/:endpointId`) with no
+   * encode/decode step. */
+  endpointId: string;
+  /** Which transport this endpoint is reachable over. See that type's
+   * own doc comment. */
+  transport: EndpointTransport;
+  /** The physical resource this endpoint contends for exclusive access
+   * to, distinct from {@link endpointId} -- see the module doc
+   * comment's "Sprint 4 reshape" section for why this field exists now
+   * even though it always equals `endpointId` this sprint (USB is
+   * 1:1). Never assume `resourceKey === endpointId` in new code --
+   * that equality is a this-sprint fact, not an invariant. */
+  resourceKey: string;
+  /** This endpoint's device-type classification, derived from its most
+   * recently seen banner (or the lack of one) via
+   * `@robot-console/protocol`'s `classifyBanner`. Drives the per-type
+   * page dispatch (`classification.type`) and diagnostics
+   * (`classification.role`/`commonName`/`dialect`/`evidence`). */
+  classification: DeviceClassification;
+  /** Banner role token (e.g. `"RADIOBRIDGE"`, `"NEZHA2"`), populated
+   * once a link to this device is open; `null` before that, or if the
+   * open attempt failed or timed out (e.g. a silently-running board
+   * that never replies to `HELLO`). Kept as its own top-level field
+   * (verbatim, identical to {@link DeviceClassification.role}) for
+   * diagnostics and forward compatibility -- a UI or log line reading
+   * `role` directly should never need to reach into `classification`
+   * for it. */
+  role: string | null;
   /** Five-letter friendly name from `swdName.ts`, or `null` while
    * unresolved or unresolvable. Never a USB-serial-derived fallback --
    * see `swdName.ts`'s own module doc for why. */
@@ -68,28 +203,26 @@ export interface DeviceListEntry {
    * mirror `swdName.ts`'s `SwdNameFailure` so the UI can show *why*,
    * never silently omit the device or invent a fallback name. */
   nameError?: { reason: string; message: string };
-  /** Banner role token (e.g. `"RADIOBRIDGE"`, `"NEZHA2"`), populated
-   * once a `UsbSerialLink` to this device is open; `null` before that,
-   * or if the open attempt failed or timed out (e.g. a silently-running
-   * board that never replies to `HELLO` -- see the ticket). */
-  role: string | null;
-  /** OS serial port path, or `null` if this device was only found on
-   * its HID persona (`devices.ts`'s `DeviceAvailability`). */
-  port: string | null;
-  /** Whether `server.ts` currently has an open `UsbSerialLink` to this
-   * device. */
-  linkOpen: boolean;
-  /** Present only when the most recent link-open attempt failed (e.g.
-   * a `HELLO` reply timeout against a silent board). Cleared on a
-   * subsequent successful open. */
-  linkError?: string;
-  /** Present only while a flash is in flight for this device (sprint
-   * 2) -- absent the rest of the time, mirroring {@link linkError}'s
+  /** Whether `server.ts` currently has an open session (a link, for a
+   * USB endpoint) to this endpoint. Renamed from `linkOpen` -- see the
+   * module doc comment. */
+  sessionOpen: boolean;
+  /** Present only when the most recent session-open attempt failed
+   * (e.g. a `HELLO` reply timeout against a silent board). Cleared on
+   * a subsequent successful open. Renamed from `linkError` -- see the
+   * module doc comment. */
+  sessionError?: string;
+  /** Present only while a flash is in flight for this endpoint --
+   * absent the rest of the time, mirroring {@link sessionError}'s
    * present-only-when-relevant shape. A reconnecting client sees this
    * in the next full snapshot even if it missed every
    * {@link FlashProgressMessage} along the way, so it never renders a
-   * stale, clickable flash button for a device mid-operation. */
+   * stale, clickable flash button for an endpoint mid-operation. */
   flashStatus?: { firmware: FirmwareKind; phase: FlashPhase };
+  /** USB-specific identity fields -- see {@link UsbEndpointIdentity}'s
+   * own doc comment. Present only when {@link transport} is `"usb"`,
+   * which is every endpoint that exists this sprint. */
+  usb?: UsbEndpointIdentity;
 }
 
 /** Which way a line is travelling on the shared `"line"` message shape:
@@ -102,106 +235,190 @@ export type LineDirection = "tx" | "rx";
  * client). `line` is the raw wire text (no trailing newline). */
 export interface LineMessage {
   type: "line";
-  deviceId: string;
+  endpointId: string;
   direction: LineDirection;
   line: string;
 }
 
 /** Per-firmware availability, as `server.ts`'s `FirmwareAvailabilityCache`
- * (sprint 2, `releases.ts`) reports it. `configured: false` means
- * `config.ts` found no `<repo-url>:<tag>` env value for this
- * {@link FirmwareKind} -- the button stays disabled with no network
- * check ever attempted. `configured: true` always carries `repoUrl`/
- * `tag` (so the UI can show what will be flashed) plus the live
- * `available` result of the most recent poll; `reason` is present only
- * when `available` is `false` (e.g. `"no-releases"`), mirroring
- * {@link DeviceListEntry.nameError}'s present-only-when-relevant shape. */
+ * (`releases.ts`) reports it. `configured: false` means `config.ts`
+ * found no `<repo-url>:<tag>` env value for this {@link FirmwareKind} --
+ * the button stays disabled with no network check ever attempted.
+ * `configured: true` always carries `repoUrl`/`tag` (so the UI can show
+ * what will be flashed) plus the live `available` result of the most
+ * recent poll; `reason` is present only when `available` is `false`
+ * (e.g. `"no-releases"`), mirroring {@link EndpointListEntry.nameError}'s
+ * present-only-when-relevant shape. */
 export type FirmwareAvailability =
   | { configured: false }
   | { configured: true; repoUrl: string; tag: string; available: boolean; reason?: string };
 
-/** Server -> client: the full current device list. Sent once on
+/** Server -> client: the full current endpoint list. Sent once on
  * connect and again on every live attach/detach/state change -- always
  * a full snapshot, never a delta, so a client that missed an update
- * self-heals on the next one. `firmwareStatus` (sprint 2) is sent as
- * part of this same snapshot rather than a separate message, for the
- * same self-healing reason: a client that connects or reconnects after
- * an availability change gets it on the very next `devices` message
- * with no separate discovery step. */
-export interface DevicesMessage {
-  type: "devices";
-  devices: DeviceListEntry[];
+ * self-heals on the next one. This full-snapshot property is
+ * deliberately preserved by the sprint 4 reshape -- nothing added here
+ * may turn this into anything resembling a delta; high-frequency data
+ * (lines, telemetry, flash progress) stays on its own message types.
+ * `firmwareStatus` is sent as part of this same snapshot rather than a
+ * separate message, for the same self-healing reason: a client that
+ * connects or reconnects after an availability change gets it on the
+ * very next `endpoints` message with no separate discovery step.
+ * Renamed from `DevicesMessage`/`type: "devices"` -- see the module doc
+ * comment. */
+export interface EndpointsMessage {
+  type: "endpoints";
+  endpoints: EndpointListEntry[];
   firmwareStatus: Record<FirmwareKind, FirmwareAvailability>;
 }
 
 /** Client -> server: open (or re-open, e.g. after a failed attempt) a
- * link to a device. */
-export interface OpenDeviceMessage {
-  type: "open";
-  deviceId: string;
+ * session to an endpoint. Renamed from `OpenDeviceMessage`/`type:
+ * "open"` -- see the module doc comment. */
+export interface SessionOpenMessage {
+  type: "session-open";
+  endpointId: string;
+  /** Reserved for sprint 7: which of a relay's several routable robots
+   * to open a session to. Always absent and ignored this sprint (every
+   * endpoint is a direct USB device, so there is nothing to route
+   * to) -- present in the type now so sprint 7 extends this message
+   * instead of reshaping it again. */
+  robotName?: string;
 }
 
-/** Client -> server: close an open link to a device. */
-export interface CloseDeviceMessage {
-  type: "close";
-  deviceId: string;
+/** Client -> server: close an open session to an endpoint. Renamed
+ * from `CloseDeviceMessage`/`type: "close"` -- see the module doc
+ * comment. */
+export interface SessionCloseMessage {
+  type: "session-close";
+  endpointId: string;
 }
 
-/** Client -> server: flash the given {@link FirmwareKind} onto a
- * device (sprint 2). `deviceRegistry.ts` runs this through the same
- * per-device mutex as `open`/`close`, so it queues behind (or blocks)
- * an in-flight operation on the same board rather than racing it. */
+/** Client -> server: flash the given {@link FirmwareSourceRef} onto an
+ * endpoint. `deviceRegistry.ts` runs this through the same per-endpoint
+ * mutex as `session-open`/`session-close`, so it queues behind (or
+ * blocks) an in-flight operation on the same board rather than racing
+ * it. */
 export interface FlashStartMessage {
   type: "flash-start";
-  deviceId: string;
-  firmware: FirmwareKind;
+  endpointId: string;
+  source: FirmwareSourceRef;
 }
 
-/** Server -> client: one stage of an in-flight flash (sprint 2). Sent
- * as the flash progresses through {@link FlashPhase}; the corresponding
- * device's {@link DeviceListEntry.flashStatus} carries the same
- * `firmware`/`phase` pair for a client that connects mid-flash. */
+/** Server -> client: one stage of an in-flight flash. Sent as the flash
+ * progresses through {@link FlashPhase}; the corresponding endpoint's
+ * {@link EndpointListEntry.flashStatus} carries the same `firmware`/
+ * `phase` pair for a client that connects mid-flash. */
 export interface FlashProgressMessage {
   type: "flash-progress";
-  deviceId: string;
-  firmware: FirmwareKind;
+  endpointId: string;
+  source: FirmwareSourceRef;
   phase: FlashPhase;
 }
 
-/** Server -> client: the terminal outcome of a flash (sprint 2) --
- * exactly one of these is sent per `flash-start`, after which
- * {@link DeviceListEntry.flashStatus} for that device is cleared.
+/** Server -> client: the terminal outcome of a flash -- exactly one of
+ * these is sent per `flash-start`, after which
+ * {@link EndpointListEntry.flashStatus} for that endpoint is cleared.
  * `message` is present only on `status: "error"`, carrying a
- * human-readable reason for the UI to display. */
+ * human-readable reason for the UI to display.
+ *
+ * `classification`/`name`/`reidentify` are present only on
+ * `status: "ok"`, and only their *type* exists as of this ticket --
+ * `deviceRegistry.ts` does not populate them yet. It still clears
+ * `flashStatus` and reports this message immediately after a
+ * successful write, exactly as before the sprint 4 reshape. A later
+ * ticket makes them real: waiting for the freshly-flashed board to
+ * re-announce (reporting `"reidentifying"` via
+ * {@link FlashProgressMessage} while it waits) and populating
+ * `classification`/`name` from that new banner, or setting
+ * `reidentify: "timeout"` if it never arrives. */
 export interface FlashResultMessage {
   type: "flash-result";
-  deviceId: string;
-  firmware: FirmwareKind;
+  endpointId: string;
+  source: FirmwareSourceRef;
   status: "ok" | "error";
   message?: string;
+  /** The endpoint's post-flash classification. Present only on
+   * `status: "ok"`; not yet populated by this ticket (see this type's
+   * own doc comment). */
+  classification?: DeviceClassification;
+  /** The endpoint's post-flash SWD name (unchanged by a flash in
+   * practice, but re-read alongside re-identify for one consistent
+   * post-flash snapshot). Present only on `status: "ok"`; not yet
+   * populated by this ticket. */
+  name?: string | null;
+  /** Present only on `status: "ok"`, and only when the post-flash
+   * re-identify attempt never received a banner in time -- the write
+   * itself succeeded, so this is reported as "waiting for the board to
+   * come back", never as a failure. Not yet populated by this ticket. */
+  reidentify?: "timeout";
 }
 
-/** Server -> client: something went wrong. `deviceId` is present when
- * the error is scoped to one device (a failed open, a send to a device
- * with no open link); absent for a connection-level problem (malformed
- * message). Never thrown as an uncaught exception on the server side --
- * see `server.ts` and `deviceRegistry.ts`'s own doc comments. */
+/** Client -> server: begin a local-hex upload. The UI computes
+ * `fileName`/`byteLength`/`sha256` from the file the student picked,
+ * client-side, before sending anything -- so the server can reject an
+ * oversized file (per `sprint.md`'s >4MB limit) before allocating a
+ * buffer for it. Part of the local-hex upload handshake documented in
+ * the module doc comment; not yet implemented by this ticket (a later
+ * ticket adds `localHexUpload.ts` and the server-side handler). */
+export interface FlashLocalBeginMessage {
+  type: "flash-local-begin";
+  fileName: string;
+  byteLength: number;
+  sha256: string;
+}
+
+/** Server -> client: the server is ready to receive the binary frame
+ * for a local-hex upload it did not reject. `uploadId` is what the
+ * client prefixes the upcoming binary frame with, and later references
+ * in a `flash-start` message's `source`. See the module doc comment's
+ * binary-frame convention and {@link UPLOAD_ID_BYTE_LENGTH}. */
+export interface FlashLocalReadyMessage {
+  type: "flash-local-ready";
+  uploadId: string;
+}
+
+/** Exact byte length of the ASCII `uploadId` prefix on the local-hex
+ * upload's binary WebSocket frame (an ASCII-encoded UUID, e.g.
+ * `"3fa85f64-5717-4562-b3fc-2c963f66afa6"`). The frame is
+ * `uploadId || payload` with no length prefix or delimiter between
+ * them -- the receiver reads exactly this many bytes as the id and
+ * treats everything after as the file's raw bytes. Documented here so
+ * ticket 005's implementation and this module agree on the convention
+ * without re-deriving it. `localHexUpload.ts`'s `LocalHexUploadManager`
+ * is the concrete implementation of this convention (ticket 005) --
+ * `receiveFrame` there is the one place a raw binary frame is actually
+ * split using this constant; this module only documents the shape. */
+export const UPLOAD_ID_BYTE_LENGTH = 36;
+
+/** Server -> client: something went wrong. `endpointId` is present when
+ * the error is scoped to one endpoint (a failed session open, a send to
+ * an endpoint with no open session); absent for a connection-level
+ * problem (malformed message). Never thrown as an uncaught exception on
+ * the server side -- see `server.ts` and `deviceRegistry.ts`'s own doc
+ * comments. */
 export interface ErrorMessage {
   type: "error";
-  deviceId?: string;
+  endpointId?: string;
   message: string;
 }
 
 /** Every message shape a client may send. */
-export type ClientMessage = OpenDeviceMessage | CloseDeviceMessage | LineMessage | FlashStartMessage;
+export type ClientMessage =
+  | SessionOpenMessage
+  | SessionCloseMessage
+  | LineMessage
+  | FlashStartMessage
+  | FlashLocalBeginMessage;
 
 /** Every message shape the server may send. */
 export type ServerMessage =
-  | DevicesMessage
+  | EndpointsMessage
   | LineMessage
   | ErrorMessage
   | FlashProgressMessage
-  | FlashResultMessage;
+  | FlashResultMessage
+  | FlashLocalReadyMessage;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -213,6 +430,23 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isFirmwareKind(value: unknown): value is FirmwareKind {
   return value === "relay" || value === "robot";
+}
+
+function isFirmwareSourceRef(value: unknown): value is FirmwareSourceRef {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.kind === "release") {
+    return isFirmwareKind(value.firmware);
+  }
+  if (value.kind === "local-hex") {
+    return (
+      isNonEmptyString(value.uploadId) &&
+      isNonEmptyString(value.fileName) &&
+      isNonEmptyString(value.sha256)
+    );
+  }
+  return false;
 }
 
 /**
@@ -228,19 +462,43 @@ export function parseClientMessage(value: unknown): ClientMessage | undefined {
     return undefined;
   }
   switch (value.type) {
-    case "open":
-      return isNonEmptyString(value.deviceId) ? { type: "open", deviceId: value.deviceId } : undefined;
-    case "close":
-      return isNonEmptyString(value.deviceId) ? { type: "close", deviceId: value.deviceId } : undefined;
+    case "session-open": {
+      if (!isNonEmptyString(value.endpointId)) {
+        return undefined;
+      }
+      if (value.robotName !== undefined && !isNonEmptyString(value.robotName)) {
+        return undefined;
+      }
+      return value.robotName !== undefined
+        ? { type: "session-open", endpointId: value.endpointId, robotName: value.robotName }
+        : { type: "session-open", endpointId: value.endpointId };
+    }
+    case "session-close":
+      return isNonEmptyString(value.endpointId)
+        ? { type: "session-close", endpointId: value.endpointId }
+        : undefined;
     case "line":
-      return isNonEmptyString(value.deviceId) &&
+      return isNonEmptyString(value.endpointId) &&
         value.direction === "tx" &&
         typeof value.line === "string"
-        ? { type: "line", deviceId: value.deviceId, direction: "tx", line: value.line }
+        ? { type: "line", endpointId: value.endpointId, direction: "tx", line: value.line }
         : undefined;
     case "flash-start":
-      return isNonEmptyString(value.deviceId) && isFirmwareKind(value.firmware)
-        ? { type: "flash-start", deviceId: value.deviceId, firmware: value.firmware }
+      return isNonEmptyString(value.endpointId) && isFirmwareSourceRef(value.source)
+        ? { type: "flash-start", endpointId: value.endpointId, source: value.source }
+        : undefined;
+    case "flash-local-begin":
+      return isNonEmptyString(value.fileName) &&
+        typeof value.byteLength === "number" &&
+        Number.isFinite(value.byteLength) &&
+        value.byteLength > 0 &&
+        isNonEmptyString(value.sha256)
+        ? {
+            type: "flash-local-begin",
+            fileName: value.fileName,
+            byteLength: value.byteLength,
+            sha256: value.sha256,
+          }
         : undefined;
     default:
       return undefined;

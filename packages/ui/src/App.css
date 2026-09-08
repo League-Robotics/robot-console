@@ -19,26 +19,6 @@
   margin: 0;
 }
 
-.tab-bar {
-  display: flex;
-  gap: 0.25rem;
-}
-
-.tab-bar-button {
-  border: none;
-  background: transparent;
-  padding: 0.4rem 0.9rem;
-  border-radius: 0.4rem;
-  font-size: 0.9rem;
-  color: var(--rc-text-muted);
-  cursor: pointer;
-}
-
-.tab-bar-button-active {
-  background: var(--rc-accent);
-  color: var(--rc-accent-contrast);
-}
-
 .app-main {
   flex: 1;
   padding: 1.25rem;

@@ -5,15 +5,13 @@
  * browser to the served UI page.
  *
  * `bin/robot-console.js` is a thin loader shim, not the real entry
- * point -- see its own comment for why it exists (in short: this
- * monorepo's packages resolve to their TypeScript sources directly, per
- * `packages/*\/package.json`'s `main`/`types` fields, with no build step
- * yet producing plain-Node-runnable `dist` output; `bin/robot-console.js`
- * registers `tsx` as a loader so this file, and everything it imports,
- * can run from source with no separate compile step). Keeping the real
- * argv/env parsing and startup sequence here, in a `.ts` module, means
- * it is covered by the same `tsc` typecheck as the rest of `host`
- * rather than living in an unchecked `.js` shim.
+ * point -- see its own comment for why it exists (in short: `npm run
+ * build`, ticket 009, compiles this file to `dist/cli.js`, and the
+ * shim imports that compiled output directly with plain `node`, no
+ * loader hook). Keeping the real argv/env parsing and startup
+ * sequence here, in a `.ts` module, means it is covered by the same
+ * `tsc` typecheck as the rest of `host` rather than living in an
+ * unchecked `.js` shim.
  */
 
 import open from "open";

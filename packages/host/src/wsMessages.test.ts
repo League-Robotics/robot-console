@@ -1,47 +1,87 @@
 import { describe, expect, it } from "vitest";
 import { parseClientMessage } from "./wsMessages.js";
-import type { DeviceListEntry } from "./wsMessages.js";
+import type { EndpointListEntry } from "./wsMessages.js";
 
 describe("parseClientMessage", () => {
-  it("accepts a well-formed open message", () => {
-    expect(parseClientMessage({ type: "open", deviceId: "abc" })).toEqual({
-      type: "open",
-      deviceId: "abc",
+  it("accepts a well-formed session-open message", () => {
+    expect(parseClientMessage({ type: "session-open", endpointId: "usb-abc" })).toEqual({
+      type: "session-open",
+      endpointId: "usb-abc",
     });
   });
 
-  it("accepts a well-formed close message", () => {
-    expect(parseClientMessage({ type: "close", deviceId: "abc" })).toEqual({
-      type: "close",
-      deviceId: "abc",
+  it("accepts a session-open message carrying the reserved robotName field", () => {
+    expect(
+      parseClientMessage({ type: "session-open", endpointId: "usb-abc", robotName: "zeguz" }),
+    ).toEqual({ type: "session-open", endpointId: "usb-abc", robotName: "zeguz" });
+  });
+
+  it("rejects a session-open message with a non-string robotName", () => {
+    expect(
+      parseClientMessage({ type: "session-open", endpointId: "usb-abc", robotName: 5 }),
+    ).toBeUndefined();
+  });
+
+  it("accepts a well-formed session-close message", () => {
+    expect(parseClientMessage({ type: "session-close", endpointId: "usb-abc" })).toEqual({
+      type: "session-close",
+      endpointId: "usb-abc",
     });
   });
 
   it("accepts a well-formed outbound line message", () => {
     expect(
-      parseClientMessage({ type: "line", deviceId: "abc", direction: "tx", line: "HELLO" }),
-    ).toEqual({ type: "line", deviceId: "abc", direction: "tx", line: "HELLO" });
+      parseClientMessage({ type: "line", endpointId: "usb-abc", direction: "tx", line: "HELLO" }),
+    ).toEqual({ type: "line", endpointId: "usb-abc", direction: "tx", line: "HELLO" });
   });
 
   it("rejects a line message claiming direction rx from a client (server-only direction)", () => {
     expect(
-      parseClientMessage({ type: "line", deviceId: "abc", direction: "rx", line: "HELLO" }),
+      parseClientMessage({ type: "line", endpointId: "usb-abc", direction: "rx", line: "HELLO" }),
     ).toBeUndefined();
   });
 
-  it("accepts a well-formed flash-start message for the relay firmware", () => {
-    expect(parseClientMessage({ type: "flash-start", deviceId: "abc", firmware: "relay" })).toEqual({
+  it("accepts a well-formed flash-start message sourced from a release build", () => {
+    expect(
+      parseClientMessage({
+        type: "flash-start",
+        endpointId: "usb-abc",
+        source: { kind: "release", firmware: "relay" },
+      }),
+    ).toEqual({
       type: "flash-start",
-      deviceId: "abc",
-      firmware: "relay",
+      endpointId: "usb-abc",
+      source: { kind: "release", firmware: "relay" },
     });
   });
 
-  it("accepts a well-formed flash-start message for the robot firmware", () => {
-    expect(parseClientMessage({ type: "flash-start", deviceId: "abc", firmware: "robot" })).toEqual({
+  it("accepts a well-formed flash-start message sourced from a local-hex upload", () => {
+    expect(
+      parseClientMessage({
+        type: "flash-start",
+        endpointId: "usb-abc",
+        source: { kind: "local-hex", uploadId: "upload-1", fileName: "custom.hex", sha256: "deadbeef" },
+      }),
+    ).toEqual({
       type: "flash-start",
-      deviceId: "abc",
-      firmware: "robot",
+      endpointId: "usb-abc",
+      source: { kind: "local-hex", uploadId: "upload-1", fileName: "custom.hex", sha256: "deadbeef" },
+    });
+  });
+
+  it("accepts a well-formed flash-local-begin message", () => {
+    expect(
+      parseClientMessage({
+        type: "flash-local-begin",
+        fileName: "custom.hex",
+        byteLength: 12345,
+        sha256: "deadbeef",
+      }),
+    ).toEqual({
+      type: "flash-local-begin",
+      fileName: "custom.hex",
+      byteLength: 12345,
+      sha256: "deadbeef",
     });
   });
 
@@ -49,36 +89,71 @@ describe("parseClientMessage", () => {
     ["not an object", "nope"],
     ["null", null],
     ["missing type", {}],
-    ["unknown type", { type: "flarp", deviceId: "abc" }],
-    ["open with no deviceId", { type: "open" }],
-    ["open with empty deviceId", { type: "open", deviceId: "" }],
-    ["open with non-string deviceId", { type: "open", deviceId: 5 }],
-    ["line missing line field", { type: "line", deviceId: "abc", direction: "tx" }],
-    ["line with non-string line field", { type: "line", deviceId: "abc", direction: "tx", line: 5 }],
-    ["flash-start with no deviceId", { type: "flash-start", firmware: "relay" }],
-    ["flash-start with empty deviceId", { type: "flash-start", deviceId: "", firmware: "relay" }],
-    ["flash-start with non-string deviceId", { type: "flash-start", deviceId: 5, firmware: "relay" }],
-    ["flash-start with no firmware", { type: "flash-start", deviceId: "abc" }],
-    ["flash-start with invalid firmware value", { type: "flash-start", deviceId: "abc", firmware: "relayx" }],
+    ["unknown type", { type: "flarp", endpointId: "usb-abc" }],
+    ["session-open with no endpointId", { type: "session-open" }],
+    ["session-open with empty endpointId", { type: "session-open", endpointId: "" }],
+    ["session-open with non-string endpointId", { type: "session-open", endpointId: 5 }],
+    ["session-close with no endpointId", { type: "session-close" }],
+    ["line missing line field", { type: "line", endpointId: "usb-abc", direction: "tx" }],
+    ["line with non-string line field", { type: "line", endpointId: "usb-abc", direction: "tx", line: 5 }],
+    ["flash-start with no endpointId", { type: "flash-start", source: { kind: "release", firmware: "relay" } }],
+    [
+      "flash-start with empty endpointId",
+      { type: "flash-start", endpointId: "", source: { kind: "release", firmware: "relay" } },
+    ],
+    [
+      "flash-start with non-string endpointId",
+      { type: "flash-start", endpointId: 5, source: { kind: "release", firmware: "relay" } },
+    ],
+    ["flash-start with no source", { type: "flash-start", endpointId: "usb-abc" }],
+    [
+      "flash-start with an invalid firmware value",
+      { type: "flash-start", endpointId: "usb-abc", source: { kind: "release", firmware: "relayx" } },
+    ],
+    [
+      "flash-start with an unknown source kind",
+      { type: "flash-start", endpointId: "usb-abc", source: { kind: "carrier-pigeon" } },
+    ],
+    [
+      "flash-start with a local-hex source missing sha256",
+      {
+        type: "flash-start",
+        endpointId: "usb-abc",
+        source: { kind: "local-hex", uploadId: "upload-1", fileName: "custom.hex" },
+      },
+    ],
+    ["flash-local-begin missing fileName", { type: "flash-local-begin", byteLength: 10, sha256: "deadbeef" }],
+    [
+      "flash-local-begin with a non-positive byteLength",
+      { type: "flash-local-begin", fileName: "custom.hex", byteLength: 0, sha256: "deadbeef" },
+    ],
+    [
+      "flash-local-begin with a non-numeric byteLength",
+      { type: "flash-local-begin", fileName: "custom.hex", byteLength: "10", sha256: "deadbeef" },
+    ],
+    ["flash-local-begin missing sha256", { type: "flash-local-begin", fileName: "custom.hex", byteLength: 10 }],
   ])("rejects: %s", (_label, value) => {
     expect(parseClientMessage(value)).toBeUndefined();
   });
 });
 
-describe("DeviceListEntry", () => {
-  it("still round-trips as a valid DeviceListEntry when flashStatus is absent (pre-sprint-2 shape)", () => {
-    // Type-level fixture: this compiles only if `flashStatus` is optional,
-    // proving the new field is additive and doesn't break a snapshot that
-    // predates it -- see the ticket's testing plan.
-    const entry: DeviceListEntry = {
-      id: "SERIAL-A",
-      serialNumber: "SERIAL-A",
-      displaySerial: "SHORT-A",
-      name: "zeguz",
+describe("EndpointListEntry", () => {
+  it("still round-trips as a valid EndpointListEntry when every optional field is absent", () => {
+    // Type-level fixture: this compiles only if nameError/sessionError/
+    // flashStatus/usb are all optional, proving the reshaped entry is
+    // additive over the fields that were already optional pre-sprint-4.
+    const entry: EndpointListEntry = {
+      endpointId: "usb-SERIAL-A",
+      transport: "usb",
+      resourceKey: "usb-SERIAL-A",
+      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
       role: "NEZHA2",
-      port: "/dev/cu.usbmodemA",
-      linkOpen: true,
+      name: "zeguz",
+      sessionOpen: true,
     };
     expect(entry.flashStatus).toBeUndefined();
+    expect(entry.usb).toBeUndefined();
+    expect(entry.nameError).toBeUndefined();
+    expect(entry.sessionError).toBeUndefined();
   });
 });

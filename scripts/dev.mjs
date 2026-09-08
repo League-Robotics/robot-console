@@ -21,10 +21,11 @@
 // to connecting to whatever origin served it -- which is the host
 // itself, exactly as `npx robot-console` intends.
 //
-// Like `bin/robot-console.js`, this registers `tsx` first: every
-// package here resolves to its TypeScript source with no build step, so
-// plain Node cannot import `packages/host/src/server.ts` directly. See
-// that file's comment for the full explanation.
+// Unlike the built `bin/robot-console.js` (ticket 009 -- that shim now
+// runs compiled `dist/` output via plain `node`), this dev script keeps
+// no-compile-step development by registering `tsx` itself, so it can
+// import `packages/host/src/server.ts` directly from TypeScript source.
+// `tsx` stays a devDependency for exactly this.
 import { register } from "tsx/esm/api";
 
 register();

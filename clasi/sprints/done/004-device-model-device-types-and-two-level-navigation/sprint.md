@@ -1,9 +1,17 @@
 ---
 id: '004'
 title: Device model, device types, and two-level navigation
-status: executing
+status: done
 branch: sprint/004-device-model-device-types-and-two-level-navigation
-use-cases: ["SUC-001", "SUC-002", "SUC-003", "SUC-004", "SUC-005", "SUC-006", "SUC-007", "SUC-008"]
+use-cases:
+- SUC-001
+- SUC-002
+- SUC-003
+- SUC-004
+- SUC-005
+- SUC-006
+- SUC-007
+- SUC-008
 issues:
 - port-lock-contention-between-identify-and-user-open.md
 - no-build-pipeline-tsx-is-a-runtime-dependency.md

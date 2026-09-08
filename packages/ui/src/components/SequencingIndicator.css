@@ -1,0 +1,44 @@
+.sequencing-indicator {
+  display: flex;
+  flex-direction: column;
+}
+
+.sequencing-none {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+  background: var(--rc-warn-bg);
+  border: 1px solid var(--rc-warn-border);
+  color: var(--rc-warn-text);
+  font-size: 0.85rem;
+}
+
+.sequencing-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  border-radius: 0.4rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+}
+
+.sequencing-field {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin: 0;
+}
+
+.sequencing-field dt {
+  color: var(--rc-text-muted);
+}
+
+.sequencing-field dd {
+  margin: 0;
+  color: var(--rc-text);
+  font-weight: 600;
+}

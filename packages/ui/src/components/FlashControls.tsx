@@ -8,19 +8,35 @@
  * machine.
  *
  * **Contract: one endpoint in, no knowledge of caller.** This
- * component's public props are exactly `{ endpoint }`. It owns all of
- * its own progress/error/local-hex-upload state and the
- * `onFlashResult`/`onFlashLocalReady` subscriptions internally, and it
- * decides for itself, via `canBeFlashed`, whether there is anything to
- * render at all -- renders `null` for a device that isn't eligible for
- * flashing rather than requiring every call site to duplicate that gate
- * (which is exactly the kind of drift this extraction exists to
- * prevent; see this sprint's Design Rationale). It never reads the
- * current route, never takes an `onFlash`/`onDone` callback, and never
- * assumes anything about what else is on the page around it. Three call
- * sites depend on this contract holding: `FrontPage.tsx`'s
- * `EndpointCard`, `UnknownDevicePage.tsx` (both this ticket), and
- * ticket 004's `AppHeader` Flash panel.
+ * component's public props are `{ endpoint }` plus one opt-in escape
+ * hatch, `forceShow` (added by ticket 004, default `false`, see
+ * below). It owns all of its own progress/error/local-hex-upload state
+ * and the `onFlashResult`/`onFlashLocalReady` subscriptions internally,
+ * and it decides for itself, via `canBeFlashed`, whether there is
+ * anything to render at all -- renders `null` for a device that isn't
+ * eligible for flashing rather than requiring every call site to
+ * duplicate that gate (which is exactly the kind of drift this
+ * extraction exists to prevent; see this sprint's Design Rationale). It
+ * never reads the current route, never takes an `onFlash`/`onDone`
+ * callback, and never assumes anything about what else is on the page
+ * around it. Three call sites depend on this contract holding:
+ * `FrontPage.tsx`'s `EndpointCard`, `UnknownDevicePage.tsx` (both this
+ * ticket), and ticket 004's `AppHeader` Flash panel.
+ *
+ * **`forceShow` (ticket 004):** the stakeholder's own request for the
+ * app header's Flash entry is that it work on an *identified*
+ * (`relay`/`robot`) device too, not just the `canBeFlashed`-eligible
+ * ones this component already covers. Rather than fork a second copy
+ * of this file's progress/error/local-hex state machine for that case
+ * -- exactly the drift the `FlashControls` extraction exists to avoid
+ * -- `AppHeader` is the one caller that has already made its own
+ * decision (behind its own route/endpoint match and, for an identified
+ * device, an explicit confirmation) about whether to show flashing
+ * right now, and passes `forceShow` to make that decision stick: when
+ * `true`, the `canBeFlashed` gate below is skipped and this component
+ * renders its normal UI regardless of `endpoint.role`. Every other call
+ * site omits it (defaults to `false`) and is therefore unaffected --
+ * this is additive, not a change to the existing gate's behavior.
  *
  * Two flash affordances, both ported from `DevicesTab.tsx`'s
  * `DeviceCard` (moved, not redesigned) plus one added in sprint 8:
@@ -144,9 +160,13 @@ function flashProgressText(progress: FlashProgressState): string {
 
 export interface FlashControlsProps {
   endpoint: EndpointListEntry;
+  /** Bypass the `canBeFlashed` self-gate below and render regardless
+   * of `endpoint.role` -- see this module's doc comment. Default
+   * `false`; only `AppHeader` (ticket 004) passes `true`. */
+  forceShow?: boolean;
 }
 
-export function FlashControls({ endpoint }: FlashControlsProps) {
+export function FlashControls({ endpoint, forceShow = false }: FlashControlsProps) {
   const firmwareStatus = useFirmwareStatus();
   const progress = useFlashProgress(endpoint.endpointId);
   const { send, sendBinary, onFlashResult, onFlashLocalReady } = useWsActions();
@@ -244,7 +264,9 @@ export function FlashControls({ endpoint }: FlashControlsProps) {
   // "no knowledge of caller" contract) -- every call site can mount
   // `<FlashControls endpoint={...} />` unconditionally and trust this
   // component to render nothing for a device that isn't eligible.
-  if (!canBeFlashed(endpoint)) {
+  // `forceShow` (ticket 004's `AppHeader`) is the one documented
+  // exception -- see this module's doc comment.
+  if (!forceShow && !canBeFlashed(endpoint)) {
     return null;
   }
 

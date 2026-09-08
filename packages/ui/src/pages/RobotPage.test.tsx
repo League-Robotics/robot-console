@@ -19,8 +19,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
 import { RobotPage } from "./RobotPage";
+import { AppHeader } from "../components/AppHeader";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
+import { withRouter } from "../testing/renderWithRouter";
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -90,5 +92,38 @@ describe("RobotPage", () => {
   it("embeds the device console for this endpoint, unchanged", () => {
     const el = mountRobotPage(robotFixture());
     expect(el.querySelector('[aria-label="Console"]')).not.toBeNull();
+  });
+});
+
+describe("RobotPage under AppHeader (ticket 012-004)", () => {
+  // AppHeader owns the back-to-devices link and the Flash menu entry
+  // (see AppHeader.test.tsx for the full behavior matrix); this is a
+  // cheap per-page smoke test proving both actually show up on a real
+  // robot device page's route, not just in AppHeader's own isolated
+  // tests.
+  it("shows a back-to-devices link and an enabled Flash entry alongside the robot page", () => {
+    const robot = robotFixture();
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <AppHeader />
+          <RobotPage endpoint={robot} />
+        </WsProvider>,
+        { initialEntries: [`/d/${robot.endpointId}`] },
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage({ type: "endpoints", endpoints: [robot] });
+    });
+
+    const backLink = el.querySelector("a");
+    expect(backLink?.getAttribute("href")).toBe("/");
+    const flashButton = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash");
+    expect(flashButton).not.toBeUndefined();
+    expect(flashButton?.disabled).toBe(false);
   });
 });

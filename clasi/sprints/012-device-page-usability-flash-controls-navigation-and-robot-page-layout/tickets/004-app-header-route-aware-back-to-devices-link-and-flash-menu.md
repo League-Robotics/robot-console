@@ -1,7 +1,7 @@
 ---
 id: '004'
 title: 'App header: route-aware back-to-devices link and Flash menu'
-status: open
+status: done
 use-cases:
 - SUC-003
 - SUC-004
@@ -61,26 +61,26 @@ route and extract `endpointId`, rather than hand-rolling a regex against
 
 ## Acceptance Criteria
 
-- [ ] New `packages/ui/src/components/AppHeader.tsx` (+ `.css`), mounted
+- [x] New `packages/ui/src/components/AppHeader.tsx` (+ `.css`), mounted
       in `App.tsx` inside `<BrowserRouter>` above `<AppRoutes />`.
-- [ ] A back-to-`/` link renders on every route other than `/`,
+- [x] A back-to-`/` link renders on every route other than `/`,
       including: the loading (`!hasSnapshot`) state, the not-connected
       state, and all three successful per-type pages.
-- [ ] The link has an accessible name (not icon-only) and is reachable
+- [x] The link has an accessible name (not icon-only) and is reachable
       by keyboard.
-- [ ] `DevicePage.tsx`'s existing not-connected-branch `<Link>` is
+- [x] `DevicePage.tsx`'s existing not-connected-branch `<Link>` is
       removed; no device-page state renders two back controls.
-- [ ] A Flash menu entry is present and enabled whenever `useMatch`
+- [x] A Flash menu entry is present and enabled whenever `useMatch`
       resolves a `/d/:endpointId` route with a matching endpoint in the
       current snapshot.
-- [ ] Selecting Flash for `unknown` opens `FlashControls` for that
+- [x] Selecting Flash for `unknown` opens `FlashControls` for that
       endpoint directly.
-- [ ] Selecting Flash for `relay`/`robot` requires an explicit
+- [x] Selecting Flash for `relay`/`robot` requires an explicit
       confirmation step before `FlashControls` opens; declining the
       confirmation leaves `FlashControls` unopened.
-- [ ] `AppHeader` uses `useMatch`/`useLocation`, not a hand-rolled
+- [x] `AppHeader` uses `useMatch`/`useLocation`, not a hand-rolled
       `location.pathname` regex.
-- [ ] `use-cases`/tests updated across `DevicePage.test.tsx`,
+- [x] `use-cases`/tests updated across `DevicePage.test.tsx`,
       `RelayPage.test.tsx`, `RobotPage.test.tsx`,
       `UnknownDevicePage.test.tsx`/`FlashControls.test.tsx` to assert
       the back link and Flash entry per state, per the linked issue's

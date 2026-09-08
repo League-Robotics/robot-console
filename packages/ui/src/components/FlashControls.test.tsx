@@ -413,6 +413,60 @@ describe("FlashControls local-hex flow", () => {
   });
 });
 
+describe("FlashControls forceShow (ticket 004's AppHeader escape hatch)", () => {
+  it("still renders nothing for an identified device when forceShow is omitted (default false, unchanged)", () => {
+    const { el } = mountFlashControls(
+      baseDevice({ role: "NEZHA2", sessionOpen: true }),
+      { firmwareStatus: firmwareStatusFixture() },
+    );
+    expect(el.querySelector(".flash-controls")).toBeNull();
+  });
+
+  it("renders the flash buttons for an identified device when forceShow is true", () => {
+    let socket: FakeSocket | null = null;
+    const device = baseDevice({ role: "NEZHA2", sessionOpen: true });
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FlashControls endpoint={device} forceShow />
+        </WsProvider>,
+        { initialEntries: [`/d/${device.endpointId}`] },
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage({ type: "endpoints", endpoints: [device], firmwareStatus: firmwareStatusFixture() });
+    });
+
+    expect(el.querySelector(".flash-controls")).not.toBeNull();
+    expect(el.textContent).toContain("Flash relay firmware");
+    expect(el.textContent).toContain("Flash robot firmware");
+  });
+
+  it("still renders nothing for an identified device when forceShow is explicitly false (not just omitted)", () => {
+    let socket: FakeSocket | null = null;
+    const device = baseDevice({ role: "NEZHA2", sessionOpen: true });
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FlashControls endpoint={device} forceShow={false} />
+        </WsProvider>,
+        { initialEntries: [`/d/${device.endpointId}`] },
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage({ type: "endpoints", endpoints: [device], firmwareStatus: firmwareStatusFixture() });
+    });
+
+    expect(el.querySelector(".flash-controls")).toBeNull();
+  });
+});
+
 describe("FlashControls post-flash navigation", () => {
   it("navigates to / when flash-result arrives ok for this endpoint", () => {
     const { el, socket } = mountFlashControls(failedIdentifyDevice());

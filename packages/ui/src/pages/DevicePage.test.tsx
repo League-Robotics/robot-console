@@ -82,7 +82,10 @@ describe("DevicePage deep-linking", () => {
     expect(el.textContent).not.toContain("isn't connected");
   });
 
-  it("shows a distinct 'not connected' state, with a way back, once the snapshot arrives without this endpoint", () => {
+  it("shows a distinct 'not connected' state once the snapshot arrives without this endpoint", () => {
+    // The way back to "/" is no longer rendered by DevicePage itself --
+    // ticket 012-004's AppHeader is the single source of that control
+    // now, covered by AppHeader.test.tsx.
     const { el, socket } = mountAt("/d/usb-MISSING");
     act(() => {
       socket().emitOpen();
@@ -93,8 +96,6 @@ describe("DevicePage deep-linking", () => {
 
     expect(el.textContent).not.toContain("Looking for this device");
     expect(el.textContent).toContain("isn't connected");
-    const back = el.querySelector("a");
-    expect(back?.getAttribute("href")).toBe("/");
   });
 
   it("renders the matched endpoint once the snapshot includes it", () => {

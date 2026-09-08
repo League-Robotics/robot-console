@@ -19,6 +19,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import type { EndpointListEntry, FirmwareKind, FirmwareAvailability } from "@robot-console/host/src/wsMessages.js";
 import { UnknownDevicePage } from "./UnknownDevicePage";
+import { AppHeader } from "../components/AppHeader";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 import { withRouter } from "../testing/renderWithRouter";
@@ -146,5 +147,40 @@ describe("UnknownDevicePage", () => {
     const { el } = mountUnknownPage(baseDevice());
     expect(el.querySelector('[aria-label="Console"]')).not.toBeNull();
     expect(el.querySelector('[data-testid="console-send-input"]')).not.toBeNull();
+  });
+});
+
+describe("UnknownDevicePage under AppHeader (ticket 012-004)", () => {
+  // AppHeader owns the back-to-devices link and the Flash menu entry
+  // (see AppHeader.test.tsx for the full behavior matrix); this is a
+  // cheap per-page smoke test proving both actually show up on a real
+  // unknown-device page's route, not just in AppHeader's own isolated
+  // tests. An unknown device's own on-page FlashControls (already
+  // covered above) and AppHeader's Flash entry coexist without
+  // conflict -- they render independent `.flash-controls` instances.
+  it("shows a back-to-devices link and an enabled Flash entry alongside the unknown-device page", () => {
+    const device = baseDevice({ role: null });
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <AppHeader />
+          <UnknownDevicePage endpoint={device} />
+        </WsProvider>,
+        { initialEntries: [`/d/${device.endpointId}`] },
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage({ type: "endpoints", endpoints: [device], firmwareStatus: firmwareStatusFixture() });
+    });
+
+    const backLink = el.querySelector("a");
+    expect(backLink?.getAttribute("href")).toBe("/");
+    const flashButton = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash");
+    expect(flashButton).not.toBeUndefined();
+    expect(flashButton?.disabled).toBe(false);
   });
 });

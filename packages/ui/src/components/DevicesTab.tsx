@@ -159,7 +159,11 @@ interface DeviceCardProps {
   onFlash: (endpointId: string, firmware: FirmwareKind) => void;
 }
 
-function nameDisplay(device: EndpointListEntry): { text: string; flagged: boolean } {
+/** Exported so `FrontPage.tsx` (ticket 007) can reuse this rendering
+ * rule verbatim rather than re-deriving it -- the front page shows the
+ * same naming states this tab always has, per the ticket's "carried
+ * over, not reinvented" plan. */
+export function nameDisplay(device: EndpointListEntry): { text: string; flagged: boolean } {
   if (device.name) {
     return { text: device.name, flagged: false };
   }
@@ -171,7 +175,8 @@ function nameDisplay(device: EndpointListEntry): { text: string; flagged: boolea
   return { text: "Naming…", flagged: false };
 }
 
-function roleDisplay(device: EndpointListEntry): string {
+/** Exported for the same reason as {@link nameDisplay} above. */
+export function roleDisplay(device: EndpointListEntry): string {
   if (device.role) {
     return device.role;
   }

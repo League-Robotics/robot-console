@@ -1,9 +1,12 @@
 ---
 id: '007'
 title: Router and front page
-status: open
-use-cases: ["SUC-001", "SUC-006"]
-depends-on: ["006"]
+status: done
+use-cases:
+- SUC-001
+- SUC-006
+depends-on:
+- '006'
 github-issue: ''
 issue: robot-console-two-level-ui-and-multi-transport-roadmap.md
 completes_issue: false
@@ -45,24 +48,24 @@ render a "loading" state, not "no such device" — read `useHasSnapshot()`
 
 ## Acceptance Criteria
 
-- [ ] `react-router` is added to `packages/ui/package.json` as a
+- [x] `react-router` is added to `packages/ui/package.json` as a
       dependency; `App.tsx` wraps its content in `BrowserRouter` and
       `Routes` with `/` and `/d/:endpointId` registered.
-- [ ] `FrontPage` renders the live endpoint list with the same
+- [x] `FrontPage` renders the live endpoint list with the same
       states/wording `DevicesTab`/`DeviceCard` render today (naming
       pending, flagged/unnamed, unresponsive, HID-only, no serial
       port, "no devices detected yet"), each row a link to
       `/d/:endpointId`.
-- [ ] Clicking a device row navigates to `/d/:endpointId` (a router
+- [x] Clicking a device row navigates to `/d/:endpointId` (a router
       test asserts the URL changes and the target route renders).
-- [ ] Deep-linking directly to `/d/:endpointId` before any `endpoints`
+- [x] Deep-linking directly to `/d/:endpointId` before any `endpoints`
       snapshot has arrived renders a distinct "loading" state; once
       the snapshot arrives, it renders either the matched endpoint or
       a "no such device" state — the two states are distinguishable in
       a test (not just visually).
-- [ ] `App.tsx`'s old tab-bar (`Devices`/`Console` buttons,
+- [x] `App.tsx`'s old tab-bar (`Devices`/`Console` buttons,
       `activeTab` state) is removed.
-- [ ] `npm test` and `npm run build` pass in full.
+- [x] `npm test` and `npm run build` pass in full.
 
 ## Testing
 

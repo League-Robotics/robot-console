@@ -1,55 +1,33 @@
 /**
  * @robot-console/ui — root component.
  *
- * Ticket 010 adds the Devices tab and the shared `WsProvider` socket
- * connection, plus a minimal tab-bar shell. Ticket 011 adds the
- * Console tab as the second entry. Later sprints add
- * Telemetry/Trace/Calibrate as additional entries -- no placeholder
- * entries for those are added ahead of their own tickets.
+ * Ticket 007 replaces the flat Devices/Console tab-bar shell (tickets
+ * 010/011, sprint 1) with the two-level navigation `sprint.md` calls
+ * for: a `BrowserRouter` mounted here, and the actual route table in
+ * `router.tsx` (`/` the front page, `/d/:endpointId` the per-device
+ * page). See `sprint.md`'s Architecture section for the full
+ * navigation design and Step 6's router decision. `server.ts` already
+ * serves `index.html` for any unmatched GET, so no host change is
+ * needed for client-side routes to be bookmarkable/refreshable.
  */
-import { useState } from "react";
+import { BrowserRouter } from "react-router";
 import { WsProvider } from "./ws/WsProvider";
-import { DevicesTab } from "./components/DevicesTab";
-import { ConsoleTab } from "./components/ConsoleTab";
+import { AppRoutes } from "./router";
 import "./App.css";
 
-type TabId = "devices" | "console";
-
 export function App() {
-  const [activeTab, setActiveTab] = useState<TabId>("devices");
-
   return (
     <WsProvider>
-      <div className="app">
-        <header className="app-header">
-          <h1>robot-console</h1>
-          <nav className="tab-bar" aria-label="Sections">
-            <button
-              type="button"
-              className={
-                activeTab === "devices" ? "tab-bar-button tab-bar-button-active" : "tab-bar-button"
-              }
-              aria-current={activeTab === "devices" ? "page" : undefined}
-              onClick={() => setActiveTab("devices")}
-            >
-              Devices
-            </button>
-            <button
-              type="button"
-              className={
-                activeTab === "console" ? "tab-bar-button tab-bar-button-active" : "tab-bar-button"
-              }
-              aria-current={activeTab === "console" ? "page" : undefined}
-              onClick={() => setActiveTab("console")}
-            >
-              Console
-            </button>
-          </nav>
-        </header>
-        <main className="app-main">
-          {activeTab === "devices" ? <DevicesTab /> : <ConsoleTab />}
-        </main>
-      </div>
+      <BrowserRouter>
+        <div className="app">
+          <header className="app-header">
+            <h1>robot-console</h1>
+          </header>
+          <main className="app-main">
+            <AppRoutes />
+          </main>
+        </div>
+      </BrowserRouter>
     </WsProvider>
   );
 }

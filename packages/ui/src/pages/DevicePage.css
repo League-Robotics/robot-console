@@ -1,0 +1,18 @@
+.device-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 46rem;
+}
+
+.device-page-status {
+  margin: 0;
+  color: var(--rc-text-muted);
+  font-size: 0.95rem;
+}
+
+.device-page-back {
+  align-self: flex-start;
+  color: var(--rc-accent);
+  font-size: 0.9rem;
+}

@@ -102,6 +102,7 @@ import type {
   RememberedRobotEntry,
   ServerMessage,
 } from "@robot-console/host/src/wsMessages.js";
+import type { WireField } from "@robot-console/protocol";
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
 
@@ -294,6 +295,18 @@ export interface WsActions {
    * silently dropped rather than queued, same as every other outbound
    * message this module sends. */
   sendBinary: (data: Uint8Array) => void;
+  /** Send one protocol verb, with optional fields, to an endpoint's open
+   * session -- forwards `{ type: "send-command", endpointId, verb,
+   * fields }` through `send`'s existing readyState guard (silently
+   * dropped if the socket isn't open, same as every other action here;
+   * no queuing). Deliberately does not classify `verb` as sequenced or
+   * unsequenced: that decision belongs to `@robot-console/protocol`'s
+   * `isSequencedVerb`, applied host-side by `deviceRegistry.ts` (ticket
+   * 003) -- duplicating it here would be exactly the client/host drift
+   * the architecture forbids. `fields` omitted is equivalent to an
+   * empty array (`SendCommandMessage`'s own doc comment), so callers
+   * with a bare verb like `STATUS` or `GET` can omit it entirely. */
+  sendCommand: (endpointId: string, verb: string, fields?: WireField[]) => void;
   onFlashResult: (handler: (message: FlashResultMessage) => void) => () => void;
   /** Subscribe to the local-hex upload handshake's `flash-local-ready`
    * reply -- the server's go-ahead to send the binary frame, carrying
@@ -506,6 +519,16 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
         if (socket && socket.readyState === WEBSOCKET_OPEN) {
           socket.send(data);
         }
+      },
+      sendCommand: (endpointId: string, verb: string, fields?: WireField[]) => {
+        // `exactOptionalPropertyTypes` forbids `fields: undefined` --
+        // the key must be absent entirely, not present-with-undefined,
+        // to satisfy `SendCommandMessage.fields?: WireField[]`.
+        store.actions.send(
+          fields !== undefined
+            ? { type: "send-command", endpointId, verb, fields }
+            : { type: "send-command", endpointId, verb },
+        );
       },
       onFlashResult: (handler: (message: FlashResultMessage) => void) => {
         store.flashResultHandlers.add(handler);
@@ -733,8 +756,34 @@ export function useFlashProgress(endpointId: string): FlashProgressState | undef
   );
 }
 
-/** The imperative surface: send a client message (`send`/`sendBinary`),
- * and subscribe to the terminal outcome of a flash (`onFlashResult`) or
+/** One endpoint's sequencing state from the most recent `endpoints`
+ * snapshot (ticket 002's `EndpointListEntry.sequencing`, populated
+ * host-side by ticket 003) -- `undefined` before any snapshot has
+ * arrived, or whenever the endpoint has no session open (the field is
+ * only present while `sessionOpen`, per `wsMessages.ts`). No new
+ * store-mutation logic is needed: `sequencing` travels inside the
+ * existing `endpoints` snapshot, already covered by `applySnapshot`'s
+ * per-entry `deepEqual`/structural-sharing, so an unchanged `sequencing`
+ * value keeps its object identity across snapshots exactly like every
+ * other `EndpointListEntry` field. Subscribes only to that one
+ * endpoint's slice of the store, mirroring `useFlashProgress` -- a
+ * component reading `useSequencing("A")` does not re-render when
+ * endpoint B's `sequencing` changes, or when an unrelated `line`/
+ * `flash-progress` message arrives. This matters more than usual here:
+ * `sequencing` updates on every ack/nack, so a naive whole-snapshot
+ * subscription would re-render every consumer on every protocol
+ * reply. */
+export function useSequencing(endpointId: string): EndpointListEntry["sequencing"] {
+  const store = useStore();
+  return useSyncExternalStore(
+    store.subscribe,
+    useCallback(() => store.endpointsById.get(endpointId)?.sequencing, [store, endpointId]),
+  );
+}
+
+/** The imperative surface: send a client message (`send`/`sendBinary`/
+ * `sendCommand`), and subscribe to the terminal outcome of a flash
+ * (`onFlashResult`) or
  * the local-hex upload handshake's go-ahead (`onFlashLocalReady`,
  * ticket 008). Per-phase progress does *not* need a matching
  * subscription here: `useFlashProgress` (ticket 006) and

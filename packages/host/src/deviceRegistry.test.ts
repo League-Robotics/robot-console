@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AckNackEvent, DecodedLine, ParsedBanner } from "@robot-console/protocol";
 import { DeviceWatcher, type DaplinkDevice } from "./devices.js";
 import type { SwdNameResult } from "./swdName.js";
@@ -8,6 +11,7 @@ import type { EndpointListEntry, FirmwareKind, FirmwareSourceRef, FlashPhase } f
 import type { FirmwareConfigMap, FirmwareSource } from "./config.js";
 import type { ResolvedRelease } from "./releases.js";
 import type { FlashOutcome } from "./flash.js";
+import { KnownRobotsStore } from "./store/knownRobots.js";
 
 // Per the ticket's Testing section: message-shaping logic is exercised
 // here against fake devices.ts/swdName.ts/UsbSerialLink outputs -- no
@@ -1009,6 +1013,247 @@ describe("DeviceRegistry — requestFlash", () => {
     await Promise.all([flashPromise, openPromise]);
 
     expect(order).toEqual(["flash-resolve-start", "flash-resolve-end", "flash-done", "open-done"]);
+
+    await registry.stop();
+  });
+});
+
+// ---------------------------------------------------------------------
+// Ticket 003 (sprint 5): the write gate, the rememberedRobots()
+// projection, and the forget action. `knownRobots.test.ts` covers the
+// store's own persistence/atomic-write/read-only behavior in isolation
+// -- these tests exercise only how DeviceRegistry wires that store into
+// live USB attach/identify/flash flow. Each test gets its own temp
+// directory-backed KnownRobotsStore, per the ticket's testing note, so
+// nothing here ever touches a real ~/.local/state.
+// ---------------------------------------------------------------------
+
+describe("DeviceRegistry — known robots (sprint 5)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(path.join(tmpdir(), "device-registry-known-robots-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("enrols a robot identified over its own USB connection (real store)", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("zeguz");
+    const createLink = () => new FakeLink(async () => banner({ role: "NEZHA2", commonName: "robot" }));
+    const knownRobotsStore = new KnownRobotsStore({ stateDir: tmpDir });
+
+    const registry = new DeviceRegistry({ watcher, resolveName, createLink, knownRobotsStore });
+    registry.start();
+
+    await waitForSnapshot(registry, (s) => s[0]?.role === "NEZHA2");
+
+    expect(knownRobotsStore.list()).toEqual([
+      expect.objectContaining({ name: "zeguz", lastRole: "NEZHA2", lastUsbSerial: "SERIAL-A" }),
+    ]);
+
+    await registry.stop();
+  });
+
+  it("records the exact recordSighting call shape (fake store)", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("zeguz");
+    const createLink = () => new FakeLink(async () => banner({ role: "NEZHA2", commonName: "robot" }));
+
+    const recordSighting = vi.fn();
+    const fakeStore = {
+      list: () => [],
+      get: () => undefined,
+      recordSighting,
+      forget: vi.fn(() => false),
+      flush: async () => {},
+      isReadOnly: false,
+    } as unknown as KnownRobotsStore;
+
+    const registry = new DeviceRegistry({ watcher, resolveName, createLink, knownRobotsStore: fakeStore });
+    registry.start();
+
+    await waitForSnapshot(registry, (s) => s[0]?.role === "NEZHA2");
+
+    expect(recordSighting).toHaveBeenCalledWith({ name: "zeguz", usbSerial: "SERIAL-A", role: "NEZHA2" });
+
+    await registry.stop();
+  });
+
+  it("does NOT enrol a relay identify -- the sprint's explicitly-required negative case", async () => {
+    // banner()'s default fixture is role RADIOBRIDGE/commonName relay --
+    // all three boards on the bench right now classify this way, which
+    // is exactly why this negative case is provable today with no
+    // hardware change.
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("zeguz");
+    const createLink = () => new FakeLink(async () => banner());
+    const knownRobotsStore = new KnownRobotsStore({ stateDir: tmpDir });
+
+    const registry = new DeviceRegistry({ watcher, resolveName, createLink, knownRobotsStore });
+    registry.start();
+
+    const snap = await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    expect(snap[0]?.classification.type).toBe("relay");
+
+    expect(knownRobotsStore.list()).toEqual([]);
+
+    await registry.stop();
+  });
+
+  it("does not enrol an unknown/unidentified device (identify() resolves null)", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("zeguz");
+    const createLink = () => new FakeLink(async () => null);
+    const knownRobotsStore = new KnownRobotsStore({ stateDir: tmpDir });
+
+    const registry = new DeviceRegistry({ watcher, resolveName, createLink, knownRobotsStore });
+    registry.start();
+
+    const snap = await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    expect(snap[0]?.classification.type).toBe("unknown");
+
+    expect(knownRobotsStore.list()).toEqual([]);
+
+    await registry.stop();
+  });
+
+  it("does not enrol a device whose name never resolved, even though its classification is robot", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => failingNameResult();
+    const createLink = () => new FakeLink(async () => banner({ role: "NEZHA2", commonName: "robot" }));
+    const knownRobotsStore = new KnownRobotsStore({ stateDir: tmpDir });
+
+    const registry = new DeviceRegistry({ watcher, resolveName, createLink, knownRobotsStore });
+    registry.start();
+
+    const snap = await waitForSnapshot(registry, (s) => s[0]?.role === "NEZHA2");
+    expect(snap[0]?.name).toBeNull();
+
+    expect(knownRobotsStore.list()).toEqual([]);
+
+    await registry.stop();
+  });
+
+  it("also enrols via the post-flash reidentify path (succeedFlash's call site)", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("zeguz");
+    const links: FakeLink[] = [];
+    const createLink = vi.fn(() => {
+      const isFirst = links.length === 0;
+      const link = new FakeLink(async () =>
+        isFirst ? banner() : banner({ role: "NEZHA2", commonName: "robot" }),
+      );
+      links.push(link);
+      return link;
+    });
+    const knownRobotsStore = new KnownRobotsStore({ stateDir: tmpDir });
+
+    const registry = new DeviceRegistry({
+      watcher,
+      resolveName,
+      createLink,
+      getFirmwareConfig: configWith(firmwareSource()),
+      resolveRelease: async () => resolvedRelease(),
+      fetchAndVerifyHex: async () => ({ hex: Buffer.from(":00000001FF\n", "utf-8") }),
+      flash: async () => ({ status: "ok", method: "swd" }) as FlashOutcome,
+      knownRobotsStore,
+    });
+
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    // Pre-flash: identifies as a relay, not enrolled yet.
+    expect(knownRobotsStore.list()).toEqual([]);
+
+    await registry.requestFlash("usb-SERIAL-A", releaseSource("relay"));
+    await waitForSnapshot(registry, (s) => s[0]?.role === "NEZHA2");
+
+    expect(knownRobotsStore.list()).toEqual([expect.objectContaining({ name: "zeguz", lastRole: "NEZHA2" })]);
+
+    await registry.stop();
+  });
+
+  it("rememberedRobots() excludes a currently-attached name and includes an absent one", async () => {
+    const devices = [device()]; // resolves to "zeguz" below -- currently attached
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("zeguz");
+    const createLink = () => new FakeLink(async () => banner({ role: "NEZHA2", commonName: "robot" }));
+    const knownRobotsStore = new KnownRobotsStore({ stateDir: tmpDir });
+    // Pre-populate the roster with a record matching the currently-
+    // attached fixture device's resolved name, plus one that stays
+    // absent.
+    knownRobotsStore.recordSighting({ name: "zeguz", usbSerial: "OLD-SERIAL", role: "NEZHA2" });
+    knownRobotsStore.recordSighting({ name: "absnt", usbSerial: "SERIAL-B", role: "NEZHA2" });
+
+    const registry = new DeviceRegistry({ watcher, resolveName, createLink, knownRobotsStore });
+    registry.start();
+
+    await waitForSnapshot(registry, (s) => s[0]?.role === "NEZHA2");
+
+    const remembered = registry.rememberedRobots();
+    expect(remembered.map((r) => r.name)).toEqual(["absnt"]);
+    // The attached name stays visible via snapshot()/endpoints -- it's
+    // just not duplicated into rememberedRobots().
+    expect(registry.snapshot().map((e) => e.name)).toContain("zeguz");
+
+    await registry.stop();
+  });
+
+  it("requestForgetKnownRobot removes the record from rememberedRobots() and notifies devicesListeners", async () => {
+    const knownRobotsStore = new KnownRobotsStore({ stateDir: tmpDir });
+    knownRobotsStore.recordSighting({ name: "gonee", usbSerial: "SERIAL-X", role: "NEZHA2" });
+
+    const watcher = fixtureWatcher(() => []);
+    const registry = new DeviceRegistry({ watcher, knownRobotsStore });
+    const notifications: EndpointListEntry[][] = [];
+    registry.onDevicesChanged((snap) => notifications.push(snap));
+
+    expect(registry.rememberedRobots().map((r) => r.name)).toEqual(["gonee"]);
+
+    registry.requestForgetKnownRobot("gonee");
+
+    expect(registry.rememberedRobots()).toEqual([]);
+    expect(notifications.length).toBeGreaterThan(0);
+  });
+
+  it("requestForgetKnownRobot for a name not in the roster does not throw", () => {
+    const knownRobotsStore = new KnownRobotsStore({ stateDir: tmpDir });
+    const watcher = fixtureWatcher(() => []);
+    const registry = new DeviceRegistry({ watcher, knownRobotsStore });
+
+    expect(() => registry.requestForgetKnownRobot("nobody-home")).not.toThrow();
+    expect(registry.rememberedRobots()).toEqual([]);
+  });
+
+  it("a read-only store does not break identify -- a robot still identifies normally, it just isn't recorded", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("zeguz");
+    const createLink = () => new FakeLink(async () => banner({ role: "NEZHA2", commonName: "robot" }));
+
+    // Force read-only by pre-writing a file with a version newer than
+    // this build supports -- see knownRobots.ts's own doc comment.
+    const filePath = path.join(tmpDir, "known-robots.json");
+    writeFileSync(filePath, JSON.stringify({ version: 999, robots: [] }), "utf8");
+    const knownRobotsStore = new KnownRobotsStore({ filePath });
+    expect(knownRobotsStore.isReadOnly).toBe(true);
+
+    const registry = new DeviceRegistry({ watcher, resolveName, createLink, knownRobotsStore });
+    registry.start();
+
+    const snap = await waitForSnapshot(registry, (s) => s[0]?.role === "NEZHA2");
+    expect(snap[0]).toEqual(expect.objectContaining({ name: "zeguz", role: "NEZHA2", sessionOpen: true }));
+
+    expect(knownRobotsStore.list()).toEqual([]);
 
     await registry.stop();
   });

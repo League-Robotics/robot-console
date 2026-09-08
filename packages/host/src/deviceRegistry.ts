@@ -215,7 +215,9 @@ import type {
   FirmwareKind,
   FirmwareSourceRef,
   FlashPhase,
+  RememberedRobotEntry,
 } from "./wsMessages.js";
+import { KnownRobotsStore } from "./store/knownRobots.js";
 
 /** Mint a URL-safe, stable endpoint id for a USB device from its serial
  * number -- see `wsMessages.ts`'s `EndpointListEntry.endpointId` doc
@@ -531,6 +533,14 @@ export interface DeviceRegistryOptions {
    * a tiny value so a fake `identify()` that never resolves doesn't
    * cost real wall-clock time. */
   reidentifyTimeoutMs?: number;
+  /** Sprint 5: injectable {@link KnownRobotsStore} -- the durable
+   * remembered-robot roster. Defaults to a real, state-dir-backed
+   * `new KnownRobotsStore()`, mirroring every other injected seam on
+   * this class. Tests substitute a store pointed at a temp directory,
+   * or a fake object satisfying the same narrow interface (`list`,
+   * `recordSighting`, `forget`), so no test needs a real filesystem to
+   * exercise the write gate/projection/forget action below. */
+  knownRobotsStore?: KnownRobotsStore;
 }
 
 /**
@@ -551,6 +561,7 @@ export class DeviceRegistry {
   private readonly flashFn: typeof flash;
   private readonly consumeUploadFn: (uploadId: string) => Buffer | undefined;
   private readonly reidentifyTimeoutMs: number;
+  private readonly knownRobotsStore: KnownRobotsStore;
   private readonly mutex = new KeyedMutex();
   private readonly states = new Map<string, EndpointState>();
   private unsubscribeWatcher: (() => void) | undefined;
@@ -571,6 +582,7 @@ export class DeviceRegistry {
     this.flashFn = options.flash ?? flash;
     this.consumeUploadFn = options.consumeUpload ?? (() => undefined);
     this.reidentifyTimeoutMs = options.reidentifyTimeoutMs ?? DEFAULT_REIDENTIFY_TIMEOUT_MS;
+    this.knownRobotsStore = options.knownRobotsStore ?? new KnownRobotsStore();
   }
 
   /** Start watching for devices. Idempotent-ish in practice (callers
@@ -605,6 +617,104 @@ export class DeviceRegistry {
     return [...this.states.values()]
       .map(toEntry)
       .sort((a, b) => a.endpointId.localeCompare(b.endpointId));
+  }
+
+  /**
+   * Sprint 5: the durable "remembered robots" projection -- every
+   * {@link KnownRobotsStore} record whose name is *not* currently
+   * attached, mapped to `RememberedRobotEntry`'s wire shape. A robot you
+   * can see right now is an endpoint (in {@link snapshot}), not a
+   * memory; showing it in both places would look like a duplicate. This
+   * "subtract what's live" filter needs {@link states} (private to this
+   * class), which is exactly why the projection lives here rather than
+   * on `KnownRobotsStore` itself -- that module knows nothing about
+   * live attachment.
+   */
+  rememberedRobots(): RememberedRobotEntry[] {
+    const attachedNames = new Set(
+      [...this.states.values()]
+        .map((s) => s.name)
+        .filter((n): n is string => n !== null),
+    );
+    return this.knownRobotsStore
+      .list()
+      .filter((r) => !attachedNames.has(r.name))
+      .map((r) => ({
+        name: r.name,
+        lastSeenAt: r.lastSeenAt,
+        lastSeenVia: r.lastSeenVia,
+        lastRole: r.lastRole,
+        lastUsbSerial: r.lastUsbSerial,
+      }));
+  }
+
+  /**
+   * Sprint 5: remove `name` from the remembered-robot roster and emit a
+   * fresh device snapshot so every connected client's `rememberedRobots`
+   * list drops it immediately. Synchronous and not run through
+   * {@link KeyedMutex} -- unlike every other public mutator on this
+   * class, this one touches no physical resource, only the store's
+   * in-memory map, so there is no resource to serialize access to.
+   * `KnownRobotsStore.forget` is itself a silent no-op for an unknown
+   * name (never throws), so forgetting an already-absent (or
+   * never-known) name is harmless here too -- this still emits a
+   * snapshot in that case, which is fine (a spurious notification, not a
+   * spurious *change*).
+   *
+   * `sprint.md`'s Step 7 flags an accepted race: a forget landing at the
+   * same moment as a re-identify of the same name is "last call wins" --
+   * whichever of `forget`/`recordSighting` reaches the store's map last
+   * determines the outcome. That is accepted as-is, not solved by this
+   * method; keeping this call synchronous and side-effect-free beyond
+   * the store mutation + one `emitDevices()` is what keeps it from
+   * making that race any wider than it already is.
+   */
+  requestForgetKnownRobot(name: string): void {
+    this.knownRobotsStore.forget(name);
+    this.emitDevices();
+  }
+
+  /**
+   * Sprint 5 write gate: record a sighting in the durable
+   * {@link KnownRobotsStore} iff `state` is both named and classified as
+   * a robot. Called from both places `state.classification` is assigned
+   * from a live banner ({@link connectAndIdentify} and
+   * {@link succeedFlash}) -- never from anywhere that only *might* have
+   * seen a robot.
+   *
+   * Deliberately no separate "banner evidence" check
+   * (`classification.evidence`) alongside the `type === "robot"` check.
+   * It would look like an extra layer of defense, but `classifyBanner`
+   * (`@robot-console/protocol`'s `deviceType.ts`) can only ever produce
+   * `type: "robot"` by way of an actual banner match -- either
+   * `commonName === "robot"` (`evidence: "common-name"`) or `role`
+   * hitting the robot allowlist (`evidence: "role"`). There is no path
+   * that produces `type: "robot"` with `evidence: "none"` or
+   * `"unrecognized"`. An extra evidence check here would therefore never
+   * reject anything this `type` check doesn't already reject -- it would
+   * just be dead code that someone later "fixes" back in on the mistaken
+   * belief it was load-bearing. If `classifyBanner`'s contract ever
+   * changes such that `type: "robot"` no longer implies real banner
+   * evidence, this comment (and this gate) is the place to revisit, not
+   * a silent second check bolted on beside it.
+   *
+   * This method touches only the in-memory write gate's *decision*; it
+   * never awaits anything. `KnownRobotsStore.recordSighting` is itself
+   * synchronous, debounced, and documented "never throws" -- calling it
+   * here cannot stall or fail the identify path it's called from.
+   */
+  private maybeRecordKnownRobot(state: EndpointState): void {
+    if (state.name === null) {
+      return;
+    }
+    if (state.classification.type !== "robot") {
+      return;
+    }
+    this.knownRobotsStore.recordSighting({
+      name: state.name,
+      usbSerial: state.device.serialNumber,
+      role: state.classification.role,
+    });
   }
 
   onDevicesChanged(listener: DevicesListener): () => void {
@@ -953,6 +1063,12 @@ export class DeviceRegistry {
     }
     state.flashStatus = undefined;
     state.classification = classification;
+    // Sprint 5 write gate: a flash can turn an unknown device into a
+    // correctly-classified robot (e.g. flashing robot firmware onto a
+    // blank board) -- the post-flash reidentify is exactly as much "a
+    // successful USB identify with banner evidence" as the plain attach
+    // flow's own call site below, so it gates enrolment the same way.
+    this.maybeRecordKnownRobot(state);
     if (reidentify) {
       this.emitFlashResult(endpointId, source, "ok", undefined, classification, name, reidentify);
     } else {
@@ -1226,6 +1342,14 @@ export class DeviceRegistry {
     // (type "unknown", evidence "none") -- a normal state, not an
     // error.
     state.classification = classifyBanner(banner);
+    // Sprint 5 write gate -- see maybeRecordKnownRobot's own doc
+    // comment for the write-gate rationale (robot + named, no separate
+    // evidence check). Only a robot identified over its own USB
+    // connection reaches this call site: a relay, an unknown/
+    // unidentified device, or a nameless device all fall out of the
+    // gate automatically; nothing here is reachable over mDNS or a
+    // relay-mediated identify (neither exists yet this sprint).
+    this.maybeRecordKnownRobot(state);
     this.emitDevices();
   }
 

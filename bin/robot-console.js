@@ -2,26 +2,24 @@
 // robot-console CLI entry point.
 //
 // This is a thin loader shim, not the real logic (that's
-// packages/host/src/cli.ts). Every package in this monorepo currently
-// resolves via its package.json's `main`/`types` fields straight to its
-// TypeScript source (no `dist` build output exists yet, ahead of a real
-// per-package build/publish pipeline), and that source uses NodeNext-
-// style ".js" import specifiers pointing at sibling ".ts" files plus
-// constructor parameter properties (see e.g. UsbSerialLink.ts's
-// WritePacer) -- neither of which plain Node's own built-in TypeScript
-// support (type-stripping, with or without --experimental-transform-
-// types) handles. `tsx` does handle both, so it is registered here as a
-// loader hook before importing anything else, letting the rest of the
-// host package run directly from source with no separate compile step.
-// tsx's own `tsx/esm/api` `register()` (rather than the lower-level
-// `node:module` `register("tsx/esm", ...)`, which hits tsx's legacy
-// `--loader`-flag code path and throws under current Node) is the
-// supported way to install this hook programmatically.
-import { register } from "tsx/esm/api";
-
-register();
-
-const { main } = await import("../packages/host/src/cli.ts");
+// packages/host/src/cli.ts). It imports the *compiled* output at
+// packages/host/dist/cli.js -- produced by `npm run build` (ticket
+// 009) -- rather than the TypeScript source directly. Plain Node
+// cannot run packages/host/src/cli.ts (and everything it imports) as
+// -is: this monorepo's sources use NodeNext-style ".js" import
+// specifiers pointing at sibling ".ts" files plus constructor
+// parameter properties (see e.g. UsbSerialLink.ts's WritePacer),
+// neither of which plain Node's own built-in TypeScript support
+// (type-stripping, with or without --experimental-transform-types)
+// handles. `tsc` (the real build, `npm run build`) does handle both,
+// emitting plain ".js" that plain `node` runs directly -- so this
+// shim needs no loader hook, and `tsx` is not a runtime dependency of
+// the published package.
+//
+// `npm run dev` is the development-time exception: it runs everything
+// from source with no compile step, via `scripts/dev.mjs`'s own `tsx`
+// registration -- see that file's comment.
+const { main } = await import("../packages/host/dist/cli.js");
 
 try {
   await main(process.argv.slice(2));

@@ -1,8 +1,9 @@
 ---
-id: '009'
+id: 009
 title: 'Real build output: drop tsx as a production runtime dependency'
-status: open
-use-cases: ["SUC-008"]
+status: done
+use-cases:
+- SUC-008
 depends-on: []
 github-issue: ''
 issue: no-build-pipeline-tsx-is-a-runtime-dependency.md
@@ -36,29 +37,63 @@ is making to `packages/host`/`packages/ui`).
 
 ## Acceptance Criteria
 
-- [ ] `packages/host` and `packages/protocol` each emit real `dist/`
+- [x] `packages/host` and `packages/protocol` each emit real `dist/`
       output from their build script (replacing/extending the current
       `tsc --noEmit`-only `build` script).
-- [ ] `main`/`types` in both packages' `package.json` point at
+- [x] `main`/`types` in both packages' `package.json` point at
       `dist/` output, not `.ts` source.
-- [ ] `tsx` is removed from the top-level `package.json`'s production
+- [x] `tsx` is removed from the top-level `package.json`'s production
       `dependencies` and added as a devDependency (or removed
       entirely, if `bin/robot-console.js` no longer needs it at
       runtime once it loads compiled JS — programmer's judgment on
       which, but production `dependencies` must not list it).
-- [ ] `bin/robot-console.js` runs the compiled `dist/` output directly
+- [x] `bin/robot-console.js` runs the compiled `dist/` output directly
       via plain `node`, with no `tsx`/type-stripping loader involved
       at runtime.
-- [ ] A clean-install smoke check: from a fresh `npm install`
+- [x] A clean-install smoke check: from a fresh `npm install`
       (or `npm pack`/install-from-tarball, whichever the programmer
       judges most faithfully simulates an `npx` consumer), running the
       package's bin entry point works with `tsx` absent from the
       resolved production dependency tree.
-- [ ] `npm test` continues to run against `.ts` source via vitest,
+- [x] `npm test` continues to run against `.ts` source via vitest,
       unaffected by the new build output — full suite still passes.
-- [ ] `npm run build` still passes across all three workspaces (now
+- [x] `npm run build` still passes across all three workspaces (now
       producing real output for `host`/`protocol`, not just
       type-checking).
+
+## Verification Notes (programmer)
+
+- `npm ls tsx --omit=dev` → empty: `tsx` does not appear anywhere in
+  the production dependency tree (top-level `dependencies` no longer
+  lists it; it only remains as a devDependency, pulled in again
+  transitively by `vite`, also dev-only).
+- Direct runtime smoke check (more faithful than a full `npm pack`
+  given the workspace-private, unpublished nature of these packages):
+  temporarily moved `node_modules/tsx` out of the way entirely, then
+  ran `node bin/robot-console.js --port 4799` against the built
+  `dist/` output — it started and served HTTP 200 with `tsx` completely
+  absent from `node_modules`, then `tsx` was restored for `npm run dev`.
+- End-to-end hardware check against built output only (no `tsx`, no
+  `--noEmit`-only source resolution): started
+  `node bin/robot-console.js --port 4797` from `dist/`, connected a
+  `ws` client, and read the `endpoints` broadcast. `zapig` (a real
+  `RADIOBRIDGE` relay) came back as
+  `classification: { type: "relay", role: "RADIOBRIDGE", ... }` —
+  confirming protocol + host + wire contract all survived the build
+  change. (The other two attached boards returned
+  `sessionError: "Cannot lock port"` — a pre-existing serial-port
+  contention condition in this environment, unrelated to this ticket's
+  build change and not a regression it introduced.)
+- `npm run dev` (via `scripts/dev.mjs`) still starts host + Vite in one
+  process from one command — verified by running it and observing both
+  `robot-console: host listening on ...` and
+  `robot-console: UI (hot reload) on ...` from a single invocation.
+- `npm test` → 557/557 passing, unaffected.
+- `npm run build` → real `dist/` emitted for `protocol` and `host`
+  (root `build` script now runs them in explicit dependency order,
+  `protocol` then `host` then `ui`, since `host`'s `tsc` needs
+  `protocol`'s emitted `dist/index.d.ts`); `ui`'s `build` is unchanged
+  (`tsc --noEmit`, still a type-check only, per scope boundary).
 
 ## Testing
 

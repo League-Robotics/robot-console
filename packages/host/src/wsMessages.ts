@@ -75,6 +75,35 @@
  *     `server.ts`'s `isBinary` branch is what routes a binary frame to
  *     it.
  *
+ * ## Sprint 6 addition -- one generic `send-command`, not per-verb messages
+ *
+ * Sprint 6 (drive/`STATUS`/`GET`/`SET`/e-stop controls) needs a second
+ * client -> server verb-sending path alongside {@link LineMessage}'s raw
+ * text: {@link SendCommandMessage} names a verb and an optional
+ * {@link WireField} list and lets `deviceRegistry.ts` (ticket 003)
+ * decide how to dispatch it through `@robot-console/protocol`'s
+ * `Session` -- sequenced verbs via `Session.send()`, everything else
+ * (including `STATUS`, which is unsequenced despite sitting next to the
+ * sequenced verbs on the Robot page) via `Session.sendUnsequenced()`.
+ * Deliberately **one** message shape rather than one per verb: verb
+ * classification (`isSequencedVerb`) is singly owned by
+ * `@robot-console/protocol`'s `session.ts` and must never be duplicated
+ * here, where it would drift from that module -- a per-verb message set
+ * would force exactly that duplication onto this file. `WireField` is
+ * already JSON-serializable as parsed (`number | string | FlagsField`,
+ * and `FlagsField` is already a plain `{ wireType: "flags"; value:
+ * number }` object), so no new wire-value encoding is introduced here.
+ *
+ * {@link EndpointListEntry} gains `sequencing`, present only while a
+ * session is open (mirroring {@link EndpointListEntry.sessionError}'s
+ * present-only-when-relevant shape) -- ticket 003 populates it from the
+ * same `Session` (`seq`/`pendingCount`/`lastDone`/`lastDoneReason`) and
+ * ticket 004's UI store reads it for SUC-003. It lives on this
+ * already-full-snapshot message rather than its own event stream, for
+ * the same self-healing reason the rest of `EndpointsMessage` does: a
+ * client that missed one snapshot gets fully-current sequencing state
+ * on the next, never a delta it needs to reconcile.
+ *
  * ## Forward compatibility: an unrecognized `classification.type`
  *
  * `EndpointListEntry.classification.type` is a {@link DeviceType}
@@ -88,8 +117,8 @@
  * Direction:
  *   - client -> server: {@link SessionOpenMessage}, {@link SessionCloseMessage},
  *     {@link LineMessage} (always `direction: "tx"` in this direction),
- *     {@link FlashStartMessage}, {@link FlashLocalBeginMessage},
- *     {@link ForgetKnownRobotMessage}.
+ *     {@link SendCommandMessage}, {@link FlashStartMessage},
+ *     {@link FlashLocalBeginMessage}, {@link ForgetKnownRobotMessage}.
  *   - server -> client: {@link EndpointsMessage}, {@link LineMessage}
  *     (always `direction: "rx"` in this direction -- an inbound line
  *     from the device), {@link ErrorMessage}, {@link FlashProgressMessage},
@@ -98,7 +127,7 @@
  *   discriminated further by its own `direction` field.
  */
 
-import type { DeviceClassification } from "@robot-console/protocol";
+import type { DeviceClassification, WireField } from "@robot-console/protocol";
 
 /** Which firmware a flash operation targets, when the source is a
  * configured release build. `"relay"` is the radio-relay board's
@@ -213,6 +242,18 @@ export interface EndpointListEntry {
    * a subsequent successful open. Renamed from `linkError` -- see the
    * module doc comment. */
   sessionError?: string;
+  /** Sequencing state from `@robot-console/protocol`'s `Session` for
+   * this endpoint's open session -- `seq`/`pendingCount`/`lastDone`/
+   * `lastDoneReason` mirror that class's own fields of the same names
+   * verbatim. Present only while
+   * {@link sessionOpen} is `true` (mirroring {@link sessionError}'s
+   * present-only-when-relevant shape), so a client can distinguish
+   * "session open, nothing pending yet" (`pendingCount: 0`) from "no
+   * session, or talking to a server too old to send this field"
+   * (`undefined`). Populated by ticket 003; this ticket only freezes
+   * the shape. New this sprint -- see the module doc comment's "Sprint
+   * 6 addition" section. */
+  sequencing?: { seq: number; pendingCount: number; lastDone: number; lastDoneReason: string };
   /** Present only while a flash is in flight for this endpoint --
    * absent the rest of the time, mirroring {@link sessionError}'s
    * present-only-when-relevant shape. A reconnecting client sees this
@@ -239,6 +280,24 @@ export interface LineMessage {
   endpointId: string;
   direction: LineDirection;
   line: string;
+}
+
+/** Client -> server: send one protocol verb, with optional fields, to an
+ * endpoint's open session -- the structured alternative to
+ * {@link LineMessage}'s raw text, added this sprint (see the module doc
+ * comment's "Sprint 6 addition" section for why this is one generic
+ * message rather than one per verb). `deviceRegistry.ts` (ticket 003)
+ * is the one place that decides, via `@robot-console/protocol`'s
+ * `isSequencedVerb`, whether `verb` goes through `Session.send()`
+ * (sequenced) or `Session.sendUnsequenced()` (everything else,
+ * including `STATUS`) -- that classification is never re-derived here.
+ * `fields` omitted is equivalent to an empty array, for bare verbs like
+ * `GET` with no arguments. */
+export interface SendCommandMessage {
+  type: "send-command";
+  endpointId: string;
+  verb: string;
+  fields?: WireField[];
 }
 
 /** Per-firmware availability, as `server.ts`'s `FirmwareAvailabilityCache`
@@ -453,6 +512,7 @@ export type ClientMessage =
   | SessionOpenMessage
   | SessionCloseMessage
   | LineMessage
+  | SendCommandMessage
   | FlashStartMessage
   | FlashLocalBeginMessage
   | ForgetKnownRobotMessage;
@@ -476,6 +536,24 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isFirmwareKind(value: unknown): value is FirmwareKind {
   return value === "relay" || value === "robot";
+}
+
+function isFlagsFieldShape(value: unknown): value is { wireType: "flags"; value: number } {
+  return isRecord(value) && value.wireType === "flags" && typeof value.value === "number";
+}
+
+/** Is `value` a legal {@link WireField} as parsed from JSON: a string, a
+ * number, or an object shaped exactly like `@robot-console/protocol`'s
+ * `FlagsField` (`{ wireType: "flags"; value: number }`)? Mirrors that
+ * package's own runtime shape rather than importing its type guard, since
+ * this module only ever sees already-parsed JSON, never a real
+ * `FlagsField` instance. */
+function isWireField(value: unknown): value is WireField {
+  return typeof value === "string" || typeof value === "number" || isFlagsFieldShape(value);
+}
+
+function isWireFieldArray(value: unknown): value is WireField[] {
+  return Array.isArray(value) && value.every(isWireField);
 }
 
 function isFirmwareSourceRef(value: unknown): value is FirmwareSourceRef {
@@ -529,6 +607,17 @@ export function parseClientMessage(value: unknown): ClientMessage | undefined {
         typeof value.line === "string"
         ? { type: "line", endpointId: value.endpointId, direction: "tx", line: value.line }
         : undefined;
+    case "send-command": {
+      if (!isNonEmptyString(value.endpointId) || !isNonEmptyString(value.verb)) {
+        return undefined;
+      }
+      if (value.fields !== undefined && !isWireFieldArray(value.fields)) {
+        return undefined;
+      }
+      return value.fields !== undefined
+        ? { type: "send-command", endpointId: value.endpointId, verb: value.verb, fields: value.fields }
+        : { type: "send-command", endpointId: value.endpointId, verb: value.verb };
+    }
     case "flash-start":
       return isNonEmptyString(value.endpointId) && isFirmwareSourceRef(value.source)
         ? { type: "flash-start", endpointId: value.endpointId, source: value.source }

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AckNackEvent, DecodedLine, ParsedBanner } from "@robot-console/protocol";
+import { Session, type AckNackEvent, type DecodedLine, type ParsedBanner } from "@robot-console/protocol";
 import { DeviceWatcher, type DaplinkDevice } from "./devices.js";
 import type { SwdNameResult } from "./swdName.js";
 import { DeviceRegistry, KeyedMutex } from "./deviceRegistry.js";
@@ -62,6 +62,7 @@ function banner(overrides: Partial<ParsedBanner> = {}): ParsedBanner {
  * (`connect()` itself failing) pass their own rejecting `connectImpl`.
  */
 class FakeLink implements Link {
+  readonly session = new Session();
   connectCalls = 0;
   identifyCalls = 0;
   closeCalls = 0;

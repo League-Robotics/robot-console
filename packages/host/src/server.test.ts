@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
-import type { AckNackEvent, DecodedLine, ParsedBanner } from "@robot-console/protocol";
+import { Session, type AckNackEvent, type DecodedLine, type ParsedBanner } from "@robot-console/protocol";
 import { DeviceWatcher, type DaplinkDevice } from "./devices.js";
 import { DeviceRegistry, type DeviceRegistryOptions } from "./deviceRegistry.js";
 import type { Link } from "./link/Link.js";
@@ -45,6 +45,7 @@ function banner(overrides: Partial<ParsedBanner> = {}): ParsedBanner {
  * every test here except the "no open link" one below cares only about
  * `identify()`'s outcome. */
 class FakeLink implements Link {
+  readonly session = new Session();
   sentLines: string[] = [];
   private lineListeners = new Set<(line: DecodedLine) => void>();
   private ackNackListeners = new Set<(event: AckNackEvent) => void>();

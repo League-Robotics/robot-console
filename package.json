@@ -16,6 +16,7 @@
     "build": "npm run build -w @robot-console/protocol && npm run build -w @robot-console/host && npm run build -w @robot-console/ui"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^26.4.1",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",

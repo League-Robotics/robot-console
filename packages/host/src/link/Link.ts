@@ -40,7 +40,7 @@
  * what stops a future change from adding one that the wire protocol
  * cannot actually support.
  */
-import type { AckNackEvent, DecodedLine, ParsedBanner, WireField } from "@robot-console/protocol";
+import type { AckNackEvent, DecodedLine, ParsedBanner, Session, WireField } from "@robot-console/protocol";
 
 export type LineListener = (line: DecodedLine) => void;
 export type AckNackListener = (event: AckNackEvent) => void;
@@ -48,6 +48,17 @@ export type LinkErrorListener = (err: Error) => void;
 
 /** The transport-agnostic link surface — see the module doc comment. */
 export interface Link {
+  /** The `@robot-console/protocol` `Session` backing this link's
+   * sequencing state (id counter, pending-retransmit table, `seq`/
+   * `pendingCount`/`lastDone`/`lastDoneReason`) — already satisfied by
+   * `UsbSerialLink`'s own `session` getter, frozen onto the interface
+   * here (sprint 6 ticket 002) so `deviceRegistry.ts` reads sequencing
+   * state and dispatches `sendCommand`/`sendUnsequenced` through this
+   * one accessor without ever branching on which concrete transport it
+   * holds. That directly serves sprint 7's relay reuse, where a second
+   * `Link` implementation exists alongside `UsbSerialLink`. */
+  readonly session: Session;
+
   /** Establish the transport (open the port / connect the socket) and
    * attach listeners. Never sends `HELLO`, never waits for a banner.
    * Throws only on a transport-level failure. */

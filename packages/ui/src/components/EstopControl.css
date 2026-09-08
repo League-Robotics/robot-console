@@ -1,0 +1,53 @@
+/* EstopControl.css — deliberately loud and structurally sticky: this is
+ * the one control on RobotPage that must stay visible and findable at
+ * a glance, no matter how far the console log below it has grown or
+ * how the page has scrolled. `position: sticky` pins it to the top of
+ * the viewport as the page scrolls (RobotPage renders the whole page
+ * in normal document flow, so the nearest scrolling ancestor is the
+ * document itself); `z-index` keeps it above the panels scrolling
+ * underneath it. */
+.estop-control {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--rc-surface);
+  border: 2px solid var(--rc-danger-border);
+  border-radius: 0.5rem;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+/* Visually distinct from every ordinary button on this page (which use
+ * `--rc-surface`/`--rc-border`, per DriveControls/StatusPanel/
+ * GetSetPanel) so it reads as "different in kind", not just "another
+ * button", under stress. */
+.estop-control-button {
+  border: none;
+  background: var(--rc-danger-bg);
+  color: var(--rc-danger-contrast);
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.4rem;
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.estop-control-button:hover:not(:disabled) {
+  background: var(--rc-danger-bg-hover);
+}
+
+.estop-control-button:disabled {
+  background: var(--rc-border);
+  color: var(--rc-text-muted);
+  cursor: not-allowed;
+}
+
+.estop-control-hint {
+  margin: 0;
+  color: var(--rc-text-muted);
+  font-size: 0.85rem;
+}

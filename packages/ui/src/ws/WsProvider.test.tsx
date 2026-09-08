@@ -33,6 +33,8 @@ import {
   useFlashProgress,
   useHasSnapshot,
   useRememberedRobots,
+  useSequencing,
+  useWsActions,
   type LogEntry,
 } from "./WsProvider";
 
@@ -67,7 +69,14 @@ afterEach(() => {
  * whichever single field a test overrides, so there is no need for
  * `DevicesTab.test.tsx`'s fuller `BaseDeviceOverrides` translation
  * layer here. */
-function endpointFixture(id: string, overrides: { sessionOpen?: boolean; role?: string | null } = {}): EndpointListEntry {
+function endpointFixture(
+  id: string,
+  overrides: {
+    sessionOpen?: boolean;
+    role?: string | null;
+    sequencing?: EndpointListEntry["sequencing"];
+  } = {},
+): EndpointListEntry {
   return {
     endpointId: `usb-${id}`,
     transport: "usb",
@@ -77,6 +86,7 @@ function endpointFixture(id: string, overrides: { sessionOpen?: boolean; role?: 
     role: overrides.role ?? null,
     sessionOpen: overrides.sessionOpen ?? false,
     usb: { serialNumber: `${id}-FULL`, displaySerial: "0002", port: "/dev/cu.usbmodemA" },
+    ...(overrides.sequencing !== undefined ? { sequencing: overrides.sequencing } : {}),
   };
 }
 
@@ -463,5 +473,202 @@ describe("useRememberedRobots", () => {
       });
     });
     expect(values[values.length - 1]).toEqual(roster);
+  });
+});
+
+describe("sendCommand", () => {
+  it("sends a correctly-shaped send-command message with fields", () => {
+    let actions: ReturnType<typeof useWsActions> | undefined;
+    function Probe() {
+      actions = useWsActions();
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+    act(() => {
+      actions!.sendCommand("usb-A", "SET", [1, "left", { wireType: "flags", value: 3 }]);
+    });
+
+    expect(getSocket().sent).toHaveLength(1);
+    expect(JSON.parse(getSocket().sent[0]!)).toEqual({
+      type: "send-command",
+      endpointId: "usb-A",
+      verb: "SET",
+      fields: [1, "left", { wireType: "flags", value: 3 }],
+    });
+  });
+
+  it("sends a correctly-shaped send-command message with fields omitted", () => {
+    let actions: ReturnType<typeof useWsActions> | undefined;
+    function Probe() {
+      actions = useWsActions();
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+    act(() => {
+      actions!.sendCommand("usb-A", "STATUS");
+    });
+
+    expect(getSocket().sent).toHaveLength(1);
+    // `fields` is undefined, not present in the wire message at all --
+    // JSON.stringify drops it, matching `SendCommandMessage`'s own
+    // "omitted is equivalent to empty" doc comment.
+    expect(JSON.parse(getSocket().sent[0]!)).toEqual({
+      type: "send-command",
+      endpointId: "usb-A",
+      verb: "STATUS",
+    });
+  });
+
+  it("is silently dropped when the socket is not open, same as every other action", () => {
+    let actions: ReturnType<typeof useWsActions> | undefined;
+    function Probe() {
+      actions = useWsActions();
+      return null;
+    }
+
+    let socket: FakeSocket | null = null;
+    mount(
+      <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+        <Probe />
+      </WsProvider>,
+    );
+    // Never emitOpen() -- socket stays at readyState 0.
+    act(() => {
+      actions!.sendCommand("usb-A", "STATUS");
+    });
+    expect(socket!.sent).toHaveLength(0);
+  });
+});
+
+describe("useSequencing", () => {
+  it("is undefined before any snapshot, and reflects the endpoint's sequencing field once one arrives", () => {
+    const values: Array<ReturnType<typeof useSequencing>> = [];
+
+    function Probe() {
+      values.push(useSequencing("usb-A"));
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+    expect(values[values.length - 1]).toBeUndefined();
+
+    const seqA = { seq: 1, pendingCount: 0, lastDone: 0, lastDoneReason: "ok" };
+    act(() => {
+      getSocket().emitMessage({
+        type: "endpoints",
+        endpoints: [endpointFixture("A", { sessionOpen: true, sequencing: seqA })],
+        firmwareStatus: NO_FIRMWARE_STATUS,
+      });
+    });
+    expect(values[values.length - 1]).toEqual(seqA);
+  });
+
+  it("is undefined for an endpoint with no session open (sequencing absent from the snapshot entry)", () => {
+    const values: Array<ReturnType<typeof useSequencing>> = [];
+
+    function Probe() {
+      values.push(useSequencing("usb-A"));
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+    act(() => {
+      getSocket().emitMessage({
+        type: "endpoints",
+        endpoints: [endpointFixture("A")],
+        firmwareStatus: NO_FIRMWARE_STATUS,
+      });
+    });
+    expect(values[values.length - 1]).toBeUndefined();
+  });
+
+  it("does not change identity across two snapshots when this endpoint's sequencing is unchanged", () => {
+    const renders = { a: 0 };
+    let lastValue: ReturnType<typeof useSequencing>;
+
+    function ProbeA() {
+      lastValue = useSequencing("usb-A");
+      renders.a += 1;
+      return null;
+    }
+
+    const seqA = { seq: 1, pendingCount: 0, lastDone: 0, lastDoneReason: "ok" };
+    const { getSocket } = mountWithSocket(<ProbeA />);
+
+    act(() => {
+      getSocket().emitMessage({
+        type: "endpoints",
+        endpoints: [endpointFixture("A", { sessionOpen: true, sequencing: seqA })],
+        firmwareStatus: NO_FIRMWARE_STATUS,
+      });
+    });
+    expect(renders.a).toBe(2);
+    const firstValue = lastValue;
+
+    act(() => {
+      // A new snapshot with a byte-for-byte identical entry for A --
+      // `applySnapshot`'s structural sharing reuses the previous object.
+      getSocket().emitMessage({
+        type: "endpoints",
+        endpoints: [endpointFixture("A", { sessionOpen: true, sequencing: { ...seqA } })],
+        firmwareStatus: NO_FIRMWARE_STATUS,
+      });
+    });
+    // No re-render: the cached snapshot value kept its identity.
+    expect(renders.a).toBe(2);
+    expect(lastValue).toBe(firstValue);
+  });
+
+  it("a consumer of endpoint A does not re-render when endpoint B's sequencing changes", () => {
+    const renders = { a: 0, b: 0 };
+
+    function ProbeA() {
+      useSequencing("usb-A");
+      renders.a += 1;
+      return null;
+    }
+    function ProbeB() {
+      useSequencing("usb-B");
+      renders.b += 1;
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(
+      <>
+        <ProbeA />
+        <ProbeB />
+      </>,
+    );
+
+    const seqA = { seq: 1, pendingCount: 0, lastDone: 0, lastDoneReason: "ok" };
+    act(() => {
+      getSocket().emitMessage({
+        type: "endpoints",
+        endpoints: [
+          endpointFixture("A", { sessionOpen: true, sequencing: seqA }),
+          endpointFixture("B", { sessionOpen: true, sequencing: { seq: 1, pendingCount: 0, lastDone: 0, lastDoneReason: "ok" } }),
+        ],
+        firmwareStatus: NO_FIRMWARE_STATUS,
+      });
+    });
+    expect(renders.a).toBe(2);
+    expect(renders.b).toBe(2);
+
+    act(() => {
+      // Only B's sequencing changes (a new ack); A is byte-for-byte
+      // identical to the previous snapshot.
+      getSocket().emitMessage({
+        type: "endpoints",
+        endpoints: [
+          endpointFixture("A", { sessionOpen: true, sequencing: seqA }),
+          endpointFixture("B", { sessionOpen: true, sequencing: { seq: 2, pendingCount: 0, lastDone: 1, lastDoneReason: "ok" } }),
+        ],
+        firmwareStatus: NO_FIRMWARE_STATUS,
+      });
+    });
+    expect(renders.b).toBe(3);
+    expect(renders.a).toBe(2);
   });
 });

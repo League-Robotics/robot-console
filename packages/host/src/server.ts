@@ -38,6 +38,13 @@
  * and the `DeviceRegistry`'s injected `consumeUpload` seam, so an
  * upload verified here is the very one `runFlash` consumes later.
  *
+ * Sprint 6 ticket 003: `send-command` (a structured verb + optional
+ * fields, alongside `line`'s raw text) forwards straight to
+ * `registry.sendCommand` unchanged -- `deviceRegistry.ts` is what
+ * decides sequenced-vs-unsequenced dispatch (`isSequencedVerb`) and
+ * rejects `HELLO` outright, not this module, per its own "no logic of
+ * its own" contract.
+ *
  * **Localhost only.** This process can open serial ports, attach over
  * SWD, and (in later sprints) flash firmware and drive a physical
  * robot -- it must never be reachable from anything but the machine
@@ -378,6 +385,13 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
           break;
         case "line":
           void registry.sendLine(message.endpointId, message.line);
+          break;
+        case "send-command":
+          // Ticket 003: deviceRegistry.ts#sendCommand is what decides
+          // sequenced-vs-unsequenced dispatch (via isSequencedVerb) and
+          // rejects HELLO -- this module only routes, per its own "no
+          // logic of its own" contract.
+          void registry.sendCommand(message.endpointId, message.verb, message.fields ?? []);
           break;
         case "flash-start":
           // Both source kinds forward straight to requestFlash unchanged

@@ -1,10 +1,18 @@
 // @vitest-environment jsdom
 /**
- * RobotPage.test.tsx — shell-rendering tests for the robot page
- * (ticket 008 / SUC-006). Only a fixture is used -- no attached board
- * classifies as `robot` this sprint (Success Criteria's hardware
- * deferral), so end-to-end verification against a real robot banner is
- * out of scope here.
+ * RobotPage.test.tsx — integration-level rendering tests for the robot
+ * page (ticket 005 / SUC-001, SUC-003, SUC-004, SUC-006).
+ *
+ * This ticket replaces sprint 4's placeholder shell with the real
+ * control surface. Focused behavior for each child component (send
+ * payloads, the drive hold/resend/release lease discipline, the
+ * GET/SET error display, sequencing states) lives in that component's
+ * own test file (`DriveControls.test.tsx`, `StatusPanel.test.tsx`,
+ * `GetSetPanel.test.tsx`, `SequencingIndicator.test.tsx`); this file
+ * only proves the page assembles them correctly and keeps
+ * `DeviceConsole` embedded, exactly as `sprint.md`'s Acceptance
+ * Criteria require. `RobotPage.transportBlind.test.ts` separately
+ * enforces the transport-blindness property with a source scan.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -40,7 +48,7 @@ afterEach(() => {
   }
 });
 
-function robotFixture(): EndpointListEntry {
+function robotFixture(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
   return {
     endpointId: "usb-ROBOT-A",
     transport: "usb",
@@ -50,6 +58,7 @@ function robotFixture(): EndpointListEntry {
     role: "NEZHA2",
     sessionOpen: true,
     usb: { serialNumber: "ROBOT-A-FULL", displaySerial: "0004", port: "/dev/cu.usbmodemC" },
+    ...overrides,
   };
 }
 
@@ -68,14 +77,17 @@ describe("RobotPage", () => {
     expect(el.textContent).toContain("vevav");
   });
 
-  it("states what's coming rather than faking drive/telemetry controls", () => {
+  it("renders drive controls, status, get/set, an e-stop control, and a sequencing indicator", () => {
     const el = mountRobotPage(robotFixture());
-    expect(el.textContent).toMatch(/coming in a later sprint/i);
-    expect(el.textContent).not.toMatch(/WHEELS_X|WHEELS_V/);
-    expect(el.querySelectorAll("input[type=range], progress")).toHaveLength(0);
+
+    expect(el.querySelector('[aria-label="Drive controls"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Status"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Get/Set"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Emergency stop"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Sequencing state"]')).not.toBeNull();
   });
 
-  it("embeds the device console for this endpoint", () => {
+  it("embeds the device console for this endpoint, unchanged", () => {
     const el = mountRobotPage(robotFixture());
     expect(el.querySelector('[aria-label="Console"]')).not.toBeNull();
   });

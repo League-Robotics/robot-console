@@ -10,5 +10,6 @@
 export * from "./wsMessages.js";
 export * from "./server.js";
 export * from "./deviceRegistry.js";
+export * from "./store/knownRobots.js";
 
 export const HOST_PACKAGE_NAME = "@robot-console/host" as const;

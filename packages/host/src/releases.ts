@@ -128,6 +128,19 @@ export interface ResolvedRelease {
  *     `MICROBIT.hex` or `MICROBIT.hex.txt`.
  *   - `"network"` — the request failed, returned a non-404 error
  *     status, or returned a body this module could not parse.
+ *
+ * `message` is safe to forward to a browser client as-is (as
+ * `wsMessages.ts`'s `FirmwareAvailability.message` now does,
+ * out-of-process, 2026-09-08): every branch below builds it from public,
+ * non-sensitive values already known to whoever configured the firmware
+ * source -- the repo owner/repo/tag this codebase itself was told to
+ * check, and (`"no-asset"`) the two fixed, public asset names this
+ * module looks for. The one branch that touches a caught exception
+ * (`"network"`, via {@link errorMessage}) only ever reads `error.message`
+ * -- never `error.stack`, never the raw `error` object -- so a network
+ * failure's `message` is a short description (e.g. `getaddrinfo ENOTFOUND
+ * api.github.com`), not a stack trace. Nothing in this module puts a
+ * secret, credential, or local file path into any `message`.
  */
 export interface ReleaseError {
   reason: "no-releases" | "tag-not-found" | "no-asset" | "network";
@@ -390,22 +403,30 @@ export type FirmwareAvailabilityListener = (current: FirmwareStatusMap) => void;
  * plain boolean: `reason` carries the specific {@link ReleaseError}
  * reason (e.g. `"no-releases"`) so {@link FirmwareAvailabilityCache}
  * can populate `FirmwareAvailability.reason` for the UI, rather than
- * only ever reporting an unexplained `false`.
+ * only ever reporting an unexplained `false`. `message` (out-of-process,
+ * 2026-09-08) likewise carries {@link ReleaseError.message} through so
+ * `FirmwareAvailability.message` can be populated -- the specific
+ * diagnostic (which repo/tag/asset), not just the short `reason` token.
  */
 export type FirmwareAvailabilityChecker = (
   source: FirmwareSource,
-) => Promise<{ available: boolean; reason?: string }>;
+) => Promise<{ available: boolean; reason?: string; message?: string }>;
 
 /** Default {@link FirmwareAvailabilityChecker}: resolves a release with
- * the real global `fetch` and maps a {@link ReleaseError}'s `reason`
- * straight through -- these are already exactly the short, stable
- * tokens (`"no-releases"`, `"tag-not-found"`, `"no-asset"`,
- * `"network"`) `wsMessages.ts`'s `FirmwareAvailability.reason` expects. */
+ * the real global `fetch` and maps a {@link ReleaseError}'s `reason`/
+ * `message` straight through -- `reason` is already exactly the short,
+ * stable token (`"no-releases"`, `"tag-not-found"`, `"no-asset"`,
+ * `"network"`) `wsMessages.ts`'s `FirmwareAvailability.reason` expects,
+ * and `message` is already the specific, safe-to-show diagnostic text
+ * `resolveRelease` built for exactly this purpose -- see that type's own
+ * doc comment for what it does and does not contain. */
 async function defaultAvailabilityChecker(
   source: FirmwareSource,
-): Promise<{ available: boolean; reason?: string }> {
+): Promise<{ available: boolean; reason?: string; message?: string }> {
   const result = await resolveRelease(source);
-  return "reason" in result ? { available: false, reason: result.reason } : { available: true };
+  return "reason" in result
+    ? { available: false, reason: result.reason, message: result.message }
+    : { available: true };
 }
 
 export interface FirmwareAvailabilityCacheOptions {
@@ -537,7 +558,7 @@ export class FirmwareAvailabilityCache {
         next[kind] = { configured: false };
         continue;
       }
-      const { available, reason } = await this.checkAvailabilityFn(source);
+      const { available, reason, message } = await this.checkAvailabilityFn(source);
       next[kind] = available
         ? { configured: true, repoUrl: source.repoUrl, tag: source.tag, available: true }
         : {
@@ -546,6 +567,7 @@ export class FirmwareAvailabilityCache {
             tag: source.tag,
             available: false,
             ...(reason !== undefined ? { reason } : {}),
+            ...(message !== undefined ? { message } : {}),
           };
     }
 

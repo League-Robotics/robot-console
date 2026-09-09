@@ -44,6 +44,21 @@
   color: var(--rc-text-muted);
 }
 
+.device-flash-detail {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--rc-text-muted);
+}
+
+.device-flash-detail summary {
+  cursor: pointer;
+}
+
+.device-flash-detail p {
+  margin: 0.25rem 0 0;
+  word-break: break-word;
+}
+
 .device-flash-progress {
   font-size: 0.9rem;
   font-style: italic;

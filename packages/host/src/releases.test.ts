@@ -190,14 +190,47 @@ describe("resolveRelease", () => {
     });
   });
 
-  it("reports 'no-asset' when the resolved release is missing MICROBIT.hex or the manifest", async () => {
+  it("reports 'no-asset' when the resolved release is missing MICROBIT.hex or the manifest, naming the missing asset(s) in message", async () => {
     const fetchFn = vi.fn<FetchFn>(async () =>
       jsonResponse(200, githubReleaseBody(RELAY_TAG, { assets: [] })),
     );
 
     const result = await resolveRelease(RELAY_SOURCE, { fetch: fetchFn });
 
-    expect(result).toMatchObject({ reason: "no-asset" });
+    expect(result).toEqual({
+      reason: "no-asset",
+      message: expect.stringContaining("MICROBIT.hex"),
+    });
+  });
+
+  it("names the actual release-asset filename in the 'no-asset' message when the published asset is a real robot-firmware-shaped mismatch", async () => {
+    // Pins the reported real-world scenario: the configured repo
+    // publishes an asset like `nezha-robot-template-v0.20260909.1.hex`
+    // instead of `MICROBIT.hex` -- resolveRelease still reports which
+    // *required* asset is missing (it never guesses that the wrongly-
+    // named asset was "close enough"), and this specific text is what
+    // `wsMessages.ts`'s `FirmwareAvailability.message` now carries to
+    // the UI end-to-end.
+    const fetchFn = vi.fn<FetchFn>(async () =>
+      jsonResponse(
+        200,
+        githubReleaseBody("v0.20260909.1", {
+          assets: [
+            {
+              name: "nezha-robot-template-v0.20260909.1.hex",
+              browser_download_url: "https://example.invalid/nezha-robot-template-v0.20260909.1.hex",
+            },
+          ],
+        }),
+      ),
+    );
+
+    const result = await resolveRelease(ROBOT_SOURCE, { fetch: fetchFn });
+
+    expect(result).toEqual({
+      reason: "no-asset",
+      message: expect.stringContaining("MICROBIT.hex"),
+    });
   });
 
   it("reports 'network' when the fetch call itself rejects", async () => {
@@ -383,6 +416,48 @@ describe("FirmwareAvailabilityCache", () => {
       available: false,
       reason: "no-releases",
     });
+  });
+
+  it("threads a checker's 'message' through to the reported FirmwareAvailability -- the wire-detail fix", async () => {
+    const checkAvailabilityFn = vi.fn(async (source: FirmwareSource) =>
+      source === ROBOT_SOURCE
+        ? { available: false, reason: "no-asset", message: "release v0.20260909.1 is missing MICROBIT.hex" }
+        : { available: true },
+    );
+    const cache = new FirmwareAvailabilityCache(
+      { relay: undefined, robot: ROBOT_SOURCE },
+      { checkAvailability: checkAvailabilityFn },
+    );
+
+    const status = await cache.pollOnce();
+
+    expect(status.robot).toEqual({
+      configured: true,
+      repoUrl: ROBOT_SOURCE.repoUrl,
+      tag: ROBOT_SOURCE.tag,
+      available: false,
+      reason: "no-asset",
+      message: "release v0.20260909.1 is missing MICROBIT.hex",
+    });
+  });
+
+  it("omits 'message' when the checker doesn't supply one (an older/absent-field checker degrades cleanly)", async () => {
+    const checkAvailabilityFn = vi.fn(async () => ({ available: false, reason: "no-releases" }));
+    const cache = new FirmwareAvailabilityCache(
+      { relay: undefined, robot: ROBOT_SOURCE },
+      { checkAvailability: checkAvailabilityFn },
+    );
+
+    const status = await cache.pollOnce();
+
+    expect(status.robot).toEqual({
+      configured: true,
+      repoUrl: ROBOT_SOURCE.repoUrl,
+      tag: ROBOT_SOURCE.tag,
+      available: false,
+      reason: "no-releases",
+    });
+    expect((status.robot as { message?: string }).message).toBeUndefined();
   });
 
   it("self-heals to available:true on a later poll with no code change", async () => {

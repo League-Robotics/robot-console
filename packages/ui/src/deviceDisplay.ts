@@ -95,6 +95,33 @@ export function firmwareDisabledReason(availability: FirmwareAvailability | unde
   }
 }
 
+/**
+ * The instructor-facing counterpart to {@link firmwareDisabledReason}
+ * (out-of-process, 2026-09-08): a diagnosable failure -- which repo/tag
+ * was checked, and `releases.ts`'s specific `resolveRelease` message
+ * (e.g. `"release v0.20260909.1 is missing MICROBIT.hex"`) -- for
+ * whoever is troubleshooting *why* a build isn't showing up, since
+ * {@link firmwareDisabledReason}'s calm, deliberately generic student
+ * text ("ask your instructor") is not that.
+ *
+ * Returns `null` whenever there is nothing more specific to add than the
+ * student-facing line already says: firmware not configured at all, a
+ * live (`available: true`) firmware, or the pre-poll `"not-yet-checked"`
+ * placeholder (never ran a real check, so it has no diagnostic detail).
+ * Callers should render this *alongside*, never *instead of*,
+ * {@link firmwareDisabledReason}'s text -- see this module's own doc
+ * comment and `FlashControls.tsx`'s disclosure for where it's shown.
+ */
+export function firmwareDiagnosticDetail(availability: FirmwareAvailability | undefined): string | null {
+  if (!availability || !availability.configured || availability.available) {
+    return null;
+  }
+  if (availability.message === undefined) {
+    return null;
+  }
+  return `Checked ${availability.repoUrl} (tag: ${availability.tag}): ${availability.message}`;
+}
+
 /** Student-facing label for a configured release firmware kind. */
 export const FIRMWARE_LABEL: Record<FirmwareKind, string> = {
   relay: "relay",

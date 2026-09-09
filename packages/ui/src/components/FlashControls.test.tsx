@@ -245,6 +245,36 @@ describe("FlashControls release-flash rendering", () => {
     expect(robotButton?.disabled).toBe(false);
   });
 
+  it("surfaces the host's specific 'no-asset' diagnostic in a details disclosure, while the calm student-facing summary is unchanged -- the wire-detail fix", () => {
+    const { el } = mountFlashControls(failedIdentifyDevice(), {
+      firmwareStatus: firmwareStatusFixture({
+        robot: {
+          configured: true,
+          repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive",
+          tag: "v0.20260909.1",
+          available: false,
+          reason: "no-asset",
+          message: "release v0.20260909.1 is missing MICROBIT.hex",
+        },
+      }),
+    });
+
+    // The student-facing summary text is exactly what it was before this
+    // fix -- no raw diagnostic string replaces it.
+    expect(el.textContent).toContain(
+      "The configured build can't be found — ask your instructor to check the setup.",
+    );
+
+    // The detail is present in the DOM (a collapsed <details>, so an
+    // instructor can find it without anyone reading source or querying
+    // the GitHub API), naming the missing asset and the checked repo/tag.
+    const detail = el.querySelector("details.device-flash-detail");
+    expect(detail).not.toBeNull();
+    expect(detail!.textContent).toContain("MICROBIT.hex");
+    expect(detail!.textContent).toContain("https://github.com/League-Robotics/pxt-nezha-diffdrive");
+    expect(detail!.textContent).toContain("v0.20260909.1");
+  });
+
   it("shows a not-broken message before the first availability poll completes", () => {
     const { el } = mountFlashControls(failedIdentifyDevice(), {
       firmwareStatus: firmwareStatusFixture({

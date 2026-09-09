@@ -53,6 +53,23 @@
  *    anything is sent, so an oversized file is never even offered to
  *    the server -- consistent with, not a replacement for, the
  *    server's own before-allocating-a-buffer rejection.
+ *  - **Diagnostic detail, out-of-process (2026-09-08):** each release
+ *    button's disabled hint (`firmwareDisabledReason`) is deliberately
+ *    calm, generic, student-facing text -- it never names a repo, tag,
+ *    or missing asset. That specific detail (`firmwareDiagnosticDetail`,
+ *    `deviceDisplay.ts`) is real and already computed on the host
+ *    (`releases.ts`'s `resolveRelease`), but showing it inline would
+ *    turn a "go ask your instructor" line into an engineer-facing wall
+ *    of text for every student who hits it. It's rendered instead as a
+ *    collapsed `<details>` disclosure right under the hint: invisible
+ *    until opened, so a student's flow is unchanged, but one click away
+ *    for whoever is actually diagnosing the setup (an instructor at the
+ *    same dialog, or a student relaying "it says ... " over their
+ *    shoulder) -- no source reading or GitHub API querying required.
+ *    Rendered here (inside the dialog `FlashDialog.tsx` now wraps this
+ *    component in) rather than in `FlashDialog.tsx` itself, since the
+ *    detail is per-firmware-button, exactly where the hint it
+ *    supplements already lives.
  *  - A warn-don't-block compatibility note sits above the file picker:
  *    this codebase has no way to confirm a hex targets this board's
  *    hardware family (`isValidIntelHexText` has no board-family
@@ -101,7 +118,7 @@ import type {
   FlashLocalReadyMessage,
 } from "@robot-console/host/src/wsMessages.js";
 import { useFirmwareStatus, useFlashProgress, useWsActions, type FlashProgressState } from "../ws/WsProvider";
-import { FIRMWARE_LABEL, PHASE_LABEL, firmwareDisabledReason } from "../deviceDisplay";
+import { FIRMWARE_LABEL, PHASE_LABEL, firmwareDiagnosticDetail, firmwareDisabledReason } from "../deviceDisplay";
 import "./FlashControls.css";
 
 /** Hard cap on a local-hex upload, checked client-side before a single
@@ -251,6 +268,8 @@ export function FlashControls({ endpoint }: FlashControlsProps) {
 
   const relayReason = firmwareDisabledReason(firmwareStatus.relay);
   const robotReason = firmwareDisabledReason(firmwareStatus.robot);
+  const relayDetail = firmwareDiagnosticDetail(firmwareStatus.relay);
+  const robotDetail = firmwareDiagnosticDetail(firmwareStatus.robot);
   const localHexBusy = localHex.phase === "awaiting-ready";
 
   return (
@@ -272,6 +291,12 @@ export function FlashControls({ endpoint }: FlashControlsProps) {
                 Flash relay firmware
               </button>
               {relayReason && <p className="device-flash-hint">{relayReason}</p>}
+              {relayDetail && (
+                <details className="device-flash-detail">
+                  <summary>Details for instructors</summary>
+                  <p>{relayDetail}</p>
+                </details>
+              )}
             </div>
             <div className="device-flash-control">
               <button
@@ -283,6 +308,12 @@ export function FlashControls({ endpoint }: FlashControlsProps) {
                 Flash robot firmware
               </button>
               {robotReason && <p className="device-flash-hint">{robotReason}</p>}
+              {robotDetail && (
+                <details className="device-flash-detail">
+                  <summary>Details for instructors</summary>
+                  <p>{robotDetail}</p>
+                </details>
+              )}
             </div>
           </div>
 

@@ -316,10 +316,29 @@ export interface SendCommandMessage {
  * what will be flashed) plus the live `available` result of the most
  * recent poll; `reason` is present only when `available` is `false`
  * (e.g. `"no-releases"`), mirroring {@link EndpointListEntry.nameError}'s
- * present-only-when-relevant shape. */
+ * present-only-when-relevant shape.
+ *
+ * `message` (added out-of-process, 2026-09-08) is the specific diagnostic
+ * `releases.ts`'s `resolveRelease` already computes for the failure --
+ * e.g. `` `release v0.20260909.1 is missing MICROBIT.hex` `` -- carried
+ * across the wire alongside `reason` so a client can show *why*, not
+ * just which short token failed. Present under the same condition as
+ * `reason` (only when `available` is `false`, and never set for the
+ * cache's own pre-poll `"not-yet-checked"` placeholder, which never ran
+ * `resolveRelease` at all). Deliberately **not** a substitute for
+ * `reason`: `reason` stays the stable token every existing branch
+ * switches on (`deviceDisplay.ts`'s `firmwareDisabledReason`); `message`
+ * is additive, free-text, and only for a diagnostic surface (e.g. a
+ * details disclosure) aimed at whoever is troubleshooting the setup, not
+ * the calm student-facing summary. An older host that never sends this
+ * field, or a client built before it existed, both degrade cleanly: the
+ * field is optional on the wire and every reader treats its absence as
+ * "no extra detail available", never as malformed input. Never populated
+ * from a raw caught exception or stack trace -- see `resolveRelease`'s
+ * own doc comment for what it does and does not put in `message`. */
 export type FirmwareAvailability =
   | { configured: false }
-  | { configured: true; repoUrl: string; tag: string; available: boolean; reason?: string };
+  | { configured: true; repoUrl: string; tag: string; available: boolean; reason?: string; message?: string };
 
 /** The wire projection of sprint 5's `KnownRobotRecord`
  * (`store/knownRobots.ts`) -- a name the host has seen before over USB

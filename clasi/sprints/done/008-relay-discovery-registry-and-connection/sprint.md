@@ -1,7 +1,7 @@
 ---
 id: 008
 title: Relay discovery, registry, and connection
-status: ticketing
+status: done
 branch: sprint/008-relay-discovery-registry-and-connection
 use-cases:
 - SUC-001

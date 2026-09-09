@@ -1,7 +1,7 @@
 ---
 id: '004'
 title: 'DeviceRegistry integration: relay-target endpoint bookkeeping and robot switching'
-status: open
+status: done
 use-cases:
 - SUC-003
 - SUC-004
@@ -62,35 +62,35 @@ case to `registry.requestOpen`.
 
 ## Acceptance Criteria
 
-- [ ] `session-open { endpointId: <relay>, robotName }` against a fake
+- [x] `session-open { endpointId: <relay>, robotName }` against a fake
       `RelayConnectionCoordinator` produces a new `EndpointListEntry` in
       `snapshot()` with the derived `endpointId`, shared `resourceKey`,
       correct `transport`/`classification`.
-- [ ] The relay's own `endpointId` and the synthesized robot-via-relay
+- [x] The relay's own `endpointId` and the synthesized robot-via-relay
       `endpointId` are both present in `snapshot()` simultaneously (the
       relay endpoint is never replaced or hidden by the synthesized
       one).
-- [ ] A flash request (`requestFlash`) against the relay's own
+- [x] A flash request (`requestFlash`) against the relay's own
       `endpointId` while a robot-via-relay session is open on the
       shared `resourceKey` queues behind it — a direct `KeyedMutex`
       ordering test, not just an assertion about eventual consistency.
-- [ ] Switching `robotName` for the same relay removes the old
+- [x] Switching `robotName` for the same relay removes the old
       synthesized endpoint from `snapshot()` and adds a new one for the
       new name — never both present at once, never the old one silently
       reused for the new name.
-- [ ] `session-close` on a robot-via-relay `endpointId` removes it from
+- [x] `session-close` on a robot-via-relay `endpointId` removes it from
       `snapshot()` and leaves the relay's own endpoint entry unaffected.
-- [ ] No code path in `deviceRegistry.ts` calls a `retarget`-shaped
+- [x] No code path in `deviceRegistry.ts` calls a `retarget`-shaped
       method on `Link` (it does not exist on the interface — enforced
       by the type system, not a runtime check; note this in the test
       file's own comment rather than asserting it at runtime).
-- [ ] `EndpointListEntry.addressSource`/`failoverTrail` are present only
+- [x] `EndpointListEntry.addressSource`/`failoverTrail` are present only
       for a relay-mediated, non-`mbserial` endpoint with an open
       session — absent otherwise, mirroring `sequencing`'s existing
       present-only-when-open discipline.
-- [ ] `server.ts` forwards `robotName` from `"session-open"` to
+- [x] `server.ts` forwards `robotName` from `"session-open"` to
       `registry.requestOpen` unchanged.
-- [ ] `npm test` and `npm run build` pass.
+- [x] `npm test` and `npm run build` pass.
 
 ## Testing
 

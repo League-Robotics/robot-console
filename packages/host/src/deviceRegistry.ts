@@ -234,7 +234,8 @@
  * with one broadcast per send on top of the pacing already governing
  * the writes themselves.
  *
- * ## Robot-via-relay endpoints (OOP 2026-09-09)
+ * ## Robot-via-relay endpoints (OOP 2026-09-09, superseded in part by
+ * sprint 8 ticket 004 -- see that section below)
  *
  * A relay classified `classification.type === "relay"` on plain USB can
  * be asked, via `requestOpen(relayEndpointId, { robotName, radio? })`,
@@ -245,9 +246,10 @@
  * `<relayEndpointId>-via-<robotName>` -- never a mutation of the
  * relay's own endpoint: both are present in {@link DeviceRegistry.snapshot}
  * simultaneously, and the synthesized one shares the relay's own
- * `resourceKey` (never an independent one), so flashing the relay and
- * driving through it are mutually exclusive through the existing
- * {@link KeyedMutex} -- no new locking mechanism.
+ * `resourceKey` (never an independent one) for `"relay-radio"`/
+ * `"mbrelay"`, so flashing the relay and driving through it are
+ * mutually exclusive through the existing {@link KeyedMutex} -- no new
+ * locking mechanism.
  *
  * `link/RelayRadioLink.ts`'s own doc comment explains why a reset is
  * needed before the handshake at all: the relay's data plane has no
@@ -264,15 +266,12 @@
  * through the DAPLink interface chip does not re-enumerate USB, unlike
  * a flash -- see that function's own doc comment), waits
  * {@link DeviceRegistryOptions.relayBootDelayMs} for the relay's own
- * firmware to come back up, resolves the radio address (an explicit
- * `radio` override, or `@robot-console/protocol`'s `nameToRadioAddress`
- * default derived from the name), then opens a `"relay-radio"`
- * {@link Link} -- `connect()` runs the `!CG`/`!GO` handshake. A
- * handshake failure, or a malformed `robotName` that
- * `nameToRadioAddress` rejects, reopens the relay's own plain USB
- * session rather than leaving it stranded with no session at all;
- * {@link DeviceRegistry.requestClose} on the synthesized endpoint does
- * the same on a deliberate close.
+ * firmware to come back up, then hands off to the coordinator (see
+ * below) to resolve/connect/identify/fail over. A candidate exhaustion,
+ * or a malformed `robotName` no candidate could use, reopens the
+ * relay's own plain USB session rather than leaving it stranded with no
+ * session at all; {@link DeviceRegistry.requestClose} on the synthesized
+ * endpoint does the same on a deliberate close.
  *
  * The whole operation, start to finish, runs under the relay's own
  * `resourceKey` in {@link KeyedMutex.run} -- never a new key -- so it
@@ -284,11 +283,75 @@
  * via-relay identify -- the durable roster stays USB-sighting-only, per
  * this ticket's own scope.
  *
- * Deliberately **not** here (sprint 8's own job; this is the OOP
- * LOCAL-USB-RELAY subset only): mDNS discovery of relays/remote robots,
- * a `RelayConnectionCoordinator`/registry client, and failover across
- * multiple candidate relays. There is exactly one way to reach a robot
- * here -- the one local USB relay already attached to this machine.
+ * ## Relay-target endpoint synthesis and switching (sprint 8 ticket 004)
+ *
+ * This ticket injects `relay/RelayConnectionCoordinator.ts` as one more
+ * seam on this class (mirroring `resolveName`/`createLink`/`flash`/
+ * `knownRobotsStore` -- see {@link DeviceRegistryOptions.relayConnectionCoordinator}),
+ * plus `discovery/mdnsDiscovery.ts`'s {@link MdnsDiscovery} (started/
+ * stopped alongside the device watcher). **Resolution, connect,
+ * liveness probing, `identify()`, and candidate failover now all belong
+ * to the coordinator** -- see that module's own doc comment for the
+ * full policy (never re-explained here, per this class's own
+ * "orchestration only" boundary). This class still owns everything it
+ * always owned: the relay's own plain-session teardown, the DAP reset
+ * and boot delay, the {@link KeyedMutex} scope, the synthesized
+ * {@link EndpointState}, {@link attachSession}, the robot status/
+ * functions probes, and reopening the relay's own session on failure.
+ *
+ * `{@link DeviceRegistry.requestOpen}`'s relay branch builds one of two
+ * candidate lists (see {@link buildSingleCandidate}/
+ * {@link buildDefaultFailoverCandidates}) and hands it to the
+ * coordinator:
+ *
+ *   - **`target.robotName` given**: a single `"relay-radio"` candidate
+ *     through this relay's own port. An explicit `target.radio`
+ *     override becomes the candidate's explicit `address` (reported by
+ *     the coordinator as `addressSource: "explicit"`); otherwise, when a
+ *     discovered `_mbrelay._tcp` service's instance name matches this
+ *     relay's own SWD-resolved name, its registry location is passed
+ *     along so the coordinator can try the registry (see
+ *     {@link findRegistryLocationForRelay}) -- with neither, the
+ *     coordinator's own `"local-derived"` outcome applies.
+ *   - **`target.robotName` omitted** (`target` itself still present,
+ *     e.g. `{}`): the default-failover list -- every
+ *     {@link KnownRobotsStore.list} entry (most recently seen first),
+ *     then every discovered `_mbserial._tcp` instance name not already
+ *     among those, deduplicated by name. A remembered-robot candidate
+ *     tries this same physical relay (`"relay-radio"`); a discovered-
+ *     `_mbserial._tcp` candidate bypasses it entirely (`"mbserial"`,
+ *     its own independent `resourceKey` -- see
+ *     {@link mbserialResourceKey}'s own doc comment). Not yet reachable
+ *     over the wire (`server.ts`'s `session-open` dispatch is
+ *     unchanged this ticket) -- see `wsMessages.ts`'s
+ *     `SessionOpenMessage.robotName` doc comment.
+ *
+ * A `"connected"` result is turned into a new {@link EndpointState}
+ * whose `resourceKey` matches the relay's own for `"relay-radio"`/
+ * `"mbrelay"` (never independent -- same rationale as the OOP section
+ * above) or its own independent {@link mbserialResourceKey} for
+ * `"mbserial"`; `synthesizedRelayTarget` carries the winning candidate's
+ * transport, a best-effort display address (see
+ * {@link bestEffortRadioAddress}'s own doc comment for why it is
+ * best-effort), the coordinator's `addressSource`, and its
+ * `failoverTrail` verbatim -- {@link toEntry} is what gates wire
+ * visibility of `viaRelay`/`addressSource`/`failoverTrail` to a
+ * non-`"mbserial"`, session-open entry (`wsMessages.ts`'s own doc
+ * comment). An `"exhausted"` result reopens the relay's own plain
+ * session, exactly like the OOP version's connect-failure path.
+ *
+ * **Observable behavior changes from the OOP version**, both accepted
+ * consequences of moving connect/identify ownership into the
+ * coordinator, not oversights: the relay's own console no longer echoes
+ * `!CG`/`!GO` handshake replies live during an attempt (each candidate's
+ * link is opened/closed inside the coordinator, with no hook back to
+ * this module until one succeeds), and the coordinator's own internal
+ * `identify()` call is not echoed to any console either (this module
+ * only ever sees the resulting `classification`, never the raw banner).
+ * The OOP version's "one retry on a missed post-reset `HELLO`" workaround
+ * is also gone -- the coordinator's liveness probe (retried, timed out,
+ * per its own doc comment) already establishes liveness before
+ * `identify()` is ever called once, which supersedes the need for it.
  */
 
 import type { AckNackEvent, DecodedLine, DeviceClassification, ParsedBanner, WireField } from "@robot-console/protocol";
@@ -308,7 +371,10 @@ import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
 import { resolveRelease, fetchAndVerifyHex } from "./releases.js";
 import { flash, resetOverSwd } from "./flash.js";
 import type {
+  AddressSource,
+  DiscoveredServicesSnapshot,
   EndpointListEntry,
+  FailoverTrailEntry,
   LineDirection,
   LineOrigin,
   FirmwareKind,
@@ -319,6 +385,13 @@ import type {
   RobotStatus,
 } from "./wsMessages.js";
 import { KnownRobotsStore } from "./store/knownRobots.js";
+import {
+  RelayConnectionCoordinator,
+  type ConnectionCandidate,
+  type RelayConnectionResult,
+} from "./relay/RelayConnectionCoordinator.js";
+import { MdnsDiscovery } from "./discovery/mdnsDiscovery.js";
+import type { RegistryLocation } from "./mbrelayRegistry.js";
 
 /** Mint a URL-safe, stable endpoint id for a USB device from its serial
  * number -- see `wsMessages.ts`'s `EndpointListEntry.endpointId` doc
@@ -331,6 +404,20 @@ import { KnownRobotsStore } from "./store/knownRobots.js";
 function usbEndpointId(serialNumber: string): string {
   return `usb-${serialNumber}`;
 }
+
+/** Sibling naming scheme (OOP 2026-09-09, sprint 8 ticket 004): a
+ * synthesized robot-via-relay endpoint's id is
+ * `` `${relayEndpointId}-via-${robotName}` `` -- concrete and URL-safe
+ * for the same router-path-segment reason {@link usbEndpointId} is,
+ * derived from the *relay's own* endpoint id (itself already
+ * URL-safe) rather than any physical identity of its own, since the
+ * synthesized endpoint has no physical device to derive one from. This
+ * naming is stable across which transport
+ * `relay/RelayConnectionCoordinator.ts` actually connected through
+ * (`"relay-radio"`/`"mbrelay"`/`"mbserial"` all use it identically) --
+ * see {@link DeviceRegistry.openRobotViaRelay}'s own doc comment for
+ * where it is constructed. Not extracted into its own function (unlike
+ * {@link usbEndpointId}) since it is built at exactly one call site. */
 
 // ---------------------------------------------------------------------
 // Injectable seams (real implementations by default; fakes in tests)
@@ -356,6 +443,61 @@ function defaultLinkFactory(spec: LinkSpec): Link {
       return new MbrelayLink(spec.host, spec.port, spec.channel, spec.group);
     case "mbserial":
       return new MbserialLink(spec.host, spec.port);
+  }
+}
+
+/** Sprint 8 ticket 004: the subset of `RelayConnectionCoordinator.ts`
+ * this module calls -- resolve a candidate list to a connected `Link`,
+ * or report exhaustion. Injectable so tests substitute a fully
+ * synthetic fake with zero real resolution/connect/liveness-probe
+ * timing (never a real {@link RelayConnectionCoordinator} instance in a
+ * test, per this ticket's own testing note); the real
+ * {@link RelayConnectionCoordinator} satisfies this interface as-is. */
+export interface RelayConnector {
+  connect(candidates: readonly ConnectionCandidate[]): Promise<RelayConnectionResult>;
+}
+
+/** Sprint 8 ticket 004: `resourceKey` for a synthesized robot-via-relay
+ * endpoint reached over `"mbserial"` -- deliberately **not** the
+ * triggering relay's own `resourceKey` (unlike `"relay-radio"`/
+ * `"mbrelay"`, see {@link EndpointState.resourceKey}'s own doc comment):
+ * an `_mbserial._tcp` connection is an independent TCP socket to the
+ * robot's own serial bridge, sharing no physical resource with whatever
+ * local USB relay's dropdown happened to trigger the default-failover
+ * attempt that found it. Keyed on the discovered instance name alone
+ * (not on which relay triggered the attempt) so two relays' default-
+ * failover attempts that both land on the same physical mbserial robot
+ * are still serialized against each other by {@link KeyedMutex}. */
+function mbserialResourceKey(name: string): string {
+  return `mbserial-${name}`;
+}
+
+/** Sprint 8 ticket 004: best-effort `{ channel, group }` for display on
+ * {@link EndpointListEntry.viaRelay}, for a `"relay-radio"`/`"mbrelay"`
+ * candidate only. `RelayConnectionCoordinator.ts#connect`'s result
+ * deliberately carries no address (it owns resolution internally, see
+ * that module's own doc comment), so this module cannot know the exact
+ * value a registry-backed resolution actually used -- an explicit
+ * override is authoritative and used verbatim; otherwise this falls
+ * back to `nameToRadioAddress(name)`'s own local derivation purely for
+ * display, which may not match a registry-resolved address exactly.
+ * Known, accepted gap (mirrors this module's other documented "known
+ * gap" sections) rather than a silent inaccuracy: flagged here for
+ * whoever wires ticket 006's disclosure chip against real registry
+ * data. Returns `undefined` (never throws) if `name` is not a valid
+ * `nameToRadioAddress` input and no explicit override was given --
+ * `viaRelay` is simply omitted for that entry in that rare case. */
+function bestEffortRadioAddress(
+  name: string,
+  explicit: { channel: number; group: number } | undefined,
+): { channel: number; group: number } | undefined {
+  if (explicit) {
+    return explicit;
+  }
+  try {
+    return nameToRadioAddress(name);
+  } catch {
+    return undefined;
   }
 }
 
@@ -568,39 +710,81 @@ interface EndpointState {
    * arriving mid-banner-wait would be swallowed by the link's banner
    * wait anyway. */
   identifying?: boolean;
-  /** OOP 2026-09-09: present only on an endpoint state synthesized by
-   * {@link DeviceRegistry.requestOpen}'s relay branch for a robot
-   * reached THROUGH a local USB relay -- see the module doc comment's
-   * "Robot-via-relay endpoints" section. Mirrors
-   * `wsMessages.ts`'s `EndpointListEntry.viaRelay` one to one;
-   * {@link toEntry} reads this field to decide whether to project
-   * `transport: "relay-radio"` and `viaRelay` (and omit `usb`) for this
-   * entry, instead of `transport: "usb"` plus a `usb` block. `device`
-   * on a via-relay state is always the *relay's* own `DaplinkDevice`
-   * (there is no separate physical device for the synthesized
-   * endpoint) -- read only for the relay's own `serialPort`/`hid`
-   * fields via {@link EndpointState.resourceKey}'s shared identity, not
-   * for anything robot-specific. */
-  viaRelay?: { relayEndpointId: string; robotName: string; channel: number; group: number } | undefined;
+  /** OOP 2026-09-09, restructured sprint 8 ticket 004: present only on
+   * an endpoint state synthesized by {@link DeviceRegistry.requestOpen}'s
+   * relay branch for a robot reached THROUGH a local USB relay -- see
+   * the module doc comment's "Robot-via-relay endpoints" section.
+   * {@link toEntry} reads this field to decide `transport` (and whether
+   * to project `viaRelay`/`addressSource`/`failoverTrail`, and omit
+   * `usb`) for this entry, instead of `transport: "usb"` plus a `usb`
+   * block. `device` on a via-relay state is always the *relay's* own
+   * `DaplinkDevice` (there is no separate physical device for the
+   * synthesized endpoint) -- read only for the relay's own
+   * `serialPort`/`hid` fields via {@link EndpointState.resourceKey}'s
+   * shared identity, not for anything robot-specific.
+   *
+   * Renamed from the OOP-era `viaRelay` (which only ever carried
+   * `channel`/`group` for a `"relay-radio"` result, the only transport
+   * that existed before this ticket) because a
+   * {@link RelayConnectionResult} can now also be `"mbserial"` (no
+   * channel/group at all -- see `RelayConnectionCoordinator.ts`'s own
+   * doc comment) or, in principle, `"mbrelay"`. `wsMessages.ts`'s own
+   * `EndpointListEntry.viaRelay` wire field is unchanged in shape --
+   * {@link toEntry} projects it from `address` below only when one
+   * exists. */
+  synthesizedRelayTarget?:
+    | {
+        relayEndpointId: string;
+        robotName: string;
+        transport: "relay-radio" | "mbrelay" | "mbserial";
+        /** `{ channel, group }` for display -- see
+         * {@link bestEffortRadioAddress}'s own doc comment for why this
+         * is best-effort rather than the exact value
+         * `RelayConnectionCoordinator.ts` resolved internally. Absent
+         * for `"mbserial"` (no channel/group exists for that
+         * transport) or if `nameToRadioAddress` rejected the name and
+         * no explicit override was given. */
+        address?: { channel: number; group: number };
+        /** `RelayConnectionCoordinator.ts`'s own `addressSource` for
+         * this result -- absent for `"mbserial"` (that module never
+         * reports one for that transport; see its own doc comment). */
+        addressSource?: AddressSource;
+        /** Every candidate abandoned before this one -- always present
+         * (possibly empty) on a synthesized state, regardless of
+         * transport; {@link toEntry} is what gates wire visibility to
+         * non-`"mbserial"` only. */
+        failoverTrail: readonly FailoverTrailEntry[];
+      }
+    | undefined;
 }
 
 function toEntry(state: EndpointState): EndpointListEntry {
+  const synth = state.synthesizedRelayTarget;
   const entry: EndpointListEntry = {
     endpointId: state.endpointId,
-    // OOP 2026-09-09: a via-relay synthesized endpoint has no USB
-    // identity of its own -- the relay owns the port -- so it projects
-    // transport: "relay-radio" and viaRelay instead of transport: "usb"
-    // plus a usb block. See the module doc comment's "Robot-via-relay
-    // endpoints" section.
-    transport: state.viaRelay ? "relay-radio" : "usb",
+    // OOP 2026-09-09, extended sprint 8 ticket 004: a via-relay
+    // synthesized endpoint has no USB identity of its own -- the
+    // triggering relay (or, for "mbserial", nothing local at all) owns
+    // the physical connection -- so it projects the coordinator's own
+    // transport and (for non-"mbserial") viaRelay instead of
+    // transport: "usb" plus a usb block. See the module doc comment's
+    // "Robot-via-relay endpoints" section.
+    transport: synth ? synth.transport : "usb",
     resourceKey: state.resourceKey,
     classification: state.classification,
     name: state.name,
     role: state.classification.role,
     sessionOpen: state.sessionOpen,
   };
-  if (state.viaRelay) {
-    entry.viaRelay = state.viaRelay;
+  if (synth) {
+    if (synth.address) {
+      entry.viaRelay = {
+        relayEndpointId: synth.relayEndpointId,
+        robotName: synth.robotName,
+        channel: synth.address.channel,
+        group: synth.address.group,
+      };
+    }
   } else {
     entry.usb = {
       serialNumber: state.device.serialNumber,
@@ -629,6 +813,15 @@ function toEntry(state: EndpointState): EndpointListEntry {
       lastDone: session.lastDone,
       lastDoneReason: session.lastDoneReason,
     };
+    // Sprint 8 ticket 004: addressSource/failoverTrail are present only
+    // for a relay-mediated, non-"mbserial" endpoint with an open
+    // session -- see wsMessages.ts's own doc comment for these fields.
+    if (synth && synth.transport !== "mbserial") {
+      if (synth.addressSource !== undefined) {
+        entry.addressSource = synth.addressSource;
+      }
+      entry.failoverTrail = [...synth.failoverTrail];
+    }
   }
   if (state.flashStatus) {
     entry.flashStatus = state.flashStatus;
@@ -812,6 +1005,24 @@ export interface DeviceRegistryOptions {
    * to come back up. Defaults to {@link DEFAULT_RELAY_BOOT_DELAY_MS}.
    * Tests pass `0` so this never costs real wall-clock time. */
   relayBootDelayMs?: number;
+  /** Sprint 8 ticket 004: injectable {@link RelayConnector} (the real
+   * {@link RelayConnectionCoordinator} by default, wired to this
+   * registry's own `createLink`). Tests substitute a fully synthetic
+   * fake -- never a real {@link RelayConnectionCoordinator} instance,
+   * per this ticket's own testing note -- so resolution, connect,
+   * liveness-probe timing, and failover are never exercised for real
+   * here; this registry only tests that it calls the seam with the
+   * right candidates and correctly turns its result into endpoint
+   * bookkeeping. */
+  relayConnectionCoordinator?: RelayConnector;
+  /** Sprint 8 ticket 001/004: injectable {@link MdnsDiscovery}; defaults
+   * to a real one (real `bonjour-service` multicast browsing). Started
+   * alongside the device watcher in {@link DeviceRegistry.start} and
+   * stopped alongside it in {@link DeviceRegistry.stop}. Tests
+   * substitute one built from a fake `MdnsBackend` (mirroring
+   * `mdnsDiscovery.test.ts`'s own fixtures), so no real multicast socket
+   * is ever opened by a `DeviceRegistry` test. */
+  mdnsDiscovery?: MdnsDiscovery;
 }
 
 /** Default period of the host's own `STATUS` poll on an open robot
@@ -841,9 +1052,12 @@ export class DeviceRegistry {
   private readonly autoRequestFunctions: boolean;
   private readonly resetOverSwdFn: typeof resetOverSwd;
   private readonly relayBootDelayMs: number;
+  private readonly relayConnectionCoordinator: RelayConnector;
+  private readonly mdnsDiscovery: MdnsDiscovery;
   private readonly mutex = new KeyedMutex();
   private readonly states = new Map<string, EndpointState>();
   private unsubscribeWatcher: (() => void) | undefined;
+  private unsubscribeMdns: (() => void) | undefined;
 
   private readonly devicesListeners = new Set<DevicesListener>();
   private readonly lineListeners = new Set<LineListener>();
@@ -866,18 +1080,32 @@ export class DeviceRegistry {
     this.autoRequestFunctions = options.autoRequestFunctions ?? true;
     this.resetOverSwdFn = options.resetOverSwd ?? resetOverSwd;
     this.relayBootDelayMs = options.relayBootDelayMs ?? DEFAULT_RELAY_BOOT_DELAY_MS;
+    this.relayConnectionCoordinator =
+      options.relayConnectionCoordinator ??
+      new RelayConnectionCoordinator({ linkFactory: (spec) => this.createLink(spec) });
+    this.mdnsDiscovery = options.mdnsDiscovery ?? new MdnsDiscovery();
   }
 
-  /** Start watching for devices. Idempotent-ish in practice (callers
-   * are expected to call this once); an immediate `pollOnce()` is
-   * kicked off so the first snapshot arrives promptly rather than
-   * waiting a full poll interval. */
+  /** Start watching for devices and browsing for relays/robots over
+   * mDNS. Idempotent-ish in practice (callers are expected to call this
+   * once); an immediate `pollOnce()` is kicked off so the first
+   * snapshot arrives promptly rather than waiting a full poll
+   * interval. A discovery change re-broadcasts the full endpoint
+   * snapshot (via the same {@link onDevicesChanged} path every other
+   * state change uses) purely so `server.ts`'s
+   * `discoveredServices()`-carrying `EndpointsMessage` reaches clients
+   * promptly -- {@link discoveredServices} itself never touches
+   * {@link states}. */
   start(): void {
     this.unsubscribeWatcher = this.watcher.onChange((event) => {
       this.handleChange(event);
     });
     this.watcher.start();
     void this.watcher.pollOnce();
+    this.unsubscribeMdns = this.mdnsDiscovery.onChange(() => {
+      this.emitDevices();
+    });
+    this.mdnsDiscovery.start();
   }
 
   /** Stop watching and close every open link, best-effort. */
@@ -885,6 +1113,9 @@ export class DeviceRegistry {
     this.watcher.stop();
     this.unsubscribeWatcher?.();
     this.unsubscribeWatcher = undefined;
+    this.mdnsDiscovery.stop();
+    this.unsubscribeMdns?.();
+    this.unsubscribeMdns = undefined;
     const closes = [...this.states.values()].map((state) =>
       this.teardownLink(state).catch(() => {
         // Best-effort shutdown -- a failure to close one link must not
@@ -929,6 +1160,31 @@ export class DeviceRegistry {
         lastRole: r.lastRole,
         lastUsbSerial: r.lastUsbSerial,
       }));
+  }
+
+  /**
+   * Sprint 8 ticket 004: the current mDNS discovery snapshot, projected
+   * onto `wsMessages.ts`'s wire shape -- see
+   * {@link DiscoveredServicesSnapshot}'s own doc comment. A straight
+   * pass-through of {@link mdnsDiscovery}'s own `current()` (this class
+   * never caches or re-derives it), mirroring {@link rememberedRobots}'s
+   * own "server.ts calls this fresh on every broadcast" precedent.
+   */
+  discoveredServices(): DiscoveredServicesSnapshot {
+    const current = this.mdnsDiscovery.current();
+    return {
+      relays: current.relays.map((r) => ({
+        instanceName: r.instanceName,
+        host: r.host,
+        port: r.port,
+        ...(r.registryPort !== undefined ? { registryPort: r.registryPort } : {}),
+      })),
+      robots: current.robots.map((r) => ({
+        instanceName: r.instanceName,
+        host: r.host,
+        port: r.port,
+      })),
+    };
   }
 
   /**
@@ -1056,20 +1312,23 @@ export class DeviceRegistry {
    * has no other resource to name. Every other {@link KeyedMutex} call
    * site in this class keys the same way, for the same reason.
    *
-   * `target` (OOP 2026-09-09) routes through a relay instead: when
-   * present, `endpointId` must name a `classification.type === "relay"`
-   * endpoint, and this synthesizes a new robot-via-relay endpoint rather
-   * than opening a session on the relay itself -- see the module doc
-   * comment's "Robot-via-relay endpoints" section and
-   * {@link openRobotViaRelay}'s own doc comment for the full flow. Still
-   * keyed by `endpointId` here, which is exactly the relay's own
-   * `resourceKey` (a relay is plain USB, 1:1 like every other USB
-   * endpoint) -- the synthesized child's *different* `resourceKey`
-   * equality is established inside {@link openRobotViaRelay} itself, not
-   * here. */
+   * `target` (OOP 2026-09-09, extended sprint 8 ticket 004) routes
+   * through a relay instead: when present, `endpointId` must name a
+   * `classification.type === "relay"` endpoint, and this synthesizes a
+   * new robot-via-relay endpoint rather than opening a session on the
+   * relay itself -- see the module doc comment's "Robot-via-relay
+   * endpoints" section and {@link openRobotViaRelay}'s own doc comment
+   * for the full flow. `target.robotName` omitted (but `target` itself
+   * still present, e.g. `{}`) triggers the default-failover candidate
+   * list instead of a single named candidate -- see
+   * {@link buildDefaultFailoverCandidates}. Still keyed by `endpointId`
+   * here, which is exactly the relay's own `resourceKey` (a relay is
+   * plain USB, 1:1 like every other USB endpoint) -- the synthesized
+   * child's *different* `resourceKey` equality is established inside
+   * {@link openRobotViaRelay} itself, not here. */
   async requestOpen(
     endpointId: string,
-    target?: { robotName: string; radio?: { channel: number; group: number } },
+    target?: { robotName?: string; radio?: { channel: number; group: number } },
   ): Promise<void> {
     if (target) {
       await this.mutex.run(endpointId, async () => {
@@ -1100,21 +1359,149 @@ export class DeviceRegistry {
    * second data structure in lockstep. */
   private findSynthesizedEndpointId(relayEndpointId: string): string | undefined {
     for (const [id, state] of this.states) {
-      if (state.viaRelay?.relayEndpointId === relayEndpointId) {
+      if (state.synthesizedRelayTarget?.relayEndpointId === relayEndpointId) {
         return id;
       }
     }
     return undefined;
   }
 
+  /** Sprint 8 ticket 004: the registry location to resolve a candidate
+   * name against, for a `"relay-radio"` candidate through this local
+   * USB relay -- the discovered `_mbrelay._tcp` service (if any) whose
+   * mDNS instance name matches this relay's own SWD-resolved five-letter
+   * name (the identity concept the whole system keys relays/robots on).
+   * `undefined` when the relay's name is not yet known, or no matching
+   * service was discovered -- {@link RelayConnectionCoordinator}'s
+   * `resolveRobotAddress` call then falls back to its own
+   * `"local-derived"` outcome, per `sprint.md`'s Solution ("registry
+   * discovery is itself an mDNS lookup"). Never a network call itself --
+   * purely a lookup against {@link mdnsDiscovery}'s already-live
+   * snapshot. */
+  private findRegistryLocationForRelay(relayState: EndpointState): RegistryLocation | undefined {
+    if (relayState.name === null) {
+      return undefined;
+    }
+    const discovered = this.mdnsDiscovery
+      .current()
+      .relays.find((r) => r.instanceName === relayState.name);
+    if (!discovered || discovered.registryPort === undefined) {
+      return undefined;
+    }
+    return { host: discovered.host, port: discovered.registryPort };
+  }
+
+  /** Sprint 8 ticket 004: the single-candidate list for an explicitly
+   * named `target.robotName` -- always a `"relay-radio"` candidate
+   * through `relayState`'s own physical port. An explicit
+   * `target.radio` override bypasses registry resolution entirely (the
+   * coordinator's own contract -- see `RelayConnectionCoordinator.ts`'s
+   * "Explicit address override" doc section), so `registry` is omitted
+   * whenever `address` is present. */
+  private buildSingleCandidate(
+    relayState: EndpointState,
+    relayPortPath: string,
+    robotName: string,
+    radio: { channel: number; group: number } | undefined,
+  ): ConnectionCandidate[] {
+    const registry = radio === undefined ? this.findRegistryLocationForRelay(relayState) : undefined;
+    return [
+      {
+        transport: "relay-radio",
+        name: robotName,
+        portPath: relayPortPath,
+        resourceKey: relayState.resourceKey,
+        ...(radio !== undefined ? { address: radio } : {}),
+        ...(registry !== undefined ? { registry } : {}),
+      },
+    ];
+  }
+
   /**
-   * `requestOpen`'s relay-routing branch (OOP 2026-09-09) -- see the
-   * module doc comment's "Robot-via-relay endpoints" section for the
-   * full rationale. Runs entirely under `relayEndpointId` (the relay's
-   * own `resourceKey`, since a relay is plain USB), so it correctly
-   * queues behind -- or blocks -- any concurrent
+   * Sprint 8 ticket 004: the default-failover candidate list for a
+   * `session-open` against a relay with no `robotName` -- every
+   * remembered robot name ({@link KnownRobotsStore.list}, most
+   * recently seen first, each tried as a `"relay-radio"` candidate
+   * through this same physical relay), followed by every discovered
+   * `_mbserial._tcp` instance name not already among those (each tried
+   * directly, bypassing this relay entirely -- see
+   * {@link mbserialResourceKey}'s own doc comment for why that
+   * candidate's `resourceKey` is independent of `relayState`'s). Names
+   * are deduplicated across both sources so the coordinator never tries
+   * the same name twice. `RelayConnectionCoordinator.connect` is what
+   * actually tries them in order and fails over -- this method only
+   * builds the ordered list.
+   */
+  private buildDefaultFailoverCandidates(
+    relayState: EndpointState,
+    relayPortPath: string,
+  ): ConnectionCandidate[] {
+    const registry = this.findRegistryLocationForRelay(relayState);
+    const seen = new Set<string>();
+    const candidates: ConnectionCandidate[] = [];
+
+    const remembered = this.knownRobotsStore
+      .list()
+      .slice()
+      .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt));
+    for (const robot of remembered) {
+      if (seen.has(robot.name)) {
+        continue;
+      }
+      seen.add(robot.name);
+      candidates.push({
+        transport: "relay-radio",
+        name: robot.name,
+        portPath: relayPortPath,
+        resourceKey: relayState.resourceKey,
+        ...(registry !== undefined ? { registry } : {}),
+      });
+    }
+
+    for (const robot of this.mdnsDiscovery.current().robots) {
+      if (seen.has(robot.instanceName)) {
+        continue;
+      }
+      seen.add(robot.instanceName);
+      candidates.push({
+        transport: "mbserial",
+        name: robot.instanceName,
+        host: robot.host,
+        port: robot.port,
+        resourceKey: mbserialResourceKey(robot.instanceName),
+      });
+    }
+
+    return candidates;
+  }
+
+  /**
+   * `requestOpen`'s relay-routing branch (OOP 2026-09-09, restructured
+   * sprint 8 ticket 004 to delegate resolve/connect/liveness/identify/
+   * failover to {@link relayConnectionCoordinator}) -- see the module
+   * doc comment's "Robot-via-relay endpoints" section for the full
+   * rationale. Runs entirely under `relayEndpointId` (the relay's own
+   * `resourceKey`, since a relay is plain USB), so it correctly queues
+   * behind -- or blocks -- any concurrent
    * `requestFlash`/`requestOpen`/`requestClose` against the same
    * physical relay; no new synchronization mechanism.
+   *
+   * This method still owns everything physical about the relay itself
+   * -- tearing down any previous synthesized child, tearing down and
+   * resetting the relay's own plain USB session, the boot delay, the
+   * synthesized {@link EndpointState}, {@link attachSession}, the robot
+   * probes, and reopening the relay's own session on failure. It no
+   * longer builds a {@link LinkSpec}, calls `createLink`/`connect`/
+   * `identify` itself, or retries a missed post-reset `HELLO` -- all of
+   * that (plus liveness probing and candidate failover) is
+   * {@link relayConnectionCoordinator}'s job now (ticket 003). One
+   * observable consequence: the relay's own console no longer echoes
+   * the `!CG`/`!GO` handshake replies live during an attempt (the
+   * coordinator opens/closes each candidate's link internally, with no
+   * hook back to this module until a candidate actually succeeds), and
+   * neither the request nor the banner text is echoed to any console
+   * for the coordinator's own internal `identify()` call -- accepted,
+   * documented behavior changes from the OOP version, not oversights.
    *
    * `relayState` is re-fetched from {@link states} here rather than
    * passed in by the caller, exactly like every other mutex-guarded
@@ -1125,7 +1512,7 @@ export class DeviceRegistry {
    */
   private async openRobotViaRelay(
     relayEndpointId: string,
-    target: { robotName: string; radio?: { channel: number; group: number } },
+    target: { robotName?: string; radio?: { channel: number; group: number } },
   ): Promise<void> {
     const relayState = this.states.get(relayEndpointId);
     if (!relayState) {
@@ -1135,7 +1522,7 @@ export class DeviceRegistry {
     if (relayState.classification.type !== "relay") {
       this.emitError(
         relayEndpointId,
-        `${relayEndpointId} is not classified as a relay -- cannot route to robot "${target.robotName}" through it`,
+        `${relayEndpointId} is not classified as a relay -- cannot route to robot "${target.robotName ?? "(default)"}" through it`,
       );
       return;
     }
@@ -1181,106 +1568,85 @@ export class DeviceRegistry {
     }
     await delay(this.relayBootDelayMs);
 
-    // (d) Resolve the radio address: an explicit override, or the
-    // name's own derived default. A malformed name is reported and this
-    // whole attempt aborted -- the relay's own plain USB session is
-    // reopened rather than left closed.
-    let address: { channel: number; group: number };
-    if (target.radio) {
-      address = target.radio;
-    } else {
-      try {
-        address = nameToRadioAddress(target.robotName);
-      } catch (error) {
-        this.emitError(relayEndpointId, error instanceof Error ? error.message : String(error));
-        await this.connectAndIdentify(relayState);
-        return;
-      }
-    }
+    // (d) Build the candidate list: a single named candidate, or the
+    // default-failover list -- see buildSingleCandidate/
+    // buildDefaultFailoverCandidates's own doc comments.
+    const candidates =
+      target.robotName !== undefined
+        ? this.buildSingleCandidate(relayState, relayPortPath, target.robotName, target.radio)
+        : this.buildDefaultFailoverCandidates(relayState, relayPortPath);
 
-    // (e) Open the radio link -- connect() runs the !CG/!GO
-    // command-plane handshake (RelayRadioLink.ts's own doc comment). A
-    // failure here means the relay never reached its data plane at
-    // all, so its own plain USB session is reopened rather than left
-    // closed with no obvious way back.
-    const link = this.createLink({
-      transport: "relay-radio",
-      resourceKey: relayState.resourceKey,
-      portPath: relayPortPath,
-      channel: address.channel,
-      group: address.group,
-    });
-
-    // The handshake's replies show in the RELAY's console (the child does
-    // not exist yet) -- see RelayRadioLink#handleRawLine.
-    const unsubscribeHandshake = link.onRawLine((raw) => {
-      this.emitLine(relayEndpointId, "rx", raw);
-    });
-    try {
-      await link.connect();
-    } catch (error) {
-      unsubscribeHandshake();
-      this.emitError(relayEndpointId, error instanceof Error ? error.message : String(error));
-      await link.close().catch(() => {});
+    if (candidates.length === 0) {
+      this.emitError(
+        relayEndpointId,
+        `no candidate robot names available for default failover on ${relayEndpointId} ` +
+          `-- no remembered robots and no discovered _mbserial._tcp services`,
+      );
       await this.connectAndIdentify(relayState);
       return;
     }
-    unsubscribeHandshake();
 
-    // (f) The handshake succeeded -- synthesize a new endpoint for this
-    // robot (never a mutation of the relay's own EndpointState) and
-    // attach the session exactly as connectAndIdentify does.
-    const synthesizedId = `${relayEndpointId}-via-${target.robotName}`;
+    // (e) Delegate resolution, connect, liveness probing, identify, and
+    // failover entirely to the coordinator -- see this method's own doc
+    // comment for what changed from the OOP version.
+    const result = await this.relayConnectionCoordinator.connect(candidates);
+
+    if (result.outcome === "exhausted") {
+      const triedNames = candidates.map((c) => c.name).join(", ");
+      this.emitError(
+        relayEndpointId,
+        `no candidate robot answered through ${relayEndpointId} (tried: ${triedNames}) -- ` +
+          `gave up after ${result.failoverTrail.length} attempt(s)`,
+      );
+      await this.connectAndIdentify(relayState);
+      return;
+    }
+
+    // (f) The coordinator connected -- synthesize a new endpoint for
+    // this robot (never a mutation of the relay's own EndpointState)
+    // and attach the already-open, already-identified session. The
+    // winning candidate is looked up by name to recover its transport/
+    // resourceKey/explicit-address -- the coordinator's result itself
+    // carries none of those (see RelayConnectionCoordinator.ts's own
+    // doc comment), only `name`, which is unique across this method's
+    // own candidate list by construction.
+    const wonCandidate = candidates.find((c) => c.name === result.name);
+    const transport = wonCandidate?.transport ?? "relay-radio";
+    const resourceKey =
+      transport === "mbserial" ? mbserialResourceKey(result.name) : relayState.resourceKey;
+    const explicitAddress =
+      wonCandidate && wonCandidate.transport !== "mbserial" ? wonCandidate.address : undefined;
+    const address = transport === "mbserial" ? undefined : bestEffortRadioAddress(result.name, explicitAddress);
+
+    const synthesizedId = `${relayEndpointId}-via-${result.name}`;
     const synthesizedState: EndpointState = {
       device: relayState.device,
       endpointId: synthesizedId,
-      resourceKey: relayState.resourceKey,
-      name: target.robotName,
-      classification: classifyBanner(null),
+      resourceKey,
+      name: result.name,
+      classification: result.classification,
       sessionOpen: true,
-      viaRelay: {
+      synthesizedRelayTarget: {
         relayEndpointId,
-        robotName: target.robotName,
-        channel: address.channel,
-        group: address.group,
+        robotName: result.name,
+        transport,
+        failoverTrail: result.failoverTrail,
+        ...(address !== undefined ? { address } : {}),
+        ...(result.addressSource !== undefined ? { addressSource: result.addressSource } : {}),
       },
     };
     this.states.set(synthesizedId, synthesizedState);
-    this.attachSession(synthesizedState, link);
+    this.attachSession(synthesizedState, result.link);
     synthesizedState.desyncNotified = false;
-    this.emitDevices();
-
-    // identify() never throws -- a robot that never replies to HELLO
-    // over the radio resolves null here, exactly like connectAndIdentify's
-    // own "connected, unresponsive" case; sessionOpen stays true either
-    // way (this is a normal, representable state, not an error).
-    this.emitLine(synthesizedId, "tx", "HELLO");
-    let banner = await link.identify();
-    if (banner === null && this.states.get(synthesizedId) === synthesizedState) {
-      // Measured on vitut -> gopiv (2026-09-09): the first HELLO after a
-      // relay reset + handshake can miss while the relay's data plane is
-      // still settling (radio traffic began ~2.5 s after the handshake
-      // confirmed) while a second HELLO a moment later answers at once.
-      // One retry, mirroring reidentifyAfterFlash's own single retry.
-      await new Promise((resolve) => setTimeout(resolve, this.relayBootDelayMs));
-      if (this.states.get(synthesizedId) === synthesizedState) {
-        this.emitLine(synthesizedId, "tx", "HELLO");
-        banner = await link.identify();
-      }
-    }
-    if (this.states.get(synthesizedId) !== synthesizedState) {
-      // Switched or closed while identifying -- whichever call did that
-      // already owns tearing down this link.
-      return;
-    }
-    this.echoBanner(synthesizedState, banner);
-    synthesizedState.classification = classifyBanner(banner);
-    if (banner) {
-      synthesizedState.sessionError = undefined;
-    } else {
-      synthesizedState.sessionError =
-        `no reply from ${target.robotName} over the radio -- is it on and listening on ` +
-        `channel ${address.channel} group ${address.group}?`;
+    // The coordinator reports a `null`-banner ("connected,
+    // unresponsive") candidate as a successful connect too -- liveness
+    // was already established by its probe, only the banner is missing
+    // (see RelayConnectionCoordinator.ts's own doc comment). Detected
+    // via classifyBanner's own `evidence: "none"` signature (the exact
+    // value `classifyBanner(null)` always produces) rather than a raw
+    // banner this module no longer has access to.
+    if (result.classification.evidence === "none") {
+      synthesizedState.sessionError = `no reply from ${result.name} -- is it on and listening?`;
     }
     // Sprint 5 write gate deliberately NOT applied here -- a via-relay
     // identify never records a KnownRobotsStore sighting; see the
@@ -1293,7 +1659,7 @@ export class DeviceRegistry {
   /**
    * Close an open session to an endpoint. No-op if not open.
    *
-   * OOP 2026-09-09: for a robot-via-relay synthesized endpoint (`state.viaRelay`
+   * OOP 2026-09-09: for a robot-via-relay synthesized endpoint (`state.synthesizedRelayTarget`
    * set -- see the module doc comment's "Robot-via-relay endpoints"
    * section), closing means the endpoint is gone entirely, not merely
    * session-closed -- unlike a plain USB endpoint, which stays listed
@@ -1317,14 +1683,14 @@ export class DeviceRegistry {
         return;
       }
       await this.teardownLink(state);
-      const viaRelay = state.viaRelay;
-      if (!viaRelay) {
+      const synthesizedTarget = state.synthesizedRelayTarget;
+      if (!synthesizedTarget) {
         this.emitDevices();
         return;
       }
       this.states.delete(endpointId);
       this.emitDevices();
-      const relayState = this.states.get(viaRelay.relayEndpointId);
+      const relayState = this.states.get(synthesizedTarget.relayEndpointId);
       if (relayState && !relayState.sessionOpen) {
         await this.connectAndIdentify(relayState);
       }

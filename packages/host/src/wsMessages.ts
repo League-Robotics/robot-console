@@ -175,6 +175,32 @@ export type FlashPhase = "fetching" | "verifying" | "erasing" | "writing" | "res
  * discovery). */
 export type EndpointTransport = "usb" | "relay-radio" | "mbrelay" | "mbserial";
 
+/** Sprint 8 ticket 004: every value {@link EndpointListEntry.addressSource}
+ * can report -- `mbrelayRegistry.ts`'s own three registry-resolution
+ * outcomes (`"config"`/`"registry"` for an authoritative reply,
+ * `"derived"` for a registry that only echoed its own guess,
+ * `"local-derived"` for no registry reachable at all), plus
+ * `"explicit"` for a caller-supplied radio override that bypassed
+ * resolution entirely. Structurally identical to (but independently
+ * declared from) `relay/RelayConnectionCoordinator.ts`'s own
+ * `CoordinatorAddressSource` -- this module never imports host-internal
+ * modules, per its own "no logic of its own" contract (see the module
+ * doc comment), so `deviceRegistry.ts` assigns that module's values into
+ * this type by structural typing rather than a shared declaration. */
+export type AddressSource = "config" | "registry" | "derived" | "local-derived" | "explicit";
+
+/** Sprint 8 ticket 004: one candidate `RelayConnectionCoordinator.ts`
+ * tried and abandoned before the one that ultimately succeeded (or,
+ * for a connection attempt reported as exhausted, every candidate
+ * given) -- mirrors that module's own `FailoverTrailEntry` structurally,
+ * for the same reason {@link AddressSource} does. `reason` is
+ * diagnostic text only, never parsed by a client. */
+export interface FailoverTrailEntry {
+  name: string;
+  transport: "relay-radio" | "mbrelay" | "mbserial";
+  reason: string;
+}
+
 /** USB-specific identity fields, present on {@link EndpointListEntry}
  * only when {@link EndpointListEntry.transport} is `"usb"`. Nested
  * (rather than flattened onto the entry) so a future remote endpoint
@@ -286,15 +312,37 @@ export interface EndpointListEntry {
    * sent, then grows one entry per reply line, so a client sees the
    * list fill in. Absent until the first `FUNCS` of the session. */
   functions?: RobotFunction[];
-  /** OOP 2026-09-09: present only on an endpoint the host synthesized
-   * for a robot reached THROUGH a relay (`transport: "relay-radio"`):
-   * which relay endpoint carries it, the robot name the user asked for,
-   * and the radio address the relay was tuned to. Such an endpoint has
-   * no {@link usb} block of its own -- the relay owns the USB port --
-   * and shares the relay's `resourceKey`, so flashing the relay and
-   * driving through it are mutually exclusive. Its `endpointId` is
-   * `<relayEndpointId>-via-<robotName>`. Absent on every other entry. */
+  /** OOP 2026-09-09, extended sprint 8 ticket 004: present only on an
+   * endpoint the host synthesized for a robot reached THROUGH a relay
+   * (`transport: "relay-radio"`/`"mbrelay"`): which relay endpoint
+   * carries it, the robot name the user asked for (or the coordinator's
+   * default-failover flow settled on), and the radio address in use.
+   * Such an endpoint has no {@link usb} block of its own -- the relay
+   * owns the USB port -- and shares the relay's `resourceKey` for
+   * `"relay-radio"`/`"mbrelay"`, so flashing the relay and driving
+   * through it are mutually exclusive. Its `endpointId` is
+   * `<relayEndpointId>-via-<robotName>` regardless of which transport
+   * `RelayConnectionCoordinator.ts` ultimately connected through -- see
+   * `deviceRegistry.ts`'s own `usbEndpointId` doc comment for the
+   * naming precedent this mirrors. **Absent** for a synthesized endpoint
+   * reached via `"mbserial"` (that transport has no `channel`/`group` to
+   * report at all -- `RelayConnectionCoordinator.ts`'s own module doc
+   * comment) and for every non-synthesized entry. */
   viaRelay?: { relayEndpointId: string; robotName: string; channel: number; group: number };
+  /** Sprint 8 ticket 004: which of `RelayConnectionCoordinator.ts`'s
+   * outcomes produced the address currently in use, for the disclosure
+   * chip (ticket 006) -- see {@link AddressSource}'s own doc comment for
+   * the five possible values. Present only for a relay-mediated
+   * (`transport: "relay-radio"`/`"mbrelay"`), non-`mbserial` endpoint
+   * with an open session -- mirrors {@link sessionError}'s
+   * present-only-when-relevant discipline. */
+  addressSource?: AddressSource;
+  /** Sprint 8 ticket 004: every candidate `RelayConnectionCoordinator.ts`
+   * abandoned before reaching {@link name} -- an empty array (never
+   * absent) whenever {@link addressSource} is present and the first
+   * candidate tried already succeeded. Present under the exact same
+   * condition as {@link addressSource}. */
+  failoverTrail?: FailoverTrailEntry[];
 }
 
 /** A parsed `status k=v ...` reply (robot firmware `wire_handler.cpp`
@@ -423,6 +471,43 @@ export interface RememberedRobotEntry {
   lastUsbSerial: string;
 }
 
+/** Sprint 8 ticket 001/004: a discovered `_mbrelay._tcp` service, wire
+ * projection of `discovery/mdnsDiscovery.ts`'s `RelayService`. Like
+ * {@link RememberedRobotEntry}, deliberately **not** an
+ * {@link EndpointListEntry} -- a bare discovery has no `resourceKey` and
+ * no session, and forcing it into that vocabulary would mean inventing
+ * placeholder values for fields that don't apply (see `sprint.md`'s
+ * Design Rationale). `registryPort` is omitted (never sent as
+ * `undefined`) when the service's TXT record carried no parseable
+ * `registry=<port>` field. */
+export interface DiscoveredRelayEntry {
+  instanceName: string;
+  host: string;
+  port: number;
+  registryPort?: number;
+}
+
+/** Sprint 8 ticket 001/004: a discovered `_mbserial._tcp` service, wire
+ * projection of `discovery/mdnsDiscovery.ts`'s `RobotService`.
+ * `instanceName` **is** the target robot's five-letter name directly --
+ * see that module's own doc comment. */
+export interface DiscoveredRobotEntry {
+  instanceName: string;
+  host: string;
+  port: number;
+}
+
+/** Sprint 8 ticket 004: the current mDNS discovery snapshot, split by
+ * service type -- mirrors `discovery/mdnsDiscovery.ts`'s own
+ * `MdnsDiscoverySnapshot` shape one to one. Always present on
+ * {@link EndpointsMessage} with both lists defaulting to `[]` (never an
+ * omitted field), matching {@link RememberedRobotEntry}'s own
+ * always-present-even-when-empty discipline. */
+export interface DiscoveredServicesSnapshot {
+  relays: DiscoveredRelayEntry[];
+  robots: DiscoveredRobotEntry[];
+}
+
 /** Server -> client: the full current endpoint list. Sent once on
  * connect and again on every live attach/detach/state change -- always
  * a full snapshot, never a delta, so a client that missed an update
@@ -451,6 +536,11 @@ export interface EndpointsMessage {
   endpoints: EndpointListEntry[];
   firmwareStatus: Record<FirmwareKind, FirmwareAvailability>;
   rememberedRobots: RememberedRobotEntry[];
+  /** Sprint 8 ticket 004: the current mDNS discovery snapshot (relays +
+   * robots) -- see {@link DiscoveredServicesSnapshot}'s own doc comment.
+   * A separate, independent top-level list, never folded into
+   * `endpoints`, for the same reason {@link rememberedRobots} isn't. */
+  discoveredServices: DiscoveredServicesSnapshot;
 }
 
 /** Client -> server: open (or re-open, e.g. after a failed attempt) a
@@ -459,11 +549,18 @@ export interface EndpointsMessage {
 export interface SessionOpenMessage {
   type: "session-open";
   endpointId: string;
-  /** Reserved for sprint 7: which of a relay's several routable robots
-   * to open a session to. Always absent and ignored this sprint (every
-   * endpoint is a direct USB device, so there is nothing to route
-   * to) -- present in the type now so sprint 7 extends this message
-   * instead of reshaping it again. */
+  /** Reserved since sprint 4, live since the 2026-09-09 OOP relay work
+   * and extended by sprint 8 ticket 004: which of a relay's several
+   * routable robots to open a session to, when `endpointId` names an
+   * endpoint classified `"relay"`. `deviceRegistry.ts#requestOpen`
+   * forwards this straight through as its `target.robotName` -- see that
+   * method's own doc comment. Note: this message shape has no way to
+   * ask for `deviceRegistry.ts`'s own default-failover candidate list
+   * (every remembered/discovered name, most-recently-seen first) --
+   * that capability exists host-side (`requestOpen(endpointId, {})`)
+   * but is not yet reachable over the wire; wiring a dropdown's "no
+   * selection" state to it is left to whichever ticket adds that UI
+   * affordance. */
   robotName?: string;
   /** OOP 2026-09-09: the radio address to tune the relay to for
    * `robotName`. Optional -- when absent the host derives it from the
@@ -472,6 +569,18 @@ export interface SessionOpenMessage {
    * name-derived one (the calibration template hardcodes channel 55 /
    * group 114 for every board). Ignored unless `robotName` is set. */
   radio?: { channel: number; group: number };
+  /** Sprint 8 ticket 005: request `deviceRegistry.ts#requestOpen`'s
+   * default-failover candidate list (every remembered/discovered name,
+   * most-recently-seen first -- `buildDefaultFailoverCandidates`)
+   * instead of a single named candidate. Set only when `robotName` is
+   * absent -- `RelayPage`'s Connect action with the dropdown's
+   * placeholder still selected sends exactly `{ type: "session-open",
+   * endpointId, autoRobot: true }`, no `robotName`, no `radio` (a radio
+   * override only makes sense alongside an explicit name). The literal
+   * type `true` (not `boolean`) mirrors {@link FirmwareSourceRef}'s own
+   * discriminated-literal style: `false` has no meaning here distinct
+   * from the field's own absence, so it is never a legal value. */
+  autoRobot?: true;
 }
 
 /** Client -> server: close an open session to an endpoint. Renamed
@@ -688,8 +797,13 @@ export function parseClientMessage(value: unknown): ClientMessage | undefined {
       if (value.robotName !== undefined && !isNonEmptyString(value.robotName)) {
         return undefined;
       }
+      if (value.autoRobot !== undefined && value.autoRobot !== true) {
+        return undefined;
+      }
       if (value.robotName === undefined) {
-        return { type: "session-open", endpointId: value.endpointId };
+        return value.autoRobot === true
+          ? { type: "session-open", endpointId: value.endpointId, autoRobot: true }
+          : { type: "session-open", endpointId: value.endpointId };
       }
       if (value.radio === undefined) {
         return { type: "session-open", endpointId: value.endpointId, robotName: value.robotName };

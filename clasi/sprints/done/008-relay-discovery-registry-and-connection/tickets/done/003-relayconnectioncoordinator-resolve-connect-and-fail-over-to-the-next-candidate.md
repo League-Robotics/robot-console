@@ -1,7 +1,7 @@
 ---
 id: '003'
 title: 'RelayConnectionCoordinator: resolve, connect, and fail over to the next candidate'
-status: open
+status: done
 use-cases:
 - SUC-003
 - SUC-005
@@ -62,37 +62,37 @@ seam) — this module needs zero real I/O to test.
 
 ## Acceptance Criteria
 
-- [ ] A single-candidate call that resolves and connects successfully
+- [x] A single-candidate call that resolves and connects successfully
       on the first attempt returns a result with an empty
       `failoverTrail`.
-- [ ] A multi-candidate call where the first two candidates' liveness
+- [x] A multi-candidate call where the first two candidates' liveness
       probes never succeed within their retry budget, and the third
       does, returns a result for the third candidate with a two-entry
       `failoverTrail` — all timing driven by a fake `Scheduler` (no real
       wall-clock delay in the test).
-- [ ] `checkLiveness()` (never `HELLO`) is the only liveness call this
+- [x] `checkLiveness()` (never `HELLO`) is the only liveness call this
       module ever makes — asserted directly against the fake `Link`'s
       call log.
-- [ ] A candidate list that exhausts entirely (every candidate's
+- [x] A candidate list that exhausts entirely (every candidate's
       liveness probe fails) resolves with a failure result carrying the
       full trail — never an unresolved promise, never a thrown
       exception.
-- [ ] For a `relay-radio`/`mbrelay` candidate, `resolveRobotAddress` is
+- [x] For a `relay-radio`/`mbrelay` candidate, `resolveRobotAddress` is
       called exactly once per candidate attempt (never speculatively,
       never re-resolved mid-retry for the same candidate) and its
       outcome tag reaches the result's `addressSource`.
-- [ ] For an `mbserial` candidate, `resolveRobotAddress` is never
+- [x] For an `mbserial` candidate, `resolveRobotAddress` is never
       called — the result's `addressSource` is absent for this
       transport.
-- [ ] A transport opened for a candidate that ultimately fails is
+- [x] A transport opened for a candidate that ultimately fails is
       closed before moving to the next candidate (no leaked open
       sockets/ports across failover attempts, asserted against the fake
       `Link`'s `close()` call count).
-- [ ] This module has no import of anything from `deviceRegistry.ts`
+- [x] This module has no import of anything from `deviceRegistry.ts`
       (enforced by a plain source-level check, following the precedent
       `RobotPage.transportBlind.test.ts` set) — the dependency direction
       is `DeviceRegistry` → coordinator, never the reverse.
-- [ ] `npm test` and `npm run build` pass.
+- [x] `npm test` and `npm run build` pass.
 
 ## Testing
 

@@ -117,6 +117,7 @@ import {
 } from "react";
 import type {
   ClientMessage,
+  DiscoveredServicesSnapshot,
   EndpointListEntry,
   ErrorMessage,
   FirmwareAvailability,
@@ -204,6 +205,13 @@ const DEFAULT_FIRMWARE_STATUS: Record<FirmwareKind, FirmwareAvailability> = {
   relay: { configured: false },
   robot: { configured: false },
 };
+
+/** {@link DiscoveredServicesSnapshot} before the first `endpoints`
+ * snapshot has ever arrived (or for an old-shaped/test-fixture message
+ * that omits the field entirely) -- both lists empty, mirroring
+ * {@link DEFAULT_FIRMWARE_STATUS}'s own "not yet known" default. Sprint
+ * 8 ticket 005's `useDiscoveredServices` selector. */
+const DEFAULT_DISCOVERED_SERVICES: DiscoveredServicesSnapshot = { relays: [], robots: [] };
 
 /**
  * The slice of the browser `WebSocket` API this module actually uses.
@@ -296,6 +304,15 @@ interface Store {
    * old-shaped/test-fixture message that omits the field entirely --
    * see that function's own doc comment. */
   rememberedRobots: RememberedRobotEntry[];
+  /** Sprint 8 ticket 004/005: the current mDNS discovery snapshot
+   * (relays + robots) from the most recent `endpoints` snapshot --
+   * mirrors {@link rememberedRobots}'s own always-present-even-when-
+   * empty discipline. `{ relays: [], robots: [] }` before the first
+   * snapshot arrives. Feeds `RelayPage`'s dropdown (ticket 005) and the
+   * disclosure chip's `registryWasConsidered` (ticket 006) -- never
+   * populated by a registry lookup of its own; this is a passive
+   * mirror of `server.ts`'s `discoveredServices` field. */
+  discoveredServices: DiscoveredServicesSnapshot;
   logsByEndpoint: Map<string, LogEntry[]>;
   /** LRU order for `logsByEndpoint`, oldest-touched first. See
    * `touchLog`. */
@@ -460,6 +477,11 @@ function applySnapshot(
   // `store.rememberedRobots` with `undefined` -- it just keeps whatever
   // the store already had.
   rememberedRobots: RememberedRobotEntry[] | undefined,
+  // Same shorthand again: `EndpointsMessage.discoveredServices` is
+  // required on a real message, but typed as possibly `undefined` here
+  // so an old-shaped message never clobbers a previously-good
+  // `store.discoveredServices` with `undefined`.
+  discoveredServices: DiscoveredServicesSnapshot | undefined,
 ): void {
   const nextIds: string[] = [];
   const nextMap = new Map<string, EndpointListEntry>();
@@ -489,6 +511,10 @@ function applySnapshot(
     store.rememberedRobots = rememberedRobots;
   }
 
+  if (discoveredServices !== undefined && !deepEqual(store.discoveredServices, discoveredServices)) {
+    store.discoveredServices = discoveredServices;
+  }
+
   // A flash's terminal `flash-result` clears `flashStatus` from the
   // snapshot; mirror that into our own progress map for any endpoint
   // this client has been tracking, so a stale bar never lingers past
@@ -512,6 +538,7 @@ function createStore(): Store {
     endpointsArray: [],
     firmwareStatus: DEFAULT_FIRMWARE_STATUS,
     rememberedRobots: [],
+    discoveredServices: DEFAULT_DISCOVERED_SERVICES,
     logsByEndpoint: new Map(),
     logOrder: [],
     flashProgressByEndpoint: new Map(),
@@ -668,7 +695,13 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
         }
         switch (parsed.type) {
           case "endpoints":
-            applySnapshot(store, parsed.endpoints, parsed.firmwareStatus, parsed.rememberedRobots);
+            applySnapshot(
+              store,
+              parsed.endpoints,
+              parsed.firmwareStatus,
+              parsed.rememberedRobots,
+              parsed.discoveredServices,
+            );
             notify(store);
             break;
           case "line":
@@ -822,6 +855,18 @@ export function useFirmwareStatus(): Record<FirmwareKind, FirmwareAvailability> 
 export function useRememberedRobots(): RememberedRobotEntry[] {
   const store = useStore();
   return useSyncExternalStore(store.subscribe, () => store.rememberedRobots);
+}
+
+/** The current mDNS discovery snapshot (relays + robots) from the most
+ * recent `endpoints` snapshot (sprint 8 ticket 004/005) -- mirrors
+ * {@link useRememberedRobots} exactly. `{ relays: [], robots: [] }`
+ * before the first snapshot arrives. Rendering or opening a dropdown
+ * fed by this selector never triggers a registry lookup of its own --
+ * this is a passive mirror of the host's already-live discovery
+ * browse, per `sprint.md`'s Solution. */
+export function useDiscoveredServices(): DiscoveredServicesSnapshot {
+  const store = useStore();
+  return useSyncExternalStore(store.subscribe, () => store.discoveredServices);
 }
 
 /** Live progress of an in-flight flash for one endpoint, populated

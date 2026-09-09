@@ -280,6 +280,14 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       endpoints,
       firmwareStatus: availabilityCache.current(),
       rememberedRobots: registry.rememberedRobots(),
+      // Sprint 8 ticket 004: registry.discoveredServices() is a straight
+      // pass-through of MdnsDiscovery's own current() snapshot -- see
+      // that method's own doc comment. registry.onDevicesChanged (which
+      // every call site below is already subscribed to) re-fires on a
+      // discovery change too (DeviceRegistry.start wires that), so this
+      // reaches every connected client with no separate event type
+      // needed, same as firmwareStatus/rememberedRobots just above.
+      discoveredServices: registry.discoveredServices(),
     };
   }
 
@@ -385,11 +393,24 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
           // `robotName` (see wsMessages.ts's SessionOpenMessage doc
           // comment), so it rides along inside the same conditional
           // rather than being forwarded independently.
+          //
+          // Sprint 8 ticket 005: `autoRobot: true` (only ever sent
+          // alongside no `robotName` -- RelayPage's Connect action with
+          // the dropdown's placeholder selected) requests
+          // `requestOpen`'s default-failover candidate list, reached by
+          // passing an empty `target` object (`{}`) rather than a single
+          // named one -- see `deviceRegistry.ts#requestOpen`'s own doc
+          // comment for why `target` present-but-empty means "use the
+          // default-failover list" instead of "open the endpoint's own
+          // plain USB session" (the `else` branch below, taken only when
+          // neither `robotName` nor `autoRobot` is set).
           if (message.robotName !== undefined) {
             void registry.requestOpen(message.endpointId, {
               robotName: message.robotName,
               ...(message.radio !== undefined ? { radio: message.radio } : {}),
             });
+          } else if (message.autoRobot) {
+            void registry.requestOpen(message.endpointId, {});
           } else {
             void registry.requestOpen(message.endpointId);
           }

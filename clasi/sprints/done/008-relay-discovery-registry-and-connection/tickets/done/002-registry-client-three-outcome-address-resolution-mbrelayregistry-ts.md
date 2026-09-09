@@ -1,7 +1,7 @@
 ---
 id: '002'
 title: 'Registry client: three-outcome address resolution (mbrelayRegistry.ts)'
-status: open
+status: done
 use-cases:
 - SUC-002
 depends-on: []
@@ -51,30 +51,30 @@ returns, including a timeout/rejection for the `local-derived` case.
 
 ## Acceptance Criteria
 
-- [ ] `resolveRobotAddress` never throws — every failure path
+- [x] `resolveRobotAddress` never throws — every failure path
       (network error, timeout, malformed response) resolves to
       `"local-derived"` with a locally-computed address, never a
       rejected promise.
-- [ ] An injected fetch returning the registry's actual-hit response
+- [x] An injected fetch returning the registry's actual-hit response
       shape yields outcome `"config"`/`"registry"`.
-- [ ] An injected fetch returning the registry's derived-on-miss
+- [x] An injected fetch returning the registry's derived-on-miss
       response shape yields outcome `"derived"`, correctly distinguished
       from the actual-hit case above (assert on the outcome tag, not
       just the resolved address, since the two cases can return the
       same numeric channel/group).
-- [ ] An injected fetch that times out (fake timer, no real wall-clock
+- [x] An injected fetch that times out (fake timer, no real wall-clock
       delay in the test) or throws a network error yields
       `"local-derived"`, with the address computed via
       `nameToRadioAddress` directly (assert the same value that function
       would return for the given name, not a re-derivation).
-- [ ] Calling `resolveRobotAddress` twice for the same name within the
+- [x] Calling `resolveRobotAddress` twice for the same name within the
       TTL window results in exactly one fetch call; calling it again
       after the TTL expires issues a second fetch.
-- [ ] No code path in this module issues anything but `GET` — a test
+- [x] No code path in this module issues anything but `GET` — a test
       asserts the fake fetch is only ever called with a GET-shaped
       request (no method, or `method: "GET"` explicitly, matching
       whatever convention the implementation uses).
-- [ ] `npm test` and `npm run build` pass.
+- [x] `npm test` and `npm run build` pass.
 
 ## Testing
 

@@ -22,6 +22,21 @@ describe("parseClientMessage", () => {
     ).toBeUndefined();
   });
 
+  it("accepts a session-open message with autoRobot: true and no robotName (sprint 8 ticket 005 default failover)", () => {
+    expect(
+      parseClientMessage({ type: "session-open", endpointId: "usb-abc", autoRobot: true }),
+    ).toEqual({ type: "session-open", endpointId: "usb-abc", autoRobot: true });
+  });
+
+  it("rejects a session-open message with autoRobot set to anything other than true", () => {
+    expect(
+      parseClientMessage({ type: "session-open", endpointId: "usb-abc", autoRobot: false }),
+    ).toBeUndefined();
+    expect(
+      parseClientMessage({ type: "session-open", endpointId: "usb-abc", autoRobot: "true" }),
+    ).toBeUndefined();
+  });
+
   it("accepts a well-formed session-close message", () => {
     expect(parseClientMessage({ type: "session-close", endpointId: "usb-abc" })).toEqual({
       type: "session-close",

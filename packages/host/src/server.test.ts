@@ -11,6 +11,7 @@ import { FirmwareAvailabilityCache, type ResolvedRelease } from "./releases.js";
 import { startServer, type RunningServer } from "./server.js";
 import { KnownRobotsStore, type KnownRobotRecord } from "./store/knownRobots.js";
 import { UPLOAD_ID_BYTE_LENGTH, type FlashPhase, type ServerMessage } from "./wsMessages.js";
+import type { MdnsDiscovery } from "./discovery/mdnsDiscovery.js";
 
 // Per the ticket's Testing section: a full end-to-end WebSocket round
 // trip -- a real Express/`ws` server, a real WebSocket client, and fake
@@ -171,6 +172,25 @@ function fakeKnownRobotsStore(initial: KnownRobotRecord[] = []): KnownRobotsStor
   } as unknown as KnownRobotsStore;
 }
 
+/** Sprint 8 ticket 004: a fully synthetic {@link MdnsDiscovery}, never
+ * the real `bonjour-service`-backed default (which would depend on --
+ * and reach out onto -- whatever LAN the suite happens to run on,
+ * exactly the "environment leak" {@link fakeKnownRobotsStore}'s own doc
+ * comment already guards against for the remembered-robot roster).
+ * Static: `onChange` never fires, matching every test here that only
+ * ever reads `EndpointsMessage.discoveredServices` from an already-built
+ * snapshot rather than a live update. */
+function fakeMdnsDiscovery(
+  snapshot: { relays?: unknown[]; robots?: unknown[] } = {},
+): MdnsDiscovery {
+  return {
+    current: () => ({ relays: snapshot.relays ?? [], robots: snapshot.robots ?? [] }),
+    onChange: () => () => {},
+    start: () => {},
+    stop: () => {},
+  } as unknown as MdnsDiscovery;
+}
+
 function buildRegistry(link: FakeLink, overrides: DeviceRegistryOptions = {}): DeviceRegistry {
   const watcher = new DeviceWatcher({
     listDevices: () => Promise.resolve([device()]),
@@ -195,6 +215,10 @@ function buildRegistry(link: FakeLink, overrides: DeviceRegistryOptions = {}): D
     // already guards against for firmwareConfig. A test that cares
     // about a non-empty roster overrides `knownRobotsStore` itself.
     knownRobotsStore: fakeKnownRobotsStore(),
+    // Sprint 8 ticket 004: same "never the real, environment-dependent
+    // default" rationale as knownRobotsStore just above -- see
+    // fakeMdnsDiscovery's own doc comment.
+    mdnsDiscovery: fakeMdnsDiscovery(),
     ...overrides,
   });
 }
@@ -364,6 +388,34 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
         robot: { configured: false },
       },
       rememberedRobots: [],
+      // Sprint 8 ticket 004: always present, mirroring rememberedRobots'
+      // own "empty array, never an omitted field" discipline -- no
+      // mdnsDiscovery override was passed to buildRegistry here, so this
+      // exercises fakeMdnsDiscovery()'s own empty default.
+      discoveredServices: { relays: [], robots: [] },
+    });
+  });
+
+  it("includes registry.discoveredServices() (relays + robots) in every endpoints snapshot (sprint 8 ticket 004)", async () => {
+    const link = new FakeLink(async () => banner());
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [{ instanceName: "torture", host: "torture.local", port: 8760, registryPort: 8761 }],
+      robots: [{ instanceName: "gopiv", host: "gopiv.local", port: 9000 }],
+    });
+    server = await startServer({
+      port: 0,
+      registry: buildRegistry(link, { mdnsDiscovery }),
+      firmwareConfig: NO_FIRMWARE,
+    });
+    const connected = await connect(server.url.replace("http://", "ws://"));
+    ws = connected.ws;
+
+    const initial = await connected.messages.waitFor((m) => m.type === "endpoints");
+    expect(initial).toMatchObject({
+      discoveredServices: {
+        relays: [{ instanceName: "torture", host: "torture.local", port: 8760, registryPort: 8761 }],
+        robots: [{ instanceName: "gopiv", host: "gopiv.local", port: 9000 }],
+      },
     });
   });
 
@@ -437,6 +489,29 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
 
     await vi.waitFor(() => {
       expect(requestOpenSpy).toHaveBeenCalledWith("usb-SERIAL-A", { robotName: "gopiv" });
+    });
+  });
+
+  it("session-open with autoRobot: true forwards an empty target to registry.requestOpen, requesting default failover (sprint 8 ticket 005)", async () => {
+    // deviceRegistry.ts's own default-failover candidate building
+    // (buildDefaultFailoverCandidates) is covered in deviceRegistry.test.ts
+    // -- this test only proves server.ts's wiring: `autoRobot: true` with
+    // no `robotName` reaches registry.requestOpen as an empty target
+    // object (`{}`), the signal that means "use the default-failover
+    // list" rather than "open the endpoint's own plain USB session".
+    const link = new FakeLink(async () => banner());
+    const registry = buildRegistry(link);
+    const requestOpenSpy = vi.spyOn(registry, "requestOpen");
+    server = await startServer({ port: 0, registry, firmwareConfig: NO_FIRMWARE });
+    const connected = await connect(server.url.replace("http://", "ws://"));
+    ws = connected.ws;
+
+    await connected.messages.waitFor((m) => m.type === "endpoints");
+
+    ws.send(JSON.stringify({ type: "session-open", endpointId: "usb-SERIAL-A", autoRobot: true }));
+
+    await vi.waitFor(() => {
+      expect(requestOpenSpy).toHaveBeenCalledWith("usb-SERIAL-A", {});
     });
   });
 

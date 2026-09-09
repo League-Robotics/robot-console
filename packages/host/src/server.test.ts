@@ -835,8 +835,7 @@ describe("server.ts firmwareStatus (sprint 2, ticket 006)", () => {
       { checkAvailability: checkAvailabilityFn },
     );
     // Deterministic: drive the poll directly rather than waiting on the
-    // cache's real interval timer (never started here since `start()`
-    // itself does not poll immediately -- see releases.ts).
+    // cache's real interval timer.
     await availabilityCache.pollOnce();
 
     server = await startServer({ port: 0, registry: buildRegistry(link), availabilityCache });
@@ -851,10 +850,78 @@ describe("server.ts firmwareStatus (sprint 2, ticket 006)", () => {
         robot: { configured: false },
       },
     });
-    // Exactly the one explicit pollOnce() call above drove the check --
-    // startServer()/availabilityCache.start() itself does not poll
-    // immediately (see releases.ts), so this is deterministic with no
-    // real timer/network dependency.
+    // The explicit pollOnce() call above drove this snapshot's content,
+    // but `startServer()` itself now *also* fires an immediate poll on
+    // startup (see the "checks firmware availability immediately at
+    // startup" test below) -- so `checkAvailabilityFn` is called at
+    // least once more in the background here. Both calls resolve to the
+    // same fixed `{ available: true }` result, so the assertions above
+    // are unaffected; this test only pins the message shape, not the
+    // call count.
+    expect(checkAvailabilityFn.mock.calls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("checks firmware availability immediately at startup, without waiting for the poll interval, and delivers the result to a client that connected before the check resolved (regression, OOP fix)", async () => {
+    const link = new FakeLink(async () => banner());
+    // Controlled by hand rather than a real timer/network call: the
+    // check stays pending until `resolveCheck()` is invoked below, so
+    // the test can deterministically connect a client *while the very
+    // first poll is still in flight* and then observe the update land
+    // on that already-open connection -- no fixed-tick `flushAsync`,
+    // just condition-based waits (`MessageCollector.waitFor`).
+    let resolveCheck!: (result: { available: boolean; reason?: string }) => void;
+    const checkAvailabilityFn = vi.fn(
+      () =>
+        new Promise<{ available: boolean; reason?: string }>((resolve) => {
+          resolveCheck = resolve;
+        }),
+    );
+    const availabilityCache = new FirmwareAvailabilityCache(
+      { relay: firmwareSource(), robot: undefined },
+      // A poll interval far longer than this test could ever run: if
+      // the fix regresses to "only the interval polls", the assertions
+      // below time out waiting for a poll that never comes, rather than
+      // passing by accident on a lucky interval tick.
+      { checkAvailability: checkAvailabilityFn, pollIntervalMs: 3_600_000 },
+    );
+
+    server = await startServer({ port: 0, registry: buildRegistry(link), availabilityCache });
+    // `startServer()` returning (i.e. `listen()` resolving) does not
+    // wait on the availability poll -- confirm the immediate poll was
+    // nonetheless *started* by the time startup completes.
+    expect(checkAvailabilityFn).toHaveBeenCalledTimes(1);
+
+    const connected = await connect(server.url.replace("http://", "ws://"));
+    ws = connected.ws;
+
+    // This client connected after startup but *before* the in-flight
+    // poll resolved -- its very first snapshot must still show the
+    // "not yet checked" placeholder, not the eventual result, proving
+    // the check really was still pending at connect time.
+    const initial = await connected.messages.waitFor((m) => m.type === "endpoints");
+    expect(initial).toMatchObject({
+      type: "endpoints",
+      firmwareStatus: { relay: { configured: true, available: false, reason: "not-yet-checked" } },
+    });
+
+    // Now let the startup poll resolve.
+    resolveCheck({ available: true });
+
+    // The already-connected client -- no reconnect, no client-sent
+    // message -- must receive the updated status via the normal
+    // onChange -> broadcast path.
+    const updated = await connected.messages.waitFor(
+      (m) => m.type === "endpoints" && m.firmwareStatus.relay.configured === true && m.firmwareStatus.relay.available === true,
+    );
+    expect(updated).toMatchObject({
+      type: "endpoints",
+      firmwareStatus: {
+        relay: { configured: true, repoUrl: firmwareSource().repoUrl, tag: "latest", available: true },
+      },
+    });
+
+    // The interval timer (5-min default, here set to an hour) must not
+    // have been touched by any of this -- exactly one check so far.
     expect(checkAvailabilityFn).toHaveBeenCalledTimes(1);
   });
 

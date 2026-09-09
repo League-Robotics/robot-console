@@ -431,6 +431,26 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 
   registry.start();
   availabilityCache.start();
+  // `start()` only arms the `DEFAULT_AVAILABILITY_POLL_INTERVAL_MS`
+  // interval timer -- without this, a freshly started host reports
+  // every firmware kind as "not-yet-checked" (flash buttons disabled,
+  // UI stuck on "Checking whether this firmware is available...") for
+  // up to 5 minutes even when the firmware is actually available.
+  // Mirrors `deviceRegistry.ts#start`'s `watcher.start(); void
+  // watcher.pollOnce();` composition exactly: the interval owner starts
+  // the timer, the caller composing it also fires one poll immediately.
+  // The `onChange` subscription above (`unsubscribeAvailability`) is
+  // already wired before this line, so this poll's result -- whether it
+  // resolves before or after `listen()` below -- reaches every already
+  // connected client via the normal broadcast path, not just future
+  // connections. `void` is deliberate and matches the existing idiom
+  // (this class's own interval callback, and `deviceRegistry.ts`'s
+  // `pollOnce()` call, both fire-and-forget the same way): `pollOnce()`
+  // never rejects in practice because `checkAvailability` (real or
+  // test fake) reports network/API failures through its own `reason`
+  // field rather than throwing, so there is no unhandled rejection to
+  // guard against here.
+  void availabilityCache.pollOnce();
   try {
     await listen(httpServer, port, host);
   } catch (error) {

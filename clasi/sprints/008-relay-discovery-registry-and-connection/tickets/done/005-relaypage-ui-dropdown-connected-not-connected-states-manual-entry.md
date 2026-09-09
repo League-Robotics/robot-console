@@ -1,7 +1,7 @@
 ---
 id: '005'
 title: 'RelayPage UI: dropdown, connected/not-connected states, manual entry'
-status: in-progress
+status: done
 use-cases:
 - SUC-003
 - SUC-004

@@ -160,10 +160,10 @@ describe("nack N sets seq to N-1, NOT N (the logged-bug arithmetic)", () => {
 });
 
 // ---------------------------------------------------------------------
-// The 11-verb id-bearing allowlist -- positive and negative
+// The 12-verb id-bearing allowlist -- positive and negative
 // ---------------------------------------------------------------------
 
-describe("only the 11 named verbs are id-bearing", () => {
+describe("only the 12 named verbs are id-bearing", () => {
   const ELEVEN = [
     "GET",
     "SET",
@@ -176,11 +176,12 @@ describe("only the 11 named verbs are id-bearing", () => {
     "MOVE_V",
     "GO_TO_R",
     "GO_TO_W",
+    "FUNCS",
   ];
 
-  it("SEQUENCED_VERBS is exactly the 11 named verbs", () => {
+  it("SEQUENCED_VERBS is exactly the 12 named verbs", () => {
     expect([...SEQUENCED_VERBS].sort()).toEqual([...ELEVEN].sort());
-    expect(SEQUENCED_VERBS.size).toBe(11);
+    expect(SEQUENCED_VERBS.size).toBe(12);
   });
 
   it.each(ELEVEN)("send() assigns a sequence id to %s", (verb) => {

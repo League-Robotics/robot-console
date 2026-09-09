@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Session, type AckNackEvent, type DecodedLine, type ParsedBanner, type WireField } from "@robot-console/protocol";
 import { DeviceWatcher, type DaplinkDevice } from "./devices.js";
 import type { SwdNameResult } from "./swdName.js";
-import { DeviceRegistry, KeyedMutex } from "./deviceRegistry.js";
+import { DeviceRegistry, KeyedMutex, parseStatusReply } from "./deviceRegistry.js";
 import type { Link } from "./link/Link.js";
 import { UsbSerialLink, type SerialPortLike } from "./link/UsbSerialLink.js";
 import type { Scheduler } from "./link/pacing.js";
@@ -204,7 +204,7 @@ describe("DeviceRegistry", () => {
     const resolveName = vi.fn(async () => namedResult("zeguz"));
     const createLink = vi.fn(() => new FakeLink(() => new Promise<ParsedBanner | null>(() => {})));
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink });
     const seen: EndpointListEntry[][] = [];
     registry.onDevicesChanged((snap) => seen.push(snap));
     registry.start();
@@ -237,7 +237,7 @@ describe("DeviceRegistry", () => {
     const resolveName = async () => namedResult("zeguz");
     const createLink = () => new FakeLink(() => new Promise<ParsedBanner | null>(() => {}));
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink });
     registry.start();
 
     const snap = await waitForSnapshot(registry, (s) => s.length === 2);
@@ -257,7 +257,7 @@ describe("DeviceRegistry", () => {
     const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
     const createLink = vi.fn(() => link);
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink });
     registry.start();
 
     const snap = await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
@@ -284,7 +284,7 @@ describe("DeviceRegistry", () => {
         () => Promise.reject(new Error("permission denied opening port")),
       );
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink });
     registry.start();
 
     const snap = await waitForSnapshot(registry, (s) => s[0]?.sessionError !== undefined);
@@ -314,7 +314,7 @@ describe("DeviceRegistry", () => {
     const link = new FakeLink(async () => null);
     const createLink = () => link;
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink });
     registry.start();
 
     const snap = await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
@@ -357,7 +357,7 @@ describe("DeviceRegistry", () => {
       return failedLink;
     };
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink });
     registry.start();
 
     await waitForSnapshot(registry, (s) => s[0]?.sessionError !== undefined);
@@ -372,7 +372,7 @@ describe("DeviceRegistry", () => {
     const resolveName = async () => failingNameResult();
     const createLink = () => new FakeLink(async () => banner());
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink });
     registry.start();
 
     const snap = await waitForSnapshot(registry, (s) => s[0]?.nameError !== undefined);
@@ -389,7 +389,7 @@ describe("DeviceRegistry", () => {
     const link = new FakeLink(async () => banner());
     const createLink = () => link;
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink });
     registry.start();
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
 
@@ -420,7 +420,7 @@ describe("DeviceRegistry", () => {
         return banner();
       });
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink });
     registry.start();
     // sessionOpen flips true as soon as connect() succeeds, before
     // identify() even starts (see connectAndIdentify's own doc comment)
@@ -455,7 +455,7 @@ describe("DeviceRegistry", () => {
       return link;
     };
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink });
     registry.start();
     await waitForSnapshot(registry, (s) => s[0]?.sessionError !== undefined);
 
@@ -479,7 +479,7 @@ describe("DeviceRegistry", () => {
     const link = new FakeLink(async () => banner());
     const createLink = () => link;
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink });
     const lines: Array<{ endpointId: string; direction: string; line: string }> = [];
     const errors: Array<{ endpointId: string | undefined; message: string }> = [];
     registry.onLine((endpointId, direction, line) => lines.push({ endpointId, direction, line }));
@@ -514,7 +514,7 @@ describe("DeviceRegistry", () => {
     const link = new FakeLink(async () => banner());
     const createLink = () => link;
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink });
     registry.start();
 
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
@@ -537,7 +537,7 @@ describe("DeviceRegistry", () => {
     const link = new FakeLink(async () => banner());
     const createLink = () => link;
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink });
     const lines: Array<{ endpointId: string; direction: string; line: string }> = [];
     registry.onLine((endpointId, direction, l) => lines.push({ endpointId, direction, line: l }));
     registry.start();
@@ -561,7 +561,7 @@ describe("DeviceRegistry", () => {
     const link = new FakeLink(async () => banner());
     const createLink = () => link;
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink });
     const errors: Array<{ endpointId: string | undefined; message: string }> = [];
     registry.onError((endpointId, message) => errors.push({ endpointId, message }));
     registry.start();
@@ -626,7 +626,7 @@ describe("DeviceRegistry.sendCommand", () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
-    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
     registry.start();
 
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
@@ -642,7 +642,7 @@ describe("DeviceRegistry.sendCommand", () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
-    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
     registry.start();
 
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
@@ -658,7 +658,7 @@ describe("DeviceRegistry.sendCommand", () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
-    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
     registry.start();
 
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
@@ -685,7 +685,7 @@ describe("DeviceRegistry.sendCommand", () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
-    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
     const errors: Array<{ endpointId: string | undefined; message: string }> = [];
     registry.onError((endpointId, message) => errors.push({ endpointId, message }));
     registry.start();
@@ -719,7 +719,7 @@ describe("DeviceRegistry.sendCommand", () => {
       // attempt (from the HELLO command below) gets no reply.
       return identifyCount === 1 ? banner({ role: "NEZHA2" }) : null;
     });
-    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
     const errors: Array<{ endpointId: string | undefined; message: string }> = [];
     registry.onError((endpointId, message) => errors.push({ endpointId, message }));
     registry.start();
@@ -746,7 +746,7 @@ describe("DeviceRegistry.sendCommand", () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
-    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
     registry.start();
 
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
@@ -763,7 +763,7 @@ describe("DeviceRegistry.sendCommand", () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
-    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
     const errors: Array<{ endpointId: string | undefined; message: string }> = [];
     registry.onError((endpointId, message) => errors.push({ endpointId, message }));
     registry.start();
@@ -786,7 +786,7 @@ describe("DeviceRegistry.sendCommand", () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const link = new FakeLink(() => new Promise<ParsedBanner | null>(() => {}));
-    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
     const errors: Array<{ endpointId: string | undefined; message: string }> = [];
     registry.onError((endpointId, message) => errors.push({ endpointId, message }));
     registry.start();
@@ -810,7 +810,7 @@ describe("DeviceRegistry.sendCommand", () => {
       () => new Promise<ParsedBanner | null>(() => {}),
       () => new Promise<void>(() => {}),
     );
-    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
     registry.start();
 
     const snap = await waitForSnapshot(registry, (s) => s.length === 1);
@@ -824,7 +824,7 @@ describe("DeviceRegistry.sendCommand", () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
-    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
     registry.start();
 
     const opened = await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
@@ -852,7 +852,7 @@ describe("DeviceRegistry.sendCommand", () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
-    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
     const errors: Array<{ endpointId: string | undefined; message: string }> = [];
     registry.onError((endpointId, message) => errors.push({ endpointId, message }));
     registry.start();
@@ -884,7 +884,7 @@ describe("DeviceRegistry.sendCommand", () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
-    const registry = new DeviceRegistry({ watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName: async () => namedResult("zavaz"), createLink: () => link });
     registry.start();
 
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
@@ -915,7 +915,7 @@ describe("DeviceRegistry.sendCommand", () => {
         openTimeoutMs: 200,
       });
 
-    const registry = new DeviceRegistry({
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false, 
       watcher,
       resolveName: async () => namedResult("zavaz"),
       createLink,
@@ -1038,7 +1038,7 @@ describe("DeviceRegistry — requestFlash", () => {
       },
     );
 
-    const registry = new DeviceRegistry({
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false, 
       watcher,
       resolveName,
       createLink,
@@ -1126,7 +1126,7 @@ describe("DeviceRegistry — requestFlash", () => {
     const fetchAndVerifyHexFn = vi.fn(async () => ({ hex: Buffer.from(":00000001FF\n", "utf-8") }));
     const flashFn = vi.fn(async (): Promise<FlashOutcome> => ({ status: "ok", method: "swd" }));
 
-    const registry = new DeviceRegistry({
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false, 
       watcher,
       resolveName,
       createLink,
@@ -1194,7 +1194,7 @@ describe("DeviceRegistry — requestFlash", () => {
       },
     );
 
-    const registry = new DeviceRegistry({
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false, 
       watcher,
       resolveName,
       createLink,
@@ -1243,7 +1243,7 @@ describe("DeviceRegistry — requestFlash", () => {
     const fetchAndVerifyHexFn = vi.fn(async () => ({ error: "sha256 mismatch for downloaded hex" }));
     const flashFn = vi.fn(async (): Promise<FlashOutcome> => ({ status: "ok", method: "swd" }));
 
-    const registry = new DeviceRegistry({
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false, 
       watcher,
       resolveName,
       createLink,
@@ -1281,7 +1281,7 @@ describe("DeviceRegistry — requestFlash", () => {
     const fetchAndVerifyHexFn = vi.fn(async () => ({ hex: Buffer.from(":00000001FF\n") }));
     const flashFn = vi.fn(async (): Promise<FlashOutcome> => ({ status: "ok", method: "swd" }));
 
-    const registry = new DeviceRegistry({
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false, 
       watcher,
       resolveName,
       createLink,
@@ -1327,7 +1327,7 @@ describe("DeviceRegistry — requestFlash", () => {
       }),
     );
 
-    const registry = new DeviceRegistry({
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false, 
       watcher,
       resolveName,
       createLink,
@@ -1369,7 +1369,7 @@ describe("DeviceRegistry — requestFlash", () => {
     const fetchAndVerifyHexFn = vi.fn(async () => ({ hex: Buffer.from(":00000001FF\n") }));
     const flashFn = vi.fn(async (): Promise<FlashOutcome> => ({ status: "ok", method: "swd" }));
 
-    const registry = new DeviceRegistry({
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false, 
       watcher,
       resolveName,
       createLink,
@@ -1397,7 +1397,7 @@ describe("DeviceRegistry — requestFlash", () => {
   });
 
   it("requestFlash for an unknown endpointId reports via onError, never throws", async () => {
-    const registry = new DeviceRegistry({
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false, 
       watcher: fixtureWatcher(() => []),
       getFirmwareConfig: configWith(firmwareSource()),
     });
@@ -1429,7 +1429,7 @@ describe("DeviceRegistry — requestFlash", () => {
     const fetchAndVerifyHexFn = vi.fn(async () => ({ hex: Buffer.from(":00000001FF\n") }));
     const flashFn = vi.fn(async (): Promise<FlashOutcome> => ({ status: "ok", method: "swd" }));
 
-    const registry = new DeviceRegistry({
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false, 
       watcher,
       resolveName,
       createLink,
@@ -1488,7 +1488,7 @@ describe("DeviceRegistry — known robots (sprint 5)", () => {
     const createLink = () => new FakeLink(async () => banner({ role: "NEZHA2", commonName: "robot" }));
     const knownRobotsStore = new KnownRobotsStore({ stateDir: tmpDir });
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink, knownRobotsStore });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink, knownRobotsStore });
     registry.start();
 
     await waitForSnapshot(registry, (s) => s[0]?.role === "NEZHA2");
@@ -1516,7 +1516,7 @@ describe("DeviceRegistry — known robots (sprint 5)", () => {
       isReadOnly: false,
     } as unknown as KnownRobotsStore;
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink, knownRobotsStore: fakeStore });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink, knownRobotsStore: fakeStore });
     registry.start();
 
     await waitForSnapshot(registry, (s) => s[0]?.role === "NEZHA2");
@@ -1537,7 +1537,7 @@ describe("DeviceRegistry — known robots (sprint 5)", () => {
     const createLink = () => new FakeLink(async () => banner());
     const knownRobotsStore = new KnownRobotsStore({ stateDir: tmpDir });
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink, knownRobotsStore });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink, knownRobotsStore });
     registry.start();
 
     const snap = await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
@@ -1555,7 +1555,7 @@ describe("DeviceRegistry — known robots (sprint 5)", () => {
     const createLink = () => new FakeLink(async () => null);
     const knownRobotsStore = new KnownRobotsStore({ stateDir: tmpDir });
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink, knownRobotsStore });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink, knownRobotsStore });
     registry.start();
 
     const snap = await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
@@ -1573,7 +1573,7 @@ describe("DeviceRegistry — known robots (sprint 5)", () => {
     const createLink = () => new FakeLink(async () => banner({ role: "NEZHA2", commonName: "robot" }));
     const knownRobotsStore = new KnownRobotsStore({ stateDir: tmpDir });
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink, knownRobotsStore });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink, knownRobotsStore });
     registry.start();
 
     const snap = await waitForSnapshot(registry, (s) => s[0]?.role === "NEZHA2");
@@ -1599,7 +1599,7 @@ describe("DeviceRegistry — known robots (sprint 5)", () => {
     });
     const knownRobotsStore = new KnownRobotsStore({ stateDir: tmpDir });
 
-    const registry = new DeviceRegistry({
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false, 
       watcher,
       resolveName,
       createLink,
@@ -1636,7 +1636,7 @@ describe("DeviceRegistry — known robots (sprint 5)", () => {
     knownRobotsStore.recordSighting({ name: "zeguz", usbSerial: "OLD-SERIAL", role: "NEZHA2" });
     knownRobotsStore.recordSighting({ name: "absnt", usbSerial: "SERIAL-B", role: "NEZHA2" });
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink, knownRobotsStore });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink, knownRobotsStore });
     registry.start();
 
     await waitForSnapshot(registry, (s) => s[0]?.role === "NEZHA2");
@@ -1655,7 +1655,7 @@ describe("DeviceRegistry — known robots (sprint 5)", () => {
     knownRobotsStore.recordSighting({ name: "gonee", usbSerial: "SERIAL-X", role: "NEZHA2" });
 
     const watcher = fixtureWatcher(() => []);
-    const registry = new DeviceRegistry({ watcher, knownRobotsStore });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, knownRobotsStore });
     const notifications: EndpointListEntry[][] = [];
     registry.onDevicesChanged((snap) => notifications.push(snap));
 
@@ -1670,7 +1670,7 @@ describe("DeviceRegistry — known robots (sprint 5)", () => {
   it("requestForgetKnownRobot for a name not in the roster does not throw", () => {
     const knownRobotsStore = new KnownRobotsStore({ stateDir: tmpDir });
     const watcher = fixtureWatcher(() => []);
-    const registry = new DeviceRegistry({ watcher, knownRobotsStore });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, knownRobotsStore });
 
     expect(() => registry.requestForgetKnownRobot("nobody-home")).not.toThrow();
     expect(registry.rememberedRobots()).toEqual([]);
@@ -1689,7 +1689,7 @@ describe("DeviceRegistry — known robots (sprint 5)", () => {
     const knownRobotsStore = new KnownRobotsStore({ filePath });
     expect(knownRobotsStore.isReadOnly).toBe(true);
 
-    const registry = new DeviceRegistry({ watcher, resolveName, createLink, knownRobotsStore });
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false,  watcher, resolveName, createLink, knownRobotsStore });
     registry.start();
 
     const snap = await waitForSnapshot(registry, (s) => s[0]?.role === "NEZHA2");
@@ -1749,7 +1749,7 @@ describe("DeviceRegistry — requestFlash (local-hex source)", () => {
       },
     );
 
-    const registry = new DeviceRegistry({
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false, 
       watcher,
       resolveName,
       createLink,
@@ -1805,7 +1805,7 @@ describe("DeviceRegistry — requestFlash (local-hex source)", () => {
     const consumeUploadFn = vi.fn((_uploadId: string) => undefined);
     const flashFn = vi.fn(async (): Promise<FlashOutcome> => ({ status: "ok", method: "swd" }));
 
-    const registry = new DeviceRegistry({
+    const registry = new DeviceRegistry({ statusPollIntervalMs: 0, autoRequestFunctions: false, 
       watcher,
       resolveName,
       createLink,
@@ -1897,5 +1897,177 @@ describe("KeyedMutex", () => {
     // b (shorter delay, different key) finishes before a even though a
     // started first -- proof the two keys never queue behind each other.
     expect(order).toEqual(["a-start", "b-start", "b-end", "a-end"]);
+  });
+});
+
+// ---------------------------------------------------------------------
+// OOP 2026-09-09: console echo of HELLO/banner and button-sent
+// commands, harvested `status`/`estop`/`funcs` replies, and the host's
+// own robot probes (automatic FUNCS + periodic STATUS poll).
+// ---------------------------------------------------------------------
+
+type SeenLine = { endpointId: string; direction: string; line: string; origin?: string };
+
+function robotBanner(): ParsedBanner {
+  return banner({ role: "NEZHA2", commonName: "robot", name: "gopiv", dialect: "space", raw: "device NEZHA2 robot gopiv 123" });
+}
+
+function decoded(verb: string, fields: string[] = [], id?: number): DecodedLine {
+  return id === undefined ? { kind: "line", verb, fields } : { kind: "line", verb, fields, id };
+}
+
+async function openRobot(options: { statusPollIntervalMs?: number; autoRequestFunctions?: boolean } = {}) {
+  const devices = [device()];
+  const watcher = fixtureWatcher(() => devices);
+  const link = new FakeLink(async () => robotBanner());
+  const registry = new DeviceRegistry({
+    statusPollIntervalMs: 0,
+    autoRequestFunctions: false,
+    ...options,
+    watcher,
+    resolveName: async () => namedResult("gopiv"),
+    createLink: () => link,
+  });
+  const lines: SeenLine[] = [];
+  registry.onLine((endpointId, direction, line, origin) =>
+    lines.push(origin ? { endpointId, direction, line, origin } : { endpointId, direction, line }),
+  );
+  registry.start();
+  await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true && s[0]?.role === "NEZHA2");
+  return { registry, link, lines };
+}
+
+describe("parseStatusReply", () => {
+  it("keeps every k=v pair and derives the named booleans from the flags bitfield", () => {
+    const status = parseStatusReply(
+      ["ready=1", "active=0", "connL=1", "connR=1", "otos=0", "wedge=0", "flags=3", "i2cf=0", "cyc=42", "tlm=off", "next=5", "done=4", "reason=stop"],
+      1000,
+    );
+    expect(status).toEqual({
+      receivedAt: 1000,
+      fields: {
+        ready: "1", active: "0", connL: "1", connR: "1", otos: "0", wedge: "0", flags: "3", i2cf: "0",
+        cyc: "42", tlm: "off", next: "5", done: "4", reason: "stop",
+      },
+      ready: true,
+      active: false,
+      estopped: true, // bit 1
+      stallHalted: false,
+      leaseExpired: false,
+    });
+  });
+
+  it("reads stall-halted / lease-expired bits and falls back to ready= when flags is absent", () => {
+    expect(parseStatusReply(["flags=c"], 0)).toMatchObject({ stallHalted: true, leaseExpired: true, estopped: false, ready: false });
+    expect(parseStatusReply(["ready=1", "active=1"], 0)).toMatchObject({ ready: true, active: true, estopped: false });
+    expect(parseStatusReply(["junk"], 0).fields).toEqual({ junk: "" });
+  });
+});
+
+describe("DeviceRegistry console echo (OOP 2026-09-09)", () => {
+  it("echoes the connect-time HELLO and its banner reply as console lines", async () => {
+    const { registry, lines } = await openRobot();
+    expect(lines).toContainEqual({ endpointId: "usb-SERIAL-A", direction: "tx", line: "HELLO" });
+    expect(lines).toContainEqual({ endpointId: "usb-SERIAL-A", direction: "rx", line: "device NEZHA2 robot gopiv 123" });
+    await registry.stop();
+  });
+
+  it("echoes a button-sent command's exact encoded line as a tx console line", async () => {
+    const { registry, lines } = await openRobot();
+    await registry.sendCommand("usb-SERIAL-A", "GET", ["speed"]);
+    await registry.sendCommand("usb-SERIAL-A", "STATUS", []);
+    expect(lines).toContainEqual({ endpointId: "usb-SERIAL-A", direction: "tx", line: "GET speed #1" });
+    expect(lines).toContainEqual({ endpointId: "usb-SERIAL-A", direction: "tx", line: "STATUS" });
+    await registry.stop();
+  });
+
+  it("HELLO pressed on a live session echoes HELLO and the fresh banner, so the button visibly does something", async () => {
+    const { registry, link, lines } = await openRobot();
+    lines.length = 0;
+    await registry.sendCommand("usb-SERIAL-A", "HELLO", []);
+    expect(link.identifyCalls).toBe(2);
+    expect(lines).toEqual([
+      { endpointId: "usb-SERIAL-A", direction: "tx", line: "HELLO" },
+      { endpointId: "usb-SERIAL-A", direction: "rx", line: "device NEZHA2 robot gopiv 123" },
+    ]);
+    await registry.stop();
+  });
+});
+
+describe("DeviceRegistry robot status and functions (OOP 2026-09-09)", () => {
+  it("harvests a status reply into robotStatus and flips estopped on a bare estop reply", async () => {
+    const { registry, link } = await openRobot();
+    expect(registry.snapshot()[0]?.robotStatus).toBeUndefined();
+
+    link.emitLine(decoded("status", ["ready=1", "active=0", "flags=1", "tlm=off"]));
+    let entry = registry.snapshot()[0]!;
+    expect(entry.robotStatus).toMatchObject({ ready: true, estopped: false, fields: { tlm: "off" } });
+
+    link.emitLine(decoded("estop"));
+    entry = registry.snapshot()[0]!;
+    expect(entry.robotStatus).toMatchObject({ estopped: true, active: false, fields: { tlm: "off" } });
+
+    link.emitLine(decoded("status", ["ready=1", "active=0", "flags=1"]));
+    expect(registry.snapshot()[0]?.robotStatus?.estopped).toBe(false);
+
+    await registry.stop();
+    // Cleared with the session.
+    expect(registry.snapshot()[0]?.robotStatus).toBeUndefined();
+  });
+
+  it("FUNCS resets the function list, then funcs reply lines rebuild it (signature optional)", async () => {
+    const { registry, link, lines } = await openRobot();
+    expect(registry.snapshot()[0]?.functions).toBeUndefined();
+
+    await registry.sendCommand("usb-SERIAL-A", "FUNCS", []);
+    expect(link.sentLines).toEqual(["FUNCS #1\n"]);
+    expect(lines).toContainEqual({ endpointId: "usb-SERIAL-A", direction: "tx", line: "FUNCS #1" });
+    expect(registry.snapshot()[0]?.functions).toEqual([]);
+
+    link.emitLine(decoded("funcs", ["clearestop"]));
+    link.emitLine(decoded("funcs", ["straight", "dist", "speed"]));
+    expect(registry.snapshot()[0]?.functions).toEqual([
+      { name: "clearestop" },
+      { name: "straight", signature: "dist speed" },
+    ]);
+    // Every funcs line is still echoed to the console.
+    expect(lines).toContainEqual({ endpointId: "usb-SERIAL-A", direction: "rx", line: "funcs straight dist speed" });
+
+    await registry.sendCommand("usb-SERIAL-A", "funcs", []); // case-folded like every other verb
+    expect(registry.snapshot()[0]?.functions).toEqual([]);
+    await registry.stop();
+  });
+
+  it("automatically requests FUNCS and polls STATUS once a robot identifies, tagging poll traffic", async () => {
+    const { registry, link, lines } = await openRobot({ statusPollIntervalMs: 60_000, autoRequestFunctions: true });
+    expect(link.sentLines).toEqual(["FUNCS #1\n", "STATUS\n"]);
+    expect(registry.snapshot()[0]?.functions).toEqual([]);
+    expect(lines).toContainEqual({ endpointId: "usb-SERIAL-A", direction: "tx", line: "STATUS", origin: "poll" });
+    // The reply to the host's own poll is tagged too; a later one is not.
+    link.emitLine(decoded("status", ["flags=1"]));
+    expect(lines).toContainEqual({ endpointId: "usb-SERIAL-A", direction: "rx", line: "status flags=1", origin: "poll" });
+    link.emitLine(decoded("status", ["flags=1"]));
+    expect(lines.filter((l) => l.line === "status flags=1")).toEqual([
+      { endpointId: "usb-SERIAL-A", direction: "rx", line: "status flags=1", origin: "poll" },
+      { endpointId: "usb-SERIAL-A", direction: "rx", line: "status flags=1" },
+    ]);
+    await registry.stop();
+  });
+
+  it("never probes a non-robot (relay) endpoint", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const link = new FakeLink(async () => banner());
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 60_000,
+      autoRequestFunctions: true,
+      watcher,
+      resolveName: async () => namedResult("getez"),
+      createLink: () => link,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true && s[0]?.role === "RADIOBRIDGE");
+    expect(link.sentLines).toEqual([]);
+    await registry.stop();
   });
 });

@@ -178,3 +178,68 @@ describe("EstopControl", () => {
     expect(socket.sent).toHaveLength(0);
   });
 });
+
+describe("EstopControl Clear E-STOP (added out-of-process, 2026-09-09)", () => {
+  function estoppedDevice(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+    return baseDevice({
+      robotStatus: {
+        receivedAt: 1000,
+        fields: { flags: "3" },
+        ready: true,
+        active: false,
+        estopped: true,
+        stallHalted: false,
+        leaseExpired: false,
+      },
+      ...overrides,
+    });
+  }
+
+  it("is absent when robotStatus is missing", () => {
+    const { el } = mountControl(baseDevice());
+    expect(el.querySelector('[data-testid="estop-clear-button"]')).toBeNull();
+  });
+
+  it("is absent when robotStatus.estopped is false", () => {
+    const { el } = mountControl(
+      baseDevice({
+        robotStatus: {
+          receivedAt: 1000,
+          fields: {},
+          ready: true,
+          active: false,
+          estopped: false,
+          stallHalted: false,
+          leaseExpired: false,
+        },
+      }),
+    );
+    expect(el.querySelector('[data-testid="estop-clear-button"]')).toBeNull();
+  });
+
+  it("appears when robotStatus.estopped is true and sends SET estop_clear 1 then STATUS", () => {
+    const { el, socket } = mountControl(estoppedDevice());
+    const button = el.querySelector<HTMLButtonElement>('[data-testid="estop-clear-button"]')!;
+    expect(button).not.toBeNull();
+
+    act(() => {
+      button.click();
+    });
+
+    expect(sentMessages(socket)).toEqual([
+      {
+        type: "send-command",
+        endpointId: "usb-ROBOT-A",
+        verb: "SET",
+        fields: ["estop_clear", "1"],
+      },
+      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "STATUS" },
+    ]);
+  });
+
+  it("disables Clear E-STOP when no session is open", () => {
+    const { el } = mountControl(estoppedDevice({ sessionOpen: false }));
+    const button = el.querySelector<HTMLButtonElement>('[data-testid="estop-clear-button"]')!;
+    expect(button.disabled).toBe(true);
+  });
+});

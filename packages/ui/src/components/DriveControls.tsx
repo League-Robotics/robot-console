@@ -48,6 +48,12 @@
  * still sequenced `STOP` (per protocol.md/motion-api.md §9.1, `STOP` is
  * one of the 11 sequenced verbs) is sent with no fields, matching
  * `stop()`'s wire form (`STOP #<id>`, no positional args).
+ *
+ * **Hold/release hint, made prominent (added out-of-process,
+ * 2026-09-09).** The "Hold a direction to drive; release to stop." note
+ * now renders above the direction pad rather than below it, with "Hold"
+ * bolded, so it reads before a student reaches the buttons instead of
+ * after -- purely a presentation change, no behavior here moved.
  */
 import { useEffect, useRef, useState } from "react";
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
@@ -157,6 +163,10 @@ export function DriveControls({ device }: DriveControlsProps) {
           No link open — open a link before driving.
         </p>
       )}
+      <p className="drive-controls-note">
+        <strong>Hold</strong> a direction to drive; release to stop.{" "}
+        {activeDirection ? `Holding: ${DIRECTION_LABELS[activeDirection]}.` : ""}
+      </p>
       <div className="drive-controls-pad">
         {directions.map((direction) => (
           <button
@@ -178,9 +188,6 @@ export function DriveControls({ device }: DriveControlsProps) {
           </button>
         ))}
       </div>
-      <p className="drive-controls-note">
-        Hold a direction to drive; release to stop. {activeDirection ? `Holding: ${DIRECTION_LABELS[activeDirection]}.` : ""}
-      </p>
     </section>
   );
 }

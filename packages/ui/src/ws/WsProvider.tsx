@@ -94,6 +94,17 @@
  * current caller produces one) is deliberately dropped rather than
  * shown as a global banner, since this store owns no UI surface outside
  * the per-endpoint log -- see `appendHostError`'s own doc comment.
+ *
+ * **Poll-origin lines carried through (added out-of-process,
+ * 2026-09-09):** `appendLine` now copies `LineMessage.origin` (`"poll"`
+ * for a line the host sent/received on its own initiative -- its
+ * periodic `STATUS` poll against an open robot session, per
+ * `wsMessages.ts`) onto the `LogEntry` it appends, verbatim and only
+ * when present. This store does no filtering of its own on `origin` --
+ * every line the host forwards is still appended to the log and counted
+ * against `MAX_LINES_PER_DEVICE` exactly as before; `DeviceConsole`
+ * decides, at render time, whether a `"poll"`-origin entry is currently
+ * shown.
  */
 import {
   createContext,
@@ -130,17 +141,25 @@ export interface LogEntry {
   id: number;
   direction: "tx" | "rx";
   line: string;
-  /** Present (`"host"`) only for an entry synthesized from a host
-   * `type: "error"` message (ticket 012-003) -- absent for an ordinary
-   * `line` message, device- or user-originated alike. `direction` is
-   * still `"rx"` for a host error (it arrives at the client, same as a
-   * device reply, and no fourth `direction` value is warranted just for
-   * this), so `origin` is what `DeviceConsole` checks to force the
-   * "error" kind styling regardless of the message text -- a host
-   * error's wording (e.g. "no open link") does not necessarily start
-   * with "err"/"nack", so relying on `classifyLine`'s text sniffing
-   * alone would misclassify most of them as ordinary `data`. */
-  origin?: "host";
+  /** `"host"` for an entry synthesized from a host `type: "error"`
+   * message (ticket 012-003); `"poll"` for an ordinary `line` message
+   * the host itself marked `origin: "poll"` (added out-of-process,
+   * 2026-09-09) -- the host's own periodic `STATUS` poll against an open
+   * robot session, carried through verbatim from `LineMessage.origin`
+   * (see `wsMessages.ts`'s own doc comment) rather than re-derived here.
+   * Absent for an ordinary user-originated `line` message. `direction`
+   * is still `"rx"` for both a host error and a poll reply (each arrives
+   * at the client the same way a device reply does, and no extra
+   * `direction` value is warranted just for this), so `origin` is what a
+   * consumer checks instead: `DeviceConsole` forces the "error" kind
+   * styling for `"host"` regardless of the message text (a host error's
+   * wording, e.g. "no open link", does not necessarily start with
+   * "err"/"nack", so `classifyLine`'s text sniffing alone would
+   * misclassify most of them as ordinary `data`), and hides a `"poll"`
+   * entry from the log by default (still retained in the store -- see
+   * `DeviceConsole.tsx`'s own doc comment; filtering is presentation
+   * only). */
+  origin?: "host" | "poll";
 }
 
 /** Maximum lines retained per endpoint in the in-memory log. Oldest
@@ -388,7 +407,17 @@ function pushLogEntry(store: Store, endpointId: string, entry: Omit<LogEntry, "i
 }
 
 function appendLine(store: Store, message: LineMessage): void {
-  pushLogEntry(store, message.endpointId, { direction: message.direction, line: message.line });
+  // `exactOptionalPropertyTypes` forbids `origin: undefined` -- the key
+  // must be absent entirely (not present-with-undefined) when the
+  // incoming message carries none, mirroring `sendCommand`'s own
+  // present/absent handling of `fields` above.
+  pushLogEntry(
+    store,
+    message.endpointId,
+    message.origin !== undefined
+      ? { direction: message.direction, line: message.line, origin: message.origin }
+      : { direction: message.direction, line: message.line },
+  );
 }
 
 /** Append a synthesized log entry for a host `type: "error"` message

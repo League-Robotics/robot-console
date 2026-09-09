@@ -165,6 +165,7 @@ describe("MbserialLink.identify", () => {
       name: "getez",
       serial: 1779042496,
       dialect: "colon",
+      raw: "DEVICE:RADIOBRIDGE:relay:getez:1779042496",
     });
   });
 

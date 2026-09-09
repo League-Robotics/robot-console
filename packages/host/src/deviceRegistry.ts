@@ -254,10 +254,13 @@ import { flash } from "./flash.js";
 import type {
   EndpointListEntry,
   LineDirection,
+  LineOrigin,
   FirmwareKind,
   FirmwareSourceRef,
   FlashPhase,
   RememberedRobotEntry,
+  RobotFunction,
+  RobotStatus,
 } from "./wsMessages.js";
 import { KnownRobotsStore } from "./store/knownRobots.js";
 
@@ -468,6 +471,29 @@ interface EndpointState {
    * task and cleared (success or error) at its end. Reflected into
    * {@link EndpointListEntry.flashStatus} by {@link toEntry}. */
   flashStatus?: { firmware: FirmwareKind; phase: FlashPhase } | undefined;
+  /** OOP 2026-09-09: the most recent parsed `status` reply on the
+   * current session (see {@link parseStatusReply}); also flipped to
+   * `estopped: true` by a bare `estop` reply. Cleared on teardown. */
+  robotStatus?: RobotStatus | undefined;
+  /** OOP 2026-09-09: `funcs` reply lines accumulated since the most
+   * recent `FUNCS` send (which resets this to `[]`). Cleared on
+   * teardown. */
+  functions?: RobotFunction[] | undefined;
+  /** OOP 2026-09-09: the periodic `STATUS` poll behind
+   * {@link EndpointListEntry.robotStatus} -- see
+   * {@link DeviceRegistry.startRobotProbes}. Only ever set for a
+   * robot-classified endpoint with an open session. */
+  statusPollTimer?: ReturnType<typeof setInterval> | undefined;
+  /** True between the poll writing `STATUS` and the next `status`
+   * reply arriving, so that reply can be tagged `origin: "poll"` and
+   * hidden by a console; a user-initiated `STATUS` reply arriving in
+   * that window is tagged the same way, which is harmless. */
+  pollAwaitingStatus?: boolean;
+  /** True while a `HELLO` round trip ({@link DeviceRegistry.resyncSession})
+   * is in flight, so the status poll stays quiet -- a `status` reply
+   * arriving mid-banner-wait would be swallowed by the link's banner
+   * wait anyway. */
+  identifying?: boolean;
 }
 
 function toEntry(state: EndpointState): EndpointListEntry {
@@ -510,7 +536,44 @@ function toEntry(state: EndpointState): EndpointListEntry {
   if (state.flashStatus) {
     entry.flashStatus = state.flashStatus;
   }
+  if (state.robotStatus) {
+    entry.robotStatus = state.robotStatus;
+  }
+  if (state.functions) {
+    entry.functions = state.functions;
+  }
   return entry;
+}
+
+/** Parse a `status k=v ...` reply's fields (robot firmware
+ * `wire_handler.cpp` `execStatus`) into a {@link RobotStatus}. The
+ * named booleans come from the `flags=<hex>` bitfield per
+ * `wire_adapter.h` (bit0 ready, bit1 estopped, bit2 stall-halted, bit3
+ * lease-expired); `active` is the firmware's own `active=` key. A field
+ * with no `=` is kept under its own text with an empty value rather
+ * than dropped, so nothing the robot said is lost. */
+export function parseStatusReply(fields: readonly string[], now: number = Date.now()): RobotStatus {
+  const map: Record<string, string> = {};
+  for (const field of fields) {
+    const eq = field.indexOf("=");
+    if (eq === -1) {
+      map[field] = "";
+    } else {
+      map[field.slice(0, eq)] = field.slice(eq + 1);
+    }
+  }
+  const flagsText = map["flags"];
+  const flags = flagsText !== undefined ? Number.parseInt(flagsText, 16) : Number.NaN;
+  const bit = (n: number): boolean => Number.isFinite(flags) && (flags & (1 << n)) !== 0;
+  return {
+    receivedAt: now,
+    fields: map,
+    ready: Number.isFinite(flags) ? bit(0) : map["ready"] === "1",
+    active: map["active"] === "1",
+    estopped: bit(1),
+    stallHalted: bit(2),
+    leaseExpired: bit(3),
+  };
 }
 
 /** Reconstruct a received line's raw wire text from its decoded form,
@@ -537,7 +600,12 @@ function reconstructLineText(decoded: DecodedLine): string {
 // ---------------------------------------------------------------------
 
 export type DevicesListener = (endpoints: EndpointListEntry[]) => void;
-export type LineListener = (endpointId: string, direction: LineDirection, line: string) => void;
+export type LineListener = (
+  endpointId: string,
+  direction: LineDirection,
+  line: string,
+  origin?: LineOrigin,
+) => void;
 export type RegistryErrorListener = (endpointId: string | undefined, message: string) => void;
 /** Notified once per {@link FlashPhase} as a `requestFlash` task
  * advances -- mirrors {@link LineListener}'s per-event shape rather
@@ -624,7 +692,20 @@ export interface DeviceRegistryOptions {
    * `recordSighting`, `forget`), so no test needs a real filesystem to
    * exercise the write gate/projection/forget action below. */
   knownRobotsStore?: KnownRobotsStore;
+  /** OOP 2026-09-09: how often the host polls `STATUS` on an open
+   * robot session to keep {@link EndpointListEntry.robotStatus} fresh.
+   * `0` disables the poll entirely. Default
+   * {@link DEFAULT_STATUS_POLL_INTERVAL_MS}. */
+  statusPollIntervalMs?: number;
+  /** OOP 2026-09-09: whether to send `FUNCS` automatically once a robot
+   * identifies, so {@link EndpointListEntry.functions} is populated
+   * without a user pressing the button. Default `true`. */
+  autoRequestFunctions?: boolean;
 }
+
+/** Default period of the host's own `STATUS` poll on an open robot
+ * session (see {@link DeviceRegistryOptions.statusPollIntervalMs}). */
+export const DEFAULT_STATUS_POLL_INTERVAL_MS = 5000;
 
 /**
  * Live registry of attached devices, their resolved identity/
@@ -645,6 +726,8 @@ export class DeviceRegistry {
   private readonly consumeUploadFn: (uploadId: string) => Buffer | undefined;
   private readonly reidentifyTimeoutMs: number;
   private readonly knownRobotsStore: KnownRobotsStore;
+  private readonly statusPollIntervalMs: number;
+  private readonly autoRequestFunctions: boolean;
   private readonly mutex = new KeyedMutex();
   private readonly states = new Map<string, EndpointState>();
   private unsubscribeWatcher: (() => void) | undefined;
@@ -666,6 +749,8 @@ export class DeviceRegistry {
     this.consumeUploadFn = options.consumeUpload ?? (() => undefined);
     this.reidentifyTimeoutMs = options.reidentifyTimeoutMs ?? DEFAULT_REIDENTIFY_TIMEOUT_MS;
     this.knownRobotsStore = options.knownRobotsStore ?? new KnownRobotsStore();
+    this.statusPollIntervalMs = options.statusPollIntervalMs ?? DEFAULT_STATUS_POLL_INTERVAL_MS;
+    this.autoRequestFunctions = options.autoRequestFunctions ?? true;
   }
 
   /** Start watching for devices. Idempotent-ish in practice (callers
@@ -991,12 +1076,19 @@ export class DeviceRegistry {
         await this.resyncSession(state, endpointId);
         return;
       }
+      if (verb.toUpperCase() === "FUNCS") {
+        this.dispatchFuncs(state);
+        return;
+      }
       try {
-        if (isSequencedVerb(verb)) {
-          state.session.link.sendCommand(verb, fields);
-        } else {
-          state.session.link.sendUnsequenced(verb, fields);
-        }
+        // OOP 2026-09-09: echo what was actually written (the encoded
+        // line, id included) back through onLine as a `tx` line, exactly
+        // as sendLine does -- button-sent commands used to leave no
+        // trace in the console, only their replies.
+        const line = isSequencedVerb(verb)
+          ? state.session.link.sendCommand(verb, fields)
+          : state.session.link.sendUnsequenced(verb, fields);
+        this.emitLine(endpointId, "tx", line.replace(/\n$/, ""));
       } catch (error) {
         this.emitError(endpointId, error instanceof Error ? error.message : String(error));
       }
@@ -1336,7 +1428,7 @@ export class DeviceRegistry {
     state.session = {
       link,
       unsubscribeLine: link.onLine((decoded) => {
-        this.emitLine(state.endpointId, "rx", reconstructLineText(decoded));
+        this.handleInboundLine(state, decoded);
       }),
       // Sprint 6 ticket 003: re-emit a snapshot on every ack/nack so a
       // corrected seq/pendingCount reaches connected clients promptly --
@@ -1361,8 +1453,10 @@ export class DeviceRegistry {
 
     // One retry on a null identify, per the ticket's acceptance
     // criteria: identify() is called at most twice total.
+    this.emitLine(state.endpointId, "tx", "HELLO");
     let banner = await identifyWithTimeout(link, this.reidentifyTimeoutMs);
     if (banner === null) {
+      this.emitLine(state.endpointId, "tx", "HELLO");
       banner = await identifyWithTimeout(link, this.reidentifyTimeoutMs);
     }
 
@@ -1371,10 +1465,12 @@ export class DeviceRegistry {
       // now-orphaned state via the detach path) owns closing it.
       return;
     }
+    this.echoBanner(state, banner);
 
     const classification = classifyBanner(banner);
     if (banner) {
       this.succeedFlash(state, endpointId, source, classification, state.name);
+      this.startRobotProbes(state);
     } else {
       this.succeedFlash(state, endpointId, source, classification, state.name, "timeout");
     }
@@ -1511,7 +1607,7 @@ export class DeviceRegistry {
     state.session = {
       link,
       unsubscribeLine: link.onLine((decoded) => {
-        this.emitLine(state.endpointId, "rx", reconstructLineText(decoded));
+        this.handleInboundLine(state, decoded);
       }),
       // Sprint 6 ticket 003: re-emit a snapshot on every ack/nack so a
       // corrected seq/pendingCount reaches connected clients promptly --
@@ -1537,12 +1633,18 @@ export class DeviceRegistry {
     // identify() never throws -- a silent board (never replies to
     // HELLO) resolves null here rather than hanging or rejecting; the
     // session above is already established either way.
+    // OOP 2026-09-09: the HELLO and its banner reply are echoed into
+    // the console like any other traffic -- identify() consumes the
+    // banner itself (it never reaches the link's line listeners), so
+    // without this the session's first exchange was invisible.
+    this.emitLine(state.endpointId, "tx", "HELLO");
     const banner = await link.identify();
     if (this.states.get(state.endpointId) !== state) {
       // Removed while identifying -- teardownLink (already run for the
       // now-orphaned state via the detach path) owns closing it.
       return;
     }
+    this.echoBanner(state, banner);
     // classification (and the role/type it carries) is derived from
     // this banner alone -- see EndpointState's own doc comment for why
     // there is no separate `role` field to keep in sync here.
@@ -1560,6 +1662,148 @@ export class DeviceRegistry {
     // relay-mediated identify (neither exists yet this sprint).
     this.maybeRecordKnownRobot(state);
     this.emitDevices();
+    this.startRobotProbes(state);
+  }
+
+  /**
+   * OOP 2026-09-09: everything inbound on an open session funnels
+   * through here. Every line is still echoed to {@link onLine} (a
+   * console must see all traffic); on top of that, three reply verbs
+   * are harvested into per-endpoint state for {@link toEntry}:
+   *   - `status` -> {@link EndpointState.robotStatus} (parsed via
+   *     {@link parseStatusReply}); tagged `origin: "poll"` when it
+   *     answers the host's own poll.
+   *   - `estop` (the `ESTOP` verb's own reply) -> `robotStatus.estopped`
+   *     flips `true` immediately, ahead of the next poll confirming it.
+   *   - `funcs <name> [signature]` -> appended to
+   *     {@link EndpointState.functions}.
+   */
+  private handleInboundLine(state: EndpointState, decoded: DecodedLine): void {
+    const text = reconstructLineText(decoded);
+    if (decoded.verb === "status") {
+      let origin: LineOrigin | undefined;
+      if (state.pollAwaitingStatus) {
+        state.pollAwaitingStatus = false;
+        origin = "poll";
+      }
+      state.robotStatus = parseStatusReply(decoded.fields);
+      this.emitLine(state.endpointId, "rx", text, origin);
+      this.emitDevices();
+      return;
+    }
+    if (decoded.verb === "estop") {
+      const previous = state.robotStatus;
+      state.robotStatus = {
+        receivedAt: Date.now(),
+        fields: previous?.fields ?? {},
+        ready: previous?.ready ?? false,
+        active: false,
+        estopped: true,
+        stallHalted: previous?.stallHalted ?? false,
+        leaseExpired: previous?.leaseExpired ?? false,
+      };
+      this.emitLine(state.endpointId, "rx", text);
+      this.emitDevices();
+      return;
+    }
+    if (decoded.verb === "funcs") {
+      const name = decoded.fields[0];
+      if (name !== undefined && name.length > 0) {
+        const fn: RobotFunction = { name };
+        const signature = decoded.fields.slice(1).join(" ");
+        if (signature.length > 0) {
+          fn.signature = signature;
+        }
+        state.functions = [...(state.functions ?? []), fn];
+      }
+      this.emitLine(state.endpointId, "rx", text);
+      this.emitDevices();
+      return;
+    }
+    this.emitLine(state.endpointId, "rx", text);
+  }
+
+  /** Echo a `HELLO` banner reply into the console (see
+   * {@link connectAndIdentify}). A `null` banner echoes nothing -- the
+   * caller reports the timeout in its own words. */
+  private echoBanner(state: EndpointState, banner: ParsedBanner | null): void {
+    if (!banner) {
+      return;
+    }
+    const text = banner.raw ?? `${banner.role} ${banner.commonName} ${banner.name} ${banner.serial}`;
+    this.emitLine(state.endpointId, "rx", text);
+  }
+
+  /**
+   * OOP 2026-09-09: once a session identifies as a robot, the host
+   * itself keeps two things current without the user asking: it sends
+   * `FUNCS` once (so the function list is there when the page opens),
+   * and it polls `STATUS` every {@link DeviceRegistryOptions.statusPollIntervalMs}
+   * (so `robotStatus` -- and in particular the e-stop latch -- is
+   * visible and stays fresh). Both are no-ops for a non-robot
+   * classification. Idempotent: restarts the poll if one was running.
+   */
+  private startRobotProbes(state: EndpointState): void {
+    this.stopRobotProbes(state);
+    if (!this.isLive(state) || !state.sessionOpen || !state.session) {
+      return;
+    }
+    if (state.classification.type !== "robot") {
+      return;
+    }
+    if (this.autoRequestFunctions) {
+      this.dispatchFuncs(state);
+    }
+    if (this.statusPollIntervalMs > 0) {
+      this.pollStatus(state);
+      const timer = setInterval(() => this.pollStatus(state), this.statusPollIntervalMs);
+      // Never keep the process alive just for a poll.
+      timer.unref?.();
+      state.statusPollTimer = timer;
+    }
+  }
+
+  private stopRobotProbes(state: EndpointState): void {
+    if (state.statusPollTimer) {
+      clearInterval(state.statusPollTimer);
+      state.statusPollTimer = undefined;
+    }
+    state.pollAwaitingStatus = false;
+  }
+
+  /** One `STATUS` on the host's own initiative, tagged `origin:
+   * "poll"` on the tx side (and, via {@link EndpointState.pollAwaitingStatus},
+   * on the matching `status` reply). Quiet while a `HELLO` round trip
+   * is in flight. Reports (never throws) a failed write. */
+  private pollStatus(state: EndpointState): void {
+    if (!this.isLive(state) || !state.sessionOpen || !state.session || state.identifying) {
+      return;
+    }
+    try {
+      const line = state.session.link.sendUnsequenced("STATUS");
+      state.pollAwaitingStatus = true;
+      this.emitLine(state.endpointId, "tx", line.replace(/\n$/, ""), "poll");
+    } catch (error) {
+      this.emitError(state.endpointId, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /** Send `FUNCS` (sequenced -- see `SEQUENCED_VERBS`) and reset the
+   * accumulated function list so the reply lines rebuild it from
+   * scratch. Shared by {@link sendCommand} (a user pressing the
+   * button) and {@link startRobotProbes} (the automatic request). */
+  private dispatchFuncs(state: EndpointState): void {
+    if (!state.session) {
+      return;
+    }
+    state.functions = [];
+    this.emitDevices();
+    try {
+      const line = state.session.link.sendCommand("FUNCS");
+      this.emitLine(state.endpointId, "tx", line.replace(/\n$/, ""));
+    } catch (error) {
+      this.emitError(state.endpointId, error instanceof Error ? error.message : String(error));
+    }
   }
 
   /**
@@ -1609,12 +1853,19 @@ export class DeviceRegistry {
     if (!link) {
       return;
     }
+    // OOP 2026-09-09: echo the HELLO and its banner reply into the
+    // console -- identify() consumes the banner itself, so without
+    // this a successful resync looked like "the button did nothing".
+    state.identifying = true;
+    this.emitLine(endpointId, "tx", "HELLO");
     const banner = await link.identify();
+    state.identifying = false;
     if (!this.isLive(state) || !state.session) {
       // Device removed, or its session torn down, while the resync was
       // in flight -- nothing left here to update.
       return;
     }
+    this.echoBanner(state, banner);
     state.desyncNotified = false;
     this.emitDevices();
     if (!banner) {
@@ -1626,6 +1877,7 @@ export class DeviceRegistry {
   }
 
   private handleLinkError(state: EndpointState, err: Error): void {
+    this.stopRobotProbes(state);
     // Note: this deliberately leaves `state.session` in place even
     // though `sessionOpen` flips false immediately -- see
     // EndpointState.sessionOpen's own doc comment for why. Only
@@ -1638,6 +1890,9 @@ export class DeviceRegistry {
   }
 
   private async teardownLink(state: EndpointState): Promise<void> {
+    this.stopRobotProbes(state);
+    state.robotStatus = undefined;
+    state.functions = undefined;
     state.session?.unsubscribeLine();
     state.session?.unsubscribeAckNack();
     state.session?.unsubscribeError();
@@ -1658,9 +1913,13 @@ export class DeviceRegistry {
     }
   }
 
-  private emitLine(endpointId: string, direction: LineDirection, line: string): void {
+  private emitLine(endpointId: string, direction: LineDirection, line: string, origin?: LineOrigin): void {
     for (const listener of this.lineListeners) {
-      listener(endpointId, direction, line);
+      if (origin) {
+        listener(endpointId, direction, line, origin);
+      } else {
+        listener(endpointId, direction, line);
+      }
     }
   }
 

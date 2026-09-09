@@ -42,6 +42,19 @@
  * moving — that is a hardware-verified safety claim, checked separately
  * against real hardware, and is never checked off by this component's
  * own test suite (see `sprint.md`'s Success Criteria).
+ *
+ * **Clear E-STOP (added out-of-process, 2026-09-09).** Once the robot's
+ * status reply reports its e-stop latch as engaged
+ * (`device.robotStatus?.estopped`, from `wsMessages.ts`'s `RobotStatus`
+ * -- the host polls `STATUS` on its own, so this refreshes without this
+ * component asking), a second button renders next to E-STOP: `SET
+ * estop_clear 1` (sequenced) to release the latch, immediately followed
+ * by a one-shot `STATUS` so the panel's own state reflects the clear
+ * without waiting for the host's next poll tick. Both are ordinary
+ * `sendCommand` calls, same seam as `ESTOP` itself. Hidden entirely
+ * (not just disabled) while `estopped` is not `true` -- there is nothing
+ * to clear, and showing it regardless would invite a confusing no-op
+ * press.
  */
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
 import { useWsActions } from "../ws/WsProvider";
@@ -67,6 +80,20 @@ export function EstopControl({ device }: EstopControlProps) {
       >
         E-STOP
       </button>
+      {device.robotStatus?.estopped === true && (
+        <button
+          type="button"
+          className="estop-control-clear-button"
+          data-testid="estop-clear-button"
+          disabled={!linkOpen}
+          onClick={() => {
+            sendCommand(endpointId, "SET", ["estop_clear", "1"]);
+            sendCommand(endpointId, "STATUS");
+          }}
+        >
+          Clear E-STOP
+        </button>
+      )}
       {!linkOpen && (
         <p className="estop-control-hint" role="status">
           No link open — there is nothing to stop.

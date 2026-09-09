@@ -68,6 +68,17 @@
  * hasn't reported yet) can still be typed and sent via GET or SET.
  * Host `type: "error"` log entries (`origin: "host"`) are excluded from
  * harvesting; they are not device-sourced `get` replies.
+ *
+ * **FUNCS (added out-of-process, 2026-09-09).** A `FUNCS` button sits
+ * after `STATUS`, sending the bare verb with no fields via the same
+ * plain `sendCommand` path as `HELLO`/`ID`/`VER`/`STATUS` -- `FUNCS` is
+ * not in `SEQUENCED_VERBS` either. The host resets
+ * `EndpointListEntry.functions` to `[]` on send and appends one entry
+ * per `funcs <name> [signature]` reply line (see `wsMessages.ts`'s
+ * `RobotFunction`); this button only fires the request. Rendering the
+ * resulting list is `FunctionsPanel`'s job, not this component's --
+ * consistent with this component never rendering a reply area of its
+ * own.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
@@ -198,6 +209,15 @@ export function CommandStrip({ device }: CommandStripProps) {
           onClick={() => sendCommand(endpointId, "STATUS")}
         >
           STATUS
+        </button>
+        <button
+          type="button"
+          className="command-strip-button"
+          data-testid="command-strip-funcs"
+          disabled={!linkOpen}
+          onClick={() => sendCommand(endpointId, "FUNCS")}
+        >
+          FUNCS
         </button>
       </div>
 

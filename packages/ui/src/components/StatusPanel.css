@@ -1,0 +1,101 @@
+/* Deliberately not ".status-panel" -- see StatusPanel.tsx's doc comment
+ * on why that class name is reserved (a regression guard in
+ * RobotPage.test.tsx checks it stays absent from the page). */
+.robot-status-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.status-panel-state {
+  margin: 0;
+  padding: 0.4rem 0.75rem;
+  border-radius: 0.4rem;
+  background: var(--rc-surface);
+  border: 1px solid var(--rc-border);
+  color: var(--rc-text);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  font-size: 0.95rem;
+}
+
+/* E-STOPPED gets the same strong danger treatment EstopControl.css uses
+ * for its own button, so this headline reads as urgent no matter which
+ * panel a student happens to be looking at. */
+.status-panel-state-danger {
+  background: var(--rc-danger-bg);
+  border-color: var(--rc-danger-border);
+  color: var(--rc-danger-contrast);
+}
+
+.status-panel-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 0.9rem;
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  border-radius: 0.4rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+}
+
+.status-panel-field {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  margin: 0;
+}
+
+.status-panel-field dt {
+  color: var(--rc-text-muted);
+}
+
+.status-panel-field dd {
+  margin: 0;
+  color: var(--rc-text);
+  font-weight: 600;
+}
+
+.status-panel-updated {
+  margin: 0;
+  color: var(--rc-text-muted);
+  font-size: 0.78rem;
+}
+
+.status-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.status-panel-button {
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.35rem 0.9rem;
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.status-panel-button:disabled {
+  color: var(--rc-text-muted);
+  cursor: not-allowed;
+}
+
+.status-panel-button-danger {
+  border-color: var(--rc-danger-border);
+  color: var(--rc-danger-text);
+  font-weight: 600;
+}
+
+.status-panel-button-danger:hover:not(:disabled) {
+  background: var(--rc-warn-bg);
+}
+
+.status-panel-button-danger:disabled {
+  border-color: var(--rc-border);
+  color: var(--rc-text-muted);
+}

@@ -36,6 +36,23 @@
  * styling as a device-sent `err`/`nack` line, forced regardless of the
  * message text -- see the render loop below and `LogEntry`'s own doc
  * comment.
+ *
+ * **Poll traffic hidden by default (added out-of-process, 2026-09-09).**
+ * A `LogEntry` with `origin: "poll"` (the host's own periodic `STATUS`
+ * poll against an open robot session -- see `wsMessages.ts`'s
+ * `LineMessage.origin`) is filtered out of what this component renders
+ * unless the "Show status polls" toggle (`data-testid=
+ * "console-show-polls"`) is checked. This is presentation-only: every
+ * poll line the host forwards is still appended to `WsProvider`'s store
+ * and counted against `MAX_LINES_PER_DEVICE` exactly like any other
+ * line (unlike this earlier version of the doc comment, which claimed
+ * nothing here is ever hidden -- that was true before this addition and
+ * remains true of the *store*, just no longer of this component's
+ * render output). Toggling the checkbox never re-sends anything and
+ * never mutates the store; it only changes which already-retained
+ * entries this render pass includes. A shown poll line gets the
+ * `console-line-origin-poll` class (`DeviceConsole.css`) so it reads as
+ * muted/secondary next to ordinary traffic once revealed.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
@@ -91,6 +108,7 @@ export function DeviceConsole({ device }: DeviceConsoleProps) {
   const [autoScroll, setAutoScroll] = useState(true);
   const [pending, setPending] = useState(false);
   const [draft, setDraft] = useState("");
+  const [showPolls, setShowPolls] = useState(false);
   const logRef = useRef<HTMLDivElement | null>(null);
   const cooldownTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -98,6 +116,10 @@ export function DeviceConsole({ device }: DeviceConsoleProps) {
   // subscribed independently of which page is currently mounted -- so
   // navigating away and back never drops a line (SUC-007).
   const log = useEndpointLog(endpointId);
+
+  // Presentation-only filter -- every entry stays in `WsProvider`'s
+  // store regardless of `showPolls`; see this module's doc comment.
+  const visibleLog = showPolls ? log : log.filter((entry) => entry.origin !== "poll");
 
   useEffect(() => {
     return () => {
@@ -111,7 +133,7 @@ export function DeviceConsole({ device }: DeviceConsoleProps) {
     if (autoScroll && logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight;
     }
-  }, [log, autoScroll]);
+  }, [visibleLog, autoScroll]);
 
   const linkOpen = device.sessionOpen;
   const sendDisabled = !linkOpen || pending;
@@ -152,6 +174,15 @@ export function DeviceConsole({ device }: DeviceConsoleProps) {
         >
           Clear log
         </button>
+        <label className="console-toggle">
+          <input
+            type="checkbox"
+            data-testid="console-show-polls"
+            checked={showPolls}
+            onChange={(event) => setShowPolls(event.target.checked)}
+          />
+          Show status polls
+        </label>
       </div>
 
       {!linkOpen && (
@@ -165,13 +196,13 @@ export function DeviceConsole({ device }: DeviceConsoleProps) {
       )}
 
       <div className="console-log" ref={logRef} data-testid="console-log">
-        {log.length === 0 ? (
+        {visibleLog.length === 0 ? (
           <p className="console-log-empty">
             No traffic yet for this device. Send a line below, or wait for the device to speak
             first.
           </p>
         ) : (
-          log.map((entry) => {
+          visibleLog.map((entry) => {
             // `entry.origin === "host"` (ticket 012-003: a host
             // `type: "error"` message routed into this log) forces the
             // existing "error" kind styling instead of running it
@@ -182,12 +213,16 @@ export function DeviceConsole({ device }: DeviceConsoleProps) {
             // as ordinary `data` and make them indistinguishable from a
             // line the device itself sent.
             const kind = entry.origin === "host" ? "error" : classifyLine(entry.line);
+            const isPoll = entry.origin === "poll";
             return (
               <div
                 key={entry.id}
-                className={`console-line console-line-${entry.direction} console-line-kind-${kind}`}
+                className={`console-line console-line-${entry.direction} console-line-kind-${kind}${
+                  isPoll ? " console-line-origin-poll" : ""
+                }`}
                 data-testid={`console-line-${entry.direction}`}
                 data-host-error={entry.origin === "host" ? "true" : undefined}
+                data-origin-poll={isPoll ? "true" : undefined}
               >
                 <span className="console-line-direction" aria-hidden="true">
                   {entry.origin === "host" ? "⚠" : entry.direction === "tx" ? "»" : "«"}

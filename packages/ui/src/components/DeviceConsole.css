@@ -39,6 +39,16 @@
   color: var(--rc-text-muted);
 }
 
+.console-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--rc-text-muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+  user-select: none;
+}
+
 .console-hint {
   margin: 0;
   padding: 0.5rem 0.75rem;
@@ -125,6 +135,16 @@
 .console-line-kind-error {
   color: var(--rc-danger-text);
   font-weight: 600;
+}
+
+/* Status-poll traffic (LogEntry.origin === "poll"), shown only when the
+ * "Show status polls" toggle is checked -- muted relative to every kind
+ * above so it reads as background/secondary next to ordinary traffic
+ * once revealed. Layered on top of a `console-line-kind-*` class, never
+ * replacing it. */
+.console-line-origin-poll {
+  color: var(--rc-text-muted);
+  opacity: 0.7;
 }
 
 .console-log-note {

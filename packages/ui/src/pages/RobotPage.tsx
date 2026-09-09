@@ -14,12 +14,17 @@
  * anything was ever sent. Sprint 012's ticket 005 (this revision)
  * replaces that layout:
  *
- * - **Left column**: `DriveControls` (unchanged, `WHEELS_V`-only per
+ * - **Left column**: `StatusPanel` (added out-of-process, 2026-09-09 --
+ *   the robot's parsed `status` reply, mounted first so a student sees
+ *   the robot's own state before reaching for drive controls),
+ *   `DriveControls` (unchanged, `WHEELS_V`-only per
  *   `vendor/radio-robot-lib/docs/design/motion-api.md`),
  *   `SequencingIndicator` (unchanged, read-only view of `Session`'s
- *   reliability state), and a stubbed, empty charts placeholder --
- *   charts themselves are future work (`sprint.md`'s Scope), this
- *   column only reserves and labels their eventual spot.
+ *   reliability state), `FunctionsPanel` (added out-of-process,
+ *   2026-09-09 -- the robot's `FUNCS`-discovered, `RUN`-able function
+ *   list, mounted below Sequencing), and a stubbed, empty charts
+ *   placeholder -- charts themselves are future work (`sprint.md`'s
+ *   Scope), this column only reserves and labels their eventual spot.
  * - **Right column**: exactly one `DeviceConsole`, sized to fill the
  *   column's available height (`RobotPage.css` overrides
  *   `DeviceConsole`'s own fixed `max-height` scoped to this column
@@ -82,7 +87,9 @@ import { CommandStrip } from "../components/CommandStrip";
 import { DeviceConsole } from "../components/DeviceConsole";
 import { DriveControls } from "../components/DriveControls";
 import { EstopControl } from "../components/EstopControl";
+import { FunctionsPanel } from "../components/FunctionsPanel";
 import { SequencingIndicator } from "../components/SequencingIndicator";
+import { StatusPanel } from "../components/StatusPanel";
 import "./RobotPage.css";
 
 export interface RobotPageProps {
@@ -99,6 +106,11 @@ export function RobotPage({ endpoint }: RobotPageProps) {
       <div className="robot-page-columns">
         <div className="robot-page-column robot-page-column-left">
           <div className="robot-page-panel">
+            <h3>Status</h3>
+            <StatusPanel device={endpoint} />
+          </div>
+
+          <div className="robot-page-panel">
             <h3>Drive</h3>
             <DriveControls device={endpoint} />
           </div>
@@ -106,6 +118,11 @@ export function RobotPage({ endpoint }: RobotPageProps) {
           <div className="robot-page-panel">
             <h3>Sequencing</h3>
             <SequencingIndicator endpointId={endpoint.endpointId} />
+          </div>
+
+          <div className="robot-page-panel">
+            <h3>Functions</h3>
+            <FunctionsPanel device={endpoint} />
           </div>
 
           <div className="robot-page-panel robot-page-charts-placeholder" aria-label="Charts">

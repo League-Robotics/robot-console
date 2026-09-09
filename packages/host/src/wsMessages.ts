@@ -273,6 +273,48 @@ export interface EndpointListEntry {
    * own doc comment. Present only when {@link transport} is `"usb"`,
    * which is every endpoint that exists this sprint. */
   usb?: UsbEndpointIdentity;
+  /** The most recent parsed `status` reply from this endpoint (added
+   * out-of-process, 2026-09-09) -- see {@link RobotStatus}. Present
+   * once any `status` (or bare `estop`) reply has been seen on the
+   * current session; cleared when the session closes. The host polls
+   * `STATUS` itself on an open robot session, so this stays fresh
+   * without the client asking. */
+  robotStatus?: RobotStatus;
+  /** The robot's `RUN`-able function list as reported by its `funcs
+   * <name> [signature]` reply lines to the most recent `FUNCS` (added
+   * out-of-process, 2026-09-09). Reset to `[]` every time a `FUNCS` is
+   * sent, then grows one entry per reply line, so a client sees the
+   * list fill in. Absent until the first `FUNCS` of the session. */
+  functions?: RobotFunction[];
+}
+
+/** A parsed `status k=v ...` reply (robot firmware `wire_handler.cpp`
+ * `execStatus`). `fields` is every `k=v` pair verbatim, order-free;
+ * the named booleans are derived host-side from the `flags=<hex>`
+ * bitfield (`wire_adapter.h`: bit0 ready, bit1 estopped, bit2 stall-
+ * halted, bit3 lease-expired) so a client never has to know the bit
+ * layout. `estopped` is also forced `true` the moment a bare `estop`
+ * reply (the `ESTOP` verb's own acknowledgement) is seen, ahead of the
+ * next `status` poll confirming it. */
+export interface RobotStatus {
+  /** `Date.now()` on the host when this was parsed. */
+  receivedAt: number;
+  fields: Record<string, string>;
+  ready: boolean;
+  active: boolean;
+  estopped: boolean;
+  stallHalted: boolean;
+  leaseExpired: boolean;
+}
+
+/** One `funcs <name> [signature]` reply line. `signature` is the
+ * rest of the line after the name when the firmware reports one
+ * (today's firmware omits it -- `captures/funcs-run-acceptance-
+ * 20260907`), so a client must treat its absence as "parameters
+ * unknown", never as "takes none". */
+export interface RobotFunction {
+  name: string;
+  signature?: string;
 }
 
 /** Which way a line is travelling on the shared `"line"` message shape:
@@ -288,7 +330,17 @@ export interface LineMessage {
   endpointId: string;
   direction: LineDirection;
   line: string;
+  /** `"poll"` marks a line the host sent or received on its own
+   * initiative -- the periodic `STATUS` poll behind
+   * {@link EndpointListEntry.robotStatus} -- rather than on behalf of
+   * a user action (added out-of-process, 2026-09-09). Absent for every
+   * other line. A console may hide poll traffic by default; nothing
+   * else should key on it. */
+  origin?: LineOrigin;
 }
+
+/** See {@link LineMessage.origin}. */
+export type LineOrigin = "poll";
 
 /** Client -> server: send one protocol verb, with optional fields, to an
  * endpoint's open session -- the structured alternative to

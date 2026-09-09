@@ -285,6 +285,81 @@ describe("DeviceConsole", () => {
     expect(el.textContent).not.toMatch(/WHEELS_X|WHEELS_V/);
   });
 
+  describe("status-poll traffic hidden by default (added out-of-process, 2026-09-09)", () => {
+    it("hides a poll-origin line by default while still showing ordinary traffic", () => {
+      const { el, socket } = mountConsole(baseDevice());
+
+      act(() => {
+        socket.emitMessage({
+          type: "line",
+          endpointId: "usb-SERIAL-A",
+          direction: "rx",
+          line: "status ready=1",
+          origin: "poll",
+        });
+        socket.emitMessage({
+          type: "line",
+          endpointId: "usb-SERIAL-A",
+          direction: "rx",
+          line: "ack HELLO",
+        });
+      });
+
+      expect(el.textContent).not.toContain("status ready=1");
+      expect(el.textContent).toContain("ack HELLO");
+      expect(el.querySelectorAll('[data-testid="console-line-rx"]').length).toBe(1);
+    });
+
+    it("shows poll-origin lines, muted, once the toggle is checked", () => {
+      const { el, socket } = mountConsole(baseDevice());
+
+      act(() => {
+        socket.emitMessage({
+          type: "line",
+          endpointId: "usb-SERIAL-A",
+          direction: "rx",
+          line: "status ready=1",
+          origin: "poll",
+        });
+      });
+      expect(el.textContent).not.toContain("status ready=1");
+
+      const toggle = el.querySelector<HTMLInputElement>('[data-testid="console-show-polls"]')!;
+      act(() => {
+        toggle.click();
+      });
+
+      expect(el.textContent).toContain("status ready=1");
+      const pollLine = el.querySelector('[data-origin-poll="true"]');
+      expect(pollLine).not.toBeNull();
+      expect(pollLine!.className).toContain("console-line-origin-poll");
+
+      // Toggling back off hides it again -- the entry is never removed
+      // from the underlying log, only from this render pass.
+      act(() => {
+        toggle.click();
+      });
+      expect(el.textContent).not.toContain("status ready=1");
+    });
+
+    it("leaves non-poll lines completely unaffected by the toggle", () => {
+      const { el, socket } = mountConsole(baseDevice());
+
+      act(() => {
+        socket.emitMessage({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: "ack HELLO" });
+      });
+      const toggle = el.querySelector<HTMLInputElement>('[data-testid="console-show-polls"]')!;
+
+      expect(el.textContent).toContain("ack HELLO");
+      act(() => {
+        toggle.click();
+      });
+      expect(el.textContent).toContain("ack HELLO");
+      const line = el.querySelector('[data-testid="console-line-rx"]')!;
+      expect(line.className).not.toContain("console-line-origin-poll");
+    });
+  });
+
   describe("host error messages (ticket 012-003)", () => {
     it("renders a host type: 'error' message in this device's log with the error kind styling, distinct from ordinary rx traffic", () => {
       const { el, socket } = mountConsole(baseDevice());

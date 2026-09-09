@@ -166,6 +166,12 @@ function buildRegistry(link: FakeLink, overrides: DeviceRegistryOptions = {}): D
     watcher,
     resolveName: async () => ({ status: "named", name: "zeguz", deviceId: 1 }),
     createLink: () => link,
+    // The host's own robot probes (OOP 2026-09-09: automatic FUNCS +
+    // periodic STATUS) stay off here so every test below sees exactly
+    // the lines it sent -- they have their own coverage in
+    // deviceRegistry.test.ts.
+    statusPollIntervalMs: 0,
+    autoRequestFunctions: false,
     // Sprint 5: default to an empty, in-memory fake store rather than
     // DeviceRegistry's own default (a real KnownRobotsStore reading
     // this machine's actual ~/.local/state roster) -- without this

@@ -1,0 +1,106 @@
+.functions-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.functions-panel-toolbar {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.functions-panel-button {
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.35rem 0.9rem;
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.functions-panel-button:disabled {
+  color: var(--rc-text-muted);
+  cursor: not-allowed;
+}
+
+.functions-panel-hint {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+  background: var(--rc-warn-bg);
+  border: 1px solid var(--rc-warn-border);
+  color: var(--rc-warn-text);
+  font-size: 0.85rem;
+}
+
+.functions-panel-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.functions-panel-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  border-radius: 0.4rem;
+}
+
+.functions-panel-row-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+  color: var(--rc-text);
+  min-width: 6rem;
+}
+
+.functions-panel-row-args {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  flex: 1;
+}
+
+.functions-panel-arg-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.75rem;
+  color: var(--rc-text-muted);
+}
+
+.functions-panel-row-args input {
+  border: 1px solid var(--rc-border);
+  background: var(--rc-bg);
+  color: var(--rc-text);
+  padding: 0.3rem 0.55rem;
+  border-radius: 0.35rem;
+  font-size: 0.85rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.functions-panel-row-args input:disabled {
+  color: var(--rc-text-muted);
+}
+
+.functions-panel-run-button {
+  border: 1px solid var(--rc-accent);
+  background: var(--rc-accent);
+  color: var(--rc-accent-contrast);
+  padding: 0.35rem 0.9rem;
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.functions-panel-run-button:disabled {
+  background: var(--rc-border);
+  border-color: var(--rc-border);
+  color: var(--rc-text-muted);
+  cursor: not-allowed;
+}

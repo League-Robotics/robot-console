@@ -75,6 +75,9 @@ export interface ParsedBanner {
   serial: number;
   /** Which banner grammar matched. */
   dialect: BannerDialect;
+  /** The banner line exactly as it arrived (no trailing newline), so a
+   * console can show the `HELLO` reply verbatim. */
+  raw: string;
 }
 
 /** Loose serial token: hex digits, since decimal digits are a subset. The
@@ -97,6 +100,7 @@ function buildBanner(
   name: string,
   serialToken: string,
   dialect: BannerDialect,
+  raw: string,
 ): ParsedBanner | null {
   if (!SERIAL_TOKEN.test(serialToken)) {
     return null;
@@ -105,7 +109,7 @@ function buildBanner(
   if (!Number.isFinite(serial)) {
     return null;
   }
-  return { role, commonName, name, serial, dialect };
+  return { role, commonName, name, serial, dialect, raw };
 }
 
 /**
@@ -126,6 +130,7 @@ export function parseBanner(line: string): ParsedBanner | null {
       colonMatch[3]!,
       colonMatch[4]!,
       "colon",
+      line,
     );
   }
 
@@ -138,6 +143,7 @@ export function parseBanner(line: string): ParsedBanner | null {
       spaceMatch[3]!,
       spaceMatch[4]!,
       "space",
+      line,
     );
   }
 

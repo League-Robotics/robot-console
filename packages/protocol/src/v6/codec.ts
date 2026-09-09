@@ -377,6 +377,11 @@ export const REPLY_VERBS: ReadonlySet<string> = new Set([
   "help",
   "debug",
   "device",
+  // `funcs <name> [signature]` -- one line per registered RUN function,
+  // emitted by the robot firmware in reply to `FUNCS #<id>` (added
+  // out-of-process, 2026-09-09; without it these lines classified as
+  // "foreign" and never reached a listener).
+  "funcs",
 ]);
 
 /** Is `verb` one of the wire's own known lowercase reply verbs

@@ -10,6 +10,7 @@ describe("parseBanner", () => {
       name: "getez",
       serial: 1779042496,
       dialect: "colon",
+      raw: "DEVICE:RADIOBRIDGE:relay:getez:1779042496",
     });
   });
 
@@ -24,6 +25,7 @@ describe("parseBanner", () => {
       name: "getez",
       serial: 0x6a0a08c0,
       dialect: "colon",
+      raw: "DEVICE:RADIORELAY:relay:getez:6a0a08c0",
     });
     expect(result?.serial).toBe(1779042496);
   });
@@ -36,6 +38,7 @@ describe("parseBanner", () => {
       name: "vevov",
       serial: 1198504156,
       dialect: "space",
+      raw: "device NEZHA2 robot vevov 1198504156",
     });
   });
 
@@ -55,6 +58,7 @@ describe("parseBanner", () => {
       name: "qzxty",
       serial: 42,
       dialect: "colon",
+      raw: "DEVICE:RADIOTHING2:relay:qzxty:42",
     });
   });
 

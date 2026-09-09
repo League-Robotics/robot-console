@@ -148,6 +148,13 @@ export const SEQUENCED_VERBS: ReadonlySet<string> = new Set([
   "MOVE_V",
   "GO_TO_R",
   "GO_TO_W",
+  // FUNCS (added out-of-process, 2026-09-09): the robot firmware's
+  // `wire_handler.cpp` registers FUNCS with a mandatory `#<id>` -- the
+  // ack is what terminates its variable-length `funcs <name>` reply --
+  // so a bare `FUNCS` with no id is malformed there and draws no reply
+  // at all (verified on hardware: `captures/funcs-run-acceptance-
+  // 20260907`).
+  "FUNCS",
 ]);
 
 /** Is `verb` one of the 11 id-bearing verbs ({@link SEQUENCED_VERBS})?

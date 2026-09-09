@@ -189,6 +189,17 @@ describe("CommandStrip", () => {
     ]);
   });
 
+  it("sends bare FUNCS with no fields", () => {
+    const { el, socket } = mountStrip(baseDevice());
+    socket.sent.length = 0;
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="command-strip-funcs"]')!.click();
+    });
+    expect(socket.sent).toEqual([
+      JSON.stringify({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "FUNCS" }),
+    ]);
+  });
+
   it("sends bare GET (no fields) when the name field is empty", () => {
     const { el, socket } = mountStrip(baseDevice());
     socket.sent.length = 0;
@@ -278,6 +289,7 @@ describe("CommandStrip", () => {
       "command-strip-id",
       "command-strip-ver",
       "command-strip-status",
+      "command-strip-funcs",
       "command-strip-get",
       "command-strip-set",
     ]) {

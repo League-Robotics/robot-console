@@ -286,8 +286,12 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   const unsubscribeDevices = registry.onDevicesChanged((endpoints) => {
     broadcast(buildEndpointsMessage(endpoints));
   });
-  const unsubscribeLine = registry.onLine((endpointId, direction, line) => {
-    broadcast({ type: "line", endpointId, direction, line });
+  const unsubscribeLine = registry.onLine((endpointId, direction, line, origin) => {
+    broadcast(
+      origin
+        ? { type: "line", endpointId, direction, line, origin }
+        : { type: "line", endpointId, direction, line },
+    );
   });
   const unsubscribeError = registry.onError((endpointId, message) => {
     broadcast(endpointId !== undefined ? { type: "error", endpointId, message } : { type: "error", message });

@@ -569,6 +569,18 @@ export interface SessionOpenMessage {
    * name-derived one (the calibration template hardcodes channel 55 /
    * group 114 for every board). Ignored unless `robotName` is set. */
   radio?: { channel: number; group: number };
+  /** Sprint 8 ticket 005: request `deviceRegistry.ts#requestOpen`'s
+   * default-failover candidate list (every remembered/discovered name,
+   * most-recently-seen first -- `buildDefaultFailoverCandidates`)
+   * instead of a single named candidate. Set only when `robotName` is
+   * absent -- `RelayPage`'s Connect action with the dropdown's
+   * placeholder still selected sends exactly `{ type: "session-open",
+   * endpointId, autoRobot: true }`, no `robotName`, no `radio` (a radio
+   * override only makes sense alongside an explicit name). The literal
+   * type `true` (not `boolean`) mirrors {@link FirmwareSourceRef}'s own
+   * discriminated-literal style: `false` has no meaning here distinct
+   * from the field's own absence, so it is never a legal value. */
+  autoRobot?: true;
 }
 
 /** Client -> server: close an open session to an endpoint. Renamed
@@ -785,8 +797,13 @@ export function parseClientMessage(value: unknown): ClientMessage | undefined {
       if (value.robotName !== undefined && !isNonEmptyString(value.robotName)) {
         return undefined;
       }
+      if (value.autoRobot !== undefined && value.autoRobot !== true) {
+        return undefined;
+      }
       if (value.robotName === undefined) {
-        return { type: "session-open", endpointId: value.endpointId };
+        return value.autoRobot === true
+          ? { type: "session-open", endpointId: value.endpointId, autoRobot: true }
+          : { type: "session-open", endpointId: value.endpointId };
       }
       if (value.radio === undefined) {
         return { type: "session-open", endpointId: value.endpointId, robotName: value.robotName };

@@ -10,7 +10,11 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import type { EndpointListEntry, RememberedRobotEntry } from "@robot-console/host/src/wsMessages.js";
+import type {
+  DiscoveredServicesSnapshot,
+  EndpointListEntry,
+  RememberedRobotEntry,
+} from "@robot-console/host/src/wsMessages.js";
 import { nameToRadioAddress } from "@robot-console/protocol";
 import { RelayPage } from "./RelayPage";
 import { AppHeader } from "../components/AppHeader";
@@ -93,9 +97,15 @@ const NO_FIRMWARE_STATUS = {
   robot: { configured: false as const },
 };
 
+const NO_DISCOVERED_SERVICES: DiscoveredServicesSnapshot = { relays: [], robots: [] };
+
 function mountRelayPage(
   endpoint: EndpointListEntry,
-  options: { rememberedRobots?: RememberedRobotEntry[]; endpoints?: EndpointListEntry[] } = {},
+  options: {
+    rememberedRobots?: RememberedRobotEntry[];
+    endpoints?: EndpointListEntry[];
+    discoveredServices?: DiscoveredServicesSnapshot;
+  } = {},
 ): { el: HTMLDivElement; socket: FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
@@ -112,9 +122,31 @@ function mountRelayPage(
       endpoints: options.endpoints ?? [endpoint],
       firmwareStatus: NO_FIRMWARE_STATUS,
       rememberedRobots: options.rememberedRobots ?? [],
+      discoveredServices: options.discoveredServices ?? NO_DISCOVERED_SERVICES,
     });
   });
   return { el, socket: socket! };
+}
+
+/** Re-emit a fresh `endpoints` snapshot on an already-mounted page's
+ * socket -- used to drive a mid-test transition (e.g. a default-failover
+ * attempt's child appearing, or a host error line arriving) without
+ * remounting, since remounting would lose the page's own in-flight
+ * "trying" state. */
+function emitEndpoints(
+  socket: FakeSocket,
+  endpoints: EndpointListEntry[],
+  options: { rememberedRobots?: RememberedRobotEntry[]; discoveredServices?: DiscoveredServicesSnapshot } = {},
+): void {
+  act(() => {
+    socket.emitMessage({
+      type: "endpoints",
+      endpoints,
+      firmwareStatus: NO_FIRMWARE_STATUS,
+      rememberedRobots: options.rememberedRobots ?? [],
+      discoveredServices: options.discoveredServices ?? NO_DISCOVERED_SERVICES,
+    });
+  });
 }
 
 function select(el: HTMLDivElement): HTMLSelectElement {
@@ -180,9 +212,9 @@ describe("RelayPage -- not connected", () => {
     expect(groupInput(el).valueAsNumber).toBe(derived.group);
   });
 
-  it("disables Connect with no selection", () => {
+  it("enables Connect with no selection -- ticket 005: no pick is the default-failover trigger, not a disabled state", () => {
     const { el } = mountRelayPage(relayFixture(), { rememberedRobots: [rememberedRobotFixture("vevav")] });
-    expect(connectButton(el).disabled).toBe(true);
+    expect(connectButton(el).disabled).toBe(false);
   });
 
   it("disables Connect when the relay itself is not attached and no child exists", () => {
@@ -191,6 +223,80 @@ describe("RelayPage -- not connected", () => {
     });
     setSelectValue(select(el), "vevav");
     expect(connectButton(el).disabled).toBe(true);
+  });
+
+  it("clicking Connect with no selection sends session-open with autoRobot: true and no robotName/radio (ticket 005 default failover)", () => {
+    const { el, socket } = mountRelayPage(relayFixture(), { rememberedRobots: [rememberedRobotFixture("vevav")] });
+
+    act(() => {
+      connectButton(el).click();
+    });
+
+    expect(socket.sent).toEqual([
+      JSON.stringify({ type: "session-open", endpointId: "usb-RELAY-A", autoRobot: true }),
+    ]);
+  });
+
+  it("shows a transient 'trying' status while a no-pick Connect is outstanding, cleared once a host error for this relay arrives", () => {
+    const relay = relayFixture();
+    const { el, socket } = mountRelayPage(relay, { rememberedRobots: [rememberedRobotFixture("vevav")] });
+
+    act(() => {
+      connectButton(el).click();
+    });
+    expect(el.querySelector('[data-testid="relay-autoconnecting"]')).not.toBeNull();
+
+    // deviceRegistry.ts's openRobotViaRelay reports failover exhaustion
+    // via emitError -- WsProvider.appendHostError lands that in this
+    // relay's own console log as an origin: "host" entry, which is what
+    // this page actually watches (see RelayPage.tsx's own doc comment).
+    emitEndpoints(socket, [relay]);
+    act(() => {
+      socket.emitMessage({ type: "error", endpointId: relay.endpointId, message: "gave up on every candidate" });
+    });
+
+    expect(el.querySelector('[data-testid="relay-autoconnecting"]')).toBeNull();
+  });
+
+  it("lists discovered-only mbserial names alongside the roster, marked '(on the network)'", () => {
+    const { el } = mountRelayPage(relayFixture(), {
+      rememberedRobots: [rememberedRobotFixture("bavon")],
+      discoveredServices: { relays: [], robots: [{ instanceName: "gopiv", host: "gopiv.local", port: 8760 }] },
+    });
+    const options = Array.from(select(el).options);
+    const texts = options.map((o) => o.textContent);
+    expect(texts).toContain("bavon");
+    expect(texts).toContain("gopiv (on the network)");
+  });
+
+  it("a name in both the roster and discovery is listed once, plain (not marked discovered-only)", () => {
+    const { el } = mountRelayPage(relayFixture(), {
+      rememberedRobots: [rememberedRobotFixture("gopiv")],
+      discoveredServices: { relays: [], robots: [{ instanceName: "gopiv", host: "gopiv.local", port: 8760 }] },
+    });
+    const values = Array.from(select(el).options).map((o) => o.value).filter((v) => v !== "");
+    expect(values).toEqual(["gopiv"]);
+    expect(select(el).textContent).toContain("gopiv");
+    expect(select(el).textContent).not.toContain("gopiv (on the network)");
+  });
+
+  it("never sends anything but session-open, and only after Connect is clicked -- rendering and opening the dropdown sends nothing", () => {
+    const { el, socket } = mountRelayPage(relayFixture(), {
+      rememberedRobots: [rememberedRobotFixture("vevav"), rememberedRobotFixture("bavon")],
+      discoveredServices: { relays: [], robots: [{ instanceName: "gopiv", host: "gopiv.local", port: 8760 }] },
+    });
+
+    setSelectValue(select(el), "vevav");
+    setSelectValue(select(el), "gopiv");
+    setSelectValue(select(el), "");
+
+    expect(socket.sent).toEqual([]);
+
+    act(() => {
+      connectButton(el).click();
+    });
+    expect(socket.sent).toHaveLength(1);
+    expect(JSON.parse(socket.sent[0]!).type).toBe("session-open");
   });
 
   it("editing the address to 55/114 and clicking Connect sends exactly one session-open with those values", () => {
@@ -320,6 +426,63 @@ describe("RelayPage -- connected", () => {
     const alert = el.querySelector('[role="alert"]');
     expect(alert).not.toBeNull();
     expect(alert!.textContent).toContain("robot did not answer HELLO");
+  });
+
+  it("mounts AddressSourceChip above RobotPage, fed from the child's own addressSource/viaRelay/transport", () => {
+    const relay = relayFixture({ sessionOpen: false });
+    const child = childFixture({ addressSource: "local-derived" });
+    const { el } = mountRelayPage(relay, { endpoints: [relay, child] });
+
+    const chip = el.querySelector('[data-testid="address-source-chip"]');
+    expect(chip).not.toBeNull();
+    expect(chip!.textContent).toContain("ch 55 / grp 114");
+    expect(chip!.textContent).toContain("derived (no registry)");
+
+    // "Above RobotPage, never inside it": the chip must precede
+    // RobotPage's own root element in document order, and RobotPage's
+    // markup must not contain it (proving it isn't nested inside).
+    const robotSection = el.querySelector('section.robot-page')!;
+    expect(robotSection.contains(chip)).toBe(false);
+    const position = chip!.compareDocumentPosition(robotSection);
+    expect(Boolean(position & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+  });
+
+  it("marks the chip's registryWasConsidered from whether any _mbrelay._tcp service is currently discovered", () => {
+    const relay = relayFixture({ sessionOpen: false });
+    const child = childFixture({ addressSource: "local-derived" });
+    const { el } = mountRelayPage(relay, {
+      endpoints: [relay, child],
+      discoveredServices: { relays: [{ instanceName: "torture", host: "torture.local", port: 8760 }], robots: [] },
+    });
+
+    const chip = el.querySelector('[data-testid="address-source-chip"]');
+    expect(chip!.getAttribute("data-variant")).toBe("warning");
+    expect(chip!.textContent).toContain("derived (registry unreachable)");
+  });
+
+  it("renders a visible failover trail (two given-up-on candidates, one success) via the chip, not hidden behind a disclosure", () => {
+    const relay = relayFixture({ sessionOpen: false });
+    const child = childFixture({
+      addressSource: "local-derived",
+      failoverTrail: [
+        { name: "zeguz", transport: "relay-radio", reason: "no reply" },
+        { name: "bavon", transport: "relay-radio", reason: "timeout" },
+      ],
+    });
+    const { el } = mountRelayPage(relay, { endpoints: [relay, child] });
+
+    const trail = el.querySelector('[data-testid="address-source-chip-trail"]');
+    expect(trail).not.toBeNull();
+    expect(trail!.textContent).toContain("gave up on zeguz (no reply)");
+    expect(trail!.textContent).toContain("tried bavon (timeout)");
+  });
+
+  it("does not render the chip for an mbserial-transport child (no address-source concept)", () => {
+    const relay = relayFixture({ sessionOpen: false });
+    const child = childFixture({ transport: "mbserial" });
+    const { el } = mountRelayPage(relay, { endpoints: [relay, child] });
+
+    expect(el.querySelector('[data-testid="address-source-chip"]')).toBeNull();
   });
 });
 

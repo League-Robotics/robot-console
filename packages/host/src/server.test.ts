@@ -492,6 +492,29 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
     });
   });
 
+  it("session-open with autoRobot: true forwards an empty target to registry.requestOpen, requesting default failover (sprint 8 ticket 005)", async () => {
+    // deviceRegistry.ts's own default-failover candidate building
+    // (buildDefaultFailoverCandidates) is covered in deviceRegistry.test.ts
+    // -- this test only proves server.ts's wiring: `autoRobot: true` with
+    // no `robotName` reaches registry.requestOpen as an empty target
+    // object (`{}`), the signal that means "use the default-failover
+    // list" rather than "open the endpoint's own plain USB session".
+    const link = new FakeLink(async () => banner());
+    const registry = buildRegistry(link);
+    const requestOpenSpy = vi.spyOn(registry, "requestOpen");
+    server = await startServer({ port: 0, registry, firmwareConfig: NO_FIRMWARE });
+    const connected = await connect(server.url.replace("http://", "ws://"));
+    ws = connected.ws;
+
+    await connected.messages.waitFor((m) => m.type === "endpoints");
+
+    ws.send(JSON.stringify({ type: "session-open", endpointId: "usb-SERIAL-A", autoRobot: true }));
+
+    await vi.waitFor(() => {
+      expect(requestOpenSpy).toHaveBeenCalledWith("usb-SERIAL-A", {});
+    });
+  });
+
   it("session-open with no robotName still forwards to registry.requestOpen with no target argument", async () => {
     const link = new FakeLink(async () => banner());
     const registry = buildRegistry(link);

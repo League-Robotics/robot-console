@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * RobotPage.transportBlind.test.ts — checks the transport-blindness
  * property `sprint.md`'s Architecture Overview requires as a *checked*
@@ -25,8 +26,28 @@
  * entry -- see `tsconfig.json`) rather than `node:fs`, so this test
  * needs no Node-specific type dependency in a package that otherwise
  * targets the browser only.
+ *
+ * **Sprint 8 ticket 005 addition**: the static source scan above proves
+ * nothing relay-specific was *written* into these files, but says
+ * nothing about whether `RobotPage` actually *renders* correctly when
+ * handed an endpoint whose `transport` is one of sprint 8's relay-
+ * mediated values -- the two are independent claims (a page could pass
+ * the source scan yet still crash or render blank for a value the scan
+ * has no way to exercise). The second describe block below closes that
+ * gap: it mounts the real `RobotPage` (via `WsProvider`/`FakeSocket`,
+ * mirroring `RobotPage.test.tsx`'s own harness) against a
+ * `transport: "relay-radio"` endpoint fixture -- exactly the shape
+ * `RelayPage.tsx` hands it for a robot reached through a relay -- and
+ * asserts the same controls a USB fixture would produce actually
+ * appear, with **zero changes to `RobotPage.tsx` or any component it
+ * mounts**. `sprint.md`'s Success Criteria calls this out by name: "the
+ * same `RobotPage.transportBlind.test.ts` source-scan technique...now
+ * also exercised against a relay-transport endpoint fixture."
  */
-import { describe, expect, it } from "vitest";
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, describe, expect, it } from "vitest";
+import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
 import robotPageSource from "./RobotPage.tsx?raw";
 import driveControlsSource from "../components/DriveControls.tsx?raw";
 import commandStripSource from "../components/CommandStrip.tsx?raw";
@@ -34,6 +55,17 @@ import sequencingIndicatorSource from "../components/SequencingIndicator.tsx?raw
 import estopControlSource from "../components/EstopControl.tsx?raw";
 import statusPanelSource from "../components/StatusPanel.tsx?raw";
 import functionsPanelSource from "../components/FunctionsPanel.tsx?raw";
+import { RobotPage } from "./RobotPage";
+import { WsProvider } from "../ws/WsProvider";
+import { FakeSocket } from "../testing/FakeSocket";
+
+// This file is deliberately kept as plain `.ts`, not `.tsx` -- per this
+// module's own doc comment, its identity is "the source-scan file",
+// and every element tree the render-based describe block below needs is
+// built with `createElement` rather than JSX for exactly that reason
+// (esbuild's `.ts` loader does not parse JSX; renaming to `.tsx` was
+// considered and rejected so this file's name -- and the ticket's own
+// reference to it by that exact name -- stays stable).
 
 const FILES_UNDER_TEST: Record<string, string> = {
   "pages/RobotPage.tsx": robotPageSource,
@@ -67,4 +99,75 @@ describe("RobotPage transport-blindness", () => {
       expect(source).not.toMatch(/endpoint\.transport|device\.transport/);
     });
   }
+});
+
+/** A robot reached through a relay -- exactly the endpoint shape
+ * `RelayPage.tsx` synthesizes and hands to `RobotPage` (`viaRelay` set,
+ * no `usb` block, `transport: "relay-radio"`). Mirrors
+ * `RelayPage.test.tsx`'s own `childFixture` and `RobotPage.test.tsx`'s
+ * `robotFixture` shapes, combined -- this file does not import either
+ * (both are test-local to their own files), since duplicating a small
+ * fixture object is cheaper here than adding a shared-test-fixture
+ * module for exactly one caller. */
+function relayTransportRobotFixture(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+  return {
+    endpointId: "usb-RELAY-A-via-vevav",
+    transport: "relay-radio",
+    resourceKey: "usb-RELAY-A",
+    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
+    name: "vevav",
+    role: "NEZHA2",
+    sessionOpen: true,
+    viaRelay: { relayEndpointId: "usb-RELAY-A", robotName: "vevav", channel: 55, group: 114 },
+    ...overrides,
+  };
+}
+
+describe("RobotPage renders correctly for a relay-transport endpoint (sprint 8 ticket 005)", () => {
+  // Companion to the source scan above: proves RobotPage actually
+  // renders its usual controls for a relay-mediated endpoint too, not
+  // just that its source contains no relay-specific branch -- with zero
+  // changes to RobotPage.tsx or any component it mounts (this describe
+  // block only adds a fixture and assertions, on the unmodified
+  // `RobotPage` import above).
+  let container: HTMLDivElement | null = null;
+  let root: Root | null = null;
+
+  afterEach(() => {
+    if (root) {
+      act(() => {
+        root!.unmount();
+      });
+      root = null;
+    }
+    if (container) {
+      container.remove();
+      container = null;
+    }
+  });
+
+  it("renders the usual robot controls (estop, drive, console) for a relay-radio-transport endpoint", () => {
+    const endpoint = relayTransportRobotFixture();
+    let socket: FakeSocket | null = null;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root!.render(
+        createElement(WsProvider, {
+          url: "ws://test/",
+          socketFactory: () => (socket = new FakeSocket()),
+          children: createElement(RobotPage, { endpoint }),
+        }),
+      );
+    });
+    act(() => {
+      socket!.emitOpen();
+    });
+
+    expect(container.querySelector('[data-testid="estop-button"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="drive-forward"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Console"]')).not.toBeNull();
+    expect(container.textContent).toContain("vevav");
+  });
 });

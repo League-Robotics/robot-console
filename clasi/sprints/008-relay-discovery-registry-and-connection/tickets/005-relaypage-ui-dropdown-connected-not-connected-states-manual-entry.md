@@ -1,7 +1,7 @@
 ---
 id: '005'
 title: 'RelayPage UI: dropdown, connected/not-connected states, manual entry'
-status: open
+status: in-progress
 use-cases:
 - SUC-003
 - SUC-004
@@ -64,28 +64,28 @@ finds nothing relay-specific.
 
 ## Acceptance Criteria
 
-- [ ] Not-connected state: dropdown lists roster + discovered names,
+- [x] Not-connected state: dropdown lists roster + discovered names,
       manual channel/group entry available, no registry call is ever
       triggered by rendering or opening the dropdown (assert against a
       fake `WsProvider`/socket that no `resolveRobotAddress`-shaped
       message is sent until "Connect" is actually clicked).
-- [ ] Explicit dropdown pick + Connect sends `session-open` with the
+- [x] Explicit dropdown pick + Connect sends `session-open` with the
       chosen `robotName`.
-- [ ] Connect with no pick sends `session-open` with no `robotName`
+- [x] Connect with no pick sends `session-open` with no `robotName`
       (default failover path).
-- [ ] Connected state renders `<RobotPage>` for the synthesized
+- [x] Connected state renders `<RobotPage>` for the synthesized
       endpoint, with `AddressSourceChip` mounted above it (not inside
       `RobotPage`).
-- [ ] `RobotPage.transportBlind.test.ts`'s source scan, extended to a
+- [x] `RobotPage.transportBlind.test.ts`'s source scan, extended to a
       relay-transport endpoint fixture, still passes with zero changes
       to `RobotPage.tsx` or its child components.
-- [ ] Switching the dropdown selection while connected sends
+- [x] Switching the dropdown selection while connected sends
       `session-close` then `session-open` (two distinct messages, in
       that order) — never a single "retarget" message (none exists).
-- [ ] A failover trail (fixture data: two given-up-on candidates, one
+- [x] A failover trail (fixture data: two given-up-on candidates, one
       success) renders visibly on the page, not hidden behind an
       expand/collapse control by default.
-- [ ] `npm test` and `npm run build` pass.
+- [x] `npm test` and `npm run build` pass.
 
 ## Testing
 

@@ -1,7 +1,7 @@
 ---
 id: '004'
 title: 'DeviceRegistry integration: relay-target endpoint bookkeeping and robot switching'
-status: in-progress
+status: done
 use-cases:
 - SUC-003
 - SUC-004

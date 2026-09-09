@@ -1,7 +1,7 @@
 ---
 id: '006'
 title: Address-source disclosure chip (neutral/warning states)
-status: in-progress
+status: done
 use-cases:
 - SUC-006
 depends-on:

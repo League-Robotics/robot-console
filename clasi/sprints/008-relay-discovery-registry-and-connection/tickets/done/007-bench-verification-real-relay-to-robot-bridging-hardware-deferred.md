@@ -165,9 +165,10 @@ memory):
 - `nezha-robot-template`: HEAD `03d92bf` ("fix: pin nezha-diffdrive
   v1.20260909.2; declare clear/diag after their handlers"), 2 commits
   past tag `v0.20260909.2` (`git describe`: `v0.20260909.2-2-g03d92bf`).
-  No `v0.20260909.4` tag exists in this repo — `git tag -l` tops out at
-  `v0.20260909.2`, so that figure could not be corroborated and is not
-  repeated here.
+  (The local clone's tags were stale when this was first written: after
+  `git fetch --tags`, `git describe --tags origin/master` reports
+  `v0.20260909.4` — the CI release that carries `runSignature()`
+  declarations for all 17 functions, built 2026-09-09 18:41 UTC.)
 - `pxt-nezha-diffdrive` extension: HEAD `6b7a6a2`, `pxt.json` version
   `1.20260909.2`, and the template's own `pxt.json` pins
   `"nezha-diffdrive": "github:League-Robotics/pxt-nezha-diffdrive#v1.20260909.2"`

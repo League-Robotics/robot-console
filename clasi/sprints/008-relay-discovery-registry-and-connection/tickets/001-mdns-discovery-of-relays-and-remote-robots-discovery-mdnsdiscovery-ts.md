@@ -1,7 +1,7 @@
 ---
 id: '001'
 title: mDNS discovery of relays and remote robots (discovery/mdnsDiscovery.ts)
-status: open
+status: done
 use-cases:
 - SUC-001
 depends-on: []
@@ -42,26 +42,26 @@ only the browse+parse module itself, fully testable in isolation).
 
 ## Acceptance Criteria
 
-- [ ] `discovery/mdnsDiscovery.ts` browses both `_mbrelay._tcp` and
+- [x] `discovery/mdnsDiscovery.ts` browses both `_mbrelay._tcp` and
       `_mbserial._tcp` via an injectable backend (default: real
       `bonjour-service`; tests substitute a fully synthetic fake, no
       real multicast socket ever opened in a test).
-- [ ] A `_mbrelay._tcp` record with TXT `registry=8761` parses into a
+- [x] A `_mbrelay._tcp` record with TXT `registry=8761` parses into a
       service record carrying `registryPort: 8761`.
-- [ ] A `_mbrelay._tcp` record with no `registry` TXT field (or an
+- [x] A `_mbrelay._tcp` record with no `registry` TXT field (or an
       unparseable one) parses into a service record with
       `registryPort: undefined` — never a thrown error, never a guessed
       default port.
-- [ ] A `_mbserial._tcp` record parses into a service record whose
+- [x] A `_mbserial._tcp` record parses into a service record whose
       `instanceName` is used directly as the target robot's name — no
       additional lookup or transformation.
-- [ ] A service that disappears from a subsequent fake browse result
+- [x] A service that disappears from a subsequent fake browse result
       (`down`/`remove` event, per whatever the chosen library calls it)
       is removed from the exposed list on the next read.
-- [ ] `bonjour-service` (or the chosen equivalent) is added to
+- [x] `bonjour-service` (or the chosen equivalent) is added to
       `packages/host/package.json`'s `dependencies`, pinned per this
       project's existing version-pinning convention.
-- [ ] `npm test` and `npm run build` pass.
+- [x] `npm test` and `npm run build` pass.
 
 ## Testing
 

@@ -41,7 +41,7 @@ import {
   type AckNackEvent,
   type WireField,
 } from "@robot-console/protocol";
-import type { Link, LineListener, AckNackListener, LinkErrorListener } from "./Link.js";
+import type { Link, LineListener, RawLineListener, AckNackListener, LinkErrorListener } from "./Link.js";
 import { LineReassembler } from "./lineStream.js";
 import { WritePacer, realScheduler, type Scheduler } from "./pacing.js";
 import { LineRouter } from "./LineRouter.js";
@@ -148,6 +148,7 @@ export class MbrelayLink implements Link {
   private readonly lineRouter: LineRouter;
 
   private readonly lineListeners = new Set<LineListener>();
+  private readonly rawLineListeners = new Set<RawLineListener>();
   private readonly ackNackListeners = new Set<AckNackListener>();
   private readonly errorListeners = new Set<LinkErrorListener>();
   private readonly commandPlaneListeners = new Set<(line: string) => void>();
@@ -181,6 +182,7 @@ export class MbrelayLink implements Link {
       onLine: (line) => this.dispatchLine(line),
       onAckNack: (event) => this.dispatchAckNack(event),
       resend: (line) => this.paceWrite(line),
+      onUnrouted: (raw) => this.dispatchRawLine(raw),
     });
   }
 
@@ -367,6 +369,13 @@ export class MbrelayLink implements Link {
     };
   }
 
+  onRawLine(listener: RawLineListener): () => void {
+    this.rawLineListeners.add(listener);
+    return () => {
+      this.rawLineListeners.delete(listener);
+    };
+  }
+
   onAckNack(listener: AckNackListener): () => void {
     this.ackNackListeners.add(listener);
     return () => {
@@ -467,6 +476,12 @@ export class MbrelayLink implements Link {
   private dispatchLine(line: DecodedLine): void {
     for (const listener of this.lineListeners) {
       listener(line);
+    }
+  }
+
+  private dispatchRawLine(raw: string): void {
+    for (const listener of this.rawLineListeners) {
+      listener(raw);
     }
   }
 

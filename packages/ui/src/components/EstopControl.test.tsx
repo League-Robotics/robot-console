@@ -243,3 +243,33 @@ describe("EstopControl Clear E-STOP (added out-of-process, 2026-09-09)", () => {
     expect(button.disabled).toBe(true);
   });
 });
+
+describe("EstopControl STOP (non-latching, added out-of-process, 2026-09-09)", () => {
+  it("sends STOP now on press, and nothing else when the robot has no abort function", () => {
+    const { el, socket } = mountControl(baseDevice());
+    socket.sent.length = 0;
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="stop-button"]')!.click();
+    });
+    expect(sentMessages(socket)).toEqual([
+      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "STOP", fields: ["now"] },
+    ]);
+  });
+
+  it("also sends RUN abort when the robot's function list includes abort", () => {
+    const { el, socket } = mountControl(baseDevice({ functions: [{ name: "clearestop" }, { name: "abort" }] }));
+    socket.sent.length = 0;
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="stop-button"]')!.click();
+    });
+    expect(sentMessages(socket)).toEqual([
+      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "STOP", fields: ["now"] },
+      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "RUN", fields: ["abort"] },
+    ]);
+  });
+
+  it("is disabled with no session open", () => {
+    const { el } = mountControl(baseDevice({ sessionOpen: false }));
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="stop-button"]')!.disabled).toBe(true);
+  });
+});

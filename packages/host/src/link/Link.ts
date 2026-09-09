@@ -43,6 +43,7 @@
 import type { AckNackEvent, DecodedLine, ParsedBanner, Session, WireField } from "@robot-console/protocol";
 
 export type LineListener = (line: DecodedLine) => void;
+export type RawLineListener = (raw: string) => void;
 export type AckNackListener = (event: AckNackEvent) => void;
 export type LinkErrorListener = (err: Error) => void;
 
@@ -94,6 +95,12 @@ export interface Link {
   /** Subscribe to every inbound reply-direction line. Returns an
    * unsubscribe function. */
   onLine(listener: LineListener): () => void;
+
+  /** Subscribe to every inbound non-blank line that is NOT a v6 reply
+   * (relay `#` command-plane text, echoes, other dialects), as raw text
+   * — see `LineRouter`'s `onUnrouted`. Returns an unsubscribe
+   * function. (OOP 2026-09-09.) */
+  onRawLine(listener: RawLineListener): () => void;
 
   /** Subscribe to `ack`/`nack` events specifically. Returns an
    * unsubscribe function. */

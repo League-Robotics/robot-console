@@ -69,8 +69,33 @@ export function EstopControl({ device }: EstopControlProps) {
   const linkOpen = device.sessionOpen;
   const { sendCommand } = useWsActions();
 
+  // OOP 2026-09-09: a plain, non-latching stop next to the e-stop.
+  // `STOP now` zeroes the wheels this cycle and resolves the active
+  // motion with reason `stop` (firmware `WireAdapter::onStop`) -- no
+  // latch, no clear step, the next drive command just works. A routine
+  // started with `RUN` (square, tour, ...) would keep issuing moves
+  // after that, so when the robot's function list includes `abort`
+  // (`test.ts`'s queue-bypassing abort), that is sent too.
+  const canAbortRun = device.functions?.some((fn) => fn.name === "abort") === true;
+  function handleStop(): void {
+    sendCommand(endpointId, "STOP", ["now"]);
+    if (canAbortRun) {
+      sendCommand(endpointId, "RUN", ["abort"]);
+    }
+  }
+
   return (
     <section className="estop-control" aria-label="Emergency stop">
+      <button
+        type="button"
+        className="estop-control-stop-button"
+        data-testid="stop-button"
+        disabled={!linkOpen}
+        onClick={handleStop}
+        title="Stop the current motion (does not latch)"
+      >
+        STOP
+      </button>
       <button
         type="button"
         className="estop-control-button"

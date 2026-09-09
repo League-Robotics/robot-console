@@ -22,7 +22,10 @@ const PORT = 4747;
 const CHANNEL = 37;
 const GROUP = 3;
 const CG_CONFIRM_LINE = `# channel: ${CHANNEL} group: ${GROUP} mode: RAW250 power: 7`;
-const GO_CONFIRM_LINE = "# go ok";
+const GO_CONFIRM_LINE = "# entering data plane";
+const ECHO_CONFIRM_LINE = "# echo: OFF";
+const MODE_CONFIRM_LINE = "# mode: RAW250";
+const FULL_PREAMBLE = ["?\n", "!ECHO OFF\n", "!MODE RAW250\n", `!CG ${CHANNEL} ${GROUP}\n`, "!P 7\n", "!GO\n"];
 
 /** A fully synthetic stand-in for `net.Socket` -- same discipline as
  * `RelayRadioLink.test.ts`'s `FakeSerialPort`. Records every call this
@@ -126,6 +129,41 @@ function newLink(overrides: {
   return { link, socket, connectPromise, handshakeScheduler };
 }
 
+/** Answer the handshake the way relay vitut does (measured 2026-09-09),
+ * one reply per step, up to and including `!P 7` -- see
+ * `RelayCommandPlane.ts` (OOP 2026-09-09: each step gated on its own
+ * reply). */
+async function answerThroughPower(target: { emit: (event: string, chunk: Buffer) => void }): Promise<void> {
+  await flush();
+  target.emit("data", Buffer.from(`${CG_CONFIRM_LINE}\n`)); // the `?` sync answer
+  await flush();
+  target.emit("data", Buffer.from(`${ECHO_CONFIRM_LINE}\n`));
+  await flush();
+  target.emit("data", Buffer.from(`${MODE_CONFIRM_LINE}\n`));
+  await flush();
+  target.emit("data", Buffer.from(`${CG_CONFIRM_LINE}\n`));
+  await flush();
+  target.emit("data", Buffer.from(`${CG_CONFIRM_LINE}\n`)); // `!P 7` answers with the same status line
+  await flush();
+}
+
+/** Answer `?`, `!ECHO OFF` and `!MODE RAW250` only -- the relay is now
+ * waiting on `!CG`. */
+async function answerThroughMode(target: { emit: (event: string, chunk: Buffer) => void }): Promise<void> {
+  await flush();
+  target.emit("data", Buffer.from(`${CG_CONFIRM_LINE}\n`));
+  await flush();
+  target.emit("data", Buffer.from(`${ECHO_CONFIRM_LINE}\n`));
+  await flush();
+  target.emit("data", Buffer.from(`${MODE_CONFIRM_LINE}\n`));
+  await flush();
+}
+
+async function answerHandshake(target: { emit: (event: string, chunk: Buffer) => void }): Promise<void> {
+  await answerThroughPower(target);
+  target.emit("data", Buffer.from(`${GO_CONFIRM_LINE}\n`));
+}
+
 /** Drive a link through the full successful handshake (socket connect,
  * then `!ECHO OFF`/`!MODE RAW250`/`!CG`/`!P 7`/`!GO`, confirming `!CG`
  * and `!GO`) and await `connect()`. */
@@ -133,10 +171,7 @@ async function handshakedLink(
   overrides: Parameters<typeof newLink>[0] = {},
 ): Promise<{ link: MbrelayLink; socket: FakeSocket }> {
   const { link, socket, connectPromise } = newLink(overrides);
-  await flush();
-  socket.emit("data", Buffer.from(`${CG_CONFIRM_LINE}\n`));
-  await flush();
-  socket.emit("data", Buffer.from(`${GO_CONFIRM_LINE}\n`));
+  await answerHandshake(socket);
   await connectPromise;
   return { link, socket };
 }
@@ -188,34 +223,29 @@ describe("MbrelayLink.connect", () => {
     expect(noDelayIndex).toBe(0);
     expect(firstWriteIndex).toBeGreaterThan(noDelayIndex);
 
-    socket.emit("data", Buffer.from(`${CG_CONFIRM_LINE}\n`));
-    await flush();
-    socket.emit("data", Buffer.from(`${GO_CONFIRM_LINE}\n`));
+    await answerHandshake(socket);
     await connectPromise;
   });
 
   it("opens the socket then sends the full preamble in order, resolving once !GO confirms", async () => {
     const { socket } = await handshakedLink();
-    expect(socket.writes).toEqual([
-      "!ECHO OFF\n",
-      "!MODE RAW250\n",
-      `!CG ${CHANNEL} ${GROUP}\n`,
-      "!P 7\n",
-      "!GO\n",
-    ]);
+    expect(socket.writes).toEqual(FULL_PREAMBLE);
   });
 
   it("is not isOpen while the handshake is still in progress, only once it completes", async () => {
     const { link, socket, connectPromise } = newLink();
     expect(link.isOpen).toBe(false);
+    await answerThroughMode(socket);
+    expect(link.isOpen).toBe(false); // waiting on !CG
+    socket.emit("data", Buffer.from(`${CG_CONFIRM_LINE}
+`));
     await flush();
-    expect(link.isOpen).toBe(false); // preamble sent, but !CG/!GO not yet confirmed
-
-    socket.emit("data", Buffer.from(`${CG_CONFIRM_LINE}\n`));
+    socket.emit("data", Buffer.from(`${CG_CONFIRM_LINE}
+`));
     await flush();
-    expect(link.isOpen).toBe(false); // !CG confirmed, !GO not yet
-
-    socket.emit("data", Buffer.from(`${GO_CONFIRM_LINE}\n`));
+    expect(link.isOpen).toBe(false); // !CG and !P confirmed, !GO not yet
+    socket.emit("data", Buffer.from(`${GO_CONFIRM_LINE}
+`));
     await connectPromise;
     expect(link.isOpen).toBe(true);
   });
@@ -239,10 +269,9 @@ describe("MbrelayLink.connect", () => {
 
   it("rejects connect() when the relay rejects !CG, closes the socket, and never sends !GO", async () => {
     const { socket, connectPromise } = newLink();
-    await flush();
-    expect(socket.writes).toEqual(["!ECHO OFF\n", "!MODE RAW250\n", `!CG ${CHANNEL} ${GROUP}\n`]);
-
-    socket.emit("data", Buffer.from("NAK\n"));
+    await answerThroughMode(socket);
+    expect(socket.writes).toEqual(FULL_PREAMBLE.slice(0, 4));
+    socket.emit("data", Buffer.from("# error: usage !CG <ch 0-83> <group 0-255>\n"));
 
     await expect(connectPromise).rejects.toThrow(/handshake failed/i);
     expect(socket.writes).not.toContain("!GO\n");
@@ -251,8 +280,8 @@ describe("MbrelayLink.connect", () => {
 
   it("never reaches isOpen after a !CG rejection -- no partial connected state", async () => {
     const { link, socket, connectPromise } = newLink();
-    await flush();
-    socket.emit("data", Buffer.from("NAK\n"));
+    await answerThroughMode(socket);
+    socket.emit("data", Buffer.from("# error: usage !CG <ch 0-83> <group 0-255>\n"));
     await expect(connectPromise).rejects.toThrow();
     expect(link.isOpen).toBe(false);
   });
@@ -261,16 +290,8 @@ describe("MbrelayLink.connect", () => {
 
   it("rejects connect() if !GO never confirms, under a fake handshake scheduler (no real wall-clock delay)", async () => {
     const { socket, connectPromise, handshakeScheduler } = newLink();
-    await flush();
-    socket.emit("data", Buffer.from(`${CG_CONFIRM_LINE}\n`));
-    await flush();
-    expect(socket.writes).toEqual([
-      "!ECHO OFF\n",
-      "!MODE RAW250\n",
-      `!CG ${CHANNEL} ${GROUP}\n`,
-      "!P 7\n",
-      "!GO\n",
-    ]);
+    await answerThroughPower(socket);
+    expect(socket.writes).toEqual(FULL_PREAMBLE);
 
     handshakeScheduler.resolveAll();
 
@@ -342,15 +363,8 @@ describe("MbrelayLink write pacing", () => {
       scheduler,
     });
 
-    expect(socket.writes).toEqual([
-      "!ECHO OFF\n",
-      "!MODE RAW250\n",
-      `!CG ${CHANNEL} ${GROUP}\n`,
-      "!P 7\n",
-      "!GO\n",
-      "HELLO\n",
-    ]);
-    expect(scheduler.calls).toEqual([10, 10, 10, 10, 10, 10]);
+    expect(socket.writes).toEqual([...FULL_PREAMBLE, "HELLO\n"]);
+    expect(scheduler.calls).toEqual([10, 10, 10, 10, 10, 10, 10]);
   });
 });
 

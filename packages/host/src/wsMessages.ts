@@ -286,6 +286,15 @@ export interface EndpointListEntry {
    * sent, then grows one entry per reply line, so a client sees the
    * list fill in. Absent until the first `FUNCS` of the session. */
   functions?: RobotFunction[];
+  /** OOP 2026-09-09: present only on an endpoint the host synthesized
+   * for a robot reached THROUGH a relay (`transport: "relay-radio"`):
+   * which relay endpoint carries it, the robot name the user asked for,
+   * and the radio address the relay was tuned to. Such an endpoint has
+   * no {@link usb} block of its own -- the relay owns the USB port --
+   * and shares the relay's `resourceKey`, so flashing the relay and
+   * driving through it are mutually exclusive. Its `endpointId` is
+   * `<relayEndpointId>-via-<robotName>`. Absent on every other entry. */
+  viaRelay?: { relayEndpointId: string; robotName: string; channel: number; group: number };
 }
 
 /** A parsed `status k=v ...` reply (robot firmware `wire_handler.cpp`
@@ -456,6 +465,13 @@ export interface SessionOpenMessage {
    * to) -- present in the type now so sprint 7 extends this message
    * instead of reshaping it again. */
   robotName?: string;
+  /** OOP 2026-09-09: the radio address to tune the relay to for
+   * `robotName`. Optional -- when absent the host derives it from the
+   * name (`@robot-console/protocol`'s `nameToRadioAddress`). Needed
+   * because a robot image may listen on a fixed address instead of its
+   * name-derived one (the calibration template hardcodes channel 55 /
+   * group 114 for every board). Ignored unless `robotName` is set. */
+  radio?: { channel: number; group: number };
 }
 
 /** Client -> server: close an open session to an endpoint. Renamed
@@ -672,9 +688,25 @@ export function parseClientMessage(value: unknown): ClientMessage | undefined {
       if (value.robotName !== undefined && !isNonEmptyString(value.robotName)) {
         return undefined;
       }
-      return value.robotName !== undefined
-        ? { type: "session-open", endpointId: value.endpointId, robotName: value.robotName }
-        : { type: "session-open", endpointId: value.endpointId };
+      if (value.robotName === undefined) {
+        return { type: "session-open", endpointId: value.endpointId };
+      }
+      if (value.radio === undefined) {
+        return { type: "session-open", endpointId: value.endpointId, robotName: value.robotName };
+      }
+      if (
+        !isRecord(value.radio) ||
+        !Number.isInteger(value.radio.channel) ||
+        !Number.isInteger(value.radio.group)
+      ) {
+        return undefined;
+      }
+      return {
+        type: "session-open",
+        endpointId: value.endpointId,
+        robotName: value.robotName,
+        radio: { channel: value.radio.channel as number, group: value.radio.group as number },
+      };
     }
     case "session-close":
       return isNonEmptyString(value.endpointId)

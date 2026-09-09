@@ -409,6 +409,76 @@ export async function flashOverSwd(
   }
 }
 
+/**
+ * Reset `device` via its DAPLink interface chip's own vendor reset
+ * command (`dapjs`'s `CmsisDAP#reset()`, which `DAPLink` inherits) --
+ * **not** a flash, and not the same operation as {@link flashOverSwd}'s
+ * own post-write reset (which is the last step of `DAPLink#flash()`'s
+ * one atomic sequence, not separately callable).
+ *
+ * The property this function exists for (OOP 2026-09-09,
+ * `deviceRegistry.ts`'s relay-via-radio support): unlike a flash --
+ * which remounts the target as mass storage and back, re-enumerating
+ * USB -- a target reset through the DAPLink interface chip does **not**
+ * re-enumerate USB. The board's CDC serial port stays exactly where it
+ * was, at the same OS path, the whole time. That matters because a
+ * relay's radio data plane has no in-band escape once `!GO` confirms
+ * (`link/RelayRadioLink.ts`'s own doc comment: exit is reset-only) --
+ * this is how a relay already bridging one robot is returned to its
+ * command plane, ready for a fresh `!CG`/`!GO` handshake against a
+ * (possibly different) robot, without the serial port the caller is
+ * about to reopen ever disappearing out from under it mid-sequence.
+ *
+ * Mirrors {@link flashOverSwd}'s own shape and "failure is a value,
+ * never throws" contract exactly (HID-path-first, injectable
+ * `createDapLink`, best-effort `disconnect()` in a `finally` that can
+ * never mask an already-determined result) but with nothing to write
+ * and no {@link FlashPhase} progress to report -- just connect, reset,
+ * disconnect.
+ */
+export async function resetOverSwd(
+  device: DaplinkDevice,
+  options?: { createDapLink?: DapLinkFactory },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const hidPath = device.hid?.path;
+  if (hidPath === undefined) {
+    return {
+      ok: false,
+      error: "no HID path available for this device (node-hid could not resolve one)",
+    };
+  }
+
+  const createDapLink = options?.createDapLink ?? defaultDapLinkFactory;
+  let daplink: DAPLink;
+  try {
+    daplink = createDapLink(hidPath);
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+
+  try {
+    await daplink.connect();
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+
+  try {
+    await daplink.reset();
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  } finally {
+    // Best-effort cleanup only -- see flashOverSwd's own `finally` block
+    // for why a failed disconnect must never mask or replace whatever
+    // result was already determined above.
+    try {
+      await daplink.disconnect();
+    } catch {
+      // Swallowed intentionally.
+    }
+  }
+}
+
 /** Function shape used to write bytes to a mounted MSD volume path.
  * Defaults to `node:fs/promises`'s `writeFile`; overridable so tests run
  * against a fake/injectable filesystem, never a real mounted volume. */

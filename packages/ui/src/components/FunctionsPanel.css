@@ -4,8 +4,10 @@
   gap: 0.6rem;
 }
 
-.functions-panel-toolbar {
+.functions-panel-bar {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 0.5rem;
 }
 
@@ -24,6 +26,21 @@
   cursor: not-allowed;
 }
 
+.functions-panel-select {
+  border: 1px solid var(--rc-border);
+  background: var(--rc-bg);
+  color: var(--rc-text);
+  padding: 0.35rem 0.55rem;
+  border-radius: 0.35rem;
+  font-size: 0.85rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.functions-panel-select:disabled {
+  color: var(--rc-text-muted);
+  cursor: not-allowed;
+}
+
 .functions-panel-hint {
   margin: 0;
   padding: 0.5rem 0.75rem;
@@ -34,35 +51,11 @@
   font-size: 0.85rem;
 }
 
-.functions-panel-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.functions-panel-row {
+.functions-panel-args {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 0.6rem;
-  padding: 0.5rem 0.7rem;
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  border-radius: 0.4rem;
-}
-
-.functions-panel-row-name {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-weight: 600;
-  color: var(--rc-text);
-  min-width: 6rem;
-}
-
-.functions-panel-row-args {
-  display: flex;
-  flex-wrap: wrap;
   gap: 0.5rem;
-  flex: 1;
 }
 
 .functions-panel-arg-field {
@@ -73,7 +66,7 @@
   color: var(--rc-text-muted);
 }
 
-.functions-panel-row-args input {
+.functions-panel-args input {
   border: 1px solid var(--rc-border);
   background: var(--rc-bg);
   color: var(--rc-text);
@@ -81,13 +74,25 @@
   border-radius: 0.35rem;
   font-size: 0.85rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  width: 7rem;
 }
 
-.functions-panel-row-args input:disabled {
+.functions-panel-args input:disabled {
   color: var(--rc-text-muted);
 }
 
-.functions-panel-run-button {
+.functions-panel-noargs {
+  color: var(--rc-text-muted);
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+.functions-panel-arg-type {
+  color: var(--rc-text-muted);
+  font-size: 0.7rem;
+}
+
+.functions-panel-go {
   border: 1px solid var(--rc-accent);
   background: var(--rc-accent);
   color: var(--rc-accent-contrast);
@@ -98,7 +103,7 @@
   cursor: pointer;
 }
 
-.functions-panel-run-button:disabled {
+.functions-panel-go:disabled {
   background: var(--rc-border);
   border-color: var(--rc-border);
   color: var(--rc-text-muted);

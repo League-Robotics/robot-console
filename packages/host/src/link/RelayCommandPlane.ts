@@ -109,6 +109,11 @@ export class RelayHandshakeError extends Error {
  * the module doc comment's "Raw lines, not decoded v6 lines" section for
  * why these are plain strings, not `link/Link.ts`'s `LineListener`. */
 export interface RelayCommandPlaneOptions {
+  /** How long to wait for the relay to answer each `?` sync probe
+   * before sending another (default 500ms), and how many probes to send
+   * before giving up (default 16, i.e. 8s -- a DAP reset + boot). */
+  syncRetryMs?: number;
+  syncAttempts?: number;
   /** Send one already-formatted wire line (trailing `\n` included, as
    * every `commands.ts` builder already produces). Expected to be paced
    * exactly like every other write the owning transport makes (e.g.
@@ -139,50 +144,7 @@ export interface RelayCommandPlaneOptions {
   scheduler?: Scheduler;
 }
 
-/** Is `line` the relay's confirmation shape -- a `#`-prefixed comment,
- * per the one captured example this codebase has
- * (`vendor/pxt-nezha-diffdrive/captures/radio-addressing-20260830.md`
- * §4: `# channel: 47 group: 60 mode: RAW250 power: 7`) and
- * `commands.ts`'s own "`#` lines are comments, never commands" contract.
- * Anything else is treated as a rejection -- see the module doc
- * comment's `!CG` bullet for why "unless it looks like the documented
- * success shape, treat it as failure" is the safer default here, given
- * no rejection wire text is captured or documented anywhere in this
- * codebase to match against instead. */
-function isConfirmationLine(line: string): boolean {
-  return line.trimStart().startsWith("#");
-}
 
-/** Wait for the next raw line `subscribe` delivers, or `undefined` if
- * none arrives within `timeoutMs` (raced via `scheduler.delay`, per the
- * module doc comment's second invariant -- this can never hang). Only
- * one call is ever in flight at a time from {@link runRelayCommandPlane}
- * itself. */
-function waitForReply(
-  subscribe: RelayCommandPlaneOptions["subscribe"],
-  scheduler: Scheduler,
-  timeoutMs: number,
-): Promise<string | undefined> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const unsubscribe = subscribe((line) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      unsubscribe();
-      resolve(line);
-    });
-    void scheduler.delay(timeoutMs).then(() => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      unsubscribe();
-      resolve(undefined);
-    });
-  });
-}
 
 /**
  * Run the full relay command-plane handshake to completion: `!ECHO OFF`
@@ -204,37 +166,122 @@ export async function runRelayCommandPlane(options: RelayCommandPlaneOptions): P
   const { write, subscribe, channel, group } = options;
   const timeoutMs = options.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
   const scheduler = options.scheduler ?? realScheduler;
+  const syncRetryMs = options.syncRetryMs ?? DEFAULT_SYNC_RETRY_MS;
+  const syncAttempts = options.syncAttempts ?? DEFAULT_SYNC_ATTEMPTS;
 
-  // !ECHO OFF, !MODE RAW250 -- sent, not gated on a reply (see the
-  // module doc comment's "What is, and is not, gated on a reply").
-  write(buildEchoOffLine());
-  write(buildModeRaw250Line());
+  // OOP 2026-09-09 -- every step below waits for ITS OWN reply, and
+  // nothing else counts. Measured on relay vitut: the relay answers
+  // every command with a `#` line (`!ECHO OFF` -> `# echo: OFF`,
+  // `!MODE RAW250` -> `# mode: RAW250`, `!CG c g` / `!P n` / `?` ->
+  // `# channel: c group: g mode: RAW250 power: n`, `!GO` -> `# entering
+  // data plane`, a bad `!CG` -> `# error: usage ...`). The previous
+  // version wrote the first three commands back to back and took "the
+  // next line" as the `!CG` confirmation -- which was really the
+  // `!ECHO OFF` reply -- and then "any line" as the `!GO` confirmation,
+  // which was the `!MODE` reply. After a DAP reset the relay's boot text
+  // satisfied both gates before it had processed a single command, and
+  // it was left in the command plane answering `# error: unknown
+  // command` to every robot verb. Hence: (1) a sync step that sends `?`
+  // until the relay answers, so a still-booting relay is waited for
+  // rather than talked past; (2) one command in flight at a time, each
+  // matched against its specific reply, with stray boot text, `DBG:`
+  // radio chatter and stale replies ignored.
 
-  // !CG <channel> <group> -- gated. A rejection (or no reply at all)
-  // stops the sequence here: !P and !GO are never sent, so the relay is
-  // left in the command plane (invariant 1).
-  write(buildSetChannelGroupLine(channel, group));
-  const cgReply = await waitForReply(subscribe, scheduler, timeoutMs);
-  if (cgReply === undefined) {
+  let synced = false;
+  for (let attempt = 0; attempt < syncAttempts && !synced; attempt++) {
+    write(QUERY_LINE);
+    const reply = await waitForMatch(subscribe, scheduler, syncRetryMs, isStatusLine);
+    synced = reply !== undefined;
+  }
+  if (!synced) {
     throw new RelayHandshakeError(
-      `relay never confirmed !CG ${channel} ${group} within ${timeoutMs}ms -- handshake stopped before !GO, relay left in the command plane`,
+      `relay never answered \`?\` after ${syncAttempts} attempts (${syncAttempts * syncRetryMs}ms) -- not in its command plane, or still booting`,
     );
   }
-  if (!isConfirmationLine(cgReply)) {
+
+  await step(write, subscribe, scheduler, timeoutMs, buildEchoOffLine(), "!ECHO OFF", /^#\s*echo:\s*OFF\b/i);
+  await step(write, subscribe, scheduler, timeoutMs, buildModeRaw250Line(), "!MODE RAW250", /^#\s*mode:\s*RAW250\b/i);
+  await step(
+    write,
+    subscribe,
+    scheduler,
+    timeoutMs,
+    buildSetChannelGroupLine(channel, group),
+    `!CG ${channel} ${group}`,
+    new RegExp(`^#\\s*channel:\\s*${channel}\\s+group:\\s*${group}\\b`, "i"),
+  );
+  await step(write, subscribe, scheduler, timeoutMs, buildSetPowerLine(), "!P 7", /\bpower:\s*7\b/i);
+  await step(write, subscribe, scheduler, timeoutMs, buildGoLine(), "!GO", /^#\s*entering data plane\b/i);
+}
+
+/** `?` -- the relay's own status query (`!HELP`: "show channel/group/
+ * mode/power"), answered with the same `# channel: ... power: ...` line
+ * `!CG`/`!P` confirm with. Used as the sync probe: it changes nothing. */
+const QUERY_LINE = "?\n";
+const DEFAULT_SYNC_RETRY_MS = 500;
+const DEFAULT_SYNC_ATTEMPTS = 16;
+
+function isStatusLine(line: string): boolean {
+  return /^#\s*channel:\s*\d+\s+group:\s*\d+/i.test(line);
+}
+
+function isErrorLine(line: string): boolean {
+  return /^#\s*error\b/i.test(line.trimStart());
+}
+
+/** Write one command and wait for the reply that matches `expect`. A
+ * `# error: ...` line in the meantime is a rejection of THIS command
+ * (the relay answers in order, one reply per command); any other line
+ * (boot text, `DBG:` chatter, a stale earlier reply) is ignored. */
+async function step(
+  write: RelayCommandPlaneOptions["write"],
+  subscribe: RelayCommandPlaneOptions["subscribe"],
+  scheduler: Scheduler,
+  timeoutMs: number,
+  line: string,
+  label: string,
+  expect: RegExp,
+): Promise<void> {
+  write(line);
+  const reply = await waitForMatch(subscribe, scheduler, timeoutMs, (candidate) => expect.test(candidate) || isErrorLine(candidate));
+  if (reply === undefined) {
     throw new RelayHandshakeError(
-      `relay rejected !CG ${channel} ${group} (reply: ${JSON.stringify(cgReply)}) -- handshake stopped before !GO, relay left in the command plane`,
+      `relay never confirmed ${label} within ${timeoutMs}ms -- handshake stopped, relay left in the command plane`,
     );
   }
-
-  // !P 7 -- sent, not gated (see above).
-  write(buildSetPowerLine());
-
-  // !GO -- gated on presence only (no captured confirmation-reply
-  // shape exists to gate on content, per the module doc comment). Never
-  // hangs: always races against scheduler.delay (invariant 2).
-  write(buildGoLine());
-  const goReply = await waitForReply(subscribe, scheduler, timeoutMs);
-  if (goReply === undefined) {
-    throw new RelayHandshakeError(`relay never confirmed !GO within ${timeoutMs}ms -- handshake timed out`);
+  if (isErrorLine(reply)) {
+    throw new RelayHandshakeError(
+      `relay rejected ${label} (reply: ${JSON.stringify(reply)}) -- handshake stopped, relay left in the command plane`,
+    );
   }
+}
+
+/** Wait for the first line satisfying `match`, or `undefined` if none
+ * arrives within `timeoutMs` (raced via `scheduler.delay` -- never
+ * hangs). Non-matching lines are ignored, not consumed as answers. */
+function waitForMatch(
+  subscribe: RelayCommandPlaneOptions["subscribe"],
+  scheduler: Scheduler,
+  timeoutMs: number,
+  match: (line: string) => boolean,
+): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const unsubscribe = subscribe((line) => {
+      if (settled || !match(line)) {
+        return;
+      }
+      settled = true;
+      unsubscribe();
+      resolve(line);
+    });
+    void scheduler.delay(timeoutMs).then(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      unsubscribe();
+      resolve(undefined);
+    });
+  });
 }

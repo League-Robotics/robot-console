@@ -68,69 +68,138 @@ async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-describe("runRelayCommandPlane -- successful handshake", () => {
-  it("sends the full preamble in order and resolves once !GO confirms", async () => {
+const STATUS_37_3 = "# channel: 37 group: 3 mode: RAW250 power: 7";
+
+/** Drive a whole successful handshake against the fake, answering each
+ * step the way relay vitut does (measured 2026-09-09). Returns the
+ * writes made. */
+async function answerHandshake(link: ReturnType<typeof fakeRelayLink>, channel: number, group: number): Promise<void> {
+  await flush();
+  expect(link.writes.at(-1)).toBe("?\n");
+  link.emit(`# channel: 25 group: 1 mode: RAW250 power: 7`); // whatever it was before
+  await flush();
+  expect(link.writes.at(-1)).toBe("!ECHO OFF\n");
+  link.emit("# echo: OFF");
+  await flush();
+  expect(link.writes.at(-1)).toBe("!MODE RAW250\n");
+  link.emit("# mode: RAW250");
+  await flush();
+  expect(link.writes.at(-1)).toBe(`!CG ${channel} ${group}\n`);
+  link.emit(`# channel: ${channel} group: ${group} mode: RAW250 power: 7`);
+  await flush();
+  expect(link.writes.at(-1)).toBe("!P 7\n");
+  link.emit(`# channel: ${channel} group: ${group} mode: RAW250 power: 7`);
+  await flush();
+  expect(link.writes.at(-1)).toBe("!GO\n");
+  link.emit("# entering data plane");
+}
+
+describe("runRelayCommandPlane -- successful handshake (each step gated on its own reply, OOP 2026-09-09)", () => {
+  it("syncs with `?`, then sends one command at a time, each confirmed by its specific reply, and resolves on `# entering data plane`", async () => {
     const link = fakeRelayLink();
     const scheduler = controllableScheduler();
-    const promise = runRelayCommandPlane({
-      write: link.write,
-      subscribe: link.subscribe,
-      channel: 37,
-      group: 3,
-      scheduler,
-    });
-
-    await flush();
-    expect(link.writes).toEqual(["!ECHO OFF\n", "!MODE RAW250\n", "!CG 37 3\n"]);
-
-    link.emit("# channel: 37 group: 3 mode: RAW250 power: 7");
-    await flush();
-    expect(link.writes).toEqual(["!ECHO OFF\n", "!MODE RAW250\n", "!CG 37 3\n", "!P 7\n", "!GO\n"]);
-
-    link.emit("# go ok");
+    const promise = runRelayCommandPlane({ write: link.write, subscribe: link.subscribe, channel: 37, group: 3, scheduler });
+    await answerHandshake(link, 37, 3);
     await expect(promise).resolves.toBeUndefined();
+    expect(link.writes).toEqual(["?\n", "!ECHO OFF\n", "!MODE RAW250\n", "!CG 37 3\n", "!P 7\n", "!GO\n"]);
+  });
+
+  it("ignores boot text, DBG chatter and stale replies -- only the step's own reply advances it", async () => {
+    const link = fakeRelayLink();
+    const scheduler = controllableScheduler();
+    const promise = runRelayCommandPlane({ write: link.write, subscribe: link.subscribe, channel: 37, group: 3, scheduler });
+    await flush();
+    link.emit("# micro:bit radio relay");
+    link.emit("DBG:wifi state=1 ip=-");
+    link.emit("# echo: OFF"); // a stale reply -- NOT the `?` answer
+    await flush();
+    expect(link.writes).toEqual(["?\n"]); // still waiting for `# channel:`
+    link.emit(STATUS_37_3);
+    await flush();
+    expect(link.writes.at(-1)).toBe("!ECHO OFF\n");
+    link.emit("# mode: RAW250"); // wrong reply for this step -- ignored
+    link.emit(STATUS_37_3);
+    await flush();
+    expect(link.writes.at(-1)).toBe("!ECHO OFF\n");
+    link.emit("# echo: OFF");
+    await flush();
+    expect(link.writes.at(-1)).toBe("!MODE RAW250\n");
+    link.emit("# mode: RAW250");
+    await flush();
+    link.emit("# channel: 99 group: 9 mode: RAW250 power: 7"); // wrong address -- ignored
+    await flush();
+    expect(link.writes.at(-1)).toBe("!CG 37 3\n");
+    link.emit(STATUS_37_3);
+    await flush();
+    link.emit(STATUS_37_3);
+    await flush();
+    expect(link.writes.at(-1)).toBe("!GO\n");
+    link.emit("# entering data plane");
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  it("re-sends `?` on each sync timeout until the relay answers (a relay still booting after a reset)", async () => {
+    const link = fakeRelayLink();
+    const scheduler = controllableScheduler();
+    const promise = runRelayCommandPlane({ write: link.write, subscribe: link.subscribe, channel: 37, group: 3, scheduler });
+    await flush();
+    expect(link.writes).toEqual(["?\n"]);
+    scheduler.resolveAll();
+    await flush();
+    expect(link.writes).toEqual(["?\n", "?\n"]);
+    scheduler.resolveAll();
+    await flush();
+    expect(link.writes).toEqual(["?\n", "?\n", "?\n"]);
+    link.emit(STATUS_37_3);
+    await flush();
+    expect(link.writes.at(-1)).toBe("!ECHO OFF\n");
+    link.emit("# echo: OFF"); await flush();
+    link.emit("# mode: RAW250"); await flush();
+    link.emit(STATUS_37_3); await flush();
+    link.emit(STATUS_37_3); await flush();
+    link.emit("# entering data plane");
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  it("gives up on sync after the configured attempts, never having sent a real command", async () => {
+    const link = fakeRelayLink();
+    const scheduler = controllableScheduler();
+    const promise = runRelayCommandPlane({ write: link.write, subscribe: link.subscribe, channel: 37, group: 3, scheduler, syncAttempts: 3 });
+    for (let i = 0; i < 3; i++) { await flush(); scheduler.resolveAll(); }
+    await expect(promise).rejects.toThrow(/never answered/);
+    expect(link.writes).toEqual(["?\n", "?\n", "?\n"]);
   });
 });
 
 describe("runRelayCommandPlane -- !CG rejection (SUC-003)", () => {
-  it("rejects when the relay's !CG reply is not a # confirmation, and !GO is never sent", async () => {
+  it("rejects when the relay answers !CG with a # error line, and !GO is never sent", async () => {
     const link = fakeRelayLink();
     const scheduler = controllableScheduler();
-    const promise = runRelayCommandPlane({
-      write: link.write,
-      subscribe: link.subscribe,
-      channel: 37,
-      group: 3,
-      scheduler,
-    });
-
+    const promise = runRelayCommandPlane({ write: link.write, subscribe: link.subscribe, channel: 37, group: 3, scheduler });
+    await flush(); link.emit(STATUS_37_3);
+    await flush(); link.emit("# echo: OFF");
+    await flush(); link.emit("# mode: RAW250");
     await flush();
-    link.emit("NAK\n");
-
+    expect(link.writes.at(-1)).toBe("!CG 37 3\n");
+    link.emit("# error: usage !CG <ch 0-83> <group 0-255>");
     await expect(promise).rejects.toThrow(RelayHandshakeError);
-    await expect(promise).rejects.toThrow(/rejected !CG/);
-    expect(link.writes).toEqual(["!ECHO OFF\n", "!MODE RAW250\n", "!CG 37 3\n"]);
+    await expect(promise).rejects.toThrow(/rejected !CG 37 3/);
     expect(link.writes).not.toContain("!P 7\n");
     expect(link.writes).not.toContain("!GO\n");
   });
 
-  it("rejects when !CG never receives any reply at all, and !GO is never sent", async () => {
+  it("rejects when !CG never receives its reply, and !GO is never sent", async () => {
     const link = fakeRelayLink();
     const scheduler = controllableScheduler();
-    const promise = runRelayCommandPlane({
-      write: link.write,
-      subscribe: link.subscribe,
-      channel: 37,
-      group: 3,
-      scheduler,
-    });
-
+    const promise = runRelayCommandPlane({ write: link.write, subscribe: link.subscribe, channel: 37, group: 3, scheduler });
+    await flush(); link.emit(STATUS_37_3);
+    await flush(); link.emit("# echo: OFF");
+    await flush(); link.emit("# mode: RAW250");
     await flush();
-    expect(link.writes).toEqual(["!ECHO OFF\n", "!MODE RAW250\n", "!CG 37 3\n"]);
-
+    expect(link.writes.at(-1)).toBe("!CG 37 3\n");
     scheduler.resolveAll();
     await expect(promise).rejects.toThrow(RelayHandshakeError);
-    await expect(promise).rejects.toThrow(/never confirmed !CG/);
+    await expect(promise).rejects.toThrow(/never confirmed !CG 37 3/);
     expect(link.writes).not.toContain("!GO\n");
   });
 });
@@ -139,23 +208,15 @@ describe("runRelayCommandPlane -- !GO timeout (SUC-003)", () => {
   it("rejects with a timeout if !GO never confirms, driven entirely by the fake scheduler", async () => {
     const link = fakeRelayLink();
     const scheduler = controllableScheduler();
-    const promise = runRelayCommandPlane({
-      write: link.write,
-      subscribe: link.subscribe,
-      channel: 37,
-      group: 3,
-      scheduler,
-    });
-
+    const promise = runRelayCommandPlane({ write: link.write, subscribe: link.subscribe, channel: 37, group: 3, scheduler });
+    await flush(); link.emit(STATUS_37_3);
+    await flush(); link.emit("# echo: OFF");
+    await flush(); link.emit("# mode: RAW250");
+    await flush(); link.emit(STATUS_37_3);
+    await flush(); link.emit(STATUS_37_3);
     await flush();
-    link.emit("# channel: 37 group: 3 mode: RAW250 power: 7");
-    await flush();
-    expect(link.writes).toEqual(["!ECHO OFF\n", "!MODE RAW250\n", "!CG 37 3\n", "!P 7\n", "!GO\n"]);
-
-    // No real wall-clock delay anywhere -- the timeout fires purely
-    // because the test drives the fake scheduler's pending delay(s).
+    expect(link.writes.at(-1)).toBe("!GO\n");
     scheduler.resolveAll();
-
     await expect(promise).rejects.toThrow(RelayHandshakeError);
     await expect(promise).rejects.toThrow(/never confirmed !GO/);
   });
@@ -163,26 +224,11 @@ describe("runRelayCommandPlane -- !GO timeout (SUC-003)", () => {
   it("never leaves the returned promise unresolved -- always settles, one way or another", async () => {
     const link = fakeRelayLink();
     const scheduler = controllableScheduler();
-    const promise = runRelayCommandPlane({
-      write: link.write,
-      subscribe: link.subscribe,
-      channel: 25,
-      group: 1,
-      scheduler,
-    });
-
+    const promise = runRelayCommandPlane({ write: link.write, subscribe: link.subscribe, channel: 25, group: 1, scheduler });
     await flush();
-    link.emit("# channel: 25 group: 1 mode: RAW250 power: 7");
-    await flush();
-
     let settled = false;
-    promise.catch(() => {
-      settled = true;
-    });
-
-    expect(settled).toBe(false);
-    scheduler.resolveAll();
-    await flush();
+    promise.then(() => { settled = true; }, () => { settled = true; });
+    for (let i = 0; i < 20; i++) { scheduler.resolveAll(); await flush(); }
     expect(settled).toBe(true);
   });
 });

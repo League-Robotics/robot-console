@@ -219,13 +219,37 @@ export interface AckNackEvent {
    * {@link resend} is always empty (this class refuses to manufacture
    * that loop) and the doomed pending table is cleared — there is
    * nothing left worth holding onto for a future retransmit, since none
-   * of it will ever be honored by a robot that has moved on. Recovery
-   * from this state is `connect()` (a fresh `HELLO`), not more
-   * retransmitting — a caller should surface this to the user as
-   * "resync needed", not silently retry.
+   * of it will ever be honored by a robot that has moved on.
+   *
+   * **Recovery is automatic (OOP 2026-09-09).** The robot has told the
+   * host exactly what it expects next -- `N` -- so this session adopts
+   * it on the spot ({@link Session.resyncTo}): the next `send()` carries
+   * `#N` and is accepted. No `HELLO` round trip, no operator action. A
+   * caller may still surface this as an informational notice ("the
+   * robot restarted its counter; picked up at #N"), but must not ask
+   * the user to do anything. Stakeholder direction, verbatim: "NACK
+   * should never, ever mean I forgot what number I was supposed to
+   * send."
    */
   readonly desynced: boolean;
+  /**
+   * Set only on a `nack` where this session has just given up on a
+   * command it had already resent {@link MAX_RESENDS} times to the same
+   * `nack N` with no progress -- the robot keeps refusing the identical
+   * line, which (protocol.md §8.9) means the line itself is malformed as
+   * constructed, not lost in transit, and resending it again would
+   * wedge the stream forever. The dropped line's text is carried here
+   * for reporting; the session has already resynced to `N`
+   * ({@link Session.resyncTo}) so the next `send()` reuses that id and
+   * the stream moves on. Absent otherwise.
+   */
+  readonly gaveUp?: string;
 }
+
+/** How many times the same pending id may be resent to the same
+ * `nack N` before {@link Session.handleReply} gives up on it -- see
+ * {@link AckNackEvent.gaveUp}. */
+export const MAX_RESENDS = 3;
 
 function parseAckNackFields(
   verb: "ack" | "nack",
@@ -256,6 +280,11 @@ function parseAckNackFields(
 export class Session {
   private nextId = 1;
   private readonly pending = new Map<number, PendingCommand>();
+  /** The `N` of the most recent `nack` that led to a resend, and how
+   * many consecutive times that same `N` has been resent -- the
+   * give-up counter behind {@link AckNackEvent.gaveUp}. */
+  private lastResendN = 0;
+  private resendStreak = 0;
 
   /** The host's current best belief about the highest sequence id the
    * robot has fully accepted — see the module doc comment for exactly
@@ -275,6 +304,34 @@ export class Session {
    * a cumulative `ack` (or purged as already-confirmed by a `nack`). */
   get pendingCount(): number {
     return this.pending.size;
+  }
+
+  /** The id the next {@link send} will carry. With nothing pending this
+   * is what the robot's `status next=` should read; a mismatch there
+   * means the two counters drifted (the robot reset) and
+   * {@link resyncTo} closes the gap without a `HELLO`. */
+  get nextSequenceId(): number {
+    return this.nextId;
+  }
+
+  /**
+   * OOP 2026-09-09: adopt the robot's own next-expected id. Drops every
+   * pending command (none of them can be honored -- they carry ids the
+   * robot no longer expects) and continues numbering from `n`, so the
+   * very next {@link send} is accepted. Used by {@link handleReply} on a
+   * desynced `nack` and on give-up, and by a host that reads
+   * `status next=` while nothing is pending. Unlike {@link connect},
+   * this sends nothing and never resets the robot.
+   */
+  resyncTo(n: number): void {
+    if (!Number.isInteger(n) || n < 1) {
+      return;
+    }
+    this.pending.clear();
+    this.nextId = n;
+    this.seq = n - 1;
+    this.lastResendN = 0;
+    this.resendStreak = 0;
   }
 
   /** Every id currently pending, ascending. Exposed for callers/tests
@@ -444,6 +501,8 @@ export class Session {
     this.lastDone = lastDone;
     this.lastDoneReason = reason;
     this.retireThrough(n);
+    this.lastResendN = 0;
+    this.resendStreak = 0;
     return { kind: "ack", n, seq: this.seq, lastDone, lastDoneReason: reason, resend: [], desynced: false };
   }
 
@@ -473,14 +532,31 @@ export class Session {
     const remaining = this.pendingIds();
     const desynced = remaining.length > 0 && remaining[0]! > n;
 
-    let resend: string[];
     if (desynced) {
-      this.pending.clear();
-      resend = [];
-    } else {
-      resend = this.retransmitFrom(n);
+      // The robot's counter reset under us. Adopt its number and move
+      // on -- see AckNackEvent.desynced (OOP 2026-09-09).
+      this.resyncTo(n);
+      return { kind: "nack", n, seq: this.seq, lastDone, lastDoneReason: reason, resend: [], desynced };
     }
 
+    if (remaining.length > 0 && remaining[0] === n) {
+      // About to resend #n. Same n as last time means the previous
+      // resend of this exact line was refused again -- count it, and
+      // give up once it has clearly stopped being "lost in transit".
+      if (this.lastResendN === n) {
+        this.resendStreak++;
+      } else {
+        this.lastResendN = n;
+        this.resendStreak = 1;
+      }
+      if (this.resendStreak > MAX_RESENDS) {
+        const dropped = this.pending.get(n)?.line ?? "";
+        this.resyncTo(n);
+        return { kind: "nack", n, seq: this.seq, lastDone, lastDoneReason: reason, resend: [], desynced: false, gaveUp: dropped };
+      }
+    }
+
+    const resend = this.retransmitFrom(n);
     return { kind: "nack", n, seq: this.seq, lastDone, lastDoneReason: reason, resend, desynced };
   }
 

@@ -233,10 +233,66 @@
  * burst of sends (a held drive control) must not storm every client
  * with one broadcast per send on top of the pacing already governing
  * the writes themselves.
+ *
+ * ## Robot-via-relay endpoints (OOP 2026-09-09)
+ *
+ * A relay classified `classification.type === "relay"` on plain USB can
+ * be asked, via `requestOpen(relayEndpointId, { robotName, radio? })`,
+ * to bridge to one named robot over its radio -- `wsMessages.ts`'s
+ * `SessionOpenMessage.robotName`/`radio` fields, reserved since sprint
+ * 4, become live for the first time here. The result is a **new**,
+ * synthesized {@link EndpointState}/{@link EndpointListEntry} --
+ * `<relayEndpointId>-via-<robotName>` -- never a mutation of the
+ * relay's own endpoint: both are present in {@link DeviceRegistry.snapshot}
+ * simultaneously, and the synthesized one shares the relay's own
+ * `resourceKey` (never an independent one), so flashing the relay and
+ * driving through it are mutually exclusive through the existing
+ * {@link KeyedMutex} -- no new locking mechanism.
+ *
+ * `link/RelayRadioLink.ts`'s own doc comment explains why a reset is
+ * needed before the handshake at all: the relay's data plane has no
+ * in-band escape once `!GO` confirms (exit is reset-only), so a relay
+ * already bridging one robot cannot simply be told `!CG`/`!GO` again
+ * for a different one. {@link DeviceRegistry.requestOpen}'s relay
+ * branch (the private `openRobotViaRelay`) therefore: tears down any
+ * existing synthesized child for this relay first -- switching robots
+ * is always close -> reset -> reopen, never an in-place retarget
+ * (`Link` has no `retarget()` method at all; see `link/Link.ts`'s own
+ * doc comment for why) -- tears down the relay's own plain USB console
+ * session (the radio link needs the same physical port), resets the
+ * relay over SWD via `flash.ts`'s {@link resetOverSwd} (a target reset
+ * through the DAPLink interface chip does not re-enumerate USB, unlike
+ * a flash -- see that function's own doc comment), waits
+ * {@link DeviceRegistryOptions.relayBootDelayMs} for the relay's own
+ * firmware to come back up, resolves the radio address (an explicit
+ * `radio` override, or `@robot-console/protocol`'s `nameToRadioAddress`
+ * default derived from the name), then opens a `"relay-radio"`
+ * {@link Link} -- `connect()` runs the `!CG`/`!GO` handshake. A
+ * handshake failure, or a malformed `robotName` that
+ * `nameToRadioAddress` rejects, reopens the relay's own plain USB
+ * session rather than leaving it stranded with no session at all;
+ * {@link DeviceRegistry.requestClose} on the synthesized endpoint does
+ * the same on a deliberate close.
+ *
+ * The whole operation, start to finish, runs under the relay's own
+ * `resourceKey` in {@link KeyedMutex.run} -- never a new key -- so it
+ * correctly queues behind (or blocks) a concurrent flash/open/close on
+ * the same physical relay; {@link DeviceRegistry.requestFlash} on a
+ * relay with an open synthesized child tears that child down first, for
+ * the same shared-port reason (documented at that call site).
+ * {@link maybeRecordKnownRobot} is deliberately never called for a
+ * via-relay identify -- the durable roster stays USB-sighting-only, per
+ * this ticket's own scope.
+ *
+ * Deliberately **not** here (sprint 8's own job; this is the OOP
+ * LOCAL-USB-RELAY subset only): mDNS discovery of relays/remote robots,
+ * a `RelayConnectionCoordinator`/registry client, and failover across
+ * multiple candidate relays. There is exactly one way to reach a robot
+ * here -- the one local USB relay already attached to this machine.
  */
 
 import type { AckNackEvent, DecodedLine, DeviceClassification, ParsedBanner, WireField } from "@robot-console/protocol";
-import { classifyBanner, encodeLine, isSequencedVerb } from "@robot-console/protocol";
+import { classifyBanner, encodeLine, isSequencedVerb, nameToRadioAddress } from "@robot-console/protocol";
 import {
   DeviceWatcher,
   type DaplinkDevice,
@@ -250,7 +306,7 @@ import { MbserialLink } from "./link/MbserialLink.js";
 import type { Link, LinkFactory, LinkSpec } from "./link/Link.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
 import { resolveRelease, fetchAndVerifyHex } from "./releases.js";
-import { flash } from "./flash.js";
+import { flash, resetOverSwd } from "./flash.js";
 import type {
   EndpointListEntry,
   LineDirection,
@@ -338,6 +394,23 @@ function identifyWithTimeout(link: Link, timeoutMs: number): Promise<ParsedBanne
   });
 }
 
+/** Default wait, after {@link resetOverSwd} resets a relay, before
+ * attempting a fresh `!CG`/`!GO` command-plane handshake against it --
+ * see {@link DeviceRegistryOptions.relayBootDelayMs}. Tests pass `0` so
+ * no real wall-clock time is spent. */
+const DEFAULT_RELAY_BOOT_DELAY_MS = 1500;
+
+/** Resolve after `ms` milliseconds -- the one place
+ * `openRobotViaRelay` waits for a just-reset relay's firmware to come
+ * back up before talking to it again. Not made a further injectable
+ * seam of its own (unlike {@link identifyWithTimeout}'s wrapped
+ * `Link.identify()`): {@link DeviceRegistryOptions.relayBootDelayMs}
+ * already gives tests full control over how long this actually waits
+ * (`0` in every test that exercises this path). */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // ---------------------------------------------------------------------
 // KeyedMutex -- serialize operations per resource key, not globally
 // ---------------------------------------------------------------------
@@ -406,6 +479,7 @@ export class KeyedMutex {
 interface EndpointSession {
   link: Link;
   unsubscribeLine: () => void;
+  unsubscribeRawLine: () => void;
   unsubscribeAckNack: () => void;
   unsubscribeError: () => void;
 }
@@ -494,23 +568,46 @@ interface EndpointState {
    * arriving mid-banner-wait would be swallowed by the link's banner
    * wait anyway. */
   identifying?: boolean;
+  /** OOP 2026-09-09: present only on an endpoint state synthesized by
+   * {@link DeviceRegistry.requestOpen}'s relay branch for a robot
+   * reached THROUGH a local USB relay -- see the module doc comment's
+   * "Robot-via-relay endpoints" section. Mirrors
+   * `wsMessages.ts`'s `EndpointListEntry.viaRelay` one to one;
+   * {@link toEntry} reads this field to decide whether to project
+   * `transport: "relay-radio"` and `viaRelay` (and omit `usb`) for this
+   * entry, instead of `transport: "usb"` plus a `usb` block. `device`
+   * on a via-relay state is always the *relay's* own `DaplinkDevice`
+   * (there is no separate physical device for the synthesized
+   * endpoint) -- read only for the relay's own `serialPort`/`hid`
+   * fields via {@link EndpointState.resourceKey}'s shared identity, not
+   * for anything robot-specific. */
+  viaRelay?: { relayEndpointId: string; robotName: string; channel: number; group: number } | undefined;
 }
 
 function toEntry(state: EndpointState): EndpointListEntry {
   const entry: EndpointListEntry = {
     endpointId: state.endpointId,
-    transport: "usb",
+    // OOP 2026-09-09: a via-relay synthesized endpoint has no USB
+    // identity of its own -- the relay owns the port -- so it projects
+    // transport: "relay-radio" and viaRelay instead of transport: "usb"
+    // plus a usb block. See the module doc comment's "Robot-via-relay
+    // endpoints" section.
+    transport: state.viaRelay ? "relay-radio" : "usb",
     resourceKey: state.resourceKey,
     classification: state.classification,
     name: state.name,
     role: state.classification.role,
     sessionOpen: state.sessionOpen,
-    usb: {
+  };
+  if (state.viaRelay) {
+    entry.viaRelay = state.viaRelay;
+  } else {
+    entry.usb = {
       serialNumber: state.device.serialNumber,
       displaySerial: state.device.displaySerial,
       port: state.device.serialPort?.path ?? null,
-    },
-  };
+    };
+  }
   if (state.nameError) {
     entry.nameError = state.nameError;
   }
@@ -701,6 +798,20 @@ export interface DeviceRegistryOptions {
    * identifies, so {@link EndpointListEntry.functions} is populated
    * without a user pressing the button. Default `true`. */
   autoRequestFunctions?: boolean;
+  /** OOP 2026-09-09: injectable `flash.ts` reset entry point, used to
+   * return a relay to its command plane before a fresh radio handshake
+   * -- see the module doc comment's "Robot-via-relay endpoints"
+   * section. Defaults to the real, DAPjs/node-hid-backed
+   * {@link resetOverSwd}. Tests substitute a fully synthetic fake,
+   * never real USB/SWD I/O -- same precedent as {@link flash}'s own
+   * injection. */
+  resetOverSwd?: typeof resetOverSwd;
+  /** OOP 2026-09-09: how long `openRobotViaRelay` waits after
+   * {@link resetOverSwd} resets a relay before attempting a fresh
+   * `!CG`/`!GO` handshake against it, giving the relay's firmware time
+   * to come back up. Defaults to {@link DEFAULT_RELAY_BOOT_DELAY_MS}.
+   * Tests pass `0` so this never costs real wall-clock time. */
+  relayBootDelayMs?: number;
 }
 
 /** Default period of the host's own `STATUS` poll on an open robot
@@ -728,6 +839,8 @@ export class DeviceRegistry {
   private readonly knownRobotsStore: KnownRobotsStore;
   private readonly statusPollIntervalMs: number;
   private readonly autoRequestFunctions: boolean;
+  private readonly resetOverSwdFn: typeof resetOverSwd;
+  private readonly relayBootDelayMs: number;
   private readonly mutex = new KeyedMutex();
   private readonly states = new Map<string, EndpointState>();
   private unsubscribeWatcher: (() => void) | undefined;
@@ -751,6 +864,8 @@ export class DeviceRegistry {
     this.knownRobotsStore = options.knownRobotsStore ?? new KnownRobotsStore();
     this.statusPollIntervalMs = options.statusPollIntervalMs ?? DEFAULT_STATUS_POLL_INTERVAL_MS;
     this.autoRequestFunctions = options.autoRequestFunctions ?? true;
+    this.resetOverSwdFn = options.resetOverSwd ?? resetOverSwd;
+    this.relayBootDelayMs = options.relayBootDelayMs ?? DEFAULT_RELAY_BOOT_DELAY_MS;
   }
 
   /** Start watching for devices. Idempotent-ish in practice (callers
@@ -939,8 +1054,29 @@ export class DeviceRegistry {
    * {@link EndpointState.resourceKey}'s own doc comment), and this
    * public API only ever receives an `endpointId` from a caller that
    * has no other resource to name. Every other {@link KeyedMutex} call
-   * site in this class keys the same way, for the same reason. */
-  async requestOpen(endpointId: string): Promise<void> {
+   * site in this class keys the same way, for the same reason.
+   *
+   * `target` (OOP 2026-09-09) routes through a relay instead: when
+   * present, `endpointId` must name a `classification.type === "relay"`
+   * endpoint, and this synthesizes a new robot-via-relay endpoint rather
+   * than opening a session on the relay itself -- see the module doc
+   * comment's "Robot-via-relay endpoints" section and
+   * {@link openRobotViaRelay}'s own doc comment for the full flow. Still
+   * keyed by `endpointId` here, which is exactly the relay's own
+   * `resourceKey` (a relay is plain USB, 1:1 like every other USB
+   * endpoint) -- the synthesized child's *different* `resourceKey`
+   * equality is established inside {@link openRobotViaRelay} itself, not
+   * here. */
+  async requestOpen(
+    endpointId: string,
+    target?: { robotName: string; radio?: { channel: number; group: number } },
+  ): Promise<void> {
+    if (target) {
+      await this.mutex.run(endpointId, async () => {
+        await this.openRobotViaRelay(endpointId, target);
+      });
+      return;
+    }
     await this.mutex.run(endpointId, async () => {
       const state = this.states.get(endpointId);
       if (!state) {
@@ -954,16 +1090,244 @@ export class DeviceRegistry {
     });
   }
 
-  /** Close an open session to an endpoint. No-op if not open. */
+  /** The `endpointId` of the synthesized robot-via-relay endpoint
+   * currently open for `relayEndpointId`, if any -- there is at most
+   * one at a time (see {@link openRobotViaRelay}'s switching behavior).
+   * A linear scan of {@link states} rather than a dedicated index: this
+   * sprint's scale (a handful of endpoints) makes that the simplest
+   * correct thing, matching {@link rememberedRobots}'s own precedent of
+   * deriving a projection from {@link states} rather than maintaining a
+   * second data structure in lockstep. */
+  private findSynthesizedEndpointId(relayEndpointId: string): string | undefined {
+    for (const [id, state] of this.states) {
+      if (state.viaRelay?.relayEndpointId === relayEndpointId) {
+        return id;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * `requestOpen`'s relay-routing branch (OOP 2026-09-09) -- see the
+   * module doc comment's "Robot-via-relay endpoints" section for the
+   * full rationale. Runs entirely under `relayEndpointId` (the relay's
+   * own `resourceKey`, since a relay is plain USB), so it correctly
+   * queues behind -- or blocks -- any concurrent
+   * `requestFlash`/`requestOpen`/`requestClose` against the same
+   * physical relay; no new synchronization mechanism.
+   *
+   * `relayState` is re-fetched from {@link states} here rather than
+   * passed in by the caller, exactly like every other mutex-guarded
+   * body in this class (`requestOpen`'s plain-USB branch,
+   * `requestClose`) -- the caller only has a synchronous snapshot from
+   * before this task's turn in the queue, which may be stale by the
+   * time it actually runs.
+   */
+  private async openRobotViaRelay(
+    relayEndpointId: string,
+    target: { robotName: string; radio?: { channel: number; group: number } },
+  ): Promise<void> {
+    const relayState = this.states.get(relayEndpointId);
+    if (!relayState) {
+      this.emitError(relayEndpointId, `no such device: ${relayEndpointId}`);
+      return;
+    }
+    if (relayState.classification.type !== "relay") {
+      this.emitError(
+        relayEndpointId,
+        `${relayEndpointId} is not classified as a relay -- cannot route to robot "${target.robotName}" through it`,
+      );
+      return;
+    }
+    const relayPortPath = relayState.device.serialPort?.path;
+    if (relayPortPath === undefined) {
+      this.emitError(relayEndpointId, `no serial port available for relay ${relayEndpointId}`);
+      return;
+    }
+
+    // (a) Switching robots (or simply reopening): any existing
+    // synthesized child for this relay is always torn down and
+    // discarded first, never retargeted in place -- Link has no
+    // retarget() method (link/Link.ts's own doc comment explains why).
+    const previousSynthesizedId = this.findSynthesizedEndpointId(relayEndpointId);
+    if (previousSynthesizedId) {
+      const previous = this.states.get(previousSynthesizedId);
+      if (previous) {
+        await this.teardownLink(previous);
+      }
+      this.states.delete(previousSynthesizedId);
+      this.emitDevices();
+    }
+
+    // (b) The radio link needs the relay's own physical port -- its
+    // plain USB console session (if any) must be closed first.
+    await this.teardownLink(relayState);
+    relayState.sessionError = undefined;
+    this.emitDevices();
+
+    // (c) A relay already in its data plane (!GO confirmed) has no
+    // in-band escape (link/RelayRadioLink.ts's own doc comment) --
+    // reset it via the DAPLink interface chip (which does not
+    // re-enumerate USB; see resetOverSwd's own doc comment) before
+    // attempting a fresh command-plane handshake. A reset failure is
+    // reported but not fatal -- the relay may already be sitting in its
+    // command plane (e.g. this is the very first open since attach).
+    const resetResult = await this.resetOverSwdFn(relayState.device);
+    if (!resetResult.ok) {
+      this.emitError(
+        relayEndpointId,
+        `relay reset before radio handshake failed: ${resetResult.error} -- continuing, the relay may already be ready`,
+      );
+    }
+    await delay(this.relayBootDelayMs);
+
+    // (d) Resolve the radio address: an explicit override, or the
+    // name's own derived default. A malformed name is reported and this
+    // whole attempt aborted -- the relay's own plain USB session is
+    // reopened rather than left closed.
+    let address: { channel: number; group: number };
+    if (target.radio) {
+      address = target.radio;
+    } else {
+      try {
+        address = nameToRadioAddress(target.robotName);
+      } catch (error) {
+        this.emitError(relayEndpointId, error instanceof Error ? error.message : String(error));
+        await this.connectAndIdentify(relayState);
+        return;
+      }
+    }
+
+    // (e) Open the radio link -- connect() runs the !CG/!GO
+    // command-plane handshake (RelayRadioLink.ts's own doc comment). A
+    // failure here means the relay never reached its data plane at
+    // all, so its own plain USB session is reopened rather than left
+    // closed with no obvious way back.
+    const link = this.createLink({
+      transport: "relay-radio",
+      resourceKey: relayState.resourceKey,
+      portPath: relayPortPath,
+      channel: address.channel,
+      group: address.group,
+    });
+
+    // The handshake's replies show in the RELAY's console (the child does
+    // not exist yet) -- see RelayRadioLink#handleRawLine.
+    const unsubscribeHandshake = link.onRawLine((raw) => {
+      this.emitLine(relayEndpointId, "rx", raw);
+    });
+    try {
+      await link.connect();
+    } catch (error) {
+      unsubscribeHandshake();
+      this.emitError(relayEndpointId, error instanceof Error ? error.message : String(error));
+      await link.close().catch(() => {});
+      await this.connectAndIdentify(relayState);
+      return;
+    }
+    unsubscribeHandshake();
+
+    // (f) The handshake succeeded -- synthesize a new endpoint for this
+    // robot (never a mutation of the relay's own EndpointState) and
+    // attach the session exactly as connectAndIdentify does.
+    const synthesizedId = `${relayEndpointId}-via-${target.robotName}`;
+    const synthesizedState: EndpointState = {
+      device: relayState.device,
+      endpointId: synthesizedId,
+      resourceKey: relayState.resourceKey,
+      name: target.robotName,
+      classification: classifyBanner(null),
+      sessionOpen: true,
+      viaRelay: {
+        relayEndpointId,
+        robotName: target.robotName,
+        channel: address.channel,
+        group: address.group,
+      },
+    };
+    this.states.set(synthesizedId, synthesizedState);
+    this.attachSession(synthesizedState, link);
+    synthesizedState.desyncNotified = false;
+    this.emitDevices();
+
+    // identify() never throws -- a robot that never replies to HELLO
+    // over the radio resolves null here, exactly like connectAndIdentify's
+    // own "connected, unresponsive" case; sessionOpen stays true either
+    // way (this is a normal, representable state, not an error).
+    this.emitLine(synthesizedId, "tx", "HELLO");
+    let banner = await link.identify();
+    if (banner === null && this.states.get(synthesizedId) === synthesizedState) {
+      // Measured on vitut -> gopiv (2026-09-09): the first HELLO after a
+      // relay reset + handshake can miss while the relay's data plane is
+      // still settling (radio traffic began ~2.5 s after the handshake
+      // confirmed) while a second HELLO a moment later answers at once.
+      // One retry, mirroring reidentifyAfterFlash's own single retry.
+      await new Promise((resolve) => setTimeout(resolve, this.relayBootDelayMs));
+      if (this.states.get(synthesizedId) === synthesizedState) {
+        this.emitLine(synthesizedId, "tx", "HELLO");
+        banner = await link.identify();
+      }
+    }
+    if (this.states.get(synthesizedId) !== synthesizedState) {
+      // Switched or closed while identifying -- whichever call did that
+      // already owns tearing down this link.
+      return;
+    }
+    this.echoBanner(synthesizedState, banner);
+    synthesizedState.classification = classifyBanner(banner);
+    if (banner) {
+      synthesizedState.sessionError = undefined;
+    } else {
+      synthesizedState.sessionError =
+        `no reply from ${target.robotName} over the radio -- is it on and listening on ` +
+        `channel ${address.channel} group ${address.group}?`;
+    }
+    // Sprint 5 write gate deliberately NOT applied here -- a via-relay
+    // identify never records a KnownRobotsStore sighting; see the
+    // module doc comment's "Robot-via-relay endpoints" section and
+    // maybeRecordKnownRobot's own doc comment for the USB-only scope.
+    this.emitDevices();
+    this.startRobotProbes(synthesizedState);
+  }
+
+  /**
+   * Close an open session to an endpoint. No-op if not open.
+   *
+   * OOP 2026-09-09: for a robot-via-relay synthesized endpoint (`state.viaRelay`
+   * set -- see the module doc comment's "Robot-via-relay endpoints"
+   * section), closing means the endpoint is gone entirely, not merely
+   * session-closed -- unlike a plain USB endpoint, which stays listed
+   * with `sessionOpen: false` after this. It is torn down and deleted
+   * from {@link states}, then the relay's own plain USB console session
+   * is reopened automatically (if the relay is still attached and not
+   * already open), so the relay isn't left stranded with no session at
+   * all. Keyed by `state.resourceKey` (the relay's own key for a
+   * synthesized endpoint, `endpointId` itself for a plain one) rather
+   * than `endpointId` directly, so this correctly queues behind -- or
+   * blocks -- a concurrent flash/open/close on the same physical relay,
+   * matching {@link openRobotViaRelay}'s own keying.
+   */
   async requestClose(endpointId: string): Promise<void> {
-    await this.mutex.run(endpointId, async () => {
+    const stateBeforeQueueing = this.states.get(endpointId);
+    const mutexKey = stateBeforeQueueing?.resourceKey ?? endpointId;
+    await this.mutex.run(mutexKey, async () => {
       const state = this.states.get(endpointId);
       if (!state) {
         this.emitError(endpointId, `no such device: ${endpointId}`);
         return;
       }
       await this.teardownLink(state);
+      const viaRelay = state.viaRelay;
+      if (!viaRelay) {
+        this.emitDevices();
+        return;
+      }
+      this.states.delete(endpointId);
       this.emitDevices();
+      const relayState = this.states.get(viaRelay.relayEndpointId);
+      if (relayState && !relayState.sessionOpen) {
+        await this.connectAndIdentify(relayState);
+      }
     });
   }
 
@@ -1186,6 +1550,23 @@ export class DeviceRegistry {
     this.setFlashPhase(state, endpointId, source, source.kind === "release" ? "fetching" : "verifying");
 
     try {
+      // OOP 2026-09-09: if this is a relay with an open robot-via-relay
+      // synthesized child (see the module doc comment's "Robot-via-relay
+      // endpoints" section), that child shares this relay's own
+      // resourceKey -- requestFlash already queues behind it via the
+      // shared KeyedMutex -- but its session also holds the same
+      // physical port a flash needs, so it must be torn down and
+      // removed first, not just left dangling once the relay itself is
+      // reflashed out from under it.
+      const synthesizedId = this.findSynthesizedEndpointId(state.endpointId);
+      if (synthesizedId) {
+        const synthesized = this.states.get(synthesizedId);
+        if (synthesized) {
+          await this.teardownLink(synthesized);
+        }
+        this.states.delete(synthesizedId);
+      }
+
       // Tear down any open link before touching config/network/SWD --
       // flash.ts's DAPjs session must never contend with an open serial
       // port over the same physical board (see this class's own
@@ -1430,6 +1811,12 @@ export class DeviceRegistry {
       unsubscribeLine: link.onLine((decoded) => {
         this.handleInboundLine(state, decoded);
       }),
+      // OOP 2026-09-09: non-protocol text (a relay's `#` command-plane
+      // replies, echoes, other dialects) is shown verbatim -- see
+      // LineRouter's onUnrouted.
+      unsubscribeRawLine: link.onRawLine((raw) => {
+        this.emitLine(state.endpointId, "rx", raw);
+      }),
       // Sprint 6 ticket 003: re-emit a snapshot on every ack/nack so a
       // corrected seq/pendingCount reaches connected clients promptly --
       // see the module doc comment's own "Command routing and
@@ -1486,7 +1873,24 @@ export class DeviceRegistry {
     for (const device of event.removed) {
       const endpointId = usbEndpointId(device.serialNumber);
       const state = this.states.get(endpointId);
+      // OOP 2026-09-09: capture this too, before any later step in this
+      // diff gets a chance to change it -- same "capture before the
+      // mutex turn actually runs" precedent as `state` itself (see the
+      // module doc comment's Detach flow). A removed relay's synthesized
+      // robot-via-relay child (if any) shares its resourceKey and must
+      // be torn down and discarded right alongside it -- see the module
+      // doc comment's "Robot-via-relay endpoints" section.
+      const synthesizedId = this.findSynthesizedEndpointId(endpointId);
       void this.mutex.run(endpointId, async () => {
+        if (synthesizedId) {
+          const synthesized = this.states.get(synthesizedId);
+          if (synthesized) {
+            await this.teardownLink(synthesized).catch(() => {});
+          }
+          if (this.states.get(synthesizedId) === synthesized) {
+            this.states.delete(synthesizedId);
+          }
+        }
         if (state) {
           await this.teardownLink(state).catch(() => {});
         }
@@ -1554,6 +1958,46 @@ export class DeviceRegistry {
    * "connected, unresponsive", not an error -- update state
    * differently, per this module's own doc comment.
    */
+  /** Attach `link`'s line/rawLine/ackNack/error subscriptions onto
+   * `state.session` (OOP 2026-09-09) -- the exact block
+   * {@link connectAndIdentify} used to build inline, extracted so
+   * {@link openRobotViaRelay}'s relay-target flow can share it verbatim
+   * rather than duplicating it. Deliberately does not touch
+   * `sessionOpen`/`sessionError`/`desyncNotified` -- every caller sets
+   * those itself immediately after, exactly as `connectAndIdentify` did
+   * before this was extracted (a via-relay open sets `sessionOpen` at
+   * state-construction time instead, since by the point this runs its
+   * `connect()`/handshake has already succeeded). */
+  private attachSession(state: EndpointState, link: Link): void {
+    state.session = {
+      link,
+      unsubscribeLine: link.onLine((decoded) => {
+        this.handleInboundLine(state, decoded);
+      }),
+      // OOP 2026-09-09: non-protocol text (a relay's `#` command-plane
+      // replies, echoes, other dialects) is shown verbatim -- see
+      // LineRouter's onUnrouted.
+      unsubscribeRawLine: link.onRawLine((raw) => {
+        this.emitLine(state.endpointId, "rx", raw);
+      }),
+      // Sprint 6 ticket 003: re-emit a snapshot on every ack/nack so a
+      // corrected seq/pendingCount reaches connected clients promptly --
+      // see the module doc comment's own "Command routing and
+      // sequencing-state projection" section for why this is bounded to
+      // ack/nack events, not fired per send or per inbound line.
+      // OOP fix (defect 1): also surface a desynced nack as a one-time
+      // "resync needed" error -- see reportDesyncIfNeeded's own doc
+      // comment.
+      unsubscribeAckNack: link.onAckNack((event) => {
+        this.emitDevices();
+        this.reportDesyncIfNeeded(state, event);
+      }),
+      unsubscribeError: link.onError((err) => {
+        this.handleLinkError(state, err);
+      }),
+    };
+  }
+
   private async connectAndIdentify(state: EndpointState): Promise<void> {
     const portPath = state.device.serialPort?.path;
     if (!portPath) {
@@ -1604,27 +2048,7 @@ export class DeviceRegistry {
     // no repeated open/close cycle on this physical port for the OS to
     // contend over, whether identify() succeeds, comes back null, or is
     // retried later.
-    state.session = {
-      link,
-      unsubscribeLine: link.onLine((decoded) => {
-        this.handleInboundLine(state, decoded);
-      }),
-      // Sprint 6 ticket 003: re-emit a snapshot on every ack/nack so a
-      // corrected seq/pendingCount reaches connected clients promptly --
-      // see the module doc comment's own "Command routing and
-      // sequencing-state projection" section for why this is bounded to
-      // ack/nack events, not fired per send or per inbound line.
-      // OOP fix (defect 1): also surface a desynced nack as a one-time
-      // "resync needed" error -- see reportDesyncIfNeeded's own doc
-      // comment.
-      unsubscribeAckNack: link.onAckNack((event) => {
-        this.emitDevices();
-        this.reportDesyncIfNeeded(state, event);
-      }),
-      unsubscribeError: link.onError((err) => {
-        this.handleLinkError(state, err);
-      }),
-    };
+    this.attachSession(state, link);
     state.sessionOpen = true;
     state.sessionError = undefined;
     state.desyncNotified = false;
@@ -1687,6 +2111,7 @@ export class DeviceRegistry {
         origin = "poll";
       }
       state.robotStatus = parseStatusReply(decoded.fields);
+      this.adoptStatusNext(state, state.robotStatus);
       this.emitLine(state.endpointId, "rx", text, origin);
       this.emitDevices();
       return;
@@ -1721,6 +2146,29 @@ export class DeviceRegistry {
       return;
     }
     this.emitLine(state.endpointId, "rx", text);
+  }
+
+  /**
+   * OOP 2026-09-09: protocol.md §8.7 -- `status next=<expectedNext_>`
+   * exists precisely so a host can realign its counter without a
+   * `HELLO`. With nothing pending, the id this session would send next
+   * must equal what the robot expects next; if it does not (the robot
+   * reset, or something out-of-band talked to it), adopt the robot's
+   * number silently. Never touched while a command is in flight -- the
+   * ack/nack path owns that case.
+   */
+  private adoptStatusNext(state: EndpointState, status: RobotStatus): void {
+    const session = state.session?.link.session;
+    const nextText = status.fields["next"];
+    if (!session || nextText === undefined || session.pendingCount > 0) {
+      return;
+    }
+    const next = Number(nextText);
+    if (!Number.isInteger(next) || next < 1 || next === session.nextSequenceId) {
+      return;
+    }
+    session.resyncTo(next);
+    state.desyncNotified = false;
   }
 
   /** Echo a `HELLO` banner reply into the console (see
@@ -1820,13 +2268,28 @@ export class DeviceRegistry {
    * a held button does not flood the console with the same line.
    */
   private reportDesyncIfNeeded(state: EndpointState, event: AckNackEvent): void {
-    if (event.kind !== "nack" || !event.desynced || state.desyncNotified) {
+    if (event.kind === "ack") {
+      // Progress: a later reset is a new episode worth reporting again.
+      state.desyncNotified = false;
+      return;
+    }
+    if (event.gaveUp !== undefined) {
+      this.emitError(
+        state.endpointId,
+        `The robot kept rejecting "${event.gaveUp.replace(/\n$/, "")}" as malformed -- dropped it and continued at #${event.n}.`,
+      );
+      return;
+    }
+    if (!event.desynced || state.desyncNotified) {
       return;
     }
     state.desyncNotified = true;
+    // OOP 2026-09-09: the Session has already adopted the robot's own
+    // next-expected id (Session.resyncTo) -- this is a notice, not a
+    // request for the user to do anything.
     this.emitError(
       state.endpointId,
-      "The robot restarted its command counter -- press HELLO to resync.",
+      `The robot restarted its command counter -- resynced automatically, continuing at #${event.n}.`,
     );
   }
 
@@ -1894,6 +2357,7 @@ export class DeviceRegistry {
     state.robotStatus = undefined;
     state.functions = undefined;
     state.session?.unsubscribeLine();
+    state.session?.unsubscribeRawLine();
     state.session?.unsubscribeAckNack();
     state.session?.unsubscribeError();
     const link = state.session?.link;

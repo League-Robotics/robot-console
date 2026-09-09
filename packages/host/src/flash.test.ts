@@ -11,6 +11,7 @@ import {
   isUniversalHex,
   isValidIntelHexText,
   parseDetailsTxt,
+  resetOverSwd,
 } from "./flash.js";
 import type { VolumeCandidate } from "./flash.js";
 import type { FlashPhase } from "./flash.js";
@@ -446,11 +447,13 @@ function createFakeDapLink(overrides?: {
   connect?: () => Promise<void>;
   disconnect?: () => Promise<void>;
   flash?: (buffer: Buffer) => Promise<void>;
+  reset?: () => Promise<boolean>;
 }): DAPLink {
   const progressListeners: Array<() => void> = [];
   const fake = {
     connect: overrides?.connect ?? (async () => {}),
     disconnect: overrides?.disconnect ?? (async () => {}),
+    reset: overrides?.reset ?? (async () => true),
     on(event: string, listener: () => void) {
       if (event === DapJs.DAPLink.EVENT_PROGRESS) {
         progressListeners.push(listener);
@@ -476,6 +479,85 @@ function createFakeDapLink(overrides?: {
   };
   return fake as unknown as DAPLink;
 }
+
+describe("resetOverSwd", () => {
+  // OOP 2026-09-09: relay-via-radio support -- see this function's own
+  // doc comment. Seam-level only, same precedent as flashOverSwd's own
+  // describe block above.
+
+  it("calls connect, then reset, then disconnect, in that order, and resolves ok", async () => {
+    const calls: string[] = [];
+    const dapLink = createFakeDapLink({
+      connect: async () => {
+        calls.push("connect");
+      },
+      reset: async () => {
+        calls.push("reset");
+        return true;
+      },
+      disconnect: async () => {
+        calls.push("disconnect");
+      },
+    });
+
+    const result = await resetOverSwd(device(), { createDapLink: () => dapLink });
+
+    expect(result).toEqual({ ok: true });
+    expect(calls).toEqual(["connect", "reset", "disconnect"]);
+  });
+
+  it("reports a classified failure without calling the factory when no HID path is available", async () => {
+    const createDapLink = vi.fn();
+    const result = await resetOverSwd(device({ hid: {} }), { createDapLink });
+    expect(result).toEqual({ ok: false, error: expect.any(String) });
+    expect(createDapLink).not.toHaveBeenCalled();
+  });
+
+  it("reports the connect() failure as the error, never throws", async () => {
+    const boom = new Error("mock: CMSIS-DAP open failed");
+    const dapLink = createFakeDapLink({
+      connect: async () => {
+        throw boom;
+      },
+    });
+
+    const result = await resetOverSwd(device(), { createDapLink: () => dapLink });
+
+    expect(result).toEqual({ ok: false, error: boom.message });
+  });
+
+  it("still disconnects, and reports the failure, when reset() itself throws", async () => {
+    const calls: string[] = [];
+    const boom = new Error("mock: reset failed");
+    const dapLink = createFakeDapLink({
+      connect: async () => {
+        calls.push("connect");
+      },
+      reset: async () => {
+        calls.push("reset");
+        throw boom;
+      },
+      disconnect: async () => {
+        calls.push("disconnect");
+      },
+    });
+
+    const result = await resetOverSwd(device(), { createDapLink: () => dapLink });
+
+    expect(result).toEqual({ ok: false, error: boom.message });
+    expect(calls).toEqual(["connect", "reset", "disconnect"]);
+  });
+
+  it("never rejects the returned promise even when the factory throws synchronously", async () => {
+    await expect(
+      resetOverSwd(device(), {
+        createDapLink: () => {
+          throw new Error("boom");
+        },
+      }),
+    ).resolves.toMatchObject({ ok: false });
+  });
+});
 
 describe("flashViaMsd", () => {
   it("writes hex bytes to <volumePath>/MICROBIT.hex via the injected writer", async () => {

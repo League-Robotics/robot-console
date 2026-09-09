@@ -32,6 +32,8 @@ import driveControlsSource from "../components/DriveControls.tsx?raw";
 import commandStripSource from "../components/CommandStrip.tsx?raw";
 import sequencingIndicatorSource from "../components/SequencingIndicator.tsx?raw";
 import estopControlSource from "../components/EstopControl.tsx?raw";
+import statusPanelSource from "../components/StatusPanel.tsx?raw";
+import functionsPanelSource from "../components/FunctionsPanel.tsx?raw";
 
 const FILES_UNDER_TEST: Record<string, string> = {
   "pages/RobotPage.tsx": robotPageSource,
@@ -39,6 +41,11 @@ const FILES_UNDER_TEST: Record<string, string> = {
   "components/CommandStrip.tsx": commandStripSource,
   "components/SequencingIndicator.tsx": sequencingIndicatorSource,
   "components/EstopControl.tsx": estopControlSource,
+  // OOP 2026-09-09: the two panels added today are held to the same
+  // property -- the robot page is ONE screen for USB, radio-via-relay,
+  // and (later) WiFi, so nothing it mounts may know which it is on.
+  "components/StatusPanel.tsx": statusPanelSource,
+  "components/FunctionsPanel.tsx": functionsPanelSource,
 };
 
 /** Matches a quoted `"usb"` literal (either quote style), not merely

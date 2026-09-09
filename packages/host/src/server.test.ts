@@ -95,6 +95,20 @@ class FakeLink implements Link {
     };
   }
 
+  private rawLineListeners = new Set<(raw: string) => void>();
+  onRawLine(listener: (raw: string) => void): () => void {
+    this.rawLineListeners.add(listener);
+    return () => {
+      this.rawLineListeners.delete(listener);
+    };
+  }
+
+  emitRawLine(raw: string): void {
+    for (const listener of this.rawLineListeners) {
+      listener(raw);
+    }
+  }
+
   onAckNack(listener: (event: AckNackEvent) => void): () => void {
     this.ackNackListeners.add(listener);
     return () => {
@@ -375,6 +389,72 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
     link.emitLine({ kind: "line", verb: "status", fields: ["mode=idle"] });
     const reply = await connected.messages.waitFor((m) => m.type === "line" && m.direction === "rx");
     expect(reply).toEqual({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: "status mode=idle" });
+  });
+
+  it("forwards robotName and radio from a session-open message to registry.requestOpen as its target argument (OOP 2026-09-09)", async () => {
+    // deviceRegistry.ts's own relay-routing behavior for `target` is
+    // covered in deviceRegistry.test.ts's "robot-via-relay endpoints"
+    // describe block -- this test only proves server.ts's wiring: the
+    // client-sent robotName/radio fields reach registry.requestOpen
+    // unchanged, as its second argument.
+    const link = new FakeLink(async () => banner());
+    const registry = buildRegistry(link);
+    const requestOpenSpy = vi.spyOn(registry, "requestOpen");
+    server = await startServer({ port: 0, registry, firmwareConfig: NO_FIRMWARE });
+    const connected = await connect(server.url.replace("http://", "ws://"));
+    ws = connected.ws;
+
+    await connected.messages.waitFor((m) => m.type === "endpoints");
+
+    ws.send(
+      JSON.stringify({
+        type: "session-open",
+        endpointId: "usb-SERIAL-A",
+        robotName: "gopiv",
+        radio: { channel: 55, group: 114 },
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(requestOpenSpy).toHaveBeenCalledWith("usb-SERIAL-A", {
+        robotName: "gopiv",
+        radio: { channel: 55, group: 114 },
+      });
+    });
+  });
+
+  it("session-open with robotName but no radio still forwards a target (radio omitted)", async () => {
+    const link = new FakeLink(async () => banner());
+    const registry = buildRegistry(link);
+    const requestOpenSpy = vi.spyOn(registry, "requestOpen");
+    server = await startServer({ port: 0, registry, firmwareConfig: NO_FIRMWARE });
+    const connected = await connect(server.url.replace("http://", "ws://"));
+    ws = connected.ws;
+
+    await connected.messages.waitFor((m) => m.type === "endpoints");
+
+    ws.send(JSON.stringify({ type: "session-open", endpointId: "usb-SERIAL-A", robotName: "gopiv" }));
+
+    await vi.waitFor(() => {
+      expect(requestOpenSpy).toHaveBeenCalledWith("usb-SERIAL-A", { robotName: "gopiv" });
+    });
+  });
+
+  it("session-open with no robotName still forwards to registry.requestOpen with no target argument", async () => {
+    const link = new FakeLink(async () => banner());
+    const registry = buildRegistry(link);
+    const requestOpenSpy = vi.spyOn(registry, "requestOpen");
+    server = await startServer({ port: 0, registry, firmwareConfig: NO_FIRMWARE });
+    const connected = await connect(server.url.replace("http://", "ws://"));
+    ws = connected.ws;
+
+    await connected.messages.waitFor((m) => m.type === "endpoints");
+
+    ws.send(JSON.stringify({ type: "session-open", endpointId: "usb-SERIAL-A" }));
+
+    await vi.waitFor(() => {
+      expect(requestOpenSpy).toHaveBeenCalledWith("usb-SERIAL-A");
+    });
   });
 
   it("routes a send-command message to registry.sendCommand: dispatches sequenced/unsequenced verbs and resyncs HELLO (OOP fix, defect 2)", async () => {

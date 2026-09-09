@@ -5,10 +5,41 @@
   max-width: 46rem;
 }
 
+/* Connected: the page hands the robot-via-relay endpoint to RobotPage --
+ * the SAME component DevicePage renders for a USB robot, and DevicePage
+ * renders it with no wrapper at all, so the robot's two-column layout
+ * gets the full window. This page's own 46rem shell (right for the
+ * connect bar and the relay's raw console) must not squeeze it into one
+ * narrow column, so the cap is lifted whenever a robot is on screen. */
+.relay-page-connected {
+  max-width: none;
+}
+
 .relay-page-hint {
   margin: 0;
   color: var(--rc-text-muted);
   font-size: 0.9rem;
+}
+
+.relay-page-alert {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--rc-danger, #c0392b);
+  border-radius: 0.4rem;
+  color: var(--rc-danger, #c0392b);
+  font-size: 0.9rem;
+}
+
+.relay-connected-status {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.relay-connect-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 1rem;
 }
 
 .relay-robot-picker {
@@ -30,4 +61,27 @@
 
 .relay-robot-picker select:disabled {
   color: var(--rc-text-muted);
+}
+
+.relay-radio-fields {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.relay-radio-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--rc-text-muted);
+}
+
+.relay-radio-fields input {
+  width: 4.5rem;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.3rem 0.5rem;
+  border-radius: 0.4rem;
+  font-size: 0.9rem;
 }

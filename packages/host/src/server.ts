@@ -378,11 +378,21 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       }
       switch (message.type) {
         case "session-open":
-          // `robotName` (reserved for sprint 7) is ignored -- every
-          // endpoint this sprint is a direct USB device, so there is no
-          // robot to route to. See wsMessages.ts's SessionOpenMessage
-          // doc comment.
-          void registry.requestOpen(message.endpointId);
+          // OOP 2026-09-09: `robotName` (reserved since sprint 4) is now
+          // live -- forwarded to requestOpen as its `target` argument,
+          // which routes through a relay endpoint's radio instead of a
+          // plain USB open. `radio` only makes sense alongside
+          // `robotName` (see wsMessages.ts's SessionOpenMessage doc
+          // comment), so it rides along inside the same conditional
+          // rather than being forwarded independently.
+          if (message.robotName !== undefined) {
+            void registry.requestOpen(message.endpointId, {
+              robotName: message.robotName,
+              ...(message.radio !== undefined ? { radio: message.radio } : {}),
+            });
+          } else {
+            void registry.requestOpen(message.endpointId);
+          }
           break;
         case "session-close":
           void registry.requestClose(message.endpointId);

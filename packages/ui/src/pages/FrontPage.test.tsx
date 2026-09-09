@@ -393,6 +393,59 @@ describe("EndpointCard flash affordance (ticket 012-002)", () => {
   });
 });
 
+describe("EndpointCard for a relay-radio (viaRelay) entry (added out-of-process, 2026-09-09)", () => {
+  function relayFixture(): EndpointListEntry {
+    return {
+      endpointId: "usb-RELAY-A",
+      transport: "usb",
+      resourceKey: "usb-RELAY-A",
+      classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role" },
+      name: "gopiv",
+      role: "RADIORELAY",
+      sessionOpen: false,
+      usb: { serialNumber: "RELAY-A-FULL", displaySerial: "0003", port: "/dev/cu.usbmodemB" },
+    };
+  }
+
+  function childFixture(): EndpointListEntry {
+    return {
+      endpointId: "usb-RELAY-A-via-vevav",
+      transport: "relay-radio",
+      resourceKey: "usb-RELAY-A",
+      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
+      name: "vevav",
+      role: "NEZHA2",
+      sessionOpen: true,
+      viaRelay: { relayEndpointId: "usb-RELAY-A", robotName: "vevav", channel: 55, group: 114 },
+    };
+  }
+
+  it("shows 'via relay <name>' instead of a port/device-id line, using the relay's own display name", () => {
+    const el = mount(withRouter(<EndpointsList status="open" devices={[relayFixture(), childFixture()]} />));
+
+    const card = el.querySelector('[data-testid="device-usb-RELAY-A-via-vevav"]');
+    expect(card).not.toBeNull();
+    expect(card!.textContent).toContain("via relay gopiv");
+    expect(card!.textContent).not.toContain("No serial port");
+    expect(card!.querySelector("dt")?.textContent).toBe("Role");
+  });
+
+  it("links to /d/<childId> like any other endpoint", () => {
+    const el = mount(withRouter(<EndpointsList status="open" devices={[relayFixture(), childFixture()]} />));
+
+    const link = el.querySelector('[data-testid="device-usb-RELAY-A-via-vevav"]');
+    expect(link?.tagName).toBe("A");
+    expect(link?.getAttribute("href")).toBe("/d/usb-RELAY-A-via-vevav");
+  });
+
+  it("falls back to the bare relay id if the relay itself isn't in the snapshot", () => {
+    const el = mount(withRouter(<EndpointsList status="open" devices={[childFixture()]} />));
+
+    const card = el.querySelector('[data-testid="device-usb-RELAY-A-via-vevav"]');
+    expect(card!.textContent).toContain("via relay usb-RELAY-A");
+  });
+});
+
 describe("RememberedRobotsSection (ticket 005)", () => {
   it("renders a remembered robot's name and lastSeenAt, with no Link for that card", () => {
     const robot = rememberedRobotFixture("wobin");

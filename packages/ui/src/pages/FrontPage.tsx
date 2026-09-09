@@ -34,6 +34,20 @@
  * `DevicesTab.tsx`/`ConsoleTab.tsx` components ticket 008 redistributed
  * from are deleted, not kept around unrouted.
  *
+ * **Relay-radio entries (added out-of-process, 2026-09-09):** the host
+ * publishes a child endpoint for a robot reached through a relay
+ * (`transport: "relay-radio"`, `viaRelay: { relayEndpointId, ... }` --
+ * `wsMessages.ts`, frozen elsewhere) alongside the relay's own entry.
+ * Such a child has no `usb` block (the relay owns the physical port),
+ * so `EndpointCard` renders "via relay `<name>`" in place of the
+ * Port/Device ID rows rather than a misleading "No serial port" -- the
+ * relay's own display name is looked up from the same `devices` list
+ * this component already has (`EndpointsList`'s `relayNameById`), never
+ * a bare id when the relay is actually present in the snapshot. The
+ * card's `Link` itself needs no special case: `/d/${device.endpointId}`
+ * already resolves to the child's own route exactly like any other
+ * endpoint.
+ *
  * Split into a connected `FrontPage` (reads `WsProvider`'s selectors)
  * and a presentational `EndpointsList`/`EndpointCard`, mirroring the
  * old Devices tab's own split, so the list states can be exercised
@@ -112,7 +126,10 @@ export function EndpointsList({
         <ul className="devices-list">
           {devices.map((device) => (
             <li key={device.endpointId}>
-              <EndpointCard device={device} />
+              <EndpointCard
+                device={device}
+                relayName={device.viaRelay ? relayDisplayName(devices, device.viaRelay.relayEndpointId) : undefined}
+              />
             </li>
           ))}
         </ul>
@@ -124,6 +141,17 @@ export function EndpointsList({
   );
 }
 
+/** The relay's own display name for a `viaRelay.relayEndpointId`, per
+ * `nameDisplay`'s own rules -- falls back to the bare id only when the
+ * relay itself isn't (or is no longer) present in this snapshot, which
+ * should not happen in practice (the relay stays listed, session-closed,
+ * while its child exists) but must never crash a card over a lookup
+ * miss. */
+function relayDisplayName(devices: EndpointListEntry[], relayEndpointId: string): string {
+  const relay = devices.find((candidate) => candidate.endpointId === relayEndpointId);
+  return relay ? nameDisplay(relay).text : relayEndpointId;
+}
+
 /** One endpoint's card -- the informational region is a `Link` to its
  * device page, per the "an arrow on the box, or maybe you just click
  * the box" stakeholder note (`sprint.md`'s SUC-001): the student can
@@ -131,10 +159,19 @@ export function EndpointsList({
  * it. A flash action row (ticket 012-002) is a sibling of the `Link`,
  * inside the same `<li>` -- not nested inside the `<a>`, which would
  * put a `<button>`/`<input>` inside an anchor (invalid HTML that would
- * also fight the router's own click handling). */
-function EndpointCard({ device }: { device: EndpointListEntry }) {
+ * also fight the router's own click handling).
+ *
+ * `relayName` (added out-of-process, 2026-09-09) is passed down rather
+ * than re-derived here because computing it needs the full `devices`
+ * list (see `relayDisplayName`), which `EndpointsList` already has and
+ * this card doesn't. `undefined` for any device that isn't a
+ * `viaRelay` child -- a required (not optional) prop typed
+ * `string | undefined` so passing an explicit `undefined` stays legal
+ * under `exactOptionalPropertyTypes`. */
+function EndpointCard({ device, relayName }: { device: EndpointListEntry; relayName: string | undefined }) {
   const name = nameDisplay(device);
   const role = roleDisplay(device);
+  const viaRelay = device.viaRelay;
 
   return (
     <>
@@ -160,14 +197,23 @@ function EndpointCard({ device }: { device: EndpointListEntry }) {
             <dt>Role</dt>
             <dd>{role}</dd>
           </div>
-          <div>
-            <dt>Port</dt>
-            <dd>{device.usb?.port ?? "No serial port"}</dd>
-          </div>
-          <div>
-            <dt>Device ID</dt>
-            <dd title={device.usb?.serialNumber}>{device.usb?.displaySerial}</dd>
-          </div>
+          {viaRelay ? (
+            <div>
+              <dt>Connection</dt>
+              <dd>{`via relay ${relayName ?? viaRelay.relayEndpointId}`}</dd>
+            </div>
+          ) : (
+            <>
+              <div>
+                <dt>Port</dt>
+                <dd>{device.usb?.port ?? "No serial port"}</dd>
+              </div>
+              <div>
+                <dt>Device ID</dt>
+                <dd title={device.usb?.serialNumber}>{device.usb?.displaySerial}</dd>
+              </div>
+            </>
+          )}
         </dl>
 
         {device.sessionError && (

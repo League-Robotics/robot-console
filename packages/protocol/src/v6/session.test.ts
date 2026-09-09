@@ -8,6 +8,7 @@ import {
   Session,
   SessionError,
   SEQUENCED_VERBS,
+  MAX_RESENDS,
   type AckNackEvent,
 } from "./session.js";
 
@@ -439,7 +440,7 @@ describe("trailing nack after an unsequenced verb's own reply (protocol.md S8.3'
 // ---------------------------------------------------------------------
 
 describe("a robot whose sequence reset below every pending id is a desync, not a lost frame", () => {
-  it("nack 1 with every pending id above 1 does not retransmit, and is flagged desynced", () => {
+  it("nack 1 with every pending id above 1 does not retransmit, is flagged desynced, and resyncs to 1 (OOP 2026-09-09)", () => {
     const session = new Session();
     session.send("WHEELS_V", [100, 100, 1000]); // #1
     session.handleReply(decodeLine("ack 1 0 none") as DecodedLine); // confirm #1 -- seq=1
@@ -448,29 +449,22 @@ describe("a robot whose sequence reset below every pending id is a desync, not a
     expect(session.pendingCount).toBe(2);
 
     // The robot rebooted mid-session: its own expectedNext_ reset to 1.
-    // The host holds nothing at id 1 anymore (already confirmed
-    // pre-reset) -- #2/#3 can never satisfy a robot asking for #1, and
-    // retransmitting them would just re-trigger the identical nack
-    // forever (the reported bug).
+    // #2/#3 can never satisfy a robot asking for #1, and retransmitting
+    // them would just re-trigger the identical nack forever.
     const event = session.handleReply(
       decodeLine("nack 1 0 none") as DecodedLine,
     ) as AckNackEvent;
     expect(event.kind).toBe("nack");
     expect(event.desynced).toBe(true);
     expect(event.resend).toEqual([]);
-    // Nothing worth holding onto -- none of it will ever be honored.
     expect(session.pendingCount).toBe(0);
+    // The robot said what it wants next; the session simply adopts it.
+    expect(session.nextSequenceId).toBe(1);
+    expect(session.seq).toBe(0);
+    expect(session.send("WHEELS_V", [100, 100, 1000])).toBe("WHEELS_V 100 100 1000 #1\n");
   });
 
-  it("a held-button style repeat: each new send while still desynced is flagged again, and none of them are ever resent", () => {
-    // Mirrors the actual bug's traffic pattern more closely than a bare
-    // repeated nack with nothing sent in between (see the next test for
-    // that narrower case): a drive button held down keeps sending one
-    // command at a time into an already-desynced session. Each single
-    // send/nack round trip must independently detect the desync and
-    // resend nothing -- this is what "does not produce an unbounded
-    // resend stream" means in practice, not just "not on the very first
-    // call".
+  it("a held-button style repeat converges: after the desync the next send carries the robot's expected id and a further nack is an ordinary resend", () => {
     const session = new Session();
     session.send("WHEELS_V", [100, 100, 1000]); // #1
     session.handleReply(decodeLine("ack 1 0 none") as DecodedLine); // confirm #1 -- seq=1
@@ -480,19 +474,19 @@ describe("a robot whose sequence reset below every pending id is a desync, not a
     expect(event.resend).toEqual([]);
     expect(event.desynced).toBe(true);
 
-    session.send("WHEELS_V", [100, 100, 1000]); // #3 -- still desynced
+    const resent = session.send("WHEELS_V", [100, 100, 1000]); // now #1, which the robot expects
+    expect(resent).toBe("WHEELS_V 100 100 1000 #1\n");
+    // A nack 1 now (a genuinely lost frame) is satisfiable: resend #1.
     event = session.handleReply(decodeLine("nack 1 0 none") as DecodedLine) as AckNackEvent;
-    expect(event.resend).toEqual([]);
-    expect(event.desynced).toBe(true);
+    expect(event.desynced).toBe(false);
+    expect(event.resend).toEqual([resent]);
+    // And the ack lands normally.
+    session.handleReply(decodeLine("ack 1 0 none") as DecodedLine);
+    expect(session.pendingCount).toBe(0);
+    expect(session.nextSequenceId).toBe(2);
   });
 
-  it("once the doomed pending table is cleared, a bare repeated nack with nothing newly sent is not re-flagged (nothing left to protect)", () => {
-    // Documents a deliberate edge case: desynced-and-therefore-cleared
-    // pending means a nack with nothing outstanding at all has nothing
-    // it could fail to resolve -- resend is (harmlessly) empty either
-    // way, so this is not re-flagged as a fresh desync. In practice a
-    // caller always sends something new before the next nack can arrive
-    // (see the previous test); this pins the narrower synthetic case.
+  it("a bare repeated nack with nothing newly sent is not re-flagged (nothing left to protect)", () => {
     const session = new Session();
     session.send("WHEELS_V", [100, 100, 1000]); // #1
     session.handleReply(decodeLine("ack 1 0 none") as DecodedLine);
@@ -505,6 +499,53 @@ describe("a robot whose sequence reset below every pending id is a desync, not a
     const second = session.handleReply(decodeLine("nack 1 0 none") as DecodedLine) as AckNackEvent;
     expect(second.resend).toEqual([]);
     expect(second.desynced).toBe(false);
+  });
+
+  it("resyncTo(n) adopts n directly (status next= while nothing is pending), ignoring nonsense", () => {
+    const session = new Session();
+    session.send("GET", []); // #1
+    session.handleReply(decodeLine("ack 1 0 none") as DecodedLine);
+    expect(session.nextSequenceId).toBe(2);
+    session.resyncTo(7);
+    expect(session.nextSequenceId).toBe(7);
+    expect(session.seq).toBe(6);
+    session.resyncTo(0);
+    session.resyncTo(2.5);
+    expect(session.nextSequenceId).toBe(7);
+  });
+
+  it("gives up on a line the robot keeps nacking after MAX_RESENDS identical resends, resyncs to n, and reports the dropped line", () => {
+    const session = new Session();
+    const bad = session.send("GET", []); // #1 -- pretend the robot cannot decode it
+    session.send("GET", []); // #2
+    for (let i = 0; i < MAX_RESENDS; i++) {
+      const event = session.handleReply(decodeLine("nack 1 0 none") as DecodedLine) as AckNackEvent;
+      expect(event.gaveUp).toBeUndefined();
+      expect(event.resend[0]).toBe(bad);
+    }
+    const event = session.handleReply(decodeLine("nack 1 0 none") as DecodedLine) as AckNackEvent;
+    expect(event.gaveUp).toBe(bad);
+    expect(event.resend).toEqual([]);
+    expect(session.pendingCount).toBe(0);
+    // The stream moves on: the next command reuses the id the robot is waiting for.
+    expect(session.send("GET", [])).toBe("GET #1\n");
+    expect(session.nextSequenceId).toBe(2);
+  });
+
+  it("the give-up counter resets on progress: alternating nacks for different ids never trip it", () => {
+    const session = new Session();
+    session.send("GET", []); // #1
+    session.send("GET", []); // #2
+    for (let i = 0; i < MAX_RESENDS + 2; i++) {
+      expect((session.handleReply(decodeLine("nack 1 0 none") as DecodedLine) as AckNackEvent).gaveUp).toBeUndefined();
+      session.handleReply(decodeLine("ack 1 0 none") as DecodedLine);
+      session.send("GET", []);
+      expect((session.handleReply(decodeLine("nack 2 0 none") as DecodedLine) as AckNackEvent).gaveUp).toBeUndefined();
+      session.handleReply(decodeLine("ack 2 0 none") as DecodedLine);
+      session.resyncTo(1);
+      session.send("GET", []);
+      session.send("GET", []);
+    }
   });
 
   it("does NOT regress the legitimate case: a nack for an id the host still holds is not desynced, and resends normally", () => {

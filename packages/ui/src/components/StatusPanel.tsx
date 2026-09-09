@@ -42,14 +42,14 @@
  * (`() => number`, defaulting to `Date.now`) purely so tests can pin
  * down an exact "Ns ago" string instead of racing a real clock.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { EndpointListEntry, RobotStatus } from "@robot-console/host/src/wsMessages.js";
 import { useWsActions } from "../ws/WsProvider";
 import "./StatusPanel.css";
 
-function stateWord(status: RobotStatus | undefined): string {
+function stateWord(status: RobotStatus | undefined, linkOpen: boolean): string {
   if (!status) {
-    return "Unknown — waiting for the robot's first status";
+    return linkOpen ? "Unknown — asking the robot for its status…" : "Unknown — no link open";
   }
   if (status.estopped) {
     return "E-STOPPED";
@@ -90,7 +90,22 @@ export function StatusPanel({ device, now = Date.now }: StatusPanelProps) {
     return () => clearInterval(interval);
   }, []);
 
-  const word = stateWord(status);
+  // OOP 2026-09-09: never sit on "Unknown" -- ask. The host polls STATUS
+  // on its own once a robot identifies, but this panel also requests one
+  // itself on mount (if the link is already open) and on every
+  // closed->open transition, exactly as CommandStrip's discovery GET
+  // does, so a freshly opened page shows a real state within one round
+  // trip regardless of where the host's poll timer happens to be.
+  const wasOpenRef = useRef(false);
+  useEffect(() => {
+    const wasOpen = wasOpenRef.current;
+    wasOpenRef.current = linkOpen;
+    if (linkOpen && !wasOpen) {
+      sendCommand(endpointId, "STATUS");
+    }
+  }, [linkOpen, endpointId, sendCommand]);
+
+  const word = stateWord(status, linkOpen);
   const isEstopped = status?.estopped === true;
 
   function handleRefresh(): void {

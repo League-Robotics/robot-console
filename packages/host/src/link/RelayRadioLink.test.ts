@@ -15,7 +15,10 @@ import { toCalloutPath } from "../devices.js";
 const CHANNEL = 37;
 const GROUP = 3;
 const CG_CONFIRM_LINE = `# channel: ${CHANNEL} group: ${GROUP} mode: RAW250 power: 7`;
-const GO_CONFIRM_LINE = "# go ok";
+const GO_CONFIRM_LINE = "# entering data plane";
+const ECHO_CONFIRM_LINE = "# echo: OFF";
+const MODE_CONFIRM_LINE = "# mode: RAW250";
+const FULL_PREAMBLE = ["?\n", "!ECHO OFF\n", "!MODE RAW250\n", `!CG ${CHANNEL} ${GROUP}\n`, "!P 7\n", "!GO\n"];
 
 /** A fully synthetic stand-in for `serialport`'s `SerialPort` -- same
  * fake `UsbSerialLink.test.ts` uses. */
@@ -125,6 +128,41 @@ function newLink(overrides: {
   return { link, port, connectPromise, handshakeScheduler };
 }
 
+/** Answer the handshake the way relay vitut does (measured 2026-09-09),
+ * one reply per step, up to and including `!P 7` -- see
+ * `RelayCommandPlane.ts` (OOP 2026-09-09: each step gated on its own
+ * reply). */
+async function answerThroughPower(target: { emit: (event: string, chunk: Buffer) => void }): Promise<void> {
+  await flush();
+  target.emit("data", Buffer.from(`${CG_CONFIRM_LINE}\n`)); // the `?` sync answer
+  await flush();
+  target.emit("data", Buffer.from(`${ECHO_CONFIRM_LINE}\n`));
+  await flush();
+  target.emit("data", Buffer.from(`${MODE_CONFIRM_LINE}\n`));
+  await flush();
+  target.emit("data", Buffer.from(`${CG_CONFIRM_LINE}\n`));
+  await flush();
+  target.emit("data", Buffer.from(`${CG_CONFIRM_LINE}\n`)); // `!P 7` answers with the same status line
+  await flush();
+}
+
+/** Answer `?`, `!ECHO OFF` and `!MODE RAW250` only -- the relay is now
+ * waiting on `!CG`. */
+async function answerThroughMode(target: { emit: (event: string, chunk: Buffer) => void }): Promise<void> {
+  await flush();
+  target.emit("data", Buffer.from(`${CG_CONFIRM_LINE}\n`));
+  await flush();
+  target.emit("data", Buffer.from(`${ECHO_CONFIRM_LINE}\n`));
+  await flush();
+  target.emit("data", Buffer.from(`${MODE_CONFIRM_LINE}\n`));
+  await flush();
+}
+
+async function answerHandshake(target: { emit: (event: string, chunk: Buffer) => void }): Promise<void> {
+  await answerThroughPower(target);
+  target.emit("data", Buffer.from(`${GO_CONFIRM_LINE}\n`));
+}
+
 /** Drive a link through the full successful handshake (port open, then
  * `!ECHO OFF`/`!MODE RAW250`/`!CG`/`!P 7`/`!GO`, confirming `!CG` and
  * `!GO`) and await `connect()`. */
@@ -132,10 +170,7 @@ async function handshakedLink(
   overrides: Parameters<typeof newLink>[0] = {},
 ): Promise<{ link: RelayRadioLink; port: FakeSerialPort }> {
   const { link, port, connectPromise } = newLink(overrides);
-  await flush();
-  port.emit("data", Buffer.from(`${CG_CONFIRM_LINE}\n`));
-  await flush();
-  port.emit("data", Buffer.from(`${GO_CONFIRM_LINE}\n`));
+  await answerHandshake(port);
   await connectPromise;
   return { link, port };
 }
@@ -161,26 +196,23 @@ async function identifiedLink(
 describe("RelayRadioLink.connect", () => {
   it("opens the port then sends the full preamble in order, resolving once !GO confirms", async () => {
     const { port } = await handshakedLink();
-    expect(port.writes).toEqual([
-      "!ECHO OFF\n",
-      "!MODE RAW250\n",
-      `!CG ${CHANNEL} ${GROUP}\n`,
-      "!P 7\n",
-      "!GO\n",
-    ]);
+    expect(port.writes).toEqual(FULL_PREAMBLE);
   });
 
   it("is not isOpen while the handshake is still in progress, only once it completes", async () => {
     const { link, port, connectPromise } = newLink();
     expect(link.isOpen).toBe(false);
+    await answerThroughMode(port);
+    expect(link.isOpen).toBe(false); // waiting on !CG
+    port.emit("data", Buffer.from(`${CG_CONFIRM_LINE}
+`));
     await flush();
-    expect(link.isOpen).toBe(false); // preamble sent, but !CG/!GO not yet confirmed
-
-    port.emit("data", Buffer.from(`${CG_CONFIRM_LINE}\n`));
+    port.emit("data", Buffer.from(`${CG_CONFIRM_LINE}
+`));
     await flush();
-    expect(link.isOpen).toBe(false); // !CG confirmed, !GO not yet
-
-    port.emit("data", Buffer.from(`${GO_CONFIRM_LINE}\n`));
+    expect(link.isOpen).toBe(false); // !CG and !P confirmed, !GO not yet
+    port.emit("data", Buffer.from(`${GO_CONFIRM_LINE}
+`));
     await connectPromise;
     expect(link.isOpen).toBe(true);
   });
@@ -218,10 +250,9 @@ describe("RelayRadioLink.connect", () => {
 
   it("rejects connect() when the relay rejects !CG, closes the port, and never sends !GO", async () => {
     const { port, connectPromise } = newLink();
-    await flush();
-    expect(port.writes).toEqual(["!ECHO OFF\n", "!MODE RAW250\n", `!CG ${CHANNEL} ${GROUP}\n`]);
-
-    port.emit("data", Buffer.from("NAK\n"));
+    await answerThroughMode(port);
+    expect(port.writes).toEqual(FULL_PREAMBLE.slice(0, 4));
+    port.emit("data", Buffer.from("# error: usage !CG <ch 0-83> <group 0-255>\n"));
 
     await expect(connectPromise).rejects.toThrow(/handshake failed/i);
     expect(port.writes).not.toContain("!GO\n");
@@ -230,8 +261,8 @@ describe("RelayRadioLink.connect", () => {
 
   it("never reaches isOpen after a !CG rejection -- no partial connected state", async () => {
     const { link, port, connectPromise } = newLink();
-    await flush();
-    port.emit("data", Buffer.from("NAK\n"));
+    await answerThroughMode(port);
+    port.emit("data", Buffer.from("# error: usage !CG <ch 0-83> <group 0-255>\n"));
     await expect(connectPromise).rejects.toThrow();
     expect(link.isOpen).toBe(false);
   });
@@ -240,16 +271,8 @@ describe("RelayRadioLink.connect", () => {
 
   it("rejects connect() if !GO never confirms, under a fake handshake scheduler (no real wall-clock delay)", async () => {
     const { port, connectPromise, handshakeScheduler } = newLink();
-    await flush();
-    port.emit("data", Buffer.from(`${CG_CONFIRM_LINE}\n`));
-    await flush();
-    expect(port.writes).toEqual([
-      "!ECHO OFF\n",
-      "!MODE RAW250\n",
-      `!CG ${CHANNEL} ${GROUP}\n`,
-      "!P 7\n",
-      "!GO\n",
-    ]);
+    await answerThroughPower(port);
+    expect(port.writes).toEqual(FULL_PREAMBLE);
 
     handshakeScheduler.resolveAll();
 
@@ -321,15 +344,8 @@ describe("RelayRadioLink write pacing", () => {
       scheduler,
     });
 
-    expect(port.writes).toEqual([
-      "!ECHO OFF\n",
-      "!MODE RAW250\n",
-      `!CG ${CHANNEL} ${GROUP}\n`,
-      "!P 7\n",
-      "!GO\n",
-      "HELLO\n",
-    ]);
-    expect(scheduler.calls).toEqual([10, 10, 10, 10, 10, 10]);
+    expect(port.writes).toEqual([...FULL_PREAMBLE, "HELLO\n"]);
+    expect(scheduler.calls).toEqual([10, 10, 10, 10, 10, 10, 10]);
   });
 });
 

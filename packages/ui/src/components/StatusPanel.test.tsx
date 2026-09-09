@@ -154,6 +154,49 @@ describe("StatusPanel fields and refresh", () => {
     expect(el.textContent).toContain("Last updated 3s ago");
   });
 
+  it("asks for STATUS itself on mount when the link is already open, and again on a closed->open transition", () => {
+    // Socket already open before the panel renders (the real app's
+    // shape: WsProvider connected long before a device page mounts) --
+    // same pattern as CommandStrip.test.tsx's mountReady.
+    let socket: FakeSocket | null = null;
+    const socketFactory = () => (socket = new FakeSocket());
+    const url = "ws://test/";
+    mount(
+      <WsProvider url={url} socketFactory={socketFactory}>
+        <div />
+      </WsProvider>,
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    const render = (next: EndpointListEntry) => {
+      act(() => {
+        root!.render(
+          <WsProvider url={url} socketFactory={socketFactory}>
+            <StatusPanel device={next} />
+          </WsProvider>,
+        );
+      });
+    };
+    const statusMessage = JSON.stringify({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "STATUS" });
+
+    render(baseDevice({ sessionOpen: false }));
+    expect(socket!.sent).toEqual([]);
+    render(baseDevice());
+    expect(socket!.sent).toEqual([statusMessage]);
+    render(baseDevice({ robotStatus: baseStatus() })); // still open: no repeat
+    expect(socket!.sent).toEqual([statusMessage]);
+    render(baseDevice({ sessionOpen: false }));
+    render(baseDevice());
+    expect(socket!.sent).toEqual([statusMessage, statusMessage]);
+  });
+
+  it("says so when no link is open instead of pretending to wait", () => {
+    const { el, socket } = mountPanel(baseDevice({ sessionOpen: false }));
+    expect(socket.sent).toEqual([]);
+    expect(stateText(el)).toContain("no link open");
+  });
+
   it("sends a bare STATUS on Refresh", () => {
     const { el, socket } = mountPanel(baseDevice({ robotStatus: baseStatus() }));
     socket.sent.length = 0;

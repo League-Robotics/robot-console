@@ -3,11 +3,18 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Session, type AckNackEvent, type DecodedLine, type ParsedBanner, type WireField } from "@robot-console/protocol";
+import {
+  Session,
+  nameToRadioAddress,
+  type AckNackEvent,
+  type DecodedLine,
+  type ParsedBanner,
+  type WireField,
+} from "@robot-console/protocol";
 import { DeviceWatcher, type DaplinkDevice } from "./devices.js";
 import type { SwdNameResult } from "./swdName.js";
 import { DeviceRegistry, KeyedMutex, parseStatusReply } from "./deviceRegistry.js";
-import type { Link } from "./link/Link.js";
+import type { Link, LinkSpec } from "./link/Link.js";
 import { UsbSerialLink, type SerialPortLike } from "./link/UsbSerialLink.js";
 import type { Scheduler } from "./link/pacing.js";
 import type { EndpointListEntry, FirmwareKind, FirmwareSourceRef, FlashPhase } from "./wsMessages.js";
@@ -124,6 +131,20 @@ class FakeLink implements Link {
     return () => {
       this.lineListeners.delete(listener);
     };
+  }
+
+  private rawLineListeners = new Set<(raw: string) => void>();
+  onRawLine(listener: (raw: string) => void): () => void {
+    this.rawLineListeners.add(listener);
+    return () => {
+      this.rawLineListeners.delete(listener);
+    };
+  }
+
+  emitRawLine(raw: string): void {
+    for (const listener of this.rawLineListeners) {
+      listener(raw);
+    }
   }
 
   onAckNack(listener: (event: AckNackEvent) => void): () => void {
@@ -848,7 +869,7 @@ describe("DeviceRegistry.sendCommand", () => {
     await registry.stop();
   });
 
-  it("surfaces a desynced nack (defect 1) as a one-time 'press HELLO to resync' error, not once per subsequent send", async () => {
+  it("surfaces a desynced nack (defect 1) as a one-time automatic-resync notice, and the session picks up at the robot's id (OOP 2026-09-09)", async () => {
     const devices = [device()];
     const watcher = fixtureWatcher(() => devices);
     const link = new FakeLink(async () => banner({ role: "NEZHA2" }));
@@ -866,16 +887,16 @@ describe("DeviceRegistry.sendCommand", () => {
     await registry.sendCommand("usb-SERIAL-A", "GET", []); // #2
 
     link.receiveReply({ kind: "line", verb: "nack", fields: ["1", "0", "none"] });
-    // A held-button style second send/nack round trip while still
-    // desynced -- must not produce a second error.
-    await registry.sendCommand("usb-SERIAL-A", "GET", []); // #3
+    // The session adopted the robot's expected id: the held-button
+    // style next send is #1, which the robot accepts -- a further
+    // nack 1 is an ordinary lost-frame resend, not a second desync.
+    await registry.sendCommand("usb-SERIAL-A", "GET", []);
+    expect(link.sentLines.at(-1)).toBe("GET #1\n");
     link.receiveReply({ kind: "line", verb: "nack", fields: ["1", "0", "none"] });
 
-    const resyncErrors = errors.filter((e) => e.message.toLowerCase().includes("hello"));
-    expect(resyncErrors).toEqual([
-      expect.objectContaining({ endpointId: "usb-SERIAL-A" }),
-    ]);
-    expect(resyncErrors).toHaveLength(1);
+    const notices = errors.filter((e) => e.message.includes("resynced automatically"));
+    expect(notices).toEqual([expect.objectContaining({ endpointId: "usb-SERIAL-A" })]);
+    expect(errors.map((e) => e.message).join(" ")).not.toMatch(/press HELLO/);
 
     await registry.stop();
   });
@@ -1835,6 +1856,421 @@ describe("DeviceRegistry — requestFlash (local-hex source)", () => {
 });
 
 // ---------------------------------------------------------------------
+// Robot-via-relay endpoints (OOP 2026-09-09) -- requestOpen(relayId,
+// { robotName, radio? }) synthesizing a new endpoint that bridges to a
+// robot over a local USB relay's radio. See deviceRegistry.ts's own
+// module doc comment's "Robot-via-relay endpoints" section.
+//
+// No code path exercised below (or in deviceRegistry.ts itself) ever
+// calls a `retarget`-shaped method on `Link` -- `link/Link.ts`'s
+// interface has no such method at all, so this is enforced by the type
+// system, not by a runtime assertion here.
+// ---------------------------------------------------------------------
+
+describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
+  function relayDevice(overrides: Partial<DaplinkDevice> = {}): DaplinkDevice {
+    return device({
+      serialNumber: "SERIAL-RELAY",
+      displaySerial: "SHORT-RELAY",
+      serialPort: { path: "/dev/cu.usbmodemRELAY" },
+      ...overrides,
+    });
+  }
+
+  function robotBanner(overrides: Partial<ParsedBanner> = {}): ParsedBanner {
+    return banner({ role: "NEZHA2", commonName: "robot", name: "gopiv", ...overrides });
+  }
+
+  /** `createLink` fake that records every {@link LinkSpec} it was given
+   * and returns a distinct {@link FakeLink} per call -- the relay's own
+   * plain USB link is `relayUsbLink` (passed in, reused across the
+   * fixture's whole lifetime, mirroring how one physical port opens one
+   * link at a time); every `"relay-radio"` spec gets a fresh link built
+   * by `makeRadioLink`, appended to `radioLinks` in call order, so a
+   * test exercising a switch (open, then open again with a different
+   * name) can tell the two links apart. */
+  function buildCreateLink(
+    relayUsbLink: FakeLink,
+    makeRadioLink: (spec: Extract<LinkSpec, { transport: "relay-radio" }>) => FakeLink,
+  ): { createLink: (spec: LinkSpec) => Link; specs: LinkSpec[]; radioLinks: FakeLink[] } {
+    const specs: LinkSpec[] = [];
+    const radioLinks: FakeLink[] = [];
+    const createLink = (spec: LinkSpec): Link => {
+      specs.push(spec);
+      if (spec.transport === "usb") {
+        return relayUsbLink;
+      }
+      if (spec.transport === "relay-radio") {
+        const link = makeRadioLink(spec);
+        radioLinks.push(link);
+        return link;
+      }
+      throw new Error(`unexpected transport in this fixture: ${spec.transport}`);
+    };
+    return { createLink, specs, radioLinks };
+  }
+
+  /** Attach `order.push(label)` onto an already-constructed `FakeLink`'s
+   * `close()`, so a test can observe *when* a specific link was closed
+   * relative to other events (`resetOverSwd`, another link's `connect`)
+   * without `FakeLink` itself needing to know about any of this. */
+  function trackClose(link: FakeLink, order: string[], label: string): void {
+    const originalClose = link.close.bind(link);
+    link.close = () => {
+      order.push(label);
+      return originalClose();
+    };
+  }
+
+  it("routes session-open with a robotName through the relay: relay-radio createLink call, reset-then-handshake ordering, and both entries in the snapshot", async () => {
+    const devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+
+    const order: string[] = [];
+    const relayUsbLink = new FakeLink(async () => banner()); // banner()'s default fixture classifies as a relay.
+    trackClose(relayUsbLink, order, "relay-usb-close");
+
+    const { createLink, specs, radioLinks } = buildCreateLink(relayUsbLink, () =>
+      new FakeLink(async () => robotBanner(), async () => {
+        order.push("radio-connect");
+      }),
+    );
+
+    const resetOverSwd = vi.fn(async () => {
+      order.push("reset");
+      return { ok: true as const };
+    });
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd,
+      relayBootDelayMs: 0,
+    });
+    registry.start();
+
+    await waitForSnapshot(
+      registry,
+      (s) => s[0]?.sessionOpen === true && s[0]?.classification.type === "relay",
+    );
+    expect(relayUsbLink.connectCalls).toBe(1);
+
+    const expectedAddress = nameToRadioAddress("gopiv");
+    await registry.requestOpen("usb-SERIAL-RELAY", { robotName: "gopiv" });
+
+    const snap = await waitForSnapshot(registry, (s) =>
+      s.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv"),
+    );
+
+    // (i) createLink called with transport relay-radio, the relay's own
+    // portPath, and gopiv's derived address.
+    const relaySpec = specs.find((s) => s.transport === "relay-radio");
+    expect(relaySpec).toEqual({
+      transport: "relay-radio",
+      resourceKey: "usb-SERIAL-RELAY",
+      portPath: "/dev/cu.usbmodemRELAY",
+      channel: expectedAddress.channel,
+      group: expectedAddress.group,
+    });
+    expect(radioLinks).toHaveLength(1);
+
+    // (iii) the relay's plain link was closed first, and resetOverSwd
+    // was called before the radio link's connect().
+    expect(order).toEqual(["relay-usb-close", "reset", "radio-connect"]);
+    expect(resetOverSwd).toHaveBeenCalledWith(devices[0]);
+
+    // (iv) both the relay entry (sessionOpen false) and the synthesized
+    // via-gopiv entry (transport relay-radio, viaRelay, no usb, shared
+    // resourceKey, classification from the fake banner) are present at
+    // once.
+    const relayEntry = snap.find((e) => e.endpointId === "usb-SERIAL-RELAY");
+    expect(relayEntry).toEqual(
+      expect.objectContaining({ sessionOpen: false, transport: "usb", resourceKey: "usb-SERIAL-RELAY" }),
+    );
+    const viaEntry = snap.find((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv");
+    expect(viaEntry).toEqual(
+      expect.objectContaining({
+        transport: "relay-radio",
+        resourceKey: "usb-SERIAL-RELAY",
+        sessionOpen: true,
+        name: "gopiv",
+        viaRelay: {
+          relayEndpointId: "usb-SERIAL-RELAY",
+          robotName: "gopiv",
+          channel: expectedAddress.channel,
+          group: expectedAddress.group,
+        },
+        classification: expect.objectContaining({ type: "robot" }),
+      }),
+    );
+    expect(viaEntry?.usb).toBeUndefined();
+
+    await registry.stop();
+  });
+
+  it("uses an explicit radio override instead of the name-derived address", async () => {
+    const devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+
+    const relayUsbLink = new FakeLink(async () => banner());
+    const { createLink, specs } = buildCreateLink(relayUsbLink, () => new FakeLink(async () => robotBanner()));
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    await registry.requestOpen("usb-SERIAL-RELAY", { robotName: "gopiv", radio: { channel: 55, group: 114 } });
+    await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv"));
+
+    const relaySpec = specs.find((s) => s.transport === "relay-radio");
+    expect(relaySpec).toEqual(
+      expect.objectContaining({ channel: 55, group: 114 }),
+    );
+
+    await registry.stop();
+  });
+
+  it("switching to another robot name removes the old synthesized endpoint and adds a new one", async () => {
+    const devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+
+    const relayUsbLink = new FakeLink(async () => banner());
+    const { createLink, radioLinks } = buildCreateLink(relayUsbLink, (spec) =>
+      new FakeLink(async () => robotBanner({ name: spec.channel === 55 ? "gopiv" : "tapaz" })),
+    );
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    await registry.requestOpen("usb-SERIAL-RELAY", { robotName: "gopiv" });
+    await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv"));
+
+    await registry.requestOpen("usb-SERIAL-RELAY", { robotName: "tapaz" });
+    const snap = await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-tapaz"));
+
+    expect(snap.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv")).toBe(false);
+    expect(snap.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-tapaz")).toBe(true);
+    expect(radioLinks).toHaveLength(2);
+    expect(radioLinks[0]?.closeCalls).toBe(1); // the old synthesized link was torn down.
+
+    await registry.stop();
+  });
+
+  it("requestClose on the synthesized endpoint removes it and reopens the relay's own plain USB session", async () => {
+    const devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+
+    let usbLinkCreations = 0;
+    const relayUsbLinks: FakeLink[] = [];
+    const radioLink = new FakeLink(async () => robotBanner());
+    const createLink = (spec: LinkSpec): Link => {
+      if (spec.transport === "usb") {
+        usbLinkCreations++;
+        const link = new FakeLink(async () => banner());
+        relayUsbLinks.push(link);
+        return link;
+      }
+      return radioLink;
+    };
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    expect(usbLinkCreations).toBe(1);
+
+    await registry.requestOpen("usb-SERIAL-RELAY", { robotName: "gopiv" });
+    await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv"));
+
+    await registry.requestClose("usb-SERIAL-RELAY-via-gopiv");
+    const snap = await waitForSnapshot(
+      registry,
+      (s) => !s.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv") && s[0]?.sessionOpen === true,
+    );
+
+    expect(snap.find((e) => e.endpointId === "usb-SERIAL-RELAY")?.sessionOpen).toBe(true);
+    expect(usbLinkCreations).toBe(2); // a fresh plain USB link was opened for the relay again.
+
+    await registry.stop();
+  });
+
+  it("a handshake (connect()) failure reports an error, creates no synthesized entry, and reopens the relay's own session", async () => {
+    const devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+
+    let usbLinkCreations = 0;
+    const createLink = (spec: LinkSpec): Link => {
+      if (spec.transport === "usb") {
+        usbLinkCreations++;
+        return new FakeLink(async () => banner());
+      }
+      return new FakeLink(
+        async () => robotBanner(), // never reached -- connect() rejects first
+        () => Promise.reject(new Error("mock: relay command-plane handshake failed")),
+      );
+    };
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+    });
+    const errors: Array<{ endpointId: string | undefined; message: string }> = [];
+    registry.onError((endpointId, message) => errors.push({ endpointId, message }));
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+    expect(usbLinkCreations).toBe(1);
+
+    await registry.requestOpen("usb-SERIAL-RELAY", { robotName: "gopiv" });
+    const snap = await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    expect(snap.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv")).toBe(false);
+    expect(errors).toContainEqual(
+      expect.objectContaining({
+        endpointId: "usb-SERIAL-RELAY",
+        message: expect.stringContaining("handshake failed"),
+      }),
+    );
+    expect(usbLinkCreations).toBe(2); // relay's own session was reopened after the failed handshake.
+
+    await registry.stop();
+  });
+
+  it("removing the relay device also removes its synthesized via-relay endpoint", async () => {
+    let devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+
+    const relayUsbLink = new FakeLink(async () => banner());
+    const radioLink = new FakeLink(async () => robotBanner());
+    const { createLink } = buildCreateLink(relayUsbLink, () => radioLink);
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    await registry.requestOpen("usb-SERIAL-RELAY", { robotName: "gopiv" });
+    await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv"));
+
+    devices = [];
+    await watcher.pollOnce();
+    const snap = await waitForSnapshot(registry, (s) => s.length === 0);
+    expect(snap).toEqual([]);
+    expect(radioLink.closeCalls).toBe(1);
+
+    await registry.stop();
+  });
+
+  it("sendCommand on the synthesized endpoint routes to the radio link", async () => {
+    const devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+
+    const relayUsbLink = new FakeLink(async () => banner());
+    const radioLink = new FakeLink(async () => robotBanner());
+    const { createLink } = buildCreateLink(relayUsbLink, () => radioLink);
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    await registry.requestOpen("usb-SERIAL-RELAY", { robotName: "gopiv" });
+    await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv"));
+
+    await registry.sendCommand("usb-SERIAL-RELAY-via-gopiv", "STATUS");
+    expect(radioLink.sentLines).toEqual(["STATUS\n"]);
+
+    await registry.stop();
+  });
+
+  it("a silent robot (identify() resolves null) leaves the synthesized endpoint open with a descriptive sessionError", async () => {
+    const devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+
+    const relayUsbLink = new FakeLink(async () => banner());
+    const radioLink = new FakeLink(async () => null);
+    const { createLink } = buildCreateLink(relayUsbLink, () => radioLink);
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    await registry.requestOpen("usb-SERIAL-RELAY", { robotName: "gopiv" });
+    const snap = await waitForSnapshot(registry, (s) =>
+      s.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv"),
+    );
+
+    const viaEntry = snap.find((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv");
+    expect(viaEntry?.sessionOpen).toBe(true);
+    expect(viaEntry?.classification.type).toBe("unknown");
+    expect(viaEntry?.sessionError).toEqual(expect.stringContaining("gopiv"));
+
+    await registry.stop();
+  });
+});
+
+// ---------------------------------------------------------------------
 // KeyedMutex -- the mechanism sprint 7's relay (many endpoints, one
 // shared resourceKey) will lean on for real. No second transport exists
 // yet this sprint (see the ticket's own scope note), so this exercises
@@ -2051,6 +2487,47 @@ describe("DeviceRegistry robot status and functions (OOP 2026-09-09)", () => {
       { endpointId: "usb-SERIAL-A", direction: "rx", line: "status flags=1", origin: "poll" },
       { endpointId: "usb-SERIAL-A", direction: "rx", line: "status flags=1" },
     ]);
+    await registry.stop();
+  });
+
+  it("adopts status next= when nothing is pending, so the next command carries the id the robot expects", async () => {
+    const { registry, link } = await openRobot();
+    await registry.sendCommand("usb-SERIAL-A", "GET", []);
+    link.receiveReply(decoded("ack", ["1", "0", "none"]));
+    expect(link.session.nextSequenceId).toBe(2);
+
+    link.emitLine(decoded("status", ["flags=1", "next=9"]));
+    expect(link.session.nextSequenceId).toBe(9);
+    await registry.sendCommand("usb-SERIAL-A", "GET", []);
+    expect(link.sentLines.at(-1)).toBe("GET #9\n");
+
+    // In flight -> left alone.
+    link.emitLine(decoded("status", ["flags=1", "next=3"]));
+    expect(link.session.nextSequenceId).toBe(10);
+    await registry.stop();
+  });
+
+  it("reports a desynced nack as an automatic resync notice, never as a request to press HELLO", async () => {
+    const { registry, link } = await openRobot();
+    const errors: string[] = [];
+    registry.onError((_endpointId, message) => errors.push(message));
+    await registry.sendCommand("usb-SERIAL-A", "GET", []);
+    link.receiveReply(decoded("ack", ["1", "0", "none"]));
+    await registry.sendCommand("usb-SERIAL-A", "GET", []); // #2
+    link.receiveReply(decoded("nack", ["1", "0", "none"])); // robot reset
+    expect(errors).toEqual(["The robot restarted its command counter -- resynced automatically, continuing at #1."]);
+    expect(errors.join(" ")).not.toMatch(/press HELLO/);
+    await registry.sendCommand("usb-SERIAL-A", "GET", []);
+    expect(link.sentLines.at(-1)).toBe("GET #1\n");
+    await registry.stop();
+  });
+
+  it("shows non-protocol inbound text (a relay's # command-plane reply) verbatim in the console", async () => {
+    const { registry, link, lines } = await openRobot();
+    link.emitRawLine("# Relay v0.20260907.1 -- commands: !CG !GO !P");
+    link.emitRawLine("!HELP");
+    expect(lines).toContainEqual({ endpointId: "usb-SERIAL-A", direction: "rx", line: "# Relay v0.20260907.1 -- commands: !CG !GO !P" });
+    expect(lines).toContainEqual({ endpointId: "usb-SERIAL-A", direction: "rx", line: "!HELP" });
     await registry.stop();
   });
 

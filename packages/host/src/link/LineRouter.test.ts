@@ -11,12 +11,14 @@ function router(session: Session) {
   const lines: unknown[] = [];
   const ackNacks: unknown[] = [];
   const resends: string[] = [];
+  const unrouted: string[] = [];
   const lineRouter = new LineRouter(session, {
     onLine: (line) => lines.push(line),
     onAckNack: (event) => ackNacks.push(event),
     resend: (line) => resends.push(line),
+    onUnrouted: (raw) => unrouted.push(raw),
   });
-  return { lineRouter, lines, ackNacks, resends };
+  return { lineRouter, lines, ackNacks, resends, unrouted };
 }
 
 describe("LineRouter", () => {
@@ -26,23 +28,38 @@ describe("LineRouter", () => {
     expect(lines).toEqual([{ kind: "line", verb: "pong", fields: [] }]);
   });
 
-  it("drops a foreign (unrecognized lowercase) line silently", () => {
-    const { lineRouter, lines, ackNacks } = router(new Session());
+  it("hands a foreign (unrecognized lowercase) line to onUnrouted as raw text, never to onLine or the session", () => {
+    const { lineRouter, lines, ackNacks, unrouted } = router(new Session());
     expect(() => lineRouter.handleLine("beep boop overheard")).not.toThrow();
     expect(lines).toEqual([]);
     expect(ackNacks).toEqual([]);
+    expect(unrouted).toEqual(["beep boop overheard"]);
   });
 
-  it("drops a blank line silently", () => {
-    const { lineRouter, lines } = router(new Session());
+  it("hands a relay's # command-plane reply to onUnrouted verbatim (OOP 2026-09-09: the console must show it)", () => {
+    const { lineRouter, lines, unrouted } = router(new Session());
+    lineRouter.handleLine("# Relay v0.20260907.1 -- commands: !CG !GO !P");
+    expect(lines).toEqual([]);
+    expect(unrouted).toEqual(["# Relay v0.20260907.1 -- commands: !CG !GO !P"]);
+  });
+
+  it("drops a blank line silently -- not even onUnrouted", () => {
+    const { lineRouter, lines, unrouted } = router(new Session());
     lineRouter.handleLine("   ");
     expect(lines).toEqual([]);
+    expect(unrouted).toEqual([]);
   });
 
-  it("drops a command-direction line silently (never surfaced as a reply)", () => {
-    const { lineRouter, lines } = router(new Session());
+  it("hands a command-direction line (an echo) to onUnrouted, never surfaced as a reply", () => {
+    const { lineRouter, lines, unrouted } = router(new Session());
     lineRouter.handleLine("STOP #1");
     expect(lines).toEqual([]);
+    expect(unrouted).toEqual(["STOP #1"]);
+  });
+
+  it("is unchanged for a caller that passes no onUnrouted: unrecognized lines are simply dropped", () => {
+    const lineRouter = new LineRouter(new Session(), { onLine: () => {}, onAckNack: () => {}, resend: () => {} });
+    expect(() => lineRouter.handleLine("# whatever")).not.toThrow();
   });
 
   it("feeds an ack to the session, fires onAckNack, and requests no resend", () => {

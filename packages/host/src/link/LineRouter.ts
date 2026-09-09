@@ -26,9 +26,16 @@
  * independently; they all use this one class instead.
  *
  * Only `"reply"`-direction lines are ever surfaced to a caller's
- * `onLine` callback — a blank line, an over-length line, a foreign
- * (unrecognized lowercase) line, and an unexpected command-direction
- * line are all dropped here silently, never surfaced as an error.
+ * `onLine` callback (decoded). Everything else that is not blank — an
+ * over-length line, a foreign (unrecognized lowercase) line, an
+ * unexpected command-direction line — goes to `onUnrouted` as raw text
+ * instead (OOP 2026-09-09): a relay answers its own `!` command plane
+ * with `#`-prefixed comment text, an echo-on board repeats commands
+ * back, and a board running some other dialect says whatever it says.
+ * None of that is v6 protocol, none of it touches the sequencer, and
+ * all of it must still reach the console — a reply the user cannot
+ * see is indistinguishable from no reply at all (measured on relay
+ * vitut: `!HELP` answered, nothing shown).
  */
 import {
   decodeLine,
@@ -48,6 +55,10 @@ export interface LineRouterCallbacks {
    * the caller is expected to pass this through the same paced write
    * path as every other write. */
   resend: (line: string) => void;
+  /** Every non-blank inbound line that is NOT a recognized v6 reply, as
+   * raw text (see the module doc comment). Optional so a caller that
+   * only wants protocol replies is unchanged. */
+  onUnrouted?: (raw: string) => void;
 }
 
 /**
@@ -64,11 +75,11 @@ export class LineRouter {
 
   handleLine(raw: string): void {
     const decoded = decodeLine(raw);
-    if (decoded.kind !== "line") {
+    if (decoded.kind === "blank") {
       return;
     }
-
-    if (classifyLine(decoded.verb) !== "reply") {
+    if (decoded.kind !== "line" || classifyLine(decoded.verb) !== "reply") {
+      this.callbacks.onUnrouted?.(raw);
       return;
     }
 

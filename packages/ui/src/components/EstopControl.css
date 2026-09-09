@@ -64,6 +64,27 @@
  * (outline style vs. filled danger) so the two are never confused under
  * stress, while still reading as related (same border color) since both
  * concern the e-stop latch. */
+.estop-control-stop-button {
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.35rem 0.85rem;
+  border-radius: 0.3rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.estop-control-stop-button:hover:not(:disabled) {
+  background: var(--rc-warn-bg);
+}
+
+.estop-control-stop-button:disabled {
+  color: var(--rc-text-muted);
+  cursor: not-allowed;
+}
+
 .estop-control-clear-button {
   border: 1px solid var(--rc-danger-border);
   background: var(--rc-surface);

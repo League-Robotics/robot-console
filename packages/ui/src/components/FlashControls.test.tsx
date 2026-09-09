@@ -5,10 +5,16 @@
  * `UnknownDevicePage.test.tsx` now that the flash UI itself lives here
  * rather than trapped inside that page.
  *
- * Four groups:
- *  - Release-flash gating (including the `canBeFlashed`-gated "renders
- *    nothing" case now owned by this component itself, not just by a
- *    caller choosing not to mount it).
+ * **Out-of-process modal work (2026-09-08):** `FlashControls` no longer
+ * gates itself on `canBeFlashed`, and dropped its `forceShow` escape
+ * hatch -- that gating now lives on `FlashDialog`'s trigger button (see
+ * `FlashDialog.test.tsx`). This file exercises `FlashControls` mounted
+ * directly (as `FlashDialog` mounts it once its dialog is open), always
+ * rendering its full UI regardless of `endpoint.role`.
+ *
+ * Three groups:
+ *  - Release-flash button/progress rendering (firmware availability
+ *    gating, flash-progress rendering for both source kinds).
  *  - The local-hex upload handshake against a fake socket, capturing
  *    both JSON messages (`sent`) and the one binary frame
  *    (`sentBinary`) `FakeSocket` records separately.
@@ -191,27 +197,11 @@ async function sha256Hex(text: string): Promise<string> {
     .join("");
 }
 
-describe("FlashControls release-flash gating", () => {
-  it("renders nothing for an identified device", () => {
-    const { el } = mountFlashControls(
-      baseDevice({ role: "NEZHA2", sessionOpen: true }),
-      { firmwareStatus: firmwareStatusFixture() },
-    );
-    expect(el.textContent).not.toContain("Flash relay firmware");
-    expect(el.textContent).not.toContain("Flash robot firmware");
-    // Not just "no flash buttons" -- the component's own `canBeFlashed`
-    // gate (see its doc comment's "no knowledge of caller" contract)
-    // means it renders no markup at all (`null`) for a non-flashable
-    // device, so a caller mounting it unconditionally never gets a
-    // stray empty wrapper.
-    expect(el.querySelector(".flash-controls")).toBeNull();
-  });
-
-  // Regression test for the bug ticket 012-001 fixed: a silent,
-  // unflashed board's session opens fine and `identify()` resolves
-  // `null` without throwing, so `sessionError` is never set. This is
-  // the most common bench state, and it must still get flash controls
-  // -- `canBeFlashed` depends only on `role`, not `sessionError`.
+describe("FlashControls release-flash rendering", () => {
+  // The `canBeFlashed`-gated "renders nothing for an identified device"
+  // case (and the ticket 012-001 regression it must not break) now
+  // lives at `FlashDialog`'s trigger -- see `FlashDialog.test.tsx`.
+  // `FlashControls` itself always renders its full UI once mounted.
   it("shows both flash buttons for an unprobed device (no role, no sessionError)", () => {
     const { el } = mountFlashControls(baseDevice({ role: null }), { firmwareStatus: firmwareStatusFixture() });
     expect(el.textContent).toContain("Flash relay firmware");
@@ -410,60 +400,6 @@ describe("FlashControls local-hex flow", () => {
     expect(socket().sent).toHaveLength(0);
     expect(socket().sentBinary).toHaveLength(0);
     expect(el.textContent).toContain("too large");
-  });
-});
-
-describe("FlashControls forceShow (ticket 004's AppHeader escape hatch)", () => {
-  it("still renders nothing for an identified device when forceShow is omitted (default false, unchanged)", () => {
-    const { el } = mountFlashControls(
-      baseDevice({ role: "NEZHA2", sessionOpen: true }),
-      { firmwareStatus: firmwareStatusFixture() },
-    );
-    expect(el.querySelector(".flash-controls")).toBeNull();
-  });
-
-  it("renders the flash buttons for an identified device when forceShow is true", () => {
-    let socket: FakeSocket | null = null;
-    const device = baseDevice({ role: "NEZHA2", sessionOpen: true });
-    const el = mount(
-      withRouter(
-        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-          <FlashControls endpoint={device} forceShow />
-        </WsProvider>,
-        { initialEntries: [`/d/${device.endpointId}`] },
-      ),
-    );
-    act(() => {
-      socket!.emitOpen();
-    });
-    act(() => {
-      socket!.emitMessage({ type: "endpoints", endpoints: [device], firmwareStatus: firmwareStatusFixture() });
-    });
-
-    expect(el.querySelector(".flash-controls")).not.toBeNull();
-    expect(el.textContent).toContain("Flash relay firmware");
-    expect(el.textContent).toContain("Flash robot firmware");
-  });
-
-  it("still renders nothing for an identified device when forceShow is explicitly false (not just omitted)", () => {
-    let socket: FakeSocket | null = null;
-    const device = baseDevice({ role: "NEZHA2", sessionOpen: true });
-    const el = mount(
-      withRouter(
-        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-          <FlashControls endpoint={device} forceShow={false} />
-        </WsProvider>,
-        { initialEntries: [`/d/${device.endpointId}`] },
-      ),
-    );
-    act(() => {
-      socket!.emitOpen();
-    });
-    act(() => {
-      socket!.emitMessage({ type: "endpoints", endpoints: [device], firmwareStatus: firmwareStatusFixture() });
-    });
-
-    expect(el.querySelector(".flash-controls")).toBeNull();
   });
 });
 

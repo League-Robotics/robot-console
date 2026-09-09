@@ -12,16 +12,17 @@
  * this is where a student actually goes to recover a device.
  *
  * A thin wrapper (ticket 012-002): header, the endpoint's own
- * `sessionError` note, the shared `FlashControls` (which decides for
- * itself, via `canBeFlashed`, whether it renders anything), and
- * `DeviceConsole`. This page owns no flash logic of its own -- the
- * release/local-hex flows, progress rendering, and post-flash
- * navigation all moved to `../components/FlashControls.tsx`, shared
- * with the front-page card and (ticket 004) the app header's Flash
- * panel.
+ * `sessionError` note, the shared `FlashDialog` (which decides for
+ * itself, via `canBeFlashed`, whether it offers a "Flash" trigger at
+ * all), and `DeviceConsole`. This page owns no flash logic of its own
+ * -- the release/local-hex flows, progress rendering, and post-flash
+ * navigation all live in `../components/FlashControls.tsx`, run inside
+ * the popup modal `../components/FlashDialog.tsx` owns (out-of-process
+ * work, 2026-09-08), shared with the front-page card and the app
+ * header's Flash entry.
  */
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
-import { FlashControls } from "../components/FlashControls";
+import { FlashDialog } from "../components/FlashDialog";
 import { DeviceConsole } from "../components/DeviceConsole";
 import "./UnknownDevicePage.css";
 
@@ -36,7 +37,7 @@ export function UnknownDevicePage({ endpoint }: UnknownDevicePageProps) {
 
       {endpoint.sessionError && <p className="device-note">Link attempt: {endpoint.sessionError}</p>}
 
-      <FlashControls endpoint={endpoint} />
+      <FlashDialog endpoint={endpoint} />
 
       <DeviceConsole device={endpoint} />
     </section>

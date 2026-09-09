@@ -1,15 +1,19 @@
 // @vitest-environment jsdom
 /**
  * AppHeader.test.tsx — component-level tests for the route-aware app
- * header (ticket 012-004, SUC-003/SUC-004).
+ * header (ticket 012-004, SUC-003/SUC-004; Flash entry reworked into a
+ * popup-modal trigger by out-of-process work, 2026-09-08).
  *
  * Covers the back-to-devices link across `/` and all five
  * `/d/:endpointId` states (loading, not-connected, relay, robot,
- * unknown), and the Flash menu entry's presence and confirmation-step
- * behavior. `FlashControls`' own release/local-hex/progress behavior
- * is exercised in `FlashControls.test.tsx`, not duplicated here -- this
- * file only proves `AppHeader` decides *when* to show/open it and
- * (for an identified device) gates that open behind confirmation.
+ * unknown), and the Flash trigger's presence and (for an identified
+ * device) the in-dialog reflash warning that replaced the old
+ * `window.confirm()` step. `FlashControls`' own release/local-hex/
+ * progress behavior is exercised in `FlashControls.test.tsx`, and
+ * `FlashDialog`'s own gating/dismissal/focus behavior in
+ * `FlashDialog.test.tsx` -- neither is duplicated here. This file only
+ * proves `AppHeader` decides *when* to offer the trigger, and passes
+ * `forceShow` so it's offered for an identified device too.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -156,24 +160,23 @@ describe("AppHeader back-to-devices link", () => {
   });
 });
 
-describe("AppHeader Flash menu entry", () => {
-  it("shows no Flash entry on /", () => {
+describe("AppHeader Flash trigger", () => {
+  it("shows no Flash trigger on /", () => {
     const { el } = mountAt("/");
     expect(flashButton(el)).toBeNull();
   });
 
-  it("shows no Flash entry in the loading state (no resolvable endpoint yet)", () => {
+  it("shows no Flash trigger in the loading state (no resolvable endpoint yet)", () => {
     const { el } = mountAt("/d/usb-SERIAL-A");
     expect(flashButton(el)).toBeNull();
   });
 
-  it("shows no Flash entry in the not-connected state (no matching endpoint in the snapshot)", () => {
+  it("shows no Flash trigger in the not-connected state (no matching endpoint in the snapshot)", () => {
     const { el } = mountAt("/d/usb-MISSING", { snapshot: [endpoint()] });
     expect(flashButton(el)).toBeNull();
   });
 
-  it("shows an enabled Flash entry for an unknown device and opens FlashControls directly, without confirmation", () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+  it("shows an enabled Flash trigger for an unknown device and opens the dialog directly, with no reflash warning", () => {
     const { el } = mountAt("/d/usb-SERIAL-A", { snapshot: [endpoint({ role: null })] });
 
     const button = flashButton(el);
@@ -184,12 +187,12 @@ describe("AppHeader Flash menu entry", () => {
       button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(confirmSpy).not.toHaveBeenCalled();
     expect(el.querySelector(".flash-controls")).not.toBeNull();
+    expect(el.textContent).not.toContain("will interrupt");
   });
 
-  it("shows an enabled Flash entry for a relay device and requires confirmation before opening FlashControls", () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+  it("shows an enabled Flash trigger for a relay device and opens the dialog with a reflash warning, no window.confirm", () => {
+    const confirmSpy = vi.spyOn(window, "confirm");
     const relay = endpoint({
       endpointId: "usb-RELAY-A",
       resourceKey: "usb-RELAY-A",
@@ -208,12 +211,13 @@ describe("AppHeader Flash menu entry", () => {
       button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(confirmSpy).not.toHaveBeenCalled();
     expect(el.querySelector(".flash-controls")).not.toBeNull();
+    expect(el.textContent).toContain("will interrupt");
   });
 
-  it("shows an enabled Flash entry for a robot device and requires confirmation before opening FlashControls", () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+  it("shows an enabled Flash trigger for a robot device and opens the dialog with a reflash warning, no window.confirm", () => {
+    const confirmSpy = vi.spyOn(window, "confirm");
     const robot = endpoint({
       endpointId: "usb-ROBOT-A",
       resourceKey: "usb-ROBOT-A",
@@ -228,27 +232,8 @@ describe("AppHeader Flash menu entry", () => {
       button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(confirmSpy).not.toHaveBeenCalled();
     expect(el.querySelector(".flash-controls")).not.toBeNull();
-  });
-
-  it("leaves FlashControls unopened when confirmation is declined for an identified device", () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-    const robot = endpoint({
-      endpointId: "usb-ROBOT-A",
-      resourceKey: "usb-ROBOT-A",
-      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
-      role: "NEZHA2",
-      sessionOpen: true,
-    });
-    const { el } = mountAt("/d/usb-ROBOT-A", { snapshot: [robot] });
-
-    const button = flashButton(el);
-    act(() => {
-      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(confirmSpy).toHaveBeenCalledTimes(1);
-    expect(el.querySelector(".flash-controls")).toBeNull();
+    expect(el.textContent).toContain("will interrupt");
   });
 });

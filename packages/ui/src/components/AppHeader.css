@@ -38,7 +38,3 @@
 .app-header-flash-toggle:hover {
   border-color: var(--rc-accent);
 }
-
-.app-header-flash-panel {
-  max-width: 46rem;
-}

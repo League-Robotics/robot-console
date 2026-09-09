@@ -128,19 +128,29 @@ describe("UnknownDevicePage", () => {
     expect(el.textContent).not.toContain("Link attempt:");
   });
 
-  it("mounts FlashControls, showing flash controls for a role-less device", () => {
+  it("mounts FlashDialog, offering a Flash trigger for a role-less device", () => {
     const { el } = mountUnknownPage(baseDevice({ role: null }), { firmwareStatus: firmwareStatusFixture() });
+    const flashTrigger = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash");
+    expect(flashTrigger).toBeDefined();
+  });
+
+  it("opening the Flash trigger reveals the flash flow for a role-less device", () => {
+    const { el } = mountUnknownPage(baseDevice({ role: null }), { firmwareStatus: firmwareStatusFixture() });
+    const flashTrigger = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash");
+    act(() => {
+      flashTrigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
     expect(el.textContent).toContain("Flash relay firmware");
     expect(el.textContent).toContain("Flash robot firmware");
   });
 
-  it("shows no flash controls for an identified device (FlashControls' own canBeFlashed gate)", () => {
+  it("shows no Flash trigger for an identified device (FlashDialog's own canBeFlashed gate)", () => {
     const { el } = mountUnknownPage(
       baseDevice({ role: "NEZHA2", sessionOpen: true }),
       { firmwareStatus: firmwareStatusFixture() },
     );
-    expect(el.textContent).not.toContain("Flash relay firmware");
-    expect(el.textContent).not.toContain("Flash robot firmware");
+    const flashTrigger = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash");
+    expect(flashTrigger).toBeUndefined();
   });
 
   it("renders DeviceConsole alongside the flash controls", () => {
@@ -151,14 +161,14 @@ describe("UnknownDevicePage", () => {
 });
 
 describe("UnknownDevicePage under AppHeader (ticket 012-004)", () => {
-  // AppHeader owns the back-to-devices link and the Flash menu entry
+  // AppHeader owns the back-to-devices link and its own Flash trigger
   // (see AppHeader.test.tsx for the full behavior matrix); this is a
   // cheap per-page smoke test proving both actually show up on a real
   // unknown-device page's route, not just in AppHeader's own isolated
-  // tests. An unknown device's own on-page FlashControls (already
-  // covered above) and AppHeader's Flash entry coexist without
-  // conflict -- they render independent `.flash-controls` instances.
-  it("shows a back-to-devices link and an enabled Flash entry alongside the unknown-device page", () => {
+  // tests. An unknown device's own on-page Flash trigger (already
+  // covered above) and AppHeader's Flash trigger coexist without
+  // conflict -- each opens its own independent `FlashDialog` instance.
+  it("shows a back-to-devices link and two independent, enabled Flash triggers alongside the unknown-device page", () => {
     const device = baseDevice({ role: null });
     let socket: FakeSocket | null = null;
     const el = mount(
@@ -179,8 +189,8 @@ describe("UnknownDevicePage under AppHeader (ticket 012-004)", () => {
 
     const backLink = el.querySelector("a");
     expect(backLink?.getAttribute("href")).toBe("/");
-    const flashButton = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash");
-    expect(flashButton).not.toBeUndefined();
-    expect(flashButton?.disabled).toBe(false);
+    const flashTriggers = Array.from(el.querySelectorAll("button")).filter((b) => b.textContent === "Flash");
+    expect(flashTriggers).toHaveLength(2);
+    expect(flashTriggers.every((b) => !b.disabled)).toBe(true);
   });
 });

@@ -2,41 +2,34 @@
  * FlashControls.tsx — the release-flash + local-hex flash UI, extracted
  * from `UnknownDevicePage.tsx` (ticket 012-002) so the front-page card
  * (`FrontPage.tsx`'s `EndpointCard`), the per-device unknown page
- * (`UnknownDevicePage.tsx`), and the app header's Flash panel
+ * (`UnknownDevicePage.tsx`), and the app header's Flash entry
  * (ticket 004) render the exact same flow instead of three independent,
  * drifting copies of the same intricate progress/error/upload state
  * machine.
  *
- * **Contract: one endpoint in, no knowledge of caller.** This
- * component's public props are `{ endpoint }` plus one opt-in escape
- * hatch, `forceShow` (added by ticket 004, default `false`, see
- * below). It owns all of its own progress/error/local-hex-upload state
- * and the `onFlashResult`/`onFlashLocalReady` subscriptions internally,
- * and it decides for itself, via `canBeFlashed`, whether there is
- * anything to render at all -- renders `null` for a device that isn't
- * eligible for flashing rather than requiring every call site to
- * duplicate that gate (which is exactly the kind of drift this
- * extraction exists to prevent; see this sprint's Design Rationale). It
+ * **Contract: one endpoint in, no knowledge of caller, no gating.**
+ * This component's only prop is `{ endpoint }`. It owns all of its own
+ * progress/error/local-hex-upload state and the
+ * `onFlashResult`/`onFlashLocalReady` subscriptions internally. It
  * never reads the current route, never takes an `onFlash`/`onDone`
  * callback, and never assumes anything about what else is on the page
- * around it. Three call sites depend on this contract holding:
- * `FrontPage.tsx`'s `EndpointCard`, `UnknownDevicePage.tsx` (both this
- * ticket), and ticket 004's `AppHeader` Flash panel.
+ * around it.
  *
- * **`forceShow` (ticket 004):** the stakeholder's own request for the
- * app header's Flash entry is that it work on an *identified*
- * (`relay`/`robot`) device too, not just the `canBeFlashed`-eligible
- * ones this component already covers. Rather than fork a second copy
- * of this file's progress/error/local-hex state machine for that case
- * -- exactly the drift the `FlashControls` extraction exists to avoid
- * -- `AppHeader` is the one caller that has already made its own
- * decision (behind its own route/endpoint match and, for an identified
- * device, an explicit confirmation) about whether to show flashing
- * right now, and passes `forceShow` to make that decision stick: when
- * `true`, the `canBeFlashed` gate below is skipped and this component
- * renders its normal UI regardless of `endpoint.role`. Every other call
- * site omits it (defaults to `false`) and is therefore unaffected --
- * this is additive, not a change to the existing gate's behavior.
+ * **Out-of-process modal work (2026-09-08): gating moved to
+ * `FlashDialog.tsx`.** Before this change, this component decided for
+ * itself, via `canBeFlashed`, whether to render anything at all (a
+ * `forceShow` escape hatch let `AppHeader` bypass that gate for an
+ * identified device). The stakeholder asked for the whole flash flow to
+ * move into a popup modal, with each call site left holding just a
+ * trigger -- and a trigger is exactly where "should this device even
+ * offer to be flashed" now belongs, not inside the dialog content. Every
+ * call site now mounts `FlashDialog` (`./FlashDialog.tsx`), which owns
+ * the `canBeFlashed` gate (skippable via its own `forceShow`, still used
+ * only by `AppHeader` for an identified relay/robot device), the trigger
+ * button, and the `<dialog>` chrome; this component always renders its
+ * full UI once mounted; it is never mounted un-gated. See
+ * `FlashDialog.tsx`'s doc comment for the gating/dismissal/focus
+ * decisions -- this file is unchanged in every other respect.
  *
  * Two flash affordances, both ported from `DevicesTab.tsx`'s
  * `DeviceCard` (moved, not redesigned) plus one added in sprint 8:
@@ -108,7 +101,7 @@ import type {
   FlashLocalReadyMessage,
 } from "@robot-console/host/src/wsMessages.js";
 import { useFirmwareStatus, useFlashProgress, useWsActions, type FlashProgressState } from "../ws/WsProvider";
-import { FIRMWARE_LABEL, PHASE_LABEL, canBeFlashed, firmwareDisabledReason } from "../deviceDisplay";
+import { FIRMWARE_LABEL, PHASE_LABEL, firmwareDisabledReason } from "../deviceDisplay";
 import "./FlashControls.css";
 
 /** Hard cap on a local-hex upload, checked client-side before a single
@@ -160,13 +153,9 @@ function flashProgressText(progress: FlashProgressState): string {
 
 export interface FlashControlsProps {
   endpoint: EndpointListEntry;
-  /** Bypass the `canBeFlashed` self-gate below and render regardless
-   * of `endpoint.role` -- see this module's doc comment. Default
-   * `false`; only `AppHeader` (ticket 004) passes `true`. */
-  forceShow?: boolean;
 }
 
-export function FlashControls({ endpoint, forceShow = false }: FlashControlsProps) {
+export function FlashControls({ endpoint }: FlashControlsProps) {
   const firmwareStatus = useFirmwareStatus();
   const progress = useFlashProgress(endpoint.endpointId);
   const { send, sendBinary, onFlashResult, onFlashLocalReady } = useWsActions();
@@ -259,16 +248,6 @@ export function FlashControls({ endpoint, forceShow = false }: FlashControlsProp
     });
     setLocalHex({ phase: "idle" });
   }, [endpoint.endpointId, localHex, send]);
-
-  // Decided here, not by the caller (see this module's doc comment's
-  // "no knowledge of caller" contract) -- every call site can mount
-  // `<FlashControls endpoint={...} />` unconditionally and trust this
-  // component to render nothing for a device that isn't eligible.
-  // `forceShow` (ticket 004's `AppHeader`) is the one documented
-  // exception -- see this module's doc comment.
-  if (!forceShow && !canBeFlashed(endpoint)) {
-    return null;
-  }
 
   const relayReason = firmwareDisabledReason(firmwareStatus.relay);
   const robotReason = firmwareDisabledReason(firmwareStatus.robot);

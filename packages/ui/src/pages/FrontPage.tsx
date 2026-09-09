@@ -21,12 +21,14 @@
  * session that failed to identify, right where the student is already
  * looking to send a line. Flash controls, by contrast, moved to the
  * per-device page in sprint 004 and then back here (ticket 012-002):
- * `EndpointCard` renders the shared `FlashControls` (`../components/
- * FlashControls.tsx`) for a `canBeFlashed` device, as a sibling of the
- * card's `Link` rather than nested inside it -- an interactive element
- * inside an `<a>` is invalid markup that would fight the router's click
- * handling, so the `Link` wraps only the informational region and the
- * action row sits beside it, inside the `<li>`. This component takes no
+ * `EndpointCard` renders the shared `FlashDialog` (`../components/
+ * FlashDialog.tsx`, a "Flash" trigger plus the popup modal the flow
+ * itself now runs in -- out-of-process work, 2026-09-08) for a
+ * `canBeFlashed` device, as a sibling of the card's `Link` rather than
+ * nested inside it -- an interactive element inside an `<a>` is invalid
+ * markup that would fight the router's click handling, so the `Link`
+ * wraps only the informational region and the action row sits beside
+ * it, inside the `<li>`. This component takes no
  * `onOpen`/`onClose` callbacks because the front page never performed
  * those actions directly itself (`DeviceCard` did). The old
  * `DevicesTab.tsx`/`ConsoleTab.tsx` components ticket 008 redistributed
@@ -58,7 +60,7 @@ import type { EndpointListEntry, RememberedRobotEntry } from "@robot-console/hos
 import type { ConnectionStatus } from "../ws/WsProvider";
 import { useConnectionStatus, useEndpoints, useRememberedRobots, useWsActions } from "../ws/WsProvider";
 import { canBeFlashed, nameDisplay, roleDisplay } from "../deviceDisplay";
-import { FlashControls } from "../components/FlashControls";
+import { FlashDialog } from "../components/FlashDialog";
 import "./FrontPage.css";
 
 export function FrontPage() {
@@ -175,7 +177,7 @@ function EndpointCard({ device }: { device: EndpointListEntry }) {
 
       {canBeFlashed(device) && (
         <div className="device-card-actions" data-testid={`device-actions-${device.endpointId}`}>
-          <FlashControls endpoint={device} />
+          <FlashDialog endpoint={device} />
         </div>
       )}
     </>

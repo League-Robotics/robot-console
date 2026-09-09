@@ -1,0 +1,57 @@
+.flash-dialog {
+  border: 1px solid var(--rc-border);
+  border-radius: 0.75rem;
+  background: var(--rc-bg);
+  color: var(--rc-text);
+  padding: 0;
+  width: min(34rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 4rem);
+  overflow-y: auto;
+}
+
+.flash-dialog::backdrop {
+  background: rgba(15, 18, 22, 0.55);
+}
+
+.flash-dialog-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 1.1rem 1.25rem 1.25rem;
+}
+
+.flash-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.flash-dialog-header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.flash-dialog-close {
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.3rem 0.75rem;
+  border-radius: 0.4rem;
+  font-size: 0.82rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.flash-dialog-close:hover {
+  border-color: var(--rc-accent);
+}
+
+.flash-dialog-warning {
+  margin: 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--rc-warn-border);
+  background: var(--rc-warn-bg);
+  color: var(--rc-warn-text);
+  border-radius: 0.4rem;
+}

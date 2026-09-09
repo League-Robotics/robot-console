@@ -296,7 +296,7 @@ describe("EndpointCard flash affordance (ticket 012-002)", () => {
     return { el, socket: () => socket! };
   }
 
-  it("shows FlashControls, as a sibling of the card's Link, for a canBeFlashed device", () => {
+  it("shows a Flash trigger, as a sibling of the card's Link, for a canBeFlashed device", () => {
     const device = baseDevice({ id: "SERIAL-FLASH", role: null });
     const { el } = mountFrontPage(device);
 
@@ -308,7 +308,26 @@ describe("EndpointCard flash affordance (ticket 012-002)", () => {
     expect(actions?.parentElement).toBe(card?.parentElement);
     expect(actions?.contains(card)).toBe(false);
     expect(card?.contains(actions)).toBe(false);
-    expect(actions?.textContent).toContain("Flash relay firmware");
+    expect(actions?.textContent).toContain("Flash");
+  });
+
+  it("opens the flash dialog, revealing the flash flow, when the trigger is clicked", () => {
+    const device = baseDevice({ id: "SERIAL-FLASH-OPEN", role: null });
+    const { el } = mountFrontPage(device);
+
+    const actions = el.querySelector('[data-testid="device-actions-usb-SERIAL-FLASH-OPEN"]');
+    const flashTrigger = Array.from(actions?.querySelectorAll("button") ?? []).find(
+      (b) => b.textContent === "Flash",
+    );
+    expect(flashTrigger).toBeDefined();
+    expect(el.querySelector("dialog")).toBeNull();
+
+    act(() => {
+      flashTrigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(el.querySelector("dialog")).not.toBeNull();
+    expect(el.textContent).toContain("Flash relay firmware");
   });
 
   it("shows no flash action row for an identified (not canBeFlashed) device -- no visual regression", () => {
@@ -343,12 +362,19 @@ describe("EndpointCard flash affordance (ticket 012-002)", () => {
     expect(el.querySelector('[data-testid="location"]')?.textContent).toBe("/d/usb-SERIAL-NAV2");
   });
 
-  it("clicking a flash button in the action row sends flash-start without navigating away", () => {
+  it("clicking a flash button in the action row's dialog sends flash-start without navigating away", () => {
     const device = baseDevice({ id: "SERIAL-NONAV", role: null });
     const { el, socket } = mountFrontPage(device);
 
     const actions = el.querySelector('[data-testid="device-actions-usb-SERIAL-NONAV"]');
-    const relayButton = Array.from(actions?.querySelectorAll("button") ?? []).find(
+    const flashTrigger = Array.from(actions?.querySelectorAll("button") ?? []).find(
+      (b) => b.textContent === "Flash",
+    );
+    act(() => {
+      flashTrigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const relayButton = Array.from(el.querySelectorAll("button")).find(
       (b) => b.textContent === "Flash relay firmware",
     );
     expect(relayButton).toBeDefined();

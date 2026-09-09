@@ -1,7 +1,7 @@
 ---
 id: '006'
 title: Address-source disclosure chip (neutral/warning states)
-status: open
+status: in-progress
 use-cases:
 - SUC-006
 depends-on:
@@ -47,25 +47,25 @@ first.
 
 ## Acceptance Criteria
 
-- [ ] All three resolution outcomes (`config`/`registry`, `derived`,
+- [x] All three resolution outcomes (`config`/`registry`, `derived`,
       `local-derived`) render with correct text and the correct
       neutral/warning styling, driven entirely by fixture props (no
       live registry, no `WsProvider` dependency in this component's own
       tests).
-- [ ] `local-derived` with no registry ever discovered renders neutral;
+- [x] `local-derived` with no registry ever discovered renders neutral;
       `local-derived`/`derived` with a registry that was discovered but
       not authoritative renders warning — these are two different input
       shapes to the same `"local-derived"`-adjacent styling decision;
       the component's prop shape must let a caller distinguish them
       (e.g. a `registryWasConsidered: boolean` alongside the outcome
       tag, or equivalent — pick a concrete shape and document it).
-- [ ] The chip renders the current `(channel, group)` alongside the
+- [x] The chip renders the current `(channel, group)` alongside the
       source text, per the example format in `sprint.md`.
-- [ ] Passing `undefined`/no `addressSource` prop renders nothing (the
+- [x] Passing `undefined`/no `addressSource` prop renders nothing (the
       chip's own not-applicable case) — callers (ticket 005) are
       responsible for not mounting it for an `mbserial` endpoint, but
       the component itself degrades safely if it ever is.
-- [ ] `npm test` and `npm run build` pass.
+- [x] `npm test` and `npm run build` pass.
 
 ## Testing
 

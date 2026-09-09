@@ -1,7 +1,7 @@
 ---
 id: '003'
 title: 'RelayConnectionCoordinator: resolve, connect, and fail over to the next candidate'
-status: in-progress
+status: done
 use-cases:
 - SUC-003
 - SUC-005

@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   Session,
+  classifyBanner,
   nameToRadioAddress,
   type AckNackEvent,
   type DecodedLine,
@@ -22,6 +23,87 @@ import type { FirmwareConfigMap, FirmwareSource } from "./config.js";
 import type { ResolvedRelease } from "./releases.js";
 import type { FlashOutcome } from "./flash.js";
 import { KnownRobotsStore } from "./store/knownRobots.js";
+import type { ConnectionCandidate, RelayConnectionResult } from "./relay/RelayConnectionCoordinator.js";
+import type { RelayConnector } from "./deviceRegistry.js";
+import { MdnsDiscovery } from "./discovery/mdnsDiscovery.js";
+
+// Sprint 8 ticket 004: DeviceRegistry's default MdnsDiscovery is real
+// (real `bonjour-service` multicast browsing, started/stopped alongside
+// the device watcher) -- verified live to actually reach the LAN and
+// discover real services. Every test in this file gets a lightweight,
+// fully synthetic fake instead, with NO edits needed at the ~100
+// existing call sites that never mention mdnsDiscovery at all: this
+// mock replaces the module for this file's whole graph (including
+// deviceRegistry.ts's own `new MdnsDiscovery()` default), so no test
+// here ever opens a real multicast socket. A test that cares about
+// specific discovered services constructs its own `new MdnsDiscovery()`
+// (the same mocked class) and calls its test-only `setSnapshot` to
+// script one -- see the "robot-via-relay endpoints" describe block.
+vi.mock("./discovery/mdnsDiscovery.js", () => {
+  class FakeMdnsDiscoveryForTests {
+    private snapshot: { relays: unknown[]; robots: unknown[] } = { relays: [], robots: [] };
+    private listeners = new Set<(current: unknown) => void>();
+    current(): unknown {
+      return this.snapshot;
+    }
+    onChange(listener: (current: unknown) => void): () => void {
+      this.listeners.add(listener);
+      return () => {
+        this.listeners.delete(listener);
+      };
+    }
+    start(): void {
+      // Intentionally inert -- no real backend, no real socket.
+    }
+    stop(): void {
+      // Intentionally inert.
+    }
+    setSnapshot(next: { relays: unknown[]; robots: unknown[] }): void {
+      this.snapshot = next;
+      for (const listener of this.listeners) {
+        listener(next);
+      }
+    }
+  }
+  return { MdnsDiscovery: FakeMdnsDiscoveryForTests };
+});
+
+/** Cast helper for the mocked {@link MdnsDiscovery}'s test-only
+ * `setSnapshot` -- TypeScript still types `new MdnsDiscovery()` against
+ * the real class (mocking is a vitest runtime mechanism, invisible to
+ * `tsc`), so this file's test bodies are excluded from `tsc -p
+ * tsconfig.json` (see `tsconfig.json`'s own `exclude`); this cast keeps
+ * call sites terse regardless. */
+function fakeMdnsDiscovery(snapshot: {
+  relays: Array<{ instanceName: string; host: string; port: number; registryPort?: number }>;
+  robots: Array<{ instanceName: string; host: string; port: number }>;
+}): MdnsDiscovery {
+  const instance = new MdnsDiscovery() as unknown as MdnsDiscovery & {
+    setSnapshot: (next: typeof snapshot) => void;
+  };
+  instance.setSnapshot(snapshot);
+  return instance;
+}
+
+/** A fully synthetic {@link RelayConnector} (sprint 8 ticket 004) --
+ * never a real {@link RelayConnectionCoordinator}, per this ticket's own
+ * testing note. Records every candidate list it was called with, in
+ * call order, so a test can assert exactly what `deviceRegistry.ts`
+ * built without any real resolve/connect/probe timing. */
+function fakeCoordinator(
+  handler: (
+    candidates: readonly ConnectionCandidate[],
+  ) => Promise<RelayConnectionResult> | RelayConnectionResult,
+): RelayConnector & { calls: ConnectionCandidate[][] } {
+  const calls: ConnectionCandidate[][] = [];
+  return {
+    calls,
+    async connect(candidates) {
+      calls.push([...candidates]);
+      return handler(candidates);
+    },
+  };
+}
 
 // Per the ticket's Testing section: message-shaping logic is exercised
 // here against fake devices.ts/swdName.ts/UsbSerialLink outputs -- no
@@ -1867,7 +1949,7 @@ describe("DeviceRegistry — requestFlash (local-hex source)", () => {
 // system, not by a runtime assertion here.
 // ---------------------------------------------------------------------
 
-describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
+describe("robot-via-relay endpoints (OOP 2026-09-09, coordinator-driven since sprint 8 ticket 004)", () => {
   function relayDevice(overrides: Partial<DaplinkDevice> = {}): DaplinkDevice {
     return device({
       serialNumber: "SERIAL-RELAY",
@@ -1881,39 +1963,31 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
     return banner({ role: "NEZHA2", commonName: "robot", name: "gopiv", ...overrides });
   }
 
-  /** `createLink` fake that records every {@link LinkSpec} it was given
-   * and returns a distinct {@link FakeLink} per call -- the relay's own
-   * plain USB link is `relayUsbLink` (passed in, reused across the
-   * fixture's whole lifetime, mirroring how one physical port opens one
-   * link at a time); every `"relay-radio"` spec gets a fresh link built
-   * by `makeRadioLink`, appended to `radioLinks` in call order, so a
-   * test exercising a switch (open, then open again with a different
-   * name) can tell the two links apart. */
-  function buildCreateLink(
-    relayUsbLink: FakeLink,
-    makeRadioLink: (spec: Extract<LinkSpec, { transport: "relay-radio" }>) => FakeLink,
-  ): { createLink: (spec: LinkSpec) => Link; specs: LinkSpec[]; radioLinks: FakeLink[] } {
-    const specs: LinkSpec[] = [];
-    const radioLinks: FakeLink[] = [];
-    const createLink = (spec: LinkSpec): Link => {
-      specs.push(spec);
+  /** `createLink` fake for the relay's OWN plain USB session only --
+   * every relay-radio/mbrelay/mbserial candidate is now built and
+   * connected entirely inside {@link fakeCoordinator}'s handler (never
+   * via this module's `createLink` seam, since
+   * `RelayConnectionCoordinator.ts` owns that -- see
+   * `deviceRegistry.ts`'s own module doc comment, "Relay-target
+   * endpoint synthesis and switching" section). Throws for any other
+   * transport so a test that forgets to fake the coordinator fails
+   * loudly instead of silently reusing the wrong link. */
+  function usbOnlyCreateLink(relayUsbLink: FakeLink): (spec: LinkSpec) => Link {
+    return (spec) => {
       if (spec.transport === "usb") {
         return relayUsbLink;
       }
-      if (spec.transport === "relay-radio") {
-        const link = makeRadioLink(spec);
-        radioLinks.push(link);
-        return link;
-      }
-      throw new Error(`unexpected transport in this fixture: ${spec.transport}`);
+      throw new Error(
+        `unexpected transport in this fixture: ${spec.transport} -- relay-radio/mbrelay/mbserial specs are the coordinator's job now, never this module's createLink`,
+      );
     };
-    return { createLink, specs, radioLinks };
   }
 
   /** Attach `order.push(label)` onto an already-constructed `FakeLink`'s
    * `close()`, so a test can observe *when* a specific link was closed
-   * relative to other events (`resetOverSwd`, another link's `connect`)
-   * without `FakeLink` itself needing to know about any of this. */
+   * relative to other events (`resetOverSwd`, the coordinator's own
+   * `connect`) without `FakeLink` itself needing to know about any of
+   * this. */
   function trackClose(link: FakeLink, order: string[], label: string): void {
     const originalClose = link.close.bind(link);
     link.close = () => {
@@ -1922,24 +1996,37 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
     };
   }
 
-  it("routes session-open with a robotName through the relay: relay-radio createLink call, reset-then-handshake ordering, and both entries in the snapshot", async () => {
+  it("routes an explicit robotName through a single relay-radio candidate: candidate shape (including a matched _mbrelay._tcp registry location), reset-then-coordinator ordering, and both entries in the snapshot with addressSource/failoverTrail present while open", async () => {
     const devices = [relayDevice()];
     const watcher = fixtureWatcher(() => devices);
-    const resolveName = async () => namedResult("rly01");
+    const resolveName = async () => namedResult("rly01"); // matches the discovered _mbrelay._tcp instance name below.
 
     const order: string[] = [];
     const relayUsbLink = new FakeLink(async () => banner()); // banner()'s default fixture classifies as a relay.
     trackClose(relayUsbLink, order, "relay-usb-close");
-
-    const { createLink, specs, radioLinks } = buildCreateLink(relayUsbLink, () =>
-      new FakeLink(async () => robotBanner(), async () => {
-        order.push("radio-connect");
-      }),
-    );
+    const createLink = usbOnlyCreateLink(relayUsbLink);
 
     const resetOverSwd = vi.fn(async () => {
       order.push("reset");
       return { ok: true as const };
+    });
+
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [{ instanceName: "rly01", host: "rly01.local", port: 8760, registryPort: 8761 }],
+      robots: [],
+    });
+
+    const robotLink = new FakeLink(async () => robotBanner());
+    const coordinator = fakeCoordinator(async (candidates) => {
+      order.push("coordinator-connect");
+      return {
+        outcome: "connected",
+        link: robotLink,
+        name: candidates[0]!.name,
+        classification: classifyBanner(robotBanner()),
+        addressSource: "registry",
+        failoverTrail: [],
+      };
     });
 
     const registry = new DeviceRegistry({
@@ -1950,6 +2037,8 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
       createLink,
       resetOverSwd,
       relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
+      mdnsDiscovery,
     });
     registry.start();
 
@@ -1966,27 +2055,29 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
       s.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv"),
     );
 
-    // (i) createLink called with transport relay-radio, the relay's own
-    // portPath, and gopiv's derived address.
-    const relaySpec = specs.find((s) => s.transport === "relay-radio");
-    expect(relaySpec).toEqual({
-      transport: "relay-radio",
-      resourceKey: "usb-SERIAL-RELAY",
-      portPath: "/dev/cu.usbmodemRELAY",
-      channel: expectedAddress.channel,
-      group: expectedAddress.group,
-    });
-    expect(radioLinks).toHaveLength(1);
+    // (i) the coordinator was called with exactly one relay-radio
+    // candidate, carrying the matched registry location.
+    expect(coordinator.calls).toHaveLength(1);
+    expect(coordinator.calls[0]).toEqual([
+      {
+        transport: "relay-radio",
+        name: "gopiv",
+        portPath: "/dev/cu.usbmodemRELAY",
+        resourceKey: "usb-SERIAL-RELAY",
+        registry: { host: "rly01.local", port: 8761 },
+      },
+    ]);
 
-    // (iii) the relay's plain link was closed first, and resetOverSwd
-    // was called before the radio link's connect().
-    expect(order).toEqual(["relay-usb-close", "reset", "radio-connect"]);
+    // (ii) the relay's plain link was closed first, resetOverSwd ran
+    // before the coordinator was ever called.
+    expect(order).toEqual(["relay-usb-close", "reset", "coordinator-connect"]);
     expect(resetOverSwd).toHaveBeenCalledWith(devices[0]);
 
-    // (iv) both the relay entry (sessionOpen false) and the synthesized
-    // via-gopiv entry (transport relay-radio, viaRelay, no usb, shared
-    // resourceKey, classification from the fake banner) are present at
-    // once.
+    // (iii) both the relay entry (sessionOpen false) and the
+    // synthesized via-gopiv entry (transport relay-radio, viaRelay, no
+    // usb, shared resourceKey, classification from the fake banner,
+    // addressSource/failoverTrail present since the session is open)
+    // are present at once.
     const relayEntry = snap.find((e) => e.endpointId === "usb-SERIAL-RELAY");
     expect(relayEntry).toEqual(
       expect.objectContaining({ sessionOpen: false, transport: "usb", resourceKey: "usb-SERIAL-RELAY" }),
@@ -2004,21 +2095,52 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
           channel: expectedAddress.channel,
           group: expectedAddress.group,
         },
+        addressSource: "registry",
+        failoverTrail: [],
         classification: expect.objectContaining({ type: "robot" }),
       }),
     );
     expect(viaEntry?.usb).toBeUndefined();
 
+    // (iv) closing the session (a link error, not a deliberate close)
+    // makes addressSource/failoverTrail disappear -- present only while
+    // the session is open -- while the entry itself remains listed.
+    robotLink.emitError(new Error("boom"));
+    const snap2 = await waitForSnapshot(
+      registry,
+      (s) => s.find((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv")?.sessionOpen === false,
+    );
+    const viaEntry2 = snap2.find((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv");
+    expect(viaEntry2).toBeDefined();
+    expect(viaEntry2?.addressSource).toBeUndefined();
+    expect(viaEntry2?.failoverTrail).toBeUndefined();
+
     await registry.stop();
   });
 
-  it("uses an explicit radio override instead of the name-derived address", async () => {
+  it("an explicit radio override becomes the candidate's explicit address and addressSource \"explicit\", never consulting a matched registry location", async () => {
     const devices = [relayDevice()];
     const watcher = fixtureWatcher(() => devices);
     const resolveName = async () => namedResult("rly01");
-
     const relayUsbLink = new FakeLink(async () => banner());
-    const { createLink, specs } = buildCreateLink(relayUsbLink, () => new FakeLink(async () => robotBanner()));
+    const createLink = usbOnlyCreateLink(relayUsbLink);
+    // A matching registry location exists but must be ignored -- an
+    // explicit override bypasses resolution entirely (RelayConnectionCoordinator.ts's
+    // own "Explicit address override" contract).
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [{ instanceName: "rly01", host: "rly01.local", port: 8760, registryPort: 8761 }],
+      robots: [],
+    });
+
+    const robotLink = new FakeLink(async () => robotBanner());
+    const coordinator = fakeCoordinator(async (candidates) => ({
+      outcome: "connected",
+      link: robotLink,
+      name: candidates[0]!.name,
+      classification: classifyBanner(robotBanner()),
+      addressSource: "explicit",
+      failoverTrail: [],
+    }));
 
     const registry = new DeviceRegistry({
       statusPollIntervalMs: 0,
@@ -2028,15 +2150,27 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
       createLink,
       resetOverSwd: async () => ({ ok: true }),
       relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
+      mdnsDiscovery,
     });
     registry.start();
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
 
     await registry.requestOpen("usb-SERIAL-RELAY", { robotName: "gopiv", radio: { channel: 55, group: 114 } });
-    await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv"));
+    const snap = await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv"));
 
-    const relaySpec = specs.find((s) => s.transport === "relay-radio");
-    expect(relaySpec).toEqual(
+    expect(coordinator.calls[0]).toEqual([
+      {
+        transport: "relay-radio",
+        name: "gopiv",
+        portPath: "/dev/cu.usbmodemRELAY",
+        resourceKey: "usb-SERIAL-RELAY",
+        address: { channel: 55, group: 114 },
+      },
+    ]);
+    const viaEntry = snap.find((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv");
+    expect(viaEntry?.addressSource).toBe("explicit");
+    expect(viaEntry?.viaRelay).toEqual(
       expect.objectContaining({ channel: 55, group: 114 }),
     );
 
@@ -2049,9 +2183,19 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
     const resolveName = async () => namedResult("rly01");
 
     const relayUsbLink = new FakeLink(async () => banner());
-    const { createLink, radioLinks } = buildCreateLink(relayUsbLink, (spec) =>
-      new FakeLink(async () => robotBanner({ name: spec.channel === 55 ? "gopiv" : "tapaz" })),
-    );
+    const createLink = usbOnlyCreateLink(relayUsbLink);
+    const links: FakeLink[] = [];
+    const coordinator = fakeCoordinator(async (candidates) => {
+      const link = new FakeLink(async () => robotBanner({ name: candidates[0]!.name }));
+      links.push(link);
+      return {
+        outcome: "connected",
+        link,
+        name: candidates[0]!.name,
+        classification: classifyBanner(robotBanner()),
+        failoverTrail: [],
+      };
+    });
 
     const registry = new DeviceRegistry({
       statusPollIntervalMs: 0,
@@ -2061,6 +2205,7 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
       createLink,
       resetOverSwd: async () => ({ ok: true }),
       relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
     });
     registry.start();
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
@@ -2073,8 +2218,8 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
 
     expect(snap.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv")).toBe(false);
     expect(snap.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-tapaz")).toBe(true);
-    expect(radioLinks).toHaveLength(2);
-    expect(radioLinks[0]?.closeCalls).toBe(1); // the old synthesized link was torn down.
+    expect(links).toHaveLength(2);
+    expect(links[0]?.closeCalls).toBe(1); // the old synthesized link was torn down.
 
     await registry.stop();
   });
@@ -2085,17 +2230,21 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
     const resolveName = async () => namedResult("rly01");
 
     let usbLinkCreations = 0;
-    const relayUsbLinks: FakeLink[] = [];
-    const radioLink = new FakeLink(async () => robotBanner());
     const createLink = (spec: LinkSpec): Link => {
       if (spec.transport === "usb") {
         usbLinkCreations++;
-        const link = new FakeLink(async () => banner());
-        relayUsbLinks.push(link);
-        return link;
+        return new FakeLink(async () => banner());
       }
-      return radioLink;
+      throw new Error(`unexpected transport in this fixture: ${spec.transport}`);
     };
+    const radioLink = new FakeLink(async () => robotBanner());
+    const coordinator = fakeCoordinator(async (candidates) => ({
+      outcome: "connected",
+      link: radioLink,
+      name: candidates[0]!.name,
+      classification: classifyBanner(robotBanner()),
+      failoverTrail: [],
+    }));
 
     const registry = new DeviceRegistry({
       statusPollIntervalMs: 0,
@@ -2105,6 +2254,7 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
       createLink,
       resetOverSwd: async () => ({ ok: true }),
       relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
     });
     registry.start();
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
@@ -2125,7 +2275,7 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
     await registry.stop();
   });
 
-  it("a handshake (connect()) failure reports an error, creates no synthesized entry, and reopens the relay's own session", async () => {
+  it("exhausted candidates report an error, create no synthesized entry, and reopen the relay's own session", async () => {
     const devices = [relayDevice()];
     const watcher = fixtureWatcher(() => devices);
     const resolveName = async () => namedResult("rly01");
@@ -2136,11 +2286,12 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
         usbLinkCreations++;
         return new FakeLink(async () => banner());
       }
-      return new FakeLink(
-        async () => robotBanner(), // never reached -- connect() rejects first
-        () => Promise.reject(new Error("mock: relay command-plane handshake failed")),
-      );
+      throw new Error(`unexpected transport in this fixture: ${spec.transport}`);
     };
+    const coordinator = fakeCoordinator(async (candidates) => ({
+      outcome: "exhausted",
+      failoverTrail: candidates.map((c) => ({ name: c.name, transport: c.transport, reason: "mock: no reply" })),
+    }));
 
     const registry = new DeviceRegistry({
       statusPollIntervalMs: 0,
@@ -2150,6 +2301,7 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
       createLink,
       resetOverSwd: async () => ({ ok: true }),
       relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
     });
     const errors: Array<{ endpointId: string | undefined; message: string }> = [];
     registry.onError((endpointId, message) => errors.push({ endpointId, message }));
@@ -2164,10 +2316,10 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
     expect(errors).toContainEqual(
       expect.objectContaining({
         endpointId: "usb-SERIAL-RELAY",
-        message: expect.stringContaining("handshake failed"),
+        message: expect.stringContaining("gopiv"),
       }),
     );
-    expect(usbLinkCreations).toBe(2); // relay's own session was reopened after the failed handshake.
+    expect(usbLinkCreations).toBe(2); // relay's own session was reopened after exhaustion.
 
     await registry.stop();
   });
@@ -2178,8 +2330,15 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
     const resolveName = async () => namedResult("rly01");
 
     const relayUsbLink = new FakeLink(async () => banner());
+    const createLink = usbOnlyCreateLink(relayUsbLink);
     const radioLink = new FakeLink(async () => robotBanner());
-    const { createLink } = buildCreateLink(relayUsbLink, () => radioLink);
+    const coordinator = fakeCoordinator(async (candidates) => ({
+      outcome: "connected",
+      link: radioLink,
+      name: candidates[0]!.name,
+      classification: classifyBanner(robotBanner()),
+      failoverTrail: [],
+    }));
 
     const registry = new DeviceRegistry({
       statusPollIntervalMs: 0,
@@ -2189,6 +2348,7 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
       createLink,
       resetOverSwd: async () => ({ ok: true }),
       relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
     });
     registry.start();
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
@@ -2205,14 +2365,21 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
     await registry.stop();
   });
 
-  it("sendCommand on the synthesized endpoint routes to the radio link", async () => {
+  it("sendCommand on the synthesized endpoint routes to the coordinator-connected link", async () => {
     const devices = [relayDevice()];
     const watcher = fixtureWatcher(() => devices);
     const resolveName = async () => namedResult("rly01");
 
     const relayUsbLink = new FakeLink(async () => banner());
+    const createLink = usbOnlyCreateLink(relayUsbLink);
     const radioLink = new FakeLink(async () => robotBanner());
-    const { createLink } = buildCreateLink(relayUsbLink, () => radioLink);
+    const coordinator = fakeCoordinator(async (candidates) => ({
+      outcome: "connected",
+      link: radioLink,
+      name: candidates[0]!.name,
+      classification: classifyBanner(robotBanner()),
+      failoverTrail: [],
+    }));
 
     const registry = new DeviceRegistry({
       statusPollIntervalMs: 0,
@@ -2222,6 +2389,7 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
       createLink,
       resetOverSwd: async () => ({ ok: true }),
       relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
     });
     registry.start();
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
@@ -2235,14 +2403,21 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
     await registry.stop();
   });
 
-  it("a silent robot (identify() resolves null) leaves the synthesized endpoint open with a descriptive sessionError", async () => {
+  it("a connected-but-silent coordinator result (classifyBanner(null), evidence \"none\") leaves the synthesized endpoint open with a descriptive sessionError", async () => {
     const devices = [relayDevice()];
     const watcher = fixtureWatcher(() => devices);
     const resolveName = async () => namedResult("rly01");
 
     const relayUsbLink = new FakeLink(async () => banner());
+    const createLink = usbOnlyCreateLink(relayUsbLink);
     const radioLink = new FakeLink(async () => null);
-    const { createLink } = buildCreateLink(relayUsbLink, () => radioLink);
+    const coordinator = fakeCoordinator(async (candidates) => ({
+      outcome: "connected",
+      link: radioLink,
+      name: candidates[0]!.name,
+      classification: classifyBanner(null),
+      failoverTrail: [],
+    }));
 
     const registry = new DeviceRegistry({
       statusPollIntervalMs: 0,
@@ -2252,6 +2427,7 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
       createLink,
       resetOverSwd: async () => ({ ok: true }),
       relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
     });
     registry.start();
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
@@ -2268,6 +2444,221 @@ describe("robot-via-relay endpoints (OOP 2026-09-09)", () => {
 
     await registry.stop();
   });
+
+  it("an mbserial-transport coordinator result has no viaRelay/addressSource/failoverTrail on the wire (no channel/group, no address-source spectrum for that transport)", async () => {
+    const devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+
+    const relayUsbLink = new FakeLink(async () => banner());
+    const createLink = usbOnlyCreateLink(relayUsbLink);
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [{ instanceName: "mmmmm", host: "mmmmm.local", port: 9000 }],
+    });
+
+    const robotLink = new FakeLink(async () => robotBanner({ name: "mmmmm" }));
+    const coordinator = fakeCoordinator(async () => ({
+      outcome: "connected",
+      link: robotLink,
+      name: "mmmmm",
+      classification: classifyBanner(robotBanner({ name: "mmmmm" })),
+      failoverTrail: [{ name: "rly01-roster-miss", transport: "relay-radio", reason: "mock: no reply" }],
+      // no addressSource -- mbserial never reports one.
+    }));
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
+      mdnsDiscovery,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    // Default-failover (no robotName) is what can land on an mbserial
+    // candidate at all -- see the dedicated ordering test below for the
+    // candidate-building policy itself.
+    await registry.requestOpen("usb-SERIAL-RELAY", {});
+    const snap = await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-mmmmm"));
+
+    const viaEntry = snap.find((e) => e.endpointId === "usb-SERIAL-RELAY-via-mmmmm");
+    expect(viaEntry?.transport).toBe("mbserial");
+    // mbserial has its own independent resourceKey -- never shared with
+    // the triggering relay.
+    expect(viaEntry?.resourceKey).toBe("mbserial-mmmmm");
+    expect(viaEntry?.viaRelay).toBeUndefined();
+    expect(viaEntry?.addressSource).toBeUndefined();
+    expect(viaEntry?.failoverTrail).toBeUndefined();
+    expect(viaEntry?.usb).toBeUndefined();
+
+    await registry.stop();
+  });
+
+  it("default failover (no robotName): candidates are every remembered robot name most-recently-seen-first, then every discovered _mbserial._tcp instance name not already listed", async () => {
+    const devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+
+    const relayUsbLink = new FakeLink(async () => banner());
+    const createLink = usbOnlyCreateLink(relayUsbLink);
+
+    const knownRobotsStore = {
+      list: () => [
+        {
+          name: "aaaaa",
+          firstSeenAt: "2026-01-01T00:00:00.000Z",
+          lastSeenAt: "2026-01-01T00:00:00.000Z",
+          lastSeenVia: "usb" as const,
+          lastUsbSerial: "X",
+          lastRole: null,
+          lastType: "robot" as const,
+        },
+        {
+          name: "zzzzz",
+          firstSeenAt: "2026-06-01T00:00:00.000Z",
+          lastSeenAt: "2026-06-01T00:00:00.000Z",
+          lastSeenVia: "usb" as const,
+          lastUsbSerial: "Y",
+          lastRole: null,
+          lastType: "robot" as const,
+        },
+      ],
+      get: () => undefined,
+      recordSighting: () => {},
+      forget: () => false,
+      flush: async () => {},
+      isReadOnly: false,
+    } as unknown as KnownRobotsStore;
+
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [
+        { instanceName: "zzzzz", host: "zzzzz.local", port: 1 }, // already remembered -- must not be duplicated
+        { instanceName: "mmmmm", host: "mmmmm.local", port: 2 }, // new -- included
+      ],
+    });
+
+    const coordinator = fakeCoordinator(async (candidates) => ({
+      outcome: "exhausted",
+      failoverTrail: candidates.map((c) => ({ name: c.name, transport: c.transport, reason: "mock: no reply" })),
+    }));
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
+      knownRobotsStore,
+      mdnsDiscovery,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    await registry.requestOpen("usb-SERIAL-RELAY", {});
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true); // exhausted -> relay's own session reopened.
+
+    expect(coordinator.calls).toHaveLength(1);
+    expect(coordinator.calls[0]).toEqual([
+      { transport: "relay-radio", name: "zzzzz", portPath: "/dev/cu.usbmodemRELAY", resourceKey: "usb-SERIAL-RELAY" },
+      { transport: "relay-radio", name: "aaaaa", portPath: "/dev/cu.usbmodemRELAY", resourceKey: "usb-SERIAL-RELAY" },
+      { transport: "mbserial", name: "mmmmm", host: "mmmmm.local", port: 2, resourceKey: "mbserial-mmmmm" },
+    ]);
+
+    await registry.stop();
+  });
+
+  it("a flash request against the relay's own endpointId queues behind an in-flight robot-via-relay open on the shared resourceKey (direct KeyedMutex ordering)", async () => {
+    const devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+
+    const relayUsbLink = new FakeLink(async () => banner());
+    const createLink = usbOnlyCreateLink(relayUsbLink);
+    const radioLink = new FakeLink(async () => robotBanner());
+
+    const order: string[] = [];
+    const coordinator = fakeCoordinator(async (candidates) => {
+      order.push("coordinator-connect-start");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      order.push("coordinator-connect-end");
+      return {
+        outcome: "connected",
+        link: radioLink,
+        name: candidates[0]!.name,
+        classification: classifyBanner(robotBanner()),
+        failoverTrail: [],
+      };
+    });
+
+    const resolveReleaseFn = vi.fn(async (): Promise<ResolvedRelease> => {
+      order.push("flash-resolve-start");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      order.push("flash-resolve-end");
+      return resolvedRelease();
+    });
+    const fetchAndVerifyHexFn = vi.fn(async () => ({ hex: Buffer.from(":00000001FF\n") }));
+    const flashFn = vi.fn(async (): Promise<FlashOutcome> => ({ status: "ok", method: "swd" }));
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
+      getFirmwareConfig: configWith(firmwareSource()),
+      resolveRelease: resolveReleaseFn,
+      fetchAndVerifyHex: fetchAndVerifyHexFn,
+      flash: flashFn,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    // Issued back-to-back on the relay's own endpointId: requestOpen's
+    // mutex slot for "usb-SERIAL-RELAY" is claimed first (it is called
+    // first, synchronously), so requestFlash's own work must wait for
+    // the whole robot-via-relay open (including the coordinator's own
+    // slow "connect") to finish before it ever starts -- the same
+    // KeyedMutex guarantee the existing plain-USB precedent test above
+    // proves, now for the relay's shared resourceKey with a
+    // robot-via-relay child in the picture.
+    const openPromise = registry
+      .requestOpen("usb-SERIAL-RELAY", { robotName: "gopiv" })
+      .then(() => order.push("open-done"));
+    const flashPromise = registry
+      .requestFlash("usb-SERIAL-RELAY", releaseSource("relay"))
+      .then(() => order.push("flash-done"));
+
+    await Promise.all([openPromise, flashPromise]);
+
+    expect(order).toEqual([
+      "coordinator-connect-start",
+      "coordinator-connect-end",
+      "open-done",
+      "flash-resolve-start",
+      "flash-resolve-end",
+      "flash-done",
+    ]);
+
+    await registry.stop();
+  });
+
+  // AC (sprint 8 ticket 004): no code path in deviceRegistry.ts (or in
+  // this test file) calls a retarget-shaped method on Link -- the
+  // Link interface (link/Link.ts) has no such method at all, so this
+  // is enforced by the type system, not a runtime check exercised here.
 });
 
 // ---------------------------------------------------------------------

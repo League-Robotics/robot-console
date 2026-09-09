@@ -280,6 +280,14 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       endpoints,
       firmwareStatus: availabilityCache.current(),
       rememberedRobots: registry.rememberedRobots(),
+      // Sprint 8 ticket 004: registry.discoveredServices() is a straight
+      // pass-through of MdnsDiscovery's own current() snapshot -- see
+      // that method's own doc comment. registry.onDevicesChanged (which
+      // every call site below is already subscribed to) re-fires on a
+      // discovery change too (DeviceRegistry.start wires that), so this
+      // reaches every connected client with no separate event type
+      // needed, same as firmwareStatus/rememberedRobots just above.
+      discoveredServices: registry.discoveredServices(),
     };
   }
 

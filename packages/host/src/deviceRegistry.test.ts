@@ -3035,11 +3035,13 @@ describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", 
 // Auto-switch radio -> WiFi (sprint 10 ticket 004). A robot currently
 // connected through a relay (a `<relay>-via-<name>` synthesized child,
 // session open) that starts advertising over WiFi is automatically
-// switched: the radio child is torn down (reopening the relay's own
-// plain USB session, exactly like a deliberate requestClose), then
-// `wifi-<name>` is opened via ticket 003's own connect path. See
-// deviceRegistry.ts's own doc comment, "Auto-switch radio -> WiFi"
-// section, for the full policy this exercises.
+// switched: `wifi-<name>` is opened via ticket 003's own connect path
+// *first*; only once that succeeds is the radio child torn down
+// (reopening the relay's own plain USB session, exactly like a
+// deliberate requestClose). A failed WiFi attempt leaves the radio
+// session completely untouched. See deviceRegistry.ts's own doc
+// comment, "Auto-switch radio -> WiFi" section, for the full policy
+// this exercises.
 // ---------------------------------------------------------------------
 
 describe("Auto-switch radio -> WiFi (sprint 10 ticket 004)", () => {
@@ -3382,7 +3384,7 @@ describe("Auto-switch radio -> WiFi (sprint 10 ticket 004)", () => {
     await registry.stop();
   });
 
-  it("a failed WiFi connect attempt reports an error and does not re-establish the radio child", async () => {
+  it("a failed WiFi connect attempt reports an error on the WiFi endpoint and leaves the radio child completely untouched", async () => {
     const mdnsDiscovery = scriptableMdnsDiscovery();
     const wifiLink = new FakeLink(
       async () => robotBanner(),
@@ -3391,6 +3393,9 @@ describe("Auto-switch radio -> WiFi (sprint 10 ticket 004)", () => {
     const wifiLinks = new Map([["gopiv.local.:7654", wifiLink]]);
 
     const { registry, notices } = await startWithOpenRelayChild({ mdnsDiscovery, wifiLinks });
+    const beforeAttempt = registry
+      .snapshot()
+      .find((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv");
 
     mdnsDiscovery.setSnapshot({
       relays: [],
@@ -3398,26 +3403,32 @@ describe("Auto-switch radio -> WiFi (sprint 10 ticket 004)", () => {
       wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
     });
 
-    // The radio child is torn down and the relay's own session reopens
-    // regardless of the WiFi outcome -- wait for that first.
-    const snap = await waitForSnapshot(
-      registry,
-      (s) =>
-        !s.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv") &&
-        s.find((e) => e.endpointId === "usb-SERIAL-RELAY")?.sessionOpen === true,
-    );
-
-    expect(snap.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen).toBe(false);
+    // The WiFi connect is attempted first and fails -- wait for the
+    // attempt itself, then confirm the radio child was never touched.
+    for (let i = 0; i < 40 && wifiLink.connectCalls === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
     expect(wifiLink.connectCalls).toBe(1);
-
     await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const snap = registry.snapshot();
+    const afterAttempt = snap.find((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv");
+    // The radio-mediated child is still open, unmodified -- same
+    // sessionOpen, same resourceKey -- never torn down just because the
+    // WiFi candidate failed.
+    expect(afterAttempt).toEqual(beforeAttempt);
+    expect(afterAttempt?.sessionOpen).toBe(true);
+    // The relay's own plain USB session was never reopened either (it
+    // was never closed in the first place).
+    expect(snap.some((e) => e.endpointId === "usb-SERIAL-RELAY" && e.sessionOpen === true)).toBe(false);
+    // wifi-gopiv is present (ticket 003's own synthesis) but not open.
+    expect(snap.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen).toBe(false);
+
     expect(
-      notices.some(
-        (n) => n.endpointId === "usb-SERIAL-RELAY" && /WiFi connection failed/.test(n.message),
-      ),
+      notices.some((n) => n.endpointId === "wifi-gopiv" && /Auto-switch of gopiv to WiFi failed/.test(n.message)),
     ).toBe(true);
-    // Nothing re-establishes the radio child automatically.
-    expect(registry.snapshot().some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv")).toBe(false);
+    // No notice at all on the radio side.
+    expect(notices.some((n) => n.endpointId === "usb-SERIAL-RELAY-via-gopiv")).toBe(false);
 
     await registry.stop();
   });
@@ -3448,7 +3459,7 @@ describe("Auto-switch radio -> WiFi (sprint 10 ticket 004)", () => {
     await registry.stop();
   });
 
-  it("runs the switch under the relay's own resourceKey mutex first, then the WiFi endpoint's own key: the relay teardown/reopen fully completes before the WiFi connect is attempted", async () => {
+  it("runs the switch under the WiFi endpoint's own resourceKey mutex first, then the relay's own key: the WiFi connect fully completes before the radio teardown/reopen is attempted", async () => {
     const order: string[] = [];
     const mdnsDiscovery = scriptableMdnsDiscovery();
 
@@ -3484,7 +3495,7 @@ describe("Auto-switch radio -> WiFi (sprint 10 ticket 004)", () => {
     });
     await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true);
 
-    expect(order).toEqual(["radio-child-close", "relay-reopen-connect", "wifi-connect"]);
+    expect(order).toEqual(["wifi-connect", "radio-child-close", "relay-reopen-connect"]);
 
     await registry.stop();
   });

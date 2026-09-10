@@ -57,31 +57,35 @@ robot ... currently connected over radio").
       over radio triggers no open/close of anything (restates the
       "click-only for a not-yet-connected robot" boundary from ticket
       003, now verified from the auto-switch trigger path specifically).
-- [x] A failed WiFi connect attempt (fake `LinkFactory` rejects) is
-      reported and does not re-establish the radio-mediated endpoint
-      automatically. **Implementation note, superseding this
-      criterion's original wording**: per explicit team-lead
-      implementation guidance grounded in the current (post-ticket-003)
-      code shape, the switch tears down the radio-mediated child and
-      reopens the relay's own plain USB session *before* attempting the
-      WiFi connect (never after), under the relay's own `resourceKey`
-      first, then the WiFi endpoint's own key — see
+- [x] A failed WiFi connect attempt (fake `LinkFactory` rejects, or a
+      link error arrives before `identify()` returns) leaves the radio
+      endpoint's `EndpointListEntry` completely unchanged — same
+      `sessionOpen`, same `resourceKey`, no error field set on it — per
+      this criterion's original wording and `sprint.md`'s SUC-004 Main
+      Flow. **Implementation note**: the WiFi connect is attempted
+      *first*, under the WiFi endpoint's own `resourceKey`; only on
+      success does the switch acquire the relay's own `resourceKey` (a
+      second, nested `KeyedMutex.run` call, always in that order) to
+      tear down the radio-mediated child and reopen the relay's own
+      plain USB session, exactly like a deliberate `requestClose` — see
       `deviceRegistry.ts`'s own doc comment, "Auto-switch radio -> WiFi"
-      section, for the full rationale (avoids ever having two live
-      command channels open to the same robot at once, even
-      transiently). Consequently, on a WiFi connect failure the old
-      radio endpoint is **not** "completely unchanged" as originally
-      worded here — it no longer exists at all by that point, exactly
-      as a deliberate `requestClose` would leave it, and is never
-      re-created automatically. This is a deliberate divergence from
-      this criterion's original wording and from `sprint.md`'s SUC-004
-      Main Flow (which describes attempting the WiFi connect first);
-      flagged here for whoever next reconciles `sprint.md`'s prose with
-      this implementation. An `identify()` resolving `null` is *not*
+      section. A failure is reported via a notice on the WiFi endpoint
+      only (never on the radio side), and never re-establishes anything
+      (the radio side was never touched to begin with). An earlier draft
+      of this implementation instead tore the radio child down *before*
+      attempting the WiFi connect (reasoning that avoided any transient
+      overlap between the two sessions); the stakeholder-confirmed
+      decision reflected here reverses that, since a failed WiFi attempt
+      must never strand a student with no working session at all — the
+      robot's TCP server accepts multiple simultaneous clients, and
+      `Session`'s own nack-triggered resync already recovers from the
+      brief two-session overlap between a successful WiFi identify and
+      the radio child's teardown a moment later, so that overlap is
+      harmless by comparison. An `identify()` resolving `null` is *not*
       treated as a connect failure (per this module's own established
       "connected, unresponsive is not an error" discipline) — only a
-      genuine `connect()`-level (socket) failure triggers the
-      not-reconnected-automatically path.
+      genuine `connect()`-level (socket) failure, or a link error before
+      `identify()` returns, triggers the untouched-radio-session path.
 - [x] Repeated discovery-change events for the same already-radio-connected
       name, after one failed attempt, do not spin — at most one
       in-flight attempt per name at a time (reuse the existing

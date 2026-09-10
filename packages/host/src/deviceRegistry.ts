@@ -370,38 +370,44 @@
  * The switch itself never retargets the existing endpoint in place --
  * per this sprint's Design Rationale ("Auto-switch closes the old radio
  * endpoint and opens a new, independently-identified WiFi endpoint --
- * never an in-place retarget"): it tears down and deletes the
- * `-via-<name>` child exactly like a deliberate {@link
- * DeviceRegistry.requestClose} on it (reopening the relay's own plain
- * USB session the same way), then opens `wifi-<name>` through {@link
+ * never an in-place retarget"): it opens `wifi-<name>` through {@link
  * DeviceRegistry.connectAndIdentifyWifi} -- ticket 003's own click path,
- * unchanged. This runs the radio side of the switch to completion
- * *before* attempting the WiFi connect, under the relay's own
- * `resourceKey` in {@link KeyedMutex.run} first, then the WiFi
- * endpoint's own key second (never the reverse, and never both acquired
- * via one call) -- so a concurrent flash/open/close on the relay itself
- * correctly queues behind (or ahead of) the whole switch, exactly like
- * {@link openRobotViaRelay}'s own single-`resourceKey` discipline. This
- * close-then-open ordering is a deliberate choice for this ticket, and
- * reads slightly differently from this sprint's own `sprint.md` prose
- * (SUC-004's Main Flow describes attempting the WiFi connect first and
- * leaving the radio session untouched on failure): by the time a
- * `-via-<name>` child is open, the *relay's own* plain session is
- * already closed (its physical port is in use for the radio link -- see
- * "Robot-via-relay endpoints" above), so there is no already-open relay
- * console session left to protect by delaying the teardown, and closing
- * the radio side first guarantees the robot never has two live command
- * channels (radio and WiFi) open at once, even transiently. A WiFi
- * connect failure after that point is reported (via {@link emitError}
- * on the relay's own endpoint) and left exactly as the teardown/reopen
- * left it -- the radio child is never re-established automatically; the
- * student's next recourse is the relay dropdown (ticket 003's click flow
- * remains reachable) or waiting for the next discovery cycle if this was
- * transient. On success, one informational notice ("Switched `<name>`
- * from relay `<relay>` to WiFi at `<host>`:`<port>`") is emitted via
- * {@link emitError} on *both* the relay's own endpoint and the new
- * `wifi-<name>` endpoint -- `emitError` is this class's one existing
- * channel for a host-originated notice, not only failures.
+ * unchanged -- and only then tears down and deletes the `-via-<name>`
+ * child, reopening the relay's own plain USB session exactly like a
+ * deliberate {@link DeviceRegistry.requestClose} on it.
+ *
+ * Per `sprint.md`'s own SUC-004 Main Flow, the WiFi connect is attempted
+ * *first*, under the WiFi endpoint's own `resourceKey` in {@link
+ * KeyedMutex.run}. A socket-level connect failure, or a link error
+ * arriving before `identify()` returns, is reported (via {@link
+ * emitError} on the WiFi endpoint only) and the radio session is left
+ * completely untouched -- a transient loss of the WiFi candidate must
+ * never regress an already-working radio session; stranding a student
+ * with no session at all on a failed WiFi attempt would be strictly
+ * worse than a harmless transient overlap (see below). Only once the
+ * WiFi link is actually open does this method acquire the relay's own
+ * `resourceKey` -- a second, nested {@link KeyedMutex.run} call, always
+ * in this order (WiFi key first, then relay key; never the reverse) --
+ * to tear down the `-via-<name>` child and reopen the relay's own plain
+ * USB session, correctly queuing around a concurrent flash/open/close on
+ * the relay itself, exactly like {@link openRobotViaRelay}'s own
+ * single-`resourceKey` discipline. On success, one informational notice
+ * ("Switched `<name>` from relay `<relay>` to WiFi at
+ * `<host>`:`<port>`") is emitted via {@link emitError} on *both* the
+ * relay's own endpoint and the new `wifi-<name>` endpoint -- `emitError`
+ * is this class's one existing channel for a host-originated notice, not
+ * only failures.
+ *
+ * This ordering means the robot can briefly hold two live command
+ * channels at once -- the still-open radio session and the newly
+ * connected WiFi one -- between the WiFi identify succeeding and the
+ * radio child's teardown completing a moment later. This is an accepted,
+ * deliberate tradeoff, not an oversight: the robot's own TCP server
+ * accepts multiple simultaneous clients, and `Session`'s own
+ * nack-triggered resync already recovers from the `HELLO` sent over the
+ * new WiFi link desyncing the about-to-close radio session, so the
+ * transient overlap is harmless, while a failed WiFi attempt stranding
+ * the student with neither session open would not be.
  *
  * Never fires against a name that is currently open over plain USB
  * ({@link DeviceRegistry.hasOpenUsbSessionForName}) -- a direct USB
@@ -1444,16 +1450,20 @@ export class DeviceRegistry {
    * {@link findSynthesizedRelayChildForName}) and no open plain-USB
    * session (see {@link hasOpenUsbSessionForName}).
    *
-   * Runs under the relay's own `resourceKey` in {@link KeyedMutex.run}
-   * first, then the WiFi endpoint's own key second -- never the
-   * reverse -- so a concurrent flash/open/close on the relay itself
-   * correctly queues around the whole switch. Every precondition is
-   * re-checked once each mutex slot is actually held (this method's own
-   * initial reads are only a pre-queueing snapshot, exactly like every
-   * other mutex-guarded entry point in this class), so a state that
-   * changed while this task was queued (the child already closed,
-   * switched, or the advertisement disappeared again) degrades to a
-   * silent no-op rather than acting on stale information.
+   * Attempts the WiFi connect *first*, under the WiFi endpoint's own
+   * `resourceKey` in {@link KeyedMutex.run} -- per `sprint.md`'s SUC-004
+   * Main Flow: a failed attempt must never regress an already-working
+   * radio session, so the radio child is left completely untouched
+   * unless and until the WiFi link is actually open. Only then does this
+   * method acquire the relay's own `resourceKey` (a second, nested
+   * {@link KeyedMutex.run} call, always in this order) to tear the radio
+   * child down and reopen the relay's own plain USB session. Every
+   * precondition is re-checked once each mutex slot is actually held
+   * (this method's own initial reads are only a pre-queueing snapshot,
+   * exactly like every other mutex-guarded entry point in this class),
+   * so a state that changed while this task was queued (the child
+   * already closed, switched, or the advertisement disappeared again)
+   * degrades to a silent no-op rather than acting on stale information.
    */
   private async autoSwitchRadioToWifi(name: string): Promise<void> {
     const childId = this.findSynthesizedRelayChildForName(name);
@@ -1465,65 +1475,72 @@ export class DeviceRegistry {
     if (!relayEndpointId) {
       return;
     }
-    const relayResourceKey = this.states.get(relayEndpointId)?.resourceKey ?? relayEndpointId;
     const wifiId = wifiEndpointId(name);
 
-    await this.mutex.run(relayResourceKey, async () => {
+    await this.mutex.run(wifiId, async () => {
       if (this.hasOpenUsbSessionForName(name)) {
         return;
       }
       if (this.findSynthesizedRelayChildForName(name) !== childId) {
         // Changed (closed, switched, or replaced) while this task was
-        // queued behind the relay's mutex slot -- nothing left to
-        // switch.
+        // queued behind the WiFi endpoint's mutex slot -- nothing left
+        // to switch.
+        return;
+      }
+      const wifiState = this.states.get(wifiId);
+      if (!wifiState?.wifiTarget || wifiState.sessionOpen) {
+        // The advertisement disappeared again, or the endpoint is
+        // already connected (e.g. a concurrent click) -- graceful
+        // no-op either way.
         return;
       }
 
-      await this.mutex.run(wifiId, async () => {
-        if (this.hasOpenUsbSessionForName(name)) {
-          return;
-        }
-        if (this.findSynthesizedRelayChildForName(name) !== childId) {
+      // (a) Attempt the WiFi connect -- ticket 003's own click path,
+      // unchanged -- *before* touching the radio session at all.
+      await this.connectAndIdentifyWifi(wifiState);
+
+      if (!wifiState.sessionOpen) {
+        // A socket-level connect failure, or a link error arriving
+        // before identify() returned -- report it on the WiFi endpoint
+        // only and stop. The radio child (and the relay's own session)
+        // are left completely untouched: a transient loss of the WiFi
+        // candidate must never strand the student with no working
+        // session at all.
+        this.emitError(
+          wifiId,
+          `Auto-switch of ${name} to WiFi failed` +
+            (wifiState.sessionError ? `: ${wifiState.sessionError}` : "") +
+            ` -- ${name} remains connected over relay ${relayEndpointId}`,
+        );
+        return;
+      }
+
+      // (b) The WiFi link is open -- now tear down the radio-mediated
+      // child and reopen the relay's own plain USB session, exactly
+      // like a deliberate requestClose on this same endpoint. Runs
+      // under the relay's own resourceKey, nested inside the WiFi key
+      // already held above (never the reverse order).
+      const relayResourceKey = this.states.get(relayEndpointId)?.resourceKey ?? relayEndpointId;
+      await this.mutex.run(relayResourceKey, async () => {
+        const liveChildId = this.findSynthesizedRelayChildForName(name);
+        if (liveChildId !== childId) {
+          // The radio child changed underneath us (closed/switched
+          // already) while queued behind the relay's mutex slot --
+          // nothing left to tear down; the WiFi session just opened
+          // above stays open regardless, since it is independently
+          // valid on its own.
           return;
         }
         const liveChild = this.states.get(childId);
         if (!liveChild) {
           return;
         }
-        const wifiState = this.states.get(wifiId);
-        if (!wifiState?.wifiTarget || wifiState.sessionOpen) {
-          // The advertisement disappeared again, or the endpoint is
-          // already connected (e.g. a concurrent click) -- graceful
-          // no-op either way.
-          return;
-        }
-
-        // (a) Tear down the radio-mediated child and reopen the
-        // relay's own plain USB session -- exactly like a deliberate
-        // requestClose on this same endpoint.
         await this.teardownLink(liveChild);
         this.states.delete(childId);
         this.emitDevices();
         const relay = this.states.get(relayEndpointId);
         if (relay && !relay.sessionOpen) {
           await this.connectAndIdentify(relay);
-        }
-
-        // (b) Attempt the WiFi connect -- ticket 003's own click path,
-        // unchanged.
-        await this.connectAndIdentifyWifi(wifiState);
-
-        if (!wifiState.sessionOpen) {
-          // A socket-level connect failure (or the state was removed
-          // out from under the attempt) -- report it and stop. The
-          // radio child is never re-established automatically.
-          this.emitError(
-            relayEndpointId,
-            `Switched ${name} from relay ${relayEndpointId} toward WiFi, but the WiFi connection failed` +
-              (wifiState.sessionError ? `: ${wifiState.sessionError}` : "") +
-              ` -- ${name} is no longer reachable through ${relayEndpointId} and was not reconnected over radio automatically`,
-          );
-          return;
         }
 
         const target = wifiState.wifiTarget;

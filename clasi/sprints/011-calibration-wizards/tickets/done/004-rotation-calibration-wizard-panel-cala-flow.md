@@ -1,7 +1,7 @@
 ---
 id: '004'
 title: Rotation calibration wizard panel (cala flow)
-status: open
+status: done
 use-cases:
 - SUC-004
 depends-on:
@@ -43,30 +43,30 @@ slip=...` lines.
 
 ## Acceptance Criteria
 
-- [ ] `RotationCalibrationWizard.tsx` (new) fires the same one-shot
+- [x] `RotationCalibrationWizard.tsx` (new) fires the same one-shot
       `FUNCS` probe pattern as the distance wizard and enables Go only
       when `cala` is present in `device.functions`.
-- [ ] When `cala` is absent, the panel shows the same
+- [x] When `cala` is absent, the panel shows the same
       "doesn't support calibration yet" message, Go disabled.
-- [ ] The panel shows the black-tape-cross physical setup instructions
+- [x] The panel shows the black-tape-cross physical setup instructions
       (no beam pointer, no mention of nudging) before Go is usable.
-- [ ] Pressing Go sends `RUN cala` via `sendCommand`.
-- [ ] As `CALA:` lines arrive, the panel renders the CW pass, the CCW
+- [x] Pressing Go sends `RUN cala` via `sendCommand`.
+- [x] As `CALA:` lines arrive, the panel renders the CW pass, the CCW
       pass, and the firmware's own re-verification pass as distinct,
       visibly separate stages via `CalibrationReport` — not collapsed
       into one "running" spinner.
-- [ ] On a `CALA:apply ...` line, the panel renders that line's exact
+- [x] On a `CALA:apply ...` line, the panel renders that line's exact
       text as the snippet, byte-for-byte (after stripping the
       `CALA:apply ` prefix), same discipline as ticket 003.
-- [ ] On any `CALA:fail ...` line (e.g. "missed an arm, re-centre the
+- [x] On any `CALA:fail ...` line (e.g. "missed an arm, re-centre the
       robot", "STALLED, power-cycle the robot"), the panel renders a
       distinct failure state showing the reason text, no snippet.
-- [ ] A `RUN` `err 1` reply renders a state distinguishable from both
+- [x] A `RUN` `err 1` reply renders a state distinguishable from both
       the `CALA:fail` state and the pre-run "unavailable" state.
-- [ ] No nudge control and no beam-pointer UI appears anywhere in this
+- [x] No nudge control and no beam-pointer UI appears anywhere in this
       panel — this is the direct regression check for the roadmap's
       stale description of this specific wizard.
-- [ ] `RobotPage.transportBlind.test.ts`'s `FILES_UNDER_TEST` list
+- [x] `RobotPage.transportBlind.test.ts`'s `FILES_UNDER_TEST` list
       includes `RotationCalibrationWizard.tsx`.
 
 ## Implementation Plan

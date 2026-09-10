@@ -96,7 +96,7 @@ export interface RelayPageProps {
 
 type ChildEndpoint = EndpointListEntry & { viaRelay: NonNullable<EndpointListEntry["viaRelay"]> };
 
-interface RadioAddress {
+export interface RadioAddress {
   channel: number;
   group: number;
 }
@@ -112,7 +112,7 @@ function addressStorageKey(name: string): string {
  * entirely, malformed JSON left by an older build) — never thrown,
  * since the derived default (`nameToRadioAddress`) is always a safe
  * fallback. */
-function readStoredAddress(name: string): RadioAddress | null {
+export function readStoredAddress(name: string): RadioAddress | null {
   try {
     const raw = window.localStorage.getItem(addressStorageKey(name));
     if (!raw) {
@@ -136,7 +136,7 @@ function readStoredAddress(name: string): RadioAddress | null {
 /** Best-effort write, mirroring {@link readStoredAddress}'s failure
  * handling — a storage error here must never block the Connect click
  * that triggered it. */
-function writeStoredAddress(name: string, address: RadioAddress): void {
+export function writeStoredAddress(name: string, address: RadioAddress): void {
   try {
     window.localStorage.setItem(addressStorageKey(name), JSON.stringify(address));
   } catch {
@@ -157,7 +157,7 @@ function parseNumberInput(raw: string): number | null {
  * `RobotSelect`'s own doc comment for how that distinction is rendered.
  * No address is attached to either kind -- resolving one is deferred
  * entirely to connect time, per this module's own doc comment. */
-interface RobotOption {
+export interface RobotOption {
   name: string;
   discoveredOnly: boolean;
 }
@@ -169,7 +169,7 @@ interface RobotOption {
  * remembered name. Pure and synchronous: no lookup of any kind, per
  * this module's own doc comment ("never a speculative registry
  * lookup"). */
-function buildRobotOptions(
+export function buildRobotOptions(
   rememberedRobots: RememberedRobotEntry[],
   discoveredRobots: DiscoveredRobotEntry[],
 ): RobotOption[] {
@@ -389,7 +389,7 @@ export function RelayPage({ endpoint }: RelayPageProps) {
  * this session, never remembered from a prior USB connection) is
  * marked `(on the network)` in its own option text so a student can
  * tell the two sources apart without a second control. */
-function RobotSelect({
+export function RobotSelect({
   options,
   value,
   onChange,

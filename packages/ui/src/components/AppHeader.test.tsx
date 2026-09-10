@@ -108,7 +108,9 @@ describe("AppHeader back-to-devices link", () => {
     const links = el.querySelectorAll("a");
     expect(links).toHaveLength(1);
     expect(links[0]?.getAttribute("href")).toBe("/");
-    expect(links[0]?.textContent).toBe("Back to devices");
+    // OOP 2026-09-10: a back arrow button, named for assistive tech.
+    expect(links[0]?.getAttribute("aria-label")).toBe("Back to devices");
+    expect(links[0]?.querySelector("svg")).not.toBeNull();
   });
 
   it("renders exactly one back link in the not-connected state", () => {

@@ -19,9 +19,25 @@
   margin: 0;
 }
 
+/* OOP 2026-09-10: a back arrow button, not a text link. */
 .app-header-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 999px;
+  background: var(--rc-surface);
   color: var(--rc-accent);
-  font-size: 0.9rem;
+  text-decoration: none;
+}
+
+.app-header-back:hover,
+.app-header-back:focus-visible {
+  border-color: var(--rc-accent);
+  background: var(--rc-accent);
+  color: var(--rc-accent-contrast);
 }
 
 .app-header-flash-toggle {

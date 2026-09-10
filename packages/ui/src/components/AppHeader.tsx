@@ -87,8 +87,11 @@ export function AppHeader() {
       <div className="app-header-bar">
         <h1>robot-console</h1>
         {!homeMatch && (
-          <Link to="/" className="app-header-back">
-            Back to devices
+          <Link to="/" className="app-header-back" aria-label="Back to devices" title="Back to devices">
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+              <polyline points="15 5 8 12 15 19" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+              <line x1="20" y1="12" x2="8" y2="12" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+            </svg>
           </Link>
         )}
         {endpoint && (

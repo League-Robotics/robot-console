@@ -308,8 +308,10 @@ describe("EndpointCard flash affordance (ticket 012-002)", () => {
     const actions = el.querySelector('[data-testid="device-actions-usb-SERIAL-FLASH"]');
     expect(card).not.toBeNull();
     expect(actions).not.toBeNull();
+    // OOP 2026-09-10: the open arrow is the card's only anchor; the
+    // action row sits beside it inside the same card, never inside it.
+    expect(el.querySelector('[data-testid="device-card-usb-SERIAL-FLASH"]')?.contains(actions)).toBe(true);
     // Siblings inside the same `<li>`, not one nested inside the other.
-    expect(actions?.parentElement).toBe(card?.parentElement);
     expect(actions?.contains(card)).toBe(false);
     expect(card?.contains(actions)).toBe(false);
     expect(actions?.textContent).toContain("Flash");
@@ -353,16 +355,23 @@ describe("EndpointCard flash affordance (ticket 012-002)", () => {
     expect(link?.querySelector("input")).toBeNull();
   });
 
-  it("clicking the informational region still navigates to /d/:endpointId on a flash-eligible card", () => {
+  it("OOP 2026-09-10: clicking the informational region no longer navigates; only the open arrow does", () => {
     const device = baseDevice({ id: "SERIAL-NAV2", role: null, name: "kivon" });
     const { el } = mountFrontPage(device);
 
-    const nameHeading = el.querySelector('[data-testid="device-usb-SERIAL-NAV2"] .device-name');
+    const nameHeading = el.querySelector('[data-testid="device-card-usb-SERIAL-NAV2"] .device-name');
     expect(nameHeading).not.toBeNull();
     act(() => {
       nameHeading!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
+    expect(el.querySelector('[data-testid="location"]')?.textContent).toBe("/");
 
+    const arrow = el.querySelector('[data-testid="device-usb-SERIAL-NAV2"]');
+    expect(arrow?.tagName).toBe("A");
+    expect(arrow?.getAttribute("aria-label")).toBe("Open kivon");
+    act(() => {
+      arrow!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
     expect(el.querySelector('[data-testid="location"]')?.textContent).toBe("/d/usb-SERIAL-NAV2");
   });
 
@@ -427,7 +436,7 @@ describe("EndpointCard for a relay-radio (viaRelay) entry (added out-of-process,
   it("shows 'via relay <name>' instead of a port/device-id line, using the relay's own display name", () => {
     const el = mount(withRouter(<EndpointsList status="open" devices={[relayFixture(), childFixture()]} />));
 
-    const card = el.querySelector('[data-testid="device-usb-RELAY-A-via-vevav"]');
+    const card = el.querySelector('[data-testid="device-card-usb-RELAY-A-via-vevav"]');
     expect(card).not.toBeNull();
     expect(card!.textContent).toContain("via relay gopiv");
     expect(card!.textContent).not.toContain("No serial port");
@@ -445,7 +454,7 @@ describe("EndpointCard for a relay-radio (viaRelay) entry (added out-of-process,
   it("falls back to the bare relay id if the relay itself isn't in the snapshot", () => {
     const el = mount(withRouter(<EndpointsList status="open" devices={[childFixture()]} />));
 
-    const card = el.querySelector('[data-testid="device-usb-RELAY-A-via-vevav"]');
+    const card = el.querySelector('[data-testid="device-card-usb-RELAY-A-via-vevav"]');
     expect(card!.textContent).toContain("via relay usb-RELAY-A");
   });
 });
@@ -489,7 +498,7 @@ describe("EndpointCard for a wifi entry (sprint 10 ticket 005)", () => {
       socket!.emitOpen();
     });
 
-    const card = el.querySelector('[data-testid="device-wifi-gopiv"]');
+    const card = el.querySelector('[data-testid="device-card-wifi-gopiv"]');
     expect(card).not.toBeNull();
     expect(card!.textContent).toContain("WiFi");
     expect(card!.textContent).toContain("192.168.1.42:8765");
@@ -519,7 +528,7 @@ describe("EndpointCard for a wifi entry (sprint 10 ticket 005)", () => {
       ),
     );
 
-    const card = el.querySelector('[data-testid="device-wifi-gopiv"]');
+    const card = el.querySelector('[data-testid="device-card-wifi-gopiv"]');
     expect(card).not.toBeNull();
     expect(card!.textContent).toContain("WiFi");
     expect(card!.textContent).toContain("192.168.1.42:8765");
@@ -652,7 +661,10 @@ describe("RememberedRobotsSection (ticket 005)", () => {
       ),
     );
 
-    expect(el.querySelectorAll('[data-testid^="device-"]')).toHaveLength(1);
+    // OOP 2026-09-10: a card is `device-card-<id>` plus its open arrow
+    // `device-<id>` and one `device-link-<id>` row per link -- still
+    // exactly one card.
+    expect(el.querySelectorAll('[data-testid^="device-card-"]')).toHaveLength(1);
     expect(el.querySelectorAll('[data-testid^="remembered-robot-"]')).toHaveLength(1);
     expect(el.querySelector('[data-testid="device-usb-SERIAL-E"]')).not.toBeNull();
     expect(el.querySelector('[data-testid="remembered-robot-dorix"]')).not.toBeNull();
@@ -785,9 +797,11 @@ describe("one card per robot (out-of-process, 2026-09-10)", () => {
     const rows = el.querySelectorAll(".device-connections li");
     expect(rows).toHaveLength(2);
     const wifiRow = el.querySelector('[data-testid="device-link-wifi-vevov"]');
-    expect(wifiRow?.getAttribute("href")).toBe("/d/wifi-vevov");
     expect(wifiRow?.textContent).toContain("WiFi · vevov.local:7654");
     expect(wifiRow?.textContent).toContain("Unreachable: could not reach vevov.local:7654");
+    // The non-primary link carries its own small open arrow.
+    expect(el.querySelector('[data-testid="device-row-open-wifi-vevov"]')?.getAttribute("href")).toBe("/d/wifi-vevov");
+    expect(el.querySelector('[data-testid="device-row-open-usb-V"]')).toBeNull();
     expect(el.querySelector('[data-testid="device-link-usb-V"]')?.textContent).toContain("Linked");
     // No anchor nested in an anchor.
     expect(el.querySelectorAll("a a")).toHaveLength(0);
@@ -803,9 +817,112 @@ describe("one card per robot (out-of-process, 2026-09-10)", () => {
     expect(el.querySelectorAll('[data-testid="calibration-badge"]')).toHaveLength(1);
   });
 
-  it("a single-link robot renders the plain card exactly as before (no connections list)", () => {
+  it("a single-link robot lists its one link with no extra row arrow, and its open arrow leads to it", () => {
     const el = mount(withRouter(<EndpointsList status="open" devices={[baseDevice({ id: "T", name: "tigez" })]} />));
-    expect(el.querySelector('[data-testid="device-usb-T"]')).not.toBeNull();
-    expect(el.querySelector(".device-connections")).toBeNull();
+    expect(el.querySelector('[data-testid="device-usb-T"]')?.getAttribute("href")).toBe("/d/usb-T");
+    expect(el.querySelectorAll(".device-connections li")).toHaveLength(1);
+    expect(el.querySelector('[data-testid="device-link-usb-T"]')?.textContent).toContain("USB · /dev/cu.usbmodemA · ID 0002");
+    expect(el.querySelector('[data-testid="device-row-open-usb-T"]')).toBeNull();
+  });
+});
+
+describe("relay card quick-connect and open arrows (OOP 2026-09-10)", () => {
+  function relay(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+    return {
+      endpointId: "usb-RELAY-Q",
+      transport: "usb",
+      resourceKey: "usb-RELAY-Q",
+      classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role", program: null, version: null },
+      name: "rly01",
+      role: "RADIORELAY",
+      sessionOpen: true,
+      usb: { serialNumber: "RELAY-Q-FULL", displaySerial: "0009", port: "/dev/cu.usbmodemQ" },
+      ...overrides,
+    };
+  }
+
+  it("a relay card carries a robot picker and Connect that reports the picked name without opening the relay page", () => {
+    const connects: Array<[string, string]> = [];
+    const el = mount(
+      withRouter(
+        <EndpointsList
+          status="open"
+          devices={[relay()]}
+          robotOptions={[{ name: "vevav", discoveredOnly: false }, { name: "gopiv", discoveredOnly: true }]}
+          onRelayConnect={(endpoint, name) => connects.push([endpoint.endpointId, name])}
+        />,
+      ),
+    );
+    const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-quick-connect-usb-RELAY-Q"] select');
+    expect(select).not.toBeNull();
+    expect(Array.from(select!.options).map((o) => o.textContent)).toEqual(["Choose a robot…", "vevav", "gopiv (on the network)"]);
+    act(() => {
+      select!.value = "vevav";
+      select!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const connect = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Connect");
+    act(() => {
+      connect!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(connects).toEqual([["usb-RELAY-Q", "vevav"]]);
+    expect(el.querySelector('[data-testid="location"]')?.textContent).toBe("/");
+  });
+
+  it("with a child already connected the relay card says so and offers Switch/Disconnect", () => {
+    const disconnects: string[] = [];
+    const child: EndpointListEntry = {
+      endpointId: "usb-RELAY-Q-via-vevav",
+      transport: "relay-radio",
+      resourceKey: "usb-RELAY-Q",
+      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
+      name: "vevav",
+      role: "NEZHA2",
+      sessionOpen: true,
+      viaRelay: { relayEndpointId: "usb-RELAY-Q", robotName: "vevav", channel: 55, group: 114 },
+    };
+    const el = mount(
+      withRouter(
+        <EndpointsList
+          status="open"
+          devices={[relay({ sessionOpen: false }), child]}
+          robotOptions={[{ name: "vevav", discoveredOnly: false }]}
+          onRelayDisconnect={(endpoint) => disconnects.push(endpoint.endpointId)}
+        />,
+      ),
+    );
+    const quick = el.querySelector('[data-testid="relay-quick-connect-usb-RELAY-Q"]');
+    expect(quick?.textContent).toContain("Connected to vevav on channel 55, group 114");
+    expect(quick?.querySelector<HTMLSelectElement>("select")?.value).toBe("vevav");
+    const disconnect = Array.from(quick?.querySelectorAll("button") ?? []).find((b) => b.textContent === "Disconnect");
+    act(() => {
+      disconnect!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(disconnects).toEqual(["usb-RELAY-Q-via-vevav"]);
+    // The robot reached through the relay is its own card, listing the radio link.
+    expect(el.querySelector('[data-testid="device-link-usb-RELAY-Q-via-vevav"]')?.textContent).toContain("Radio via relay rly01");
+  });
+
+  it("FrontPage wires Connect with no pick to a session-open autoRobot request", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <AppRoutes />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage({ type: "endpoints", endpoints: [relay()] });
+    });
+    const connect = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Connect");
+    expect(connect).toBeDefined();
+    act(() => {
+      connect!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(socket!.sent).toEqual([JSON.stringify({ type: "session-open", endpointId: "usb-RELAY-Q", autoRobot: true })]);
+    expect(el.querySelector('[data-testid="location"]')?.textContent).toBe("/");
   });
 });

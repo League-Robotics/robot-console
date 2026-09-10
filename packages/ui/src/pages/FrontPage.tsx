@@ -108,25 +108,51 @@
  * deliberately ships no separate empty-state copy for an empty roster
  * (see the ticket).
  */
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import type { EndpointListEntry, RememberedRobotEntry } from "@robot-console/host/src/wsMessages.js";
+import { nameToRadioAddress } from "@robot-console/protocol";
 import type { ConnectionStatus } from "../ws/WsProvider";
-import { useConnectionStatus, useEndpoints, useRememberedRobots, useWsActions } from "../ws/WsProvider";
+import {
+  useConnectionStatus,
+  useDiscoveredServices,
+  useEndpoints,
+  useRememberedRobots,
+  useWsActions,
+} from "../ws/WsProvider";
 import { canBeFlashed, nameDisplay, roleDisplay } from "../deviceDisplay";
 import { FlashDialog } from "../components/FlashDialog";
+import { buildRobotOptions, readStoredAddress, RobotSelect, writeStoredAddress, type RobotOption } from "./RelayPage";
 import "./FrontPage.css";
 
 export function FrontPage() {
   const status = useConnectionStatus();
   const devices = useEndpoints();
   const rememberedRobots = useRememberedRobots();
+  const discoveredServices = useDiscoveredServices();
   const { send } = useWsActions();
+  const robotOptions = buildRobotOptions(rememberedRobots, discoveredServices.robots);
   return (
     <EndpointsList
       status={status}
       devices={devices}
       rememberedRobots={rememberedRobots}
       onForgetRememberedRobot={(name) => send({ type: "forget-known-robot", name })}
+      robotOptions={robotOptions}
+      onRelayConnect={(relay, robotName) => {
+        const child = devices.find((candidate) => candidate.viaRelay?.relayEndpointId === relay.endpointId);
+        if (child) {
+          send({ type: "session-close", endpointId: child.endpointId });
+        }
+        if (robotName === "") {
+          send({ type: "session-open", endpointId: relay.endpointId, autoRobot: true });
+          return;
+        }
+        const radio = readStoredAddress(robotName) ?? nameToRadioAddress(robotName);
+        writeStoredAddress(robotName, radio);
+        send({ type: "session-open", endpointId: relay.endpointId, robotName, radio });
+      }}
+      onRelayDisconnect={(child) => send({ type: "session-close", endpointId: child.endpointId })}
     />
   );
 }
@@ -140,6 +166,17 @@ export interface EndpointsListProps {
   /** Defaults to a no-op so `rememberedRobots`-less call sites never
    * need to pass a handler that will never fire. */
   onForgetRememberedRobot?: (name: string) => void;
+  /** OOP 2026-09-10: the names a relay card's own robot picker offers
+   * (`RelayPage.buildRobotOptions`'s roster-plus-discovered list).
+   * Defaults to `[]`, which renders the picker disabled with its
+   * "no robots remembered yet" placeholder. */
+  robotOptions?: RobotOption[];
+  /** OOP 2026-09-10: a relay card's Connect press -- `robotName` is
+   * `""` for "let the host pick" (`autoRobot`). */
+  onRelayConnect?: (relay: EndpointListEntry, robotName: string) => void;
+  /** OOP 2026-09-10: a relay card's Disconnect press for its current
+   * via-relay child. */
+  onRelayDisconnect?: (child: EndpointListEntry) => void;
 }
 
 export function EndpointsList({
@@ -147,6 +184,9 @@ export function EndpointsList({
   devices,
   rememberedRobots = [],
   onForgetRememberedRobot = () => {},
+  robotOptions = [],
+  onRelayConnect = () => {},
+  onRelayDisconnect = () => {},
 }: EndpointsListProps) {
   return (
     <section className="front-page" aria-label="Devices">
@@ -165,16 +205,13 @@ export function EndpointsList({
         <ul className="devices-list">
           {groupEndpointsByRobot(devices).map((group) => (
             <li key={group.key}>
-              {group.members.length === 1 ? (
-                <EndpointCard
-                  device={group.primary}
-                  relayName={
-                    group.primary.viaRelay ? relayDisplayName(devices, group.primary.viaRelay.relayEndpointId) : undefined
-                  }
-                />
-              ) : (
-                <RobotCard group={group} devices={devices} />
-              )}
+              <RobotCard
+                group={group}
+                devices={devices}
+                robotOptions={robotOptions}
+                onRelayConnect={onRelayConnect}
+                onRelayDisconnect={onRelayDisconnect}
+              />
             </li>
           ))}
         </ul>
@@ -191,7 +228,7 @@ export function EndpointsList({
 export interface RobotGroup {
   /** The robot's name, or the lone endpoint's id for a nameless one. */
   key: string;
-  /** The endpoint the card itself navigates to -- see {@link linkScore}. */
+  /** The endpoint the card's open-arrow leads to -- see {@link linkScore}. */
   primary: EndpointListEntry;
   /** Every endpoint in the group, best first. */
   members: EndpointListEntry[];
@@ -244,16 +281,29 @@ function bestClassified(group: RobotGroup): EndpointListEntry {
   return best;
 }
 
-/** A short label for one link: "USB · /dev/…", "WiFi · host:port",
- * "via relay <name>". */
+/** The relay's own display name for a `viaRelay.relayEndpointId`, per
+ * `nameDisplay`'s own rules -- falls back to the bare id only when the
+ * relay itself isn't (or is no longer) present in this snapshot, which
+ * should not happen in practice (the relay stays listed, session-closed,
+ * while its child exists) but must never crash a card over a lookup
+ * miss. */
+function relayDisplayName(devices: EndpointListEntry[], relayEndpointId: string): string {
+  const relay = devices.find((candidate) => candidate.endpointId === relayEndpointId);
+  return relay ? nameDisplay(relay).text : relayEndpointId;
+}
+
+/** A short label for one link: "USB · /dev/… · ID 0002", "WiFi ·
+ * host:port", "Radio via relay <name>". The USB form keeps the port
+ * and short device id a student matches against the physical board. */
 function connectionLabel(device: EndpointListEntry, devices: EndpointListEntry[]): string {
   if (device.viaRelay) {
-    return `via relay ${relayDisplayName(devices, device.viaRelay.relayEndpointId)}`;
+    return `Radio via relay ${relayDisplayName(devices, device.viaRelay.relayEndpointId)}`;
   }
   if (device.transport === "wifi") {
     return device.wifi ? `WiFi · ${device.wifi.host}:${device.wifi.port}` : "WiFi";
   }
-  return `USB · ${device.usb?.port ?? "no serial port"}`;
+  const port = device.usb?.port ?? "No serial port";
+  return device.usb?.displaySerial ? `USB · ${port} · ID ${device.usb.displaySerial}` : `USB · ${port}`;
 }
 
 function connectionState(device: EndpointListEntry): string {
@@ -266,55 +316,124 @@ function connectionState(device: EndpointListEntry): string {
   return "Not linked";
 }
 
-/** One robot reachable over more than one link -- see this module's
- * doc comment, "One card per robot". The informational `Link` mirrors
- * `EndpointCard`'s header/role for the group's primary endpoint; the
- * `Connections` list is a sibling of that anchor (never nested inside
- * it) with one `Link` per member. */
-function RobotCard({ group, devices }: { group: RobotGroup; devices: EndpointListEntry[] }) {
+/** An arrow glyph for the open/back buttons -- inline SVG so it needs
+ * no icon font and inherits `currentColor`. */
+function ArrowIcon({ direction }: { direction: "forward" | "back" }) {
+  const points = direction === "forward" ? "9 5 16 12 9 19" : "15 5 8 12 15 19";
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+      <polyline points={points} fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+      <line
+        x1={direction === "forward" ? "4" : "20"}
+        y1="12"
+        x2={direction === "forward" ? "16" : "8"}
+        y2="12"
+        stroke="currentColor"
+        strokeWidth="2.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+/** One robot's card -- see this module's doc comment, "One card per
+ * robot". Nothing in the informational region navigates (the
+ * stakeholder's 2026-09-10 direction): the only way into the robot's
+ * page is the open-arrow button on the right (`data-testid=
+ * "device-<primaryId>"`, a real `Link`), and each extra link listed
+ * under the card carries its own small arrow to that link's page. A
+ * relay's card additionally carries the robot picker + Connect from
+ * `RelayPage`, so a relay can be pointed at a robot without opening
+ * its page first. */
+function RobotCard({
+  group,
+  devices,
+  robotOptions,
+  onRelayConnect,
+  onRelayDisconnect,
+}: {
+  group: RobotGroup;
+  devices: EndpointListEntry[];
+  robotOptions: RobotOption[];
+  onRelayConnect: (relay: EndpointListEntry, robotName: string) => void;
+  onRelayDisconnect: (child: EndpointListEntry) => void;
+}) {
   const primary = group.primary;
   const identified = bestClassified(group);
   const name = nameDisplay(primary);
   const role = roleDisplay(identified);
   const isCalibration = identified.classification.type === "calibration";
+  const isRelay = primary.classification.type === "relay";
 
   return (
-    <div className="device-card-group" data-testid={`robot-${group.key}`}>
-      <Link to={`/d/${primary.endpointId}`} className="device-card" data-testid={`device-${primary.endpointId}`}>
-        <div className="device-card-header">
-          <h3 className="device-name">{name.text}</h3>
-          {isCalibration && (
-            <span className="device-calibration-badge" data-testid="calibration-badge">
-              {identified.classification.version
-                ? `Calibration robot · ${identified.classification.version}`
-                : "Calibration robot"}
-            </span>
-          )}
-          {primary.sessionOpen && <span className="device-linked-pill">Linked</span>}
-        </div>
-        <dl className="device-fields">
-          <div>
-            <dt>Role</dt>
-            <dd>{role}</dd>
-          </div>
-          <div>
-            <dt>Connection</dt>
-            <dd>{connectionLabel(primary, devices)}</dd>
-          </div>
-        </dl>
-      </Link>
-      <ul className="device-connections" aria-label={`Connections for ${name.text}`}>
-        {group.members.map((member) => (
-          <li key={member.endpointId}>
-            <Link to={`/d/${member.endpointId}`} className="device-connection" data-testid={`device-link-${member.endpointId}`}>
-              <span className="device-connection-label">{connectionLabel(member, devices)}</span>
-              <span className={member.sessionOpen ? "device-connection-state device-connection-open" : "device-connection-state"}>
-                {connectionState(member)}
+    <div className="device-card" data-testid={`device-card-${primary.endpointId}`}>
+      <div className="device-card-main">
+        <div className="device-card-body">
+          <div className="device-card-header">
+            <h3 className={name.flagged ? "device-name device-name-flagged" : "device-name"}>{name.text}</h3>
+            {name.flagged && <span className="device-flag">Unnamed / naming failed</span>}
+            {isCalibration && (
+              <span className="device-calibration-badge" data-testid="calibration-badge">
+                {identified.classification.version
+                  ? `Calibration robot · ${identified.classification.version}`
+                  : "Calibration robot"}
               </span>
-            </Link>
-          </li>
-        ))}
-      </ul>
+            )}
+            {primary.sessionOpen && <span className="device-linked-pill">Linked</span>}
+          </div>
+
+          {name.flagged && primary.nameError && <p className="device-note">{primary.nameError.message}</p>}
+
+          <dl className="device-fields">
+            <div>
+              <dt>Role</dt>
+              <dd>{role}</dd>
+            </div>
+          </dl>
+
+          <ul className="device-connections" aria-label={`Connections for ${name.text}`}>
+            {group.members.map((member) => (
+              <li key={member.endpointId} className="device-connection" data-testid={`device-link-${member.endpointId}`}>
+                <span className="device-connection-label">{connectionLabel(member, devices)}</span>
+                <span className={member.sessionOpen ? "device-connection-state device-connection-open" : "device-connection-state"}>
+                  {connectionState(member)}
+                </span>
+                {member !== primary && (
+                  <Link
+                    to={`/d/${member.endpointId}`}
+                    className="device-connection-open-button"
+                    aria-label={`Open ${name.text} over ${connectionLabel(member, devices)}`}
+                    data-testid={`device-row-open-${member.endpointId}`}
+                  >
+                    <ArrowIcon direction="forward" />
+                  </Link>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <Link
+          to={`/d/${primary.endpointId}`}
+          className="device-open-button"
+          aria-label={`Open ${name.text}`}
+          title={`Open ${name.text}`}
+          data-testid={`device-${primary.endpointId}`}
+        >
+          <ArrowIcon direction="forward" />
+        </Link>
+      </div>
+
+      {isRelay && (
+        <RelayQuickConnect
+          relay={primary}
+          devices={devices}
+          robotOptions={robotOptions}
+          onConnect={onRelayConnect}
+          onDisconnect={onRelayDisconnect}
+        />
+      )}
+
       {canBeFlashed(primary) && (
         <div className="device-card-actions" data-testid={`device-actions-${primary.endpointId}`}>
           <FlashDialog endpoint={primary} />
@@ -324,105 +443,58 @@ function RobotCard({ group, devices }: { group: RobotGroup; devices: EndpointLis
   );
 }
 
-/** The relay's own display name for a `viaRelay.relayEndpointId`, per
- * `nameDisplay`'s own rules -- falls back to the bare id only when the
- * relay itself isn't (or is no longer) present in this snapshot, which
- * should not happen in practice (the relay stays listed, session-closed,
- * while its child exists) but must never crash a card over a lookup
- * miss. */
-function relayDisplayName(devices: EndpointListEntry[], relayEndpointId: string): string {
-  const relay = devices.find((candidate) => candidate.endpointId === relayEndpointId);
-  return relay ? nameDisplay(relay).text : relayEndpointId;
-}
-
-/** One endpoint's card -- the informational region is a `Link` to its
- * device page, per the "an arrow on the box, or maybe you just click
- * the box" stakeholder note (`sprint.md`'s SUC-001): the student can
- * click anywhere in that region, not just a small affordance inside
- * it. A flash action row (ticket 012-002) is a sibling of the `Link`,
- * inside the same `<li>` -- not nested inside the `<a>`, which would
- * put a `<button>`/`<input>` inside an anchor (invalid HTML that would
- * also fight the router's own click handling).
- *
- * `relayName` (added out-of-process, 2026-09-09) is passed down rather
- * than re-derived here because computing it needs the full `devices`
- * list (see `relayDisplayName`), which `EndpointsList` already has and
- * this card doesn't. `undefined` for any device that isn't a
- * `viaRelay` child -- a required (not optional) prop typed
- * `string | undefined` so passing an explicit `undefined` stays legal
- * under `exactOptionalPropertyTypes`. */
-function EndpointCard({ device, relayName }: { device: EndpointListEntry; relayName: string | undefined }) {
-  const name = nameDisplay(device);
-  const role = roleDisplay(device);
-  const viaRelay = device.viaRelay;
-  const isCalibration = device.classification.type === "calibration";
+/** OOP 2026-09-10: a relay card's own robot picker + Connect/Disconnect
+ * -- `RelayPage`'s `RobotSelect` reused verbatim, so a relay can be
+ * pointed at a robot from the front page. The radio address sent is
+ * whatever `RelayPage` last stored for that name, else the name-derived
+ * default (`FrontPage`'s `onRelayConnect`); the editable override
+ * stays on `RelayPage`. Uncontrolled selection state lives here, per
+ * card. */
+function RelayQuickConnect({
+  relay,
+  devices,
+  robotOptions,
+  onConnect,
+  onDisconnect,
+}: {
+  relay: EndpointListEntry;
+  devices: EndpointListEntry[];
+  robotOptions: RobotOption[];
+  onConnect: (relay: EndpointListEntry, robotName: string) => void;
+  onDisconnect: (child: EndpointListEntry) => void;
+}) {
+  const child = devices.find((candidate) => candidate.viaRelay?.relayEndpointId === relay.endpointId);
+  const [selectedName, setSelectedName] = useState<string>(child?.viaRelay?.robotName ?? "");
+  useEffect(() => {
+    if (child?.viaRelay) {
+      setSelectedName(child.viaRelay.robotName);
+    }
+  }, [child?.viaRelay?.robotName]);
 
   return (
-    <>
-      <Link
-        to={`/d/${device.endpointId}`}
-        className="device-card"
-        data-testid={`device-${device.endpointId}`}
-      >
-        <div className="device-card-header">
-          <h3 className={name.flagged ? "device-name device-name-flagged" : "device-name"}>
-            {name.text}
-          </h3>
-          {name.flagged && <span className="device-flag">Unnamed / naming failed</span>}
-          {isCalibration && (
-            <span className="device-calibration-badge" data-testid="calibration-badge">
-              {device.classification.version
-                ? `Calibration robot · ${device.classification.version}`
-                : "Calibration robot"}
-            </span>
-          )}
-          {device.sessionOpen && <span className="device-linked-pill">Linked</span>}
-        </div>
-
-        {name.flagged && device.nameError && (
-          <p className="device-note">{device.nameError.message}</p>
-        )}
-
-        <dl className="device-fields">
-          <div>
-            <dt>Role</dt>
-            <dd>{role}</dd>
-          </div>
-          {viaRelay ? (
-            <div>
-              <dt>Connection</dt>
-              <dd>{`via relay ${relayName ?? viaRelay.relayEndpointId}`}</dd>
-            </div>
-          ) : device.transport === "wifi" ? (
-            <div>
-              <dt>Connection</dt>
-              <dd>{device.wifi ? `WiFi · ${device.wifi.host}:${device.wifi.port}` : "WiFi"}</dd>
-            </div>
-          ) : (
-            <>
-              <div>
-                <dt>Port</dt>
-                <dd>{device.usb?.port ?? "No serial port"}</dd>
-              </div>
-              <div>
-                <dt>Device ID</dt>
-                <dd title={device.usb?.serialNumber}>{device.usb?.displaySerial}</dd>
-              </div>
-            </>
-          )}
-        </dl>
-
-        {device.sessionError && (
-          <p className="device-note">Link attempt: {device.sessionError}</p>
-        )}
-      </Link>
-
-      {canBeFlashed(device) && (
-        <div className="device-card-actions" data-testid={`device-actions-${device.endpointId}`}>
-          <FlashDialog endpoint={device} />
-        </div>
+    <div className="device-relay-connect" data-testid={`relay-quick-connect-${relay.endpointId}`}>
+      {child?.viaRelay && (
+        <p className="device-relay-connected">
+          Connected to {child.viaRelay.robotName} on channel {child.viaRelay.channel}, group {child.viaRelay.group}
+        </p>
       )}
-    </>
+      <div className="device-relay-connect-row">
+        <RobotSelect options={robotOptions} value={selectedName} onChange={setSelectedName} />
+        <button
+          type="button"
+          className="device-relay-connect-button"
+          disabled={!relay.sessionOpen && !child}
+          onClick={() => onConnect(relay, selectedName)}
+        >
+          {child ? "Switch" : "Connect"}
+        </button>
+        {child && (
+          <button type="button" className="device-relay-disconnect-button" onClick={() => onDisconnect(child)}>
+            Disconnect
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 

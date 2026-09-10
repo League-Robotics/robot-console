@@ -3159,6 +3159,49 @@ describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", 
       expect.objectContaining({ sessionOpen: true, role: "NEZHA2" }),
     );
   });
+
+  it("OOP 2026-09-10: a dropped WiFi link is reconnected by the retry timer with no mDNS change at all (a rebooting robot fires no new up event)", async () => {
+    const watcher = fixtureWatcher(() => []);
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+    const wifiLink = new FakeLink(async () => wifiRobotBanner());
+    const createLink = wifiOnlyCreateLink(new Map([["gopiv.local.:7654", wifiLink]]));
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      knownRobotsStore: fakeRoster(["gopiv"]),
+      mdnsDiscovery,
+      createLink,
+      wifiRetryIntervalMs: 20,
+    });
+    registry.start();
+    try {
+      await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true);
+      expect(wifiLink.connectCalls).toBe(1);
+
+      // The robot is powered off: the open link errors out.
+      wifiLink.emitError(new Error("read ECONNRESET"));
+      const dropped = await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === false);
+      expect(dropped.find((e) => e.endpointId === "wifi-gopiv")?.sessionError).toBe("read ECONNRESET");
+
+      // No setSnapshot() here on purpose -- the backend never fires
+      // `up` again for a re-announcing instance it already knows.
+      const back = await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true);
+      expect(wifiLink.connectCalls).toBe(2);
+      expect(wifiLink.identifyCalls).toBe(2);
+      expect(back.find((e) => e.endpointId === "wifi-gopiv")).toEqual(
+        expect.objectContaining({ sessionOpen: true, role: "NEZHA2" }),
+      );
+      expect(back.find((e) => e.endpointId === "wifi-gopiv")?.sessionError).toBeUndefined();
+    } finally {
+      await registry.stop();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------

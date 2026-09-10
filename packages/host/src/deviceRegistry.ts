@@ -904,6 +904,10 @@ interface EndpointState {
    * silently reconnected a minute later. Only meaningful alongside
    * {@link wifiTarget}. */
   wifiAutoConnect?: boolean;
+  /** OOP 2026-09-10: an auto-connect attempt is in flight for this WiFi
+   * endpoint -- the retry timer skips it rather than queuing a second
+   * attempt behind the first. */
+  wifiConnecting?: boolean;
 }
 
 function toEntry(state: EndpointState): EndpointListEntry {
@@ -1205,7 +1209,23 @@ export interface DeviceRegistryOptions {
    * tests that want ticket 003's list-first, connect-on-click shape
    * pass `false`. */
   autoConnectWifi?: boolean;
+  /** OOP 2026-09-10 (second fix): how often the host retries a WiFi
+   * endpoint whose discovery-time connect failed or whose link has
+   * since dropped (robot rebooted, left the network). Needed because
+   * the mDNS backend fires `up` only for a *new* service instance --
+   * a robot re-announcing after a reboot updates the existing record
+   * silently, so {@link DeviceRegistry.syncWifiEndpoints} would never
+   * run again for it. `0` disables the timer (an mDNS change still
+   * retries). Default {@link DEFAULT_WIFI_RETRY_INTERVAL_MS}. */
+  wifiRetryIntervalMs?: number;
 }
+
+/** Default period of the WiFi reconnect retry timer (see
+ * {@link DeviceRegistryOptions.wifiRetryIntervalMs}). Short enough that a
+ * rebooted robot is back on the front page within seconds of rejoining
+ * the network; a failed attempt against an unreachable name fails fast
+ * (resolver `ENOTFOUND`), so this costs little while a robot is off. */
+export const DEFAULT_WIFI_RETRY_INTERVAL_MS = 10_000;
 
 /** Default period of the host's own `STATUS` poll on an open robot
  * session (see {@link DeviceRegistryOptions.statusPollIntervalMs}). */
@@ -1238,6 +1258,8 @@ export class DeviceRegistry {
   private readonly mdnsDiscovery: MdnsDiscovery;
   private readonly autoSwitchToWifi: boolean;
   private readonly autoConnectWifi: boolean;
+  private readonly wifiRetryIntervalMs: number;
+  private wifiRetryTimer: ReturnType<typeof setInterval> | undefined;
   private readonly mutex = new KeyedMutex();
   private readonly states = new Map<string, EndpointState>();
   private unsubscribeWatcher: (() => void) | undefined;
@@ -1271,6 +1293,7 @@ export class DeviceRegistry {
     this.mdnsDiscovery = options.mdnsDiscovery ?? new MdnsDiscovery();
     this.autoSwitchToWifi = options.autoSwitchToWifi ?? true;
     this.autoConnectWifi = options.autoConnectWifi ?? true;
+    this.wifiRetryIntervalMs = options.wifiRetryIntervalMs ?? DEFAULT_WIFI_RETRY_INTERVAL_MS;
   }
 
   /** Start watching for devices and browsing for relays/robots over
@@ -1303,6 +1326,11 @@ export class DeviceRegistry {
     });
     this.mdnsDiscovery.start();
     this.syncWifiEndpoints();
+    if (this.autoConnectWifi && this.wifiRetryIntervalMs > 0) {
+      const timer = setInterval(() => this.retryWifiAutoConnects(), this.wifiRetryIntervalMs);
+      timer.unref?.();
+      this.wifiRetryTimer = timer;
+    }
   }
 
   /** Stop watching and close every open link, best-effort. */
@@ -1313,6 +1341,10 @@ export class DeviceRegistry {
     this.mdnsDiscovery.stop();
     this.unsubscribeMdns?.();
     this.unsubscribeMdns = undefined;
+    if (this.wifiRetryTimer) {
+      clearInterval(this.wifiRetryTimer);
+      this.wifiRetryTimer = undefined;
+    }
     const closes = [...this.states.values()].map((state) =>
       this.teardownLink(state).catch(() => {
         // Best-effort shutdown -- a failure to close one link must not
@@ -1505,12 +1537,39 @@ export class DeviceRegistry {
       if (this.hasOpenUsbSessionForName(name)) {
         return;
       }
+      state.wifiConnecting = true;
       try {
         await this.connectAndIdentifyWifi(state);
       } catch (error) {
         this.emitError(wifiId, error instanceof Error ? error.message : String(error));
+      } finally {
+        state.wifiConnecting = false;
       }
     });
+  }
+
+  /**
+   * OOP 2026-09-10 (second fix): the retry-timer pass -- see
+   * {@link DeviceRegistryOptions.wifiRetryIntervalMs} for why an mDNS
+   * change alone is not enough. Re-queues {@link autoConnectWifiRobot}
+   * for every WiFi endpoint that still wants a connection and has none,
+   * skipping any with an attempt already in flight. The stakeholder's
+   * report: power-cycle a robot, its card shows the dropped link's
+   * error, and it never came back on its own.
+   */
+  private retryWifiAutoConnects(): void {
+    for (const state of this.states.values()) {
+      if (
+        state.wifiTarget &&
+        state.wifiAutoConnect &&
+        !state.sessionOpen &&
+        !state.identifying &&
+        !state.wifiConnecting &&
+        state.name !== null
+      ) {
+        void this.autoConnectWifiRobot(state.name);
+      }
+    }
   }
 
   /** Sprint 10 ticket 004: the `-via-<name>` synthesized child endpoint

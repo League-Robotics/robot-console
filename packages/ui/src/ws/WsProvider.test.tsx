@@ -19,7 +19,7 @@
  *    both a release and a local-hex source, and clearing on the
  *    terminal `flash-result` (ticket 005's flagged gap).
  */
-import { act, type ReactElement } from "react";
+import { act, useEffect, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EndpointListEntry, RememberedRobotEntry } from "@robot-console/host/src/wsMessages.js";
@@ -27,6 +27,7 @@ import { FakeSocket } from "../testing/FakeSocket";
 import {
   MAX_LINES_PER_DEVICE,
   MAX_TRACKED_ENDPOINT_LOGS,
+  TELEMETRY_RING_CAPACITY,
   WsProvider,
   useEndpoint,
   useEndpointLog,
@@ -34,8 +35,12 @@ import {
   useHasSnapshot,
   useRememberedRobots,
   useSequencing,
+  useTelemetry,
+  useTelemetryHeader,
   useWsActions,
   type LogEntry,
+  type TelemetryFrame,
+  type TelemetryHandle,
 } from "./WsProvider";
 
 let container: HTMLDivElement | null = null;
@@ -769,5 +774,275 @@ describe("useSequencing", () => {
     });
     expect(renders.b).toBe(3);
     expect(renders.a).toBe(2);
+  });
+});
+
+describe("useTelemetry / useTelemetryHeader (sprint 9 ticket 003)", () => {
+  it("a header then frames populate the ring, in order, with the header parsed and each frame's values numeric", () => {
+    let handle: TelemetryHandle | undefined;
+    function Probe() {
+      handle = useTelemetry("usb-A");
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+    expect(handle!.header).toBeUndefined();
+    expect(handle!.snapshot()).toEqual([]);
+    expect(handle!.latest).toBeUndefined();
+
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["ox", "oy"] });
+    });
+    expect(handle!.header).toEqual(["ox", "oy"]);
+    expect(handle!.snapshot()).toEqual([]);
+
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { ox: "1", oy: "2" } });
+    });
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { ox: "3", oy: "4" } });
+    });
+
+    const frames = handle!.snapshot();
+    expect(frames).toHaveLength(2);
+    expect(frames[0]!.values).toEqual({ ox: 1, oy: 2 });
+    expect(frames[1]!.values).toEqual({ ox: 3, oy: 4 });
+    expect(typeof frames[0]!.t).toBe("number");
+    expect(handle!.latest).toEqual(frames[1]);
+  });
+
+  it(`capacity wraps oldest-first once TELEMETRY_RING_CAPACITY (${TELEMETRY_RING_CAPACITY}) is exceeded`, () => {
+    let handle: TelemetryHandle | undefined;
+    function Probe() {
+      handle = useTelemetry("usb-A");
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["x"] });
+    });
+
+    const total = TELEMETRY_RING_CAPACITY + 5;
+    act(() => {
+      for (let i = 0; i < total; i++) {
+        getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { x: String(i) } });
+      }
+    });
+
+    const frames = handle!.snapshot();
+    expect(frames).toHaveLength(TELEMETRY_RING_CAPACITY);
+    // The oldest 5 pushed (x = 0..4) were evicted first.
+    expect(frames[0]!.values.x).toBe(5);
+    expect(frames[frames.length - 1]!.values.x).toBe(total - 1);
+  });
+
+  it("a frame arriving before any header is ignored rather than thrown or buffered", () => {
+    let handle: TelemetryHandle | undefined;
+    function Probe() {
+      handle = useTelemetry("usb-A");
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+
+    expect(() => {
+      act(() => {
+        getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { x: "1" } });
+      });
+    }).not.toThrow();
+    expect(handle!.snapshot()).toEqual([]);
+    expect(handle!.header).toBeUndefined();
+
+    // Recovery: once a header arrives, frames resume normal handling --
+    // the earlier headerless frame was dropped, not queued.
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["x"] });
+    });
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { x: "9" } });
+    });
+    expect(handle!.snapshot()).toHaveLength(1);
+    expect(handle!.snapshot()[0]!.values).toEqual({ x: 9 });
+  });
+
+  it("a header change resets the ring (SUC-003: previous frames' columns no longer apply)", () => {
+    let handle: TelemetryHandle | undefined;
+    function Probe() {
+      handle = useTelemetry("usb-A");
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["x"] });
+    });
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { x: "1" } });
+    });
+    expect(handle!.snapshot()).toHaveLength(1);
+
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["y"] });
+    });
+    expect(handle!.header).toEqual(["y"]);
+    expect(handle!.snapshot()).toEqual([]);
+  });
+
+  it("resets the ring when the endpoint's session closes", () => {
+    let handle: TelemetryHandle | undefined;
+    function Probe() {
+      handle = useTelemetry("usb-A");
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+    act(() => {
+      getSocket().emitMessage({
+        type: "endpoints",
+        endpoints: [endpointFixture("A", { sessionOpen: true })],
+        firmwareStatus: NO_FIRMWARE_STATUS,
+      });
+    });
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["x"] });
+    });
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { x: "1" } });
+    });
+    expect(handle!.snapshot()).toHaveLength(1);
+
+    act(() => {
+      getSocket().emitMessage({
+        type: "endpoints",
+        endpoints: [endpointFixture("A", { sessionOpen: false })],
+        firmwareStatus: NO_FIRMWARE_STATUS,
+      });
+    });
+    expect(handle!.snapshot()).toEqual([]);
+    // The header itself is untouched by a session close -- only the
+    // stale frame history is.
+    expect(handle!.header).toEqual(["x"]);
+  });
+
+  it("clearTelemetry (and the handle's own clear()) empties the ring without touching the header", () => {
+    let handle: TelemetryHandle | undefined;
+    let actions: ReturnType<typeof useWsActions> | undefined;
+    function Probe() {
+      handle = useTelemetry("usb-A");
+      actions = useWsActions();
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["x"] });
+    });
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { x: "1" } });
+    });
+    expect(handle!.snapshot()).toHaveLength(1);
+
+    act(() => {
+      actions!.clearTelemetry("usb-A");
+    });
+    expect(handle!.snapshot()).toEqual([]);
+    expect(handle!.header).toEqual(["x"]);
+
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { x: "2" } });
+    });
+    expect(handle!.snapshot()).toHaveLength(1);
+
+    act(() => {
+      handle!.clear();
+    });
+    expect(handle!.snapshot()).toEqual([]);
+  });
+
+  it("useTelemetryHeader is undefined before any header, and reflects the current header once one arrives", () => {
+    const values: Array<readonly string[] | undefined> = [];
+    function Probe() {
+      values.push(useTelemetryHeader("usb-A"));
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+    expect(values[values.length - 1]).toBeUndefined();
+
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["ox", "oy"] });
+    });
+    expect(values[values.length - 1]).toEqual(["ox", "oy"]);
+  });
+
+  it("telemetrySubscribe sends the exact send-command TLM message", () => {
+    let actions: ReturnType<typeof useWsActions> | undefined;
+    function Probe() {
+      actions = useWsActions();
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+    act(() => {
+      actions!.telemetrySubscribe("usb-A", "POSE");
+    });
+
+    expect(getSocket().sent).toHaveLength(1);
+    expect(JSON.parse(getSocket().sent[0]!)).toEqual({
+      type: "send-command",
+      endpointId: "usb-A",
+      verb: "TLM",
+      fields: ["POSE"],
+    });
+  });
+
+  describe("render-count isolation", () => {
+    it("frame arrivals for A fire subscribers directly, without re-rendering the useTelemetry(A) component or an unrelated useEndpoint(B) selector", () => {
+      const renders = { telemetry: 0, other: 0 };
+      const receivedFrames: TelemetryFrame[] = [];
+
+      function TelemetryProbe() {
+        const handle = useTelemetry("usb-A");
+        renders.telemetry += 1;
+        useEffect(() => handle.subscribe((frame) => receivedFrames.push(frame)), [handle]);
+        return null;
+      }
+      function OtherProbe() {
+        useEndpoint("usb-B");
+        renders.other += 1;
+        return null;
+      }
+
+      const { getSocket } = mountWithSocket(
+        <>
+          <TelemetryProbe />
+          <OtherProbe />
+        </>,
+      );
+      expect(renders.telemetry).toBe(1);
+      expect(renders.other).toBe(1);
+
+      act(() => {
+        getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["x"] });
+      });
+      // The header update is the one telemetry event that does go
+      // through `notify(store)` -- but neither probe reads the header,
+      // so neither re-renders.
+      expect(renders.telemetry).toBe(1);
+      expect(renders.other).toBe(1);
+
+      act(() => {
+        for (let i = 0; i < 20; i++) {
+          getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { x: String(i) } });
+        }
+      });
+      expect(receivedFrames).toHaveLength(20);
+      // The whole point of the ring-buffer design: 20 frames arrived
+      // for A, delivered synchronously to the subscriber, and zero
+      // React re-renders resulted for either component.
+      expect(renders.telemetry).toBe(1);
+      expect(renders.other).toBe(1);
+    });
   });
 });

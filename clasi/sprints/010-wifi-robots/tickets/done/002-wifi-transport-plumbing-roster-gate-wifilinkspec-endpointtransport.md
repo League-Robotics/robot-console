@@ -1,9 +1,11 @@
 ---
 id: '002'
 title: 'WiFi transport plumbing: roster gate, WifiLinkSpec, EndpointTransport'
-status: open
-use-cases: [SUC-002]
-depends-on: ["001"]
+status: done
+use-cases:
+- SUC-002
+depends-on:
+- '001'
 github-issue: ''
 issue: robot-console-two-level-ui-and-multi-transport-roadmap.md
 completes_issue: true
@@ -43,24 +45,24 @@ making them constructible and testable in isolation first.
 
 ## Acceptance Criteria
 
-- [ ] `gateWifiRobots` returns a discovered robot whose name is in the
+- [x] `gateWifiRobots` returns a discovered robot whose name is in the
       roster.
-- [ ] **Negative case** (required — this is the sprint's core privacy
+- [x] **Negative case** (required — this is the sprint's core privacy
       guarantee): `gateWifiRobots` excludes a discovered robot whose
       name is *not* in the roster, asserted directly against the
       function with no registry/endpoint machinery involved.
-- [ ] `gateWifiRobots` handles an empty roster (returns `[]`) and an
+- [x] `gateWifiRobots` handles an empty roster (returns `[]`) and an
       empty discovery list (returns `[]`) without error.
-- [ ] `LinkSpec` accepts a `WifiLinkSpec` value; TypeScript's
+- [x] `LinkSpec` accepts a `WifiLinkSpec` value; TypeScript's
       exhaustiveness checking on `defaultLinkFactory`'s switch
       requires (and the ticket adds) the new `"wifi"` case.
-- [ ] `defaultLinkFactory({ transport: "wifi", host, port })` returns
+- [x] `defaultLinkFactory({ transport: "wifi", host, port })` returns
       an `MbserialLink` instance constructed with that exact
       host/port — asserted by checking the returned object's
       constructor or an equivalent narrow check, not by re-testing
       `MbserialLink`'s own behavior (already covered by its own test
       file).
-- [ ] `EndpointTransport` includes `"wifi"`; no existing exhaustive
+- [x] `EndpointTransport` includes `"wifi"`; no existing exhaustive
       switch/mapping over `EndpointTransport` elsewhere in the
       codebase is left un-handling the new value (grep for
       `EndpointTransport` usages and confirm each either handles

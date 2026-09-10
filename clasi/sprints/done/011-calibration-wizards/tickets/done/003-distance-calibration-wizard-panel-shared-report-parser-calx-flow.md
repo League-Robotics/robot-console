@@ -1,7 +1,7 @@
 ---
 id: '003'
 title: Distance calibration wizard panel (shared report parser + calx flow)
-status: open
+status: done
 use-cases:
 - SUC-003
 depends-on:
@@ -46,44 +46,44 @@ firmware's own line.
 
 ## Acceptance Criteria
 
-- [ ] `CalibrationReport.ts` (new, pure, no I/O, no React) parses one rx
+- [x] `CalibrationReport.ts` (new, pure, no I/O, no React) parses one rx
       log line into one of: a progress event (any `<PREFIX>:...` line
       that isn't `apply` or `fail`, carrying the raw remainder text), an
       `apply` event (the full snippet text), a `fail` event (the reason
       text), or "not a calibration line" (anything not matching a known
       prefix) — this module accepts the prefix as a parameter (`"CALX"`
       or `"CALA"`), it is not `calx`-specific.
-- [ ] `DistanceCalibrationWizard.tsx` (new) fires a one-shot `FUNCS`
+- [x] `DistanceCalibrationWizard.tsx` (new) fires a one-shot `FUNCS`
       probe on mount/reopen (mirroring `CommandStrip`'s existing
       mount/reopen pattern for its bare `GET`) and enables Go only when
       `calx` is present in the resulting `device.functions`.
-- [ ] When `calx` is absent, the panel shows a clear, non-alarming
+- [x] When `calx` is absent, the panel shows a clear, non-alarming
       "this robot doesn't support calibration yet" message and Go stays
       disabled — never a spinner, never a timeout-shaped wait.
-- [ ] The panel shows the two-line, 90 cm physical setup instructions
+- [x] The panel shows the two-line, 90 cm physical setup instructions
       before Go is usable.
-- [ ] Pressing Go sends `RUN calx` via `sendCommand` (mirroring
+- [x] Pressing Go sends `RUN calx` via `sendCommand` (mirroring
       `FunctionsPanel`'s existing `RUN` dispatch for an arbitrary
       function).
-- [ ] As `CALX:` lines arrive in the endpoint's log (`useEndpointLog`,
+- [x] As `CALX:` lines arrive in the endpoint's log (`useEndpointLog`,
       same source `CommandStrip` reads), the panel renders visible,
       distinct progress via `CalibrationReport` — at minimum "seeking
       first line" and "measuring second line" are distinguishable
       states, not one generic "running" spinner.
-- [ ] On a `CALX:apply ...` line, the panel renders that line's exact
+- [x] On a `CALX:apply ...` line, the panel renders that line's exact
       text as the copy-paste snippet — pinned by a test asserting the
       rendered text equals the fixture line's text byte-for-byte (after
       stripping the `CALX:apply ` prefix only).
-- [ ] On any `CALX:fail ...` line, the panel renders a distinct failure
+- [x] On any `CALX:fail ...` line, the panel renders a distinct failure
       state (showing the reason text) and never renders a snippet.
-- [ ] A `RUN` `err 1` reply (a missing/wrong program name) renders a
+- [x] A `RUN` `err 1` reply (a missing/wrong program name) renders a
       state distinguishable from both the `CALX:fail` state and the
       pre-run "unavailable" state.
-- [ ] No nudge control and no beam-pointer UI appears anywhere in this
+- [x] No nudge control and no beam-pointer UI appears anywhere in this
       panel (this wizard's own regression check, since the roadmap's
       stale text described one for the *rotation* wizard, not this one,
       but the panel should not gain one by accident either).
-- [ ] `RobotPage.transportBlind.test.ts`'s `FILES_UNDER_TEST` list is
+- [x] `RobotPage.transportBlind.test.ts`'s `FILES_UNDER_TEST` list is
       updated to include `DistanceCalibrationWizard.tsx` and
       `CalibrationReport.ts`, and the scan continues to pass — no
       transport-specific reference in either new file.

@@ -169,7 +169,7 @@ describe("RelayConnectionCoordinator.connect", () => {
     expect(result).toEqual({
       outcome: "connected",
       link,
-      classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none" },
+      classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
       name: "zuzuv",
       addressSource: "registry",
       failoverTrail: [],

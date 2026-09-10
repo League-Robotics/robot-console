@@ -38,23 +38,40 @@
  * {@link DeviceClassification} for diagnostics/logging only -- it must
  * never grow a `switch` of its own.
  *
- * ## Why a fourth type is purely additive
+ * ## The `ID`-verb calibration signal (sprint 011 ticket 001)
  *
- * A calibration-robot type is blocked upstream (`wire_handler.cpp`
- * hardcodes `NEZHA2` for every robot build today) and is deliberately
- * not modeled here. {@link normalizeDeviceType} is the mechanism that
- * keeps a future fourth wire value from breaking an older client: any
- * string this module doesn't recognize coerces to `"unknown"` rather
- * than being passed through or rejected, so a client built against
- * today's two-type union degrades gracefully against a newer host.
+ * A calibration robot and a student robot emit the **identical** banner
+ * (`device NEZHA2 robot <name> <serial>`) -- the banner alone can never
+ * distinguish them, and no firmware change is needed to fix that: the
+ * separately-issued `ID` verb already carries the distinction, and has
+ * all along. Its reply's grammar is `id <product> <program> <version>
+ * <name>`; `program` is `calibration-<version>` on the calibration
+ * build, the build's own name (e.g. `tovez`) otherwise. {@link
+ * parseIdReply} parses that reply's fields (pure, no I/O); {@link
+ * refineForCalibration} is the **one place** the `calibration-` prefix
+ * is matched -- see its own doc comment for why this is a second,
+ * independent signal layered on after {@link classifyBanner} rather
+ * than folded into it. A robot that never answers `ID` (older firmware,
+ * a request that times out, or a build without the verb) simply never
+ * has this refinement applied, and stays classified `"robot"` -- see
+ * `deviceRegistry.ts`'s own doc comment for where the request is sent
+ * and the reply harvested. {@link normalizeDeviceType} treats
+ * `"calibration"` as a recognized value now, exactly as it already does
+ * `"relay"`/`"robot"` -- see that function's own doc comment for why an
+ * older client talking to a newer host still degrades safely for any
+ * value it doesn't recognize.
  */
 import type { BannerDialect, ParsedBanner } from "./banner.js";
 
 /** Every device type this client can classify a banner into. See the
  * module doc comment for why a future addition here must go through
  * {@link normalizeDeviceType} rather than growing this union out from
- * under an older, already-shipped client. */
-export type DeviceType = "unknown" | "relay" | "robot";
+ * under an older, already-shipped client. `"calibration"` (sprint 011
+ * ticket 001) is never produced by {@link classifyBanner} itself (the
+ * banner cannot distinguish a calibration robot from a student one) --
+ * only {@link refineForCalibration}, applied after a matching `ID`
+ * reply, ever narrows a `"robot"` classification to `"calibration"`. */
+export type DeviceType = "unknown" | "relay" | "robot" | "calibration";
 
 /** Which signal (if any) produced a {@link DeviceClassification}'s
  * `type`, for diagnostics -- never branched on by the UI. `"none"`: no
@@ -87,6 +104,15 @@ export interface DeviceClassification {
   dialect: BannerDialect | null;
   /** Which signal produced `type` -- see this type's own doc comment. */
   evidence: ClassificationEvidence;
+  /** The `ID` reply's raw `program` field (e.g. `"calibration-0.20260907.2"`,
+   * `"tovez"`), preserved verbatim -- `null` until (and unless) an `ID`
+   * reply has ever been received for this endpoint; `classifyBanner`
+   * itself never sets this to anything but `null`, since a banner alone
+   * carries no `ID`-verb signal. See {@link refineForCalibration}. */
+  program: string | null;
+  /** The `ID` reply's raw `version` field, preserved verbatim -- `null`
+   * under the same condition as {@link program}. */
+  version: string | null;
 }
 
 /** Role tokens that classify as `"relay"` even though their
@@ -105,7 +131,7 @@ const ROBOT_ROLES = new Set(["NEZHA2"]);
  */
 export function classifyBanner(banner: ParsedBanner | null): DeviceClassification {
   if (!banner) {
-    return { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none" };
+    return { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null };
   }
 
   const commonName = banner.commonName.toLowerCase();
@@ -116,6 +142,8 @@ export function classifyBanner(banner: ParsedBanner | null): DeviceClassificatio
       commonName: banner.commonName,
       dialect: banner.dialect,
       evidence: "common-name",
+      program: null,
+      version: null,
     };
   }
   if (commonName === "robot") {
@@ -125,6 +153,8 @@ export function classifyBanner(banner: ParsedBanner | null): DeviceClassificatio
       commonName: banner.commonName,
       dialect: banner.dialect,
       evidence: "common-name",
+      program: null,
+      version: null,
     };
   }
 
@@ -135,6 +165,8 @@ export function classifyBanner(banner: ParsedBanner | null): DeviceClassificatio
       commonName: banner.commonName,
       dialect: banner.dialect,
       evidence: "role",
+      program: null,
+      version: null,
     };
   }
   if (ROBOT_ROLES.has(banner.role)) {
@@ -144,6 +176,8 @@ export function classifyBanner(banner: ParsedBanner | null): DeviceClassificatio
       commonName: banner.commonName,
       dialect: banner.dialect,
       evidence: "role",
+      program: null,
+      version: null,
     };
   }
 
@@ -156,6 +190,78 @@ export function classifyBanner(banner: ParsedBanner | null): DeviceClassificatio
     commonName: banner.commonName,
     dialect: banner.dialect,
     evidence: "unrecognized",
+    program: null,
+    version: null,
+  };
+}
+
+/** One robot's `ID` reply, parsed positionally from the wire's `id
+ * <product> <program> <version> <name>` fields -- see the module doc
+ * comment's "The `ID`-verb calibration signal" section. `product` and
+ * `name` are carried for completeness (a caller may want them for
+ * display) even though only `program`/`version` feed {@link
+ * refineForCalibration}. */
+export interface IdReply {
+  readonly product: string;
+  readonly program: string;
+  readonly version: string;
+  readonly name: string;
+}
+
+/** Parse a decoded `id` reply's fields into an {@link IdReply}. `null`
+ * if fewer than the four expected positional fields are present -- this
+ * module never guesses at a partial or malformed reply; a caller sees
+ * `null` and simply does not refine the classification, which stays
+ * whatever {@link classifyBanner} already produced. The vocabulary of
+ * `product`/`program`/`name` values is not controlled by this project,
+ * so no field here is validated against an allowlist -- only counted. */
+export function parseIdReply(fields: readonly string[]): IdReply | null {
+  const [product, program, version, name] = fields;
+  if (product === undefined || program === undefined || version === undefined || name === undefined) {
+    return null;
+  }
+  return { product, program, version, name };
+}
+
+/** Matches an `ID` reply's `program` field naming the calibration build
+ * -- the **one place** this project matches on the `calibration-`
+ * prefix (per the linked issue's own design caution: match the prefix,
+ * not an exact version string, and keep the match in exactly one
+ * place). Deliberately a prefix match, not equality: the calibration
+ * build's `program` embeds its own version
+ * (`calibration-0.20260907.2`), which churns on every calibration
+ * release. */
+const CALIBRATION_PROGRAM_PREFIX = /^calibration-/;
+
+/**
+ * Refine a `"robot"` {@link DeviceClassification} using a parsed `ID`
+ * reply -- the second, independent signal layered on after {@link
+ * classifyBanner}, never folded into it (the `ID` round trip is a
+ * separate request `deviceRegistry.ts` sends after a banner already
+ * classified the endpoint as a plain robot; {@link classifyBanner}
+ * itself has no access to it and stays banner-only).
+ *
+ * `program` matching {@link CALIBRATION_PROGRAM_PREFIX} narrows `type`
+ * to `"calibration"`; anything else -- including a near-miss like
+ * `"calib-test"` that merely resembles the prefix -- leaves `type`
+ * alone. Only ever narrows a `"robot"` classification: called with a
+ * `"relay"`/`"unknown"` classification (which should not happen, since
+ * `deviceRegistry.ts` only ever sends `ID` after a `"robot"` identify)
+ * returns it unchanged rather than misclassifying a non-robot as
+ * `"calibration"`. `program`/`version` are always set verbatim from the
+ * reply, regardless of whether the prefix matched -- they are
+ * diagnostics, preserved for display exactly like {@link
+ * DeviceClassification.role} is from the banner.
+ */
+export function refineForCalibration(classification: DeviceClassification, idReply: IdReply): DeviceClassification {
+  return {
+    ...classification,
+    type:
+      classification.type === "robot" && CALIBRATION_PROGRAM_PREFIX.test(idReply.program)
+        ? "calibration"
+        : classification.type,
+    program: idReply.program,
+    version: idReply.version,
   };
 }
 
@@ -165,8 +271,12 @@ export function classifyBanner(banner: ParsedBanner | null): DeviceClassificatio
  * doesn't recognize as `"unknown"`. This is the mechanism that makes a
  * future fourth wire-level type purely additive: an older client
  * talking to a newer host degrades a value it has never heard of to
- * `"unknown"` instead of crashing or mis-rendering.
+ * `"unknown"` instead of crashing or mis-rendering. `"calibration"`
+ * (sprint 011 ticket 001) is now one of the recognized values -- it
+ * round-trips exactly like `"relay"`/`"robot"` always have; anything
+ * still unrecognized (a hypothetical future fifth type) keeps degrading
+ * to `"unknown"`, unchanged.
  */
 export function normalizeDeviceType(value: string): DeviceType {
-  return value === "relay" || value === "robot" ? value : "unknown";
+  return value === "relay" || value === "robot" || value === "calibration" ? value : "unknown";
 }

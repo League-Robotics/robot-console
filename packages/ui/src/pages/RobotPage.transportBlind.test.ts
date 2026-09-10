@@ -74,6 +74,9 @@ import statusPanelSource from "../components/StatusPanel.tsx?raw";
 import functionsPanelSource from "../components/FunctionsPanel.tsx?raw";
 import chartsPanelSource from "../components/ChartsPanel.tsx?raw";
 import pathTracePanelSource from "../components/PathTracePanel.tsx?raw";
+import distanceCalibrationWizardSource from "../components/DistanceCalibrationWizard.tsx?raw";
+import rotationCalibrationWizardSource from "../components/RotationCalibrationWizard.tsx?raw";
+import calibrationReportSource from "../components/CalibrationReport.ts?raw";
 import { RobotPage } from "./RobotPage";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
@@ -104,6 +107,16 @@ const FILES_UNDER_TEST: Record<string, string> = {
   // it reads only `useTelemetry`/`useTelemetryHeader`/`useWsActions`,
   // never a transport/link type.
   "components/PathTracePanel.tsx": pathTracePanelSource,
+  // Sprint 011 ticket 003: the distance-calibration wizard and its
+  // shared report parser are held to the same property -- both read
+  // only `device.functions`/`useEndpointLog`/`useWsActions`, never a
+  // transport/link type or `endpoint.transport`.
+  "components/DistanceCalibrationWizard.tsx": distanceCalibrationWizardSource,
+  // Sprint 011 ticket 004: the rotation-calibration wizard is held to
+  // the same property -- it reads only `device.functions`/
+  // `useEndpointLog`/`useWsActions`, never a transport/link type.
+  "components/RotationCalibrationWizard.tsx": rotationCalibrationWizardSource,
+  "components/CalibrationReport.ts": calibrationReportSource,
 };
 
 /** Matches a quoted `"usb"` literal (either quote style), not merely
@@ -140,7 +153,7 @@ function relayTransportRobotFixture(overrides: Partial<EndpointListEntry> = {}):
     endpointId: "usb-RELAY-A-via-vevav",
     transport: "relay-radio",
     resourceKey: "usb-RELAY-A",
-    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
+    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
     name: "vevav",
     role: "NEZHA2",
     sessionOpen: true,
@@ -160,7 +173,7 @@ function wifiTransportRobotFixture(overrides: Partial<EndpointListEntry> = {}): 
     endpointId: "wifi-gopiv",
     transport: "wifi",
     resourceKey: "wifi-gopiv",
-    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
+    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
     name: "gopiv",
     role: "NEZHA2",
     sessionOpen: true,

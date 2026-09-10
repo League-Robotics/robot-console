@@ -86,7 +86,7 @@ function endpointFixture(
     endpointId: `usb-${id}`,
     transport: "usb",
     resourceKey: `usb-${id}`,
-    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none" },
+    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
     name: `name-${id}`,
     role: overrides.role ?? null,
     sessionOpen: overrides.sessionOpen ?? false,

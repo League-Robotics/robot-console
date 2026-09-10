@@ -2404,6 +2404,11 @@ describe("robot-via-relay endpoints (OOP 2026-09-09, coordinator-driven since sp
 
     await registry.requestOpen("usb-SERIAL-RELAY", { robotName: "gopiv" });
     await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv"));
+    // Sprint 011 ticket 001: startRobotProbes fires a one-shot ID probe
+    // on this synthesized robot too (the same shared post-identify step
+    // as every other transport) -- cleared here so it doesn't leak into
+    // this test's own sentLines assertion below.
+    radioLink.sentLines = radioLink.sentLines.filter((sent) => !sent.startsWith("ID"));
 
     await registry.sendCommand("usb-SERIAL-RELAY-via-gopiv", "STATUS");
     expect(radioLink.sentLines).toEqual(["STATUS\n"]);
@@ -3623,6 +3628,14 @@ async function openRobot(options: { statusPollIntervalMs?: number; autoRequestFu
   );
   registry.start();
   await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true && s[0]?.role === "NEZHA2");
+  // Sprint 011 ticket 001: startRobotProbes also fires a one-shot,
+  // unsequenced ID probe on every robot identify, unconditionally (see
+  // that method's own doc comment) -- strip it from sentLines here so
+  // every test built on this helper before that probe existed keeps
+  // its own sentLines assertions unchanged; a fixture robot that never
+  // answers ID stays classified "robot" regardless, exactly like the
+  // ticket's own "no reply" acceptance criterion.
+  link.sentLines = link.sentLines.filter((sent) => !sent.startsWith("ID"));
   return { registry, link, lines };
 }
 
@@ -3798,6 +3811,114 @@ describe("DeviceRegistry robot status and functions (OOP 2026-09-09)", () => {
     registry.start();
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true && s[0]?.role === "RADIOBRIDGE");
     expect(link.sentLines).toEqual([]);
+    await registry.stop();
+  });
+});
+
+describe("DeviceRegistry calibration classification via ID (sprint 011 ticket 001)", () => {
+  it("sends unsequenced ID exactly once after a robot identifies, on any transport", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const link = new FakeLink(async () => robotBanner());
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName: async () => namedResult("gopiv"),
+      createLink: () => link,
+    });
+    const lines: SeenLine[] = [];
+    registry.onLine((endpointId, direction, line, origin) =>
+      lines.push(origin ? { endpointId, direction, line, origin } : { endpointId, direction, line }),
+    );
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true && s[0]?.role === "NEZHA2");
+
+    // Exactly one ID, never gated behind autoRequestFunctions/statusPollIntervalMs
+    // (both false/0 here) -- this probe is unconditional on a robot identify.
+    expect(link.sentLines).toEqual(["ID\n"]);
+    expect(lines).toContainEqual({ endpointId: "usb-SERIAL-A", direction: "tx", line: "ID" });
+
+    await registry.stop();
+  });
+
+  it("a program matching the calibration- prefix refines classification.type to calibration, preserving program/version", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const link = new FakeLink(async () => robotBanner());
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName: async () => namedResult("gopiv"),
+      createLink: () => link,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true && s[0]?.role === "NEZHA2");
+
+    link.emitLine(decoded("id", ["diffdrive", "calibration-0.20260907.2", "1.20260907.5", "gopiv"]));
+    const snap = await waitForSnapshot(registry, (s) => s[0]?.classification.type === "calibration");
+    expect(snap[0]?.classification).toMatchObject({
+      type: "calibration",
+      program: "calibration-0.20260907.2",
+      version: "1.20260907.5",
+    });
+
+    await registry.stop();
+  });
+
+  it("any other program value (e.g. a student build's own name) leaves classification.type at robot", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const link = new FakeLink(async () => robotBanner());
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName: async () => namedResult("zavaz"),
+      createLink: () => link,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true && s[0]?.role === "NEZHA2");
+
+    link.emitLine(decoded("id", ["diffdrive", "tovez", "1.20260905.1", "zavaz"]));
+    const snap = await waitForSnapshot(registry, (s) => s[0]?.classification.program === "tovez");
+    expect(snap[0]?.classification).toMatchObject({ type: "robot", program: "tovez", version: "1.20260905.1" });
+
+    await registry.stop();
+  });
+
+  it("a program that merely resembles the calibration prefix (e.g. 'calib-test') leaves classification.type at robot", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const link = new FakeLink(async () => robotBanner());
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName: async () => namedResult("zzzzz"),
+      createLink: () => link,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true && s[0]?.role === "NEZHA2");
+
+    link.emitLine(decoded("id", ["diffdrive", "calib-test", "0.0.1", "zzzzz"]));
+    const snap = await waitForSnapshot(registry, (s) => s[0]?.classification.program === "calib-test");
+    expect(snap[0]?.classification.type).toBe("robot");
+
+    await registry.stop();
+  });
+
+  it("no ID reply at all leaves classification.type at robot -- never unknown, never calibration", async () => {
+    const { registry } = await openRobot();
+
+    // openRobot()'s fixture link never answers ID (no fixture reply
+    // scripted) -- per the linked issue's own design caution, absence
+    // of a reply must never be treated as evidence of a student build,
+    // and must never degrade to "unknown" either.
+    const snap = registry.snapshot();
+    expect(snap[0]?.classification).toMatchObject({ type: "robot", program: null, version: null });
+
     await registry.stop();
   });
 });

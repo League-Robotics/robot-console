@@ -49,7 +49,7 @@ function endpoint(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry
     endpointId: "usb-SERIAL-A",
     transport: "usb",
     resourceKey: "usb-SERIAL-A",
-    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none" },
+    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
     name: "zeguz",
     role: null,
     sessionOpen: false,
@@ -82,7 +82,7 @@ function wifiEndpoint(overrides: Partial<EndpointListEntry> = {}): EndpointListE
     endpointId: "wifi-gopiv",
     transport: "wifi",
     resourceKey: "wifi-gopiv",
-    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none" },
+    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
     name: "gopiv",
     role: null,
     sessionOpen: false,
@@ -160,7 +160,7 @@ describe("DevicePage per-type dispatch", () => {
         type: "endpoints",
         endpoints: [
           endpoint({
-            classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role" },
+            classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role", program: null, version: null },
           }),
         ],
       });
@@ -180,7 +180,7 @@ describe("DevicePage per-type dispatch", () => {
         type: "endpoints",
         endpoints: [
           endpoint({
-            classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
+            classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
           }),
         ],
       });
@@ -201,11 +201,7 @@ describe("DevicePage per-type dispatch", () => {
     expect(el.querySelector('[aria-label="Unknown device"]')).not.toBeNull();
   });
 
-  it("dispatches an unrecognized classification.type to UnknownDevicePage via the default arm", () => {
-    // The "a fourth device type is purely additive" contract
-    // (`wsMessages.ts`'s module doc comment): a client built against
-    // today's two-type union must treat any value it doesn't recognize
-    // as unknown, not crash or render nothing.
+  it("dispatches a calibration-classified endpoint to RobotPage (sprint 011 ticket 002)", () => {
     const { el, socket } = mountAt("/d/usb-SERIAL-A");
     act(() => {
       socket().emitOpen();
@@ -216,11 +212,45 @@ describe("DevicePage per-type dispatch", () => {
         endpoints: [
           endpoint({
             classification: {
-              type: "calibration" as unknown as EndpointListEntry["classification"]["type"],
+              type: "calibration",
+              role: "NEZHA2",
+              commonName: "robot",
+              dialect: "space",
+              evidence: "role",
+              program: "calibration-0.20260907.2",
+              version: "0.20260907.2",
+            },
+          }),
+        ],
+      });
+    });
+
+    expect(el.querySelector('[aria-label="Robot device"]')).not.toBeNull();
+  });
+
+  it("dispatches an unrecognized classification.type to UnknownDevicePage via the default arm", () => {
+    // The "a fourth device type is purely additive" contract
+    // (`wsMessages.ts`'s module doc comment): a client built against
+    // today's known-type union must treat any value it doesn't
+    // recognize as unknown, not crash or render nothing.
+    // "calibration" itself is no longer a usable stand-in for this
+    // (sprint 011 ticket 001 made it a real, recognized type) -- this
+    // uses a still-hypothetical fifth value instead.
+    const { el, socket } = mountAt("/d/usb-SERIAL-A");
+    act(() => {
+      socket().emitOpen();
+    });
+    act(() => {
+      socket().emitMessage({
+        type: "endpoints",
+        endpoints: [
+          endpoint({
+            classification: {
+              type: "future-type" as unknown as EndpointListEntry["classification"]["type"],
               role: "SOMETHING_NEW",
               commonName: null,
               dialect: null,
-              evidence: "role",
+              evidence: "role", program: null, version: null,
             },
           }),
         ],
@@ -255,7 +285,7 @@ describe("DevicePage opens a wifi endpoint's session on mount (sprint 10 ticket 
         type: "endpoints",
         endpoints: [
           wifiEndpoint({
-            classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
+            classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
             role: "NEZHA2",
             sessionOpen: true,
           }),

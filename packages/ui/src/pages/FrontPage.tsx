@@ -68,6 +68,13 @@
  * old Devices tab's own split, so the list states can be exercised
  * directly in tests against plain `EndpointListEntry` fixtures.
  *
+ * **Calibration classification (sprint 011 ticket 002):** a
+ * `classification.type === "calibration"` card renders an additional
+ * `data-testid="calibration-badge"` label ("Calibration robot", plus
+ * the raw `classification.version` when present) alongside the header
+ * row's existing name/flag/linked-pill markup -- purely additive; a
+ * plain `"robot"` card's rendering is unchanged.
+ *
  * **Sprint 5's remembered-robot roster:** a second, visually secondary
  * section, `RememberedRobotsSection`, rendered below the attached-
  * endpoint list -- robots this host has seen over USB before but are
@@ -187,6 +194,7 @@ function EndpointCard({ device, relayName }: { device: EndpointListEntry; relayN
   const name = nameDisplay(device);
   const role = roleDisplay(device);
   const viaRelay = device.viaRelay;
+  const isCalibration = device.classification.type === "calibration";
 
   return (
     <>
@@ -200,6 +208,13 @@ function EndpointCard({ device, relayName }: { device: EndpointListEntry; relayN
             {name.text}
           </h3>
           {name.flagged && <span className="device-flag">Unnamed / naming failed</span>}
+          {isCalibration && (
+            <span className="device-calibration-badge" data-testid="calibration-badge">
+              {device.classification.version
+                ? `Calibration robot · ${device.classification.version}`
+                : "Calibration robot"}
+            </span>
+          )}
           {device.sessionOpen && <span className="device-linked-pill">Linked</span>}
         </div>
 

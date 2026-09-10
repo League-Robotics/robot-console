@@ -25,9 +25,16 @@
  *   2026-09-09 -- the robot's `FUNCS`-discovered, `RUN`-able function
  *   list, mounted below Sequencing), `ChartsPanel` (sprint 9 ticket
  *   004 -- wheel-speed bars and a rolling time-series chart fed by
- *   `useTelemetry`/`useTelemetryHeader`), and `PathTracePanel` (sprint 9
+ *   `useTelemetry`/`useTelemetryHeader`), `PathTracePanel` (sprint 9
  *   ticket 005 -- a top-down plot of the `ox`/`oy` position trail, with
- *   its own client-side-only Clear button, mounted below Charts).
+ *   its own client-side-only Clear button, mounted below Charts), and
+ *   `DistanceCalibrationWizard` (sprint 011 ticket 003 -- the `calx`
+ *   distance-calibration wizard, `FUNCS`-gated per `sprint.md`'s Design
+ *   Rationale, mounted below Path trace; see that component's own doc
+ *   comment), and `RotationCalibrationWizard` (sprint 011 ticket 004 --
+ *   the `cala` rotation-calibration wizard, same `FUNCS`-gating
+ *   discipline, mounted below Distance calibration; see that
+ *   component's own doc comment).
  * - **Right column**: exactly one `DeviceConsole`, sized to fill the
  *   column's available height (`RobotPage.css` overrides
  *   `DeviceConsole`'s own fixed `max-height` scoped to this column
@@ -64,6 +71,20 @@
  * every other test and any external tooling keyed on them keeps working
  * unmodified.
  *
+ * **`program`/`version` diagnostics (sprint 011 ticket 002).** The
+ * `ID` reply's raw `program`/`version` strings (`classification.program`/
+ * `.version`, sprint 011 ticket 001) are shown verbatim, near the `<h2>`
+ * name heading, whenever `program` is non-null -- a robot that never
+ * answered `ID` (older firmware, or the request timing out) renders
+ * nothing extra. This is deliberately gated on the *data* being present,
+ * never on `classification.type`: a plain `"robot"` that did answer
+ * `ID` shows the same diagnostics a `"calibration"`-classified one does
+ * (see `deviceType.ts`'s own doc comment -- `program`/`version` are
+ * preserved on both outcomes of `refineForCalibration`). This keeps
+ * this page's own transport-blindness property good company -- nothing
+ * here branches on *what kind* of robot this is, only on whether a
+ * diagnostic value exists to show.
+ *
  * **Transport-blindness is load-bearing, not incidental**: this page
  * and every component it mounts render off `WsProvider`'s hooks/
  * actions only — never a transport-specific link type, a hardcoded
@@ -77,9 +98,11 @@ import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
 import { ChartsPanel } from "../components/ChartsPanel";
 import { CommandStrip } from "../components/CommandStrip";
 import { DeviceConsole } from "../components/DeviceConsole";
+import { DistanceCalibrationWizard } from "../components/DistanceCalibrationWizard";
 import { DriveControls } from "../components/DriveControls";
 import { FunctionsPanel } from "../components/FunctionsPanel";
 import { PathTracePanel } from "../components/PathTracePanel";
+import { RotationCalibrationWizard } from "../components/RotationCalibrationWizard";
 import { SequencingIndicator } from "../components/SequencingIndicator";
 import { StatusPanel } from "../components/StatusPanel";
 import "./RobotPage.css";
@@ -92,6 +115,14 @@ export function RobotPage({ endpoint }: RobotPageProps) {
   return (
     <section className="robot-page" aria-label="Robot device">
       <h2>{endpoint.name ?? endpoint.endpointId}</h2>
+
+      {endpoint.classification.program !== null && (
+        <p className="robot-page-diagnostics" data-testid="robot-page-diagnostics">
+          Program: {endpoint.classification.program}
+          {" · "}
+          Version: {endpoint.classification.version}
+        </p>
+      )}
 
       <div className="robot-page-columns">
         <div className="robot-page-column robot-page-column-left">
@@ -123,6 +154,16 @@ export function RobotPage({ endpoint }: RobotPageProps) {
           <div className="robot-page-panel" aria-label="Path trace">
             <h3>Path trace</h3>
             <PathTracePanel endpointId={endpoint.endpointId} />
+          </div>
+
+          <div className="robot-page-panel" aria-label="Distance calibration">
+            <h3>Distance calibration</h3>
+            <DistanceCalibrationWizard device={endpoint} />
+          </div>
+
+          <div className="robot-page-panel" aria-label="Rotation calibration">
+            <h3>Rotation calibration</h3>
+            <RotationCalibrationWizard device={endpoint} />
           </div>
         </div>
 

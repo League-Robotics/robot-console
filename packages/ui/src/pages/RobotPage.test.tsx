@@ -65,7 +65,7 @@ function robotFixture(overrides: Partial<EndpointListEntry> = {}): EndpointListE
     endpointId: "usb-ROBOT-A",
     transport: "usb",
     resourceKey: "usb-ROBOT-A",
-    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
+    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
     name: "vevav",
     role: "NEZHA2",
     sessionOpen: true,
@@ -93,7 +93,7 @@ describe("RobotPage", () => {
     expect(el.textContent).toContain("vevav");
   });
 
-  it("renders the left column with status, drive controls, a sequencing indicator, functions, a charts placeholder, and a path trace panel", () => {
+  it("renders the left column with status, drive controls, a sequencing indicator, functions, a charts placeholder, a path trace panel, and both calibration wizards", () => {
     const { el } = mountRobotPage(robotFixture());
     const left = el.querySelector(".robot-page-column-left");
     expect(left).not.toBeNull();
@@ -103,13 +103,24 @@ describe("RobotPage", () => {
     expect(left!.querySelector('[aria-label="Functions"]')).not.toBeNull();
     expect(left!.querySelector('[aria-label="Charts"]')).not.toBeNull();
     expect(left!.querySelector('[aria-label="Path trace"]')).not.toBeNull();
+    expect(left!.querySelector('[aria-label="Distance calibration"]')).not.toBeNull();
+    expect(left!.querySelector('[aria-label="Rotation calibration"]')).not.toBeNull();
   });
 
-  it("orders the left column's panels Status, Drive, Sequencing, Functions, Charts, Path trace", () => {
+  it("orders the left column's panels Status, Drive, Sequencing, Functions, Charts, Path trace, Distance calibration, Rotation calibration", () => {
     const { el } = mountRobotPage(robotFixture());
     const left = el.querySelector(".robot-page-column-left")!;
     const headings = Array.from(left.querySelectorAll("h3")).map((h) => h.textContent);
-    expect(headings).toEqual(["Status", "Drive", "Sequencing", "Functions", "Charts", "Path trace"]);
+    expect(headings).toEqual([
+      "Status",
+      "Drive",
+      "Sequencing",
+      "Functions",
+      "Charts",
+      "Path trace",
+      "Distance calibration",
+      "Rotation calibration",
+    ]);
   });
 
   it("renders exactly one console and a command strip in the right column", () => {
@@ -210,6 +221,56 @@ describe("RobotPage", () => {
     // Still exactly one console region -- the rejection lands in the
     // same log, not a second surface.
     expect(el.querySelectorAll('[aria-label="Console"]').length).toBe(1);
+  });
+});
+
+describe("RobotPage program/version diagnostics (sprint 011 ticket 002)", () => {
+  it("renders no diagnostics line when program/version are both null (a robot that never answered ID) -- regression", () => {
+    const { el } = mountRobotPage(robotFixture());
+
+    expect(el.querySelector('[data-testid="robot-page-diagnostics"]')).toBeNull();
+  });
+
+  it("shows the raw program/version strings for a robot-classified endpoint that answered ID", () => {
+    const { el } = mountRobotPage(
+      robotFixture({
+        classification: {
+          type: "robot",
+          role: "NEZHA2",
+          commonName: "robot",
+          dialect: "space",
+          evidence: "role",
+          program: "tovez",
+          version: "0.20260901.1",
+        },
+      }),
+    );
+
+    const diagnostics = el.querySelector('[data-testid="robot-page-diagnostics"]');
+    expect(diagnostics).not.toBeNull();
+    expect(diagnostics!.textContent).toContain("tovez");
+    expect(diagnostics!.textContent).toContain("0.20260901.1");
+  });
+
+  it("shows the raw program/version strings for a calibration-classified endpoint", () => {
+    const { el } = mountRobotPage(
+      robotFixture({
+        classification: {
+          type: "calibration",
+          role: "NEZHA2",
+          commonName: "robot",
+          dialect: "space",
+          evidence: "role",
+          program: "calibration-0.20260907.2",
+          version: "0.20260907.2",
+        },
+      }),
+    );
+
+    const diagnostics = el.querySelector('[data-testid="robot-page-diagnostics"]');
+    expect(diagnostics).not.toBeNull();
+    expect(diagnostics!.textContent).toContain("calibration-0.20260907.2");
+    expect(diagnostics!.textContent).toContain("0.20260907.2");
   });
 });
 

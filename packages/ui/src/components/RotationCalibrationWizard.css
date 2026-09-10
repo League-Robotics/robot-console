@@ -1,0 +1,145 @@
+.rotation-calibration-wizard {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.rotation-calibration-hint {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+  background: var(--rc-warn-bg);
+  border: 1px solid var(--rc-warn-border);
+  color: var(--rc-warn-text);
+  font-size: 0.85rem;
+}
+
+.rotation-calibration-setup {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: var(--rc-text);
+  font-size: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.rotation-calibration-go {
+  align-self: flex-start;
+  border: 1px solid var(--rc-accent);
+  background: var(--rc-accent);
+  color: var(--rc-accent-contrast);
+  padding: 0.35rem 0.9rem;
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.rotation-calibration-go:disabled {
+  background: var(--rc-border);
+  border-color: var(--rc-border);
+  color: var(--rc-text-muted);
+  cursor: not-allowed;
+}
+
+.rotation-calibration-progress {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+  background: var(--rc-surface);
+  border: 1px solid var(--rc-border);
+  color: var(--rc-text);
+  font-size: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.rotation-calibration-progress > p {
+  margin: 0;
+  font-weight: 600;
+}
+
+.rotation-calibration-leading {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--rc-text-muted);
+}
+
+.rotation-calibration-stage {
+  border-top: 1px solid var(--rc-border);
+  padding-top: 0.35rem;
+}
+
+.rotation-calibration-stage-label {
+  margin: 0 0 0.2rem;
+  font-weight: 600;
+  color: var(--rc-text);
+}
+
+.rotation-calibration-stage ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--rc-text-muted);
+}
+
+.rotation-calibration-run-error,
+.rotation-calibration-failed {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+  background: var(--rc-danger-bg);
+  border: 1px solid var(--rc-danger-border);
+  color: var(--rc-danger-contrast);
+  font-size: 0.85rem;
+}
+
+.rotation-calibration-result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+  background: var(--rc-ok-bg);
+  border: 1px solid var(--rc-border);
+}
+
+.rotation-calibration-result p {
+  margin: 0;
+  color: var(--rc-ok-text);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.rotation-calibration-snippet {
+  display: block;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.35rem;
+  background: var(--rc-bg);
+  border: 1px solid var(--rc-border);
+  color: var(--rc-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.rotation-calibration-copy {
+  align-self: flex-start;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.3rem 0.8rem;
+  border-radius: 0.4rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}

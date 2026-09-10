@@ -10,6 +10,16 @@
  * guarantees the *value* reaching here is already safe, but this
  * switch's `default` is what a client actually does with it.
  *
+ * **`"calibration"` dispatch (sprint 011 ticket 002).** A
+ * `calibration`-classified endpoint is, per `deviceType.ts`'s own doc
+ * comment, still a `"robot"` classification that an `ID` reply refined
+ * -- it is a robot in every way that matters to this page, so it gets
+ * its own additive `case` alongside `"robot"` rendering the exact same
+ * `<RobotPage .../>`, not a fallthrough and not a new page. `RobotPage`
+ * itself stays unaware of the distinction (see its own module doc
+ * comment) -- this dispatch arm is the only place on this page that
+ * reads `classification.type === "calibration"`.
+ *
  * This module still owns the deep-link states from ticket 007
  * (SUC-001's alternate flow), unchanged:
  *
@@ -121,6 +131,7 @@ export function DevicePage() {
     case "relay":
       return <RelayPage endpoint={endpoint} />;
     case "robot":
+    case "calibration":
       return <RobotPage endpoint={endpoint} />;
     default:
       // Covers "unknown" and, per the module doc comment, any type

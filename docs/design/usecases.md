@@ -204,35 +204,46 @@ running firmware that emits telemetry.
 
 **Actor:** Student
 
-**Preconditions:** A robot running calibration-capable firmware is
-connected. (Per specification §9 open question 1, calibration firmware
-does not yet exist — this use case describes the intended flow once it
-does; the console feature-detects its absence and does not offer this
-wizard without it.)
+**Preconditions:** A robot running the shipped `calx` calibration program
+is connected. The console feature-detects support via `FUNCS` and does
+not offer this wizard until `calx` appears in the response.
 
 **Main flow:**
 1. Student opens the **Calibrate** tab and selects the distance
    calibration wizard.
-2. The wizard drives the robot forward via a `RUN:` program; the robot
-   inches forward until it detects a first black line and sets a
-   distance counter to zero.
-3. The robot continues to a second line 90 cm away.
-4. The wizard reports how far the robot's internal counter thought it
-   had driven, compared to the known 90 cm.
-5. On completion, the wizard emits a MakeCode snippet reflecting the
-   calibrated distance parameter.
-6. Student copies the snippet into their own MakeCode program.
+2. Student lays two black lines 90 cm apart on the floor and places the
+   robot just behind the first line, facing forward.
+3. Student presses Go; the wizard sends `RUN calx`.
+4. The robot creeps forward autonomously until it detects the first
+   line, then drives the known 90 cm gap and stops on the second line —
+   no student action during the run beyond the initial physical setup
+   and pressing Go.
+5. The firmware narrates its own progress as plain `CALX:` text lines
+   (e.g. "begin ...", "start line found", "measured=...", "calib=...",
+   "diameter=..."), which the wizard renders as they arrive.
+6. The firmware emits its own terminal `CALX:apply <MakeCode line>` line
+   carrying the corrected wheel-calibration constant; the wizard renders
+   this line verbatim as the result — it never computes or reconstructs
+   the value itself.
+7. Student copies the snippet (the wizard's Copy button) into their own
+   MakeCode program.
 
-**Postconditions:** The student has a calibrated distance constant ready
-to paste into their program.
+**Postconditions:** The student has a calibrated distance constant, in
+the firmware's own words, ready to paste into their program.
 
 **Error flows:**
-- If the robot never detects the first line, the wizard times out and
-  reports failure rather than reporting a bogus calibration.
-- Because the v6 `RUN` verb is currently a stub (specification §9 open
-  question 3), the wizard depends on the cleartext `RUN:name:arg` path
-  with no sequence id; if that path is unavailable, the wizard cannot
-  run and reports so clearly.
+- If `FUNCS` does not list `calx`, the wizard shows "This robot doesn't
+  support calibration yet" and never offers Go.
+- If `RUN calx` itself is rejected (e.g. `calx` not registered on this
+  build), the robot replies with a bare `err 1`-style reply, distinct
+  from any `CALX:` line; the wizard shows this as its own "the robot
+  rejected the run request" state, never confused with a calibration
+  failure.
+- If the robot never finds the first line, or never finds the second
+  within its own search bounds, the firmware itself emits a
+  `CALX:fail ...` line describing why (e.g. "no start line within
+  60cm"); the wizard renders this as a failure state carrying the
+  firmware's own reason text, not a snippet.
 
 ---
 
@@ -240,28 +251,68 @@ to paste into their program.
 
 **Actor:** Student
 
-**Preconditions:** Same as UC-006 — calibration-capable firmware
-connected; the robot has a front-mounted beam pointer.
+**Preconditions:** A robot running the shipped `cala` calibration program
+is connected. The console feature-detects support via `FUNCS`, the same
+as UC-006. There is no beam pointer — the robot's own reflectance
+sensor bar reads a black-tape cross on the floor.
 
 **Main flow:**
 1. Student opens the **Calibrate** tab and selects the rotation
    calibration wizard.
-2. The wizard drives the robot via a `RUN:` program to attempt a full
-   360° turn.
-3. Student uses on-screen nudge buttons to walk the robot's turn in until
-   the beam pointer returns to its starting orientation, dialling in the
-   wheelbase parameter.
-4. On completion, the wizard emits a MakeCode snippet reflecting the
-   calibrated wheelbase.
-5. Student copies the snippet into their own MakeCode program.
+2. Student lays two strips of black tape crossing at right angles on
+   the floor and places the robot at the centre of the cross.
+3. Student presses Go; the wizard sends `RUN cala`.
+4. The robot spins in place fully autonomously — first clockwise, then
+   counter-clockwise — timing white-to-black edge crossings on one
+   reflectance channel to measure its effective track width. There is
+   no beam pointer and no on-screen nudge control; the student does
+   nothing during the run beyond the initial physical setup and
+   pressing Go.
+5. The firmware narrates the clockwise and counter-clockwise passes as
+   plain `CALA:` text lines, marked with its own `CALA:pass clockwise` /
+   `CALA:pass counter-clockwise` stage lines; the wizard buckets and
+   renders each progress line under whichever stage was most recently
+   announced.
+6. The firmware emits its own terminal `CALA:apply <MakeCode line>` line
+   carrying the corrected rotational-slip constant; the wizard treats
+   this as the end of the run and renders the line verbatim as the
+   result the moment it is parsed.
+7. **The firmware's own automatic re-verification pass runs after
+   `CALA:apply`, not before it.** Internally, the firmware applies the
+   correction immediately and re-spins both directions a second time,
+   narrated with its own `CALA:check clockwise` / `CALA:check
+   counter-clockwise` stage lines and a final error-summary line — all
+   sent over the wire *after* `CALA:apply`. The wizard's own log
+   derivation (`deriveRotationCalibrationRun`) treats the first `apply`
+   event it parses as terminal and returns immediately once it sees
+   one, so this re-verification narration is never surfaced: the wizard
+   shows the result screen as soon as `CALA:apply` arrives, and the two
+   `check` stages that follow on the wire are not added to the stage
+   list or rendered anywhere in the wizard, even though the robot is
+   genuinely still spinning through them. Only the clockwise and
+   counter-clockwise measurement passes from step 5 ever appear as
+   stages.
+8. Student copies the snippet into their own MakeCode program.
 
-**Postconditions:** The student has a calibrated wheelbase constant ready
-to paste into their program.
+**Postconditions:** The student has a calibrated wheelbase
+(rotational-slip) constant, in the firmware's own words, ready to paste
+into their program. The robot has also completed its own re-verification
+pass by this point; that pass's result is not shown anywhere in the
+wizard.
 
 **Error flows:**
-- Same `RUN:` stub dependency as UC-006.
-- If nudge commands are sent faster than the pacing budget, the console
-  throttles them rather than overrunning the link.
+- If `FUNCS` does not list `cala`, the wizard shows "This robot doesn't
+  support calibration yet" and never offers Go.
+- If `RUN cala` itself is rejected (e.g. `cala` not registered on this
+  build), the robot replies with a bare `err 1`-style reply, distinct
+  from any `CALA:` line; the wizard shows this as its own "the robot
+  rejected the run request" state, never confused with a calibration
+  failure.
+- If either spin fails to collect enough clean edge transitions, the
+  firmware itself emits a `CALA:fail ...` line describing why (e.g.
+  "saw 3 transitions, need 5 -- STALLED, power-cycle the robot"); the
+  wizard renders this as a failure state carrying the firmware's own
+  reason text, not a snippet.
 
 ---
 

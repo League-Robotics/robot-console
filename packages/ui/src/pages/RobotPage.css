@@ -24,6 +24,16 @@
   gap: 1rem;
 }
 
+/* Program/version diagnostics line (sprint 011 ticket 002) -- rendered
+ * only when `classification.program` is non-null (see this file's own
+ * module doc comment), so this rule has no visual effect on a robot
+ * that never answered `ID`. */
+.robot-page-diagnostics {
+  margin: -0.5rem 0 0;
+  font-size: 0.85rem;
+  color: var(--rc-text-muted);
+}
+
 .robot-page-columns {
   display: grid;
   grid-template-columns: 1fr 1fr;

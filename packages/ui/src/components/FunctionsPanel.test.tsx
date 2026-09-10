@@ -93,7 +93,7 @@ function baseDevice(
     endpointId: "usb-ROBOT-A",
     transport: "usb",
     resourceKey: "usb-ROBOT-A",
-    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
+    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
     name: "zavaz",
     role: "NEZHA2",
     sessionOpen: true,

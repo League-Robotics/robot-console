@@ -2743,6 +2743,7 @@ describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", 
       watcher,
       knownRobotsStore,
       mdnsDiscovery,
+      autoConnectWifi: false,
     });
     registry.start();
 
@@ -2777,6 +2778,7 @@ describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", 
       watcher,
       knownRobotsStore,
       mdnsDiscovery,
+      autoConnectWifi: false,
     });
     registry.start();
 
@@ -2810,6 +2812,7 @@ describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", 
       watcher,
       knownRobotsStore,
       mdnsDiscovery,
+      autoConnectWifi: false,
       createLink,
     });
     registry.start();
@@ -2857,6 +2860,7 @@ describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", 
       watcher,
       knownRobotsStore,
       mdnsDiscovery,
+      autoConnectWifi: false,
       createLink,
     });
     registry.start();
@@ -2893,6 +2897,7 @@ describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", 
       watcher,
       knownRobotsStore,
       mdnsDiscovery,
+      autoConnectWifi: false,
       createLink,
     });
     registry.start();
@@ -2924,6 +2929,7 @@ describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", 
       watcher,
       knownRobotsStore,
       mdnsDiscovery,
+      autoConnectWifi: false,
     });
     registry.start();
     await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "wifi-gopiv"));
@@ -2954,6 +2960,7 @@ describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", 
       watcher,
       knownRobotsStore,
       mdnsDiscovery,
+      autoConnectWifi: false,
       createLink,
     });
     registry.start();
@@ -3003,6 +3010,7 @@ describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", 
       watcher,
       knownRobotsStore,
       mdnsDiscovery,
+      autoConnectWifi: false,
       createLink,
     });
     registry.start();
@@ -3033,6 +3041,123 @@ describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", 
     expect(wifiLink.closeCalls).toBe(1);
 
     await registry.stop();
+  });
+
+  // -------------------------------------------------------------------
+  // OOP 2026-09-10: identify at discovery. The stakeholder's report:
+  // every WiFi card sat at "No role announced" until someone clicked
+  // into it, because the host only listed a gated robot at discovery
+  // and identified it on the first session-open. A found robot is now
+  // connected, sent HELLO, and (once it identifies as a robot) probed
+  // with ID/STATUS/FUNCS immediately -- the same treatment a USB
+  // attach gets -- so the front page is right the first time.
+  // -------------------------------------------------------------------
+
+  it("OOP 2026-09-10: a gated WiFi robot is connected and identified at discovery, with no session-open requested, and the ID probe is sent", async () => {
+    const watcher = fixtureWatcher(() => []);
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+    const wifiLink = new FakeLink(async () => wifiRobotBanner());
+    const createLink = vi.fn(wifiOnlyCreateLink(new Map([["gopiv.local.:7654", wifiLink]])));
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      knownRobotsStore: fakeRoster(["gopiv"]),
+      mdnsDiscovery,
+      createLink,
+    });
+    registry.start();
+
+    const snap = await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true);
+    expect(createLink).toHaveBeenCalledWith({ transport: "wifi", host: "gopiv.local.", port: 7654 });
+    expect(wifiLink.connectCalls).toBe(1);
+    expect(wifiLink.identifyCalls).toBe(1);
+    expect(snap).toEqual([
+      expect.objectContaining({
+        endpointId: "wifi-gopiv",
+        transport: "wifi",
+        name: "gopiv",
+        sessionOpen: true,
+        role: "NEZHA2",
+        classification: expect.objectContaining({ type: "robot" }),
+      }),
+    ]);
+    // The post-identify probes ran on the host's own initiative too.
+    expect(wifiLink.sentLines.some((line) => /^ID\b/.test(line))).toBe(true);
+  });
+
+  it("OOP 2026-09-10: a deliberately closed WiFi endpoint is not reconnected by the next mDNS change", async () => {
+    const watcher = fixtureWatcher(() => []);
+    const advertisement = { name: "gopiv", host: "gopiv.local.", port: 7654 };
+    const mdnsDiscovery = fakeMdnsDiscovery({ relays: [], robots: [], wifiRobots: [advertisement] });
+    const wifiLink = new FakeLink(async () => wifiRobotBanner());
+    const createLink = wifiOnlyCreateLink(new Map([["gopiv.local.:7654", wifiLink]]));
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      knownRobotsStore: fakeRoster(["gopiv"]),
+      mdnsDiscovery,
+      createLink,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true);
+
+    await registry.requestClose("wifi-gopiv");
+    await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === false);
+
+    // The robot re-announces (a 60 s period in the field) -- the user's
+    // close must stand.
+    mdnsDiscovery.setSnapshot({ relays: [], robots: [], wifiRobots: [advertisement] });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(wifiLink.connectCalls).toBe(1);
+    expect(registry.snapshot().find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen).toBe(false);
+  });
+
+  it("OOP 2026-09-10: a failed discovery-time connect is recorded as sessionError and retried at the next mDNS change", async () => {
+    const watcher = fixtureWatcher(() => []);
+    const advertisement = { name: "gopiv", host: "gopiv.local.", port: 7654 };
+    const mdnsDiscovery = fakeMdnsDiscovery({ relays: [], robots: [], wifiRobots: [advertisement] });
+    let refuse = true;
+    const wifiLink = new FakeLink(
+      async () => wifiRobotBanner(),
+      async () => {
+        if (refuse) {
+          throw new Error("connect ECONNREFUSED gopiv.local.:7654");
+        }
+      },
+    );
+    const createLink = wifiOnlyCreateLink(new Map([["gopiv.local.:7654", wifiLink]]));
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      knownRobotsStore: fakeRoster(["gopiv"]),
+      mdnsDiscovery,
+      createLink,
+    });
+    registry.start();
+
+    const failed = await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionError !== undefined);
+    expect(wifiLink.connectCalls).toBe(1);
+    expect(failed.find((e) => e.endpointId === "wifi-gopiv")).toEqual(
+      expect.objectContaining({ sessionOpen: false, sessionError: "connect ECONNREFUSED gopiv.local.:7654" }),
+    );
+
+    refuse = false;
+    mdnsDiscovery.setSnapshot({ relays: [], robots: [], wifiRobots: [advertisement] });
+    const snap = await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true);
+    expect(wifiLink.connectCalls).toBe(2);
+    expect(snap.find((e) => e.endpointId === "wifi-gopiv")).toEqual(
+      expect.objectContaining({ sessionOpen: true, role: "NEZHA2" }),
+    );
   });
 });
 
@@ -3136,6 +3261,7 @@ describe("Auto-switch radio -> WiFi (sprint 10 ticket 004)", () => {
       knownRobotsStore?: KnownRobotsStore;
       mdnsDiscovery?: MdnsDiscovery;
       autoSwitchToWifi?: boolean;
+      autoConnectWifi?: boolean;
       relayUsbLink?: FakeLink;
       radioLink?: FakeLink;
       wifiLinks?: Map<string, FakeLink>;
@@ -3174,6 +3300,7 @@ describe("Auto-switch radio -> WiFi (sprint 10 ticket 004)", () => {
       knownRobotsStore: options.knownRobotsStore ?? fakeRoster(["gopiv"]),
       mdnsDiscovery: options.mdnsDiscovery ?? scriptableMdnsDiscovery(),
       ...(options.autoSwitchToWifi !== undefined ? { autoSwitchToWifi: options.autoSwitchToWifi } : {}),
+      ...(options.autoConnectWifi !== undefined ? { autoConnectWifi: options.autoConnectWifi } : {}),
     });
     const notices = collectNotices(registry);
     registry.start();
@@ -3245,7 +3372,7 @@ describe("Auto-switch radio -> WiFi (sprint 10 ticket 004)", () => {
     const wifiLink = new FakeLink(async () => robotBanner());
     const wifiLinks = new Map([["gopiv.local.:7654", wifiLink]]);
 
-    const { registry } = await startWithOpenRelayChild({ mdnsDiscovery, wifiLinks, autoSwitchToWifi: false });
+    const { registry } = await startWithOpenRelayChild({ mdnsDiscovery, wifiLinks, autoSwitchToWifi: false, autoConnectWifi: false });
 
     mdnsDiscovery.setSnapshot({
       relays: [],
@@ -3367,6 +3494,9 @@ describe("Auto-switch radio -> WiFi (sprint 10 ticket 004)", () => {
       watcher,
       knownRobotsStore: fakeRoster(["gopiv"]),
       mdnsDiscovery,
+      // OOP 2026-09-10: this test is about the *switch* alone; the
+      // discovery-time auto-connect has its own tests above.
+      autoConnectWifi: false,
       createLink: (spec) => {
         if (spec.transport === "wifi") {
           return wifiLink;

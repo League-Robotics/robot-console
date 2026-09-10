@@ -427,7 +427,7 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
     });
   });
 
-  it("includes a wifi-transport endpoint in the endpoints snapshot when the fake discovery advertises a roster-matched name (sprint 10 ticket 003)", async () => {
+  it("includes a wifi-transport endpoint in the endpoints snapshot when the fake discovery advertises a roster-matched name (sprint 10 ticket 003), already connected and identified at discovery (OOP 2026-09-10)", async () => {
     const link = new FakeLink(async () => banner());
     const knownRobotsStore = fakeKnownRobotsStore([
       {
@@ -461,7 +461,11 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
           transport: "wifi",
           resourceKey: "wifi-gopiv",
           name: "gopiv",
-          sessionOpen: false,
+          // OOP 2026-09-10: the host connects and identifies a gated
+          // WiFi robot as soon as it is discovered (see
+          // DeviceRegistry.autoConnectWifiRobot), so by the time a
+          // client connects the entry is already linked.
+          sessionOpen: true,
           wifi: { host: "gopiv.local.", port: 7654 },
         }),
       ]),

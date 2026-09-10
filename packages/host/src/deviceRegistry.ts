@@ -894,6 +894,16 @@ interface EndpointState {
    * `Link` already has its own connection and nothing here reconnects it
    * mid-session. */
   wifiTarget?: { host: string; port: number } | undefined;
+  /** OOP 2026-09-10: whether the host should connect+identify this WiFi
+   * endpoint on its own at the next {@link DeviceRegistry.syncWifiEndpoints}
+   * pass (see {@link DeviceRegistry.autoConnectWifiRobot}). `true` from
+   * synthesis, and again after a dropped link ({@link
+   * DeviceRegistry.handleLinkError}) so the robot is re-identified when
+   * it re-announces; `false` after a deliberate {@link
+   * DeviceRegistry.requestClose}, so a user who closed the link is not
+   * silently reconnected a minute later. Only meaningful alongside
+   * {@link wifiTarget}. */
+  wifiAutoConnect?: boolean;
 }
 
 function toEntry(state: EndpointState): EndpointListEntry {
@@ -1184,6 +1194,17 @@ export interface DeviceRegistryOptions {
    * want ticket 003's plain endpoint-synthesis behavior without the
    * switch also firing pass `false`. */
   autoSwitchToWifi?: boolean;
+  /** OOP 2026-09-10: whether a gated WiFi robot is connected and
+   * identified (`HELLO`, then the `ID`/`STATUS`/`FUNCS` probes of
+   * {@link DeviceRegistry.startRobotProbes}) as soon as its
+   * advertisement is seen -- the same "identify at attach" behavior a
+   * USB device gets -- rather than only on the first `session-open`
+   * click. See {@link DeviceRegistry.autoConnectWifiRobot} for the
+   * policy (retry on a failed attempt or a dropped link at the next
+   * mDNS change; never after a deliberate close). Defaults to `true`;
+   * tests that want ticket 003's list-first, connect-on-click shape
+   * pass `false`. */
+  autoConnectWifi?: boolean;
 }
 
 /** Default period of the host's own `STATUS` poll on an open robot
@@ -1216,6 +1237,7 @@ export class DeviceRegistry {
   private readonly relayConnectionCoordinator: RelayConnector;
   private readonly mdnsDiscovery: MdnsDiscovery;
   private readonly autoSwitchToWifi: boolean;
+  private readonly autoConnectWifi: boolean;
   private readonly mutex = new KeyedMutex();
   private readonly states = new Map<string, EndpointState>();
   private unsubscribeWatcher: (() => void) | undefined;
@@ -1248,6 +1270,7 @@ export class DeviceRegistry {
       new RelayConnectionCoordinator({ linkFactory: (spec) => this.createLink(spec) });
     this.mdnsDiscovery = options.mdnsDiscovery ?? new MdnsDiscovery();
     this.autoSwitchToWifi = options.autoSwitchToWifi ?? true;
+    this.autoConnectWifi = options.autoConnectWifi ?? true;
   }
 
   /** Start watching for devices and browsing for relays/robots over
@@ -1421,10 +1444,21 @@ export class DeviceRegistry {
         classification: classifyBanner(null),
         sessionOpen: false,
         wifiTarget: { host: robot.host, port: robot.port },
+        wifiAutoConnect: true,
       });
     }
 
     this.emitDevices();
+
+    // OOP 2026-09-10: identify at discovery, exactly like a USB attach
+    // -- see autoConnectWifiRobot's own doc comment. Queued before the
+    // auto-switch below under the same per-endpoint mutex key, so the
+    // switch always observes the outcome of this attempt.
+    if (this.autoConnectWifi) {
+      for (const robot of gatedByName.values()) {
+        void this.autoConnectWifiRobot(robot.name);
+      }
+    }
 
     // Sprint 10 ticket 004: after the gated set above is up to date,
     // look for any name that both has a gated WiFi record AND is a
@@ -1439,6 +1473,44 @@ export class DeviceRegistry {
         void this.autoSwitchRadioToWifi(robot.name);
       }
     }
+  }
+
+  /**
+   * OOP 2026-09-10: connect and identify a gated WiFi robot on the
+   * host's own initiative, so the front page shows its role,
+   * classification (`ID`), status and function list without anyone
+   * clicking into it first -- the same thing a USB device gets at
+   * attach time via {@link connectAndIdentify}. Fire-and-forget from
+   * {@link syncWifiEndpoints} (which must stay synchronous), one queued
+   * mutex task per name.
+   *
+   * Policy: attempt whenever the endpoint still wants it
+   * ({@link EndpointState.wifiAutoConnect}), has no open session, and
+   * the same name is not already connected directly over USB (a
+   * direct USB session already carries everything this would fetch;
+   * mirrors {@link autoSwitchRadioToWifi}'s own guard). A failed
+   * attempt leaves the flag set, so the next mDNS announce (the robot
+   * re-advertises on a 60 s period) retries; a deliberate
+   * {@link requestClose} clears it. Never throws -- any failure is
+   * reported on the endpoint via {@link emitError} and the state left
+   * as {@link connectAndIdentifyOverLink} recorded it.
+   */
+  private async autoConnectWifiRobot(name: string): Promise<void> {
+    const wifiId = wifiEndpointId(name);
+    await this.mutex.run(wifiId, async () => {
+      const state = this.states.get(wifiId);
+      if (!state?.wifiTarget || !state.wifiAutoConnect || state.sessionOpen || state.identifying) {
+        return;
+      }
+      if (this.hasOpenUsbSessionForName(name)) {
+        return;
+      }
+      try {
+        await this.connectAndIdentifyWifi(state);
+      } catch (error) {
+        this.emitError(wifiId, error instanceof Error ? error.message : String(error));
+      }
+    });
   }
 
   /** Sprint 10 ticket 004: the `-via-<name>` synthesized child endpoint
@@ -1524,16 +1596,22 @@ export class DeviceRegistry {
         return;
       }
       const wifiState = this.states.get(wifiId);
-      if (!wifiState?.wifiTarget || wifiState.sessionOpen) {
-        // The advertisement disappeared again, or the endpoint is
-        // already connected (e.g. a concurrent click) -- graceful
-        // no-op either way.
+      if (!wifiState?.wifiTarget) {
+        // The advertisement disappeared again -- nothing to switch to.
         return;
       }
 
       // (a) Attempt the WiFi connect -- ticket 003's own click path,
       // unchanged -- *before* touching the radio session at all.
-      await this.connectAndIdentifyWifi(wifiState);
+      // OOP 2026-09-10: when autoConnectWifi is on, the queued
+      // autoConnectWifiRobot task already ran ahead of this one under
+      // the same mutex key, so its outcome (open, or failed with
+      // sessionError) is simply observed here rather than attempted a
+      // second time. An already-open WiFi session (auto-connect or a
+      // concurrent click) proceeds straight to the teardown in (b).
+      if (!wifiState.sessionOpen && !this.autoConnectWifi) {
+        await this.connectAndIdentifyWifi(wifiState);
+      }
 
       if (!wifiState.sessionOpen) {
         // A socket-level connect failure, or a link error arriving
@@ -2138,6 +2216,9 @@ export class DeviceRegistry {
         return;
       }
       await this.teardownLink(state);
+      // OOP 2026-09-10: a deliberate close is not undone by the next
+      // mDNS announce -- see EndpointState.wifiAutoConnect.
+      state.wifiAutoConnect = false;
       const synthesizedTarget = state.synthesizedRelayTarget;
       if (!synthesizedTarget) {
         // Sprint 10 ticket 003: a WiFi endpoint's entry stays listed
@@ -2888,6 +2969,12 @@ export class DeviceRegistry {
       this.emitError(state.endpointId, `no WiFi address recorded for ${state.endpointId}`);
       return;
     }
+    if (state.session) {
+      // A dropped link (handleLinkError) leaves the dead session in
+      // place -- dispose of it before attaching a fresh one, so its
+      // subscriptions are not left dangling alongside the new link's.
+      await this.teardownLink(state);
+    }
     const link = this.createLink({ transport: "wifi", host: target.host, port: target.port });
     await this.connectAndIdentifyOverLink(state, link, { recordKnownRobot: false });
   }
@@ -3430,6 +3517,12 @@ export class DeviceRegistry {
     // the session's link and subscriptions.
     state.sessionOpen = false;
     state.sessionError = err.message;
+    if (state.wifiTarget) {
+      // OOP 2026-09-10: a dropped WiFi link (robot rebooted, left the
+      // network) is re-identified when it next announces -- see
+      // EndpointState.wifiAutoConnect.
+      state.wifiAutoConnect = true;
+    }
     this.emitDevices();
     this.emitError(state.endpointId, err.message);
   }

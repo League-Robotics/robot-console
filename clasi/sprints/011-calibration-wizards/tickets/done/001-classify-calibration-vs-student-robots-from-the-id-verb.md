@@ -1,7 +1,7 @@
 ---
 id: '001'
 title: Classify calibration vs student robots from the ID verb
-status: open
+status: done
 use-cases:
 - SUC-001
 depends-on: []
@@ -43,27 +43,27 @@ as `"calibration"` or degraded to `"unknown"`.
 
 ## Acceptance Criteria
 
-- [ ] `DeviceType` (`packages/protocol/src/deviceType.ts`) gains
+- [x] `DeviceType` (`packages/protocol/src/deviceType.ts`) gains
       `"calibration"` as a fourth member.
-- [ ] `DeviceClassification` gains `program: string | null` and
+- [x] `DeviceClassification` gains `program: string | null` and
       `version: string | null`, preserved verbatim from the `ID` reply
       (`null` only when no `ID` reply was ever received).
-- [ ] After a successful identify classifying `type: "robot"` (any
+- [x] After a successful identify classifying `type: "robot"` (any
       transport), `deviceRegistry.ts` sends unsequenced `ID` once and
       parses a reply of the shape `id <product> <program> <version>
       <name>`.
-- [ ] A `program` value matching `/^calibration-/` refines
+- [x] A `program` value matching `/^calibration-/` refines
       `classification.type` to `"calibration"`.
-- [ ] Any other `program` value (including one that merely resembles
+- [x] Any other `program` value (including one that merely resembles
       "calibration" without the prefix, e.g. `calib-test`) leaves
       `classification.type` at `"robot"`.
-- [ ] No `ID` reply within the request's timeout leaves
+- [x] No `ID` reply within the request's timeout leaves
       `classification.type` at whatever `classifyBanner` already
       produced (`"robot"`) — never `"unknown"`, never `"calibration"`.
-- [ ] The `calibration-` match lives in exactly one function/module —
+- [x] The `calibration-` match lives in exactly one function/module —
       no second copy of the prefix check anywhere else in this ticket's
       diff.
-- [ ] `normalizeDeviceType` (used to coerce an unrecognized wire-level
+- [x] `normalizeDeviceType` (used to coerce an unrecognized wire-level
       `classification.type` string) is updated so `"calibration"` round-
       trips correctly and anything still unrecognized coerces to
       `"unknown"`, unchanged.

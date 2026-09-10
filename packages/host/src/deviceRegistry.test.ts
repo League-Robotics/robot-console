@@ -14,9 +14,10 @@ import {
 } from "@robot-console/protocol";
 import { DeviceWatcher, type DaplinkDevice } from "./devices.js";
 import type { SwdNameResult } from "./swdName.js";
-import { DeviceRegistry, KeyedMutex, parseStatusReply } from "./deviceRegistry.js";
+import { DeviceRegistry, KeyedMutex, defaultLinkFactory, parseStatusReply } from "./deviceRegistry.js";
 import type { Link, LinkSpec } from "./link/Link.js";
 import { UsbSerialLink, type SerialPortLike } from "./link/UsbSerialLink.js";
+import { MbserialLink } from "./link/MbserialLink.js";
 import type { Scheduler } from "./link/pacing.js";
 import type { EndpointListEntry, FirmwareKind, FirmwareSourceRef, FlashPhase } from "./wsMessages.js";
 import type { FirmwareConfigMap, FirmwareSource } from "./config.js";
@@ -2659,6 +2660,28 @@ describe("robot-via-relay endpoints (OOP 2026-09-09, coordinator-driven since sp
   // this test file) calls a retarget-shaped method on Link -- the
   // Link interface (link/Link.ts) has no such method at all, so this
   // is enforced by the type system, not a runtime check exercised here.
+});
+
+// ---------------------------------------------------------------------
+// defaultLinkFactory -- sprint 10 ticket 002's "wifi" case. Every prior
+// transport's dispatch is exercised only indirectly (through
+// DeviceRegistry's injected `createLink` fake); this ticket's own
+// acceptance criteria specifically ask for a direct assertion against
+// the real factory function for "wifi", per link/Link.ts's WifiLinkSpec
+// doc comment ("TCP over UDP, reusing MbserialLink unchanged"). This
+// does not re-test MbserialLink's own connect/identify behavior
+// (MbserialLink.test.ts already covers that) -- only that "wifi"
+// dispatches to it with the spec's exact host/port.
+// ---------------------------------------------------------------------
+
+describe("defaultLinkFactory", () => {
+  it('constructs an MbserialLink for transport "wifi", with that spec\'s exact host/port', () => {
+    const spec: LinkSpec = { transport: "wifi", host: "gopiv.local.", port: 7654 };
+    const link = defaultLinkFactory(spec);
+    expect(link).toBeInstanceOf(MbserialLink);
+    expect((link as unknown as { host: string; port: number }).host).toBe("gopiv.local.");
+    expect((link as unknown as { host: string; port: number }).port).toBe(7654);
+  });
 });
 
 // ---------------------------------------------------------------------

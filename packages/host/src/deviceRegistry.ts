@@ -429,11 +429,18 @@ export type NameResolver = (device: DaplinkDevice) => Promise<SwdNameResult>;
  * RelayRadioLink}, {@link MbrelayLink}, or {@link MbserialLink} from a
  * {@link LinkSpec}, dispatching on `spec.transport` (sprint 7 ticket 002
  * adds the `"relay-radio"` branch, ticket 003 adds `"mbrelay"`, ticket
- * 004 adds `"mbserial"` -- see `link/Link.ts`'s own doc comment). Tests
- * substitute a fake {@link LinkFactory} returning a fully synthetic
- * {@link Link}, without any real `serialport`/`net` I/O -- the ticket's
- * own testing note asks for exactly this. */
-function defaultLinkFactory(spec: LinkSpec): Link {
+ * 004 adds `"mbserial"`; sprint 10 ticket 002 adds `"wifi"`, reusing
+ * {@link MbserialLink} verbatim -- see this sprint's Design Rationale,
+ * "TCP over UDP, reusing `MbserialLink` unchanged", and `link/Link.ts`'s
+ * own doc comment). Tests substitute a fake {@link LinkFactory} returning
+ * a fully synthetic {@link Link}, without any real `serialport`/`net`
+ * I/O -- the ticket's own testing note asks for exactly this. Exported
+ * (sprint 10 ticket 002) so `"wifi"`'s dispatch can be asserted directly
+ * against the real function, without constructing a whole
+ * {@link DeviceRegistry} -- no prior transport's dispatch had its own
+ * direct test, but this ticket's acceptance criteria specifically ask
+ * for one here. */
+export function defaultLinkFactory(spec: LinkSpec): Link {
   switch (spec.transport) {
     case "usb":
       return new UsbSerialLink(spec.portPath);
@@ -442,6 +449,8 @@ function defaultLinkFactory(spec: LinkSpec): Link {
     case "mbrelay":
       return new MbrelayLink(spec.host, spec.port, spec.channel, spec.group);
     case "mbserial":
+      return new MbserialLink(spec.host, spec.port);
+    case "wifi":
       return new MbserialLink(spec.host, spec.port);
   }
 }

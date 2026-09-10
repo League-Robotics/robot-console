@@ -172,8 +172,17 @@ export type FlashPhase = "fetching" | "verifying" | "erasing" | "writing" | "res
  * has a concrete `LinkSpec`/`Link` as of ticket 002; nothing in
  * `packages/host`/`packages/ui` constructs an endpoint carrying any of
  * these three new values yet (sprint 8's job -- endpoint synthesis from
- * discovery). */
-export type EndpointTransport = "usb" | "relay-radio" | "mbrelay" | "mbserial";
+ * discovery). Sprint 10 ticket 002 adds `"wifi"`: a direct-to-robot TCP
+ * link to a roster-gated `_robotlink._tcp`/`_robotlink._udp` advertisement
+ * (`wifi/wifiRobotGate.ts`), reusing `MbserialLink` unchanged (see
+ * `link/Link.ts`'s `WifiLinkSpec` doc comment and this sprint's Design
+ * Rationale, "TCP over UDP, reusing `MbserialLink` unchanged"). Endpoint
+ * synthesis for `"wifi"` is ticket 003's job -- this ticket only extends
+ * the type. An older client that does not recognize `"wifi"` degrades
+ * per this module's own forward-compatibility discipline (see the
+ * module doc comment's "Forward compatibility" section for the sibling
+ * `classification.type` case). */
+export type EndpointTransport = "usb" | "relay-radio" | "mbrelay" | "mbserial" | "wifi";
 
 /** Sprint 8 ticket 004: every value {@link EndpointListEntry.addressSource}
  * can report -- `mbrelayRegistry.ts`'s own three registry-resolution

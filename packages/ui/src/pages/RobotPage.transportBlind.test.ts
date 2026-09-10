@@ -11,15 +11,20 @@
  *
  * Scoped to `RobotPage.tsx` and the components it mounts that ticket
  * 005/006 introduced or still mount (`DriveControls`, `CommandStrip`,
- * `SequencingIndicator`, `EstopControl`) -- `DeviceConsole` predates
- * this ticket and is shared with every other per-device page, so it is
- * out of this ticket's scope to re-certify, though it happens to
- * already satisfy the same property. Sprint 006's separate
- * status-request panel and Get/Set panel are retired this ticket
- * (deleted outright, superseded by `CommandStrip` + the unified
- * console) and dropped from this list; `CommandStrip.tsx` (new) is
- * added so the scan actually certifies the new file, not just continues
- * passing on a stale list.
+ * `SequencingIndicator`) -- `DeviceConsole` predates this ticket and is
+ * shared with every other per-device page, so it is out of this
+ * ticket's scope to re-certify, though it happens to already satisfy
+ * the same property. Sprint 006's separate status-request panel and
+ * Get/Set panel are retired this ticket (deleted outright, superseded
+ * by `CommandStrip` + the unified console) and dropped from this list;
+ * `CommandStrip.tsx` (new) is added so the scan actually certifies the
+ * new file, not just continues passing on a stale list.
+ *
+ * **Out-of-process, 2026-09-10**: `EstopControl.tsx` is deleted (STOP/
+ * E-STOP moved into `DriveControls`'s own pad) and dropped from this
+ * list -- the file no longer exists, so scanning its source is no
+ * longer possible or meaningful; `DriveControls.tsx`'s entry already
+ * certifies the merged-in STOP/E-STOP markup.
  *
  * Each file's source is pulled in via Vite's `?raw` import suffix
  * (typed by `vite/client`, already this package's one ambient `types`
@@ -65,7 +70,6 @@ import robotPageSource from "./RobotPage.tsx?raw";
 import driveControlsSource from "../components/DriveControls.tsx?raw";
 import commandStripSource from "../components/CommandStrip.tsx?raw";
 import sequencingIndicatorSource from "../components/SequencingIndicator.tsx?raw";
-import estopControlSource from "../components/EstopControl.tsx?raw";
 import statusPanelSource from "../components/StatusPanel.tsx?raw";
 import functionsPanelSource from "../components/FunctionsPanel.tsx?raw";
 import { RobotPage } from "./RobotPage";
@@ -85,7 +89,6 @@ const FILES_UNDER_TEST: Record<string, string> = {
   "components/DriveControls.tsx": driveControlsSource,
   "components/CommandStrip.tsx": commandStripSource,
   "components/SequencingIndicator.tsx": sequencingIndicatorSource,
-  "components/EstopControl.tsx": estopControlSource,
   // OOP 2026-09-09: the two panels added today are held to the same
   // property -- the robot page is ONE screen for USB, radio-via-relay,
   // and (later) WiFi, so nothing it mounts may know which it is on.

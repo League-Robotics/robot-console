@@ -1,15 +1,33 @@
 /**
- * DriveControls.tsx — `WHEELS_V`-only drive controls (ticket 005 /
- * SUC-001).
+ * DriveControls.tsx — the robot page's single drive pad: held-direction
+ * `WHEELS_V` driving, one-shot fixed-angle `MOVE_X` turns, and STOP/
+ * E-STOP, all in one 3x3 grid (ticket 005 / SUC-001; STOP/E-STOP and
+ * fixed turns merged in out-of-process, 2026-09-10).
  *
- * **Why `WHEELS_V` only.** Per
+ * **Why `WHEELS_V` for held driving.** Per
  * `vendor/radio-robot-lib/docs/design/motion-api.md`, `DiffDriveAdapter`
  * — the only concrete `Adapter` this project's firmware ships — has no
- * planner and answers `WHEELS_X`/`MOVE_X`/`MOVE_V`/`GO_TO_R`/`GO_TO_W`
- * with an unknown-command error. Only `WHEELS_V left right duration`
- * (velocity, `[mm/s]`) and `STOP`/`STOP now` are actually implemented.
- * Offering any of the other five would ship buttons that reliably
- * error — not a real capability.
+ * planner and answers `WHEELS_X`/`MOVE_V`/`GO_TO_R`/`GO_TO_W` with an
+ * unknown-command error. Only `WHEELS_V left right duration` (velocity,
+ * `[mm/s]`) and `STOP`/`STOP now` were implemented at the time that
+ * finding was written up. Offering any of the other verbs for *held*
+ * driving would ship buttons that reliably error — not a real
+ * capability.
+ *
+ * **`MOVE_X` for fixed turns is a deliberate, separately-verified
+ * exception to that finding** (stakeholder spec, 2026-09-10): the fixed
+ * 90°/180° turn buttons below are one-shot, not a held lease, and the
+ * wire fields are exactly `MOVE_X <distance> <rotation> <cruise>
+ * <timeout> #<id>` (`protocol.md` §6 verb table; `motion-api.md` §3.3
+ * for units — distance `[mm]`, rotation `[deg]`, cruise `[mm/s]`,
+ * timeout `[ms]`). `distance` is always `0` — these buttons turn in
+ * place, they do not also translate.
+ *
+ * **Yaw is CCW-positive** (`vendor/pxt-nezha-diffdrive/src/blocks/
+ * motion.ts`, "angle to turn CCW+"): a left turn is a positive rotation,
+ * a right turn negative. See {@link TURN_CRUISE_MM_S},
+ * {@link TURN_90_TIMEOUT_MS}, {@link TURN_180_TIMEOUT_MS} for the exact
+ * values sent.
  *
  * **`duration` is a lease, not a one-shot** (motion-api.md §1: bounded
  * by time; the wheel kernel's `drive(velocity, twist, lease)` stops on
@@ -34,13 +52,13 @@
  * single moderate, classroom-safe demo speed — not tuned against a
  * real robot (that tuning is explicitly hardware-deferred, per this
  * ticket's Acceptance Criteria: this component's tests prove the
- * command *plumbing*, not real-world motion). Turning is a pivot
- * (`wheels_v(-v, +v)`/`wheels_v(+v, -v)`) rather than an arc, mirroring
- * motion-api.md §2's `wheels_x(+d, -d)` in-place-pivot special case;
- * sign convention follows motion-api.md §2.1's "CCW-positive, left
- * wheel is the slower one" rule (positive omega — a left turn — comes
- * from the left wheel going slower/negative, the right wheel faster/
- * positive).
+ * command *plumbing*, not real-world motion). Held-direction turning is
+ * a pivot (`wheels_v(-v, +v)`/`wheels_v(+v, -v)`) rather than an arc,
+ * mirroring motion-api.md §2's `wheels_x(+d, -d)` in-place-pivot special
+ * case; sign convention follows motion-api.md §2.1's "CCW-positive,
+ * left wheel is the slower one" rule (positive omega — a left turn —
+ * comes from the left wheel going slower/negative, the right wheel
+ * faster/positive).
  *
  * On release (mouse/touch up, mouse leaving the button while held, the
  * link closing, or this component unmounting while a direction is
@@ -49,11 +67,52 @@
  * one of the 11 sequenced verbs) is sent with no fields, matching
  * `stop()`'s wire form (`STOP #<id>`, no positional args).
  *
- * **Hold/release hint, made prominent (added out-of-process,
- * 2026-09-09).** The "Hold a direction to drive; release to stop." note
- * now renders above the direction pad rather than below it, with "Hold"
- * bolded, so it reads before a student reaches the buttons instead of
- * after -- purely a presentation change, no behavior here moved.
+ * **STOP/E-STOP, merged in from the now-retired `EstopControl.tsx`
+ * (out-of-process, 2026-09-10).** The center cell of the 3x3 pad carries
+ * two square stop-sign-icon buttons side by side:
+ *  - **STOP** (`data-testid="stop-button"`) — a plain, non-latching
+ *    stop. `STOP now` zeroes the wheels this cycle and resolves the
+ *    active motion with reason `stop` (firmware `WireAdapter::onStop`)
+ *    — no latch, no clear step, the next drive command just works. A
+ *    routine started with `RUN` (square, tour, ...) would keep issuing
+ *    moves after that, so when the robot's function list includes
+ *    `abort`, `RUN abort` is sent right after.
+ *  - **E-STOP** (`data-testid="estop-button"`) — `ESTOP`, outside the
+ *    sequence entirely (protocol.md §8.3/§9): no id, never acked or
+ *    nacked, dispatched via plain `sendCommand` exactly like every
+ *    other verb this component sends. Never gated on `sequencing`/
+ *    pending state — a `WHEELS_V` lease resend in flight, a `GET`/`SET`
+ *    awaiting `ack`, or any pending `MOVE_X` must never stand between a
+ *    student and this button. Repeated presses are harmless: each is an
+ *    independent `sendCommand` call, and `ESTOP` being unsequenced means
+ *    the host never queues, rejects, or errors on a second one arriving
+ *    while the first is still being acted on. Its icon gets a
+ *    "latched" visual variant while
+ *    `device.robotStatus?.estopped` is `true`.
+ *  - **Clear E-STOP** (`data-testid="estop-clear-button"`) — rendered
+ *    directly under the pad, only while `device.robotStatus?.estopped`
+ *    is `true` (hidden entirely, not just disabled, the rest of the
+ *    time — there is nothing to clear, and showing it regardless would
+ *    invite a confusing no-op press): `SET estop_clear 1` (sequenced)
+ *    to release the latch, immediately followed by a one-shot `STATUS`
+ *    so the panel's own state reflects the clear without waiting for
+ *    the host's next poll tick.
+ *
+ * None of the above three read or care about `sequencing` in any form
+ * — the only thing that disables any button on this pad is
+ * `device.sessionOpen` being false (nothing to send at all).
+ *
+ * **Hardware-deferred claim.** This component's own tests (fake
+ * `WsProvider` socket) prove only that pressing a button sends the
+ * exact wire line at the right time, under the right conditions. They
+ * do not and cannot prove that a real robot moves or stops moving —
+ * that is a hardware-verified safety claim, checked separately against
+ * real hardware.
+ *
+ * **Hold/release + click hints.** "Hold a direction to drive; release
+ * to stop." (bolded "Hold") covers the four directional buttons; "Click
+ * a turn button for a fixed turn." (added 2026-09-10) covers the four
+ * corner turn buttons, which are one-shot clicks, not holds.
  */
 import { useEffect, useRef, useState } from "react";
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
@@ -67,6 +126,17 @@ const DRIVE_LEASE_MS = 400;
 /** [ms] -- how often a held direction re-issues `WHEELS_V`, well inside
  * {@link DRIVE_LEASE_MS}. See this module's doc comment. */
 const DRIVE_RESEND_INTERVAL_MS = 150;
+
+/** [mm/s] -- `cruise` field for every fixed-angle `MOVE_X` turn. Same
+ * moderate demo speed as {@link DRIVE_VELOCITY_MM_S}, chosen for the
+ * same classroom-safe reason; not independently hardware-tuned. */
+const TURN_CRUISE_MM_S = 150;
+/** [ms] -- `timeout` field for a fixed 90 degree `MOVE_X` turn. */
+const TURN_90_TIMEOUT_MS = 4000;
+/** [ms] -- `timeout` field for a fixed 180 degree `MOVE_X` turn (longer
+ * than {@link TURN_90_TIMEOUT_MS} -- twice the rotation, more time to
+ * finish it before the adapter gives up). */
+const TURN_180_TIMEOUT_MS = 6000;
 
 export type DriveDirection = "forward" | "backward" | "left" | "right";
 
@@ -90,6 +160,138 @@ function wheelVelocities(direction: DriveDirection): [number, number] {
     case "right":
       return [DRIVE_VELOCITY_MM_S, -DRIVE_VELOCITY_MM_S];
   }
+}
+
+/** One entry per fixed-turn button. `rotation` is the signed `[deg]`
+ * field sent as `MOVE_X`'s second argument -- CCW-positive, so every
+ * "left" entry is positive and every "right" entry negative (this
+ * module's doc comment). `gridArea` names the `grid-template-areas`
+ * cell (DriveControls.css) the button occupies in the 3x3 pad. */
+interface FixedTurn {
+  testId: string;
+  ariaLabel: string;
+  degreesLabel: string;
+  icon: "ccw" | "cw";
+  rotation: number;
+  timeoutMs: number;
+  gridArea: string;
+}
+
+/** Named individually (rather than indexed out of an array) so every
+ * call site is a direct reference `TypeScript` can prove is defined --
+ * `noUncheckedIndexedAccess` makes `array[i]` come back `T | undefined`
+ * even for a literal in-range index. */
+const TURN_90_LEFT: FixedTurn = {
+  testId: "turn-90-left",
+  ariaLabel: "Turn 90 degrees left",
+  degreesLabel: "90",
+  icon: "ccw",
+  rotation: 90,
+  timeoutMs: TURN_90_TIMEOUT_MS,
+  gridArea: "turn90left",
+};
+
+const TURN_90_RIGHT: FixedTurn = {
+  testId: "turn-90-right",
+  ariaLabel: "Turn 90 degrees right",
+  degreesLabel: "90",
+  icon: "cw",
+  rotation: -90,
+  timeoutMs: TURN_90_TIMEOUT_MS,
+  gridArea: "turn90right",
+};
+
+const TURN_180_LEFT: FixedTurn = {
+  testId: "turn-180-left",
+  ariaLabel: "Turn 180 degrees left",
+  degreesLabel: "180",
+  icon: "ccw",
+  rotation: 180,
+  timeoutMs: TURN_180_TIMEOUT_MS,
+  gridArea: "turn180left",
+};
+
+const TURN_180_RIGHT: FixedTurn = {
+  testId: "turn-180-right",
+  ariaLabel: "Turn 180 degrees right",
+  degreesLabel: "180",
+  icon: "cw",
+  rotation: -180,
+  timeoutMs: TURN_180_TIMEOUT_MS,
+  gridArea: "turn180right",
+};
+
+/** A small circular-arrow glyph (Feather-style `rotate-ccw`/`rotate-cw`
+ * paths) -- deliberately icon-only with no visible text, so the button
+ * itself carries the degree number and `aria-label` carries the words
+ * ("Turn 90 degrees left") that a screen reader or a test asserts on.
+ * `aria-hidden` here because the enclosing button's own `aria-label`
+ * already gives the accessible name -- this SVG must never be read as a
+ * second, redundant description. */
+function TurnArrowIcon({ direction }: { direction: "ccw" | "cw" }) {
+  const commonProps = {
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 2,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+  };
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      aria-hidden="true"
+      focusable="false"
+      className="drive-controls-turn-icon"
+    >
+      {direction === "ccw" ? (
+        <>
+          <polyline points="1 4 1 10 7 10" {...commonProps} />
+          <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" {...commonProps} />
+        </>
+      ) : (
+        <>
+          <polyline points="23 4 23 10 17 10" {...commonProps} />
+          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" {...commonProps} />
+        </>
+      )}
+    </svg>
+  );
+}
+
+/** A plain octagonal stop sign, optionally carrying a white "E" (the
+ * E-STOP variant) and an optional "latched" visual state (dimmed body,
+ * outlined rather than filled) for while `robotStatus.estopped` is
+ * `true`. `aria-hidden` for the same reason as {@link TurnArrowIcon} --
+ * the enclosing button's own `aria-label`/text is the accessible name. */
+function StopSignIcon({ letter, latched }: { letter: boolean; latched: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+      <polygon
+        points="8,2 16,2 22,8 22,16 16,22 8,22 2,16 2,8"
+        className={
+          latched
+            ? "drive-controls-stop-icon-body drive-controls-stop-icon-body-latched"
+            : "drive-controls-stop-icon-body"
+        }
+      />
+      {letter && (
+        <text
+          x="12"
+          y="16.5"
+          textAnchor="middle"
+          className={
+            latched
+              ? "drive-controls-stop-icon-letter drive-controls-stop-icon-letter-latched"
+              : "drive-controls-stop-icon-letter"
+          }
+        >
+          E
+        </text>
+      )}
+    </svg>
+  );
 }
 
 export interface DriveControlsProps {
@@ -128,6 +330,25 @@ export function DriveControls({ device }: DriveControlsProps) {
     intervalRef.current = setInterval(resend, DRIVE_RESEND_INTERVAL_MS);
   }
 
+  /** One-shot fixed turn -- a click, not a hold. See this module's doc
+   * comment for why `MOVE_X` (not `WHEELS_V`) is used here. */
+  function turn(rotation: number, timeoutMs: number): void {
+    if (!linkOpen) {
+      return;
+    }
+    sendCommand(endpointId, "MOVE_X", [0, rotation, TURN_CRUISE_MM_S, timeoutMs]);
+  }
+
+  const canAbortRun = device.functions?.some((fn) => fn.name === "abort") === true;
+  function handleStop(): void {
+    sendCommand(endpointId, "STOP", ["now"]);
+    if (canAbortRun) {
+      sendCommand(endpointId, "RUN", ["abort"]);
+    }
+  }
+
+  const estopped = device.robotStatus?.estopped === true;
+
   // A held direction must not survive the link closing out from under
   // it (disconnect/session close mid-hold) -- release() sends STOP,
   // which `sendCommand` silently drops if the socket isn't open, but
@@ -154,7 +375,47 @@ export function DriveControls({ device }: DriveControlsProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const directions: DriveDirection[] = ["forward", "backward", "left", "right"];
+  function directionButton(direction: DriveDirection) {
+    return (
+      <button
+        key={direction}
+        type="button"
+        className={`drive-controls-button drive-controls-button-${direction}`}
+        data-testid={`drive-${direction}`}
+        disabled={!linkOpen}
+        onMouseDown={() => press(direction)}
+        onMouseUp={release}
+        onMouseLeave={release}
+        onTouchStart={(event) => {
+          event.preventDefault();
+          press(direction);
+        }}
+        onTouchEnd={release}
+      >
+        {DIRECTION_LABELS[direction]}
+      </button>
+    );
+  }
+
+  function turnButton(fixedTurn: FixedTurn) {
+    return (
+      <button
+        key={fixedTurn.testId}
+        type="button"
+        className={`drive-controls-button drive-controls-turn-button drive-controls-button-${fixedTurn.gridArea}`}
+        data-testid={fixedTurn.testId}
+        aria-label={fixedTurn.ariaLabel}
+        title={fixedTurn.ariaLabel}
+        disabled={!linkOpen}
+        onClick={() => turn(fixedTurn.rotation, fixedTurn.timeoutMs)}
+      >
+        <TurnArrowIcon direction={fixedTurn.icon} />
+        <span className="drive-controls-turn-degrees" aria-hidden="true">
+          {fixedTurn.degreesLabel}
+        </span>
+      </button>
+    );
+  }
 
   return (
     <section className="drive-controls" aria-label="Drive controls">
@@ -164,30 +425,60 @@ export function DriveControls({ device }: DriveControlsProps) {
         </p>
       )}
       <p className="drive-controls-note">
-        <strong>Hold</strong> a direction to drive; release to stop.{" "}
+        <strong>Hold</strong> a direction to drive; release to stop. Click a turn button for a
+        fixed turn.{" "}
         {activeDirection ? `Holding: ${DIRECTION_LABELS[activeDirection]}.` : ""}
       </p>
       <div className="drive-controls-pad">
-        {directions.map((direction) => (
+        {turnButton(TURN_90_LEFT)}
+        {directionButton("forward")}
+        {turnButton(TURN_90_RIGHT)}
+
+        {directionButton("left")}
+        <div className="drive-controls-stop-cell">
           <button
-            key={direction}
             type="button"
-            className={`drive-controls-button drive-controls-button-${direction}`}
-            data-testid={`drive-${direction}`}
+            className="drive-controls-button drive-controls-stop-button"
+            data-testid="stop-button"
+            aria-label="Stop"
+            title="Stop the current motion (does not latch)"
             disabled={!linkOpen}
-            onMouseDown={() => press(direction)}
-            onMouseUp={release}
-            onMouseLeave={release}
-            onTouchStart={(event) => {
-              event.preventDefault();
-              press(direction);
-            }}
-            onTouchEnd={release}
+            onClick={handleStop}
           >
-            {DIRECTION_LABELS[direction]}
+            <StopSignIcon letter={false} latched={false} />
           </button>
-        ))}
+          <button
+            type="button"
+            className="drive-controls-button drive-controls-estop-button"
+            data-testid="estop-button"
+            aria-label="Emergency stop"
+            title={estopped ? "Emergency stop (latched)" : "Emergency stop"}
+            disabled={!linkOpen}
+            onClick={() => sendCommand(endpointId, "ESTOP")}
+          >
+            <StopSignIcon letter={true} latched={estopped} />
+          </button>
+        </div>
+        {directionButton("right")}
+
+        {turnButton(TURN_180_LEFT)}
+        {directionButton("backward")}
+        {turnButton(TURN_180_RIGHT)}
       </div>
+      {estopped && (
+        <button
+          type="button"
+          className="drive-controls-clear-estop-button"
+          data-testid="estop-clear-button"
+          disabled={!linkOpen}
+          onClick={() => {
+            sendCommand(endpointId, "SET", ["estop_clear", "1"]);
+            sendCommand(endpointId, "STATUS");
+          }}
+        >
+          Clear E-STOP
+        </button>
+      )}
     </section>
   );
 }

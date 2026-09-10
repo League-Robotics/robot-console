@@ -17,8 +17,9 @@
  * - **Left column**: `StatusPanel` (added out-of-process, 2026-09-09 --
  *   the robot's parsed `status` reply, mounted first so a student sees
  *   the robot's own state before reaching for drive controls),
- *   `DriveControls` (unchanged, `WHEELS_V`-only per
- *   `vendor/radio-robot-lib/docs/design/motion-api.md`),
+ *   `DriveControls` (held-direction `WHEELS_V` driving plus, as of
+ *   2026-09-10, one-shot fixed-angle `MOVE_X` turns and the merged-in
+ *   STOP/E-STOP pad -- see that component's own doc comment),
  *   `SequencingIndicator` (unchanged, read-only view of `Session`'s
  *   reliability state), `FunctionsPanel` (added out-of-process,
  *   2026-09-09 -- the robot's `FUNCS`-discovered, `RUN`-able function
@@ -42,36 +43,24 @@
  *   deprecated -- both are fully superseded by `CommandStrip` + the
  *   unified console).
  *
- * **`EstopControl` is mounted here unconditionally, directly under the
- * page's `h2`, and -- critically -- as a sibling of the two-column grid
- * below, not nested inside either column.** This is structural, not
- * cosmetic: `EstopControl.css` pins it via
- * `position: sticky; top: 0`, which depends on the *document* being its
- * nearest scrolling ancestor (per that file's own doc comment). The
- * right column now scrolls independently to hold `DeviceConsole` to a
- * bounded height (see `RobotPage.css`) -- if `EstopControl` were nested
- * inside that column, its nearest scrolling ancestor would silently
- * become the column instead of the document, breaking the sticky
- * pinning sprint 006 built this control to have. Keeping it a sibling
- * of `.robot-page-columns` (never a descendant of either column's own
- * scroll container) is what keeps `EstopControl.css` needing no
- * *layout* change to stay pinned, and is asserted structurally, not
- * just visually, by `RobotPage.test.tsx`.
- *
- * **Sized and positioned per stakeholder feedback (2026-09-08):** a
- * full-width e-stop bar read as disproportionate once the page was in
- * real use ("it's ridiculous"). `EstopControl.css` now sizes the
- * control to its own content and left-aligns it (`align-self:
- * flex-start`), so it renders as a small control sitting just above
- * `DriveControls` in the left column rather than spanning the page.
- * It stays a DOM sibling of `.robot-page-columns` -- moving it into the
- * left column's own markup was considered and rejected, since that
- * column is a bounded, internally-scrolling container (see
- * `RobotPage.css`) and would silently break the sticky pinning above.
- * Smaller and visually adjacent to the drive controls, still
- * unconditionally reachable with no scrolling: that combination is the
- * point of keeping the DOM position and the CSS sizing as two
- * independent decisions.
+ * **STOP/E-STOP moved into `DriveControls`'s pad, `EstopControl.tsx`
+ * retired outright (out-of-process, 2026-09-10).** Sprint 006 mounted a
+ * separate, always-reachable `EstopControl` here, directly under the
+ * `h2` and pinned with `position: sticky` so it stayed visible
+ * regardless of scrolling or what else was on screen. The stakeholder's
+ * revised spec instead asks for STOP and E-STOP as two stop-sign-icon
+ * buttons in the center of `DriveControls`'s 3x3 drive pad, between the
+ * four directional buttons -- reachable because the drive pad itself is
+ * always on screen in the left column, not because of a sticky
+ * position. `EstopControl.tsx`/`.css`/`.test.tsx` are deleted; their
+ * tests' intent (unsequenced `ESTOP` on press, reachable regardless of
+ * pending sequenced activity, repeated presses harmless, disabled with
+ * a hint when no session is open, Clear E-STOP appearing only while
+ * `robotStatus.estopped` and sending `SET estop_clear 1` then `STATUS`)
+ * now lives in `DriveControls.test.tsx`. The `stop-button`/
+ * `estop-button`/`estop-clear-button` `data-testid`s are unchanged, so
+ * every other test and any external tooling keyed on them keeps working
+ * unmodified.
  *
  * **Transport-blindness is load-bearing, not incidental**: this page
  * and every component it mounts render off `WsProvider`'s hooks/
@@ -86,7 +75,6 @@ import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
 import { CommandStrip } from "../components/CommandStrip";
 import { DeviceConsole } from "../components/DeviceConsole";
 import { DriveControls } from "../components/DriveControls";
-import { EstopControl } from "../components/EstopControl";
 import { FunctionsPanel } from "../components/FunctionsPanel";
 import { SequencingIndicator } from "../components/SequencingIndicator";
 import { StatusPanel } from "../components/StatusPanel";
@@ -100,8 +88,6 @@ export function RobotPage({ endpoint }: RobotPageProps) {
   return (
     <section className="robot-page" aria-label="Robot device">
       <h2>{endpoint.name ?? endpoint.endpointId}</h2>
-
-      <EstopControl device={endpoint} />
 
       <div className="robot-page-columns">
         <div className="robot-page-column robot-page-column-left">

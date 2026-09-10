@@ -2,21 +2,21 @@
  *
  * `max-width: 46rem` (sprint 006's single-column shell) is gone -- the
  * page now uses the full window width, split roughly in half between
- * `.robot-page-column-left` (DriveControls, SequencingIndicator, a
- * stubbed charts placeholder) and `.robot-page-column-right`
- * (DeviceConsole + CommandStrip).
+ * `.robot-page-column-left` (StatusPanel, DriveControls,
+ * SequencingIndicator, FunctionsPanel, a stubbed charts placeholder)
+ * and `.robot-page-column-right` (DeviceConsole + CommandStrip).
  *
- * `EstopControl` (mounted by RobotPage.tsx directly under the `h2`, as
- * a sibling of `.robot-page-columns`) gets no rule here at all -- it is
- * intentionally outside every selector in this file, so its own
- * `position: sticky; top: 0` (EstopControl.css) keeps the *document* as
- * its nearest scrolling ancestor, exactly as sprint 006 built it. That
- * only holds if nothing below scopes an `overflow` onto an ancestor of
- * `EstopControl` itself -- `.robot-page` and `.robot-page-columns`
- * (both ancestors of EstopControl's *sibling* subtree, not of
- * EstopControl) stay in normal flow with no `overflow` set, so this
- * file's independently-scrolling right column (below) never becomes
- * EstopControl's scrolling ancestor.
+ * **No sticky e-stop bar any more (out-of-process, 2026-09-10).** Sprint
+ * 006's separate `EstopControl` used to mount directly under the `h2`,
+ * as a sibling of `.robot-page-columns`, pinned via
+ * `position: sticky; top: 0` so it stayed reachable regardless of
+ * scrolling -- this file deliberately gave it no rule so the *document*
+ * stayed its nearest scrolling ancestor. `EstopControl` is retired: STOP
+ * and E-STOP now live inside `DriveControls`'s own 3x3 pad, in normal
+ * document flow in the left column, so there is nothing left in this
+ * page that depends on `.robot-page`/`.robot-page-columns` staying free
+ * of `overflow`. The right column's independent scrolling (below) is
+ * unaffected either way.
  */
 .robot-page {
   display: flex;
@@ -49,13 +49,17 @@
  * to fill whatever room the viewport actually has and then scroll
  * internally -- "the consoles need to scroll" (stakeholder issue),
  * rather than leaving dead space below a short fixed max-height or
- * growing the whole document unboundedly. The `14rem` deduction is an
- * approximation for the app header, this page's own heading, the
- * e-stop bar, and CommandStrip's own height below the console -- it
- * does not need to be exact, only to keep the column from overflowing
- * the viewport on ordinary window sizes. */
+ * growing the whole document unboundedly. The `11rem` deduction (was
+ * `14rem` while sprint 006's separate sticky e-stop bar sat above the
+ * columns -- out-of-process, 2026-09-10, that bar is gone, STOP/E-STOP
+ * now live inside DriveControls' pad in the left column instead, so
+ * this column's own available height no longer needs to leave room for
+ * it) is an approximation for the app header, this page's own heading,
+ * and CommandStrip's own height below the console -- it does not need
+ * to be exact, only to keep the column from overflowing the viewport on
+ * ordinary window sizes. */
 .robot-page-column-right {
-  height: calc(100vh - 14rem);
+  height: calc(100vh - 11rem);
   min-height: 24rem;
 }
 

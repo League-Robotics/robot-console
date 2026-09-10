@@ -8,8 +8,10 @@
  * retired Get/Set panel -- with a real `-1`-watermark bug) with a two-column
  * layout: left column `DriveControls` + `SequencingIndicator` + a
  * stubbed charts placeholder; right column exactly one `DeviceConsole`
- * with `CommandStrip` beneath it. `EstopControl` stays a sibling of the
- * two-column grid.
+ * with `CommandStrip` beneath it. STOP/E-STOP (out-of-process,
+ * 2026-09-10) no longer have a separate sticky `EstopControl` sibling --
+ * they render inside `DriveControls`'s own pad in the left column; see
+ * `DriveControls.test.tsx` for their behavior.
  *
  * Focused per-component behavior lives in each component's own test
  * file (`DriveControls.test.tsx`, `SequencingIndicator.test.tsx`,
@@ -122,24 +124,25 @@ describe("RobotPage", () => {
     expect(el.querySelectorAll('[data-testid="console-log"]').length).toBe(1);
   });
 
-  it("mounts EstopControl as a sibling of the two-column grid, not nested inside either column", () => {
+  it("renders STOP/E-STOP inside DriveControls' pad in the left column, not as a page-level sibling (out-of-process, 2026-09-10)", () => {
     const { el } = mountRobotPage(robotFixture());
+    const stop = el.querySelector('[data-testid="stop-button"]');
     const estop = el.querySelector('[aria-label="Emergency stop"]');
+    expect(stop).not.toBeNull();
     expect(estop).not.toBeNull();
 
-    const columns = el.querySelector(".robot-page-columns");
-    expect(columns).not.toBeNull();
-    expect(columns!.contains(estop)).toBe(false);
-
     const left = el.querySelector(".robot-page-column-left");
-    const right = el.querySelector(".robot-page-column-right");
-    expect(left!.contains(estop)).toBe(false);
-    expect(right!.contains(estop)).toBe(false);
+    const driveControls = left!.querySelector('[aria-label="Drive controls"]');
+    expect(driveControls).not.toBeNull();
+    expect(driveControls!.contains(stop)).toBe(true);
+    expect(driveControls!.contains(estop)).toBe(true);
 
-    // `.robot-page` (EstopControl's parent) is EstopControl's own
-    // nearest ancestor with any layout say over it; `.robot-page-columns`
-    // is a sibling subtree, never an ancestor of EstopControl.
-    expect(el.querySelector(".robot-page")!.contains(estop)).toBe(true);
+    // No separate top-level e-stop control sitting outside the columns
+    // any more -- `.robot-page`'s only children are the heading and the
+    // two-column grid.
+    const right = el.querySelector(".robot-page-column-right");
+    expect(right!.contains(stop)).toBe(false);
+    expect(right!.contains(estop)).toBe(false);
   });
 
   it("removes the old single-column max-width from RobotPage.css", () => {

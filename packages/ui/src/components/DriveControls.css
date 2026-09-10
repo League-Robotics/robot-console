@@ -14,13 +14,17 @@
   font-size: 0.85rem;
 }
 
+/* 3x3 pad (out-of-process, 2026-09-10): the four directional buttons at
+ * the cardinal cells, a fixed 90/180 degree turn button in each corner,
+ * and STOP/E-STOP sharing the center cell -- see DriveControls.tsx's
+ * doc comment for the wire semantics behind each cell. */
 .drive-controls-pad {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 6rem));
+  grid-template-columns: repeat(3, minmax(0, 5.5rem));
   grid-template-areas:
-    ".        forward  ."
-    "left     .        right"
-    ".        backward .";
+    "turn90left  forward     turn90right"
+    "left        stopcell    right"
+    "turn180left backward    turn180right";
   gap: 0.5rem;
 }
 
@@ -54,6 +58,112 @@
 
 .drive-controls-button-right {
   grid-area: right;
+}
+
+/* Corner fixed-turn buttons -- square-ish, icon above the degree
+ * number, both centered, so "90"/"180" plus a small circular-arrow
+ * glyph fit inside the same footprint as a cardinal direction button. */
+.drive-controls-button-turn90left {
+  grid-area: turn90left;
+}
+
+.drive-controls-button-turn90right {
+  grid-area: turn90right;
+}
+
+.drive-controls-button-turn180left {
+  grid-area: turn180left;
+}
+
+.drive-controls-button-turn180right {
+  grid-area: turn180right;
+}
+
+.drive-controls-turn-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.15rem;
+  padding: 0.4rem 0.3rem;
+}
+
+.drive-controls-turn-icon {
+  color: var(--rc-text-muted);
+}
+
+.drive-controls-turn-degrees {
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* Center cell: STOP and E-STOP side by side, sized to fit together in
+ * one grid cell (see .drive-controls-pad's grid-template-areas above). */
+.drive-controls-stop-cell {
+  grid-area: stopcell;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+}
+
+.drive-controls-stop-button,
+.drive-controls-estop-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.6rem;
+  height: 2.6rem;
+  padding: 0;
+}
+
+/* Plain stop sign: red fill, white border, no letter. */
+.drive-controls-stop-icon-body {
+  fill: var(--rc-danger-bg);
+  stroke: var(--rc-danger-contrast);
+  stroke-width: 1.5;
+}
+
+/* E-STOP's white "E" on the same red octagon, unless latched. */
+.drive-controls-stop-icon-letter {
+  fill: var(--rc-danger-contrast);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* Latched (device.robotStatus?.estopped === true): dimmed, outlined
+ * variant so the E-STOP icon visibly reads "already tripped" rather
+ * than "press me" while the latch is engaged. */
+.drive-controls-stop-icon-body-latched {
+  fill: var(--rc-border);
+  stroke: var(--rc-danger-border);
+}
+
+.drive-controls-stop-icon-letter-latched {
+  fill: var(--rc-danger-text);
+}
+
+.drive-controls-clear-estop-button {
+  align-self: flex-start;
+  border: 1px solid var(--rc-danger-border);
+  background: var(--rc-surface);
+  color: var(--rc-danger-text);
+  padding: 0.35rem 0.85rem;
+  border-radius: 0.3rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.drive-controls-clear-estop-button:hover:not(:disabled) {
+  background: var(--rc-warn-bg);
+}
+
+.drive-controls-clear-estop-button:disabled {
+  border-color: var(--rc-border);
+  color: var(--rc-text-muted);
+  cursor: not-allowed;
 }
 
 .drive-controls-note {

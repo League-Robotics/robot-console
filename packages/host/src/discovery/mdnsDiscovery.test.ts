@@ -38,25 +38,40 @@ function fakeBrowser() {
 
 /**
  * Fully synthetic fake {@link MdnsBackend}: routes `find({ type: "mbrelay" })`
- * to one fake browser and `find({ type: "mbserial" })` to another, and
- * records every `find()` call so tests can assert both service types
- * were browsed.
+ * to one fake browser, `find({ type: "mbserial" })` to another, and
+ * `find({ type: "robotlink", protocol: "tcp" | "udp" })` to two more
+ * (kept separate so a test can independently drive `_robotlink._tcp`
+ * and `_robotlink._udp` events, including both simultaneously for the
+ * same robot). Records every `find()` call so tests can assert which
+ * service types/protocols were browsed.
  */
 function fakeBackend() {
   const relay = fakeBrowser();
   const robot = fakeBrowser();
+  const robotlinkTcp = fakeBrowser();
+  const robotlinkUdp = fakeBrowser();
   const findCalls: MdnsFindOptions[] = [];
   const backend: MdnsBackend & {
     relay: typeof relay;
     robot: typeof robot;
+    robotlinkTcp: typeof robotlinkTcp;
+    robotlinkUdp: typeof robotlinkUdp;
     findCalls: MdnsFindOptions[];
   } = {
     relay,
     robot,
+    robotlinkTcp,
+    robotlinkUdp,
     findCalls,
     find(options: MdnsFindOptions): MdnsBrowser {
       findCalls.push(options);
-      return options.type === "mbrelay" ? relay : robot;
+      if (options.type === "mbrelay") {
+        return relay;
+      }
+      if (options.type === "mbserial") {
+        return robot;
+      }
+      return options.protocol === "udp" ? robotlinkUdp : robotlinkTcp;
     },
     destroy: vi.fn(),
   };
@@ -64,7 +79,7 @@ function fakeBackend() {
 }
 
 describe("MdnsDiscovery", () => {
-  it("browses both _mbrelay._tcp and _mbserial._tcp via the injected backend", () => {
+  it("browses _mbrelay._tcp, _mbserial._tcp, and _robotlink._tcp/._udp via the injected backend", () => {
     const backend = fakeBackend();
     const discovery = new MdnsDiscovery({ backend });
 
@@ -73,6 +88,8 @@ describe("MdnsDiscovery", () => {
     expect(backend.findCalls).toEqual([
       { type: "mbrelay", protocol: "tcp" },
       { type: "mbserial", protocol: "tcp" },
+      { type: "robotlink", protocol: "tcp" },
+      { type: "robotlink", protocol: "udp" },
     ]);
   });
 
@@ -83,7 +100,7 @@ describe("MdnsDiscovery", () => {
     discovery.start();
     discovery.start();
 
-    expect(backend.findCalls).toHaveLength(2);
+    expect(backend.findCalls).toHaveLength(4);
   });
 
   it("parses a _mbrelay._tcp record with TXT registry=8761 into registryPort: 8761", () => {
@@ -216,7 +233,7 @@ describe("MdnsDiscovery", () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
-  it("stops both underlying browse sessions on stop()", () => {
+  it("stops all underlying browse sessions on stop()", () => {
     const backend = fakeBackend();
     const discovery = new MdnsDiscovery({ backend });
     discovery.start();
@@ -225,13 +242,15 @@ describe("MdnsDiscovery", () => {
 
     expect(backend.relay.stop).toHaveBeenCalledTimes(1);
     expect(backend.robot.stop).toHaveBeenCalledTimes(1);
+    expect(backend.robotlinkTcp.stop).toHaveBeenCalledTimes(1);
+    expect(backend.robotlinkUdp.stop).toHaveBeenCalledTimes(1);
     // The backend's own destroy() is never called by stop() -- the
     // backend may be injected/shared and re-start() must not need to
     // reconstruct it.
     expect(backend.destroy).not.toHaveBeenCalled();
   });
 
-  it("can be started again after stop(), re-browsing both service types", () => {
+  it("can be started again after stop(), re-browsing all service types", () => {
     const backend = fakeBackend();
     const discovery = new MdnsDiscovery({ backend });
     discovery.start();
@@ -239,6 +258,115 @@ describe("MdnsDiscovery", () => {
 
     discovery.start();
 
-    expect(backend.findCalls).toHaveLength(4);
+    expect(backend.findCalls).toHaveLength(8);
+  });
+
+  describe("_robotlink._tcp/._udp (WiFi robots)", () => {
+    /** The live-verified `gopiv` fixture from this ticket's acceptance
+     * criteria: instance `gopiv robot link`, SRV `gopiv.local.:7654`,
+     * TXT `name=gopiv role=robot link=v6 port=7654`. */
+    function gopivFixture(): MdnsService {
+      return {
+        name: "gopiv robot link",
+        host: "gopiv.local.",
+        port: 7654,
+        txt: { name: "gopiv", role: "robot", link: "v6", port: "7654" },
+      };
+    }
+
+    const expectedGopiv = {
+      name: "gopiv",
+      host: "gopiv.local.",
+      port: 7654,
+      role: "robot",
+      link: "v6",
+    };
+
+    it("parses a _robotlink._tcp record by TXT name, not the instance string", () => {
+      const backend = fakeBackend();
+      const discovery = new MdnsDiscovery({ backend });
+      discovery.start();
+
+      backend.robotlinkTcp.emitUp(gopivFixture());
+
+      expect(discovery.current().wifiRobots).toEqual([expectedGopiv]);
+    });
+
+    it("parses an identical fixture advertised on _robotlink._udp identically", () => {
+      const backend = fakeBackend();
+      const discovery = new MdnsDiscovery({ backend });
+      discovery.start();
+
+      backend.robotlinkUdp.emitUp(gopivFixture());
+
+      expect(discovery.current().wifiRobots).toEqual([expectedGopiv]);
+    });
+
+    it("deduplicates a robot advertising on both _robotlink._tcp and _robotlink._udp into one entry", () => {
+      const backend = fakeBackend();
+      const discovery = new MdnsDiscovery({ backend });
+      discovery.start();
+
+      backend.robotlinkTcp.emitUp(gopivFixture());
+      backend.robotlinkUdp.emitUp(gopivFixture());
+
+      expect(discovery.current().wifiRobots).toEqual([expectedGopiv]);
+    });
+
+    it("removes the entry on a down event from _robotlink._tcp", () => {
+      const backend = fakeBackend();
+      const discovery = new MdnsDiscovery({ backend });
+      discovery.start();
+      backend.robotlinkTcp.emitUp(gopivFixture());
+      backend.robotlinkUdp.emitUp(gopivFixture());
+      expect(discovery.current().wifiRobots).toHaveLength(1);
+
+      backend.robotlinkTcp.emitDown(gopivFixture());
+
+      expect(discovery.current().wifiRobots).toEqual([]);
+    });
+
+    it("removes the entry on a down event from _robotlink._udp", () => {
+      const backend = fakeBackend();
+      const discovery = new MdnsDiscovery({ backend });
+      discovery.start();
+      backend.robotlinkUdp.emitUp(gopivFixture());
+      expect(discovery.current().wifiRobots).toHaveLength(1);
+
+      backend.robotlinkUdp.emitDown(gopivFixture());
+
+      expect(discovery.current().wifiRobots).toEqual([]);
+    });
+
+    it("parses role/link as undefined, never throwing, when the TXT record omits them", () => {
+      const backend = fakeBackend();
+      const discovery = new MdnsDiscovery({ backend });
+      discovery.start();
+
+      expect(() =>
+        backend.robotlinkTcp.emitUp({
+          name: "gopiv robot link",
+          host: "gopiv.local.",
+          port: 7654,
+          txt: { name: "gopiv" },
+        }),
+      ).not.toThrow();
+
+      expect(discovery.current().wifiRobots).toEqual([
+        { name: "gopiv", host: "gopiv.local.", port: 7654, role: undefined, link: undefined },
+      ]);
+    });
+
+    it("does not affect the relays/robots lists", () => {
+      const backend = fakeBackend();
+      const discovery = new MdnsDiscovery({ backend });
+      discovery.start();
+
+      backend.robotlinkTcp.emitUp(gopivFixture());
+
+      const snapshot = discovery.current();
+      expect(snapshot.relays).toEqual([]);
+      expect(snapshot.robots).toEqual([]);
+    });
   });
 });

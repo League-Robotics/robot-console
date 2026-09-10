@@ -48,6 +48,21 @@
  * already resolves to the child's own route exactly like any other
  * endpoint.
  *
+ * **WiFi entries (sprint 10 ticket 005):** ticket 003 already
+ * synthesizes a `transport: "wifi"` `EndpointListEntry` (`endpointId:
+ * "wifi-<name>"`, a `wifi: { host, port }` block, no `usb` block) for a
+ * roster-remembered robot reachable over the network -- `EndpointCard`
+ * already renders any `EndpointListEntry` generically (the `Link`, the
+ * "Linked" pill, flash gating), so the only gap is the Port/Device ID
+ * row, which assumes a physical USB device. In its place this card
+ * shows the same `Connection`-labeled row the relay branch uses, reading
+ * "WiFi · `<host>:<port>`" -- distinguishing it from both a plain USB
+ * card and a "via relay `<name>`" one, with no new component needed.
+ * This file is explicitly *not* scanned by `RobotPage.transportBlind
+ * .test.ts` (see that file's own scope note), so knowing `transport`
+ * here is fine; `RobotPage` itself still never sees this label or this
+ * field.
+ *
  * Split into a connected `FrontPage` (reads `WsProvider`'s selectors)
  * and a presentational `EndpointsList`/`EndpointCard`, mirroring the
  * old Devices tab's own split, so the list states can be exercised
@@ -201,6 +216,11 @@ function EndpointCard({ device, relayName }: { device: EndpointListEntry; relayN
             <div>
               <dt>Connection</dt>
               <dd>{`via relay ${relayName ?? viaRelay.relayEndpointId}`}</dd>
+            </div>
+          ) : device.transport === "wifi" ? (
+            <div>
+              <dt>Connection</dt>
+              <dd>{device.wifi ? `WiFi · ${device.wifi.host}:${device.wifi.port}` : "WiFi"}</dd>
             </div>
           ) : (
             <>

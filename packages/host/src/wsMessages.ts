@@ -172,8 +172,17 @@ export type FlashPhase = "fetching" | "verifying" | "erasing" | "writing" | "res
  * has a concrete `LinkSpec`/`Link` as of ticket 002; nothing in
  * `packages/host`/`packages/ui` constructs an endpoint carrying any of
  * these three new values yet (sprint 8's job -- endpoint synthesis from
- * discovery). */
-export type EndpointTransport = "usb" | "relay-radio" | "mbrelay" | "mbserial";
+ * discovery). Sprint 10 ticket 002 adds `"wifi"`: a direct-to-robot TCP
+ * link to a roster-gated `_robotlink._tcp`/`_robotlink._udp` advertisement
+ * (`wifi/wifiRobotGate.ts`), reusing `MbserialLink` unchanged (see
+ * `link/Link.ts`'s `WifiLinkSpec` doc comment and this sprint's Design
+ * Rationale, "TCP over UDP, reusing `MbserialLink` unchanged"). Endpoint
+ * synthesis for `"wifi"` is ticket 003's job -- this ticket only extends
+ * the type. An older client that does not recognize `"wifi"` degrades
+ * per this module's own forward-compatibility discipline (see the
+ * module doc comment's "Forward compatibility" section for the sibling
+ * `classification.type` case). */
+export type EndpointTransport = "usb" | "relay-radio" | "mbrelay" | "mbserial" | "wifi";
 
 /** Sprint 8 ticket 004: every value {@link EndpointListEntry.addressSource}
  * can report -- `mbrelayRegistry.ts`'s own three registry-resolution
@@ -299,6 +308,15 @@ export interface EndpointListEntry {
    * own doc comment. Present only when {@link transport} is `"usb"`,
    * which is every endpoint that exists this sprint. */
   usb?: UsbEndpointIdentity;
+  /** Sprint 10 ticket 003: present only when {@link transport} is
+   * `"wifi"` -- the gated WiFi robot's `host`/`port` (the same pair
+   * `deviceRegistry.ts` builds a `WifiLinkSpec` from on `session-open`),
+   * so a client can display where a not-yet-connected WiFi card would
+   * connect to. No {@link usb} block accompanies a WiFi-transport entry
+   * -- there is no physical device backing it (see `deviceRegistry.ts`'s
+   * `EndpointState.device` doc comment for why that field is itself
+   * optional now). */
+  wifi?: { host: string; port: number };
   /** The most recent parsed `status` reply from this endpoint (added
    * out-of-process, 2026-09-09) -- see {@link RobotStatus}. Present
    * once any `status` (or bare `estop`) reply has been seen on the

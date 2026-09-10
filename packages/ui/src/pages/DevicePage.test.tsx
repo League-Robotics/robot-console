@@ -71,6 +71,26 @@ function mountAt(initialPath: string): { el: HTMLDivElement; socket: () => FakeS
   return { el, socket: () => socket! };
 }
 
+/** A WiFi-reachable robot's endpoint (sprint 10 ticket 005 fix-up),
+ * mirroring `FrontPage.test.tsx`'s own wifi fixture shape:
+ * `endpointId: "wifi-<name>"`, `transport: "wifi"`, a `wifi: { host,
+ * port }` block, no `usb` block. Defaults to not-yet-open and
+ * identified, matching the common "just navigated here" case this
+ * ticket fixes. */
+function wifiEndpoint(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+  return {
+    endpointId: "wifi-gopiv",
+    transport: "wifi",
+    resourceKey: "wifi-gopiv",
+    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none" },
+    name: "gopiv",
+    role: null,
+    sessionOpen: false,
+    wifi: { host: "192.168.1.42", port: 8765 },
+    ...overrides,
+  };
+}
+
 describe("DevicePage deep-linking", () => {
   it("shows a loading state, not 'not connected', before the first snapshot arrives", () => {
     const { el, socket } = mountAt("/d/usb-SERIAL-A");
@@ -208,5 +228,72 @@ describe("DevicePage per-type dispatch", () => {
     });
 
     expect(el.querySelector('[aria-label="Unknown device"]')).not.toBeNull();
+  });
+});
+
+describe("DevicePage opens a wifi endpoint's session on mount (sprint 10 ticket 005 fix-up)", () => {
+  it("sends exactly one session-open for a not-yet-open wifi endpoint on mount", () => {
+    const { el, socket } = mountAt("/d/wifi-gopiv");
+    act(() => {
+      socket().emitOpen();
+    });
+    act(() => {
+      socket().emitMessage({ type: "endpoints", endpoints: [wifiEndpoint()] });
+    });
+
+    expect(el.textContent).toContain("gopiv");
+    expect(socket().sent).toEqual([JSON.stringify({ type: "session-open", endpointId: "wifi-gopiv" })]);
+  });
+
+  it("sends no session-open for a wifi endpoint that is already open", () => {
+    const { socket } = mountAt("/d/wifi-gopiv");
+    act(() => {
+      socket().emitOpen();
+    });
+    act(() => {
+      socket().emitMessage({
+        type: "endpoints",
+        endpoints: [
+          wifiEndpoint({
+            classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
+            role: "NEZHA2",
+            sessionOpen: true,
+          }),
+        ],
+      });
+    });
+
+    // Already-open triggers RobotPage's own child panels (StatusPanel's
+    // STATUS poll, FunctionsPanel's discovery GET) to send their usual
+    // opening traffic -- unrelated to this fix. Only session-open itself
+    // is this test's concern.
+    expect(socket().sent).not.toContain(JSON.stringify({ type: "session-open", endpointId: "wifi-gopiv" }));
+  });
+
+  it("sends no session-open for a wifi endpoint with a sessionError set -- does not loop on a failed attempt", () => {
+    const { socket } = mountAt("/d/wifi-gopiv");
+    act(() => {
+      socket().emitOpen();
+    });
+    act(() => {
+      socket().emitMessage({
+        type: "endpoints",
+        endpoints: [wifiEndpoint({ sessionError: "HELLO reply timed out after 2000ms" })],
+      });
+    });
+
+    expect(socket().sent).toEqual([]);
+  });
+
+  it("sends no session-open for a not-yet-open usb endpoint -- the host already auto-opens USB on attach", () => {
+    const { socket } = mountAt("/d/usb-SERIAL-A");
+    act(() => {
+      socket().emitOpen();
+    });
+    act(() => {
+      socket().emitMessage({ type: "endpoints", endpoints: [endpoint({ sessionOpen: false })] });
+    });
+
+    expect(socket().sent).toEqual([]);
   });
 });

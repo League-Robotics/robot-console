@@ -208,14 +208,44 @@ export interface MbserialLinkSpec {
 }
 
 /**
+ * The direct-to-robot WiFi transport variant of {@link LinkSpec} (sprint
+ * 10 ticket 002) — pure data, mirroring {@link MbserialLinkSpec}'s own
+ * host+port shape exactly: **deliberately no `resourceKey` field**,
+ * unlike every other `LinkSpec` variant. Per this sprint's Design
+ * Rationale ("TCP over UDP, reusing `MbserialLink` unchanged"), a WiFi
+ * link is connected via `MbserialLink` verbatim — no new `Link`
+ * implementation class — so `deviceRegistry.ts`'s `defaultLinkFactory`
+ * needs only `host`/`port` to construct it; `resourceKey` for the
+ * synthesized endpoint (`wifi-<name>`, independent of any other
+ * resource) is a `deviceRegistry.ts`/`EndpointState` concern, decided by
+ * ticket 003's endpoint synthesis, not by this spec. **Deliberately no
+ * `channel`/`group` fields** either, for the same reason {@link
+ * MbserialLinkSpec} has none: `_robotlink._tcp`/`_robotlink._udp`
+ * addresses one specific robot directly, not a shared radio channel a
+ * relay must be told how to bridge.
+ */
+export interface WifiLinkSpec {
+  transport: "wifi";
+  /** TCP host of the WiFi-reachable robot, e.g. an IP address or
+   * `<name>.local.` hostname resolved from `_robotlink._tcp`/
+   * `_robotlink._udp` mDNS discovery, gated against sprint 5's roster by
+   * `wifi/wifiRobotGate.ts` before ever reaching here. */
+  host: string;
+  /** TCP port of the WiFi-reachable robot — observed live as 7654 for
+   * both `vevov`/`gopiv` (`sprint.md`'s Problem section). */
+  port: number;
+}
+
+/**
  * Pure data describing which transport to open and how — one variant
  * per transport. {@link UsbLinkSpec} exists since sprint 4; {@link
  * RelayLinkSpec} is added sprint 7 ticket 002, {@link MbrelayLinkSpec}
- * sprint 7 ticket 003, {@link MbserialLinkSpec} sprint 7 ticket 004.
+ * sprint 7 ticket 003, {@link MbserialLinkSpec} sprint 7 ticket 004,
+ * {@link WifiLinkSpec} sprint 10 ticket 002.
  * Being pure data (not a link instance) makes a spec loggable,
  * comparable by value, and testable with no I/O at all.
  */
-export type LinkSpec = UsbLinkSpec | RelayLinkSpec | MbrelayLinkSpec | MbserialLinkSpec;
+export type LinkSpec = UsbLinkSpec | RelayLinkSpec | MbrelayLinkSpec | MbserialLinkSpec | WifiLinkSpec;
 
 /** Builds a {@link Link} for a given {@link LinkSpec}. Replaces the
  * previous `(portPath: string) => UsbSerialLinkLike` shape — a pure

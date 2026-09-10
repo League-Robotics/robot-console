@@ -1,7 +1,7 @@
 ---
 id: '010'
 title: WiFi robots
-status: ticketing
+status: done
 branch: sprint/010-wifi-robots
 use-cases:
 - SUC-001

@@ -1,0 +1,121 @@
+.distance-calibration-wizard {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.distance-calibration-hint {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+  background: var(--rc-warn-bg);
+  border: 1px solid var(--rc-warn-border);
+  color: var(--rc-warn-text);
+  font-size: 0.85rem;
+}
+
+.distance-calibration-setup {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: var(--rc-text);
+  font-size: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.distance-calibration-go {
+  align-self: flex-start;
+  border: 1px solid var(--rc-accent);
+  background: var(--rc-accent);
+  color: var(--rc-accent-contrast);
+  padding: 0.35rem 0.9rem;
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.distance-calibration-go:disabled {
+  background: var(--rc-border);
+  border-color: var(--rc-border);
+  color: var(--rc-text-muted);
+  cursor: not-allowed;
+}
+
+.distance-calibration-progress {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+  background: var(--rc-surface);
+  border: 1px solid var(--rc-border);
+  color: var(--rc-text);
+  font-size: 0.85rem;
+}
+
+.distance-calibration-progress p {
+  margin: 0 0 0.3rem;
+  font-weight: 600;
+}
+
+.distance-calibration-progress ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--rc-text-muted);
+}
+
+.distance-calibration-run-error,
+.distance-calibration-failed {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+  background: var(--rc-danger-bg);
+  border: 1px solid var(--rc-danger-border);
+  color: var(--rc-danger-contrast);
+  font-size: 0.85rem;
+}
+
+.distance-calibration-result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+  background: var(--rc-ok-bg);
+  border: 1px solid var(--rc-border);
+}
+
+.distance-calibration-result p {
+  margin: 0;
+  color: var(--rc-ok-text);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.distance-calibration-snippet {
+  display: block;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.35rem;
+  background: var(--rc-bg);
+  border: 1px solid var(--rc-border);
+  color: var(--rc-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.distance-calibration-copy {
+  align-self: flex-start;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.3rem 0.8rem;
+  border-radius: 0.4rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}

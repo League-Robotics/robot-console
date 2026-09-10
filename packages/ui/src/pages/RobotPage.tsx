@@ -25,9 +25,13 @@
  *   2026-09-09 -- the robot's `FUNCS`-discovered, `RUN`-able function
  *   list, mounted below Sequencing), `ChartsPanel` (sprint 9 ticket
  *   004 -- wheel-speed bars and a rolling time-series chart fed by
- *   `useTelemetry`/`useTelemetryHeader`), and `PathTracePanel` (sprint 9
+ *   `useTelemetry`/`useTelemetryHeader`), `PathTracePanel` (sprint 9
  *   ticket 005 -- a top-down plot of the `ox`/`oy` position trail, with
- *   its own client-side-only Clear button, mounted below Charts).
+ *   its own client-side-only Clear button, mounted below Charts), and
+ *   `DistanceCalibrationWizard` (sprint 011 ticket 003 -- the `calx`
+ *   distance-calibration wizard, `FUNCS`-gated per `sprint.md`'s Design
+ *   Rationale, mounted below Path trace; see that component's own doc
+ *   comment).
  * - **Right column**: exactly one `DeviceConsole`, sized to fill the
  *   column's available height (`RobotPage.css` overrides
  *   `DeviceConsole`'s own fixed `max-height` scoped to this column
@@ -91,6 +95,7 @@ import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
 import { ChartsPanel } from "../components/ChartsPanel";
 import { CommandStrip } from "../components/CommandStrip";
 import { DeviceConsole } from "../components/DeviceConsole";
+import { DistanceCalibrationWizard } from "../components/DistanceCalibrationWizard";
 import { DriveControls } from "../components/DriveControls";
 import { FunctionsPanel } from "../components/FunctionsPanel";
 import { PathTracePanel } from "../components/PathTracePanel";
@@ -145,6 +150,11 @@ export function RobotPage({ endpoint }: RobotPageProps) {
           <div className="robot-page-panel" aria-label="Path trace">
             <h3>Path trace</h3>
             <PathTracePanel endpointId={endpoint.endpointId} />
+          </div>
+
+          <div className="robot-page-panel" aria-label="Distance calibration">
+            <h3>Distance calibration</h3>
+            <DistanceCalibrationWizard device={endpoint} />
           </div>
         </div>
 

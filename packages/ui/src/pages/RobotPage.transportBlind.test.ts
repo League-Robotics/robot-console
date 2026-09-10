@@ -74,6 +74,8 @@ import statusPanelSource from "../components/StatusPanel.tsx?raw";
 import functionsPanelSource from "../components/FunctionsPanel.tsx?raw";
 import chartsPanelSource from "../components/ChartsPanel.tsx?raw";
 import pathTracePanelSource from "../components/PathTracePanel.tsx?raw";
+import distanceCalibrationWizardSource from "../components/DistanceCalibrationWizard.tsx?raw";
+import calibrationReportSource from "../components/CalibrationReport.ts?raw";
 import { RobotPage } from "./RobotPage";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
@@ -104,6 +106,12 @@ const FILES_UNDER_TEST: Record<string, string> = {
   // it reads only `useTelemetry`/`useTelemetryHeader`/`useWsActions`,
   // never a transport/link type.
   "components/PathTracePanel.tsx": pathTracePanelSource,
+  // Sprint 011 ticket 003: the distance-calibration wizard and its
+  // shared report parser are held to the same property -- both read
+  // only `device.functions`/`useEndpointLog`/`useWsActions`, never a
+  // transport/link type or `endpoint.transport`.
+  "components/DistanceCalibrationWizard.tsx": distanceCalibrationWizardSource,
+  "components/CalibrationReport.ts": calibrationReportSource,
 };
 
 /** Matches a quoted `"usb"` literal (either quote style), not merely

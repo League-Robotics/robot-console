@@ -1,9 +1,11 @@
 ---
 id: '003'
 title: 'DeviceRegistry: WiFi endpoint synthesis and connect-on-click'
-status: open
-use-cases: [SUC-003]
-depends-on: ["002"]
+status: done
+use-cases:
+- SUC-003
+depends-on:
+- '002'
 github-issue: ''
 issue: robot-console-two-level-ui-and-multi-transport-roadmap.md
 completes_issue: true
@@ -44,27 +46,27 @@ Rationale, "No wire-visible ungated WiFi list").
 
 ## Acceptance Criteria
 
-- [ ] A gated WiFi robot (fake mDNS + fake roster) appears in
+- [x] A gated WiFi robot (fake mDNS + fake roster) appears in
       `deviceRegistry.snapshot()` as `transport: "wifi"`,
       `sessionOpen: false`, before any connect is requested.
-- [ ] `requestOpen("wifi-<name>")` (or the equivalent internal call
+- [x] `requestOpen("wifi-<name>")` (or the equivalent internal call
       `session-open` dispatches to) connects via the `WifiLinkSpec`
       built from the gated record's host/port, and on success
       `sessionOpen` flips to `true` with the identified
       `classification`/`name` populated.
-- [ ] **End-to-end negative** (restates ticket 002's gate test at the
+- [x] **End-to-end negative** (restates ticket 002's gate test at the
       registry level): a raw discovery fixture containing a robot
       absent from an injected roster fixture never produces an
       `EndpointListEntry` for that name, under any circumstance —
       asserted against `deviceRegistry.snapshot()` directly, not just
       the gate function's own unit test.
-- [ ] A `down` event on a not-yet-connected WiFi robot's advertisement
+- [x] A `down` event on a not-yet-connected WiFi robot's advertisement
       removes its `EndpointListEntry` from the next snapshot.
-- [ ] A `down` event on an already-**open** WiFi session's
+- [x] A `down` event on an already-**open** WiFi session's
       advertisement does **not** close the session or remove the
       endpoint — `sessionOpen` stays `true` (only a real socket
       close/error does that).
-- [ ] `requestOpen` on a `"wifi"`-transport endpoint runs under the
+- [x] `requestOpen` on a `"wifi"`-transport endpoint runs under the
       same per-endpoint `KeyedMutex` discipline every other operation
       in this module already uses (no new synchronization mechanism).
 

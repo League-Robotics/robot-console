@@ -1,7 +1,7 @@
 ---
 id: '002'
 title: Surface calibration classification on the front-page card and device page
-status: open
+status: done
 use-cases:
 - SUC-002
 depends-on:
@@ -35,19 +35,19 @@ tests don't require this ticket to pass.
 
 ## Acceptance Criteria
 
-- [ ] `FrontPage`'s `EndpointCard` renders a distinguishing label (e.g.
+- [x] `FrontPage`'s `EndpointCard` renders a distinguishing label (e.g.
       "Calibration robot") for `classification.type === "calibration"`,
       leaving the existing `"robot"` label/rendering unchanged.
-- [ ] `DevicePage.tsx`'s dispatch gains `case "calibration": return
+- [x] `DevicePage.tsx`'s dispatch gains `case "calibration": return
       <RobotPage .../>`, additive alongside the existing `"robot"` arm
       — no existing arm (`"relay"`, `"unknown"`, `"robot"`) changes
       behavior.
-- [ ] `RobotPage` displays the raw `classification.program` and
+- [x] `RobotPage` displays the raw `classification.program` and
       `classification.version` strings somewhere visible (diagnostics,
       per the linked issue's Verification section) when they are
       non-null; renders nothing extra when they are null (a robot that
       never answered `ID`).
-- [ ] A `classification.type === "robot"` fixture (the ordinary case)
+- [x] A `classification.type === "robot"` fixture (the ordinary case)
       is unaffected by every change above — pinned by a regression
       assertion, not just "not covered by a new test."
 

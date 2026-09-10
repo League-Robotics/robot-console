@@ -24,7 +24,11 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import type { EndpointListEntry, RememberedRobotEntry } from "@robot-console/host/src/wsMessages.js";
+import type {
+  DiscoveredRobotEntry,
+  EndpointListEntry,
+  RememberedRobotEntry,
+} from "@robot-console/host/src/wsMessages.js";
 import { EndpointsList, FrontPage } from "./FrontPage";
 import { AppRoutes } from "../router";
 import { WsProvider } from "../ws/WsProvider";
@@ -443,6 +447,124 @@ describe("EndpointCard for a relay-radio (viaRelay) entry (added out-of-process,
 
     const card = el.querySelector('[data-testid="device-usb-RELAY-A-via-vevav"]');
     expect(card!.textContent).toContain("via relay usb-RELAY-A");
+  });
+});
+
+describe("EndpointCard for a wifi entry (sprint 10 ticket 005)", () => {
+  /** A WiFi-reachable roster robot's endpoint, mirroring the contract
+   * `deviceRegistry.ts`/ticket 003 synthesize: `endpointId: "wifi-<name>"`,
+   * `transport: "wifi"`, a `wifi: { host, port }` block, no `usb` block.
+   * Not yet connected (`classification.type: "unknown"`, no `role`) by
+   * default -- ticket 003's own note that a WiFi endpoint's
+   * classification stays `"unknown"` until a session opens and
+   * identifies it. */
+  function wifiFixture(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+    return {
+      endpointId: "wifi-gopiv",
+      transport: "wifi",
+      resourceKey: "wifi-gopiv",
+      classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none" },
+      name: "gopiv",
+      role: null,
+      sessionOpen: false,
+      wifi: { host: "192.168.1.42", port: 8765 },
+      ...overrides,
+    };
+  }
+
+  // `role: null` (not yet identified) makes this fixture `canBeFlashed`,
+  // so its card mounts `FlashDialog` (ticket 012-002), which reads
+  // `WsProvider`'s hooks -- same note as the "flags a device..."
+  // `EndpointsList` test above, this fixture needs a real provider.
+  it("shows a WiFi-distinguishing label with host:port for a not-yet-connected wifi entry", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <EndpointsList status="open" devices={[wifiFixture()]} />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+
+    const card = el.querySelector('[data-testid="device-wifi-gopiv"]');
+    expect(card).not.toBeNull();
+    expect(card!.textContent).toContain("WiFi");
+    expect(card!.textContent).toContain("192.168.1.42:8765");
+    expect(card!.textContent).not.toContain("No serial port");
+    expect(card!.querySelector(".device-linked-pill")).toBeNull();
+  });
+
+  it("keeps the same WiFi label once the entry is open and identified", () => {
+    const el = mount(
+      withRouter(
+        <EndpointsList
+          status="open"
+          devices={[
+            wifiFixture({
+              classification: {
+                type: "robot",
+                role: "NEZHA2",
+                commonName: "robot",
+                dialect: "space",
+                evidence: "role",
+              },
+              role: "NEZHA2",
+              sessionOpen: true,
+            }),
+          ]}
+        />,
+      ),
+    );
+
+    const card = el.querySelector('[data-testid="device-wifi-gopiv"]');
+    expect(card).not.toBeNull();
+    expect(card!.textContent).toContain("WiFi");
+    expect(card!.textContent).toContain("192.168.1.42:8765");
+    expect(card!.querySelector(".device-linked-pill")).not.toBeNull();
+  });
+
+  it("links to /d/wifi-<name> like any other endpoint", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <EndpointsList status="open" devices={[wifiFixture()]} />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+
+    const link = el.querySelector('[data-testid="device-wifi-gopiv"]');
+    expect(link?.tagName).toBe("A");
+    expect(link?.getAttribute("href")).toBe("/d/wifi-gopiv");
+  });
+
+  // Ticket 002/003 already enforce, host-side, that a robot never
+  // becomes a `wifi-<name>` `EndpointListEntry` unless it matches the
+  // roster (`rememberedRobots`) by name -- an ungated mDNS discovery
+  // never gets promoted. This is the UI-level restatement of that
+  // negative case, not a new enforcement point: `EndpointsList` renders
+  // purely off the `devices` snapshot it's handed and has no discovery
+  // list of its own to consult, so a name that never made it into
+  // `devices` (e.g. because the host's roster gate rejected it) can
+  // never produce a card, no matter what a raw discovery entry for it
+  // looked like.
+  it("renders no card, and no console error, for a name the host's roster gate never turned into an endpoint", () => {
+    const discovered: DiscoveredRobotEntry = {
+      instanceName: "zzzzz",
+      host: "192.168.1.99",
+      port: 8765,
+    };
+
+    const el = mount(withRouter(<EndpointsList status="open" devices={[]} />));
+
+    expect(el.querySelector(`[data-testid="device-wifi-${discovered.instanceName}"]`)).toBeNull();
+    expect(el.textContent ?? "").not.toContain(discovered.instanceName);
   });
 });
 

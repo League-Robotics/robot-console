@@ -43,6 +43,19 @@
  * mounts**. `sprint.md`'s Success Criteria calls this out by name: "the
  * same `RobotPage.transportBlind.test.ts` source-scan technique...now
  * also exercised against a relay-transport endpoint fixture."
+ *
+ * **Sprint 10 ticket 005 addition**: the same gap, closed again for
+ * `transport: "wifi"` -- a WiFi-reachable robot's endpoint (`endpointId:
+ * "wifi-<name>"`, a `wifi: { host, port }` block, no `usb` block, once
+ * identified) is, per this sprint's Architecture, meant to render on
+ * `RobotPage` exactly like any other transport once a session is open
+ * and the banner identifies it as a robot -- `DevicePage.tsx`'s
+ * dispatch and `RobotPage` itself are both transport-blind, so nothing
+ * new needs writing, only proving. The third describe block below
+ * mirrors the relay-radio one immediately above it (same fixture shape,
+ * same harness, same assertions), against a `transport: "wifi"` fixture
+ * instead -- again with **zero changes to `RobotPage.tsx` or any file in
+ * `FILES_UNDER_TEST`**.
  */
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -123,6 +136,26 @@ function relayTransportRobotFixture(overrides: Partial<EndpointListEntry> = {}):
   };
 }
 
+/** A robot reached directly over WiFi -- exactly the endpoint shape
+ * ticket 003 synthesizes once such an endpoint has identified (`wifi`
+ * set, no `usb` block, `transport: "wifi"`). Mirrors
+ * `relayTransportRobotFixture` above; this file does not import a
+ * shared fixture module for the same one-caller-each reason that
+ * function's own doc comment gives. */
+function wifiTransportRobotFixture(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+  return {
+    endpointId: "wifi-gopiv",
+    transport: "wifi",
+    resourceKey: "wifi-gopiv",
+    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
+    name: "gopiv",
+    role: "NEZHA2",
+    sessionOpen: true,
+    wifi: { host: "192.168.1.42", port: 8765 },
+    ...overrides,
+  };
+}
+
 describe("RobotPage renders correctly for a relay-transport endpoint (sprint 8 ticket 005)", () => {
   // Companion to the source scan above: proves RobotPage actually
   // renders its usual controls for a relay-mediated endpoint too, not
@@ -169,5 +202,54 @@ describe("RobotPage renders correctly for a relay-transport endpoint (sprint 8 t
     expect(container.querySelector('[data-testid="drive-forward"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Console"]')).not.toBeNull();
     expect(container.textContent).toContain("vevav");
+  });
+});
+
+describe("RobotPage renders correctly for a wifi-transport endpoint (sprint 10 ticket 005)", () => {
+  // Companion to the source scan above, mirroring the relay-transport
+  // describe block immediately above this one: proves RobotPage renders
+  // its usual controls for a WiFi-reached endpoint too, with zero
+  // changes to RobotPage.tsx or any component it mounts (this describe
+  // block only adds a fixture and assertions, on the unmodified
+  // `RobotPage` import above).
+  let container: HTMLDivElement | null = null;
+  let root: Root | null = null;
+
+  afterEach(() => {
+    if (root) {
+      act(() => {
+        root!.unmount();
+      });
+      root = null;
+    }
+    if (container) {
+      container.remove();
+      container = null;
+    }
+  });
+
+  it("renders the usual robot controls (estop, drive, console) for a wifi-transport endpoint", () => {
+    const endpoint = wifiTransportRobotFixture();
+    let socket: FakeSocket | null = null;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root!.render(
+        createElement(WsProvider, {
+          url: "ws://test/",
+          socketFactory: () => (socket = new FakeSocket()),
+          children: createElement(RobotPage, { endpoint }),
+        }),
+      );
+    });
+    act(() => {
+      socket!.emitOpen();
+    });
+
+    expect(container.querySelector('[data-testid="estop-button"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="drive-forward"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Console"]')).not.toBeNull();
+    expect(container.textContent).toContain("gopiv");
   });
 });

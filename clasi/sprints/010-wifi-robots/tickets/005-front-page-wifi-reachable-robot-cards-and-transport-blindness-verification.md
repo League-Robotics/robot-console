@@ -1,9 +1,11 @@
 ---
 id: '005'
 title: 'Front page: WiFi-reachable robot cards and transport-blindness verification'
-status: open
-use-cases: [SUC-005]
-depends-on: ["003"]
+status: in-progress
+use-cases:
+- SUC-005
+depends-on:
+- '003'
 github-issue: ''
 issue: robot-console-two-level-ui-and-multi-transport-roadmap.md
 completes_issue: true
@@ -41,20 +43,20 @@ transport, not changing what they check.
 
 ## Acceptance Criteria
 
-- [ ] `FrontPage` renders a WiFi-distinguishing label for a
+- [x] `FrontPage` renders a WiFi-distinguishing label for a
       `transport: "wifi"` fixture entry (both `sessionOpen: false` —
       the not-yet-connected, clickable card — and `sessionOpen: true`
       states).
-- [ ] `FrontPage` renders no card at all, and no console error, for a
+- [x] `FrontPage` renders no card at all, and no console error, for a
       fixture representing a raw (ungated) discovery entry — i.e. the
       UI-level restatement of the negative case ticket 002/003 already
       enforce host-side (this is a defense-in-depth UI test, not the
       primary enforcement point).
-- [ ] `RobotPage.transportBlind.test.ts`'s render-describe block passes
+- [x] `RobotPage.transportBlind.test.ts`'s render-describe block passes
       against a new `transport: "wifi"` fixture: estop button, drive
       controls, and console all present, robot name in the rendered
       text.
-- [ ] `RobotPage.transportBlind.test.ts`'s existing source-scan
+- [x] `RobotPage.transportBlind.test.ts`'s existing source-scan
       assertions (all three, across every file in `FILES_UNDER_TEST`)
       continue to pass unmodified — proving this sprint introduced no
       new transport-blindness violation anywhere in `RobotPage`'s

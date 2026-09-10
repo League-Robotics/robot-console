@@ -28,6 +28,21 @@ describe("LineRouter", () => {
     expect(lines).toEqual([{ kind: "line", verb: "pong", fields: [] }]);
   });
 
+  it("delivers thdr and t (telemetry, sprint 009 ticket 002) to onLine, never onUnrouted", () => {
+    // Regression coverage: before this ticket, codec.ts's REPLY_VERBS
+    // deliberately excluded thdr/t, so LineRouter classified them
+    // "foreign" and routed them to onUnrouted as raw console noise
+    // instead of dispatching them as decoded reply lines.
+    const { lineRouter, lines, unrouted } = router(new Session());
+    lineRouter.handleLine("thdr seq now flags posl posr vell velr");
+    lineRouter.handleLine("t 1 2 3 4 5 6 7");
+    expect(unrouted).toEqual([]);
+    expect(lines).toEqual([
+      { kind: "line", verb: "thdr", fields: ["seq", "now", "flags", "posl", "posr", "vell", "velr"] },
+      { kind: "line", verb: "t", fields: ["1", "2", "3", "4", "5", "6", "7"] },
+    ]);
+  });
+
   it("hands a foreign (unrecognized lowercase) line to onUnrouted as raw text, never to onLine or the session", () => {
     const { lineRouter, lines, ackNacks, unrouted } = router(new Session());
     expect(() => lineRouter.handleLine("beep boop overheard")).not.toThrow();

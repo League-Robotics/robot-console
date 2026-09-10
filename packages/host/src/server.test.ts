@@ -492,6 +492,43 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
     expect(reply).toEqual({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: "status mode=idle" });
   });
 
+  it("broadcasts thdr/t telemetry as its own message type, never as a line or an endpoints snapshot (sprint 009 ticket 002)", async () => {
+    const link = new FakeLink(async () => banner());
+    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
+    const connected = await connect(server.url.replace("http://", "ws://"));
+    ws = connected.ws;
+
+    await connected.messages.waitFor((m) => m.type === "endpoints" && m.endpoints[0]?.sessionOpen === true);
+    const snapshotsBeforeTelemetry = connected.messages.all.filter((m) => m.type === "endpoints").length;
+
+    link.emitLine({ kind: "line", verb: "thdr", fields: ["seq", "now", "flags", "posl", "posr", "vell", "velr"] });
+    const header = await connected.messages.waitFor((m) => m.type === "telemetry");
+    expect(header).toEqual({
+      type: "telemetry",
+      endpointId: "usb-SERIAL-A",
+      header: ["seq", "now", "flags", "posl", "posr", "vell", "velr"],
+    });
+
+    link.emitLine({ kind: "line", verb: "t", fields: ["1", "2", "3", "4", "5", "6", "7"] });
+    const frame = await connected.messages.waitFor(
+      (m) => m.type === "telemetry" && "frame" in m,
+    );
+    expect(frame).toEqual({
+      type: "telemetry",
+      endpointId: "usb-SERIAL-A",
+      frame: { seq: "1", now: "2", flags: "3", posl: "4", posr: "5", vell: "6", velr: "7" },
+    });
+
+    // Neither telemetry event grew the per-device rx log (no "line"
+    // message was ever broadcast for them) nor triggered an extra
+    // "endpoints" snapshot -- see wsMessages.ts's own TelemetryMessage
+    // doc comment and this ticket's own acceptance criteria.
+    expect(connected.messages.all.filter((m) => m.type === "line")).toEqual([]);
+    expect(connected.messages.all.filter((m) => m.type === "endpoints").length).toBe(
+      snapshotsBeforeTelemetry,
+    );
+  });
+
   it("forwards robotName and radio from a session-open message to registry.requestOpen as its target argument (OOP 2026-09-09)", async () => {
     // deviceRegistry.ts's own relay-routing behavior for `target` is
     // covered in deviceRegistry.test.ts's "robot-via-relay endpoints"

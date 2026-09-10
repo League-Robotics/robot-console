@@ -122,7 +122,8 @@
  *   - server -> client: {@link EndpointsMessage}, {@link LineMessage}
  *     (always `direction: "rx"` in this direction -- an inbound line
  *     from the device), {@link ErrorMessage}, {@link FlashProgressMessage},
- *     {@link FlashResultMessage}, {@link FlashLocalReadyMessage}.
+ *     {@link FlashResultMessage}, {@link FlashLocalReadyMessage},
+ *     {@link TelemetryMessage} (sprint 009 ticket 002).
  *   `LineMessage` is one shared shape used in both directions,
  *   discriminated further by its own `direction` field.
  */
@@ -416,6 +417,43 @@ export interface LineMessage {
 
 /** See {@link LineMessage.origin}. */
 export type LineOrigin = "poll";
+
+/** Server -> client: one decoded telemetry event for an endpoint (sprint
+ * 009 ticket 002) -- either a header update, when a `thdr` line arrives
+ * or changes, or one decoded frame, when a `t` line successfully zips
+ * against the currently held header. Never both on the same message;
+ * `deviceRegistry.ts` sends one or the other, never a combined message.
+ *
+ * Deliberately its own message type (`type: "telemetry"`), distinct from
+ * {@link LineMessage} (bounded by `MAX_LINES_PER_DEVICE`, feeds the
+ * console log -- the wrong vehicle for a 20 Hz structured-data stream)
+ * and from {@link EndpointsMessage} (a deliberately infrequent full
+ * snapshot -- folding 20 Hz data into it would mean re-broadcasting the
+ * entire endpoint list 20 times a second). See sprint.md's Design
+ * Rationale #2.
+ *
+ * A `t` frame that arrives with no header held for the endpoint (or one
+ * that fails to zip against the held header, a field-count mismatch)
+ * produces no {@link TelemetryMessage} at all -- the client's own
+ * default per-endpoint state already reads as "waiting for header" (see
+ * `deviceRegistry.ts`'s own header-recovery doc comment), so there is
+ * nothing useful to forward until a `thdr` (or a decodable `t`) arrives. */
+export interface TelemetryMessage {
+  type: "telemetry";
+  endpointId: string;
+  /** Present only on a header update -- the ordered column names from
+   * the most recent `thdr` line, verbatim (no validation, no scaling;
+   * see `@robot-console/protocol`'s `v6/telemetry.ts` module doc
+   * comment for why this module holds no column-name knowledge at
+   * all). */
+  header?: readonly string[];
+  /** Present only on a decoded frame -- `header[i]` -> the `t` line's
+   * `fields[i]`, raw wire text, completely unconverted (unit conversion
+   * for named columns like `ox`/`oy`/`oh`/`rotation`/`omega` is a
+   * consumer-side concern, applied only where those names happen to be
+   * present -- see `v6/telemetry.ts`'s own doc comment). */
+  frame?: Record<string, string>;
+}
 
 /** Client -> server: send one protocol verb, with optional fields, to an
  * endpoint's open session -- the structured alternative to
@@ -746,7 +784,8 @@ export type ServerMessage =
   | ErrorMessage
   | FlashProgressMessage
   | FlashResultMessage
-  | FlashLocalReadyMessage;
+  | FlashLocalReadyMessage
+  | TelemetryMessage;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;

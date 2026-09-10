@@ -359,11 +359,13 @@ export function decodeLine(raw: string): DecodeResult {
  *     lowercase `device ...` dialect banner.ts also parses is an
  *     ordinary lowercase reply-direction line under this rule, not
  *     foreign traffic to drop)
- * Deliberately excludes `thdr`/`t` (telemetry, v6/telemetry.ts's own
- * schemaless verbs — out of this ticket's scope per sprint.md, but
- * still legitimate reply-direction lines; a caller combining this
- * module with telemetry.ts should treat those two as reply-direction
- * too rather than reading their absence here as "foreign"). */
+ * Includes `thdr`/`t` (telemetry, v6/telemetry.ts's own schemaless
+ * verbs -- added sprint 009 ticket 002, the same way `funcs` was added
+ * below: without them these lines classified as "foreign" and never
+ * reached a listener, even though the robot emits them continuously at
+ * 20 Hz (protocol.md S10.2). `v6/telemetry.ts` is what actually zips a
+ * `thdr` against each `t` line; this module owns only the classification
+ * that lets them reach a caller at all. */
 export const REPLY_VERBS: ReadonlySet<string> = new Set([
   "ack",
   "nack",
@@ -382,6 +384,14 @@ export const REPLY_VERBS: ReadonlySet<string> = new Set([
   // out-of-process, 2026-09-09; without it these lines classified as
   // "foreign" and never reached a listener).
   "funcs",
+  // `thdr <col> <col> ...` -- the telemetry column-name header
+  // (protocol.md S10.2), emitted whenever the column set changes or the
+  // wire's own 20-frame auto-refresh fires (sprint 009 ticket 002).
+  "thdr",
+  // `t <val> <val> ...` -- one telemetry frame, zipped positionally
+  // against the most recently held `thdr` by v6/telemetry.ts (sprint 009
+  // ticket 002).
+  "t",
 ]);
 
 /** Is `verb` one of the wire's own known lowercase reply verbs

@@ -1,10 +1,13 @@
 ---
-id: "001"
-title: "telemetry.ts: schemaless thdr/t positional decoder"
-status: open
-use-cases: [SUC-001, SUC-002, SUC-003]
+id: '001'
+title: 'telemetry.ts: schemaless thdr/t positional decoder'
+status: done
+use-cases:
+- SUC-001
+- SUC-002
+- SUC-003
 depends-on: []
-github-issue: ""
+github-issue: ''
 issue: robot-console-two-level-ui-and-multi-transport-roadmap.md
 completes_issue: false
 ---
@@ -47,24 +50,24 @@ as long as the module stays schemaless and I/O-free):
 
 ## Acceptance Criteria
 
-- [ ] A single decode path zips `thdr` against `t` positionally for
+- [x] A single decode path zips `thdr` against `t` positionally for
       7-, 11-, 12-, and 20-column headers, with no code path that
       branches on column count.
-- [ ] `ox`/`oy` values pass through the decoder completely unscaled
+- [x] `ox`/`oy` values pass through the decoder completely unscaled
       (a test asserts the decoded value equals the raw wire value, in
       mm, not divided or multiplied).
-- [ ] `oh` values pass through completely undivided (a test pins this
+- [x] `oh` values pass through completely undivided (a test pins this
       — the specific historical trap — by asserting the decoded value
       is NOT divided by any factor).
-- [ ] `rotation`/`omega` values pass through as raw milliradians (a
+- [x] `rotation`/`omega` values pass through as raw milliradians (a
       test asserts no scaling is applied).
-- [ ] A `t` line whose field count does not match the held header's
+- [x] A `t` line whose field count does not match the held header's
       column count is handled explicitly (rejected or flagged), not
       silently zipped short.
-- [ ] A `t` line arriving before any `thdr` has been seen is handled
+- [x] A `t` line arriving before any `thdr` has been seen is handled
       explicitly (the module surfaces "no header held" rather than
       guessing or throwing an uncaught exception).
-- [ ] The module has zero imports of anything I/O-related (no
+- [x] The module has zero imports of anything I/O-related (no
       transport, no `EndpointState`, no WS types) — it is pure data in,
       data out, matching `packages/protocol`'s existing "zero I/O"
       discipline.

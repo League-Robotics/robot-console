@@ -1558,17 +1558,27 @@ export class DeviceRegistry {
    * error, and it never came back on its own.
    */
   private retryWifiAutoConnects(): void {
-    for (const state of this.states.values()) {
-      if (
-        state.wifiTarget &&
-        state.wifiAutoConnect &&
-        !state.sessionOpen &&
-        !state.identifying &&
-        !state.wifiConnecting &&
-        state.name !== null
-      ) {
+    let removed = false;
+    for (const [id, state] of [...this.states]) {
+      if (!state.wifiTarget || state.sessionOpen || state.identifying || state.wifiConnecting || state.name === null) {
+        continue;
+      }
+      if (!this.isWifiRobotGated(state.name)) {
+        // The advertisement went away while the session was still open
+        // (syncWifiEndpoints deliberately leaves an open session alone),
+        // and the link has since dropped: nothing is left to reconnect
+        // to, so drop the entry rather than retrying a vanished robot
+        // forever. A fresh advertisement recreates it.
+        this.states.delete(id);
+        removed = true;
+        continue;
+      }
+      if (state.wifiAutoConnect) {
         void this.autoConnectWifiRobot(state.name);
       }
+    }
+    if (removed) {
+      this.emitDevices();
     }
   }
 

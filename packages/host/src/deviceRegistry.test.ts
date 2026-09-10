@@ -3202,6 +3202,44 @@ describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", 
       await registry.stop();
     }
   });
+
+  it("OOP 2026-09-10: a WiFi endpoint whose advertisement went away while its session was open is dropped once the link dies, instead of being retried forever", async () => {
+    const watcher = fixtureWatcher(() => []);
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+    const wifiLink = new FakeLink(async () => wifiRobotBanner());
+    const createLink = wifiOnlyCreateLink(new Map([["gopiv.local.:7654", wifiLink]]));
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      knownRobotsStore: fakeRoster(["gopiv"]),
+      mdnsDiscovery,
+      createLink,
+      wifiRetryIntervalMs: 20,
+    });
+    registry.start();
+    try {
+      await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true);
+
+      // Advertisement aged out while the session is still up: the
+      // open entry is deliberately left alone.
+      mdnsDiscovery.setSnapshot({ relays: [], robots: [], wifiRobots: [] });
+      expect(registry.snapshot().find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen).toBe(true);
+
+      // Then the link dies. With nothing advertised any more there is
+      // nothing to reconnect to -- the entry goes, rather than a card
+      // sitting on "unreachable" and retrying every few seconds.
+      wifiLink.emitError(new Error("read ECONNRESET"));
+      await waitForSnapshot(registry, (s) => !s.some((e) => e.endpointId === "wifi-gopiv"));
+      expect(wifiLink.connectCalls).toBe(1);
+    } finally {
+      await registry.stop();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------

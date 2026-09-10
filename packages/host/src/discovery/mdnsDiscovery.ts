@@ -89,6 +89,11 @@ export interface MdnsService {
    * default, non-binary decode). Absent or empty if the service
    * advertised no TXT record. */
   txt?: Record<string, string>;
+  /** The instance's fully-qualified mDNS name (e.g.
+   * `gopiv robot link._robotlink._tcp.local`) -- the key
+   * {@link MdnsBackend.onAnnounce} reports and {@link MdnsBrowser.forget}
+   * accepts. Absent from a backend that does not track liveness. */
+  fqdn?: string;
 }
 
 /** Listener shape for one browse session's `up`/`down` events. */
@@ -105,6 +110,14 @@ export interface MdnsBrowser {
   /** Stop this browse session (no more `up`/`down` events after this
    * returns). Idempotent. */
   stop(): void;
+  /** OOP 2026-09-10: drop one instance from this browse session's own
+   * memory, emitting `down` for it, so a later announcement of the same
+   * instance fires `up` again. `bonjour-service` only ever emits `up`
+   * for an instance it has not seen before and never expires one on its
+   * own, so without this a robot that went away and came back would be
+   * invisible forever. Optional: a backend without it is simply never
+   * asked. */
+  forget?(fqdn: string): void;
 }
 
 /** Options passed to {@link MdnsBackend.find}, mirroring
@@ -123,6 +136,13 @@ export interface MdnsFindOptions {
  * fake that never touches a real multicast socket. */
 export interface MdnsBackend {
   find(options: MdnsFindOptions): MdnsBrowser;
+  /** OOP 2026-09-10: subscribe to every PTR answer heard on the wire,
+   * reported as the instance's fqdn plus the receive time -- the only
+   * way to learn that an already-known, announce-only instance is
+   * still alive (see {@link MdnsBrowser.forget}). Returns an
+   * unsubscribe function. Optional: without it, WiFi records are never
+   * aged out. */
+  onAnnounce?(listener: (fqdn: string, receivedAt: number) => void): () => void;
   /** Release the backend's own resources (e.g. close its multicast
    * socket). Not called by {@link MdnsDiscovery.stop} -- see that
    * method's doc comment for why. */
@@ -159,18 +179,52 @@ function createBonjourBackend(): MdnsBackend {
               host: service.host,
               port: service.port,
               ...(service.txt !== undefined ? { txt: service.txt as Record<string, string> } : {}),
+              fqdn: service.fqdn,
             });
           });
         },
         stop(): void {
           browser.stop();
         },
+        forget(fqdn: string): void {
+          // `Browser.removeService` is a real, public method of
+          // bonjour-service's Browser (it emits `down` and drops the
+          // instance from its list) that its `.d.ts` simply does not
+          // declare.
+          (browser as unknown as { removeService(fqdn: string): void }).removeService(fqdn);
+        },
+      };
+    },
+    onAnnounce(listener: (fqdn: string, receivedAt: number) => void): () => void {
+      // The multicast-dns instance every Browser listens on -- private
+      // in the typings, but the one place raw response packets (and so
+      // re-announcements of already-known instances) can be observed.
+      const mdns = (bonjour as unknown as { server: { mdns: NodeJS.EventEmitter } }).server.mdns;
+      const handler = (packet: { answers?: DnsRecord[]; additionals?: DnsRecord[] }): void => {
+        const receivedAt = Date.now();
+        for (const record of [...(packet.answers ?? []), ...(packet.additionals ?? [])]) {
+          if (record.type === "PTR" && typeof record.data === "string" && (record.ttl ?? 0) > 0) {
+            listener(record.data, receivedAt);
+          }
+        }
+      };
+      mdns.on("response", handler);
+      return () => {
+        mdns.removeListener("response", handler);
       };
     },
     destroy(): void {
       bonjour.destroy();
     },
   };
+}
+
+/** The slice of a multicast-dns resource record {@link createBonjourBackend}'s
+ * announce listener reads. */
+interface DnsRecord {
+  type: string;
+  data?: unknown;
+  ttl?: number;
 }
 
 /**
@@ -233,7 +287,20 @@ export interface MdnsDiscoveryOptions {
    * `bonjour-service` backend. Tests/callers substitute a fully
    * synthetic fake so no real multicast socket is ever opened. */
   backend?: MdnsBackend;
+  /** OOP 2026-09-10: how long a WiFi robot may go without a heard
+   * announcement before its record is dropped (and forgotten in the
+   * browser -- see {@link MdnsBrowser.forget}). The robots announce
+   * every 60 s with a 120 s PTR TTL, so the default,
+   * {@link DEFAULT_WIFI_STALE_AFTER_MS}, tolerates one missed
+   * announcement plus slack. `0` disables aging entirely. */
+  staleAfterMs?: number;
+  /** OOP 2026-09-10: how often the staleness sweep runs. Default
+   * {@link DEFAULT_WIFI_SWEEP_INTERVAL_MS}. */
+  sweepIntervalMs?: number;
 }
+
+export const DEFAULT_WIFI_STALE_AFTER_MS = 150_000;
+export const DEFAULT_WIFI_SWEEP_INTERVAL_MS = 30_000;
 
 /**
  * Parse a raw TXT `registry` field into a port number. Never throws:
@@ -325,9 +392,38 @@ export class MdnsDiscovery {
    * collapses into exactly one entry. */
   private readonly wifiRobots = new Map<string, WifiRobotService>();
   private readonly listeners = new Set<MdnsDiscoveryListener>();
+  /** OOP 2026-09-10: liveness bookkeeping per WiFi instance fqdn (one
+   * per service type the robot advertises on) -- see
+   * {@link MdnsDiscoveryOptions.staleAfterMs}. */
+  private readonly wifiLiveness = new Map<string, { browser: MdnsBrowser; key: string; lastSeen: number }>();
+  private readonly staleAfterMs: number;
+  private readonly sweepIntervalMs: number;
+  private sweepTimer: ReturnType<typeof setInterval> | undefined;
+  private unsubscribeAnnounce: (() => void) | undefined;
 
   constructor(options: MdnsDiscoveryOptions = {}) {
     this.injectedBackend = options.backend;
+    this.staleAfterMs = options.staleAfterMs ?? DEFAULT_WIFI_STALE_AFTER_MS;
+    this.sweepIntervalMs = options.sweepIntervalMs ?? DEFAULT_WIFI_SWEEP_INTERVAL_MS;
+  }
+
+  /** OOP 2026-09-10: drop every WiFi instance not heard from within
+   * {@link staleAfterMs}. Forgetting it in its browser emits `down`,
+   * which {@link start}'s handler turns into the snapshot change; a
+   * backend without `forget` gets the same snapshot change directly. */
+  private sweepStaleWifiRobots(): void {
+    const now = Date.now();
+    for (const [fqdn, record] of [...this.wifiLiveness]) {
+      if (now - record.lastSeen <= this.staleAfterMs) {
+        continue;
+      }
+      this.wifiLiveness.delete(fqdn);
+      if (record.browser.forget) {
+        record.browser.forget(fqdn);
+      } else if (this.wifiRobots.delete(record.key)) {
+        this.notify();
+      }
+    }
   }
 
   /** Discovered services as of the most recent `up`/`down` event
@@ -388,22 +484,41 @@ export class MdnsDiscovery {
       this.notify();
     });
 
-    const onWifiRobotUp = (service: MdnsService): void => {
-      this.wifiRobots.set(wifiRobotKey(service), parseWifiRobotService(service));
+    const onWifiRobotUp = (browser: MdnsBrowser) => (service: MdnsService): void => {
+      const key = wifiRobotKey(service);
+      this.wifiRobots.set(key, parseWifiRobotService(service));
+      this.wifiLiveness.set(service.fqdn ?? service.name, { browser, key, lastSeen: Date.now() });
       this.notify();
     };
     const onWifiRobotDown = (service: MdnsService): void => {
       this.wifiRobots.delete(wifiRobotKey(service));
+      this.wifiLiveness.delete(service.fqdn ?? service.name);
       this.notify();
     };
 
-    this.robotlinkTcpBrowser = backend.find({ type: ROBOTLINK_SERVICE_TYPE, protocol: "tcp" });
-    this.robotlinkTcpBrowser.on("up", onWifiRobotUp);
-    this.robotlinkTcpBrowser.on("down", onWifiRobotDown);
+    const tcp = backend.find({ type: ROBOTLINK_SERVICE_TYPE, protocol: "tcp" });
+    this.robotlinkTcpBrowser = tcp;
+    tcp.on("up", onWifiRobotUp(tcp));
+    tcp.on("down", onWifiRobotDown);
 
-    this.robotlinkUdpBrowser = backend.find({ type: ROBOTLINK_SERVICE_TYPE, protocol: "udp" });
-    this.robotlinkUdpBrowser.on("up", onWifiRobotUp);
-    this.robotlinkUdpBrowser.on("down", onWifiRobotDown);
+    const udp = backend.find({ type: ROBOTLINK_SERVICE_TYPE, protocol: "udp" });
+    this.robotlinkUdpBrowser = udp;
+    udp.on("up", onWifiRobotUp(udp));
+    udp.on("down", onWifiRobotDown);
+
+    // OOP 2026-09-10: age out WiFi robots that stop announcing -- see
+    // MdnsDiscoveryOptions.staleAfterMs.
+    this.unsubscribeAnnounce = backend.onAnnounce?.((fqdn, receivedAt) => {
+      const record = this.wifiLiveness.get(fqdn);
+      if (record) {
+        record.lastSeen = receivedAt;
+      }
+    });
+    if (this.staleAfterMs > 0 && this.sweepIntervalMs > 0) {
+      const timer = setInterval(() => this.sweepStaleWifiRobots(), this.sweepIntervalMs);
+      timer.unref?.();
+      this.sweepTimer = timer;
+    }
   }
 
   /**
@@ -418,6 +533,13 @@ export class MdnsDiscovery {
     this.robotBrowser?.stop();
     this.robotlinkTcpBrowser?.stop();
     this.robotlinkUdpBrowser?.stop();
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = undefined;
+    }
+    this.unsubscribeAnnounce?.();
+    this.unsubscribeAnnounce = undefined;
+    this.wifiLiveness.clear();
     this.relayBrowser = undefined;
     this.robotBrowser = undefined;
     this.robotlinkTcpBrowser = undefined;

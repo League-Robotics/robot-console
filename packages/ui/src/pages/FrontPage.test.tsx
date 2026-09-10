@@ -29,7 +29,7 @@ import type {
   EndpointListEntry,
   RememberedRobotEntry,
 } from "@robot-console/host/src/wsMessages.js";
-import { EndpointsList, FrontPage } from "./FrontPage";
+import { EndpointsList, FrontPage, groupEndpointsByRobot } from "./FrontPage";
 import { AppRoutes } from "../router";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
@@ -730,5 +730,82 @@ describe("RememberedRobotsSection (ticket 005)", () => {
       });
     });
     expect(el.querySelector('[data-testid="remembered-robot-nuvek"]')).toBeNull();
+  });
+});
+
+describe("one card per robot (out-of-process, 2026-09-10)", () => {
+  function wifiEntry(name: string, overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+    return {
+      endpointId: `wifi-${name}`,
+      transport: "wifi",
+      resourceKey: `wifi-${name}`,
+      classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
+      name,
+      role: null,
+      sessionOpen: false,
+      wifi: { host: `${name}.local`, port: 7654 },
+      ...overrides,
+    };
+  }
+
+  it("groupEndpointsByRobot folds a USB link and a WiFi link with the same name into one group led by the open USB link", () => {
+    const usb = baseDevice({ id: "V", name: "vevov" });
+    const wifi = wifiEntry("vevov", { sessionError: "could not reach vevov.local:7654" });
+    const groups = groupEndpointsByRobot([wifi, usb]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.key).toBe("vevov");
+    expect(groups[0]?.primary.endpointId).toBe("usb-V");
+    expect(groups[0]?.members.map((m) => m.endpointId)).toEqual(["usb-V", "wifi-vevov"]);
+  });
+
+  it("an open WiFi link outranks a closed USB link as the group's primary", () => {
+    const usb = baseDevice({ id: "V", name: "vevov", linkOpen: false });
+    const wifi = wifiEntry("vevov", { sessionOpen: true, role: "NEZHA2", classification: classificationFor("NEZHA2") });
+    expect(groupEndpointsByRobot([usb, wifi])[0]?.primary.endpointId).toBe("wifi-vevov");
+  });
+
+  it("nameless endpoints never group, and different names stay separate", () => {
+    const a = baseDevice({ id: "A", name: null });
+    const b = baseDevice({ id: "B", name: null });
+    const c = baseDevice({ id: "C", name: "tigez" });
+    expect(groupEndpointsByRobot([a, b, c]).map((g) => g.key)).toEqual(["endpoint:usb-A", "endpoint:usb-B", "tigez"]);
+  });
+
+  it("renders exactly one card for a robot on USB and WiFi, linking to the USB page, with both links listed", () => {
+    const usb = baseDevice({ id: "V", name: "vevov" });
+    const wifi = wifiEntry("vevov", { sessionError: "could not reach vevov.local:7654" });
+    const el = mount(withRouter(<EndpointsList status="open" devices={[wifi, usb]} />));
+
+    expect(el.querySelectorAll("h3.device-name")).toHaveLength(1);
+    expect(el.querySelector("h3.device-name")?.textContent).toBe("vevov");
+    const card = el.querySelector('[data-testid="device-usb-V"]');
+    expect(card?.getAttribute("href")).toBe("/d/usb-V");
+    expect(el.querySelector('[data-testid="device-wifi-vevov"]')).toBeNull();
+
+    const rows = el.querySelectorAll(".device-connections li");
+    expect(rows).toHaveLength(2);
+    const wifiRow = el.querySelector('[data-testid="device-link-wifi-vevov"]');
+    expect(wifiRow?.getAttribute("href")).toBe("/d/wifi-vevov");
+    expect(wifiRow?.textContent).toContain("WiFi · vevov.local:7654");
+    expect(wifiRow?.textContent).toContain("Unreachable: could not reach vevov.local:7654");
+    expect(el.querySelector('[data-testid="device-link-usb-V"]')?.textContent).toContain("Linked");
+    // No anchor nested in an anchor.
+    expect(el.querySelectorAll("a a")).toHaveLength(0);
+  });
+
+  it("keeps the calibration badge from the identified USB link even when the WiFi link is the unidentified one", () => {
+    const usb = baseDevice({ id: "V", name: "vevov" });
+    usb.classification = { ...usb.classification, type: "calibration", program: "calibration-0.20260910.4", version: "1.20260910.2" };
+    const wifi = wifiEntry("vevov");
+    const el = mount(withRouter(<EndpointsList status="open" devices={[wifi, usb]} />));
+    expect(el.querySelector('[data-testid="calibration-badge"]')?.textContent).toBe("Calibration robot · 1.20260910.2");
+    expect(el.querySelector('[data-testid="calibration-badge"]')).not.toBeNull();
+    expect(el.querySelectorAll('[data-testid="calibration-badge"]')).toHaveLength(1);
+  });
+
+  it("a single-link robot renders the plain card exactly as before (no connections list)", () => {
+    const el = mount(withRouter(<EndpointsList status="open" devices={[baseDevice({ id: "T", name: "tigez" })]} />));
+    expect(el.querySelector('[data-testid="device-usb-T"]')).not.toBeNull();
+    expect(el.querySelector(".device-connections")).toBeNull();
   });
 });

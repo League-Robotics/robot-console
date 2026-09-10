@@ -17,16 +17,30 @@ import {
  */
 function fakeBrowser() {
   const emitter = new EventEmitter();
+  const known = new Map<string, MdnsService>();
   const browser: MdnsBrowser & {
     emitUp: (service: MdnsService) => void;
     emitDown: (service: MdnsService) => void;
     stop: ReturnType<typeof vi.fn>;
+    forget: ReturnType<typeof vi.fn>;
   } = {
     on(event, listener) {
       emitter.on(event, listener);
     },
     stop: vi.fn(),
+    // Mirrors bonjour-service's Browser.removeService: drop the
+    // instance and emit `down` for it (OOP 2026-09-10).
+    forget: vi.fn((fqdn: string) => {
+      const service = known.get(fqdn);
+      if (service) {
+        known.delete(fqdn);
+        emitter.emit("down", service);
+      }
+    }),
     emitUp(service: MdnsService) {
+      if (service.fqdn) {
+        known.set(service.fqdn, service);
+      }
       emitter.emit("up", service);
     },
     emitDown(service: MdnsService) {
@@ -51,18 +65,32 @@ function fakeBackend() {
   const robotlinkTcp = fakeBrowser();
   const robotlinkUdp = fakeBrowser();
   const findCalls: MdnsFindOptions[] = [];
+  const announceListeners = new Set<(fqdn: string, receivedAt: number) => void>();
   const backend: MdnsBackend & {
     relay: typeof relay;
     robot: typeof robot;
     robotlinkTcp: typeof robotlinkTcp;
     robotlinkUdp: typeof robotlinkUdp;
     findCalls: MdnsFindOptions[];
+    /** Simulate one PTR answer heard on the wire (OOP 2026-09-10). */
+    announce: (fqdn: string) => void;
   } = {
     relay,
     robot,
     robotlinkTcp,
     robotlinkUdp,
     findCalls,
+    announce(fqdn: string) {
+      for (const listener of announceListeners) {
+        listener(fqdn, Date.now());
+      }
+    },
+    onAnnounce(listener) {
+      announceListeners.add(listener);
+      return () => {
+        announceListeners.delete(listener);
+      };
+    },
     find(options: MdnsFindOptions): MdnsBrowser {
       findCalls.push(options);
       if (options.type === "mbrelay") {
@@ -368,5 +396,87 @@ describe("MdnsDiscovery", () => {
       expect(snapshot.relays).toEqual([]);
       expect(snapshot.robots).toEqual([]);
     });
+  });
+});
+
+describe("WiFi robot advertisement liveness (OOP 2026-09-10)", () => {
+  const FQDN = "gopiv robot link._robotlink._tcp.local";
+  function gopivService(): MdnsService {
+    return {
+      name: "gopiv robot link",
+      host: "gopiv.local.",
+      port: 7654,
+      txt: { name: "gopiv", role: "robot", link: "v6", port: "7654" },
+      fqdn: FQDN,
+    };
+  }
+
+  it("drops a WiFi robot that has not been heard from within staleAfterMs, forgetting it in its browser so a later announce fires up again", () => {
+    vi.useFakeTimers();
+    try {
+      const backend = fakeBackend();
+      const discovery = new MdnsDiscovery({ backend, staleAfterMs: 150_000, sweepIntervalMs: 30_000 });
+      const changes: number[] = [];
+      discovery.onChange((current) => changes.push(current.wifiRobots.length));
+      discovery.start();
+
+      backend.robotlinkTcp.emitUp(gopivService());
+      expect(discovery.current().wifiRobots.map((r) => r.name)).toEqual(["gopiv"]);
+
+      vi.advanceTimersByTime(120_000);
+      expect(discovery.current().wifiRobots).toHaveLength(1);
+      expect(backend.robotlinkTcp.forget).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(60_000);
+      expect(backend.robotlinkTcp.forget).toHaveBeenCalledWith(FQDN);
+      expect(discovery.current().wifiRobots).toEqual([]);
+      expect(changes.at(-1)).toBe(0);
+
+      // The robot comes back: the (now forgotten) instance fires `up`
+      // again, exactly as bonjour-service would for a new instance.
+      backend.robotlinkTcp.emitUp(gopivService());
+      expect(discovery.current().wifiRobots.map((r) => r.name)).toEqual(["gopiv"]);
+      discovery.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a heard re-announcement keeps the robot listed past staleAfterMs", () => {
+    vi.useFakeTimers();
+    try {
+      const backend = fakeBackend();
+      const discovery = new MdnsDiscovery({ backend, staleAfterMs: 150_000, sweepIntervalMs: 30_000 });
+      discovery.start();
+      backend.robotlinkTcp.emitUp(gopivService());
+
+      vi.advanceTimersByTime(120_000);
+      backend.announce(FQDN);
+      vi.advanceTimersByTime(120_000);
+      expect(backend.robotlinkTcp.forget).not.toHaveBeenCalled();
+      expect(discovery.current().wifiRobots).toHaveLength(1);
+
+      vi.advanceTimersByTime(90_000);
+      expect(backend.robotlinkTcp.forget).toHaveBeenCalledWith(FQDN);
+      expect(discovery.current().wifiRobots).toEqual([]);
+      discovery.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stop() ends the sweep and a later staleness never fires", () => {
+    vi.useFakeTimers();
+    try {
+      const backend = fakeBackend();
+      const discovery = new MdnsDiscovery({ backend, staleAfterMs: 150_000, sweepIntervalMs: 30_000 });
+      discovery.start();
+      backend.robotlinkTcp.emitUp(gopivService());
+      discovery.stop();
+      vi.advanceTimersByTime(400_000);
+      expect(backend.robotlinkTcp.forget).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

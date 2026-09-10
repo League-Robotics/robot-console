@@ -63,6 +63,23 @@
  * here is fine; `RobotPage` itself still never sees this label or this
  * field.
  *
+ * **One card per robot (out-of-process, 2026-09-10):** the host lists
+ * one `EndpointListEntry` per *link* (a USB port, a WiFi address, a
+ * relay child), so a robot plugged into USB while also advertising over
+ * WiFi arrived as two cards with the same name -- the stakeholder's
+ * "the same name does not exist twice" rule. `groupEndpointsByRobot`
+ * folds every named endpoint into one group per name; the card's
+ * informational `Link` goes to the group's *primary* endpoint (an open
+ * link first, then USB over WiFi over a relay child -- see
+ * `linkScore`), its badge/role come from the most specifically
+ * identified member (a robot identified as a calibration build over
+ * USB stays a calibration robot even when its WiFi link is down), and
+ * a `Connections` list below the `Link` (a sibling, never nested inside
+ * the anchor) shows every link with its own state and its own `Link`
+ * to that endpoint's page. A single-link robot renders exactly as
+ * before. Nameless endpoints never group (there is no name to group
+ * by), and a relay is its own device with its own name.
+ *
  * Split into a connected `FrontPage` (reads `WsProvider`'s selectors)
  * and a presentational `EndpointsList`/`EndpointCard`, mirroring the
  * old Devices tab's own split, so the list states can be exercised
@@ -146,12 +163,18 @@ export function EndpointsList({
         </p>
       ) : (
         <ul className="devices-list">
-          {devices.map((device) => (
-            <li key={device.endpointId}>
-              <EndpointCard
-                device={device}
-                relayName={device.viaRelay ? relayDisplayName(devices, device.viaRelay.relayEndpointId) : undefined}
-              />
+          {groupEndpointsByRobot(devices).map((group) => (
+            <li key={group.key}>
+              {group.members.length === 1 ? (
+                <EndpointCard
+                  device={group.primary}
+                  relayName={
+                    group.primary.viaRelay ? relayDisplayName(devices, group.primary.viaRelay.relayEndpointId) : undefined
+                  }
+                />
+              ) : (
+                <RobotCard group={group} devices={devices} />
+              )}
             </li>
           ))}
         </ul>
@@ -160,6 +183,144 @@ export function EndpointsList({
         <RememberedRobotsSection robots={rememberedRobots} onForget={onForgetRememberedRobot} />
       )}
     </section>
+  );
+}
+
+/** One robot's worth of endpoints -- see this module's doc comment,
+ * "One card per robot". Exported for `FrontPage.test.tsx`. */
+export interface RobotGroup {
+  /** The robot's name, or the lone endpoint's id for a nameless one. */
+  key: string;
+  /** The endpoint the card itself navigates to -- see {@link linkScore}. */
+  primary: EndpointListEntry;
+  /** Every endpoint in the group, best first. */
+  members: EndpointListEntry[];
+}
+
+const TRANSPORT_RANK: Record<string, number> = { usb: 3, wifi: 2, "relay-radio": 1, mbrelay: 1, mbserial: 1 };
+const CLASSIFICATION_RANK: Record<string, number> = { calibration: 3, relay: 3, robot: 2, unknown: 0 };
+
+/** Which of a robot's links the card should lead to: an open link beats
+ * a closed one; among equals, a direct USB link beats WiFi beats a relay
+ * child (the same preference `deviceRegistry.ts`'s auto-switch encodes);
+ * a link that has identified beats one that hasn't. */
+function linkScore(device: EndpointListEntry): number {
+  return (
+    (device.sessionOpen ? 100 : 0) +
+    (TRANSPORT_RANK[device.transport] ?? 0) * 10 +
+    (CLASSIFICATION_RANK[device.classification.type] ?? 0)
+  );
+}
+
+/** Fold the host's per-link endpoint list into one group per robot
+ * name, preserving the host's order for the groups' first appearance.
+ * Exported for `FrontPage.test.tsx`. */
+export function groupEndpointsByRobot(devices: EndpointListEntry[]): RobotGroup[] {
+  const groups = new Map<string, EndpointListEntry[]>();
+  for (const device of devices) {
+    const key = device.name ?? `endpoint:${device.endpointId}`;
+    const members = groups.get(key);
+    if (members) {
+      members.push(device);
+    } else {
+      groups.set(key, [device]);
+    }
+  }
+  return [...groups.entries()].map(([key, members]) => {
+    const sorted = [...members].sort((a, b) => linkScore(b) - linkScore(a));
+    return { key, primary: sorted[0]!, members: sorted };
+  });
+}
+
+/** The member whose classification is most specific -- the primary on
+ * a tie, so a single-link group is unaffected. */
+function bestClassified(group: RobotGroup): EndpointListEntry {
+  let best = group.primary;
+  for (const member of group.members) {
+    if ((CLASSIFICATION_RANK[member.classification.type] ?? 0) > (CLASSIFICATION_RANK[best.classification.type] ?? 0)) {
+      best = member;
+    }
+  }
+  return best;
+}
+
+/** A short label for one link: "USB · /dev/…", "WiFi · host:port",
+ * "via relay <name>". */
+function connectionLabel(device: EndpointListEntry, devices: EndpointListEntry[]): string {
+  if (device.viaRelay) {
+    return `via relay ${relayDisplayName(devices, device.viaRelay.relayEndpointId)}`;
+  }
+  if (device.transport === "wifi") {
+    return device.wifi ? `WiFi · ${device.wifi.host}:${device.wifi.port}` : "WiFi";
+  }
+  return `USB · ${device.usb?.port ?? "no serial port"}`;
+}
+
+function connectionState(device: EndpointListEntry): string {
+  if (device.sessionOpen) {
+    return "Linked";
+  }
+  if (device.sessionError) {
+    return `Unreachable: ${device.sessionError}`;
+  }
+  return "Not linked";
+}
+
+/** One robot reachable over more than one link -- see this module's
+ * doc comment, "One card per robot". The informational `Link` mirrors
+ * `EndpointCard`'s header/role for the group's primary endpoint; the
+ * `Connections` list is a sibling of that anchor (never nested inside
+ * it) with one `Link` per member. */
+function RobotCard({ group, devices }: { group: RobotGroup; devices: EndpointListEntry[] }) {
+  const primary = group.primary;
+  const identified = bestClassified(group);
+  const name = nameDisplay(primary);
+  const role = roleDisplay(identified);
+  const isCalibration = identified.classification.type === "calibration";
+
+  return (
+    <div className="device-card-group" data-testid={`robot-${group.key}`}>
+      <Link to={`/d/${primary.endpointId}`} className="device-card" data-testid={`device-${primary.endpointId}`}>
+        <div className="device-card-header">
+          <h3 className="device-name">{name.text}</h3>
+          {isCalibration && (
+            <span className="device-calibration-badge" data-testid="calibration-badge">
+              {identified.classification.version
+                ? `Calibration robot · ${identified.classification.version}`
+                : "Calibration robot"}
+            </span>
+          )}
+          {primary.sessionOpen && <span className="device-linked-pill">Linked</span>}
+        </div>
+        <dl className="device-fields">
+          <div>
+            <dt>Role</dt>
+            <dd>{role}</dd>
+          </div>
+          <div>
+            <dt>Connection</dt>
+            <dd>{connectionLabel(primary, devices)}</dd>
+          </div>
+        </dl>
+      </Link>
+      <ul className="device-connections" aria-label={`Connections for ${name.text}`}>
+        {group.members.map((member) => (
+          <li key={member.endpointId}>
+            <Link to={`/d/${member.endpointId}`} className="device-connection" data-testid={`device-link-${member.endpointId}`}>
+              <span className="device-connection-label">{connectionLabel(member, devices)}</span>
+              <span className={member.sessionOpen ? "device-connection-state device-connection-open" : "device-connection-state"}>
+                {connectionState(member)}
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+      {canBeFlashed(primary) && (
+        <div className="device-card-actions" data-testid={`device-actions-${primary.endpointId}`}>
+          <FlashDialog endpoint={primary} />
+        </div>
+      )}
+    </div>
   );
 }
 

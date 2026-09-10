@@ -64,6 +64,20 @@
  * every other test and any external tooling keyed on them keeps working
  * unmodified.
  *
+ * **`program`/`version` diagnostics (sprint 011 ticket 002).** The
+ * `ID` reply's raw `program`/`version` strings (`classification.program`/
+ * `.version`, sprint 011 ticket 001) are shown verbatim, near the `<h2>`
+ * name heading, whenever `program` is non-null -- a robot that never
+ * answered `ID` (older firmware, or the request timing out) renders
+ * nothing extra. This is deliberately gated on the *data* being present,
+ * never on `classification.type`: a plain `"robot"` that did answer
+ * `ID` shows the same diagnostics a `"calibration"`-classified one does
+ * (see `deviceType.ts`'s own doc comment -- `program`/`version` are
+ * preserved on both outcomes of `refineForCalibration`). This keeps
+ * this page's own transport-blindness property good company -- nothing
+ * here branches on *what kind* of robot this is, only on whether a
+ * diagnostic value exists to show.
+ *
  * **Transport-blindness is load-bearing, not incidental**: this page
  * and every component it mounts render off `WsProvider`'s hooks/
  * actions only — never a transport-specific link type, a hardcoded
@@ -92,6 +106,14 @@ export function RobotPage({ endpoint }: RobotPageProps) {
   return (
     <section className="robot-page" aria-label="Robot device">
       <h2>{endpoint.name ?? endpoint.endpointId}</h2>
+
+      {endpoint.classification.program !== null && (
+        <p className="robot-page-diagnostics" data-testid="robot-page-diagnostics">
+          Program: {endpoint.classification.program}
+          {" · "}
+          Version: {endpoint.classification.version}
+        </p>
+      )}
 
       <div className="robot-page-columns">
         <div className="robot-page-column robot-page-column-left">

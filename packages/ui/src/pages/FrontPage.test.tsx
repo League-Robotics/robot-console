@@ -568,6 +568,64 @@ describe("EndpointCard for a wifi entry (sprint 10 ticket 005)", () => {
   });
 });
 
+describe("EndpointCard calibration badge (sprint 011 ticket 002)", () => {
+  /** A calibration-classified robot's endpoint -- `classification.type`
+   * refined to `"calibration"` by `refineForCalibration` (ticket 001)
+   * after an `ID` reply whose `program` matched the `calibration-`
+   * prefix. Mirrors `baseDevice`'s USB shape. */
+  function calibrationFixture(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+    return {
+      endpointId: "usb-CAL-A",
+      transport: "usb",
+      resourceKey: "usb-CAL-A",
+      classification: {
+        type: "calibration",
+        role: "NEZHA2",
+        commonName: "robot",
+        dialect: "space",
+        evidence: "role",
+        program: "calibration-0.20260907.2",
+        version: "0.20260907.2",
+      },
+      name: "kivon",
+      role: "NEZHA2",
+      sessionOpen: true,
+      usb: { serialNumber: "CAL-A-FULL", displaySerial: "0005", port: "/dev/cu.usbmodemD" },
+      ...overrides,
+    };
+  }
+
+  it("shows a distinguishing calibration badge with the version for a calibration-classified card", () => {
+    const el = mount(withRouter(<EndpointsList status="open" devices={[calibrationFixture()]} />));
+
+    const badge = el.querySelector('[data-testid="calibration-badge"]');
+    expect(badge).not.toBeNull();
+    expect(badge!.textContent).toBe("Calibration robot · 0.20260907.2");
+  });
+
+  it("falls back to a version-less badge when classification.version is null", () => {
+    const el = mount(
+      withRouter(
+        <EndpointsList
+          status="open"
+          devices={[calibrationFixture({ classification: { ...calibrationFixture().classification, version: null } })]}
+        />,
+      ),
+    );
+
+    const badge = el.querySelector('[data-testid="calibration-badge"]');
+    expect(badge).not.toBeNull();
+    expect(badge!.textContent).toBe("Calibration robot");
+  });
+
+  it("shows no calibration badge for a plain robot-classified card (regression)", () => {
+    const el = mount(withRouter(<EndpointsList status="open" devices={[baseDevice()]} />));
+
+    expect(el.querySelector('[data-testid="calibration-badge"]')).toBeNull();
+    expect(el.textContent ?? "").not.toContain("Calibration robot");
+  });
+});
+
 describe("RememberedRobotsSection (ticket 005)", () => {
   it("renders a remembered robot's name and lastSeenAt, with no Link for that card", () => {
     const robot = rememberedRobotFixture("wobin");

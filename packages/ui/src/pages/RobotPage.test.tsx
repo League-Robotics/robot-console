@@ -213,6 +213,56 @@ describe("RobotPage", () => {
   });
 });
 
+describe("RobotPage program/version diagnostics (sprint 011 ticket 002)", () => {
+  it("renders no diagnostics line when program/version are both null (a robot that never answered ID) -- regression", () => {
+    const { el } = mountRobotPage(robotFixture());
+
+    expect(el.querySelector('[data-testid="robot-page-diagnostics"]')).toBeNull();
+  });
+
+  it("shows the raw program/version strings for a robot-classified endpoint that answered ID", () => {
+    const { el } = mountRobotPage(
+      robotFixture({
+        classification: {
+          type: "robot",
+          role: "NEZHA2",
+          commonName: "robot",
+          dialect: "space",
+          evidence: "role",
+          program: "tovez",
+          version: "0.20260901.1",
+        },
+      }),
+    );
+
+    const diagnostics = el.querySelector('[data-testid="robot-page-diagnostics"]');
+    expect(diagnostics).not.toBeNull();
+    expect(diagnostics!.textContent).toContain("tovez");
+    expect(diagnostics!.textContent).toContain("0.20260901.1");
+  });
+
+  it("shows the raw program/version strings for a calibration-classified endpoint", () => {
+    const { el } = mountRobotPage(
+      robotFixture({
+        classification: {
+          type: "calibration",
+          role: "NEZHA2",
+          commonName: "robot",
+          dialect: "space",
+          evidence: "role",
+          program: "calibration-0.20260907.2",
+          version: "0.20260907.2",
+        },
+      }),
+    );
+
+    const diagnostics = el.querySelector('[data-testid="robot-page-diagnostics"]');
+    expect(diagnostics).not.toBeNull();
+    expect(diagnostics!.textContent).toContain("calibration-0.20260907.2");
+    expect(diagnostics!.textContent).toContain("0.20260907.2");
+  });
+});
+
 describe("RobotPage under AppHeader (ticket 012-004)", () => {
   // AppHeader owns the back-to-devices link and the Flash menu entry
   // (see AppHeader.test.tsx for the full behavior matrix); this is a

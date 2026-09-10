@@ -90,6 +90,18 @@
   color: var(--rc-ok-text);
 }
 
+/* Calibration-classification badge (sprint 011 ticket 002) -- same pill
+ * shape as `.device-linked-pill`/`.device-flag`, distinguished by the
+ * accent color so it reads as "a fact about this device" rather than
+ * "linked" or "a problem". */
+.device-calibration-badge {
+  font-size: 0.75rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: var(--rc-accent);
+  color: var(--rc-accent-contrast);
+}
+
 .device-fields {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));

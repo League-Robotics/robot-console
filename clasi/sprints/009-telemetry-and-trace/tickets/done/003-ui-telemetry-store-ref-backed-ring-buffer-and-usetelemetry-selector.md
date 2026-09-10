@@ -1,10 +1,14 @@
 ---
-id: "003"
-title: "UI telemetry store: ref-backed ring buffer and useTelemetry selector"
-status: open
-use-cases: [SUC-001, SUC-002, SUC-003]
-depends-on: ["002"]
-github-issue: ""
+id: '003'
+title: 'UI telemetry store: ref-backed ring buffer and useTelemetry selector'
+status: done
+use-cases:
+- SUC-001
+- SUC-002
+- SUC-003
+depends-on:
+- '002'
+github-issue: ''
 issue: robot-console-two-level-ui-and-multi-transport-roadmap.md
 completes_issue: false
 ---
@@ -49,19 +53,19 @@ tickets 004 and 005 both consume.
 
 ## Acceptance Criteria
 
-- [ ] A telemetry slice exists per endpoint in the ref-backed store,
+- [x] A telemetry slice exists per endpoint in the ref-backed store,
       independent of the existing log-line slice.
-- [ ] The ring buffer has its own explicit, documented cap, distinct
+- [x] The ring buffer has its own explicit, documented cap, distinct
       from `MAX_LINES_PER_DEVICE`, and evicts oldest-first once full.
-- [ ] `useTelemetry(endpointId)` is implemented via
+- [x] `useTelemetry(endpointId)` is implemented via
       `useSyncExternalStore` and only notifies subscribers of that
       endpoint's telemetry slice — a component subscribed to a
       *different* endpoint's telemetry (or to no telemetry at all) does
       not re-render when a frame arrives for this endpoint (a test
       using a render-count spy proves this).
-- [ ] A header-update message clears any "waiting for header" state for
+- [x] A header-update message clears any "waiting for header" state for
       that endpoint.
-- [ ] A frame-update message with no header held yet is handled
+- [x] A frame-update message with no header held yet is handled
       gracefully (buffered, ignored, or flagged — whichever the store
       design chooses, it must not throw).
 

@@ -1,9 +1,11 @@
 /**
  * server.ts — transport to the UI (`docs/design/specification.md` §4.7).
  *
- * Express + `ws`: one WebSocket carries endpoint-list updates and line
- * traffic to and from the browser (telemetry frames join this same
- * channel in a later sprint). Express itself serves the built
+ * Express + `ws`: one WebSocket carries endpoint-list updates, line
+ * traffic, and (sprint 009 ticket 002) decoded telemetry to and from the
+ * browser -- telemetry rides its own {@link TelemetryMessage} type on
+ * this same socket, never folded into `line`/`endpoints` (see that
+ * type's own doc comment). Express itself serves the built
  * `packages/ui` output as static files. This module merges the
  * `FirmwareAvailabilityCache`'s current status into every `endpoints`
  * broadcast, and wires flash-start/flash-progress/flash-result traffic,
@@ -68,6 +70,7 @@ import {
   type EndpointsMessage,
   type FlashResultMessage,
   type ServerMessage,
+  type TelemetryMessage,
 } from "./wsMessages.js";
 
 /** Default port `npx robot-console` listens on. Override via
@@ -304,6 +307,19 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   const unsubscribeError = registry.onError((endpointId, message) => {
     broadcast(endpointId !== undefined ? { type: "error", endpointId, message } : { type: "error", message });
   });
+  // Sprint 009 ticket 002: decoded telemetry rides its own message type,
+  // never `buildEndpointsMessage`'s full snapshot or the `line` channel
+  // above -- see `deviceRegistry.ts`'s own `TelemetryEvent` doc comment
+  // and `wsMessages.ts`'s `TelemetryMessage` doc comment for why. This
+  // module still does no decoding/classification of its own: `event` is
+  // already either a header or a frame, straight from `deviceRegistry.ts`.
+  const unsubscribeTelemetry = registry.onTelemetry((endpointId, event) => {
+    const message: TelemetryMessage =
+      "header" in event
+        ? { type: "telemetry", endpointId, header: event.header }
+        : { type: "telemetry", endpointId, frame: event.frame };
+    broadcast(message);
+  });
   // deviceRegistry.ts (ticket 005) now carries the full FirmwareSourceRef
   // through requestFlash/runFlash itself -- every progress/result event
   // it emits already carries the exact `source` the client requested, so
@@ -496,6 +512,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     unsubscribeDevices();
     unsubscribeLine();
     unsubscribeError();
+    unsubscribeTelemetry();
     unsubscribeFlashProgress();
     unsubscribeFlashResult();
     unsubscribeAvailability();

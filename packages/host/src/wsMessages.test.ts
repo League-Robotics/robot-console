@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseClientMessage } from "./wsMessages.js";
-import type { EndpointListEntry } from "./wsMessages.js";
+import type { EndpointListEntry, ServerMessage, TelemetryMessage } from "./wsMessages.js";
 
 describe("parseClientMessage", () => {
   it("accepts a well-formed session-open message", () => {
@@ -260,5 +260,28 @@ describe("EndpointListEntry", () => {
       sequencing: { seq: 0, pendingCount: 0, lastDone: 0, lastDoneReason: "none" },
     };
     expect(entry.sequencing).toEqual({ seq: 0, pendingCount: 0, lastDone: 0, lastDoneReason: "none" });
+  });
+});
+
+describe("TelemetryMessage (sprint 009 ticket 002)", () => {
+  it("is a distinct type discriminator from line/endpoints, carrying either a header or a frame", () => {
+    // Type-level fixture: this compiles only if both shapes below are
+    // legal TelemetryMessage/ServerMessage values -- see wsMessages.ts's
+    // own doc comment for why header/frame are mutually exclusive on
+    // the wire (deviceRegistry.ts never sends both on one message).
+    const header: TelemetryMessage = {
+      type: "telemetry",
+      endpointId: "usb-SERIAL-A",
+      header: ["seq", "now", "flags", "posl", "posr", "vell", "velr"],
+    };
+    const frame: TelemetryMessage = {
+      type: "telemetry",
+      endpointId: "usb-SERIAL-A",
+      frame: { seq: "1", now: "2", flags: "3", posl: "4", posr: "5", vell: "6", velr: "7" },
+    };
+    const asServerMessages: ServerMessage[] = [header, frame];
+    expect(asServerMessages.every((m) => m.type === "telemetry")).toBe(true);
+    expect(header.frame).toBeUndefined();
+    expect(frame.header).toBeUndefined();
   });
 });

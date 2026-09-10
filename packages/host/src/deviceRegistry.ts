@@ -420,7 +420,7 @@
  */
 
 import type { AckNackEvent, DecodedLine, DeviceClassification, ParsedBanner, WireField } from "@robot-console/protocol";
-import { classifyBanner, encodeLine, isSequencedVerb, nameToRadioAddress } from "@robot-console/protocol";
+import { classifyBanner, encodeLine, isSequencedVerb, nameToRadioAddress, TelemetryDecoder } from "@robot-console/protocol";
 import {
   DeviceWatcher,
   type DaplinkDevice,
@@ -795,6 +795,21 @@ interface EndpointState {
    * recent `FUNCS` send (which resets this to `[]`). Cleared on
    * teardown. */
   functions?: RobotFunction[] | undefined;
+  /** Sprint 009 ticket 002: the stateful half of
+   * `@robot-console/protocol`'s `v6/telemetry.ts` for this endpoint's
+   * current session -- remembers the most recently held `thdr` and zips
+   * each `t` line against it. Created lazily, on the first `thdr`/`t`
+   * line seen for a session (see {@link DeviceRegistry.getTelemetryDecoder}),
+   * and discarded on teardown/resync (see {@link DeviceRegistry.teardownLink}/
+   * {@link DeviceRegistry.resyncSession}) so a stale header from a prior
+   * session is never zipped against a new one's frames.
+   *
+   * Header recovery is deliberately passive -- see
+   * {@link handleTelemetryLine}'s own doc comment for why there is no
+   * recovery-request guard field here (an earlier revision of this
+   * ticket had one; removed once bench testing showed the firmware has
+   * no mode to request). */
+  telemetryDecoder?: TelemetryDecoder | undefined;
   /** OOP 2026-09-09: the periodic `STATUS` poll behind
    * {@link EndpointListEntry.robotStatus} -- see
    * {@link DeviceRegistry.startRobotProbes}. Only ever set for a
@@ -1015,6 +1030,18 @@ export type LineListener = (
   origin?: LineOrigin,
 ) => void;
 export type RegistryErrorListener = (endpointId: string | undefined, message: string) => void;
+/** Sprint 009 ticket 002: one decoded telemetry event for an endpoint --
+ * either a header update (`thdr`) or a decoded frame (`t`), never both
+ * at once. `server.ts` is what turns this into a {@link TelemetryMessage}-
+ * shaped broadcast; this module never imports `wsMessages.ts`'s wire
+ * type directly (same "no reach into packages/host's wire layer" split
+ * every other listener type here already follows -- see
+ * {@link LineListener}/{@link FlashProgressListener}). Deliberately never
+ * fired for a header-less or field-count-mismatched `t` line -- see
+ * {@link DeviceRegistry.handleInboundLine}'s own doc comment for why
+ * nothing is forwarded in that case. */
+export type TelemetryEvent = { header: readonly string[] } | { frame: Record<string, string> };
+export type TelemetryListener = (endpointId: string, event: TelemetryEvent) => void;
 /** Notified once per {@link FlashPhase} as a `requestFlash` task
  * advances -- mirrors {@link LineListener}'s per-event shape rather
  * than a bulk snapshot, since `server.ts` forwards these directly as
@@ -1189,6 +1216,7 @@ export class DeviceRegistry {
   private readonly devicesListeners = new Set<DevicesListener>();
   private readonly lineListeners = new Set<LineListener>();
   private readonly errorListeners = new Set<RegistryErrorListener>();
+  private readonly telemetryListeners = new Set<TelemetryListener>();
   private readonly flashProgressListeners = new Set<FlashProgressListener>();
   private readonly flashResultListeners = new Set<FlashResultListener>();
 
@@ -1660,6 +1688,20 @@ export class DeviceRegistry {
     this.errorListeners.add(listener);
     return () => {
       this.errorListeners.delete(listener);
+    };
+  }
+
+  /** Subscribe to decoded telemetry events (sprint 009 ticket 002) --
+   * see {@link TelemetryEvent}'s own doc comment. Deliberately a
+   * separate subscription from {@link onLine}: telemetry never rides
+   * that channel (see {@link handleInboundLine}'s own doc comment), so a
+   * caller that only wants console traffic is unaffected by 20 Hz
+   * telemetry, and a caller that only wants telemetry (`server.ts`) does
+   * not have to filter it out of every other reply verb. */
+  onTelemetry(listener: TelemetryListener): () => void {
+    this.telemetryListeners.add(listener);
+    return () => {
+      this.telemetryListeners.delete(listener);
     };
   }
 
@@ -2958,6 +3000,12 @@ export class DeviceRegistry {
    *     flips `true` immediately, ahead of the next poll confirming it.
    *   - `funcs <name> [signature]` -> appended to
    *     {@link EndpointState.functions}.
+   *
+   * Sprint 009 ticket 002: `thdr`/`t` are the one exception to "every
+   * line is still echoed to `onLine`" above -- see
+   * {@link handleTelemetryLine}'s own doc comment for why telemetry
+   * rides {@link emitTelemetry} exclusively, never the rx log or a full
+   * endpoint-snapshot broadcast.
    */
   private handleInboundLine(state: EndpointState, decoded: DecodedLine): void {
     const text = reconstructLineText(decoded);
@@ -3002,7 +3050,98 @@ export class DeviceRegistry {
       this.emitDevices();
       return;
     }
+    if (decoded.verb === "thdr" || decoded.verb === "t") {
+      this.handleTelemetryLine(state, decoded);
+      return;
+    }
     this.emitLine(state.endpointId, "rx", text);
+  }
+
+  /** Lazily create (never destroy on its own) the per-endpoint
+   * {@link TelemetryDecoder} instance -- see
+   * {@link EndpointState.telemetryDecoder}'s own doc comment for why it
+   * is created on first use rather than at endpoint/session
+   * construction time (this method is the one call site for both
+   * branches {@link handleTelemetryLine} dispatches to). */
+  private getTelemetryDecoder(state: EndpointState): TelemetryDecoder {
+    if (!state.telemetryDecoder) {
+      state.telemetryDecoder = new TelemetryDecoder();
+    }
+    return state.telemetryDecoder;
+  }
+
+  /**
+   * Sprint 009 ticket 002: `thdr`/`t` handling, split out of
+   * {@link handleInboundLine} since -- unlike every other reply verb
+   * that method dispatches -- telemetry deliberately does **not** echo
+   * to {@link onLine}/{@link emitLine} (the per-device rx log is capped
+   * at `MAX_LINES_PER_DEVICE` and meant for human-readable console
+   * traffic, not a 20 Hz structured stream) and does **not** call
+   * {@link emitDevices} (that would re-broadcast the full endpoint
+   * snapshot 20 times a second -- see `wsMessages.ts`'s own
+   * {@link TelemetryMessage} doc comment and sprint.md's Design
+   * Rationale #2). Telemetry rides {@link emitTelemetry}/{@link onTelemetry}
+   * only.
+   *
+   * - `thdr` -> store the new header via {@link TelemetryDecoder.handleHeader},
+   *   forward it as a header-update {@link TelemetryEvent}.
+   * - `t` with no header held ({@link TelemetryDecoder.decodeFrame}
+   *   returning `NoHeaderHeld`) or a field-count mismatch against the
+   *   held header -> drop the row silently: forward nothing (the
+   *   client's own default state already reads as "waiting for header"
+   *   -- see `wsMessages.ts`'s {@link TelemetryMessage} doc comment) and
+   *   issue **no** recovery command. See this method's own "Passive
+   *   header recovery" note below for why -- an earlier revision of
+   *   this ticket sent `TLM HDR` here; that was wrong and has been
+   *   removed.
+   * - `t` with a header held that decodes successfully -> zip via
+   *   `@robot-console/protocol`'s `v6/telemetry.ts`, forward the
+   *   resulting frame.
+   *
+   * ## Passive header recovery (revised; no `TLM HDR` request)
+   *
+   * An earlier revision of this ticket had this method send `TLM HDR`
+   * on a gap, guarded like {@link pollAwaitingStatus}'s single-
+   * outstanding-request pattern. Bench testing against gopiv (fw
+   * `v1.20260909.2`, this repo's `vendor/pxt-nezha-diffdrive` checkout)
+   * showed that request is wrong: `WireHandler::parseTlmMode`
+   * (`vendor/pxt-nezha-diffdrive/src/comms/wire_handler.cpp:174-191`)
+   * only recognizes `OFF`/`POSE`/`FULL`/`NOW`/`AUTO`/`BUFFER` as `TLM`
+   * mode tokens -- there is no `HDR` mode on this firmware at all, so
+   * sending it drew `err 2` plus a nack (the session's own nack-driven
+   * resync absorbed the fallout, but the send itself was simply wrong
+   * against the real firmware).
+   *
+   * Recovery does not need a request regardless: `WireHandler::emitTelemetry`
+   * (`vendor/pxt-nezha-diffdrive/src/comms/wire_handler.cpp:1440-1453`)
+   * re-emits `thdr` on its own whenever the column set changes
+   * (`headerChanged(snapshot)`) OR every `kHeaderRefreshFrames` frames
+   * (`framesSinceHeader_ >= kHeaderRefreshFrames`) -- so a host that
+   * missed (or never held) a header only has to wait for the next
+   * periodic re-emission, which arrives unprompted. Dropping a
+   * header-less/mismatched row and doing nothing else is therefore the
+   * correct behavior, not a stopgap: there is nothing this host could
+   * usefully send to speed recovery up, and the one verb it used to
+   * send for that purpose does not exist on the firmware it talks to.
+   */
+  private handleTelemetryLine(state: EndpointState, decoded: DecodedLine): void {
+    const decoder = this.getTelemetryDecoder(state);
+    if (decoded.verb === "thdr") {
+      decoder.handleHeader(decoded.fields);
+      this.emitTelemetry(state.endpointId, { header: decoder.currentHeader ?? decoded.fields });
+      return;
+    }
+    const result = decoder.decodeFrame(decoded.fields);
+    if (result.kind === "noHeaderHeld" || result.kind === "fieldCountMismatch") {
+      // Drop silently -- see this method's own "Passive header
+      // recovery" doc comment. The decoder's held header (if any) is
+      // left untouched: `zipTelemetryFrame`/`decodeFrame` are pure and
+      // never mutate it on a mismatch, so the very next matching `t`
+      // (or a fresh `thdr`) resumes decoding normally with no action
+      // needed here.
+      return;
+    }
+    this.emitTelemetry(state.endpointId, { frame: result.fields });
   }
 
   /**
@@ -3187,6 +3326,12 @@ export class DeviceRegistry {
     }
     this.echoBanner(state, banner);
     state.desyncNotified = false;
+    // Sprint 009 ticket 002: a HELLO resync is exactly the kind of
+    // session discontinuity a stale telemetry header must not survive --
+    // reset the decoder so the next `t` line is treated as a fresh gap
+    // (dropped silently, per handleTelemetryLine's own doc comment),
+    // never zipped against a header held before the resync.
+    state.telemetryDecoder = undefined;
     this.emitDevices();
     if (!banner) {
       this.emitError(
@@ -3213,6 +3358,11 @@ export class DeviceRegistry {
     this.stopRobotProbes(state);
     state.robotStatus = undefined;
     state.functions = undefined;
+    // Sprint 009 ticket 002: discard the held telemetry header along
+    // with the rest of this session's state -- a fresh session must
+    // never zip a `t` line against a header held by whatever session
+    // came before it.
+    state.telemetryDecoder = undefined;
     state.session?.unsubscribeLine();
     state.session?.unsubscribeRawLine();
     state.session?.unsubscribeAckNack();
@@ -3247,6 +3397,12 @@ export class DeviceRegistry {
   private emitError(endpointId: string | undefined, message: string): void {
     for (const listener of this.errorListeners) {
       listener(endpointId, message);
+    }
+  }
+
+  private emitTelemetry(endpointId: string, event: TelemetryEvent): void {
+    for (const listener of this.telemetryListeners) {
+      listener(endpointId, event);
     }
   }
 

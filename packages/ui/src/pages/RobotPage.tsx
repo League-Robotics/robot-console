@@ -23,9 +23,11 @@
  *   `SequencingIndicator` (unchanged, read-only view of `Session`'s
  *   reliability state), `FunctionsPanel` (added out-of-process,
  *   2026-09-09 -- the robot's `FUNCS`-discovered, `RUN`-able function
- *   list, mounted below Sequencing), and a stubbed, empty charts
- *   placeholder -- charts themselves are future work (`sprint.md`'s
- *   Scope), this column only reserves and labels their eventual spot.
+ *   list, mounted below Sequencing), `ChartsPanel` (sprint 9 ticket
+ *   004 -- wheel-speed bars and a rolling time-series chart fed by
+ *   `useTelemetry`/`useTelemetryHeader`), and `PathTracePanel` (sprint 9
+ *   ticket 005 -- a top-down plot of the `ox`/`oy` position trail, with
+ *   its own client-side-only Clear button, mounted below Charts).
  * - **Right column**: exactly one `DeviceConsole`, sized to fill the
  *   column's available height (`RobotPage.css` overrides
  *   `DeviceConsole`'s own fixed `max-height` scoped to this column
@@ -72,10 +74,12 @@
  * relay-connected robot depends entirely on this property holding.
  */
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import { ChartsPanel } from "../components/ChartsPanel";
 import { CommandStrip } from "../components/CommandStrip";
 import { DeviceConsole } from "../components/DeviceConsole";
 import { DriveControls } from "../components/DriveControls";
 import { FunctionsPanel } from "../components/FunctionsPanel";
+import { PathTracePanel } from "../components/PathTracePanel";
 import { SequencingIndicator } from "../components/SequencingIndicator";
 import { StatusPanel } from "../components/StatusPanel";
 import "./RobotPage.css";
@@ -111,11 +115,14 @@ export function RobotPage({ endpoint }: RobotPageProps) {
             <FunctionsPanel device={endpoint} />
           </div>
 
-          <div className="robot-page-panel robot-page-charts-placeholder" aria-label="Charts">
+          <div className="robot-page-panel" aria-label="Charts">
             <h3>Charts</h3>
-            <p className="robot-page-charts-placeholder-text">
-              Telemetry charts are not built yet -- this space is reserved for a future sprint.
-            </p>
+            <ChartsPanel endpointId={endpoint.endpointId} />
+          </div>
+
+          <div className="robot-page-panel" aria-label="Path trace">
+            <h3>Path trace</h3>
+            <PathTracePanel endpointId={endpoint.endpointId} />
           </div>
         </div>
 

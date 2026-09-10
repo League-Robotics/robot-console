@@ -545,6 +545,16 @@ describe("classifyLine: case is direction (protocol.md S2.1)", () => {
     expect(classifyLine("ACK")).toBe("command");
   });
 
+  it("thdr and t (telemetry, sprint 009 ticket 002) classify as reply-direction, not foreign", () => {
+    // Regression coverage: before this ticket, REPLY_VERBS deliberately
+    // excluded these two, so a thdr/t line classified "foreign" and
+    // LineRouter routed it to onUnrouted instead of onLine.
+    expect(classifyLine("thdr")).toBe("reply");
+    expect(classifyLine("t")).toBe("reply");
+    expect(isReplyVerb("thdr")).toBe(true);
+    expect(isReplyVerb("t")).toBe(true);
+  });
+
   it("the CURRENT colon-form HELLO banner sentinel classifies as command-direction (protocol.md S2.4's own flagged note)", () => {
     // decodeLine has no ':' delimiter knowledge, so this single colon-
     // joined token decodes as one verb with no fields at all -- exactly

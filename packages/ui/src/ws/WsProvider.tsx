@@ -105,6 +105,25 @@
  * against `MAX_LINES_PER_DEVICE` exactly as before; `DeviceConsole`
  * decides, at render time, whether a `"poll"`-origin entry is currently
  * shown.
+ *
+ * **Telemetry: a ref-backed ring buffer that never triggers a React
+ * re-render on its own (sprint 9 ticket 003):** `TelemetryMessage`
+ * (ticket 002) can arrive at up to tens of times a second per endpoint
+ * -- an order of magnitude past what `logsByEndpoint`/`notify` were
+ * ever designed for. Routing each frame through `notify(store)` would
+ * re-render every `useSyncExternalStore` consumer of this store on
+ * every frame, exactly the whole-context-value problem this module's
+ * ref-backed redesign exists to avoid. So a frame is stored into a
+ * per-endpoint `TelemetryRing` and fanned out to that endpoint's own
+ * `frameListeners` directly -- a second, narrower pub/sub that never
+ * touches `store.listeners`/`notify` at all. `useTelemetry` hands
+ * consumers (chart/trace panels, tickets 004/005) a stable object with
+ * live getters and a `subscribe`, so they can read the ring on their
+ * own schedule (an animation frame) instead of on every incoming
+ * frame. Only the header -- which changes far less often -- goes
+ * through the normal `notify`/`useSyncExternalStore` path via
+ * `useTelemetryHeader`, so a "waiting for header" banner can still be
+ * ordinary reactive React state.
  */
 import {
   createContext,
@@ -129,6 +148,7 @@ import type {
   LineMessage,
   RememberedRobotEntry,
   ServerMessage,
+  TelemetryMessage,
 } from "@robot-console/host/src/wsMessages.js";
 import type { WireField } from "@robot-console/protocol";
 
@@ -186,6 +206,135 @@ export const MAX_TRACKED_ENDPOINT_LOGS = 8;
 const EMPTY_LOG: readonly LogEntry[] = [];
 
 let nextLogEntryId = 0;
+
+/** Maximum frames retained per endpoint in the telemetry ring buffer
+ * (sprint 9 ticket 003) -- deliberately independent of
+ * {@link MAX_LINES_PER_DEVICE}, which bounds a completely different
+ * kind of data at a completely different rate (a handful of console
+ * lines a second, versus telemetry's up to tens of frames a second per
+ * `sprint.md`'s Architecture). 600 frames is about 60 seconds of
+ * history at a typical 10Hz telemetry rate -- enough for the chart/
+ * trace panels (tickets 004/005) to show a meaningful recent window
+ * without growing without bound over a long session. Exported so tests
+ * can pin down the exact eviction boundary, mirroring
+ * `MAX_LINES_PER_DEVICE`'s own reasoning. */
+export const TELEMETRY_RING_CAPACITY = 600;
+
+/** One decoded telemetry frame, ready for chart/trace consumption. `t`
+ * is this client's own receipt time (`Date.now()`), not anything the
+ * wire sends -- `TelemetryMessage.frame` carries no timestamp of its
+ * own -- so panels can plot against a consistent wall-clock axis even
+ * across a header change. `values` is `TelemetryMessage.frame`'s raw
+ * wire strings parsed with `Number()`; a missing or non-numeric field
+ * parses to `NaN` rather than being dropped, so a frame's keys always
+ * match `header` 1:1 even when one column is briefly unparsable --
+ * consumers of a numeric series already have to handle `NaN` (e.g. skip
+ * drawing that point) rather than a hole in the object shape. */
+export interface TelemetryFrame {
+  t: number;
+  values: Record<string, number>;
+}
+
+/** Which telemetry stream, if any, an endpoint's robot should push --
+ * sent to the robot via `useWsActions().telemetrySubscribe`, which
+ * forwards it as `TLM <mode>` (see that action's own doc comment).
+ * `"HDR"` re-requests just the current column header without changing
+ * which frames stream, mirroring `deviceRegistry.ts`'s own one-shot
+ * `TLM HDR` gap-recovery request (`sprint.md`'s Architecture, Design
+ * Rationale #3). */
+export type TelemetryMode = "POSE" | "FULL" | "OFF" | "HDR";
+
+/** The imperative, non-React-reactive interface to one endpoint's
+ * telemetry ring, returned by `useTelemetry`. `header` and `latest` are
+ * live getters -- each read goes straight to the store, not to cached
+ * React state -- and `subscribe` fires its callback synchronously on
+ * every incoming frame, entirely outside React's render cycle. This
+ * lets a chart/trace consumer (tickets 004/005) pull `snapshot()` (or
+ * accumulate frames via `subscribe`) on its own schedule, typically
+ * once per animation frame, instead of re-rendering on every frame the
+ * way a `useSyncExternalStore` selector would -- see this module's doc
+ * comment ("Telemetry: a ref-backed ring buffer...") for why. */
+export interface TelemetryHandle {
+  readonly header: readonly string[] | undefined;
+  readonly latest: TelemetryFrame | undefined;
+  /** All frames currently retained, oldest first -- a fresh array each
+   * call, safe to hold onto without it mutating underneath the
+   * caller. */
+  snapshot(): TelemetryFrame[];
+  /** Register `cb` to be called, synchronously and outside React, with
+   * each frame as it arrives for this endpoint. Returns the
+   * unsubscribe function. */
+  subscribe(cb: (frame: TelemetryFrame) => void): () => void;
+  /** Empty this endpoint's ring (ticket 005's Clear button). Does not
+   * touch the current header -- the column layout hasn't changed, only
+   * the retained history has. Equivalent to
+   * `useWsActions().clearTelemetry(endpointId)`. */
+  clear(): void;
+}
+
+/** Fixed-capacity ring buffer backing one endpoint's telemetry slice --
+ * the "ref-backed ring buffer" this ticket introduces. Writes
+ * circularly into a single `capacity`-length array (no `splice`/`shift`
+ * per push) so pushing at capacity is O(1) regardless of how full the
+ * ring is, unlike `pushLogEntry`'s trim-from-the-front approach above
+ * (fine at the console log's much lower rate, but an O(n) copy on every
+ * incoming frame here would not be, at telemetry's 10-20Hz). Not
+ * exported -- `TelemetryHandle`'s `snapshot`/`latest`/`subscribe`/
+ * `clear` are the only surface consumers need. */
+class TelemetryRing {
+  private readonly buffer: (TelemetryFrame | undefined)[];
+  private start = 0;
+  private count = 0;
+
+  constructor(private readonly capacity: number) {
+    this.buffer = new Array(capacity);
+  }
+
+  push(frame: TelemetryFrame): void {
+    const index = (this.start + this.count) % this.capacity;
+    this.buffer[index] = frame;
+    if (this.count < this.capacity) {
+      this.count += 1;
+    } else {
+      this.start = (this.start + 1) % this.capacity;
+    }
+  }
+
+  snapshot(): TelemetryFrame[] {
+    const out: TelemetryFrame[] = [];
+    for (let i = 0; i < this.count; i++) {
+      out.push(this.buffer[(this.start + i) % this.capacity]!);
+    }
+    return out;
+  }
+
+  latest(): TelemetryFrame | undefined {
+    if (this.count === 0) {
+      return undefined;
+    }
+    return this.buffer[(this.start + this.count - 1) % this.capacity];
+  }
+
+  clear(): void {
+    this.buffer.fill(undefined);
+    this.start = 0;
+    this.count = 0;
+  }
+}
+
+/** One endpoint's telemetry state: the current column header (or
+ * `undefined` before any `thdr` has been recovered / after a session
+ * close), its ring of decoded frames, and the frame-arrival
+ * subscribers that bypass `notify`/`store.listeners` entirely -- see
+ * this module's doc comment. Not part of `Store`'s React-visible
+ * fields the way `endpointsById`/`logsByEndpoint` are read via
+ * `useSyncExternalStore`; only `header` is ever exposed that way, via
+ * `useTelemetryHeader`. */
+interface TelemetrySlice {
+  header: readonly string[] | undefined;
+  ring: TelemetryRing;
+  frameListeners: Set<(frame: TelemetryFrame) => void>;
+}
 
 /** The latest known progress of an in-flight flash for one endpoint,
  * populated from live `flash-progress` events -- see this module's doc
@@ -326,6 +475,11 @@ interface Store {
    * needs a matching `notify(store)` call the way `flash-result`'s
    * handling does. */
   flashLocalReadyHandlers: Set<(message: FlashLocalReadyMessage) => void>;
+  /** Per-endpoint telemetry state (sprint 9 ticket 003) -- see
+   * `TelemetrySlice`'s own doc comment. Created lazily, on first
+   * reference (a `"telemetry"` message, or a `useTelemetry`/
+   * `useTelemetryHeader` call), by `getOrCreateTelemetrySlice`. */
+  telemetryByEndpoint: Map<string, TelemetrySlice>;
   listeners: Set<() => void>;
   /** `useSyncExternalStore`'s subscribe half -- registers `cb` to be
    * called after any store mutation, returns the unsubscribe function.
@@ -386,6 +540,20 @@ export interface WsActions {
    * `touchLog`) -- an explicit clear is not the same signal as
    * inactivity. */
   clearEndpointLog: (endpointId: string) => void;
+  /** Empty one endpoint's telemetry ring (ticket 005's Clear button) --
+   * see `TelemetryHandle.clear`'s own doc comment. Equivalent to
+   * calling `clear()` on the handle `useTelemetry(endpointId)` returns;
+   * exposed here too so a component that only needs to clear (and
+   * doesn't otherwise read telemetry) can use `useWsActions()` alone. */
+  clearTelemetry: (endpointId: string) => void;
+  /** Request the robot change (or re-announce) its telemetry stream --
+   * forwards `{ type: "send-command", endpointId, verb: "TLM", fields:
+   * [mode] }` through `sendCommand`'s existing readyState guard (see
+   * that action's own doc comment). `RobotPage` (ticket 004) decides
+   * when to call this (e.g. `"POSE"`/`"FULL"` on mount or tab-select,
+   * `"OFF"` on unmount) -- this action only owns the wire shape, not
+   * the policy of when to send it. */
+  telemetrySubscribe: (endpointId: string, mode: TelemetryMode) => void;
 }
 
 function notify(store: Store): void {
@@ -489,6 +657,14 @@ function applySnapshot(
     const previous = store.endpointsById.get(entry.endpointId);
     nextMap.set(entry.endpointId, previous && deepEqual(previous, entry) ? previous : entry);
     nextIds.push(entry.endpointId);
+    // Sprint 9 ticket 003: a session that just closed leaves its
+    // telemetry ring holding frames from a session that no longer
+    // exists -- reset it (but keep the header; the column layout
+    // itself hasn't changed, only the retained history has, mirroring
+    // `clearTelemetrySlice`'s own scope).
+    if (previous?.sessionOpen && !entry.sessionOpen) {
+      clearTelemetrySlice(store, entry.endpointId);
+    }
   }
 
   const idsChanged =
@@ -528,6 +704,67 @@ function applySnapshot(
   store.hasSnapshot = true;
 }
 
+/** Return `endpointId`'s telemetry slice, creating an empty one (no
+ * header, empty ring) on first reference -- mirrors
+ * `logsByEndpoint.get(id) ?? []`'s "doesn't exist yet" handling
+ * elsewhere in this module, but as a real map entry rather than a
+ * shared empty constant, since a slice's ring/listeners need to be a
+ * live, mutable identity once frames start arriving for it. */
+function getOrCreateTelemetrySlice(store: Store, endpointId: string): TelemetrySlice {
+  let slice = store.telemetryByEndpoint.get(endpointId);
+  if (!slice) {
+    slice = { header: undefined, ring: new TelemetryRing(TELEMETRY_RING_CAPACITY), frameListeners: new Set() };
+    store.telemetryByEndpoint.set(endpointId, slice);
+  }
+  return slice;
+}
+
+/** Empty `endpointId`'s telemetry ring, if a slice exists for it yet --
+ * a no-op otherwise (nothing to clear). Shared by `applySnapshot`'s
+ * session-close handling and `WsActions.clearTelemetry`/
+ * `TelemetryHandle.clear`. Never touches `header` -- see both callers'
+ * own doc comments for why. */
+function clearTelemetrySlice(store: Store, endpointId: string): void {
+  store.telemetryByEndpoint.get(endpointId)?.ring.clear();
+}
+
+/** Handle one `"telemetry"` message (ticket 002's `TelemetryMessage`):
+ * a header update replaces the current header and resets the ring
+ * (SUC-003's "header recovered" -- the previous frames' columns no
+ * longer describe anything, per this ticket's acceptance criteria), and
+ * is the one telemetry event that goes through `notify(store)`, since
+ * `useTelemetryHeader` is an ordinary reactive selector. A frame update
+ * with no header held yet is dropped rather than buffered or thrown on
+ * (AC5) -- there is no column layout to attach it to, and the header
+ * will be re-sent once `deviceRegistry.ts`'s gap-recovery `TLM HDR`
+ * completes host-side. A frame update with a header held is parsed
+ * (`Number()` per field, `NaN` for anything unparsable -- see
+ * `TelemetryFrame`'s own doc comment), pushed into the ring, and fanned
+ * out to `frameListeners` directly -- deliberately *not* through
+ * `notify(store)`, per this module's doc comment. */
+function handleTelemetryMessage(store: Store, message: TelemetryMessage): void {
+  const slice = getOrCreateTelemetrySlice(store, message.endpointId);
+  if (message.header !== undefined) {
+    slice.header = message.header;
+    slice.ring.clear();
+    notify(store);
+  }
+  if (message.frame !== undefined) {
+    if (slice.header === undefined) {
+      return;
+    }
+    const values: Record<string, number> = {};
+    for (const [key, raw] of Object.entries(message.frame)) {
+      values[key] = Number(raw);
+    }
+    const frame: TelemetryFrame = { t: Date.now(), values };
+    slice.ring.push(frame);
+    for (const listener of slice.frameListeners) {
+      listener(frame);
+    }
+  }
+}
+
 function createStore(): Store {
   const listeners = new Set<() => void>();
   const store: Store = {
@@ -544,6 +781,7 @@ function createStore(): Store {
     flashProgressByEndpoint: new Map(),
     flashResultHandlers: new Set(),
     flashLocalReadyHandlers: new Set(),
+    telemetryByEndpoint: new Map(),
     listeners,
     subscribe: (cb: () => void) => {
       listeners.add(cb);
@@ -653,6 +891,12 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
         store.logsByEndpoint.set(endpointId, []);
         notify(store);
       },
+      clearTelemetry: (endpointId: string) => {
+        clearTelemetrySlice(store, endpointId);
+      },
+      telemetrySubscribe: (endpointId: string, mode: TelemetryMode) => {
+        store.actions.sendCommand(endpointId, "TLM", [mode]);
+      },
     };
   }
 
@@ -742,6 +986,14 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
             for (const handler of store.flashLocalReadyHandlers) {
               handler(parsed);
             }
+            break;
+          case "telemetry":
+            // Sprint 9 ticket 003: deliberately does not call
+            // `notify(store)` itself here -- `handleTelemetryMessage`
+            // only does so for a header update; a frame update fans out
+            // to that endpoint's own `frameListeners` instead, per this
+            // module's doc comment.
+            handleTelemetryMessage(store, parsed);
             break;
         }
       });
@@ -906,6 +1158,67 @@ export function useSequencing(endpointId: string): EndpointListEntry["sequencing
     store.subscribe,
     useCallback(() => store.endpointsById.get(endpointId)?.sequencing, [store, endpointId]),
   );
+}
+
+/** One endpoint's current telemetry column header, or `undefined`
+ * before any `thdr` has been recovered for it (or after its session has
+ * closed and no new header has arrived yet) -- an ordinary reactive
+ * selector via `useSyncExternalStore`, unlike `useTelemetry` below,
+ * since headers change rarely enough (per this ticket's design) that
+ * React state is the right tool for a "waiting for header" banner.
+ * Subscribes only to that one endpoint's header -- a component reading
+ * `useTelemetryHeader("A")` does not re-render when endpoint B's header
+ * changes, or on any frame arriving for either endpoint (frames never
+ * call `notify(store)` -- see this module's doc comment). */
+export function useTelemetryHeader(endpointId: string): readonly string[] | undefined {
+  const store = useStore();
+  return useSyncExternalStore(
+    store.subscribe,
+    useCallback(() => store.telemetryByEndpoint.get(endpointId)?.header, [store, endpointId]),
+  );
+}
+
+/** The imperative, non-React-reactive handle to one endpoint's
+ * telemetry ring -- see `TelemetryHandle`'s own doc comment for what it
+ * exposes and why. Returns the *same* handle object for as long as
+ * `endpointId` doesn't change (built once per endpoint via a plain
+ * `useRef`, not `useSyncExternalStore`), so a consumer's
+ * `useEffect(() => handle.subscribe(cb), [handle])` never re-runs on an
+ * unrelated render the way it would if a fresh object were handed back
+ * every time. `header`/`latest` on the returned handle are live
+ * getters, so they can be read at any point after this hook returns
+ * (e.g. inside a `requestAnimationFrame` callback) and always reflect
+ * the current store, not a value frozen at the render that created the
+ * handle. */
+export function useTelemetry(endpointId: string): TelemetryHandle {
+  const store = useStore();
+  const ref = useRef<{ endpointId: string; handle: TelemetryHandle } | null>(null);
+  if (ref.current === null || ref.current.endpointId !== endpointId) {
+    const getSlice = () => getOrCreateTelemetrySlice(store, endpointId);
+    ref.current = {
+      endpointId,
+      handle: {
+        get header() {
+          return getSlice().header;
+        },
+        get latest() {
+          return getSlice().ring.latest();
+        },
+        snapshot: () => getSlice().ring.snapshot(),
+        subscribe: (cb: (frame: TelemetryFrame) => void) => {
+          const slice = getSlice();
+          slice.frameListeners.add(cb);
+          return () => {
+            slice.frameListeners.delete(cb);
+          };
+        },
+        clear: () => {
+          clearTelemetrySlice(store, endpointId);
+        },
+      },
+    };
+  }
+  return ref.current.handle;
 }
 
 /** The imperative surface: send a client message (`send`/`sendBinary`/

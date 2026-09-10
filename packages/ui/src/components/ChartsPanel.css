@@ -1,0 +1,272 @@
+/* ChartsPanel.css — sprint 9 ticket 004.
+ *
+ * Chrome (surface/border/ink) reuses this project's existing `--rc-*`
+ * tokens (`theme.css`) directly. Chart-specific slots this project has
+ * no token for yet (categorical series colors, gridlines, the diverging
+ * positive/negative pair) are declared here as local `--rc-chart-*`
+ * custom properties, using the `dataviz` skill's validated reference
+ * palette (`references/palette.md`) hex steps verbatim -- see
+ * `ChartsPanel.tsx`'s own doc comment. Scoped to `.charts-panel` so
+ * nothing here leaks onto the rest of the page; overridden under
+ * `@media (prefers-color-scheme: dark)` exactly the way `theme.css`
+ * itself redefines `--rc-*` for dark, since this app has no separate
+ * light/dark toggle -- system preference is the only input.
+ */
+
+.charts-panel {
+  --rc-chart-grid: #e1e0d9;
+  --rc-chart-baseline: #c3c2b7;
+  /* Categorical order (blue, orange, aqua, yellow) -- fixed, never
+   * cycled, per the dataviz skill's non-negotiables. */
+  --rc-chart-series-1: #2a78d6;
+  --rc-chart-series-2: #eb6834;
+  --rc-chart-series-3: #1baf7a;
+  --rc-chart-series-4: #eda100;
+  /* Diverging pair (blue <-> red) for the wheel bars' forward/reverse
+   * sign -- a polarity, not an identity, so it deliberately does not
+   * reuse the categorical slots above even though slot 1 happens to be
+   * the same blue. */
+  --rc-chart-positive: #2a78d6;
+  --rc-chart-negative: #e34948;
+
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  .charts-panel {
+    --rc-chart-grid: #2c2c2a;
+    --rc-chart-baseline: #383835;
+    --rc-chart-series-1: #3987e5;
+    --rc-chart-series-2: #d95926;
+    --rc-chart-series-3: #199e70;
+    --rc-chart-series-4: #c98500;
+    --rc-chart-positive: #3987e5;
+    --rc-chart-negative: #e66767;
+  }
+}
+
+.charts-panel-mode {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.charts-panel-mode-button {
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.3rem 0.7rem;
+  border-radius: 0.4rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.charts-panel-mode-button[aria-pressed="true"] {
+  background: var(--rc-accent);
+  border-color: var(--rc-accent);
+  color: var(--rc-accent-contrast);
+}
+
+.charts-panel-waiting {
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px dashed var(--rc-border);
+  border-radius: 0.4rem;
+  color: var(--rc-text-muted);
+  font-size: 0.85rem;
+}
+
+.charts-panel-unavailable {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+  background: var(--rc-warn-bg);
+  border: 1px solid var(--rc-warn-border);
+  color: var(--rc-warn-text);
+  font-size: 0.82rem;
+}
+
+.charts-panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.charts-panel-section-title {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--rc-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* --- Wheel-speed bars: two diverging horizontal gauges ------------- */
+
+.charts-panel-wheel-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.charts-panel-wheel-bar {
+  display: grid;
+  grid-template-columns: 3rem 1fr 6.5rem;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.charts-panel-wheel-bar-label {
+  color: var(--rc-text-muted);
+}
+
+.charts-panel-wheel-bar-track {
+  position: relative;
+  height: 0.85rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 0.25rem;
+  background: var(--rc-bg);
+  overflow: hidden;
+}
+
+.charts-panel-wheel-bar-center {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--rc-chart-baseline);
+}
+
+.charts-panel-wheel-bar-fill {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  border-radius: 2px;
+}
+
+.charts-panel-bar-fill-positive {
+  background: var(--rc-chart-positive);
+}
+
+.charts-panel-bar-fill-negative {
+  background: var(--rc-chart-negative);
+}
+
+.charts-panel-wheel-bar-value {
+  text-align: right;
+  color: var(--rc-text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Time-series chart --------------------------------------------- */
+
+.charts-panel-columns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  font-size: 0.78rem;
+  color: var(--rc-text-muted);
+}
+
+.charts-panel-column-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  cursor: pointer;
+}
+
+.charts-panel-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.charts-panel-chart-svg {
+  width: 100%;
+  height: 8rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 0.4rem;
+  background: var(--rc-surface);
+}
+
+.charts-panel-chart-grid {
+  stroke: var(--rc-chart-grid);
+  stroke-width: 0.4;
+}
+
+.charts-panel-chart-baseline {
+  stroke: var(--rc-chart-baseline);
+  stroke-width: 0.6;
+}
+
+.charts-panel-chart-line {
+  fill: none;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.charts-panel-chart-series-1 {
+  stroke: var(--rc-chart-series-1);
+}
+
+.charts-panel-chart-series-2 {
+  stroke: var(--rc-chart-series-2);
+}
+
+.charts-panel-chart-series-3 {
+  stroke: var(--rc-chart-series-3);
+}
+
+.charts-panel-chart-series-4 {
+  stroke: var(--rc-chart-series-4);
+}
+
+.charts-panel-chart-axis-y {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  color: var(--rc-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.charts-panel-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  font-size: 0.78rem;
+  color: var(--rc-text);
+}
+
+.charts-panel-chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.charts-panel-chart-legend-swatch {
+  display: inline-block;
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+}
+
+.charts-panel-chart-legend-item.charts-panel-chart-series-1 .charts-panel-chart-legend-swatch {
+  background: var(--rc-chart-series-1);
+}
+
+.charts-panel-chart-legend-item.charts-panel-chart-series-2 .charts-panel-chart-legend-swatch {
+  background: var(--rc-chart-series-2);
+}
+
+.charts-panel-chart-legend-item.charts-panel-chart-series-3 .charts-panel-chart-legend-swatch {
+  background: var(--rc-chart-series-3);
+}
+
+.charts-panel-chart-legend-item.charts-panel-chart-series-4 .charts-panel-chart-legend-swatch {
+  background: var(--rc-chart-series-4);
+}

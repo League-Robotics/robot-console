@@ -1,7 +1,7 @@
 ---
 id: 009
 title: Telemetry and trace
-status: ticketing
+status: done
 branch: sprint/009-telemetry-and-trace
 use-cases:
 - SUC-001

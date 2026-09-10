@@ -74,15 +74,6 @@
   font-size: 1rem;
 }
 
-.robot-page-charts-placeholder-text {
-  margin: 0;
-  padding: 0.75rem;
-  border: 1px dashed var(--rc-border);
-  border-radius: 0.4rem;
-  color: var(--rc-text-muted);
-  font-size: 0.85rem;
-}
-
 /* DeviceConsole fills the right column and scrolls within it -- scoped
  * to this column only (via descendant selectors against DeviceConsole's
  * own classes) so RelayPage/UnknownDevicePage, which embed the same

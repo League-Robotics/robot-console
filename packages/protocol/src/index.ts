@@ -11,4 +11,5 @@ export * from "./banner.js";
 export * from "./deviceType.js";
 export * from "./v6/codec.js";
 export * from "./v6/session.js";
+export * from "./v6/telemetry.js";
 export * from "./relay/commands.js";

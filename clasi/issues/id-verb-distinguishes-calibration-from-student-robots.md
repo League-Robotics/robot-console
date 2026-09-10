@@ -1,6 +1,6 @@
 ---
 status: pending
-sprint: '010'
+sprint: '011'
 ---
 
 # The `ID` verb distinguishes calibration from student robots — the fourth device type is unblocked

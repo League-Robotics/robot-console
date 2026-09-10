@@ -65,7 +65,7 @@ function baseDevice(overrides: Partial<EndpointListEntry> = {}): EndpointListEnt
     endpointId: "usb-SERIAL-A",
     transport: "usb",
     resourceKey: "usb-SERIAL-A",
-    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
+    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
     name: "zeguz",
     role: "NEZHA2",
     sessionOpen: true,

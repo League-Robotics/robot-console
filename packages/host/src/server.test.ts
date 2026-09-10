@@ -475,6 +475,12 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
     ws = connected.ws;
 
     await connected.messages.waitFor((m) => m.type === "endpoints" && m.endpoints[0]?.sessionOpen === true);
+    // Sprint 011 ticket 001: deviceRegistry.ts's startRobotProbes also
+    // sends a one-shot, unsequenced ID right after this robot identifies
+    // -- strip it here so it doesn't leak into this test's own sentLines
+    // assertion below (see deviceRegistry.test.ts's own coverage of that
+    // probe).
+    link.sentLines = link.sentLines.filter((sent) => !sent.startsWith("ID"));
 
     // Any raw line other than HELLO -- see the dedicated raw-HELLO
     // resync test below for why HELLO itself is intercepted rather than
@@ -634,6 +640,9 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
     ws = connected.ws;
 
     await connected.messages.waitFor((m) => m.type === "endpoints" && m.endpoints[0]?.sessionOpen === true);
+    // Sprint 011 ticket 001: strip the one-shot ID probe sent on this
+    // robot's initial identify -- see the previous test's own comment.
+    link.sentLines = link.sentLines.filter((sent) => !sent.startsWith("ID"));
 
     ws.send(JSON.stringify({ type: "send-command", endpointId: "usb-SERIAL-A", verb: "GET", fields: [] }));
     ws.send(JSON.stringify({ type: "send-command", endpointId: "usb-SERIAL-A", verb: "STATUS" }));
@@ -913,7 +922,7 @@ describe("server.ts flash wiring (sprint 2, ticket 006)", () => {
       endpointId: "usb-SERIAL-A",
       source: { kind: "release", firmware: "relay" },
       status: "ok",
-      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "common-name" },
+      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "common-name", program: null, version: null },
       name: "zeguz",
     };
     const resultOnFirst = await first.messages.waitFor((m) => m.type === "flash-result");
@@ -1054,7 +1063,7 @@ describe("server.ts local-hex upload handshake (sprint 4 ticket 005)", () => {
       endpointId: "usb-SERIAL-A",
       source,
       status: "ok",
-      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "common-name" },
+      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "common-name", program: null, version: null },
       name: "zeguz",
     });
 

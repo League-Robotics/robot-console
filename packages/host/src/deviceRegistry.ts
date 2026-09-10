@@ -420,7 +420,15 @@
  */
 
 import type { AckNackEvent, DecodedLine, DeviceClassification, ParsedBanner, WireField } from "@robot-console/protocol";
-import { classifyBanner, encodeLine, isSequencedVerb, nameToRadioAddress, TelemetryDecoder } from "@robot-console/protocol";
+import {
+  classifyBanner,
+  encodeLine,
+  isSequencedVerb,
+  nameToRadioAddress,
+  parseIdReply,
+  refineForCalibration,
+  TelemetryDecoder,
+} from "@robot-console/protocol";
 import {
   DeviceWatcher,
   type DaplinkDevice,
@@ -3054,7 +3062,37 @@ export class DeviceRegistry {
       this.handleTelemetryLine(state, decoded);
       return;
     }
+    if (decoded.verb === "id") {
+      this.handleIdReply(state, decoded);
+      this.emitLine(state.endpointId, "rx", text);
+      return;
+    }
     this.emitLine(state.endpointId, "rx", text);
+  }
+
+  /**
+   * Sprint 011 ticket 001: harvest an `id <product> <program> <version>
+   * <name>` reply -- sent unsequenced, once, by {@link startRobotProbes}
+   * after every robot identify (any transport) -- into this endpoint's
+   * `classification`. `@robot-console/protocol`'s {@link parseIdReply}
+   * owns the positional parse; {@link refineForCalibration} owns the
+   * `calibration-` prefix match (the one place it is matched -- see
+   * that function's own doc comment). A malformed reply (fewer than
+   * four fields) is silently ignored -- `parseIdReply` returning `null`
+   * means the classification simply stays whatever it already was,
+   * exactly like a robot that never answers `ID` at all. Only ever
+   * called for a `decoded.verb === "id"` line, which arrives on a
+   * session already classified `"robot"` or `"calibration"` (an
+   * unrelated device would never have had `ID` sent to it in the first
+   * place -- see {@link startRobotProbes}'s own guard).
+   */
+  private handleIdReply(state: EndpointState, decoded: DecodedLine): void {
+    const idReply = parseIdReply(decoded.fields);
+    if (!idReply) {
+      return;
+    }
+    state.classification = refineForCalibration(state.classification, idReply);
+    this.emitDevices();
   }
 
   /** Lazily create (never destroy on its own) the per-endpoint
@@ -3186,6 +3224,20 @@ export class DeviceRegistry {
    * (so `robotStatus` -- and in particular the e-stop latch -- is
    * visible and stays fresh). Both are no-ops for a non-robot
    * classification. Idempotent: restarts the poll if one was running.
+   *
+   * Sprint 011 ticket 001: this is also the one shared post-identify
+   * step every transport already runs through (USB attach, WiFi attach,
+   * post-flash reidentify, and a relay/mbserial robot synthesized by
+   * `openRobotViaRelay` -- see this module's own doc comment), so it is
+   * where the unsequenced `ID` probe is sent too, exactly once per
+   * identify, unconditionally (never gated by `autoRequestFunctions`/
+   * `statusPollIntervalMs` -- those two are opt-in conveniences, this is
+   * the classification signal the linked issue exists for). The reply
+   * (if any) is harvested by {@link handleIdReply} whenever it arrives;
+   * a robot that never answers (older firmware, a build without the
+   * verb, or the request simply going unanswered) is never specially
+   * waited for or timed out here -- `classification.type` simply stays
+   * `"robot"`, exactly as the ticket's own acceptance criteria requires.
    */
   private startRobotProbes(state: EndpointState): void {
     this.stopRobotProbes(state);
@@ -3195,6 +3247,7 @@ export class DeviceRegistry {
     if (state.classification.type !== "robot") {
       return;
     }
+    this.probeIdentity(state);
     if (this.autoRequestFunctions) {
       this.dispatchFuncs(state);
     }
@@ -3227,6 +3280,33 @@ export class DeviceRegistry {
       const line = state.session.link.sendUnsequenced("STATUS");
       state.pollAwaitingStatus = true;
       this.emitLine(state.endpointId, "tx", line.replace(/\n$/, ""), "poll");
+    } catch (error) {
+      this.emitError(state.endpointId, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
+   * Sprint 011 ticket 001: send unsequenced `ID` once, on the host's own
+   * initiative, right after a robot identifies -- see
+   * {@link startRobotProbes}'s own doc comment for why this lives there
+   * rather than behind either of that method's two existing opt-in
+   * flags. Fire-and-forget, exactly like {@link pollStatus}/{@link
+   * dispatchFuncs}: this method never awaits a reply or tracks a
+   * timeout of its own. The reply (if the robot ever answers) arrives
+   * on the normal inbound-line path and is harvested by
+   * {@link handleIdReply}; if it never arrives, nothing here times out
+   * or retries -- the classification simply stays whatever it already
+   * was, per the linked issue's own design caution that absence of a
+   * reply is never evidence of a student build. Reports (never throws)
+   * a failed write, same as every other probe here.
+   */
+  private probeIdentity(state: EndpointState): void {
+    if (!state.session) {
+      return;
+    }
+    try {
+      const line = state.session.link.sendUnsequenced("ID");
+      this.emitLine(state.endpointId, "tx", line.replace(/\n$/, ""));
     } catch (error) {
       this.emitError(state.endpointId, error instanceof Error ? error.message : String(error));
     }

@@ -63,7 +63,7 @@ function baseDevice(overrides: Partial<EndpointListEntry> = {}): EndpointListEnt
     endpointId: "usb-SERIAL-A",
     transport: "usb",
     resourceKey: "usb-SERIAL-A",
-    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none" },
+    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
     name: "zeguz",
     role: null,
     sessionOpen: false,
@@ -286,7 +286,7 @@ describe("FlashDialog dismissal while a flash is in progress", () => {
         endpointId: "usb-SERIAL-A",
         source: { kind: "release", firmware: "relay" },
         status: "ok",
-        classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none" },
+        classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
         reidentify: "timeout",
       });
     });
@@ -307,7 +307,7 @@ describe("FlashDialog dismissal while a flash is in progress", () => {
         endpointId: "usb-SERIAL-A",
         source: { kind: "release", firmware: "relay" },
         status: "ok",
-        classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none" },
+        classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
         reidentify: "timeout",
       });
     });

@@ -77,12 +77,12 @@ interface BaseDeviceOverrides {
 
 function classificationFor(role: string | null): EndpointListEntry["classification"] {
   if (role === null) {
-    return { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none" };
+    return { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null };
   }
   if (role === "NEZHA2") {
-    return { type: "robot", role, commonName: "robot", dialect: "space", evidence: "role" };
+    return { type: "robot", role, commonName: "robot", dialect: "space", evidence: "role", program: null, version: null };
   }
-  return { type: "unknown", role, commonName: null, dialect: null, evidence: "unrecognized" };
+  return { type: "unknown", role, commonName: null, dialect: null, evidence: "unrecognized", program: null, version: null };
 }
 
 function baseDevice(overrides: BaseDeviceOverrides = {}): EndpointListEntry {
@@ -403,7 +403,7 @@ describe("EndpointCard for a relay-radio (viaRelay) entry (added out-of-process,
       endpointId: "usb-RELAY-A",
       transport: "usb",
       resourceKey: "usb-RELAY-A",
-      classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role" },
+      classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role", program: null, version: null },
       name: "gopiv",
       role: "RADIORELAY",
       sessionOpen: false,
@@ -416,7 +416,7 @@ describe("EndpointCard for a relay-radio (viaRelay) entry (added out-of-process,
       endpointId: "usb-RELAY-A-via-vevav",
       transport: "relay-radio",
       resourceKey: "usb-RELAY-A",
-      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
+      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
       name: "vevav",
       role: "NEZHA2",
       sessionOpen: true,
@@ -463,7 +463,7 @@ describe("EndpointCard for a wifi entry (sprint 10 ticket 005)", () => {
       endpointId: "wifi-gopiv",
       transport: "wifi",
       resourceKey: "wifi-gopiv",
-      classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none" },
+      classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
       name: "gopiv",
       role: null,
       sessionOpen: false,
@@ -509,7 +509,7 @@ describe("EndpointCard for a wifi entry (sprint 10 ticket 005)", () => {
                 role: "NEZHA2",
                 commonName: "robot",
                 dialect: "space",
-                evidence: "role",
+                evidence: "role", program: null, version: null,
               },
               role: "NEZHA2",
               sessionOpen: true,

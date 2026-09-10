@@ -49,7 +49,7 @@ function endpoint(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry
     endpointId: "usb-SERIAL-A",
     transport: "usb",
     resourceKey: "usb-SERIAL-A",
-    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none" },
+    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
     name: "zeguz",
     role: null,
     sessionOpen: false,
@@ -82,7 +82,7 @@ function wifiEndpoint(overrides: Partial<EndpointListEntry> = {}): EndpointListE
     endpointId: "wifi-gopiv",
     transport: "wifi",
     resourceKey: "wifi-gopiv",
-    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none" },
+    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
     name: "gopiv",
     role: null,
     sessionOpen: false,
@@ -160,7 +160,7 @@ describe("DevicePage per-type dispatch", () => {
         type: "endpoints",
         endpoints: [
           endpoint({
-            classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role" },
+            classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role", program: null, version: null },
           }),
         ],
       });
@@ -180,7 +180,7 @@ describe("DevicePage per-type dispatch", () => {
         type: "endpoints",
         endpoints: [
           endpoint({
-            classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
+            classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
           }),
         ],
       });
@@ -220,7 +220,7 @@ describe("DevicePage per-type dispatch", () => {
               role: "SOMETHING_NEW",
               commonName: null,
               dialect: null,
-              evidence: "role",
+              evidence: "role", program: null, version: null,
             },
           }),
         ],
@@ -255,7 +255,7 @@ describe("DevicePage opens a wifi endpoint's session on mount (sprint 10 ticket 
         type: "endpoints",
         endpoints: [
           wifiEndpoint({
-            classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
+            classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
             role: "NEZHA2",
             sessionOpen: true,
           }),

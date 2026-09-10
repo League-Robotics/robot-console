@@ -97,7 +97,7 @@ function baseDevice(overrides: Partial<EndpointListEntry> = {}): EndpointListEnt
     endpointId: "usb-SERIAL-A",
     transport: "usb",
     resourceKey: "usb-SERIAL-A",
-    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none" },
+    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
     name: "zeguz",
     role: null,
     sessionOpen: false,
@@ -442,7 +442,7 @@ describe("FlashControls post-flash navigation", () => {
         endpointId: "usb-SERIAL-UNRESPONSIVE",
         source: { kind: "release", firmware: "relay" },
         status: "ok",
-        classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role" },
+        classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role", program: null, version: null },
         name: "zeguz",
       });
     });
@@ -472,7 +472,7 @@ describe("FlashControls post-flash navigation", () => {
         endpointId: "usb-SERIAL-UNRESPONSIVE",
         source: { kind: "release", firmware: "relay" },
         status: "ok",
-        classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none" },
+        classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
         reidentify: "timeout",
       });
     });

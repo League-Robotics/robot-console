@@ -19,15 +19,31 @@
  * 90°/180° turn buttons below are one-shot, not a held lease, and the
  * wire fields are exactly `MOVE_X <distance> <rotation> <cruise>
  * <timeout> #<id>` (`protocol.md` §6 verb table; `motion-api.md` §3.3
- * for units — distance `[mm]`, rotation `[deg]`, cruise `[mm/s]`,
+ * for the field list — distance `[mm]`, rotation, cruise `[mm/s]`,
  * timeout `[ms]`). `distance` is always `0` — these buttons turn in
  * place, they do not also translate.
  *
+ * **`rotation` is milliradians on the wire, not degrees (fixed
+ * out-of-process, 2026-09-10).** `motion-api.md` §9.1 states the rule
+ * plainly -- "degrees at the API and milliradian integers on the
+ * wire... the conversion lives in the binding, in one place" -- and
+ * this component *is* that binding: it talks straight to the wire-level
+ * `MOVE_X` verb via `sendCommand`, with no degrees-native client
+ * library underneath doing the conversion for it. The first version of
+ * these buttons sent a bare `90`/`180` and every fixed turn barely
+ * twitched on real hardware. The bench capture that caught it commanded
+ * a 90 degree pivot as `MOVE_X 0 1571 100 5000`
+ * (`vendor/pxt-nezha-diffdrive/captures/bench-acceptance-029-20260904/
+ * notes.md:95`) -- `1571 == round(90 * pi / 180 * 1000)`. See
+ * {@link degreesToMilliradians}, which every fixed turn now goes
+ * through before it ever reaches `sendCommand`.
+ *
  * **Yaw is CCW-positive** (`vendor/pxt-nezha-diffdrive/src/blocks/
  * motion.ts`, "angle to turn CCW+"): a left turn is a positive rotation,
- * a right turn negative. See {@link TURN_CRUISE_MM_S},
- * {@link TURN_90_TIMEOUT_MS}, {@link TURN_180_TIMEOUT_MS} for the exact
- * values sent.
+ * a right turn negative, in degrees at this component's own level --
+ * {@link degreesToMilliradians} converts only at the point of sending.
+ * See {@link TURN_CRUISE_MM_S}, {@link TURN_90_TIMEOUT_MS},
+ * {@link TURN_180_TIMEOUT_MS} for the other three `MOVE_X` fields sent.
  *
  * **`duration` is a lease, not a one-shot** (motion-api.md §1: bounded
  * by time; the wheel kernel's `drive(velocity, twist, lease)` stops on
@@ -127,16 +143,37 @@ const DRIVE_LEASE_MS = 400;
  * {@link DRIVE_LEASE_MS}. See this module's doc comment. */
 const DRIVE_RESEND_INTERVAL_MS = 150;
 
-/** [mm/s] -- `cruise` field for every fixed-angle `MOVE_X` turn. Same
- * moderate demo speed as {@link DRIVE_VELOCITY_MM_S}, chosen for the
- * same classroom-safe reason; not independently hardware-tuned. */
-const TURN_CRUISE_MM_S = 150;
+/** `cruise` field for every fixed-angle `MOVE_X` turn. `0` is not "zero
+ * speed" -- it is the wire's own "use the robot's configured default
+ * cruise" sentinel (`motion-api.md` §1.1: "An X-form's commanded value
+ * is a displacement... so `cruise` is its own argument. Pass `0` for
+ * the configured default."), confirmed against a real board by the
+ * `MOVE_X 100 0 0 8000 #1` line in the tovez acceptance capture
+ * (`vendor/pxt-nezha-diffdrive/captures/
+ * consolidation-acceptance-tovez-20260906/notes.md:100`). Corrected
+ * out-of-process, 2026-09-10, from a previously-sent `150` -- an
+ * assumed mm/s value that was never actually verified against the
+ * wire's own contract for this field, the same class of mistake as the
+ * `rotation` units bug this same pass fixed (see this module's doc
+ * comment). */
+const TURN_CRUISE_MM_S = 0;
 /** [ms] -- `timeout` field for a fixed 90 degree `MOVE_X` turn. */
 const TURN_90_TIMEOUT_MS = 4000;
 /** [ms] -- `timeout` field for a fixed 180 degree `MOVE_X` turn (longer
  * than {@link TURN_90_TIMEOUT_MS} -- twice the rotation, more time to
  * finish it before the adapter gives up). */
 const TURN_180_TIMEOUT_MS = 6000;
+
+/** Converts a signed API-level angle in whole degrees to the signed
+ * wire-level integer milliradians `MOVE_X`'s `rotation` field actually
+ * wants -- see this module's doc comment for why this conversion has to
+ * happen here rather than further down some binding this project
+ * doesn't have. Verified against the bench capture that caught the bug
+ * this fixes: `round(90 * pi / 180 * 1000) === 1571`, matching
+ * `MOVE_X 0 1571 100 5000`'s commanded +90 degrees
+ * (`vendor/pxt-nezha-diffdrive/captures/bench-acceptance-029-20260904/
+ * notes.md:95`). */
+const degreesToMilliradians = (deg: number) => Math.round((deg * Math.PI) / 180 * 1000);
 
 export type DriveDirection = "forward" | "backward" | "left" | "right";
 
@@ -331,12 +368,19 @@ export function DriveControls({ device }: DriveControlsProps) {
   }
 
   /** One-shot fixed turn -- a click, not a hold. See this module's doc
-   * comment for why `MOVE_X` (not `WHEELS_V`) is used here. */
-  function turn(rotation: number, timeoutMs: number): void {
+   * comment for why `MOVE_X` (not `WHEELS_V`) is used here, and why
+   * `rotationDeg` is converted through {@link degreesToMilliradians}
+   * before it goes on the wire. */
+  function turn(rotationDeg: number, timeoutMs: number): void {
     if (!linkOpen) {
       return;
     }
-    sendCommand(endpointId, "MOVE_X", [0, rotation, TURN_CRUISE_MM_S, timeoutMs]);
+    sendCommand(endpointId, "MOVE_X", [
+      0,
+      degreesToMilliradians(rotationDeg),
+      TURN_CRUISE_MM_S,
+      timeoutMs,
+    ]);
   }
 
   const canAbortRun = device.functions?.some((fn) => fn.name === "abort") === true;

@@ -476,11 +476,18 @@ describe("DriveControls Clear E-STOP (ported from EstopControl.test.tsx, out-of-
 });
 
 describe("DriveControls fixed-angle turns (MOVE_X, added out-of-process 2026-09-10)", () => {
+  // Field 2 is milliradians, not degrees (`MOVE_X`'s wire contract --
+  // see DriveControls.tsx's doc comment and the bench capture that
+  // caught the earlier degrees-on-the-wire bug,
+  // vendor/pxt-nezha-diffdrive/captures/bench-acceptance-029-20260904/
+  // notes.md:95): 1571 = round(90 * pi / 180 * 1000), 3142 = round(180 *
+  // pi / 180 * 1000). Field 3 (cruise) is 0 -- the wire's own "use the
+  // robot's configured default cruise" sentinel, not an mm/s value.
   const cases: Array<{ testId: string; fields: [number, number, number, number] }> = [
-    { testId: "turn-90-left", fields: [0, 90, 150, 4000] },
-    { testId: "turn-90-right", fields: [0, -90, 150, 4000] },
-    { testId: "turn-180-left", fields: [0, 180, 150, 6000] },
-    { testId: "turn-180-right", fields: [0, -180, 150, 6000] },
+    { testId: "turn-90-left", fields: [0, 1571, 0, 4000] },
+    { testId: "turn-90-right", fields: [0, -1571, 0, 4000] },
+    { testId: "turn-180-left", fields: [0, 3142, 0, 6000] },
+    { testId: "turn-180-right", fields: [0, -3142, 0, 6000] },
   ];
 
   for (const { testId, fields } of cases) {

@@ -15,6 +15,18 @@
  * state, a second run after a completed one, and the regression check
  * that no nudge/beam-pointer UI ever appears in this panel.
  *
+ * **`apply` is not the last line on the wire.** `test/calibratea.ts`
+ * emits `CALA:apply ...` and then immediately re-runs both directions a
+ * second time to verify the fix -- `CALA:check clockwise`/`CALA:check
+ * counter-clockwise` and their own progress lines arrive AFTER `apply`,
+ * not before it (a bug caught during ticket 005's review: an earlier
+ * version of this wizard returned at the first `apply` line and never
+ * rendered the two re-verification stages at all). The fixtures below
+ * use that real order, and separately cover a `CALA:fail` arriving
+ * *after* `apply` -- the run must flip to `failed` and drop the
+ * snippet, since a failed re-verification must never leave a green
+ * result standing.
+ *
  * Marker and progress-line text throughout is taken verbatim from
  * `test/calibratea.ts` (`nezha-robot-template`, read directly) --
  * `CALA:pass clockwise`, `CALA:pass counter-clockwise`, `CALA:check
@@ -270,7 +282,14 @@ describe("RotationCalibrationWizard progress rendering", () => {
 });
 
 describe("RotationCalibrationWizard terminal states", () => {
-  it("renders a CALA:apply line's exact text as the snippet, byte-for-byte after stripping only 'CALA:apply ', once all four pass stages have streamed in", () => {
+  it("renders a CALA:apply line's exact text as the snippet, byte-for-byte after stripping only 'CALA:apply ', in the firmware's own real emission order (cw, ccw, apply, then the two re-verification passes)", () => {
+    // test/calibratea.ts emits `CALA:apply ...` once the correction is
+    // computed -- *before* it re-runs both directions a second time to
+    // verify the fix -- so `CALA:check clockwise`/`CALA:check
+    // counter-clockwise` and their own progress lines arrive AFTER
+    // apply, not before it. The panel must still be "succeeded" as soon
+    // as apply is seen, and must still populate/render the two
+    // re-verification stages as they stream in afterward.
     const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
     clickGo(el);
     emitLine(socket, "CALA:begin track=11.5cm slip=0.952 b=12.08cm");
@@ -280,16 +299,67 @@ describe("RotationCalibrationWizard terminal states", () => {
     emitLine(socket, "CALA:pass counter-clockwise");
     emitLine(socket, "CALA:edge 1 at 358deg");
     emitLine(socket, "CALA:centring scatter=3.9deg");
-    emitLine(socket, "CALA:check clockwise");
-    emitLine(socket, "CALA:check counter-clockwise");
     emitLine(socket, "CALA:apply diffDrive.setConfigValue(ConfigField.RotationalSlip, 0.965)");
 
-    const snippet = el.querySelector('[data-testid="rotation-calibration-snippet"]')!;
+    let snippet = el.querySelector('[data-testid="rotation-calibration-snippet"]')!;
     expect(snippet.textContent).toBe("diffDrive.setConfigValue(ConfigField.RotationalSlip, 0.965)");
     expect(el.querySelector('[data-testid="rotation-calibration-failed"]')).toBeNull();
     expect(el.querySelector('[data-testid="rotation-calibration-run-error"]')).toBeNull();
     // Go re-enables so the student can run again if they want to.
     expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(false);
+    // The two earlier stages are already visible alongside the result.
+    expect(el.querySelector('[data-testid="rotation-calibration-stage-cw"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="rotation-calibration-stage-ccw"]')).not.toBeNull();
+    // The re-verification stages haven't been announced yet -- not
+    // fabricated ahead of the firmware's own marker lines.
+    expect(el.querySelector('[data-testid="rotation-calibration-stage-check-cw"]')).toBeNull();
+    expect(el.querySelector('[data-testid="rotation-calibration-stage-check-ccw"]')).toBeNull();
+
+    // The firmware keeps talking after apply -- its own re-verification
+    // passes stream in next, and must still render even though the run
+    // is already succeeded.
+    emitLine(socket, "CALA:check clockwise");
+    emitLine(socket, "CALA:edge 1 at 90.5deg");
+    emitLine(socket, "CALA:check counter-clockwise");
+    emitLine(socket, "CALA:edge 1 at 269.7deg");
+    emitLine(socket, "CALA:error cw=0.4deg ccw=-0.2deg per turn");
+
+    const checkCw = el.querySelector('[data-testid="rotation-calibration-stage-check-cw"]')!;
+    expect(checkCw).not.toBeNull();
+    expect(checkCw.textContent).toContain("edge 1 at 90.5deg");
+    const checkCcw = el.querySelector('[data-testid="rotation-calibration-stage-check-ccw"]')!;
+    expect(checkCcw).not.toBeNull();
+    expect(checkCcw.textContent).toContain("edge 1 at 269.7deg");
+    expect(checkCcw.textContent).toContain("error cw=0.4deg ccw=-0.2deg per turn");
+
+    // The snippet and Go's re-enabled state are unaffected by the
+    // re-verification lines still streaming in afterward.
+    snippet = el.querySelector('[data-testid="rotation-calibration-snippet"]')!;
+    expect(snippet.textContent).toBe("diffDrive.setConfigValue(ConfigField.RotationalSlip, 0.965)");
+    expect(el.querySelector('[data-testid="rotation-calibration-failed"]')).toBeNull();
+  });
+
+  it("flips a succeeded run to failed if a CALA:fail line arrives after CALA:apply -- a failed re-verification must not leave a green result standing", () => {
+    const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
+    clickGo(el);
+    emitLine(socket, "CALA:pass clockwise");
+    emitLine(socket, "CALA:edge 1 at 90deg");
+    emitLine(socket, "CALA:pass counter-clockwise");
+    emitLine(socket, "CALA:edge 1 at 270deg");
+    emitLine(socket, "CALA:apply diffDrive.setConfigValue(ConfigField.RotationalSlip, 0.965)");
+
+    expect(el.querySelector('[data-testid="rotation-calibration-result"]')).not.toBeNull();
+
+    emitLine(socket, "CALA:check clockwise");
+    emitLine(socket, "CALA:fail STALLED, power-cycle the robot");
+
+    const failed = el.querySelector('[data-testid="rotation-calibration-failed"]')!;
+    expect(failed).not.toBeNull();
+    expect(failed.textContent).toContain("STALLED, power-cycle the robot");
+    // The earlier "succeeded" result is gone -- no green result and no
+    // snippet stand alongside a failed re-verification.
+    expect(el.querySelector('[data-testid="rotation-calibration-result"]')).toBeNull();
+    expect(el.querySelector('[data-testid="rotation-calibration-snippet"]')).toBeNull();
   });
 
   it("renders a distinct failure state on a CALA:fail line during the very first pass, never a snippet", () => {
@@ -438,5 +508,39 @@ describe("deriveRotationCalibrationRun (pure derivation)", () => {
         { stage: "ccw", events: ["edge 1 at 358deg"] },
       ],
     });
+  });
+
+  it("keeps consuming entries after CALA:apply so the two re-verification stages -- which the real firmware announces after apply, not before -- still populate", () => {
+    const run = deriveRotationCalibrationRun([
+      { direction: "rx", line: "CALA:pass clockwise" },
+      { direction: "rx", line: "CALA:edge 1 at 92deg" },
+      { direction: "rx", line: "CALA:pass counter-clockwise" },
+      { direction: "rx", line: "CALA:edge 1 at 358deg" },
+      { direction: "rx", line: "CALA:apply diffDrive.setConfigValue(ConfigField.RotationalSlip, 0.965)" },
+      { direction: "rx", line: "CALA:check clockwise" },
+      { direction: "rx", line: "CALA:edge 1 at 90.5deg" },
+      { direction: "rx", line: "CALA:check counter-clockwise" },
+      { direction: "rx", line: "CALA:edge 1 at 269.7deg" },
+    ]);
+    expect(run).toEqual({
+      kind: "succeeded",
+      snippet: "diffDrive.setConfigValue(ConfigField.RotationalSlip, 0.965)",
+      leadingEvents: [],
+      stages: [
+        { stage: "cw", events: ["edge 1 at 92deg"] },
+        { stage: "ccw", events: ["edge 1 at 358deg"] },
+        { stage: "check-cw", events: ["edge 1 at 90.5deg"] },
+        { stage: "check-ccw", events: ["edge 1 at 269.7deg"] },
+      ],
+    });
+  });
+
+  it("overrides a recorded apply snippet with failed if CALA:fail arrives afterward", () => {
+    const run = deriveRotationCalibrationRun([
+      { direction: "rx", line: "CALA:apply diffDrive.setConfigValue(ConfigField.RotationalSlip, 0.965)" },
+      { direction: "rx", line: "CALA:check clockwise" },
+      { direction: "rx", line: "CALA:fail STALLED, power-cycle the robot" },
+    ]);
+    expect(run).toEqual({ kind: "failed", reason: "STALLED, power-cycle the robot" });
   });
 });

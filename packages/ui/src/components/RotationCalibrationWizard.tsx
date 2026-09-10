@@ -34,12 +34,22 @@
  * **The snippet is never computed by this panel** -- same rule as the
  * distance wizard: the observed `CALA:apply ...` line is rendered
  * verbatim, never a value reconstructed from the intermediate `CALA:
- * measured b=...`/`CALA:derived slip=...` lines. An `apply` line is
- * this routine's own terminal signal (mirroring `calx`'s identical
- * `CALX:apply` terminal line and `CalibrationReport`'s shared "apply
- * ends the run" shape) -- once it is parsed, the run is `succeeded` and
- * carries only the snippet, matching the distance wizard's own terminal
- * rendering discipline exactly.
+ * measured b=...`/`CALA:derived slip=...` lines.
+ *
+ * **`apply` is *not* the last line on the wire, unlike `calx`'s
+ * identical-looking `CALX:apply` terminal line.** `test/calibratea.ts`
+ * (read directly) emits `CALA:apply ...` once the correction is
+ * computed, then immediately *sets* that correction and re-runs both
+ * directions a second time -- `CALA:check clockwise`/`CALA:check
+ * counter-clockwise` and their own progress lines follow `apply` on the
+ * wire, not precede it. So `deriveRotationCalibrationRun` treats `apply`
+ * as "the result is now known", not "stop reading the log": it records
+ * the snippet and *keeps consuming* subsequent entries, so the two
+ * re-verification stages still populate and render even though the run
+ * is already `succeeded`. A `CALA:fail` line arriving after `apply` (the
+ * re-verification pass itself can fail) overrides that outcome -- the
+ * run flips to `failed`, discarding the snippet, because a failed
+ * re-verification must never leave a green result standing.
  *
  * No nudge control, no beam-pointer UI: this routine has neither -- see
  * this module's own doc comment above and the distance wizard's
@@ -99,19 +109,27 @@ export interface RotationCalibrationStageEvents {
 export type RotationCalibrationRun =
   | { kind: "running"; leadingEvents: string[]; stages: RotationCalibrationStageEvents[] }
   | { kind: "run-error"; leadingEvents: string[]; stages: RotationCalibrationStageEvents[] }
-  | { kind: "succeeded"; snippet: string }
+  | { kind: "succeeded"; leadingEvents: string[]; stages: RotationCalibrationStageEvents[]; snippet: string }
   | { kind: "failed"; reason: string };
 
 /** Pure derivation of a run's phase from the slice of `log` recorded
  * since Go was pressed -- exported so `RotationCalibrationWizard.test.tsx`
  * can exercise it directly against fixture log slices, mirroring
- * `DistanceCalibrationWizard.tsx`'s `deriveDistanceCalibrationRun`. */
+ * `DistanceCalibrationWizard.tsx`'s `deriveDistanceCalibrationRun`.
+ *
+ * `apply` does not end the loop (see this module's doc comment: the
+ * real firmware keeps narrating both re-verification stages after its
+ * own `apply` line) -- the snippet is recorded and iteration continues,
+ * so a later `check clockwise`/`check counter-clockwise` marker still
+ * opens its own stage bucket, and a later `fail` still overrides the
+ * outcome to `failed`, discarding the snippet. */
 export function deriveRotationCalibrationRun(
   entries: readonly { direction: "tx" | "rx"; line: string }[],
 ): RotationCalibrationRun {
   const leadingEvents: string[] = [];
   const stages: RotationCalibrationStageEvents[] = [];
   let current: RotationCalibrationStageEvents | undefined;
+  let snippet: string | undefined;
 
   for (const entry of entries) {
     if (entry.direction !== "rx") {
@@ -120,9 +138,15 @@ export function deriveRotationCalibrationRun(
     const event = parseCalibrationLine("CALA", entry.line);
     if (event) {
       if (event.kind === "apply") {
-        return { kind: "succeeded", snippet: event.snippet };
+        // The result is now known, but the routine is not done talking
+        // -- its own re-verification passes still follow on the wire.
+        // Keep reading so those stages still populate.
+        snippet = event.snippet;
+        continue;
       }
       if (event.kind === "fail") {
+        // Overrides any snippet already recorded -- a fail during
+        // re-verification must not leave a green result standing.
         return { kind: "failed", reason: event.reason };
       }
       const stageId = STAGE_MARKER_TEXT[event.text];
@@ -141,6 +165,9 @@ export function deriveRotationCalibrationRun(
     if (RUN_ERR_REPLY_PATTERN.test(entry.line.trim())) {
       return { kind: "run-error", leadingEvents, stages };
     }
+  }
+  if (snippet !== undefined) {
+    return { kind: "succeeded", leadingEvents, stages, snippet };
   }
   return { kind: "running", leadingEvents, stages };
 }
@@ -229,9 +256,9 @@ export function RotationCalibrationWizard({ device }: RotationCalibrationWizardP
         Go
       </button>
 
-      {run?.kind === "running" && (
+      {(run?.kind === "running" || run?.kind === "succeeded") && (
         <div className="rotation-calibration-progress" data-testid="rotation-calibration-progress" role="status">
-          <p>Running…</p>
+          <p>{run.kind === "running" ? "Running…" : "Verifying the correction…"}</p>
           {run.leadingEvents.length > 0 && (
             <ul className="rotation-calibration-leading">
               {run.leadingEvents.map((text, index) => (

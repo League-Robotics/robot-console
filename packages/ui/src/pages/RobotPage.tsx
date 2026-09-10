@@ -31,7 +31,10 @@
  *   `DistanceCalibrationWizard` (sprint 011 ticket 003 -- the `calx`
  *   distance-calibration wizard, `FUNCS`-gated per `sprint.md`'s Design
  *   Rationale, mounted below Path trace; see that component's own doc
- *   comment).
+ *   comment), and `RotationCalibrationWizard` (sprint 011 ticket 004 --
+ *   the `cala` rotation-calibration wizard, same `FUNCS`-gating
+ *   discipline, mounted below Distance calibration; see that
+ *   component's own doc comment).
  * - **Right column**: exactly one `DeviceConsole`, sized to fill the
  *   column's available height (`RobotPage.css` overrides
  *   `DeviceConsole`'s own fixed `max-height` scoped to this column
@@ -99,6 +102,7 @@ import { DistanceCalibrationWizard } from "../components/DistanceCalibrationWiza
 import { DriveControls } from "../components/DriveControls";
 import { FunctionsPanel } from "../components/FunctionsPanel";
 import { PathTracePanel } from "../components/PathTracePanel";
+import { RotationCalibrationWizard } from "../components/RotationCalibrationWizard";
 import { SequencingIndicator } from "../components/SequencingIndicator";
 import { StatusPanel } from "../components/StatusPanel";
 import "./RobotPage.css";
@@ -155,6 +159,11 @@ export function RobotPage({ endpoint }: RobotPageProps) {
           <div className="robot-page-panel" aria-label="Distance calibration">
             <h3>Distance calibration</h3>
             <DistanceCalibrationWizard device={endpoint} />
+          </div>
+
+          <div className="robot-page-panel" aria-label="Rotation calibration">
+            <h3>Rotation calibration</h3>
+            <RotationCalibrationWizard device={endpoint} />
           </div>
         </div>
 

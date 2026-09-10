@@ -75,6 +75,7 @@ import functionsPanelSource from "../components/FunctionsPanel.tsx?raw";
 import chartsPanelSource from "../components/ChartsPanel.tsx?raw";
 import pathTracePanelSource from "../components/PathTracePanel.tsx?raw";
 import distanceCalibrationWizardSource from "../components/DistanceCalibrationWizard.tsx?raw";
+import rotationCalibrationWizardSource from "../components/RotationCalibrationWizard.tsx?raw";
 import calibrationReportSource from "../components/CalibrationReport.ts?raw";
 import { RobotPage } from "./RobotPage";
 import { WsProvider } from "../ws/WsProvider";
@@ -111,6 +112,10 @@ const FILES_UNDER_TEST: Record<string, string> = {
   // only `device.functions`/`useEndpointLog`/`useWsActions`, never a
   // transport/link type or `endpoint.transport`.
   "components/DistanceCalibrationWizard.tsx": distanceCalibrationWizardSource,
+  // Sprint 011 ticket 004: the rotation-calibration wizard is held to
+  // the same property -- it reads only `device.functions`/
+  // `useEndpointLog`/`useWsActions`, never a transport/link type.
+  "components/RotationCalibrationWizard.tsx": rotationCalibrationWizardSource,
   "components/CalibrationReport.ts": calibrationReportSource,
 };
 

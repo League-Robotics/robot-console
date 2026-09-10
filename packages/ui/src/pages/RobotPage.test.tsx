@@ -93,7 +93,7 @@ describe("RobotPage", () => {
     expect(el.textContent).toContain("vevav");
   });
 
-  it("renders the left column with status, drive controls, a sequencing indicator, functions, a charts placeholder, a path trace panel, and the distance calibration wizard", () => {
+  it("renders the left column with status, drive controls, a sequencing indicator, functions, a charts placeholder, a path trace panel, and both calibration wizards", () => {
     const { el } = mountRobotPage(robotFixture());
     const left = el.querySelector(".robot-page-column-left");
     expect(left).not.toBeNull();
@@ -104,9 +104,10 @@ describe("RobotPage", () => {
     expect(left!.querySelector('[aria-label="Charts"]')).not.toBeNull();
     expect(left!.querySelector('[aria-label="Path trace"]')).not.toBeNull();
     expect(left!.querySelector('[aria-label="Distance calibration"]')).not.toBeNull();
+    expect(left!.querySelector('[aria-label="Rotation calibration"]')).not.toBeNull();
   });
 
-  it("orders the left column's panels Status, Drive, Sequencing, Functions, Charts, Path trace, Distance calibration", () => {
+  it("orders the left column's panels Status, Drive, Sequencing, Functions, Charts, Path trace, Distance calibration, Rotation calibration", () => {
     const { el } = mountRobotPage(robotFixture());
     const left = el.querySelector(".robot-page-column-left")!;
     const headings = Array.from(left.querySelectorAll("h3")).map((h) => h.textContent);
@@ -118,6 +119,7 @@ describe("RobotPage", () => {
       "Charts",
       "Path trace",
       "Distance calibration",
+      "Rotation calibration",
     ]);
   });
 

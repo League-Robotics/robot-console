@@ -23,9 +23,10 @@
  *   `SequencingIndicator` (unchanged, read-only view of `Session`'s
  *   reliability state), `FunctionsPanel` (added out-of-process,
  *   2026-09-09 -- the robot's `FUNCS`-discovered, `RUN`-able function
- *   list, mounted below Sequencing), and a stubbed, empty charts
- *   placeholder -- charts themselves are future work (`sprint.md`'s
- *   Scope), this column only reserves and labels their eventual spot.
+ *   list, mounted below Sequencing), and `ChartsPanel` (sprint 9 ticket
+ *   004 -- wheel-speed bars and a rolling time-series chart fed by
+ *   `useTelemetry`/`useTelemetryHeader`; the path-trace panel is
+ *   ticket 005's job and not mounted here).
  * - **Right column**: exactly one `DeviceConsole`, sized to fill the
  *   column's available height (`RobotPage.css` overrides
  *   `DeviceConsole`'s own fixed `max-height` scoped to this column
@@ -72,6 +73,7 @@
  * relay-connected robot depends entirely on this property holding.
  */
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import { ChartsPanel } from "../components/ChartsPanel";
 import { CommandStrip } from "../components/CommandStrip";
 import { DeviceConsole } from "../components/DeviceConsole";
 import { DriveControls } from "../components/DriveControls";
@@ -111,11 +113,9 @@ export function RobotPage({ endpoint }: RobotPageProps) {
             <FunctionsPanel device={endpoint} />
           </div>
 
-          <div className="robot-page-panel robot-page-charts-placeholder" aria-label="Charts">
+          <div className="robot-page-panel" aria-label="Charts">
             <h3>Charts</h3>
-            <p className="robot-page-charts-placeholder-text">
-              Telemetry charts are not built yet -- this space is reserved for a future sprint.
-            </p>
+            <ChartsPanel endpointId={endpoint.endpointId} />
           </div>
         </div>
 

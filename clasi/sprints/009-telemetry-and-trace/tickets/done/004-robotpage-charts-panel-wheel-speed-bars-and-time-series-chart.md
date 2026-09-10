@@ -1,10 +1,12 @@
 ---
-id: "004"
-title: "RobotPage Charts panel: wheel-speed bars and time-series chart"
-status: open
-use-cases: [SUC-001]
-depends-on: ["003"]
-github-issue: ""
+id: '004'
+title: 'RobotPage Charts panel: wheel-speed bars and time-series chart'
+status: done
+use-cases:
+- SUC-001
+depends-on:
+- '003'
+github-issue: ''
 issue: robot-console-two-level-ui-and-multi-transport-roadmap.md
 completes_issue: false
 ---
@@ -46,20 +48,20 @@ share the same page column).
 
 ## Acceptance Criteria
 
-- [ ] The Charts placeholder text/element is replaced by a live panel;
+- [x] The Charts placeholder text/element is replaced by a live panel;
       no dead "future work" copy remains for this feature.
-- [ ] Wheel-speed bars render from decoded frames and update as new
+- [x] Wheel-speed bars render from decoded frames and update as new
       frames arrive.
-- [ ] A time-series chart renders a rolling window of decoded values.
-- [ ] Before a header is held, the panel shows an explicit
+- [x] A time-series chart renders a rolling window of decoded values.
+- [x] Before a header is held, the panel shows an explicit
       "waiting for header" state (verified by a test that mounts the
       panel with no header in the store).
-- [ ] A named column the current header does not include renders that
+- [x] A named column the current header does not include renders that
       one reading/series as explicitly unavailable, not a wrong value
       or a crash.
-- [ ] Charts are legible in both light and dark themes (per the
+- [x] Charts are legible in both light and dark themes (per the
       `dataviz` skill's palette/contrast guidance).
-- [ ] `RobotPage.transportBlind.test.ts` passes unmodified.
+- [x] `RobotPage.transportBlind.test.ts` passes unmodified.
 
 ## Testing
 

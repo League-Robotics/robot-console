@@ -72,6 +72,7 @@ import commandStripSource from "../components/CommandStrip.tsx?raw";
 import sequencingIndicatorSource from "../components/SequencingIndicator.tsx?raw";
 import statusPanelSource from "../components/StatusPanel.tsx?raw";
 import functionsPanelSource from "../components/FunctionsPanel.tsx?raw";
+import chartsPanelSource from "../components/ChartsPanel.tsx?raw";
 import { RobotPage } from "./RobotPage";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
@@ -94,6 +95,10 @@ const FILES_UNDER_TEST: Record<string, string> = {
   // and (later) WiFi, so nothing it mounts may know which it is on.
   "components/StatusPanel.tsx": statusPanelSource,
   "components/FunctionsPanel.tsx": functionsPanelSource,
+  // Sprint 9 ticket 004: ChartsPanel replaces the stubbed placeholder
+  // and is held to the same property -- it reads only
+  // `useTelemetry`/`useTelemetryHeader`, never a transport/link type.
+  "components/ChartsPanel.tsx": chartsPanelSource,
 };
 
 /** Matches a quoted `"usb"` literal (either quote style), not merely

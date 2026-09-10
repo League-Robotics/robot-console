@@ -3032,6 +3032,465 @@ describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", 
 });
 
 // ---------------------------------------------------------------------
+// Auto-switch radio -> WiFi (sprint 10 ticket 004). A robot currently
+// connected through a relay (a `<relay>-via-<name>` synthesized child,
+// session open) that starts advertising over WiFi is automatically
+// switched: the radio child is torn down (reopening the relay's own
+// plain USB session, exactly like a deliberate requestClose), then
+// `wifi-<name>` is opened via ticket 003's own connect path. See
+// deviceRegistry.ts's own doc comment, "Auto-switch radio -> WiFi"
+// section, for the full policy this exercises.
+// ---------------------------------------------------------------------
+
+describe("Auto-switch radio -> WiFi (sprint 10 ticket 004)", () => {
+  function relayDevice(overrides: Partial<DaplinkDevice> = {}): DaplinkDevice {
+    return device({
+      serialNumber: "SERIAL-RELAY",
+      displaySerial: "SHORT-RELAY",
+      serialPort: { path: "/dev/cu.usbmodemRELAY" },
+      ...overrides,
+    });
+  }
+
+  function robotBanner(overrides: Partial<ParsedBanner> = {}): ParsedBanner {
+    return banner({ role: "NEZHA2", commonName: "robot", name: "gopiv", ...overrides });
+  }
+
+  function fakeRoster(names: string[]): KnownRobotsStore {
+    return {
+      list: () =>
+        names.map((name) => ({
+          name,
+          firstSeenAt: "2026-01-01T00:00:00.000Z",
+          lastSeenAt: "2026-01-01T00:00:00.000Z",
+          lastSeenVia: "usb" as const,
+          lastUsbSerial: `SERIAL-${name}`,
+          lastRole: "NEZHA2",
+          lastType: "robot" as const,
+        })),
+      get: () => undefined,
+      recordSighting: () => {},
+      forget: () => false,
+      flush: async () => {},
+      isReadOnly: false,
+    } as unknown as KnownRobotsStore;
+  }
+
+  type ScriptableMdns = MdnsDiscovery & {
+    setSnapshot: (next: { relays: unknown[]; robots: unknown[]; wifiRobots?: unknown[] }) => void;
+  };
+
+  function scriptableMdnsDiscovery(): ScriptableMdns {
+    return fakeMdnsDiscovery({ relays: [], robots: [] }) as ScriptableMdns;
+  }
+
+  /** `createLink` fake dispatching on both `"usb"` (the relay's own
+   * plain session -- one fixed link instance reused across opens/
+   * reopens, mirroring the "robot-via-relay endpoints" describe block's
+   * own `usbOnlyCreateLink`) and `"wifi"` (looked up by host:port).
+   * Every relay-radio/mbrelay/mbserial candidate itself is built and
+   * connected inside the fake coordinator, never through this seam. */
+  function autoSwitchCreateLink(relayUsbLink: FakeLink, wifiLinks: Map<string, FakeLink>): (spec: LinkSpec) => Link {
+    return (spec) => {
+      if (spec.transport === "usb") {
+        return relayUsbLink;
+      }
+      if (spec.transport === "wifi") {
+        const link = wifiLinks.get(`${spec.host}:${spec.port}`);
+        if (!link) {
+          throw new Error(`no fake link registered for wifi ${spec.host}:${spec.port}`);
+        }
+        return link;
+      }
+      throw new Error(`unexpected transport in this fixture: ${spec.transport}`);
+    };
+  }
+
+  /** Collects every notice/error delivered over `onError` -- this
+   * ticket's "one informational notice on both endpoints" travels over
+   * the same channel as an error report, so a test asserts against it
+   * the same way an error test would. */
+  function collectNotices(registry: DeviceRegistry): Array<{ endpointId: string | undefined; message: string }> {
+    const notices: Array<{ endpointId: string | undefined; message: string }> = [];
+    registry.onError((endpointId, message) => {
+      notices.push({ endpointId, message });
+    });
+    return notices;
+  }
+
+  /** Build a registry with a relay already attached and a robot named
+   * "gopiv" already open through it (a `usb-SERIAL-RELAY-via-gopiv`
+   * synthesized child, `sessionOpen: true`) -- the shared precondition
+   * every test below starts from. Mirrors the "robot-via-relay
+   * endpoints" describe block's own setup, trimmed to what this
+   * describe's tests share. */
+  async function startWithOpenRelayChild(
+    options: {
+      knownRobotsStore?: KnownRobotsStore;
+      mdnsDiscovery?: MdnsDiscovery;
+      autoSwitchToWifi?: boolean;
+      relayUsbLink?: FakeLink;
+      radioLink?: FakeLink;
+      wifiLinks?: Map<string, FakeLink>;
+    } = {},
+  ): Promise<{
+    registry: DeviceRegistry;
+    relayUsbLink: FakeLink;
+    radioLink: FakeLink;
+    wifiLinks: Map<string, FakeLink>;
+    notices: Array<{ endpointId: string | undefined; message: string }>;
+  }> {
+    const devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+    const relayUsbLink = options.relayUsbLink ?? new FakeLink(async () => banner());
+    const radioLink = options.radioLink ?? new FakeLink(async () => robotBanner());
+    const wifiLinks = options.wifiLinks ?? new Map<string, FakeLink>();
+    const createLink = autoSwitchCreateLink(relayUsbLink, wifiLinks);
+    const coordinator = fakeCoordinator(async (candidates) => ({
+      outcome: "connected",
+      link: radioLink,
+      name: candidates[0]!.name,
+      classification: classifyBanner(robotBanner()),
+      failoverTrail: [],
+    }));
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
+      knownRobotsStore: options.knownRobotsStore ?? fakeRoster(["gopiv"]),
+      mdnsDiscovery: options.mdnsDiscovery ?? scriptableMdnsDiscovery(),
+      ...(options.autoSwitchToWifi !== undefined ? { autoSwitchToWifi: options.autoSwitchToWifi } : {}),
+    });
+    const notices = collectNotices(registry);
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    await registry.requestOpen("usb-SERIAL-RELAY", { robotName: "gopiv" });
+    await waitForSnapshot(registry, (s) =>
+      s.find((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv")?.sessionOpen === true,
+    );
+
+    return { registry, relayUsbLink, radioLink, wifiLinks, notices };
+  }
+
+  it("switches an open relay-radio child to WiFi when its name starts advertising over WiFi, and notifies both endpoints", async () => {
+    const mdnsDiscovery = scriptableMdnsDiscovery();
+    const wifiLink = new FakeLink(async () => robotBanner());
+    const wifiLinks = new Map([["gopiv.local.:7654", wifiLink]]);
+
+    const { registry, radioLink, notices } = await startWithOpenRelayChild({ mdnsDiscovery, wifiLinks });
+
+    mdnsDiscovery.setSnapshot({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+    // Fire the same match a second time immediately (simulating a
+    // duplicate/coalesced mdns change notification) -- the per-resource
+    // mutex must serialize these so the switch only ever runs once.
+    mdnsDiscovery.setSnapshot({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+
+    const snap = await waitForSnapshot(
+      registry,
+      (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true,
+    );
+
+    expect(snap.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv")).toBe(false);
+    const relayEntry = snap.find((e) => e.endpointId === "usb-SERIAL-RELAY");
+    expect(relayEntry).toEqual(expect.objectContaining({ sessionOpen: true, transport: "usb" }));
+    const wifiEntry = snap.find((e) => e.endpointId === "wifi-gopiv");
+    expect(wifiEntry).toEqual(
+      expect.objectContaining({
+        transport: "wifi",
+        sessionOpen: true,
+        name: "gopiv",
+        wifi: { host: "gopiv.local.", port: 7654 },
+      }),
+    );
+    expect(wifiLink.connectCalls).toBe(1);
+    expect(wifiLink.identifyCalls).toBe(1);
+    expect(radioLink.closeCalls).toBe(1);
+
+    const expectedNotice = "Switched gopiv from relay usb-SERIAL-RELAY to WiFi at gopiv.local.:7654";
+    expect(notices).toEqual(
+      expect.arrayContaining([
+        { endpointId: "usb-SERIAL-RELAY", message: expectedNotice },
+        { endpointId: "wifi-gopiv", message: expectedNotice },
+      ]),
+    );
+
+    await registry.stop();
+  });
+
+  it("does not auto-switch anything when autoSwitchToWifi is false", async () => {
+    const mdnsDiscovery = scriptableMdnsDiscovery();
+    const wifiLink = new FakeLink(async () => robotBanner());
+    const wifiLinks = new Map([["gopiv.local.:7654", wifiLink]]);
+
+    const { registry } = await startWithOpenRelayChild({ mdnsDiscovery, wifiLinks, autoSwitchToWifi: false });
+
+    mdnsDiscovery.setSnapshot({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+
+    // Give the (disabled) auto-switch every chance to fire if it were
+    // going to -- poll a handful of times and confirm nothing changed.
+    for (let i = 0; i < 10; i++) {
+      const snap = registry.snapshot();
+      expect(snap.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv" && e.sessionOpen === true)).toBe(true);
+      expect(snap.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(wifiLink.connectCalls).toBe(0);
+
+    await registry.stop();
+  });
+
+  it("never switches a name that is also currently connected directly over USB", async () => {
+    // A second, directly USB-attached device happens to share the same
+    // resolved name as the robot open via the relay -- an edge case
+    // (the same physical robot plugged into USB while also reachable
+    // via radio through a relay), but auto-switch must never act on it:
+    // a USB session is strictly better than WiFi.
+    const usbRobotDevice = device({
+      serialNumber: "SERIAL-DIRECT",
+      displaySerial: "SHORT-DIRECT",
+      serialPort: { path: "/dev/cu.usbmodemDIRECT" },
+    });
+    const directUsbLink = new FakeLink(async () => robotBanner());
+    const relayUsbLink = new FakeLink(async () => banner());
+    const wifiLink = new FakeLink(async () => robotBanner());
+    const wifiLinks = new Map([["gopiv.local.:7654", wifiLink]]);
+    const mdnsDiscovery = scriptableMdnsDiscovery();
+
+    const devices = [relayDevice(), usbRobotDevice];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async (d: DaplinkDevice) =>
+      d.serialNumber === "SERIAL-RELAY" ? namedResult("rly01") : namedResult("gopiv");
+    const createLink = (spec: LinkSpec): Link => {
+      if (spec.transport === "usb") {
+        return spec.portPath === "/dev/cu.usbmodemDIRECT" ? directUsbLink : relayUsbLink;
+      }
+      if (spec.transport === "wifi") {
+        const link = wifiLinks.get(`${spec.host}:${spec.port}`);
+        if (!link) {
+          throw new Error(`no fake link for wifi ${spec.host}:${spec.port}`);
+        }
+        return link;
+      }
+      throw new Error(`unexpected transport: ${spec.transport}`);
+    };
+    const radioLink = new FakeLink(async () => robotBanner());
+    const coordinator = fakeCoordinator(async (candidates) => ({
+      outcome: "connected",
+      link: radioLink,
+      name: candidates[0]!.name,
+      classification: classifyBanner(robotBanner()),
+      failoverTrail: [],
+    }));
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
+      knownRobotsStore: fakeRoster(["gopiv"]),
+      mdnsDiscovery,
+    });
+    registry.start();
+
+    await waitForSnapshot(
+      registry,
+      (s) =>
+        s.find((e) => e.endpointId === "usb-SERIAL-DIRECT")?.sessionOpen === true &&
+        s.find((e) => e.endpointId === "usb-SERIAL-RELAY")?.sessionOpen === true,
+    );
+
+    await registry.requestOpen("usb-SERIAL-RELAY", { robotName: "gopiv" });
+    await waitForSnapshot(registry, (s) =>
+      s.find((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv")?.sessionOpen === true,
+    );
+
+    mdnsDiscovery.setSnapshot({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+
+    for (let i = 0; i < 10; i++) {
+      const snap = registry.snapshot();
+      expect(snap.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv" && e.sessionOpen === true)).toBe(true);
+      expect(snap.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(wifiLink.connectCalls).toBe(0);
+
+    await registry.stop();
+  });
+
+  it("a discovery match for a name not currently connected over radio triggers no open/close of anything", async () => {
+    const wifiLink = new FakeLink(async () => robotBanner());
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+
+    const watcher = fixtureWatcher(() => []);
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      knownRobotsStore: fakeRoster(["gopiv"]),
+      mdnsDiscovery,
+      createLink: (spec) => {
+        if (spec.transport === "wifi") {
+          return wifiLink;
+        }
+        throw new Error(`unexpected transport: ${spec.transport}`);
+      },
+    });
+    registry.start();
+
+    await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "wifi-gopiv"));
+    // No radio session for "gopiv" ever existed -- the endpoint is
+    // listed (ticket 003's own synthesis), but sessionOpen must stay
+    // false; nothing auto-connects it.
+    for (let i = 0; i < 10; i++) {
+      expect(registry.snapshot().find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(wifiLink.connectCalls).toBe(0);
+
+    await registry.stop();
+  });
+
+  it("a failed WiFi connect attempt reports an error and does not re-establish the radio child", async () => {
+    const mdnsDiscovery = scriptableMdnsDiscovery();
+    const wifiLink = new FakeLink(
+      async () => robotBanner(),
+      () => Promise.reject(new Error("connection refused")),
+    );
+    const wifiLinks = new Map([["gopiv.local.:7654", wifiLink]]);
+
+    const { registry, notices } = await startWithOpenRelayChild({ mdnsDiscovery, wifiLinks });
+
+    mdnsDiscovery.setSnapshot({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+
+    // The radio child is torn down and the relay's own session reopens
+    // regardless of the WiFi outcome -- wait for that first.
+    const snap = await waitForSnapshot(
+      registry,
+      (s) =>
+        !s.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv") &&
+        s.find((e) => e.endpointId === "usb-SERIAL-RELAY")?.sessionOpen === true,
+    );
+
+    expect(snap.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen).toBe(false);
+    expect(wifiLink.connectCalls).toBe(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(
+      notices.some(
+        (n) => n.endpointId === "usb-SERIAL-RELAY" && /WiFi connection failed/.test(n.message),
+      ),
+    ).toBe(true);
+    // Nothing re-establishes the radio child automatically.
+    expect(registry.snapshot().some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv")).toBe(false);
+
+    await registry.stop();
+  });
+
+  it("an mDNS down for the now-WiFi-connected robot leaves the session open (no switch-back to relay)", async () => {
+    const mdnsDiscovery = scriptableMdnsDiscovery();
+    const wifiLink = new FakeLink(async () => robotBanner());
+    const wifiLinks = new Map([["gopiv.local.:7654", wifiLink]]);
+
+    const { registry } = await startWithOpenRelayChild({ mdnsDiscovery, wifiLinks });
+
+    mdnsDiscovery.setSnapshot({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+    await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true);
+
+    mdnsDiscovery.setSnapshot({ relays: [], robots: [], wifiRobots: [] });
+
+    for (let i = 0; i < 10; i++) {
+      const entry = registry.snapshot().find((e) => e.endpointId === "wifi-gopiv");
+      expect(entry?.sessionOpen).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(wifiLink.closeCalls).toBe(0);
+
+    await registry.stop();
+  });
+
+  it("runs the switch under the relay's own resourceKey mutex first, then the WiFi endpoint's own key: the relay teardown/reopen fully completes before the WiFi connect is attempted", async () => {
+    const order: string[] = [];
+    const mdnsDiscovery = scriptableMdnsDiscovery();
+
+    const radioLink = new FakeLink(async () => robotBanner());
+    const originalRadioClose = radioLink.close.bind(radioLink);
+    radioLink.close = () => {
+      order.push("radio-child-close");
+      return originalRadioClose();
+    };
+
+    const relayUsbLink = new FakeLink(async () => banner());
+    const originalRelayConnect = relayUsbLink.connect.bind(relayUsbLink);
+    relayUsbLink.connect = () => {
+      order.push("relay-reopen-connect");
+      return originalRelayConnect();
+    };
+
+    const wifiLink = new FakeLink(async () => robotBanner());
+    const originalWifiConnect = wifiLink.connect.bind(wifiLink);
+    wifiLink.connect = () => {
+      order.push("wifi-connect");
+      return originalWifiConnect();
+    };
+    const wifiLinks = new Map([["gopiv.local.:7654", wifiLink]]);
+
+    const { registry } = await startWithOpenRelayChild({ mdnsDiscovery, wifiLinks, relayUsbLink, radioLink });
+    order.length = 0; // discard setup-phase entries (the initial attach/open above).
+
+    mdnsDiscovery.setSnapshot({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+    await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true);
+
+    expect(order).toEqual(["radio-child-close", "relay-reopen-connect", "wifi-connect"]);
+
+    await registry.stop();
+  });
+});
+
+// ---------------------------------------------------------------------
 // defaultLinkFactory -- sprint 10 ticket 002's "wifi" case. Every prior
 // transport's dispatch is exercised only indirectly (through
 // DeviceRegistry's injected `createLink` fake); this ticket's own

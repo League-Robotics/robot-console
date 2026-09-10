@@ -352,6 +352,65 @@
  * is also gone -- the coordinator's liveness probe (retried, timed out,
  * per its own doc comment) already establishes liveness before
  * `identify()` is ever called once, which supersedes the need for it.
+ *
+ * ## Auto-switch radio -> WiFi (sprint 10 ticket 004)
+ *
+ * {@link DeviceRegistry.syncWifiEndpoints} (ticket 003, called on every
+ * {@link mdnsDiscovery} change) is also this ticket's one trigger point:
+ * after it recomputes the gated WiFi set, it looks for any currently-
+ * open `"relay-radio"`/`"mbrelay"` synthesized child (never `"mbserial"`
+ * -- that transport has no local relay to reopen a session on) whose
+ * `robotName` now has a gated WiFi record, and kicks off
+ * {@link DeviceRegistry.autoSwitchRadioToWifi} for it (fire-and-forget --
+ * `syncWifiEndpoints` itself must stay synchronous). Disabled entirely
+ * via {@link DeviceRegistryOptions.autoSwitchToWifi} (`false`; default
+ * `true`), for a test that wants ticket 003's plain endpoint synthesis
+ * without the switch also firing.
+ *
+ * The switch itself never retargets the existing endpoint in place --
+ * per this sprint's Design Rationale ("Auto-switch closes the old radio
+ * endpoint and opens a new, independently-identified WiFi endpoint --
+ * never an in-place retarget"): it tears down and deletes the
+ * `-via-<name>` child exactly like a deliberate {@link
+ * DeviceRegistry.requestClose} on it (reopening the relay's own plain
+ * USB session the same way), then opens `wifi-<name>` through {@link
+ * DeviceRegistry.connectAndIdentifyWifi} -- ticket 003's own click path,
+ * unchanged. This runs the radio side of the switch to completion
+ * *before* attempting the WiFi connect, under the relay's own
+ * `resourceKey` in {@link KeyedMutex.run} first, then the WiFi
+ * endpoint's own key second (never the reverse, and never both acquired
+ * via one call) -- so a concurrent flash/open/close on the relay itself
+ * correctly queues behind (or ahead of) the whole switch, exactly like
+ * {@link openRobotViaRelay}'s own single-`resourceKey` discipline. This
+ * close-then-open ordering is a deliberate choice for this ticket, and
+ * reads slightly differently from this sprint's own `sprint.md` prose
+ * (SUC-004's Main Flow describes attempting the WiFi connect first and
+ * leaving the radio session untouched on failure): by the time a
+ * `-via-<name>` child is open, the *relay's own* plain session is
+ * already closed (its physical port is in use for the radio link -- see
+ * "Robot-via-relay endpoints" above), so there is no already-open relay
+ * console session left to protect by delaying the teardown, and closing
+ * the radio side first guarantees the robot never has two live command
+ * channels (radio and WiFi) open at once, even transiently. A WiFi
+ * connect failure after that point is reported (via {@link emitError}
+ * on the relay's own endpoint) and left exactly as the teardown/reopen
+ * left it -- the radio child is never re-established automatically; the
+ * student's next recourse is the relay dropdown (ticket 003's click flow
+ * remains reachable) or waiting for the next discovery cycle if this was
+ * transient. On success, one informational notice ("Switched `<name>`
+ * from relay `<relay>` to WiFi at `<host>`:`<port>`") is emitted via
+ * {@link emitError} on *both* the relay's own endpoint and the new
+ * `wifi-<name>` endpoint -- `emitError` is this class's one existing
+ * channel for a host-originated notice, not only failures.
+ *
+ * Never fires against a name that is currently open over plain USB
+ * ({@link DeviceRegistry.hasOpenUsbSessionForName}) -- a direct USB
+ * session is strictly better than WiFi, so this ticket only ever
+ * switches `"relay-radio"`/`"mbrelay"` sessions, never a USB one. An
+ * mDNS `down` for an already-switched WiFi session never tears it down
+ * either (ticket 003's own "An ad disappearing is not a disconnect"
+ * rule, unchanged by this ticket) -- there is no switch-back path from
+ * WiFi to radio at all.
  */
 
 import type { AckNackEvent, DecodedLine, DeviceClassification, ParsedBanner, WireField } from "@robot-console/protocol";
@@ -1076,6 +1135,14 @@ export interface DeviceRegistryOptions {
    * `mdnsDiscovery.test.ts`'s own fixtures), so no real multicast socket
    * is ever opened by a `DeviceRegistry` test. */
   mdnsDiscovery?: MdnsDiscovery;
+  /** Sprint 10 ticket 004: whether a currently radio-connected robot
+   * (`"relay-radio"`/`"mbrelay"`, never `"mbserial"`) is automatically
+   * switched to WiFi once a gated WiFi advertisement for the same name
+   * appears -- see this class's own doc comment, "Auto-switch radio ->
+   * WiFi" section, for the full policy. Defaults to `true`; tests that
+   * want ticket 003's plain endpoint-synthesis behavior without the
+   * switch also firing pass `false`. */
+  autoSwitchToWifi?: boolean;
 }
 
 /** Default period of the host's own `STATUS` poll on an open robot
@@ -1107,6 +1174,7 @@ export class DeviceRegistry {
   private readonly relayBootDelayMs: number;
   private readonly relayConnectionCoordinator: RelayConnector;
   private readonly mdnsDiscovery: MdnsDiscovery;
+  private readonly autoSwitchToWifi: boolean;
   private readonly mutex = new KeyedMutex();
   private readonly states = new Map<string, EndpointState>();
   private unsubscribeWatcher: (() => void) | undefined;
@@ -1137,6 +1205,7 @@ export class DeviceRegistry {
       options.relayConnectionCoordinator ??
       new RelayConnectionCoordinator({ linkFactory: (spec) => this.createLink(spec) });
     this.mdnsDiscovery = options.mdnsDiscovery ?? new MdnsDiscovery();
+    this.autoSwitchToWifi = options.autoSwitchToWifi ?? true;
   }
 
   /** Start watching for devices and browsing for relays/robots over
@@ -1314,6 +1383,156 @@ export class DeviceRegistry {
     }
 
     this.emitDevices();
+
+    // Sprint 10 ticket 004: after the gated set above is up to date,
+    // look for any name that both has a gated WiFi record AND is a
+    // currently-open radio-mediated child, and kick off the
+    // host-initiated switch -- see this class's own doc comment,
+    // "Auto-switch radio -> WiFi" section. Fire-and-forget: this method
+    // itself must stay synchronous (the mdnsDiscovery.onChange contract
+    // this is called from), so each candidate's actual switch runs as
+    // an independent queued mutex task rather than being awaited here.
+    if (this.autoSwitchToWifi) {
+      for (const robot of gatedByName.values()) {
+        void this.autoSwitchRadioToWifi(robot.name);
+      }
+    }
+  }
+
+  /** Sprint 10 ticket 004: the `-via-<name>` synthesized child endpoint
+   * id currently open for `name`, if any -- restricted to
+   * `"relay-radio"`/`"mbrelay"` (never `"mbserial"`, which has no local
+   * relay to reopen a plain session on -- see this class's own doc
+   * comment). Mirrors {@link findSynthesizedEndpointId}'s own linear-scan
+   * precedent, keyed by robot name instead of relay endpoint id. */
+  private findSynthesizedRelayChildForName(name: string): string | undefined {
+    for (const [id, state] of this.states) {
+      const target = state.synthesizedRelayTarget;
+      if (target && target.robotName === name && target.transport !== "mbserial" && state.sessionOpen) {
+        return id;
+      }
+    }
+    return undefined;
+  }
+
+  /** Sprint 10 ticket 004: whether `name` is currently connected over a
+   * plain, directly-attached USB endpoint (not a via-relay or WiFi
+   * synthesized one) -- used to guard {@link autoSwitchRadioToWifi}: a
+   * direct USB session is strictly better than WiFi, so this ticket never
+   * switches a name that also has one open, even if a radio-mediated
+   * child for the same name happens to be open too. */
+  private hasOpenUsbSessionForName(name: string): boolean {
+    for (const state of this.states.values()) {
+      if (
+        state.sessionOpen &&
+        state.name === name &&
+        state.device !== undefined &&
+        !state.synthesizedRelayTarget &&
+        !state.wifiTarget
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Sprint 10 ticket 004: the host-initiated radio -> WiFi switch for
+   * `name` -- see this class's own doc comment, "Auto-switch radio ->
+   * WiFi" section, for the full policy this implements. A no-op unless
+   * `name` currently has an open `"relay-radio"`/`"mbrelay"` child (see
+   * {@link findSynthesizedRelayChildForName}) and no open plain-USB
+   * session (see {@link hasOpenUsbSessionForName}).
+   *
+   * Runs under the relay's own `resourceKey` in {@link KeyedMutex.run}
+   * first, then the WiFi endpoint's own key second -- never the
+   * reverse -- so a concurrent flash/open/close on the relay itself
+   * correctly queues around the whole switch. Every precondition is
+   * re-checked once each mutex slot is actually held (this method's own
+   * initial reads are only a pre-queueing snapshot, exactly like every
+   * other mutex-guarded entry point in this class), so a state that
+   * changed while this task was queued (the child already closed,
+   * switched, or the advertisement disappeared again) degrades to a
+   * silent no-op rather than acting on stale information.
+   */
+  private async autoSwitchRadioToWifi(name: string): Promise<void> {
+    const childId = this.findSynthesizedRelayChildForName(name);
+    if (!childId) {
+      return;
+    }
+    const child = this.states.get(childId);
+    const relayEndpointId = child?.synthesizedRelayTarget?.relayEndpointId;
+    if (!relayEndpointId) {
+      return;
+    }
+    const relayResourceKey = this.states.get(relayEndpointId)?.resourceKey ?? relayEndpointId;
+    const wifiId = wifiEndpointId(name);
+
+    await this.mutex.run(relayResourceKey, async () => {
+      if (this.hasOpenUsbSessionForName(name)) {
+        return;
+      }
+      if (this.findSynthesizedRelayChildForName(name) !== childId) {
+        // Changed (closed, switched, or replaced) while this task was
+        // queued behind the relay's mutex slot -- nothing left to
+        // switch.
+        return;
+      }
+
+      await this.mutex.run(wifiId, async () => {
+        if (this.hasOpenUsbSessionForName(name)) {
+          return;
+        }
+        if (this.findSynthesizedRelayChildForName(name) !== childId) {
+          return;
+        }
+        const liveChild = this.states.get(childId);
+        if (!liveChild) {
+          return;
+        }
+        const wifiState = this.states.get(wifiId);
+        if (!wifiState?.wifiTarget || wifiState.sessionOpen) {
+          // The advertisement disappeared again, or the endpoint is
+          // already connected (e.g. a concurrent click) -- graceful
+          // no-op either way.
+          return;
+        }
+
+        // (a) Tear down the radio-mediated child and reopen the
+        // relay's own plain USB session -- exactly like a deliberate
+        // requestClose on this same endpoint.
+        await this.teardownLink(liveChild);
+        this.states.delete(childId);
+        this.emitDevices();
+        const relay = this.states.get(relayEndpointId);
+        if (relay && !relay.sessionOpen) {
+          await this.connectAndIdentify(relay);
+        }
+
+        // (b) Attempt the WiFi connect -- ticket 003's own click path,
+        // unchanged.
+        await this.connectAndIdentifyWifi(wifiState);
+
+        if (!wifiState.sessionOpen) {
+          // A socket-level connect failure (or the state was removed
+          // out from under the attempt) -- report it and stop. The
+          // radio child is never re-established automatically.
+          this.emitError(
+            relayEndpointId,
+            `Switched ${name} from relay ${relayEndpointId} toward WiFi, but the WiFi connection failed` +
+              (wifiState.sessionError ? `: ${wifiState.sessionError}` : "") +
+              ` -- ${name} is no longer reachable through ${relayEndpointId} and was not reconnected over radio automatically`,
+          );
+          return;
+        }
+
+        const target = wifiState.wifiTarget;
+        const address = target ? `${target.host}:${target.port}` : "an unknown address";
+        const notice = `Switched ${name} from relay ${relayEndpointId} to WiFi at ${address}`;
+        this.emitError(relayEndpointId, notice);
+        this.emitError(wifiId, notice);
+      });
+    });
   }
 
   /** Sprint 10 ticket 003: whether `name` currently gates through --

@@ -1,7 +1,7 @@
 ---
 id: '011'
 title: Calibration wizards
-status: executing
+status: done
 branch: sprint/011-calibration-wizards
 use-cases:
 - SUC-001

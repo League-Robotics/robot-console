@@ -42,7 +42,11 @@ import { MdnsDiscovery } from "./discovery/mdnsDiscovery.js";
 // script one -- see the "robot-via-relay endpoints" describe block.
 vi.mock("./discovery/mdnsDiscovery.js", () => {
   class FakeMdnsDiscoveryForTests {
-    private snapshot: { relays: unknown[]; robots: unknown[] } = { relays: [], robots: [] };
+    private snapshot: { relays: unknown[]; robots: unknown[]; wifiRobots: unknown[] } = {
+      relays: [],
+      robots: [],
+      wifiRobots: [],
+    };
     private listeners = new Set<(current: unknown) => void>();
     current(): unknown {
       return this.snapshot;
@@ -59,10 +63,10 @@ vi.mock("./discovery/mdnsDiscovery.js", () => {
     stop(): void {
       // Intentionally inert.
     }
-    setSnapshot(next: { relays: unknown[]; robots: unknown[] }): void {
-      this.snapshot = next;
+    setSnapshot(next: { relays: unknown[]; robots: unknown[]; wifiRobots?: unknown[] }): void {
+      this.snapshot = { wifiRobots: [], ...next };
       for (const listener of this.listeners) {
-        listener(next);
+        listener(this.snapshot);
       }
     }
   }
@@ -74,10 +78,13 @@ vi.mock("./discovery/mdnsDiscovery.js", () => {
  * the real class (mocking is a vitest runtime mechanism, invisible to
  * `tsc`), so this file's test bodies are excluded from `tsc -p
  * tsconfig.json` (see `tsconfig.json`'s own `exclude`); this cast keeps
- * call sites terse regardless. */
+ * call sites terse regardless. `wifiRobots` (sprint 10 ticket 003) is
+ * optional and defaults to `[]`, so every existing call site written
+ * before this ticket keeps compiling unchanged. */
 function fakeMdnsDiscovery(snapshot: {
   relays: Array<{ instanceName: string; host: string; port: number; registryPort?: number }>;
   robots: Array<{ instanceName: string; host: string; port: number }>;
+  wifiRobots?: Array<{ name: string; host: string; port: number; role?: string; link?: string }>;
 }): MdnsDiscovery {
   const instance = new MdnsDiscovery() as unknown as MdnsDiscovery & {
     setSnapshot: (next: typeof snapshot) => void;
@@ -2660,6 +2667,368 @@ describe("robot-via-relay endpoints (OOP 2026-09-09, coordinator-driven since sp
   // this test file) calls a retarget-shaped method on Link -- the
   // Link interface (link/Link.ts) has no such method at all, so this
   // is enforced by the type system, not a runtime check exercised here.
+});
+
+// ---------------------------------------------------------------------
+// WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003).
+// A gated WiFi robot (ticket 002's gateWifiRobots, applied to ticket
+// 001's mdnsDiscovery.current().wifiRobots and knownRobotsStore.list())
+// is minted immediately as an EndpointListEntry -- list first, connect
+// on request, mirroring the USB attach flow -- and connected via an
+// ordinary session-open, exactly like every other transport.
+// ---------------------------------------------------------------------
+
+describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", () => {
+  /** A `KnownRobotsStore`-shaped fake roster containing exactly `names`
+   * -- mirrors the "robot-via-relay endpoints" describe block's own
+   * inline fake-store fixture pattern above, trimmed to just what
+   * `gateWifiRobots` reads (`list()`). */
+  function fakeRoster(names: string[]): KnownRobotsStore {
+    return {
+      list: () =>
+        names.map((name) => ({
+          name,
+          firstSeenAt: "2026-01-01T00:00:00.000Z",
+          lastSeenAt: "2026-01-01T00:00:00.000Z",
+          lastSeenVia: "usb" as const,
+          lastUsbSerial: `SERIAL-${name}`,
+          lastRole: "NEZHA2",
+          lastType: "robot" as const,
+        })),
+      get: () => undefined,
+      recordSighting: () => {},
+      forget: () => false,
+      flush: async () => {},
+      isReadOnly: false,
+    } as unknown as KnownRobotsStore;
+  }
+
+  function wifiRobotBanner(overrides: Partial<ParsedBanner> = {}): ParsedBanner {
+    return banner({ role: "NEZHA2", commonName: "robot", name: "gopiv", ...overrides });
+  }
+
+  /** `createLink` fake dispatching only on `"wifi"` -- every test in
+   * this block never attaches a USB device, so any other transport
+   * reaching this seam is itself a bug in the fixture. */
+  function wifiOnlyCreateLink(byHostPort: Map<string, FakeLink>): (spec: LinkSpec) => Link {
+    return (spec) => {
+      if (spec.transport !== "wifi") {
+        throw new Error(`unexpected transport in this fixture: ${spec.transport} -- only "wifi" is faked here`);
+      }
+      const link = byHostPort.get(`${spec.host}:${spec.port}`);
+      if (!link) {
+        throw new Error(`no fake link registered for wifi ${spec.host}:${spec.port}`);
+      }
+      return link;
+    };
+  }
+
+  it("a gated WiFi robot (roster-matched) appears in snapshot() as transport: wifi, sessionOpen: false, before any connect is requested", async () => {
+    const watcher = fixtureWatcher(() => []);
+    const knownRobotsStore = fakeRoster(["gopiv"]);
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654, role: "robot", link: "v6" }],
+    });
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      knownRobotsStore,
+      mdnsDiscovery,
+    });
+    registry.start();
+
+    const snap = await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "wifi-gopiv"));
+    expect(snap).toEqual([
+      expect.objectContaining({
+        endpointId: "wifi-gopiv",
+        transport: "wifi",
+        resourceKey: "wifi-gopiv",
+        name: "gopiv",
+        sessionOpen: false,
+        wifi: { host: "gopiv.local.", port: 7654 },
+      }),
+    ]);
+    expect(snap[0]?.usb).toBeUndefined();
+
+    await registry.stop();
+  });
+
+  it("end-to-end negative: an advertised robot absent from the roster never produces an EndpointListEntry, even though the raw discovery fixture contains it", async () => {
+    const watcher = fixtureWatcher(() => []);
+    const knownRobotsStore = fakeRoster(["zeguz"]); // "gopiv" is NOT enrolled.
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      knownRobotsStore,
+      mdnsDiscovery,
+    });
+    registry.start();
+
+    // Give the (inert, fake) mdns start a moment; there is no discovery
+    // event to await here beyond what start() itself may fire, so poll
+    // the plain snapshot a handful of times and confirm it never gains
+    // an entry.
+    for (let i = 0; i < 10; i++) {
+      expect(registry.snapshot().some((e) => e.endpointId === "wifi-gopiv")).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    await registry.stop();
+  });
+
+  it('requestOpen("wifi-<name>") connects via a WifiLinkSpec built from the gated record\'s host/port, identifies, and flips sessionOpen to true with classification/name populated', async () => {
+    const watcher = fixtureWatcher(() => []);
+    const knownRobotsStore = fakeRoster(["gopiv"]);
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+
+    const wifiLink = new FakeLink(async () => wifiRobotBanner());
+    const createLink = vi.fn(wifiOnlyCreateLink(new Map([["gopiv.local.:7654", wifiLink]])));
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      knownRobotsStore,
+      mdnsDiscovery,
+      createLink,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "wifi-gopiv"));
+
+    await registry.requestOpen("wifi-gopiv");
+    const snap = await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true);
+
+    expect(createLink).toHaveBeenCalledWith({ transport: "wifi", host: "gopiv.local.", port: 7654 });
+    expect(wifiLink.connectCalls).toBe(1);
+    expect(wifiLink.identifyCalls).toBe(1);
+    expect(snap[0]).toEqual(
+      expect.objectContaining({
+        endpointId: "wifi-gopiv",
+        transport: "wifi",
+        sessionOpen: true,
+        name: "gopiv",
+        role: "NEZHA2",
+        classification: expect.objectContaining({ type: "robot" }),
+      }),
+    );
+
+    // Sprint 5 write gate stays USB-only -- a WiFi identify never
+    // enrolls or refreshes the durable roster (deviceRegistry.ts's own
+    // maybeRecordKnownRobot doc comment).
+    expect(knownRobotsStore.list()).toEqual([expect.objectContaining({ name: "gopiv" })]);
+
+    await registry.stop();
+  });
+
+  it("a null banner on WiFi connect is 'connected, unresponsive', not an error: sessionOpen stays true with classification.type unknown", async () => {
+    const watcher = fixtureWatcher(() => []);
+    const knownRobotsStore = fakeRoster(["gopiv"]);
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+    const wifiLink = new FakeLink(async () => null);
+    const createLink = wifiOnlyCreateLink(new Map([["gopiv.local.:7654", wifiLink]]));
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      knownRobotsStore,
+      mdnsDiscovery,
+      createLink,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "wifi-gopiv"));
+
+    await registry.requestOpen("wifi-gopiv");
+    const snap = await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true);
+
+    expect(snap[0]).toEqual(
+      expect.objectContaining({
+        sessionOpen: true,
+        classification: expect.objectContaining({ type: "unknown" }),
+      }),
+    );
+    expect(snap[0]?.sessionError).toBeUndefined();
+
+    await registry.stop();
+  });
+
+  it("requestClose tears the session down but keeps the entry listed while the advertisement stands", async () => {
+    const watcher = fixtureWatcher(() => []);
+    const knownRobotsStore = fakeRoster(["gopiv"]);
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+    const wifiLink = new FakeLink(async () => wifiRobotBanner());
+    const createLink = wifiOnlyCreateLink(new Map([["gopiv.local.:7654", wifiLink]]));
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      knownRobotsStore,
+      mdnsDiscovery,
+      createLink,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "wifi-gopiv"));
+    await registry.requestOpen("wifi-gopiv");
+    await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true);
+
+    await registry.requestClose("wifi-gopiv");
+    const snap = await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === false);
+
+    expect(wifiLink.closeCalls).toBe(1);
+    expect(snap.some((e) => e.endpointId === "wifi-gopiv")).toBe(true);
+
+    await registry.stop();
+  });
+
+  it("a down event on a not-yet-connected WiFi robot removes its EndpointListEntry from the next snapshot", async () => {
+    const watcher = fixtureWatcher(() => []);
+    const knownRobotsStore = fakeRoster(["gopiv"]);
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    }) as unknown as MdnsDiscovery & { setSnapshot: (next: unknown) => void };
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      knownRobotsStore,
+      mdnsDiscovery,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "wifi-gopiv"));
+
+    // The advertisement goes down -- gopiv no longer appears in the raw
+    // discovery snapshot at all.
+    mdnsDiscovery.setSnapshot({ relays: [], robots: [], wifiRobots: [] });
+    const snap = await waitForSnapshot(registry, (s) => !s.some((e) => e.endpointId === "wifi-gopiv"));
+    expect(snap).toEqual([]);
+
+    await registry.stop();
+  });
+
+  it("a down event on an already-open WiFi session's advertisement does not close the session or remove the endpoint", async () => {
+    const watcher = fixtureWatcher(() => []);
+    const knownRobotsStore = fakeRoster(["gopiv"]);
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    }) as unknown as MdnsDiscovery & { setSnapshot: (next: unknown) => void };
+    const wifiLink = new FakeLink(async () => wifiRobotBanner());
+    const createLink = wifiOnlyCreateLink(new Map([["gopiv.local.:7654", wifiLink]]));
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      knownRobotsStore,
+      mdnsDiscovery,
+      createLink,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "wifi-gopiv"));
+    await registry.requestOpen("wifi-gopiv");
+    await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true);
+
+    // The advertisement disappears while the session is open.
+    mdnsDiscovery.setSnapshot({ relays: [], robots: [], wifiRobots: [] });
+    // Give the (synchronous) change handler a moment to run, then assert
+    // the entry is still there and still open -- never removed, never
+    // torn down, by this ad-disappearing event alone.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const snap = registry.snapshot();
+    const entry = snap.find((e) => e.endpointId === "wifi-gopiv");
+    expect(entry?.sessionOpen).toBe(true);
+    expect(wifiLink.closeCalls).toBe(0);
+
+    // Only the link's own close/error ends it -- confirm that still
+    // works normally afterward.
+    wifiLink.emitError(new Error("connection reset"));
+    const afterError = await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === false);
+    expect(afterError.some((e) => e.endpointId === "wifi-gopiv")).toBe(true);
+
+    await registry.stop();
+  });
+
+  it("requestOpen on a wifi-transport endpoint runs under the same per-endpoint KeyedMutex as every other operation (a concurrent requestClose queues behind it)", async () => {
+    const watcher = fixtureWatcher(() => []);
+    const knownRobotsStore = fakeRoster(["gopiv"]);
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+
+    let resolveConnect: (() => void) | undefined;
+    const wifiLink = new FakeLink(
+      async () => wifiRobotBanner(),
+      () => new Promise<void>((resolve) => { resolveConnect = resolve; }),
+    );
+    const createLink = wifiOnlyCreateLink(new Map([["gopiv.local.:7654", wifiLink]]));
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      knownRobotsStore,
+      mdnsDiscovery,
+      createLink,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "wifi-gopiv"));
+
+    const openPromise = registry.requestOpen("wifi-gopiv");
+    // requestClose queues behind the still-connecting requestOpen on the
+    // same resourceKey/endpointId ("wifi-gopiv") -- it must not run (and
+    // therefore not call close()) until connect() resolves and the
+    // session is fully attached.
+    const closePromise = registry.requestClose("wifi-gopiv");
+
+    // KeyedMutex.run schedules the queued task via a Promise `.then()`
+    // (a microtask), not synchronously -- give it a chance to actually
+    // reach connectAndIdentifyWifi's `link.connect()` call before
+    // asserting anything about it.
+    for (let i = 0; i < 20 && wifiLink.connectCalls === 0; i++) {
+      await Promise.resolve();
+    }
+    expect(wifiLink.connectCalls).toBe(1);
+    expect(wifiLink.closeCalls).toBe(0);
+
+    resolveConnect?.();
+    await openPromise;
+    await closePromise;
+
+    expect(wifiLink.connectCalls).toBe(1);
+    expect(wifiLink.closeCalls).toBe(1);
+
+    await registry.stop();
+  });
 });
 
 // ---------------------------------------------------------------------

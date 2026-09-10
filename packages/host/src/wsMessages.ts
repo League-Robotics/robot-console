@@ -308,6 +308,15 @@ export interface EndpointListEntry {
    * own doc comment. Present only when {@link transport} is `"usb"`,
    * which is every endpoint that exists this sprint. */
   usb?: UsbEndpointIdentity;
+  /** Sprint 10 ticket 003: present only when {@link transport} is
+   * `"wifi"` -- the gated WiFi robot's `host`/`port` (the same pair
+   * `deviceRegistry.ts` builds a `WifiLinkSpec` from on `session-open`),
+   * so a client can display where a not-yet-connected WiFi card would
+   * connect to. No {@link usb} block accompanies a WiFi-transport entry
+   * -- there is no physical device backing it (see `deviceRegistry.ts`'s
+   * `EndpointState.device` doc comment for why that field is itself
+   * optional now). */
+  wifi?: { host: string; port: number };
   /** The most recent parsed `status` reply from this endpoint (added
    * out-of-process, 2026-09-09) -- see {@link RobotStatus}. Present
    * once any `status` (or bare `estop`) reply has been seen on the

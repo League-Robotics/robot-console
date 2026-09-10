@@ -181,10 +181,18 @@ function fakeKnownRobotsStore(initial: KnownRobotRecord[] = []): KnownRobotsStor
  * ever reads `EndpointsMessage.discoveredServices` from an already-built
  * snapshot rather than a live update. */
 function fakeMdnsDiscovery(
-  snapshot: { relays?: unknown[]; robots?: unknown[] } = {},
+  snapshot: { relays?: unknown[]; robots?: unknown[]; wifiRobots?: unknown[] } = {},
 ): MdnsDiscovery {
   return {
-    current: () => ({ relays: snapshot.relays ?? [], robots: snapshot.robots ?? [] }),
+    current: () => ({
+      relays: snapshot.relays ?? [],
+      robots: snapshot.robots ?? [],
+      // Sprint 10 ticket 003: deviceRegistry.ts's syncWifiEndpoints
+      // reads this on every start()/onChange -- gateWifiRobots iterates
+      // it directly, so it must never be undefined even when a test
+      // never mentions WiFi robots at all.
+      wifiRobots: snapshot.wifiRobots ?? [],
+    }),
     onChange: () => () => {},
     start: () => {},
     stop: () => {},
@@ -416,6 +424,47 @@ describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () 
         relays: [{ instanceName: "torture", host: "torture.local", port: 8760, registryPort: 8761 }],
         robots: [{ instanceName: "gopiv", host: "gopiv.local", port: 9000 }],
       },
+    });
+  });
+
+  it("includes a wifi-transport endpoint in the endpoints snapshot when the fake discovery advertises a roster-matched name (sprint 10 ticket 003)", async () => {
+    const link = new FakeLink(async () => banner());
+    const knownRobotsStore = fakeKnownRobotsStore([
+      {
+        name: "gopiv",
+        firstSeenAt: "2026-01-01T00:00:00.000Z",
+        lastSeenAt: "2026-01-01T00:00:00.000Z",
+        lastSeenVia: "usb",
+        lastUsbSerial: "SERIAL-GOPIV",
+        lastRole: "NEZHA2",
+        lastType: "robot",
+      },
+    ]);
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654, role: "robot", link: "v6" }],
+    });
+    server = await startServer({
+      port: 0,
+      registry: buildRegistry(link, { mdnsDiscovery, knownRobotsStore }),
+      firmwareConfig: NO_FIRMWARE,
+    });
+    const connected = await connect(server.url.replace("http://", "ws://"));
+    ws = connected.ws;
+
+    const initial = await connected.messages.waitFor(
+      (m) => m.type === "endpoints" && m.endpoints.some((e) => e.endpointId === "wifi-gopiv"),
+    );
+    expect(initial).toMatchObject({
+      endpoints: expect.arrayContaining([
+        expect.objectContaining({
+          endpointId: "wifi-gopiv",
+          transport: "wifi",
+          resourceKey: "wifi-gopiv",
+          name: "gopiv",
+          sessionOpen: false,
+          wifi: { host: "gopiv.local.", port: 7654 },
+        }),
+      ]),
     });
   });
 

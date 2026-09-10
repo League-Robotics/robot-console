@@ -390,8 +390,9 @@ import {
   type ConnectionCandidate,
   type RelayConnectionResult,
 } from "./relay/RelayConnectionCoordinator.js";
-import { MdnsDiscovery } from "./discovery/mdnsDiscovery.js";
+import { MdnsDiscovery, type WifiRobotService } from "./discovery/mdnsDiscovery.js";
 import type { RegistryLocation } from "./mbrelayRegistry.js";
+import { gateWifiRobots } from "./wifi/wifiRobotGate.js";
 
 /** Mint a URL-safe, stable endpoint id for a USB device from its serial
  * number -- see `wsMessages.ts`'s `EndpointListEntry.endpointId` doc
@@ -403,6 +404,18 @@ import type { RegistryLocation } from "./mbrelayRegistry.js";
  * to convert between a raw serial number and an endpoint id. */
 function usbEndpointId(serialNumber: string): string {
   return `usb-${serialNumber}`;
+}
+
+/** Mint the endpoint id for a gated WiFi robot (sprint 10 ticket 003) --
+ * mirrors {@link usbEndpointId}'s own URL-safety rationale, and the
+ * `<relayEndpointId>-via-<robotName>` sibling naming precedent below.
+ * Independent of any relay/USB id: a WiFi robot has no local physical
+ * device, and its `resourceKey` equals this same value (a WiFi TCP
+ * socket shares no physical resource with anything else -- see
+ * `mbserialResourceKey`'s own doc comment for the identical rationale
+ * on the sibling `_mbserial._tcp` transport). */
+function wifiEndpointId(name: string): string {
+  return `wifi-${name}`;
 }
 
 /** Sibling naming scheme (OOP 2026-09-09, sprint 8 ticket 004): a
@@ -636,7 +649,20 @@ interface EndpointSession {
 }
 
 interface EndpointState {
-  device: DaplinkDevice;
+  /** The physical USB device backing this endpoint -- present for a
+   * plain USB endpoint and for a robot-via-relay synthesized endpoint
+   * (which reuses the *relay's* own device, see
+   * {@link EndpointState.synthesizedRelayTarget}'s own doc comment).
+   * **Absent** (sprint 10 ticket 003) for a synthesized WiFi-robot
+   * endpoint ({@link EndpointState.wifiTarget} set instead) -- a WiFi
+   * robot has no local physical device at all, only a TCP host/port.
+   * Every call site that reads this field only ever runs against a
+   * state where it is known to be set by construction (USB attach,
+   * post-flash reidentify, or a relay's own state); guarded with an
+   * early return or `?.` rather than a non-null assertion wherever a
+   * type-level check is needed, matching this module's existing
+   * "failure is a value, never a crash" discipline. */
+  device?: DaplinkDevice | undefined;
   /** This endpoint's stable, URL-safe id -- `usbEndpointId(device.serialNumber)`,
    * computed once when the state is created. Stored rather than
    * re-derived everywhere so a rename of the minting scheme only touches
@@ -765,20 +791,36 @@ interface EndpointState {
         failoverTrail: readonly FailoverTrailEntry[];
       }
     | undefined;
+  /** Sprint 10 ticket 003: present only on an endpoint synthesized for a
+   * gated WiFi robot (`wifi-<name>`) -- the discovery record's
+   * `host`/`port`, used to build the `WifiLinkSpec`
+   * {@link DeviceRegistry.connectAndIdentifyWifi} connects with. Mutually
+   * exclusive with {@link synthesizedRelayTarget} (a WiFi endpoint is
+   * never also a via-relay one) and with {@link device} (no physical
+   * device backs it -- see that field's own doc comment). `toEntry`
+   * reads this field, not `device`, to decide `transport: "wifi"` and
+   * project {@link EndpointListEntry.wifi} instead of a `usb` block.
+   * Refreshed in place by {@link DeviceRegistry.syncWifiEndpoints} while
+   * not yet connected (a re-advertisement may report a changed
+   * host/port); left untouched once a session is open, since an open
+   * `Link` already has its own connection and nothing here reconnects it
+   * mid-session. */
+  wifiTarget?: { host: string; port: number } | undefined;
 }
 
 function toEntry(state: EndpointState): EndpointListEntry {
   const synth = state.synthesizedRelayTarget;
+  const wifi = state.wifiTarget;
   const entry: EndpointListEntry = {
     endpointId: state.endpointId,
-    // OOP 2026-09-09, extended sprint 8 ticket 004: a via-relay
-    // synthesized endpoint has no USB identity of its own -- the
-    // triggering relay (or, for "mbserial", nothing local at all) owns
-    // the physical connection -- so it projects the coordinator's own
-    // transport and (for non-"mbserial") viaRelay instead of
-    // transport: "usb" plus a usb block. See the module doc comment's
-    // "Robot-via-relay endpoints" section.
-    transport: synth ? synth.transport : "usb",
+    // OOP 2026-09-09, extended sprint 8 ticket 004, extended sprint 10
+    // ticket 003: a via-relay or WiFi synthesized endpoint has no USB
+    // identity of its own -- the triggering relay (or, for "mbserial"/
+    // "wifi", nothing local at all) owns the physical connection -- so
+    // it projects the coordinator's own transport (or "wifi") and a
+    // viaRelay/wifi block instead of transport: "usb" plus a usb block.
+    // See the module doc comment's "Robot-via-relay endpoints" section.
+    transport: synth ? synth.transport : wifi ? "wifi" : "usb",
     resourceKey: state.resourceKey,
     classification: state.classification,
     name: state.name,
@@ -794,7 +836,9 @@ function toEntry(state: EndpointState): EndpointListEntry {
         group: synth.address.group,
       };
     }
-  } else {
+  } else if (wifi) {
+    entry.wifi = { host: wifi.host, port: wifi.port };
+  } else if (state.device) {
     entry.usb = {
       serialNumber: state.device.serialNumber,
       displaySerial: state.device.displaySerial,
@@ -1097,14 +1141,23 @@ export class DeviceRegistry {
 
   /** Start watching for devices and browsing for relays/robots over
    * mDNS. Idempotent-ish in practice (callers are expected to call this
-   * once); an immediate `pollOnce()` is kicked off so the first
-   * snapshot arrives promptly rather than waiting a full poll
-   * interval. A discovery change re-broadcasts the full endpoint
-   * snapshot (via the same {@link onDevicesChanged} path every other
-   * state change uses) purely so `server.ts`'s
+   * once); an immediate `pollOnce()` is kicked off so the first device
+   * snapshot arrives promptly rather than waiting a full poll interval.
+   * A discovery change re-broadcasts the full endpoint snapshot -- via
+   * {@link syncWifiEndpoints} (sprint 10 ticket 003), which both
+   * recomputes the gated WiFi endpoint set (see that method's own doc
+   * comment) and re-broadcasts (via the same {@link onDevicesChanged}
+   * path every other state change uses) so `server.ts`'s
    * `discoveredServices()`-carrying `EndpointsMessage` reaches clients
    * promptly -- {@link discoveredServices} itself never touches
-   * {@link states}. */
+   * {@link states}. {@link syncWifiEndpoints} is also called once
+   * immediately here, mirroring `pollOnce()`'s own "don't wait for the
+   * next event" rationale: {@link mdnsDiscovery}'s `current()` can
+   * already be non-empty at this point (most notably after a
+   * `stop()`/`start()` cycle -- `MdnsDiscovery.stop()`'s own doc comment
+   * explains why its already-discovered maps are not cleared), and no
+   * fresh `up`/`down` event would otherwise ever fire for an
+   * already-known service to trigger a first sync. */
   start(): void {
     this.unsubscribeWatcher = this.watcher.onChange((event) => {
       this.handleChange(event);
@@ -1112,9 +1165,10 @@ export class DeviceRegistry {
     this.watcher.start();
     void this.watcher.pollOnce();
     this.unsubscribeMdns = this.mdnsDiscovery.onChange(() => {
-      this.emitDevices();
+      this.syncWifiEndpoints();
     });
     this.mdnsDiscovery.start();
+    this.syncWifiEndpoints();
   }
 
   /** Stop watching and close every open link, best-effort. */
@@ -1197,6 +1251,84 @@ export class DeviceRegistry {
   }
 
   /**
+   * Sprint 10 ticket 003: recompute the gated set of WiFi-robot
+   * {@link EndpointState}s from {@link mdnsDiscovery}'s current
+   * `wifiRobots` snapshot and {@link knownRobotsStore}'s current roster
+   * -- called on every {@link mdnsDiscovery} change (see {@link start}),
+   * never on a timer and never reading `mdnsDiscovery.current().wifiRobots`
+   * anywhere else in this class (this is the one gate call site --
+   * `wifi/wifiRobotGate.ts`'s own module doc comment and this sprint's
+   * Design Rationale, "No wire-visible ungated WiFi list").
+   *
+   * Mints a fresh, not-yet-connected `wifi-<name>` {@link EndpointState}
+   * for every gated robot with no existing state (mirroring the USB
+   * attach flow's "list first, connect on request" shape -- see
+   * {@link EndpointState.wifiTarget}'s own doc comment), refreshes
+   * `wifiTarget` in place for one that already exists but is not yet
+   * connected (a re-advertisement may report a changed host/port), and
+   * leaves an already-**open** session's `wifiTarget` untouched (nothing
+   * reconnects a live session just because a later advertisement
+   * repeats or changes it).
+   *
+   * A gated robot's state disappearing from this snapshot (its
+   * advertisement went `down`, or it dropped out of the roster) removes
+   * its `EndpointState` **only if no session is open** for it -- per
+   * this sprint's Design Rationale, "An ad disappearing is not a
+   * disconnect": only the link's own `close`/`error` (via
+   * {@link handleLinkError}) ends an open WiFi session. An open session
+   * whose advertisement is gone is left listed, `sessionOpen: true`,
+   * exactly like a USB board that stops answering `HELLO` stays listed
+   * as "connected, unresponsive" rather than disappearing.
+   */
+  private syncWifiEndpoints(): void {
+    const gated = gateWifiRobots(this.mdnsDiscovery.current().wifiRobots, this.knownRobotsStore.list());
+    const gatedByName = new Map<string, WifiRobotService>(gated.map((robot) => [robot.name, robot]));
+
+    for (const [id, state] of this.states) {
+      if (!state.wifiTarget) {
+        continue;
+      }
+      const stillGated = state.name !== null && gatedByName.has(state.name);
+      if (!stillGated && !state.sessionOpen) {
+        this.states.delete(id);
+      }
+    }
+
+    for (const robot of gatedByName.values()) {
+      const id = wifiEndpointId(robot.name);
+      const existing = this.states.get(id);
+      if (existing) {
+        if (!existing.sessionOpen) {
+          existing.wifiTarget = { host: robot.host, port: robot.port };
+        }
+        continue;
+      }
+      this.states.set(id, {
+        endpointId: id,
+        resourceKey: id,
+        name: robot.name,
+        classification: classifyBanner(null),
+        sessionOpen: false,
+        wifiTarget: { host: robot.host, port: robot.port },
+      });
+    }
+
+    this.emitDevices();
+  }
+
+  /** Sprint 10 ticket 003: whether `name` currently gates through --
+   * see {@link syncWifiEndpoints} for the full gating flow. Used by
+   * {@link requestClose} to decide whether a WiFi endpoint's entry
+   * should survive a deliberate close whose advertisement has already
+   * gone `down` -- a fresh gate computation, not a read of
+   * {@link states}, since the point is to check the *advertisement*,
+   * not this class's own (about to be stale) bookkeeping. */
+  private isWifiRobotGated(name: string): boolean {
+    const gated = gateWifiRobots(this.mdnsDiscovery.current().wifiRobots, this.knownRobotsStore.list());
+    return gated.some((robot) => robot.name === name);
+  }
+
+  /**
    * Sprint 5: remove `name` from the remembered-robot roster and emit a
    * fresh device snapshot so every connected client's `rememberedRobots`
    * list drops it immediately. Synchronous and not run through
@@ -1256,6 +1388,15 @@ export class DeviceRegistry {
       return;
     }
     if (state.classification.type !== "robot") {
+      return;
+    }
+    // Sprint 10 ticket 003: a WiFi-synthesized state has no physical
+    // `device` (see that field's own doc comment) and this call site is
+    // never actually reached for one anyway -- `connectAndIdentifyWifi`
+    // passes `recordKnownRobot: false` to `connectAndIdentifyOverLink`,
+    // so this guard is a type-level narrowing only, not a reachable
+    // no-op in practice.
+    if (!state.device) {
       return;
     }
     this.knownRobotsStore.recordSighting({
@@ -1352,6 +1493,15 @@ export class DeviceRegistry {
         return;
       }
       if (state.sessionOpen) {
+        return;
+      }
+      // Sprint 10 ticket 003: a gated WiFi robot's plain `session-open`
+      // (no `target` -- see this method's own doc comment) connects via
+      // its own `WifiLinkSpec`-built link instead of a USB device's --
+      // still under this same `endpointId`-keyed mutex run, no new
+      // synchronization mechanism.
+      if (state.wifiTarget) {
+        await this.connectAndIdentifyWifi(state);
         return;
       }
       await this.connectAndIdentify(state);
@@ -1535,7 +1685,17 @@ export class DeviceRegistry {
       );
       return;
     }
-    const relayPortPath = relayState.device.serialPort?.path;
+    // Sprint 10 ticket 003: `device` is optional on `EndpointState` now
+    // (absent for a WiFi-synthesized endpoint) -- narrowed into a local
+    // const once here so every later read in this method (which always
+    // runs against a real, USB-attached relay) doesn't need its own
+    // `?.`.
+    const relayDevice = relayState.device;
+    if (!relayDevice) {
+      this.emitError(relayEndpointId, `no physical device recorded for relay ${relayEndpointId}`);
+      return;
+    }
+    const relayPortPath = relayDevice.serialPort?.path;
     if (relayPortPath === undefined) {
       this.emitError(relayEndpointId, `no serial port available for relay ${relayEndpointId}`);
       return;
@@ -1568,7 +1728,7 @@ export class DeviceRegistry {
     // attempting a fresh command-plane handshake. A reset failure is
     // reported but not fatal -- the relay may already be sitting in its
     // command plane (e.g. this is the very first open since attach).
-    const resetResult = await this.resetOverSwdFn(relayState.device);
+    const resetResult = await this.resetOverSwdFn(relayDevice);
     if (!resetResult.ok) {
       this.emitError(
         relayEndpointId,
@@ -1629,7 +1789,7 @@ export class DeviceRegistry {
 
     const synthesizedId = `${relayEndpointId}-via-${result.name}`;
     const synthesizedState: EndpointState = {
-      device: relayState.device,
+      device: relayDevice,
       endpointId: synthesizedId,
       resourceKey,
       name: result.name,
@@ -1694,6 +1854,19 @@ export class DeviceRegistry {
       await this.teardownLink(state);
       const synthesizedTarget = state.synthesizedRelayTarget;
       if (!synthesizedTarget) {
+        // Sprint 10 ticket 003: a WiFi endpoint's entry stays listed
+        // after a deliberate close, exactly like a plain USB endpoint --
+        // the ticket's own "requestClose tears it down but the entry
+        // stays listed while the advertisement stands" rule. If the
+        // advertisement has *also* gone (e.g. it went `down` while this
+        // session was open, which `syncWifiEndpoints` deliberately left
+        // alone -- see that method's own doc comment), this close is the
+        // next opportunity to notice and drop the now-stale entry rather
+        // than leaving it listed indefinitely with nothing to
+        // reconnect it on the next mDNS change.
+        if (state.wifiTarget && state.name !== null && !this.isWifiRobotGated(state.name)) {
+          this.states.delete(endpointId);
+        }
         this.emitDevices();
         return;
       }
@@ -1924,6 +2097,20 @@ export class DeviceRegistry {
     // upload time), so it starts directly at "verifying" instead.
     this.setFlashPhase(state, endpointId, source, source.kind === "release" ? "fetching" : "verifying");
 
+    // Sprint 10 ticket 003: `device` is optional on `EndpointState` now
+    // (absent for a WiFi-synthesized endpoint, which has no physical
+    // board `flash.ts` could ever write to) -- narrowed into a local
+    // const once here so `flashFn` below reads a real `DaplinkDevice`,
+    // never `undefined`. Flashing was never reachable for a WiFi
+    // endpoint before this ticket either (no such endpoint existed);
+    // this guard just makes the now-optional type explicit rather than
+    // relying on a caller to never ask.
+    const device = state.device;
+    if (!device) {
+      this.failFlash(state, endpointId, source, "flashing requires a directly attached USB device");
+      return;
+    }
+
     try {
       // OOP 2026-09-09: if this is a relay with an open robot-via-relay
       // synthesized child (see the module doc comment's "Robot-via-relay
@@ -2002,7 +2189,7 @@ export class DeviceRegistry {
       const onProgress = (phase: FlashPhase) => {
         this.setFlashPhase(state, endpointId, source, phase);
       };
-      const outcome = await this.flashFn(state.device, hexBuffer.toString("utf-8"), onProgress);
+      const outcome = await this.flashFn(device, hexBuffer.toString("utf-8"), onProgress);
       if (outcome.status === "error") {
         this.failFlash(state, endpointId, source, outcome.error);
         return;
@@ -2150,7 +2337,7 @@ export class DeviceRegistry {
   ): Promise<void> {
     this.setFlashPhase(state, endpointId, source, "reidentifying");
 
-    const portPath = state.device.serialPort?.path;
+    const portPath = state.device?.serialPort?.path;
     if (!portPath) {
       this.succeedFlash(state, endpointId, source, classifyBanner(null), state.name, "timeout");
       return;
@@ -2301,6 +2488,15 @@ export class DeviceRegistry {
   }
 
   private async resolveNameAndOpen(state: EndpointState): Promise<void> {
+    // Sprint 10 ticket 003: `device` is optional on `EndpointState` now,
+    // but this method is only ever queued from `handleChange`'s USB
+    // attach path, against a state constructed with a real device --
+    // this guard is a type-level narrowing only (a WiFi-synthesized
+    // state never reaches this method at all; see
+    // `connectAndIdentifyWifi` for its own connect path).
+    if (!state.device) {
+      return;
+    }
     const result = await this.resolveName(state.device);
     // The device may have been removed (and even re-added under a new
     // state object) while the SWD read was in flight; only apply the
@@ -2374,7 +2570,7 @@ export class DeviceRegistry {
   }
 
   private async connectAndIdentify(state: EndpointState): Promise<void> {
-    const portPath = state.device.serialPort?.path;
+    const portPath = state.device?.serialPort?.path;
     if (!portPath) {
       state.sessionError = "no serial port available for this device";
       this.emitDevices();
@@ -2382,7 +2578,55 @@ export class DeviceRegistry {
     }
 
     const link = this.createLink({ transport: "usb", resourceKey: state.resourceKey, portPath });
+    await this.connectAndIdentifyOverLink(state, link, { recordKnownRobot: true });
+  }
 
+  /**
+   * Sprint 10 ticket 003: connect+identify a gated WiFi robot the same
+   * way {@link connectAndIdentify} connects a USB device -- built from
+   * {@link EndpointState.wifiTarget}'s `host`/`port` (ticket 002's
+   * `WifiLinkSpec`) instead of a USB device's serial port path, and
+   * reusing {@link MbserialLink} verbatim via {@link defaultLinkFactory}
+   * (this sprint's Design Rationale, "TCP over UDP, reusing
+   * `MbserialLink` unchanged"). `recordKnownRobot: false` is the one
+   * behavioral difference from the USB path -- see
+   * {@link maybeRecordKnownRobot}'s own doc comment: the durable roster
+   * stays USB-sighting-only, and a robot only ever reaches this method
+   * because it was already in the roster (the gate applied in
+   * {@link syncWifiEndpoints}), so there is nothing new to enroll here
+   * anyway.
+   */
+  private async connectAndIdentifyWifi(state: EndpointState): Promise<void> {
+    const target = state.wifiTarget;
+    if (!target) {
+      this.emitError(state.endpointId, `no WiFi address recorded for ${state.endpointId}`);
+      return;
+    }
+    const link = this.createLink({ transport: "wifi", host: target.host, port: target.port });
+    await this.connectAndIdentifyOverLink(state, link, { recordKnownRobot: false });
+  }
+
+  /**
+   * Sprint 10 ticket 003: the connect()/identify() body {@link
+   * connectAndIdentify} used to run inline against a USB `Link` it built
+   * itself -- extracted, unchanged in behavior, so
+   * {@link connectAndIdentifyWifi} can share it verbatim against a WiFi
+   * `Link` instead, mirroring {@link attachSession}'s own extraction
+   * precedent (see that method's doc comment). `connect()` and
+   * `identify()` are still awaited as two separate steps (not one
+   * combined try/catch) specifically so a `connect()` failure -- a
+   * genuine transport error -- and an `identify()` `null` -- "connected,
+   * unresponsive", not an error -- update state differently, per this
+   * module's own "Attach flow" doc comment. `options.recordKnownRobot`
+   * is the only behavioral fork between callers -- see
+   * {@link maybeRecordKnownRobot}'s own doc comment for why a WiFi
+   * identify never writes the durable roster.
+   */
+  private async connectAndIdentifyOverLink(
+    state: EndpointState,
+    link: Link,
+    options: { recordKnownRobot: boolean },
+  ): Promise<void> {
     try {
       await link.connect();
     } catch (error) {
@@ -2408,7 +2652,7 @@ export class DeviceRegistry {
       return;
     }
 
-    if (this.states.get(state.endpointId) !== state) {
+    if (!this.isLive(state)) {
       // Removed while connecting -- don't leak the link we just opened.
       await link.close().catch(() => {});
       return;
@@ -2438,7 +2682,7 @@ export class DeviceRegistry {
     // without this the session's first exchange was invisible.
     this.emitLine(state.endpointId, "tx", "HELLO");
     const banner = await link.identify();
-    if (this.states.get(state.endpointId) !== state) {
+    if (!this.isLive(state)) {
       // Removed while identifying -- teardownLink (already run for the
       // now-orphaned state via the detach path) owns closing it.
       return;
@@ -2455,11 +2699,13 @@ export class DeviceRegistry {
     // Sprint 5 write gate -- see maybeRecordKnownRobot's own doc
     // comment for the write-gate rationale (robot + named, no separate
     // evidence check). Only a robot identified over its own USB
-    // connection reaches this call site: a relay, an unknown/
-    // unidentified device, or a nameless device all fall out of the
-    // gate automatically; nothing here is reachable over mDNS or a
-    // relay-mediated identify (neither exists yet this sprint).
-    this.maybeRecordKnownRobot(state);
+    // connection reaches this call site with `recordKnownRobot: true`:
+    // a relay, an unknown/unidentified device, or a nameless device all
+    // fall out of the gate automatically; a WiFi identify
+    // (`recordKnownRobot: false`) never reaches it at all.
+    if (options.recordKnownRobot) {
+      this.maybeRecordKnownRobot(state);
+    }
     this.emitDevices();
     this.startRobotProbes(state);
   }

@@ -3802,7 +3802,19 @@ describe("DeviceRegistry robot status and functions (OOP 2026-09-09)", () => {
   });
 });
 
-describe("DeviceRegistry telemetry (thdr/t) and TLM HDR recovery (sprint 009 ticket 002)", () => {
+describe("DeviceRegistry telemetry (thdr/t) and passive header recovery (sprint 009 ticket 002)", () => {
+  // Revised per bench finding on gopiv (fw v1.20260909.2,
+  // vendor/pxt-nezha-diffdrive): `WireHandler::parseTlmMode`
+  // (wire_handler.cpp:174-191) has no `HDR` mode -- only
+  // OFF/POSE/FULL/NOW/AUTO/BUFFER -- so sending `TLM HDR` as a recovery
+  // request drew `err 2` plus a nack against real firmware. Recovery is
+  // passive instead: `WireHandler::emitTelemetry` (wire_handler.cpp:
+  // 1440-1453) re-emits `thdr` on its own whenever the column set
+  // changes or every `kHeaderRefreshFrames` frames, so a header-less or
+  // mismatched `t` row is simply dropped -- no command sent -- and the
+  // next periodic `thdr` resyncs it. See handleTelemetryLine's own doc
+  // comment in deviceRegistry.ts for the full account.
+
   it("does not append thdr/t to the console rx log or trigger an endpoints snapshot", async () => {
     const { registry, link, lines } = await openRobot();
     const snapshots: unknown[] = [];
@@ -3841,78 +3853,102 @@ describe("DeviceRegistry telemetry (thdr/t) and TLM HDR recovery (sprint 009 tic
     await registry.stop();
   });
 
-  it("a t frame with no header held sends TLM HDR exactly once -- never TLM NOW -- and does not resend while still waiting", async () => {
+  it("a t frame with no header held is dropped silently -- nothing forwarded, no command sent", async () => {
     const { registry, link } = await openRobot();
     link.sentLines.length = 0;
+    const events: unknown[] = [];
+    registry.onTelemetry((endpointId, event) => events.push(event));
 
     link.emitLine(decoded("t", ["1", "2", "3"]));
-    expect(link.sentLines).toEqual([expect.stringMatching(/^TLM HDR #\d+\n$/)]);
+    link.emitLine(decoded("t", ["4", "5", "6"])); // still no header -- still dropped, not a resend target
 
-    // A second (and third) header-less t frame while still waiting must
-    // not resend -- the one-shot guard, not a resend-per-frame.
-    link.emitLine(decoded("t", ["4", "5", "6"]));
-    link.emitLine(decoded("t", ["7", "8", "9"]));
-    expect(link.sentLines).toEqual([expect.stringMatching(/^TLM HDR #\d+\n$/)]);
-    expect(link.sentLines.some((l) => /^TLM NOW/.test(l))).toBe(false);
+    expect(events).toEqual([]);
+    expect(link.sentLines).toEqual([]);
     await registry.stop();
   });
 
-  it("a field-count mismatch against an already-held header also triggers a guarded TLM HDR recovery request", async () => {
+  it("a field-count mismatch against an already-held header is also dropped silently, no command sent", async () => {
     const { registry, link } = await openRobot();
     link.emitLine(decoded("thdr", ["seq", "now", "flags", "posl", "posr", "vell", "velr"])); // 7 columns
     link.sentLines.length = 0;
+    const events: unknown[] = [];
+    registry.onTelemetry((endpointId, event) => events.push(event));
 
     link.emitLine(decoded("t", ["1", "2", "3"])); // only 3 fields -- mismatch
-    expect(link.sentLines).toEqual([expect.stringMatching(/^TLM HDR #\d+\n$/)]);
+    link.emitLine(decoded("t", ["4", "5", "6"])); // still mismatched -- still dropped
 
-    // Still mismatched/waiting -- no second request.
-    link.emitLine(decoded("t", ["4", "5", "6"]));
-    expect(link.sentLines).toEqual([expect.stringMatching(/^TLM HDR #\d+\n$/)]);
+    expect(events).toEqual([]);
+    expect(link.sentLines).toEqual([]);
     await registry.stop();
   });
 
-  it("clears the one-shot guard once a frame decodes successfully, so a later independent gap can trigger TLM HDR again", async () => {
+  it("a later thdr passively resyncs a dropped gap -- frames resume decoding with no command ever sent", async () => {
     const { registry, link } = await openRobot();
+    link.sentLines.length = 0;
+    const events: Array<{ endpointId: string; event: unknown }> = [];
+    registry.onTelemetry((endpointId, event) => events.push({ endpointId, event }));
 
-    link.emitLine(decoded("t", ["1", "2", "3"])); // no header -- first gap
-    expect(link.sentLines.filter((l) => l.startsWith("TLM"))).toHaveLength(1);
+    link.emitLine(decoded("t", ["1", "2", "3"])); // no header -- dropped
+    expect(events).toEqual([]);
 
+    // The firmware's own periodic/on-change re-emission, not a host
+    // request -- see this describe block's own header comment.
     link.emitLine(decoded("thdr", ["seq", "now", "flags", "posl", "posr", "vell", "velr"]));
-    link.emitLine(decoded("t", ["1", "2", "3", "4", "5", "6", "7"])); // decodes fine -- clears the guard
+    link.emitLine(decoded("t", ["1", "2", "3", "4", "5", "6", "7"]));
 
-    link.emitLine(decoded("t", ["1", "2", "3"])); // a second, independent gap (mismatch again)
-    expect(link.sentLines.filter((l) => l.startsWith("TLM"))).toHaveLength(2);
+    expect(events).toEqual([
+      { endpointId: "usb-SERIAL-A", event: { header: ["seq", "now", "flags", "posl", "posr", "vell", "velr"] } },
+      {
+        endpointId: "usb-SERIAL-A",
+        event: { frame: { seq: "1", now: "2", flags: "3", posl: "4", posr: "5", vell: "6", velr: "7" } },
+      },
+    ]);
+    expect(link.sentLines).toEqual([]); // no TLM (or any other) command was ever sent for this
     await registry.stop();
   });
 
-  it("resets the held header and recovery guard on session teardown, so a reopened session starts from a fresh gap", async () => {
+  it("resets the held header on session teardown, so a reopened session drops until a fresh thdr arrives", async () => {
     const { registry, link } = await openRobot();
     link.emitLine(decoded("thdr", ["seq", "now", "flags", "posl", "posr", "vell", "velr"]));
-    link.emitLine(decoded("t", ["1", "2", "3", "4", "5", "6", "7"])); // decodes fine, no recovery needed
+    link.emitLine(decoded("t", ["1", "2", "3", "4", "5", "6", "7"])); // decodes fine
 
     await registry.requestClose("usb-SERIAL-A");
     await registry.requestOpen("usb-SERIAL-A");
     await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
     link.sentLines.length = 0;
+    const events: unknown[] = [];
+    registry.onTelemetry((endpointId, event) => events.push(event));
 
     // Same column count as before teardown, but the decoder held no
-    // header across the reopened session -- this must be treated as a
-    // fresh gap, not zipped against the pre-teardown header.
+    // header across the reopened session -- this must be dropped, not
+    // zipped against the pre-teardown header.
     link.emitLine(decoded("t", ["1", "2", "3", "4", "5", "6", "7"]));
-    expect(link.sentLines).toEqual([expect.stringMatching(/^TLM HDR #\d+\n$/)]);
+    expect(events).toEqual([]);
+    expect(link.sentLines).toEqual([]);
+
+    // A fresh thdr on the new session resumes decoding normally.
+    link.emitLine(decoded("thdr", ["seq", "now", "flags", "posl", "posr", "vell", "velr"]));
+    link.emitLine(decoded("t", ["1", "2", "3", "4", "5", "6", "7"]));
+    expect(events).toEqual([
+      { header: ["seq", "now", "flags", "posl", "posr", "vell", "velr"] },
+      { frame: { seq: "1", now: "2", flags: "3", posl: "4", posr: "5", vell: "6", velr: "7" } },
+    ]);
     await registry.stop();
   });
 
-  it("resets the held header and recovery guard on a HELLO resync", async () => {
+  it("resets the held header on a HELLO resync", async () => {
     const { registry, link } = await openRobot();
     link.emitLine(decoded("thdr", ["seq", "now", "flags", "posl", "posr", "vell", "velr"]));
     link.emitLine(decoded("t", ["1", "2", "3", "4", "5", "6", "7"])); // decodes fine
 
     await registry.sendCommand("usb-SERIAL-A", "HELLO", []);
     link.sentLines.length = 0;
+    const events: unknown[] = [];
+    registry.onTelemetry((endpointId, event) => events.push(event));
 
-    link.emitLine(decoded("t", ["1", "2", "3", "4", "5", "6", "7"])); // held header must be gone
-    expect(link.sentLines).toEqual([expect.stringMatching(/^TLM HDR #\d+\n$/)]);
+    link.emitLine(decoded("t", ["1", "2", "3", "4", "5", "6", "7"])); // held header must be gone -- dropped
+    expect(events).toEqual([]);
+    expect(link.sentLines).toEqual([]);
     await registry.stop();
   });
 });

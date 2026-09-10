@@ -802,16 +802,14 @@ interface EndpointState {
    * line seen for a session (see {@link DeviceRegistry.getTelemetryDecoder}),
    * and discarded on teardown/resync (see {@link DeviceRegistry.teardownLink}/
    * {@link DeviceRegistry.resyncSession}) so a stale header from a prior
-   * session is never zipped against a new one's frames. */
+   * session is never zipped against a new one's frames.
+   *
+   * Header recovery is deliberately passive -- see
+   * {@link handleTelemetryLine}'s own doc comment for why there is no
+   * recovery-request guard field here (an earlier revision of this
+   * ticket had one; removed once bench testing showed the firmware has
+   * no mode to request). */
   telemetryDecoder?: TelemetryDecoder | undefined;
-  /** Sprint 009 ticket 002: set once a `TLM HDR` header-recovery request
-   * has been sent for the CURRENT gap (no header held, or a field-count
-   * mismatch against the held header), mirroring
-   * {@link pollAwaitingStatus}'s own single-outstanding-request guard --
-   * see {@link DeviceRegistry.requestTelemetryHeader}. Cleared once a `t`
-   * line successfully decodes against a held header, so a later,
-   * independent gap can trigger the request again. */
-  telemetryHdrRequested?: boolean | undefined;
   /** OOP 2026-09-09: the periodic `STATUS` poll behind
    * {@link EndpointListEntry.robotStatus} -- see
    * {@link DeviceRegistry.startRobotProbes}. Only ever set for a
@@ -3086,23 +3084,45 @@ export class DeviceRegistry {
    * only.
    *
    * - `thdr` -> store the new header via {@link TelemetryDecoder.handleHeader},
-   *   forward it as a header-update {@link TelemetryEvent}. The one-shot
-   *   `TLM HDR` guard is deliberately left alone here -- see
-   *   {@link EndpointState.telemetryHdrRequested}'s own doc comment and
-   *   the "`t` with a header held" branch below for where it actually
-   *   clears.
+   *   forward it as a header-update {@link TelemetryEvent}.
    * - `t` with no header held ({@link TelemetryDecoder.decodeFrame}
    *   returning `NoHeaderHeld`) or a field-count mismatch against the
-   *   held header -> forward nothing (the client's own default state
-   *   already reads as "waiting for header" -- see
-   *   `wsMessages.ts`'s {@link TelemetryMessage} doc comment) and issue
-   *   a one-shot `TLM HDR` recovery request via
-   *   {@link requestTelemetryHeader} -- never `TLM NOW` (protocol.md
-   *   S10.5, this sprint's UC-009).
+   *   held header -> drop the row silently: forward nothing (the
+   *   client's own default state already reads as "waiting for header"
+   *   -- see `wsMessages.ts`'s {@link TelemetryMessage} doc comment) and
+   *   issue **no** recovery command. See this method's own "Passive
+   *   header recovery" note below for why -- an earlier revision of
+   *   this ticket sent `TLM HDR` here; that was wrong and has been
+   *   removed.
    * - `t` with a header held that decodes successfully -> zip via
    *   `@robot-console/protocol`'s `v6/telemetry.ts`, forward the
-   *   resulting frame, and clear the one-shot guard (it must be able to
-   *   fire again on a later, independent gap).
+   *   resulting frame.
+   *
+   * ## Passive header recovery (revised; no `TLM HDR` request)
+   *
+   * An earlier revision of this ticket had this method send `TLM HDR`
+   * on a gap, guarded like {@link pollAwaitingStatus}'s single-
+   * outstanding-request pattern. Bench testing against gopiv (fw
+   * `v1.20260909.2`, this repo's `vendor/pxt-nezha-diffdrive` checkout)
+   * showed that request is wrong: `WireHandler::parseTlmMode`
+   * (`vendor/pxt-nezha-diffdrive/src/comms/wire_handler.cpp:174-191`)
+   * only recognizes `OFF`/`POSE`/`FULL`/`NOW`/`AUTO`/`BUFFER` as `TLM`
+   * mode tokens -- there is no `HDR` mode on this firmware at all, so
+   * sending it drew `err 2` plus a nack (the session's own nack-driven
+   * resync absorbed the fallout, but the send itself was simply wrong
+   * against the real firmware).
+   *
+   * Recovery does not need a request regardless: `WireHandler::emitTelemetry`
+   * (`vendor/pxt-nezha-diffdrive/src/comms/wire_handler.cpp:1440-1453`)
+   * re-emits `thdr` on its own whenever the column set changes
+   * (`headerChanged(snapshot)`) OR every `kHeaderRefreshFrames` frames
+   * (`framesSinceHeader_ >= kHeaderRefreshFrames`) -- so a host that
+   * missed (or never held) a header only has to wait for the next
+   * periodic re-emission, which arrives unprompted. Dropping a
+   * header-less/mismatched row and doing nothing else is therefore the
+   * correct behavior, not a stopgap: there is nothing this host could
+   * usefully send to speed recovery up, and the one verb it used to
+   * send for that purpose does not exist on the firmware it talks to.
    */
   private handleTelemetryLine(state: EndpointState, decoded: DecodedLine): void {
     const decoder = this.getTelemetryDecoder(state);
@@ -3113,46 +3133,15 @@ export class DeviceRegistry {
     }
     const result = decoder.decodeFrame(decoded.fields);
     if (result.kind === "noHeaderHeld" || result.kind === "fieldCountMismatch") {
-      this.requestTelemetryHeader(state);
+      // Drop silently -- see this method's own "Passive header
+      // recovery" doc comment. The decoder's held header (if any) is
+      // left untouched: `zipTelemetryFrame`/`decodeFrame` are pure and
+      // never mutate it on a mismatch, so the very next matching `t`
+      // (or a fresh `thdr`) resumes decoding normally with no action
+      // needed here.
       return;
     }
-    state.telemetryHdrRequested = false;
     this.emitTelemetry(state.endpointId, { frame: result.fields });
-  }
-
-  /**
-   * Sprint 009 ticket 002 (UC-009): issue `TLM HDR` (never `TLM NOW` --
-   * protocol.md S10.5 is explicit that `TLM NOW` is not the recovery
-   * path) at most once per observed gap, guarded exactly like
-   * {@link pollAwaitingStatus}'s own single-outstanding-request pattern
-   * -- see {@link EndpointState.telemetryHdrRequested}'s own doc
-   * comment. Deliberately **not** a polling timer: the wire already
-   * free-runs a 20-frame header auto-refresh (protocol.md S10.2), so
-   * this fires only when {@link handleTelemetryLine} observes an actual
-   * gap, never on an interval. `TLM` is a sequenced verb
-   * (`@robot-console/protocol`'s `SEQUENCED_VERBS`), so this dispatches
-   * to `Link.sendCommand` directly -- mirroring {@link sendCommand}'s
-   * own dispatch, not re-deriving the sequenced/unsequenced split here.
-   * A missing session (telemetry arriving in the narrow window after
-   * `handleLinkError` flips `sessionOpen` false but before
-   * {@link teardownLink} actually runs) still sets the guard so a flood
-   * of already-buffered `t` lines can't each attempt a send -- there is
-   * nothing to recover into at that point regardless.
-   */
-  private requestTelemetryHeader(state: EndpointState): void {
-    if (state.telemetryHdrRequested) {
-      return;
-    }
-    state.telemetryHdrRequested = true;
-    if (!state.session) {
-      return;
-    }
-    try {
-      const line = state.session.link.sendCommand("TLM", ["HDR"]);
-      this.emitLine(state.endpointId, "tx", line.replace(/\n$/, ""));
-    } catch (error) {
-      this.emitError(state.endpointId, error instanceof Error ? error.message : String(error));
-    }
   }
 
   /**
@@ -3339,11 +3328,10 @@ export class DeviceRegistry {
     state.desyncNotified = false;
     // Sprint 009 ticket 002: a HELLO resync is exactly the kind of
     // session discontinuity a stale telemetry header must not survive --
-    // reset the decoder and its recovery guard so the next `t` line is
-    // treated as a fresh gap, never zipped against a header held before
-    // the resync.
+    // reset the decoder so the next `t` line is treated as a fresh gap
+    // (dropped silently, per handleTelemetryLine's own doc comment),
+    // never zipped against a header held before the resync.
     state.telemetryDecoder = undefined;
-    state.telemetryHdrRequested = false;
     this.emitDevices();
     if (!banner) {
       this.emitError(
@@ -3370,12 +3358,11 @@ export class DeviceRegistry {
     this.stopRobotProbes(state);
     state.robotStatus = undefined;
     state.functions = undefined;
-    // Sprint 009 ticket 002: discard the held telemetry header and its
-    // recovery guard along with the rest of this session's state -- a
-    // fresh session must never zip a `t` line against a header held by
-    // whatever session came before it.
+    // Sprint 009 ticket 002: discard the held telemetry header along
+    // with the rest of this session's state -- a fresh session must
+    // never zip a `t` line against a header held by whatever session
+    // came before it.
     state.telemetryDecoder = undefined;
-    state.telemetryHdrRequested = false;
     state.session?.unsubscribeLine();
     state.session?.unsubscribeRawLine();
     state.session?.unsubscribeAckNack();

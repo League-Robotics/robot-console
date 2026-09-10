@@ -1,0 +1,112 @@
+/* PathTracePanel.css — sprint 9 ticket 005.
+ *
+ * `--rc-chart-*` custom properties are redeclared here (values copied
+ * verbatim from `ChartsPanel.css`, light and dark alike) rather than
+ * inherited from it -- a CSS custom property does not cross between
+ * sibling elements, only down through actual DOM ancestry, and
+ * `.charts-panel`/`.path-trace-panel` are siblings in `RobotPage`'s left
+ * column. Keeping the values identical (not just the property names) is
+ * what makes the two panels read as one system, per the `dataviz`
+ * skill's palette discipline and this ticket's own instruction to reuse
+ * `ChartsPanel`'s colour choices.
+ */
+
+.path-trace-panel {
+  --rc-chart-grid: #e1e0d9;
+  --rc-chart-baseline: #c3c2b7;
+  --rc-chart-series-1: #2a78d6;
+  --rc-chart-positive: #2a78d6;
+
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  .path-trace-panel {
+    --rc-chart-grid: #2c2c2a;
+    --rc-chart-baseline: #383835;
+    --rc-chart-series-1: #3987e5;
+    --rc-chart-positive: #3987e5;
+  }
+}
+
+.path-trace-panel-waiting {
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px dashed var(--rc-border);
+  border-radius: 0.4rem;
+  color: var(--rc-text-muted);
+  font-size: 0.85rem;
+}
+
+.path-trace-panel-unavailable {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+  background: var(--rc-warn-bg);
+  border: 1px solid var(--rc-warn-border);
+  color: var(--rc-warn-text);
+  font-size: 0.82rem;
+}
+
+.path-trace-panel-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.path-trace-panel-clear {
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.3rem 0.7rem;
+  border-radius: 0.4rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.path-trace-panel-clear:hover {
+  border-color: var(--rc-accent);
+}
+
+.path-trace-panel-plot {
+  border: 1px solid var(--rc-border);
+  border-radius: 0.4rem;
+  background: var(--rc-surface);
+}
+
+.path-trace-panel-svg {
+  display: block;
+  width: 100%;
+  height: 18rem;
+}
+
+.path-trace-panel-origin {
+  fill: none;
+  stroke: var(--rc-chart-baseline);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.path-trace-panel-trail {
+  fill: none;
+  stroke: var(--rc-chart-series-1);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.path-trace-panel-heading-tick {
+  stroke: var(--rc-chart-positive);
+  stroke-width: 2;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.path-trace-panel-current-pose {
+  fill: var(--rc-chart-positive);
+  stroke: var(--rc-surface);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}

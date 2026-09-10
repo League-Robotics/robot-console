@@ -1,10 +1,12 @@
 ---
-id: "005"
-title: "Path trace panel with Clear action"
-status: open
-use-cases: [SUC-002]
-depends-on: ["003"]
-github-issue: ""
+id: '005'
+title: Path trace panel with Clear action
+status: done
+use-cases:
+- SUC-002
+depends-on:
+- '003'
+github-issue: ''
 issue: robot-console-two-level-ui-and-multi-transport-roadmap.md
 completes_issue: false
 ---
@@ -45,17 +47,17 @@ or the Charts panel's own display.
 
 ## Acceptance Criteria
 
-- [ ] The path trace accumulates `ox`/`oy` points from decoded frames,
+- [x] The path trace accumulates `ox`/`oy` points from decoded frames,
       unscaled (a test asserts the plotted coordinate equals the raw
       wire value in mm).
-- [ ] Clear empties the trace buffer and resets the plot; a test
+- [x] Clear empties the trace buffer and resets the plot; a test
       asserts no wire command is sent when Clear is pressed.
-- [ ] When `ox`/`oy` are absent from the current header, the panel
+- [x] When `ox`/`oy` are absent from the current header, the panel
       shows "not available on this firmware" rather than plotting or
       crashing (a test using a header without those columns, e.g. a
       radio-robot-lib POSE fixture's column set, confirms this).
-- [ ] Before a header is held, the panel shows "waiting for header".
-- [ ] `RobotPage.transportBlind.test.ts` passes unmodified.
+- [x] Before a header is held, the panel shows "waiting for header".
+- [x] `RobotPage.transportBlind.test.ts` passes unmodified.
 
 ## Testing
 

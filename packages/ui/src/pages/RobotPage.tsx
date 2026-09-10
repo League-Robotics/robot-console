@@ -23,10 +23,11 @@
  *   `SequencingIndicator` (unchanged, read-only view of `Session`'s
  *   reliability state), `FunctionsPanel` (added out-of-process,
  *   2026-09-09 -- the robot's `FUNCS`-discovered, `RUN`-able function
- *   list, mounted below Sequencing), and `ChartsPanel` (sprint 9 ticket
+ *   list, mounted below Sequencing), `ChartsPanel` (sprint 9 ticket
  *   004 -- wheel-speed bars and a rolling time-series chart fed by
- *   `useTelemetry`/`useTelemetryHeader`; the path-trace panel is
- *   ticket 005's job and not mounted here).
+ *   `useTelemetry`/`useTelemetryHeader`), and `PathTracePanel` (sprint 9
+ *   ticket 005 -- a top-down plot of the `ox`/`oy` position trail, with
+ *   its own client-side-only Clear button, mounted below Charts).
  * - **Right column**: exactly one `DeviceConsole`, sized to fill the
  *   column's available height (`RobotPage.css` overrides
  *   `DeviceConsole`'s own fixed `max-height` scoped to this column
@@ -78,6 +79,7 @@ import { CommandStrip } from "../components/CommandStrip";
 import { DeviceConsole } from "../components/DeviceConsole";
 import { DriveControls } from "../components/DriveControls";
 import { FunctionsPanel } from "../components/FunctionsPanel";
+import { PathTracePanel } from "../components/PathTracePanel";
 import { SequencingIndicator } from "../components/SequencingIndicator";
 import { StatusPanel } from "../components/StatusPanel";
 import "./RobotPage.css";
@@ -116,6 +118,11 @@ export function RobotPage({ endpoint }: RobotPageProps) {
           <div className="robot-page-panel" aria-label="Charts">
             <h3>Charts</h3>
             <ChartsPanel endpointId={endpoint.endpointId} />
+          </div>
+
+          <div className="robot-page-panel" aria-label="Path trace">
+            <h3>Path trace</h3>
+            <PathTracePanel endpointId={endpoint.endpointId} />
           </div>
         </div>
 

@@ -73,6 +73,7 @@ import sequencingIndicatorSource from "../components/SequencingIndicator.tsx?raw
 import statusPanelSource from "../components/StatusPanel.tsx?raw";
 import functionsPanelSource from "../components/FunctionsPanel.tsx?raw";
 import chartsPanelSource from "../components/ChartsPanel.tsx?raw";
+import pathTracePanelSource from "../components/PathTracePanel.tsx?raw";
 import { RobotPage } from "./RobotPage";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
@@ -99,6 +100,10 @@ const FILES_UNDER_TEST: Record<string, string> = {
   // and is held to the same property -- it reads only
   // `useTelemetry`/`useTelemetryHeader`, never a transport/link type.
   "components/ChartsPanel.tsx": chartsPanelSource,
+  // Sprint 9 ticket 005: PathTracePanel is held to the same property --
+  // it reads only `useTelemetry`/`useTelemetryHeader`/`useWsActions`,
+  // never a transport/link type.
+  "components/PathTracePanel.tsx": pathTracePanelSource,
 };
 
 /** Matches a quoted `"usb"` literal (either quote style), not merely

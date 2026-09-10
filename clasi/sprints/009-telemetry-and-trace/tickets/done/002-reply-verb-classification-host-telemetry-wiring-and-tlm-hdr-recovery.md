@@ -31,37 +31,64 @@ per-endpoint reply-dispatch chain (the `if (decoded.verb === ...)`
 branches that already special-case `status`/`estop`/`funcs`, around
 where `robotStatus`/`funcsBuffer` are populated) with `thdr`/`t`
 handling:
-- New `EndpointState` fields mirroring the existing
-  `robotStatus`/`funcsBuffer`/`pollAwaitingStatus` pattern: something
-  like `telemetryHeader?: readonly string[]`, and a guard flag so a
-  `TLM HDR` recovery request is sent at most once per observed gap
-  (not resent every subsequent header-less `t` frame).
+- New `EndpointState` field mirroring the existing
+  `robotStatus`/`funcsBuffer` pattern: a lazily-created per-endpoint
+  `TelemetryDecoder` (ticket 001), reset on session teardown and on
+  HELLO/resync so a stale header from a prior session is never zipped
+  against a new one's frames.
 - On `thdr` → store the new header via ticket 001's decoder, forward a
-  header update over the new WS message (ticket 003 defines the exact
-  message shape — coordinate field names with that ticket, or land
-  this ticket's message shape first since it is upstream).
-- On `t` with no header held → do not decode; if the one-shot guard is
-  clear, send `TLM HDR` (never `TLM NOW` — a test must pin this) and
-  set the guard; forward a "no header yet" signal (or simply omit a
-  frame — verify against ticket 003's exact contract) so the UI can
-  render "waiting for header".
+  header update over the new WS message.
+- On `t` with no header held, or a field-count mismatch against the
+  held header → **drop the row silently**: do not decode, forward
+  nothing (the client's own default state already reads as "waiting
+  for header"), and send **no** recovery command.
 - On `t` with a header held → zip via ticket 001's `telemetry.ts`,
-  forward the resulting frame over the new WS message; clear the
-  one-shot guard once a header is confirmed held (it must be able to
-  fire again on a later, independent gap).
-- Do **not** add a polling timer for this (unlike `pollStatus`'s
-  `setInterval` for `STATUS`) — the wire already free-runs a 20-frame
-  header auto-refresh (protocol.md §10.2); this is event-triggered
-  recovery only.
+  forward the resulting frame over the new WS message.
+- **No `setInterval`/polling timer, and no `TLM HDR` (or any other)
+  recovery request.** Header recovery is entirely passive — see the
+  "Revision: passive recovery, no `TLM HDR`" note below.
 - Telemetry frames/headers must not be appended to the per-device rx
   log (`emitLine`) or trigger a full `EndpointsMessage` snapshot
   broadcast — they ride the dedicated message type only.
 
-Coordinate with ticket 003 on the exact WS message shape added to
-`packages/host/src/wsMessages.ts` (a new discriminated type, e.g.
-`TelemetryMessage` with `type: "telemetry"`, `endpointId`, and either a
-`header` or `frame` payload) — this ticket is the natural place to add
+The exact WS message shape is added to `packages/host/src/wsMessages.ts`
+as `TelemetryMessage`, `type: "telemetry"`, `endpointId`, and either a
+`header` or `frame` payload — this ticket is the natural place to add
 it since it's the first producer.
+
+### Revision (bench finding, ticket reopened): passive recovery, no `TLM HDR`
+
+This ticket originally specified an event-triggered `TLM HDR` recovery
+request, guarded like `pollAwaitingStatus`'s single-outstanding-request
+pattern, on a `NoHeaderHeld`/field-count-mismatch gap. **Bench testing
+against gopiv (firmware `v1.20260909.2`,
+`vendor/pxt-nezha-diffdrive`)** showed this was wrong on two counts:
+
+1. **The firmware has no `HDR` mode.**
+   `WireHandler::parseTlmMode` (`vendor/pxt-nezha-diffdrive/src/comms/
+   wire_handler.cpp:174-191`) recognizes only `OFF`/`POSE`/`FULL`/
+   `NOW`/`AUTO`/`BUFFER` as `TLM` mode tokens. Sending `TLM HDR` against
+   real firmware drew `err 2` plus a nack — the session's own
+   nack-driven resync absorbed the fallout, but the send itself was a
+   verb the firmware does not accept, not a working recovery path.
+2. **No request is needed anyway.** `WireHandler::emitTelemetry`
+   (`vendor/pxt-nezha-diffdrive/src/comms/wire_handler.cpp:1440-1453`)
+   re-emits `thdr` on its own whenever the column set changes
+   (`headerChanged(snapshot)`) **or** every `kHeaderRefreshFrames`
+   frames (`framesSinceHeader_ >= kHeaderRefreshFrames`) — a host that
+   missed (or never held) a header only has to wait for the firmware's
+   next periodic re-emission, which arrives unprompted.
+
+Recovery is therefore **passive**: a header-less or mismatched `t` row
+is dropped silently (decoder state and any currently-held header are
+left untouched — `zipTelemetryFrame`/`decodeFrame` never mutate on a
+mismatch), no command is ever sent for it, and the very next `thdr`
+(periodic or on-change) resyncs decoding with no host-side action. This
+replaces every `TLM HDR`-sending behavior this ticket previously
+specified; `TLM NOW` was never sent in either revision (protocol.md
+§10.5's own point — `TLM NOW` was never the recovery path — still
+holds, it just turns out there is no request-based recovery path at
+all against this firmware).
 
 ## Acceptance Criteria
 
@@ -70,9 +97,12 @@ it since it's the first producer.
 - [x] A `thdr`/`t` line no longer reaches `LineRouter`'s `onUnrouted`
       callback (a regression test on `LineRouter` or `deviceRegistry`
       confirms this).
-- [x] A `t` frame with no header held for an endpoint triggers exactly
-      one `TLM HDR` — not `TLM NOW` — and does not re-send it on
-      subsequent header-less frames while still waiting.
+- [x] A `t` frame with no header held for an endpoint, or one whose
+      field count mismatches the held header, is dropped silently — no
+      frame forwarded, no `TLM HDR` (or any other) command sent, ever
+      (revised: the firmware has no `HDR` `TLM` mode —
+      `wire_handler.cpp:174-191` — and re-emits `thdr` on its own —
+      `wire_handler.cpp:1440-1453` — so recovery is passive).
 - [x] Once a header is held, `t` frames decode via ticket 001's module
       and forward as telemetry WS messages.
 - [x] No `setInterval`/polling timer is added for header recovery.
@@ -90,10 +120,12 @@ it since it's the first producer.
   `deviceRegistry.test.ts`, and `codec.test.ts` still pass unmodified
   in their pre-existing cases.
 - **New tests to write**: a `codec.test.ts` case for `thdr`/`t`
-  classification; a `deviceRegistry.test.ts` (or `LineRouter.test.ts`)
-  case for the full header-recovery sequence — no header → one `TLM
-  HDR` sent → `thdr` arrives → subsequent `t` decodes — plus a case
-  proving a second header-less `t` frame does not send a second `TLM
-  HDR` while the first is still outstanding.
+  classification; `deviceRegistry.test.ts` cases for: a header-less `t`
+  row dropped silently with no command sent; a field-count-mismatched
+  `t` row (against an already-held header) dropped the same way; a
+  later `thdr` passively resyncing a previously-dropped gap with frames
+  resuming decoding and no command ever sent; and decoder reset on
+  session teardown and on HELLO/resync (each followed by a fresh `thdr`
+  resuming decoding).
 - **Verification command**: `npx vitest run packages/protocol
   packages/host`

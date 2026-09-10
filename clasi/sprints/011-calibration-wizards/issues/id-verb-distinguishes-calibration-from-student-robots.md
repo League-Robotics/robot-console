@@ -1,6 +1,9 @@
 ---
-status: pending
+status: in-progress
 sprint: '011'
+tickets:
+- 011-001
+- 011-002
 ---
 
 # The `ID` verb distinguishes calibration from student robots — the fourth device type is unblocked

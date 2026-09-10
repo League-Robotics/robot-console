@@ -1,6 +1,6 @@
 ---
 status: in-progress
-sprint: 009
+sprint: '011'
 tickets:
 - 003-003
 - 003-004
@@ -31,6 +31,10 @@ tickets:
 - 009-004
 - 009-005
 - 009-006
+- 011-003
+- 011-004
+- 011-005
+- 011-006
 ---
 
 # Two-level UI and multi-transport device model

@@ -1,7 +1,7 @@
 ---
 id: '005'
 title: 'Front page: WiFi-reachable robot cards and transport-blindness verification'
-status: in-progress
+status: done
 use-cases:
 - SUC-005
 depends-on:

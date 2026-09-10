@@ -1,10 +1,13 @@
 ---
-id: "002"
-title: "Reply-verb classification + host telemetry wiring and TLM HDR recovery"
-status: open
-use-cases: [SUC-001, SUC-003]
-depends-on: ["001"]
-github-issue: ""
+id: '002'
+title: Reply-verb classification + host telemetry wiring and TLM HDR recovery
+status: done
+use-cases:
+- SUC-001
+- SUC-003
+depends-on:
+- '001'
+github-issue: ''
 issue: robot-console-two-level-ui-and-multi-transport-roadmap.md
 completes_issue: false
 ---
@@ -62,21 +65,21 @@ it since it's the first producer.
 
 ## Acceptance Criteria
 
-- [ ] `thdr` and `t` are in `REPLY_VERBS`; `classifyLine("thdr")` and
+- [x] `thdr` and `t` are in `REPLY_VERBS`; `classifyLine("thdr")` and
       `classifyLine("t")` both return `"reply"`.
-- [ ] A `thdr`/`t` line no longer reaches `LineRouter`'s `onUnrouted`
+- [x] A `thdr`/`t` line no longer reaches `LineRouter`'s `onUnrouted`
       callback (a regression test on `LineRouter` or `deviceRegistry`
       confirms this).
-- [ ] A `t` frame with no header held for an endpoint triggers exactly
+- [x] A `t` frame with no header held for an endpoint triggers exactly
       one `TLM HDR` — not `TLM NOW` — and does not re-send it on
       subsequent header-less frames while still waiting.
-- [ ] Once a header is held, `t` frames decode via ticket 001's module
+- [x] Once a header is held, `t` frames decode via ticket 001's module
       and forward as telemetry WS messages.
-- [ ] No `setInterval`/polling timer is added for header recovery.
-- [ ] Telemetry traffic does not append to the per-device rx log buffer
+- [x] No `setInterval`/polling timer is added for header recovery.
+- [x] Telemetry traffic does not append to the per-device rx log buffer
       (`MAX_LINES_PER_DEVICE`) and does not trigger an `EndpointsMessage`
       snapshot broadcast.
-- [ ] The new WS message type is added to `wsMessages.ts` with a
+- [x] The new WS message type is added to `wsMessages.ts` with a
       `type` discriminator distinct from `"line"`/`"endpoints"`, and
       `isServerMessage`'s type guard (or equivalent) recognizes it.
 

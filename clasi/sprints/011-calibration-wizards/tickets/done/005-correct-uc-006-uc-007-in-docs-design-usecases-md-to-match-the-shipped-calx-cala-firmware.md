@@ -2,7 +2,7 @@
 id: '005'
 title: Correct UC-006/UC-007 in docs/design/usecases.md to match the shipped calx/cala
   firmware
-status: open
+status: done
 use-cases: []
 depends-on:
 - '003'
@@ -47,27 +47,27 @@ sprint-planner's own write scope (`docs/design/` is not
 
 ## Acceptance Criteria
 
-- [ ] UC-006's main flow describes: `FUNCS`-gated availability, `RUN
+- [x] UC-006's main flow describes: `FUNCS`-gated availability, `RUN
       calx`, the robot creeping to a first line and driving a known
       90 cm gap autonomously, and the wizard rendering the firmware's
       own `CALX:apply ...` line verbatim as the snippet — no student
       action mid-run beyond the initial physical setup (laying two
       lines 90 cm apart) and pressing Go.
-- [ ] UC-006's error flows drop the stale cleartext-`RUN:` dependency
+- [x] UC-006's error flows drop the stale cleartext-`RUN:` dependency
       language and instead describe: a `FUNCS` response missing `calx`
       (wizard shows "unavailable", never starts), a `RUN` `err 1`
       (distinct from a `CALX:fail` report), and a `CALX:fail ...` report
       line (the firmware's own failure report, e.g. no line found).
-- [ ] UC-007's main flow is rewritten to remove the beam pointer and
+- [x] UC-007's main flow is rewritten to remove the beam pointer and
       nudge-control description entirely and instead describes:
       `FUNCS`-gated availability, `RUN cala`, the autonomous CW/CCW
       spin against a black-tape cross, the firmware's own automatic
       re-verification pass, and the wizard rendering the firmware's own
       `CALA:apply ...` line verbatim as the snippet.
-- [ ] UC-007's error flows mirror UC-006's corrected shape (missing
+- [x] UC-007's error flows mirror UC-006's corrected shape (missing
       `cala`, `err 1`, `CALA:fail ...`) and drop the stale nudge-pacing
       error flow (there is no nudge control to pace).
-- [ ] Neither use case is renumbered, and neither loses its existing
+- [x] Neither use case is renumbered, and neither loses its existing
       `**Actor:**`/`**Preconditions:**` header structure — this is a
       content correction within the existing use-case format, not a
       restructuring.

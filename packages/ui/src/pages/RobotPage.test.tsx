@@ -122,7 +122,7 @@ describe("RobotPage", () => {
     expect(el.querySelector('[data-testid="robot-tab-main"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("OOP 2026-09-10: the Functions & charts tab shows functions on the left and charts plus path trace on the right", () => {
+  it("OOP 2026-09-10: the Functions & charts tab shows functions and the drive pad on the left and charts plus path trace on the right", () => {
     const { el } = mountRobotPage(robotFixture());
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-functions"]')!.click();
@@ -131,6 +131,8 @@ describe("RobotPage", () => {
     const left = el.querySelector(".robot-page-column-left")!;
     const right = el.querySelector(".robot-page-column-right")!;
     expect(left.querySelector('[aria-label="Functions"]')).not.toBeNull();
+    expect(left.querySelector('[aria-label="Drive controls"]')).not.toBeNull();
+    expect(Array.from(left.querySelectorAll("h3")).map((h) => h.textContent)).toEqual(["Functions", "Drive"]);
     expect(right.querySelector('[aria-label="Charts"]')).not.toBeNull();
     expect(right.querySelector('[aria-label="Path trace"]')).not.toBeNull();
     expect(el.querySelector('[data-testid="robot-tab-functions"]')?.getAttribute("aria-selected")).toBe("true");

@@ -114,8 +114,8 @@ export interface RobotPageProps {
 /** OOP 2026-09-10: the robot page is split into tabs next to the
  * robot's name (stakeholder direction): Main (status, drive, console),
  * Calibration (both wizards -- only offered for a calibration-classified
- * robot), and Functions & charts (functions on one side, charts and the
- * path trace on the other). Sequencing state moved into the console's
+ * robot), and Functions & charts (functions and the drive pad on one side,
+ * charts and the path trace on the other). Sequencing state moved into the console's
  * own header (`DeviceConsole`) rather than a page panel. */
 export type RobotTab = "main" | "calibration" | "functions";
 
@@ -201,6 +201,12 @@ export function RobotPage({ endpoint }: RobotPageProps) {
             <div className="robot-page-panel">
               <h3>Functions</h3>
               <FunctionsPanel device={endpoint} />
+            </div>
+            {/* OOP 2026-09-10: the drive pad rides along on this tab too,
+                so a student can drive while watching functions/charts. */}
+            <div className="robot-page-panel">
+              <h3>Drive</h3>
+              <DriveControls device={endpoint} />
             </div>
           </div>
           <div className="robot-page-column robot-page-column-right">

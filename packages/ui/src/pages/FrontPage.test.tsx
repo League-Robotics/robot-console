@@ -926,3 +926,113 @@ describe("relay card quick-connect and open arrows (OOP 2026-09-10)", () => {
     expect(el.querySelector('[data-testid="location"]')?.textContent).toBe("/");
   });
 });
+
+describe("relay card relayBridge connecting/connected/failed states (sprint 013 ticket 003)", () => {
+  function relay(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+    return {
+      endpointId: "usb-RELAY-R",
+      transport: "usb",
+      resourceKey: "usb-RELAY-R",
+      classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role", program: null, version: null },
+      name: "rly02",
+      role: "RADIORELAY",
+      sessionOpen: true,
+      usb: { serialNumber: "RELAY-R-FULL", displaySerial: "0010", port: "/dev/cu.usbmodemR" },
+      ...overrides,
+    };
+  }
+
+  it("renders 'Connecting to <name>…' as soon as relayBridge.state is 'connecting', with no child endpoint present", () => {
+    const el = mount(
+      withRouter(
+        <EndpointsList
+          status="open"
+          devices={[relay({ relayBridge: { state: "connecting", robotName: "GoPiv" } })]}
+          robotOptions={[{ name: "GoPiv", discoveredOnly: false }]}
+        />,
+      ),
+    );
+    const quick = el.querySelector('[data-testid="relay-quick-connect-usb-RELAY-R"]');
+    expect(quick?.textContent).toContain("Connecting to GoPiv…");
+  });
+
+  it("renders the no-pick equivalent when relayBridge.state is 'connecting' with no robotName (default failover)", () => {
+    const el = mount(
+      withRouter(<EndpointsList status="open" devices={[relay({ relayBridge: { state: "connecting" } })]} />),
+    );
+    const quick = el.querySelector('[data-testid="relay-quick-connect-usb-RELAY-R"]');
+    expect(quick?.textContent).toContain("Trying remembered robots…");
+  });
+
+  it("renders the failure reason from relayBridge.error when relayBridge.state is 'failed'", () => {
+    const el = mount(
+      withRouter(
+        <EndpointsList
+          status="open"
+          devices={[
+            relay({
+              relayBridge: {
+                state: "failed",
+                robotName: "GoPiv",
+                triedNames: ["GoPiv"],
+                error: "GoPiv did not respond on any known address",
+              },
+            }),
+          ]}
+        />,
+      ),
+    );
+    const quick = el.querySelector('[data-testid="relay-quick-connect-usb-RELAY-R"]');
+    expect(quick?.textContent).toContain("GoPiv did not respond on any known address");
+    // The relay's own connect row is still usable after a failure, not disabled/hidden.
+    expect(quick?.querySelector("button")).not.toBeNull();
+  });
+
+  it("connectionState's Linked/Unreachable/Not linked text is identical whether relayBridge is absent, connecting, or failed", () => {
+    const linkedTextFor = (overrides: Partial<EndpointListEntry>): string | null => {
+      if (root) {
+        act(() => {
+          root!.unmount();
+        });
+      }
+      if (container) {
+        container.remove();
+      }
+      const el = mount(withRouter(<EndpointsList status="open" devices={[relay(overrides)]} />));
+      return el.querySelector('[data-testid="device-link-usb-RELAY-R"] .device-connection-state')?.textContent ?? null;
+    };
+    expect(linkedTextFor({})).toBe("Linked");
+    expect(linkedTextFor({ relayBridge: { state: "connecting", robotName: "GoPiv" } })).toBe("Linked");
+    expect(linkedTextFor({ relayBridge: { state: "failed", error: "boom" } })).toBe("Linked");
+  });
+
+  it("on success (relayBridge cleared, child present) the robot reached through the relay appears as its own card listing 'Radio via relay <relay name>' and 'Linked'", () => {
+    const child: EndpointListEntry = {
+      endpointId: "usb-RELAY-R-via-gopiv",
+      transport: "relay-radio",
+      resourceKey: "usb-RELAY-R",
+      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
+      name: "gopiv",
+      role: "NEZHA2",
+      sessionOpen: true,
+      viaRelay: { relayEndpointId: "usb-RELAY-R", robotName: "gopiv", channel: 12, group: 3 },
+    };
+    // relayBridge is absent here -- ticket 002's contract clears it in the
+    // same snapshot that introduces the child (see wsMessages.ts's
+    // relayBridge doc comment).
+    const el = mount(withRouter(<EndpointsList status="open" devices={[relay(), child]} />));
+
+    // The relay's own card still says "Connected to <name>", not "Linked" alone.
+    const quick = el.querySelector('[data-testid="relay-quick-connect-usb-RELAY-R"]');
+    expect(quick?.textContent).toContain("Connected to gopiv on channel 12, group 3");
+    expect(quick?.querySelector(".device-relay-connecting")).toBeNull();
+    expect(quick?.querySelector(".device-relay-failed")).toBeNull();
+
+    // The robot connected through the relay is its own device-list card.
+    const childCard = el.querySelector('[data-testid="device-card-usb-RELAY-R-via-gopiv"]');
+    expect(childCard).not.toBeNull();
+    const childRow = childCard?.querySelector('[data-testid="device-link-usb-RELAY-R-via-gopiv"]');
+    expect(childRow?.querySelector(".device-connection-label")?.textContent).toBe("Radio via relay rly02");
+    expect(childRow?.querySelector(".device-connection-state")?.textContent).toBe("Linked");
+  });
+});

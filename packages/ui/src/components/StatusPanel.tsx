@@ -47,28 +47,6 @@ import type { EndpointListEntry, RobotStatus } from "@robot-console/host/src/wsM
 import { useWsActions } from "../ws/WsProvider";
 import "./StatusPanel.css";
 
-function stateWord(status: RobotStatus | undefined, linkOpen: boolean): string {
-  if (!status) {
-    return linkOpen ? "Unknown — asking the robot for its status…" : "Unknown — no link open";
-  }
-  if (status.estopped) {
-    return "E-STOPPED";
-  }
-  if (status.stallHalted) {
-    return "Stall halted";
-  }
-  if (status.leaseExpired) {
-    return "Lease expired";
-  }
-  if (!status.ready) {
-    return "Not ready";
-  }
-  if (status.active) {
-    return "Moving";
-  }
-  return "Ready";
-}
-
 /** OOP 2026-09-10: the firmware's `status k=v` keys, given real names
  * and decoded values (stakeholder: "make that a real little table with
  * actual names for things"). The key set comes from
@@ -130,7 +108,10 @@ export function describeStatusValue(key: string, raw: string): string {
       return yesNo(raw);
     case "connL":
     case "connR":
-      return raw === "1" ? "Connected" : raw === "0" ? "Not connected" : raw;
+      // OOP 2026-09-10 (stakeholder): a 0 here only means the motor has
+      // not been seen moving -- nothing has been commanded yet -- not
+      // that it is disconnected.
+      return raw === "1" ? "Connected" : raw === "0" ? "Not seen moving yet" : raw;
     case "otos":
       return raw === "1" ? "Detected" : raw === "0" ? "Not detected" : raw;
     case "flags":
@@ -189,7 +170,6 @@ export function StatusPanel({ device }: StatusPanelProps) {
     }
   }, [linkOpen, endpointId, sendCommand]);
 
-  const word = stateWord(status, linkOpen);
   const isEstopped = status?.estopped === true;
 
   function handleClearEstop(): void {
@@ -204,12 +184,19 @@ export function StatusPanel({ device }: StatusPanelProps) {
     <section className="robot-status-panel" aria-label="Robot status">
       <div className="status-panel-heading">
         <h3>Status</h3>
-        <span
-          className={`status-panel-state${isEstopped ? " status-panel-state-danger" : ""}`}
-          data-testid="status-panel-state"
-        >
-          {word}
-        </span>
+        {/* OOP 2026-09-10 (stakeholder): no Ready/Moving word up here --
+            the table already says both. Only two things are worth a
+            word on this line: an e-stop, and "no status yet". */}
+        {isEstopped && (
+          <span className="status-panel-state status-panel-state-danger" data-testid="status-panel-state">
+            E-STOPPED
+          </span>
+        )}
+        {!status && (
+          <span className="status-panel-note" data-testid="status-panel-state">
+            {linkOpen ? "Waiting for the robot's status…" : "No link open"}
+          </span>
+        )}
         {isEstopped && (
           <button
             type="button"

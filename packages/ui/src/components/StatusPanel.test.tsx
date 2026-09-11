@@ -91,41 +91,24 @@ function stateText(el: HTMLDivElement): string | null {
 }
 
 describe("StatusPanel state word", () => {
-  it("shows Unknown when there is no robotStatus yet", () => {
+  it("shows a waiting note (not a state word) while there is no robotStatus yet", () => {
     const { el } = mountPanel(baseDevice());
-    expect(stateText(el)).toContain("Unknown");
+    expect(stateText(el)).toContain("Waiting for the robot");
   });
 
-  it("shows E-STOPPED when estopped, taking priority over active", () => {
+  it("shows E-STOPPED on the heading line when estopped", () => {
     const { el } = mountPanel(
       baseDevice({ robotStatus: baseStatus({ estopped: true, active: true, ready: true }) }),
     );
     expect(stateText(el)).toBe("E-STOPPED");
   });
 
-  it("shows Stall halted when stallHalted (and not estopped)", () => {
-    const { el } = mountPanel(baseDevice({ robotStatus: baseStatus({ stallHalted: true }) }));
-    expect(stateText(el)).toBe("Stall halted");
-  });
-
-  it("shows Lease expired when leaseExpired (and not estopped/stalled)", () => {
-    const { el } = mountPanel(baseDevice({ robotStatus: baseStatus({ leaseExpired: true }) }));
-    expect(stateText(el)).toBe("Lease expired");
-  });
-
-  it("shows Not ready when !ready", () => {
-    const { el } = mountPanel(baseDevice({ robotStatus: baseStatus({ ready: false }) }));
-    expect(stateText(el)).toBe("Not ready");
-  });
-
-  it("shows Moving when active", () => {
-    const { el } = mountPanel(baseDevice({ robotStatus: baseStatus({ active: true }) }));
-    expect(stateText(el)).toBe("Moving");
-  });
-
-  it("shows Ready otherwise", () => {
-    const { el } = mountPanel(baseDevice({ robotStatus: baseStatus() }));
-    expect(stateText(el)).toBe("Ready");
+  it("OOP 2026-09-10 (stakeholder): shows no Ready/Moving word on the heading line -- the table carries both", () => {
+    for (const status of [baseStatus(), baseStatus({ active: true }), baseStatus({ ready: false }), baseStatus({ stallHalted: true })]) {
+      const { el } = mountPanel(baseDevice({ robotStatus: status }));
+      expect(stateText(el)).toBeNull();
+      expect(el.querySelector(".status-panel-heading")?.textContent).toBe("Status");
+    }
   });
 });
 
@@ -144,7 +127,7 @@ describe("StatusPanel fields (OOP 2026-09-10: a named table, no refresh, no coun
     expect(rows).toEqual([
       ["Ready", "Yes"],
       ["Left motor", "Connected"],
-      ["Right motor", "Not connected"],
+      ["Right motor", "Not seen moving yet"],
       ["Odometry sensor", "Detected"],
       ["Flags", "Ready, Stall halted (0x5)"],
       ["Control cycles", "1234"],
@@ -160,11 +143,11 @@ describe("StatusPanel fields (OOP 2026-09-10: a named table, no refresh, no coun
     expect(statusRows({ wedge: "0" })).toEqual([{ key: "wedge", label: "Bus wedged", value: "No" }]);
   });
 
-  it("puts the state word on the same line as the Status heading and shows no Refresh button or last-updated counter", () => {
+  it("shows just the Status heading, with no Refresh button or last-updated counter", () => {
     const { el } = mountPanel(baseDevice({ robotStatus: baseStatus({ receivedAt: 2000 }) }));
     const heading = el.querySelector(".status-panel-heading")!;
     expect(heading.querySelector("h3")?.textContent).toBe("Status");
-    expect(heading.querySelector('[data-testid="status-panel-state"]')).not.toBeNull();
+    expect(heading.querySelector('[data-testid="status-panel-state"]')).toBeNull();
     expect(el.querySelector('[data-testid="status-panel-refresh"]')).toBeNull();
     expect(el.textContent).not.toContain("Last updated");
     expect(el.textContent).not.toContain("Refresh");
@@ -210,7 +193,7 @@ describe("StatusPanel fields (OOP 2026-09-10: a named table, no refresh, no coun
   it("says so when no link is open instead of pretending to wait", () => {
     const { el, socket } = mountPanel(baseDevice({ sessionOpen: false }));
     expect(socket.sent).toEqual([]);
-    expect(stateText(el)).toContain("no link open");
+    expect(stateText(el)).toBe("No link open");
   });
 
 });

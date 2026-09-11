@@ -34,6 +34,11 @@
 /* E-STOPPED gets the same strong danger treatment EstopControl.css uses
  * for its own button, so this headline reads as urgent no matter which
  * panel a student happens to be looking at. */
+.status-panel-note {
+  color: var(--rc-text-muted);
+  font-size: 0.85rem;
+}
+
 .status-panel-state-danger {
   background: var(--rc-danger-bg);
   border-color: var(--rc-danger-border);

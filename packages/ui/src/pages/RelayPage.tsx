@@ -44,18 +44,23 @@
  *   derived from whether any `_mbrelay._tcp` service is currently
  *   discovered at all (`discoveredServices.relays.length > 0`), per that
  *   component's own neutral/warning rule.
- * - **In-flight failover visibility** (SUC-005): while a default-
- *   failover Connect is outstanding, a transient `role="status"` line
- *   reads "Trying remembered robots…" until either the child appears
- *   (success — the completed trail then renders via the chip) or a host
- *   `error` for this relay arrives in its own console log (failure —
- *   every candidate was exhausted, per `deviceRegistry.ts`'s
- *   `openRobotViaRelay`). The relay's own `EndpointListEntry.sessionError`
- *   is *not* set for an exhausted default-failover attempt (only
- *   `emitError`, which lands in the log via `WsProvider`'s
- *   `appendHostError` as an `origin: "host"` entry), so this page reads
- *   `useEndpointLog(endpoint.endpointId)` rather than
- *   `endpoint.sessionError` to detect that outcome.
+ * - **In-flight/failed bridging visibility** (SUC-005, sprint 13 ticket
+ *   004): driven directly by the host's own `endpoint.relayBridge` field
+ *   (set/cleared by `deviceRegistry.ts`'s `openRobotViaRelay` across its
+ *   reset/boot-delay/handshake sequence) -- no local state and no log
+ *   scanning. `relayBridge?.state === "connecting"` renders a transient
+ *   `role="status"` line, "Connecting to `<name>`…" for a named pick or
+ *   "Trying remembered robots…" for a no-pick default-failover attempt
+ *   with no candidate name yet. `relayBridge?.state === "failed"` renders
+ *   `relayBridge.error` visibly instead of silently reverting to a bare
+ *   connect bar. Both clear the moment the child endpoint appears
+ *   (success) or a fresh attempt starts, since `openRobotViaRelay` clears
+ *   `relayBridge` itself at that point (sprint 013 `sprint.md`
+ *   Architecture) -- this replaces the sprint 8 `autoConnecting`/
+ *   `autoConnectLogBaseline` mechanism that used to infer the failure
+ *   case from a host-origin line landing in
+ *   `useEndpointLog(endpoint.endpointId)`; that log-scanning approach is
+ *   gone from this page entirely.
  *
  * **Connected**: a status line, a "Disconnect" button
  * (`session-close` on the child), the same connect bar (prefilled to
@@ -71,7 +76,7 @@
  * is not rendered here (its session is closed while a child owns the
  * port) — a one-line note says it returns after Disconnect.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type {
   DiscoveredRobotEntry,
   EndpointListEntry,
@@ -83,7 +88,6 @@ import { DeviceConsole } from "../components/DeviceConsole";
 import { RobotPage } from "./RobotPage";
 import {
   useDiscoveredServices,
-  useEndpointLog,
   useEndpoints,
   useRememberedRobots,
   useWsActions,
@@ -191,7 +195,6 @@ export function RelayPage({ endpoint }: RelayPageProps) {
   const endpoints = useEndpoints();
   const rememberedRobots = useRememberedRobots();
   const discoveredServices = useDiscoveredServices();
-  const relayLog = useEndpointLog(endpoint.endpointId);
   const { send } = useWsActions();
 
   const child = endpoints.find(
@@ -201,14 +204,22 @@ export function RelayPage({ endpoint }: RelayPageProps) {
   const [selectedName, setSelectedName] = useState<string>("");
   const [channel, setChannel] = useState<number>(0);
   const [group, setGroup] = useState<number>(0);
-  // Sprint 8 ticket 005 (SUC-005): true from the moment a no-pick
-  // Connect sends `autoRobot: true` until either the child appears
-  // (success) or a host error for this relay lands in its log
-  // (exhausted) -- see this module's own doc comment ("In-flight
-  // failover visibility") for why the log, not `sessionError`, is what
-  // signals the failure case.
-  const [autoConnecting, setAutoConnecting] = useState(false);
-  const autoConnectLogBaseline = useRef(0);
+
+  // Sprint 13 ticket 004: `relayBridge` covers the two states that have
+  // no other representation -- "connecting" and "failed" -- both of
+  // which can occur only while no child exists yet (`openRobotViaRelay`
+  // clears `relayBridge` the moment the child is synthesized). Looked up
+  // from the live `endpoints` snapshot (`useEndpoints()`) by id, exactly
+  // like `child` above, rather than off the `endpoint` prop directly --
+  // the prop is normally kept fresh by the router-level parent
+  // (`DevicePage.tsx`) re-deriving it from the same snapshot on every
+  // render, but reading it via `endpoints` here makes this page reactive
+  // to a `relayBridge` transition on its own, without depending on that
+  // parent behavior. The `child`-present branch below never reads this;
+  // it stays driven purely by the child's own existence, exactly as
+  // before this ticket.
+  const liveEndpoint = endpoints.find((candidate) => candidate.endpointId === endpoint.endpointId) ?? endpoint;
+  const bridge = child ? undefined : liveEndpoint.relayBridge;
 
   // Sync the connect bar to the live child's own address whenever it
   // appears or changes -- covers both "this page mounted while already
@@ -223,27 +234,6 @@ export function RelayPage({ endpoint }: RelayPageProps) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [child?.viaRelay.robotName, child?.viaRelay.channel, child?.viaRelay.group]);
-
-  // Clear the transient "trying" status on either terminal outcome: the
-  // child appearing (success), or a fresh host-origin log line landing
-  // for this relay since the auto-connect attempt was sent (exhausted --
-  // deviceRegistry.ts's openRobotViaRelay reports failover exhaustion via
-  // emitError, which only reaches this page through its console log, not
-  // through EndpointListEntry.sessionError -- see this module's own doc
-  // comment).
-  useEffect(() => {
-    if (!autoConnecting) {
-      return;
-    }
-    if (child) {
-      setAutoConnecting(false);
-      return;
-    }
-    const newEntries = relayLog.slice(autoConnectLogBaseline.current);
-    if (newEntries.some((entry) => entry.origin === "host")) {
-      setAutoConnecting(false);
-    }
-  }, [autoConnecting, child, relayLog]);
 
   const robotOptions = buildRobotOptions(rememberedRobots, discoveredServices.robots);
 
@@ -278,7 +268,6 @@ export function RelayPage({ endpoint }: RelayPageProps) {
     }
     if (selectedName) {
       writeStoredAddress(selectedName, { channel, group });
-      setAutoConnecting(false);
       send({
         type: "session-open",
         endpointId: endpoint.endpointId,
@@ -289,9 +278,9 @@ export function RelayPage({ endpoint }: RelayPageProps) {
     }
     // No pick: sprint 8 ticket 004's default-failover candidate list,
     // requested over the wire by `autoRobot: true` with no `robotName`
-    // and no `radio` -- see this module's own doc comment.
-    autoConnectLogBaseline.current = relayLog.length;
-    setAutoConnecting(true);
+    // and no `radio` -- see this module's own doc comment. The host
+    // reports the resulting "connecting" state back via
+    // `endpoint.relayBridge`, not any local state set here.
     send({ type: "session-open", endpointId: endpoint.endpointId, autoRobot: true });
   }
 
@@ -367,9 +356,14 @@ export function RelayPage({ endpoint }: RelayPageProps) {
             Defaults to the address derived from the name. The calibration image listens on 55 / 114. Leave the
             robot unpicked and press Connect to try every remembered/discovered robot in turn.
           </p>
-          {autoConnecting && (
+          {bridge?.state === "connecting" && (
             <p className="relay-autoconnecting-status" role="status" data-testid="relay-autoconnecting">
-              Trying remembered robots…
+              {bridge.robotName ? `Connecting to ${bridge.robotName}…` : "Trying remembered robots…"}
+            </p>
+          )}
+          {bridge?.state === "failed" && (
+            <p className="relay-page-alert" role="alert" data-testid="relay-bridge-failed">
+              {bridge.error}
             </p>
           )}
 

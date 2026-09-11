@@ -237,25 +237,55 @@ describe("RelayPage -- not connected", () => {
     ]);
   });
 
-  it("shows a transient 'trying' status while a no-pick Connect is outstanding, cleared once a host error for this relay arrives", () => {
+  it("shows 'Trying remembered robots…' as soon as the host reports relayBridge connecting with no robotName (no-pick attempt)", () => {
     const relay = relayFixture();
     const { el, socket } = mountRelayPage(relay, { rememberedRobots: [rememberedRobotFixture("vevav")] });
 
-    act(() => {
-      connectButton(el).click();
-    });
+    emitEndpoints(socket, [relayFixture({ relayBridge: { state: "connecting" } })]);
+
+    const status = el.querySelector('[data-testid="relay-autoconnecting"]');
+    expect(status).not.toBeNull();
+    expect(status!.getAttribute("role")).toBe("status");
+    expect(status!.textContent).toBe("Trying remembered robots…");
+  });
+
+  it("shows 'Connecting to <name>…' when relayBridge carries a robotName (named-pick attempt)", () => {
+    const relay = relayFixture();
+    const { el, socket } = mountRelayPage(relay, { rememberedRobots: [rememberedRobotFixture("vevav")] });
+
+    emitEndpoints(socket, [relayFixture({ relayBridge: { state: "connecting", robotName: "vevav" } })]);
+
+    const status = el.querySelector('[data-testid="relay-autoconnecting"]');
+    expect(status).not.toBeNull();
+    expect(status!.textContent).toBe("Connecting to vevav…");
+  });
+
+  it("clears the 'trying' status once the child appears (relayBridge absent from the fresh snapshot)", () => {
+    const relay = relayFixture();
+    const { el, socket } = mountRelayPage(relay, { rememberedRobots: [rememberedRobotFixture("vevav")] });
+
+    emitEndpoints(socket, [relayFixture({ relayBridge: { state: "connecting", robotName: "vevav" } })]);
     expect(el.querySelector('[data-testid="relay-autoconnecting"]')).not.toBeNull();
 
-    // deviceRegistry.ts's openRobotViaRelay reports failover exhaustion
-    // via emitError -- WsProvider.appendHostError lands that in this
-    // relay's own console log as an origin: "host" entry, which is what
-    // this page actually watches (see RelayPage.tsx's own doc comment).
-    emitEndpoints(socket, [relay]);
-    act(() => {
-      socket.emitMessage({ type: "error", endpointId: relay.endpointId, message: "gave up on every candidate" });
-    });
+    const child = childFixture();
+    emitEndpoints(socket, [relayFixture({ sessionOpen: false }), child]);
 
     expect(el.querySelector('[data-testid="relay-autoconnecting"]')).toBeNull();
+  });
+
+  it("shows the failure reason from relayBridge.error when relayBridge.state is 'failed', instead of a bare connect bar", () => {
+    const relay = relayFixture();
+    const { el, socket } = mountRelayPage(relay, { rememberedRobots: [rememberedRobotFixture("vevav")] });
+
+    emitEndpoints(socket, [
+      relayFixture({ relayBridge: { state: "failed", robotName: "vevav", error: "gave up on every candidate" } }),
+    ]);
+
+    expect(el.querySelector('[data-testid="relay-autoconnecting"]')).toBeNull();
+    const failed = el.querySelector('[data-testid="relay-bridge-failed"]');
+    expect(failed).not.toBeNull();
+    expect(failed!.getAttribute("role")).toBe("alert");
+    expect(failed!.textContent).toBe("gave up on every candidate");
   });
 
   it("lists discovered-only mbserial names alongside the roster, marked '(on the network)'", () => {

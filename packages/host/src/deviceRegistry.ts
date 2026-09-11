@@ -861,6 +861,23 @@ interface EndpointState {
    * `EndpointListEntry.viaRelay` wire field is unchanged in shape --
    * {@link toEntry} projects it from `address` below only when one
    * exists. */
+  /** Sprint 13 ticket 001/002: mirrors {@link EndpointListEntry.relayBridge}'s
+   * wire shape -- present only on a *relay's own* `EndpointState` (never
+   * on a synthesized child) while that relay has an in-flight or
+   * recently-failed radio-bridging attempt. Set/cleared exclusively by
+   * {@link DeviceRegistry.openRobotViaRelay} -- see that method's own
+   * doc comment for the full set/clear contract and sprint.md (sprint
+   * 013)'s Architecture for the state flow diagram. `toEntry` projects
+   * this onto the wire field the same way it already projects
+   * {@link nameError}/{@link sessionError}. */
+  relayBridge?:
+    | {
+        state: "connecting" | "failed";
+        robotName?: string;
+        triedNames?: string[];
+        error?: string;
+      }
+    | undefined;
   synthesizedRelayTarget?:
     | {
         relayEndpointId: string;
@@ -958,6 +975,14 @@ function toEntry(state: EndpointState): EndpointListEntry {
   }
   if (state.sessionError) {
     entry.sessionError = state.sessionError;
+  }
+  // Sprint 13 ticket 002: project the relay's own in-flight/recently-
+  // failed bridging attempt, present-only-when-set -- mirrors
+  // nameError/sessionError's discipline immediately above. Set/cleared
+  // exclusively by openRobotViaRelay; see EndpointState.relayBridge's
+  // own doc comment.
+  if (state.relayBridge) {
+    entry.relayBridge = state.relayBridge;
   }
   // Sprint 6 ticket 003: project the open session's live `Session`
   // state -- read fresh off `Link.session` on every call, never cached
@@ -2118,6 +2143,30 @@ export class DeviceRegistry {
    * `requestClose`) -- the caller only has a synchronous snapshot from
    * before this task's turn in the queue, which may be stale by the
    * time it actually runs.
+   *
+   * Sprint 13 ticket 002: `relayState.relayBridge` is set/cleared at
+   * every exit from this method from the very first line onward -- this
+   * is a hard invariant, not an incidental detail. The four early
+   * validation returns above (no such device / wrong classification /
+   * no device / no port) reject the attempt via `emitError` alone and
+   * must NOT set `relayBridge` first (there is nothing "in flight" to
+   * represent yet). Once past those, `relayBridge` is set to
+   * `{ state: "connecting", ... }` and emitted immediately -- before
+   * steps (a)-(c)'s teardown/reset/boot-delay even start -- so a client
+   * sees "connecting" the instant a valid Connect is accepted, not once
+   * the multi-second handshake sequence finishes. From there it is
+   * always exactly one of: still `"connecting"` (attempt in progress),
+   * `"failed"` (no candidates, or the coordinator exhausted every
+   * candidate -- set in addition to, not instead of, the existing
+   * `emitError` call), or cleared to `undefined` (the coordinator
+   * connected -- cleared in the same snapshot that introduces the
+   * synthesized child, so the two facts -- child present, bridge no
+   * longer in flight -- are never observed apart). A second Connect
+   * (switching robots, or retrying after a failure) always overwrites
+   * whatever `relayBridge` currently holds with a fresh `"connecting"`
+   * state at the top of the next call -- no stale value survives a new
+   * attempt. See sprint.md (sprint 013) Architecture's state-flow
+   * diagram for the full picture.
    */
   private async openRobotViaRelay(
     relayEndpointId: string,
@@ -2150,6 +2199,19 @@ export class DeviceRegistry {
       this.emitError(relayEndpointId, `no serial port available for relay ${relayEndpointId}`);
       return;
     }
+
+    // Sprint 13 ticket 002: set "connecting" and emit BEFORE any of
+    // steps (a)-(c)'s teardown/reset/boot-delay -- see this method's own
+    // doc comment for why this goes first, and sprint.md's Design
+    // Rationale. Overwrites whatever `relayBridge` held before (a prior
+    // "failed", or "connecting" from a still-running earlier attempt
+    // this call is superseding), matching the "switching always
+    // overwrites" invariant.
+    relayState.relayBridge = {
+      state: "connecting",
+      ...(target.robotName !== undefined ? { robotName: target.robotName } : {}),
+    };
+    this.emitDevices();
 
     // (a) Switching robots (or simply reopening): any existing
     // synthesized child for this relay is always torn down and
@@ -2196,11 +2258,16 @@ export class DeviceRegistry {
         : this.buildDefaultFailoverCandidates(relayState, relayPortPath);
 
     if (candidates.length === 0) {
-      this.emitError(
-        relayEndpointId,
+      const noCandidatesMessage =
         `no candidate robot names available for default failover on ${relayEndpointId} ` +
-          `-- no remembered robots and no discovered _mbserial._tcp services`,
-      );
+        `-- no remembered robots and no discovered _mbserial._tcp services`;
+      // Sprint 13 ticket 002: `relayBridge` set BEFORE connectAndIdentify
+      // reopens the relay's own session below -- that call mutates
+      // `relayState` in place and calls its own emitDevices(), so the
+      // "failed" value set here is what that emit (and any emit before
+      // it) carries, never clobbered.
+      relayState.relayBridge = { state: "failed", error: noCandidatesMessage };
+      this.emitError(relayEndpointId, noCandidatesMessage);
       await this.connectAndIdentify(relayState);
       return;
     }
@@ -2211,12 +2278,20 @@ export class DeviceRegistry {
     const result = await this.relayConnectionCoordinator.connect(candidates);
 
     if (result.outcome === "exhausted") {
-      const triedNames = candidates.map((c) => c.name).join(", ");
-      this.emitError(
-        relayEndpointId,
-        `no candidate robot answered through ${relayEndpointId} (tried: ${triedNames}) -- ` +
-          `gave up after ${result.failoverTrail.length} attempt(s)`,
-      );
+      const triedNames = candidates.map((c) => c.name);
+      const exhaustedMessage =
+        `no candidate robot answered through ${relayEndpointId} (tried: ${triedNames.join(", ")}) -- ` +
+        `gave up after ${result.failoverTrail.length} attempt(s)`;
+      // Sprint 13 ticket 002: same "set before connectAndIdentify reopens
+      // the relay's own session" ordering as the no-candidates path
+      // above.
+      relayState.relayBridge = {
+        state: "failed",
+        ...(target.robotName !== undefined ? { robotName: target.robotName } : {}),
+        triedNames,
+        error: exhaustedMessage,
+      };
+      this.emitError(relayEndpointId, exhaustedMessage);
       await this.connectAndIdentify(relayState);
       return;
     }
@@ -2271,6 +2346,11 @@ export class DeviceRegistry {
     // identify never records a KnownRobotsStore sighting; see the
     // module doc comment's "Robot-via-relay endpoints" section and
     // maybeRecordKnownRobot's own doc comment for the USB-only scope.
+    // Sprint 13 ticket 002: clear the relay's own in-flight/failed
+    // bridging state in the same snapshot that introduces the child --
+    // never a snapshot with the child present AND a stale
+    // "connecting"/"failed" still on the relay's own entry.
+    relayState.relayBridge = undefined;
     this.emitDevices();
     this.startRobotProbes(synthesizedState);
   }

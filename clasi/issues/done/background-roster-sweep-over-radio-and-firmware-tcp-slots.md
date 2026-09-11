@@ -62,3 +62,7 @@ schedule and the "last checked" bookkeeping, wired into the same
 `KnownRobotsStore` and `DeviceRegistry` seams the WiFi work uses, with
 the front page reading the sighting data it publishes. Item 3 can be
 a small ticket in the same sprint.
+
+## Superseded (2026-09-11)
+
+The host-side work here is redesigned under `docs/design/architecture.md` and split into `rearch-09-relay-lease-idle-state-reset-between-candidates.md` (ownership, idle state) and `rearch-10-relay-sweeper-radio-sightings.md` (the sweep). The "Firmware note" above about unreclaimed TCP client slots remains a robot-firmware item and is not covered by either.

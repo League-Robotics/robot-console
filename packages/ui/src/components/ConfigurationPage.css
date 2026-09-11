@@ -32,3 +32,8 @@
 .configuration-page .calibration-table input:not([type="number"]) {
   width: 14rem;
 }
+
+.configuration-footer {
+  border-top: 1px solid var(--rc-border);
+  padding-top: 0.6rem;
+}

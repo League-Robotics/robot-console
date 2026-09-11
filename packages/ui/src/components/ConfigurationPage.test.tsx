@@ -87,7 +87,7 @@ describe("configurationCode", () => {
     expect(code.split("\n")).toEqual([
       "// tigez configuration",
       "diffDrive.setupRadio(55, 114)  // radio channel, group",
-      `diffDrive.setupWifi("Busboom_Garage", "${MASKED_PASSWORD}")  // password hidden -- tick 'Show the Wi-Fi password' to fill it in`,
+      `diffDrive.setupWifi("Busboom_Garage", "${MASKED_PASSWORD}")  // password not known to this computer -- fill it in`,
       "diffDrive.setWheelCalibration(90.68 * Math.PI / 360)  // wheel diameter 90.68 mm",
     ]);
   });
@@ -101,69 +101,61 @@ describe("configurationCode", () => {
 });
 
 describe("ConfigurationPage", () => {
-  it("asks the host for the network, shows the name-derived radio address, and builds the code block; the password stays masked until revealed", () => {
+  it("asks the host for the network with the password, shows both in the fields, and puts them in the code", () => {
     const { el, socket } = mountPage();
-    expect(sent(socket)).toEqual([{ type: "get-wifi-credentials" }]);
-    act(() => {
-      socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "stored" });
-    });
-    expect(el.querySelector<HTMLInputElement>('[data-testid="configuration-wifi-ssid"]')!.value).toBe("Busboom_Garage");
-    let code = el.querySelector('[data-testid="configuration-code"]')?.textContent ?? "";
-    expect(code).toContain("diffDrive.setupRadio(");
-    expect(code).toContain(`diffDrive.setupWifi("Busboom_Garage", "${MASKED_PASSWORD}")`);
-    expect(el.textContent).not.toContain("hunter2");
-
-    act(() => {
-      const box = el.querySelector<HTMLInputElement>('[data-testid="configuration-reveal-password"]')!;
-      box.click();
-    });
-    expect(sent(socket).at(-1)).toEqual({ type: "get-wifi-credentials", reveal: true });
+    expect(sent(socket)).toEqual([{ type: "get-wifi-credentials", reveal: true }]);
     act(() => {
       socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "stored", password: "hunter2" });
     });
-    code = el.querySelector('[data-testid="configuration-code"]')?.textContent ?? "";
+    expect(el.querySelector<HTMLInputElement>('[data-testid="configuration-wifi-ssid"]')!.value).toBe("Busboom_Garage");
+    expect(el.querySelector<HTMLInputElement>('[data-testid="configuration-wifi-password"]')!.value).toBe("hunter2");
+    const code = el.querySelector('[data-testid="configuration-code"]')?.textContent ?? "";
+    expect(code).toContain("diffDrive.setupRadio(");
     expect(code).toContain('diffDrive.setupWifi("Busboom_Garage", "hunter2")');
   });
 
-  it("saving the radio address writes the console's per-name address and updates the code; a bad channel is refused", () => {
+  it("Save writes the console's per-name radio address and updates the code; a bad channel is refused", () => {
     const { el } = mountPage();
     type(el, '[data-testid="configuration-radio-channel"]', "55");
     type(el, '[data-testid="configuration-radio-group"]', "114");
     act(() => {
-      el.querySelector<HTMLButtonElement>('[data-testid="configuration-radio-save"]')!.click();
+      el.querySelector<HTMLButtonElement>('[data-testid="configuration-save"]')!.click();
     });
     expect(JSON.parse(window.localStorage.getItem("robot-console:relay-address:tigez") ?? "{}")).toEqual({ channel: 55, group: 114 });
     expect(el.querySelector('[data-testid="configuration-code"]')?.textContent).toContain("diffDrive.setupRadio(55, 114)");
     type(el, '[data-testid="configuration-radio-channel"]', "200");
     act(() => {
-      el.querySelector<HTMLButtonElement>('[data-testid="configuration-radio-save"]')!.click();
+      el.querySelector<HTMLButtonElement>('[data-testid="configuration-save"]')!.click();
     });
     expect(el.querySelector('[data-testid="configuration-radio-error"]')?.textContent).toContain("0 to 83");
   });
 
-  it("saving Wi-Fi sends set-wifi-credentials, Write to robot sends provision-wifi, and a name with a space is refused", () => {
+  it("Save sends set-wifi-credentials, Write to robot sends provision-wifi, and a name with a space is refused", () => {
     const { el, socket } = mountPage();
     act(() => {
       socket.emitMessage({ type: "wifi-credentials", ssid: null, hasPassword: false, source: "none" });
     });
-    expect(el.querySelector<HTMLButtonElement>('[data-testid="configuration-wifi-write"]')!.disabled).toBe(true);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.disabled).toBe(true);
     type(el, '[data-testid="configuration-wifi-ssid"]', "Busboom Mesh");
     type(el, '[data-testid="configuration-wifi-password"]', "pw");
     act(() => {
-      el.querySelector<HTMLButtonElement>('[data-testid="configuration-wifi-save"]')!.click();
+      el.querySelector<HTMLButtonElement>('[data-testid="configuration-save"]')!.click();
     });
     expect(el.querySelector('[data-testid="configuration-wifi-error"]')?.textContent).toContain("spaces");
 
     type(el, '[data-testid="configuration-wifi-ssid"]', "Busboom_Garage");
     act(() => {
-      el.querySelector<HTMLButtonElement>('[data-testid="configuration-wifi-save"]')!.click();
+      el.querySelector<HTMLButtonElement>('[data-testid="configuration-save"]')!.click();
     });
-    expect(sent(socket).at(-1)).toEqual({ type: "set-wifi-credentials", ssid: "Busboom_Garage", password: "pw" });
+    expect(sent(socket).slice(-2)).toEqual([
+      { type: "set-wifi-credentials", ssid: "Busboom_Garage", password: "pw" },
+      { type: "get-wifi-credentials", reveal: true },
+    ]);
     act(() => {
       socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "stored" });
     });
     act(() => {
-      el.querySelector<HTMLButtonElement>('[data-testid="configuration-wifi-write"]')!.click();
+      el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.click();
     });
     expect(sent(socket).at(-1)).toEqual({ type: "provision-wifi", endpointId: "usb-ROBOT-A", slot: 0 });
   });

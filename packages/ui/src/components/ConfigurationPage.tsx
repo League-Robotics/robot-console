@@ -7,10 +7,11 @@
  *  - **Calibration**: the same per-robot state the Calibration tab's
  *    wizards fill (`CalibrationPage`'s `readCalibrationState`), editable
  *    here too.
- *  - **Wi-Fi**: the host's stored network (`get-wifi-credentials`). The
- *    code line uses the extension's `diffDrive.setupWifi(ssid,
- *    password)`. The password is masked in the code until the student
- *    asks for it, which fetches it from the host for this page only.
+ *  - **Wi-Fi**: the host's stored network, asked for with `reveal:
+ *    true` so this page shows the password in the field and in the
+ *    code line (`diffDrive.setupWifi(ssid, password)`) -- stakeholder
+ *    direction: everybody in the room knows it. (The header's Set Wi-Fi
+ *    dialog is the only other place it appears.)
  *  - **Radio**: the console's per-name relay address (the same stored
  *    channel/group `RelayPage` reads), emitted as
  *    `diffDrive.setupRadio(channel, group)`.
@@ -56,7 +57,7 @@ export function configurationCode(input: ConfigurationCodeInput): string {
     const password = input.wifi.password === undefined ? MASKED_PASSWORD : input.wifi.password;
     lines.push(
       `diffDrive.setupWifi(${jsString(input.wifi.ssid)}, ${jsString(password)})` +
-        (input.wifi.password === undefined ? "  // password hidden -- tick 'Show the Wi-Fi password' to fill it in" : ""),
+        (input.wifi.password === undefined ? "  // password not known to this computer -- fill it in" : ""),
     );
   }
   const calibration = calibrationCode(input.calibration, input.robotName);
@@ -100,16 +101,16 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
   );
   const [radioDraft, setRadioDraft] = useState({ channel: String(radio.channel), group: String(radio.group) });
   const [radioError, setRadioError] = useState<string | null>(null);
-  function saveRadio(): void {
+  function saveRadio(): boolean {
     const channel = Number(radioDraft.channel);
     const group = Number(radioDraft.group);
     if (!Number.isInteger(channel) || channel < 0 || channel > 83) {
       setRadioError("Channel must be a whole number from 0 to 83.");
-      return;
+      return false;
     }
     if (!Number.isInteger(group) || group < 0 || group > 255) {
       setRadioError("Group must be a whole number from 0 to 255.");
-      return;
+      return false;
     }
     setRadioError(null);
     const next = { channel, group };
@@ -117,6 +118,7 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
     if (device.name) {
       writeStoredAddress(device.name, next);
     }
+    return true;
   }
 
   // Wi-Fi -- the host's stored network. Asked for once the socket is
@@ -124,47 +126,55 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
   const status = useConnectionStatus();
   useEffect(() => {
     if (status === "open") {
-      send({ type: "get-wifi-credentials" });
+      send({ type: "get-wifi-credentials", reveal: true });
     }
   }, [status, send]);
   const [wifiDraft, setWifiDraft] = useState({ ssid: "", password: "" });
   const [wifiSeeded, setWifiSeeded] = useState(false);
   useEffect(() => {
     if (stored && !wifiSeeded) {
-      setWifiDraft({ ssid: stored.ssid ?? "", password: "" });
+      setWifiDraft({ ssid: stored.ssid ?? "", password: stored.password ?? "" });
       setWifiSeeded(true);
     }
   }, [stored, wifiSeeded]);
   const [wifiError, setWifiError] = useState<string | null>(null);
-  const [showPassword, setShowPassword] = useState(false);
-  function saveWifi(): void {
+  function saveWifi(): boolean {
     const ssid = wifiDraft.ssid.trim();
+    if (ssid === "" && wifiDraft.password === "" && !stored?.ssid) {
+      // Nothing entered and nothing held: not an error, just nothing to save.
+      setWifiError(null);
+      return true;
+    }
     const problem = validateWifiInput(ssid, wifiDraft.password, stored?.hasPassword === true && stored.ssid === ssid);
     if (problem) {
       setWifiError(problem);
-      return;
+      return false;
     }
     setWifiError(null);
     send({ type: "set-wifi-credentials", ssid, password: wifiDraft.password });
-    setWifiDraft({ ssid, password: "" });
-    if (showPassword) {
-      send({ type: "get-wifi-credentials", reveal: true });
-    }
-  }
-  function toggleShowPassword(next: boolean): void {
-    setShowPassword(next);
-    send(next ? { type: "get-wifi-credentials", reveal: true } : { type: "get-wifi-credentials" });
+    send({ type: "get-wifi-credentials", reveal: true });
+    return true;
   }
 
+  const [savedNote, setSavedNote] = useState<string | null>(null);
+  function saveAll(): void {
+    const radioOk = saveRadio();
+    const wifiOk = saveWifi();
+    writeCalibrationState(robotName, calibration);
+    setSavedNote(radioOk && wifiOk ? "Saved." : null);
+    if (radioOk && wifiOk) {
+      setTimeout(() => setSavedNote(null), 2000);
+    }
+  }
   const code = useMemo(
     () =>
       configurationCode({
         robotName,
         radio,
-        wifi: stored?.ssid ? { ssid: stored.ssid, password: showPassword ? stored.password : undefined } : undefined,
+        wifi: stored?.ssid ? { ssid: stored.ssid, password: stored.password } : undefined,
         calibration,
       }),
-    [robotName, radio, stored, showPassword, calibration],
+    [robotName, radio, stored, calibration],
   );
   const [copied, setCopied] = useState(false);
   function copy(): void {
@@ -263,10 +273,9 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
                   <input
                     id="configuration-wifi-password"
                     data-testid="configuration-wifi-password"
-                    type="password"
+                    type="text"
                     value={wifiDraft.password}
                     autoComplete="off"
-                    placeholder={stored?.hasPassword && stored.ssid === wifiDraft.ssid.trim() ? "saved — leave blank to keep" : ""}
                     onChange={(event) => setWifiDraft((draft) => ({ ...draft, password: event.target.value }))}
                   />
                 </td>
@@ -278,25 +287,6 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
               {wifiError}
             </p>
           )}
-          {provisionResult && (
-            <p className={provisionResult.ok ? "credentials-result credentials-result-ok" : "credentials-error"} role="status">
-              {provisionResult.message}
-            </p>
-          )}
-          <div className="configuration-actions">
-            <button type="button" data-testid="configuration-wifi-save" onClick={saveWifi}>
-              Save
-            </button>
-            <button
-              type="button"
-              data-testid="configuration-wifi-write"
-              disabled={!device.sessionOpen || !stored?.ssid}
-              title={device.sessionOpen ? "Write the saved network to the robot's credential slot 0" : "Open a link to the robot first"}
-              onClick={() => send({ type: "provision-wifi", endpointId: device.endpointId, slot: 0 })}
-            >
-              Write to robot
-            </button>
-          </div>
           <p className="credentials-note">
             {stored?.source === "stored"
               ? "Saved on this computer."
@@ -345,14 +335,54 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
               {radioError}
             </p>
           )}
-          <div className="configuration-actions">
-            <button type="button" data-testid="configuration-radio-save" onClick={saveRadio}>
-              Save
-            </button>
-          </div>
           <p className="credentials-note">
             Also the address the console uses for {robotName} through a relay. The robot's own radio address comes
             from this line in its program.
+          </p>
+        </div>
+
+        {/* One Save and one Write to robot for the whole page (stakeholder
+            direction). Save keeps every value on this computer (the host
+            for Wi-Fi, this browser for calibration and radio); Write to
+            robot sends the Wi-Fi network to the robot's credential slot --
+            the one value the robot itself stores. Calibration and radio
+            reach the robot through the code on the right. */}
+        <div className="robot-page-panel configuration-footer" aria-label="Configuration actions">
+          {provisionResult && (
+            <p
+              className={provisionResult.ok ? "credentials-result credentials-result-ok" : "credentials-error"}
+              role="status"
+              data-testid="configuration-write-result"
+            >
+              {provisionResult.message}
+            </p>
+          )}
+          {savedNote && (
+            <p className="credentials-result credentials-result-ok" role="status" data-testid="configuration-saved">
+              {savedNote}
+            </p>
+          )}
+          <div className="configuration-actions">
+            <button type="button" className="calibration-code-copy" data-testid="configuration-save" onClick={saveAll}>
+              Save
+            </button>
+            <button
+              type="button"
+              data-testid="configuration-write"
+              disabled={!device.sessionOpen || !stored?.ssid}
+              title={
+                device.sessionOpen
+                  ? "Write the saved Wi-Fi network to the robot's credential slot 0"
+                  : "Open a link to the robot first"
+              }
+              onClick={() => send({ type: "provision-wifi", endpointId: device.endpointId, slot: 0 })}
+            >
+              Write to robot
+            </button>
+          </div>
+          <p className="credentials-note">
+            Write to robot stores the Wi-Fi network on the robot itself; calibration and radio settings reach it
+            through the code on the right.
           </p>
         </div>
       </div>
@@ -373,17 +403,6 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
                 <button type="button" className="calibration-code-copy" data-testid="configuration-code-copy" onClick={copy}>
                   {copied ? "Copied" : "Copy"}
                 </button>
-                {stored?.ssid && (
-                  <label className="configuration-reveal">
-                    <input
-                      type="checkbox"
-                      data-testid="configuration-reveal-password"
-                      checked={showPassword}
-                      onChange={(event) => toggleShowPassword(event.target.checked)}
-                    />{" "}
-                    Show the Wi-Fi password in the code
-                  </label>
-                )}
               </div>
             </>
           )}

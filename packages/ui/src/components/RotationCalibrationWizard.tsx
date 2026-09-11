@@ -6,7 +6,7 @@
  * module's own doc comment for the full rationale this one shares:
  * `FUNCS`-gated availability, `RUN`-dispatch on Go, progress derived
  * from the endpoint's own rx log via `CalibrationReport.parseCalibrationLine`,
- * the run's phase recomputed from `log.slice(runStartIndex)` on every
+ * the run's phase recomputed from `log.filter(id >= runStartId)` on every
  * render rather than accumulated as incremental state) — per
  * `sprint.md`'s Step 3 module table, this wizard "differs from the
  * distance wizard mainly in having more distinct pass stages to show
@@ -130,6 +130,13 @@ export function deriveRotationCalibrationRun(
   const stages: RotationCalibrationStageEvents[] = [];
   let current: RotationCalibrationStageEvents | undefined;
   let snippet: string | undefined;
+  // OOP 2026-09-10: over WiFi the firmware drops lines emitted in a
+  // burst, and `CALA:apply` rides in one (slope, measured, derived,
+  // apply, check -- five lines back to back). The result is already on
+  // the wire one line earlier, in `CALA:derived slip=<n> ...`, and the
+  // apply line only restates that same number, so it is reconstructed
+  // from there when the apply line never shows up.
+  let derivedSnippet: string | undefined;
 
   for (const entry of entries) {
     if (entry.direction !== "rx") {
@@ -137,6 +144,12 @@ export function deriveRotationCalibrationRun(
     }
     const event = parseCalibrationLine("CALA", entry.line);
     if (event) {
+      if (event.kind === "progress") {
+        const slip = /^derived slip=\s*(-?\d+(?:\.\d+)?)/.exec(event.text.trim());
+        if (slip) {
+          derivedSnippet = `diffDrive.setConfigValue(ConfigField.RotationalSlip, ${slip[1]})`;
+        }
+      }
       if (event.kind === "apply") {
         // The result is now known, but the routine is not done talking
         // -- its own re-verification passes still follow on the wire.
@@ -166,8 +179,9 @@ export function deriveRotationCalibrationRun(
       return { kind: "run-error", leadingEvents, stages };
     }
   }
-  if (snippet !== undefined) {
-    return { kind: "succeeded", leadingEvents, stages, snippet };
+  const result = snippet ?? derivedSnippet;
+  if (result !== undefined) {
+    return { kind: "succeeded", leadingEvents, stages, snippet: result };
   }
   return { kind: "running", leadingEvents, stages };
 }
@@ -196,14 +210,29 @@ export function RotationCalibrationWizard({ device }: RotationCalibrationWizardP
     }
   }, [linkOpen, endpointId, sendCommand]);
 
-  const [runStartIndex, setRunStartIndex] = useState<number | undefined>(undefined);
-
-  const run = useMemo<RotationCalibrationRun | undefined>(() => {
-    if (runStartIndex === undefined) {
+  // OOP 2026-09-10: the run's window is anchored on the log entry *id*
+  // minted at Go, not an array index. `useEndpointLog` is a bounded
+  // ring (MAX_LINES_PER_DEVICE) trimmed from the front, so in a tab
+  // that has been open a while an index-based window slides and the
+  // terminal `apply` line scrolls straight out of it -- the
+  // stakeholder's "lots of details, then no code" report.
+  const [runStartId, setRunStartId] = useState<number | undefined>(undefined);
+  const derived = useMemo<RotationCalibrationRun | undefined>(() => {
+    if (runStartId === undefined) {
       return undefined;
     }
-    return deriveRotationCalibrationRun(log.slice(runStartIndex));
-  }, [log, runStartIndex]);
+    return deriveRotationCalibrationRun(log.filter((entry) => entry.id >= runStartId));
+  }, [log, runStartId]);
+
+  // Belt and braces: once a run has succeeded, keep that result even if
+  // the ring later evicts the lines it was derived from. Cleared by Go.
+  const latchedRef = useRef<{ startId: number; run: RotationCalibrationRun } | undefined>(undefined);
+  if (derived?.kind === "succeeded" && runStartId !== undefined) {
+    latchedRef.current = { startId: runStartId, run: derived };
+  }
+  const latched = latchedRef.current;
+  const run =
+    derived?.kind === "running" && latched && latched.startId === runStartId ? latched.run : derived;
 
   const goDisabled = !linkOpen || !available || run?.kind === "running";
 
@@ -211,7 +240,8 @@ export function RotationCalibrationWizard({ device }: RotationCalibrationWizardP
     if (goDisabled) {
       return;
     }
-    setRunStartIndex(log.length);
+    const last = log[log.length - 1];
+    setRunStartId(last ? last.id + 1 : 0);
     sendCommand(endpointId, "RUN", ["cala"]);
   }
 

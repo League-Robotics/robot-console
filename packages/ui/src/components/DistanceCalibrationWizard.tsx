@@ -36,9 +36,9 @@
  *    rendered as a third, distinct terminal state so it is never
  *    confused with a `CALX:fail` line or with "unavailable".
  *  - **The run's own log window is derived, not accumulated as
- *    incremental state**: `runStartIndex` records `log.length` at the
+ *    incremental state**: `runStartId` records the next log entry id at the
  *    moment Go was pressed, and the run's current phase is recomputed
- *    from `log.slice(runStartIndex)` on every render (`useMemo`) --
+ *    from `log.filter(id >= runStartId)` on every render (`useMemo`) --
  *    mirroring `CommandStrip`'s own `discoveredNames` derivation from
  *    `log` rather than separately-mutated state, so a cleared log or a
  *    second Go press both fall out of the same derivation with no extra
@@ -79,6 +79,12 @@ export function deriveDistanceCalibrationRun(
   entries: readonly { direction: "tx" | "rx"; line: string }[],
 ): DistanceCalibrationRun {
   let events: string[] = [];
+  // OOP 2026-09-10: over WiFi the firmware drops lines emitted in a
+  // burst, and `CALX:apply` is the last of four (measured, calib,
+  // diameter, apply). The mm-per-degree value the apply line would
+  // carry is already in `CALX:calib=<n> mm/deg`, so the result is
+  // reconstructed from there when the apply line never shows up.
+  let derivedSnippet: string | undefined;
   for (const entry of entries) {
     if (entry.direction !== "rx") {
       continue;
@@ -91,12 +97,21 @@ export function deriveDistanceCalibrationRun(
       if (event.kind === "fail") {
         return { kind: "failed", events, reason: event.reason };
       }
+      const calib = /^calib=\s*(-?\d+(?:\.\d+)?)/.exec(event.text.trim());
+      if (calib) {
+        derivedSnippet = `diffDrive.setWheelCalibration(${calib[1]})`;
+      }
       events = [...events, event.text];
       continue;
     }
     if (RUN_ERR_REPLY_PATTERN.test(entry.line.trim())) {
       return { kind: "run-error", events };
     }
+  }
+  if (derivedSnippet !== undefined && events.some((text) => /^diameter=/.test(text.trim()))) {
+    // Both result lines arrived but the apply line did not -- the run
+    // is complete as far as the answer goes.
+    return { kind: "succeeded", events, snippet: derivedSnippet };
   }
   return { kind: "running", events };
 }
@@ -172,14 +187,29 @@ export function DistanceCalibrationWizard({ device }: DistanceCalibrationWizardP
     }
   }, [linkOpen, endpointId, sendCommand]);
 
-  const [runStartIndex, setRunStartIndex] = useState<number | undefined>(undefined);
-
-  const run = useMemo<DistanceCalibrationRun | undefined>(() => {
-    if (runStartIndex === undefined) {
+  // OOP 2026-09-10: the run's window is anchored on the log entry *id*
+  // minted at Go, not an array index. `useEndpointLog` is a bounded
+  // ring (MAX_LINES_PER_DEVICE) trimmed from the front, so in a tab
+  // that has been open a while an index-based window slides and the
+  // terminal `apply` line scrolls straight out of it -- the
+  // stakeholder's "lots of details, then no code" report.
+  const [runStartId, setRunStartId] = useState<number | undefined>(undefined);
+  const derived = useMemo<DistanceCalibrationRun | undefined>(() => {
+    if (runStartId === undefined) {
       return undefined;
     }
-    return deriveDistanceCalibrationRun(log.slice(runStartIndex));
-  }, [log, runStartIndex]);
+    return deriveDistanceCalibrationRun(log.filter((entry) => entry.id >= runStartId));
+  }, [log, runStartId]);
+
+  // Belt and braces: once a run has succeeded, keep that result even if
+  // the ring later evicts the lines it was derived from. Cleared by Go.
+  const latchedRef = useRef<{ startId: number; run: DistanceCalibrationRun } | undefined>(undefined);
+  if (derived?.kind === "succeeded" && runStartId !== undefined) {
+    latchedRef.current = { startId: runStartId, run: derived };
+  }
+  const latched = latchedRef.current;
+  const run =
+    derived?.kind === "running" && latched && latched.startId === runStartId ? latched.run : derived;
 
   const goDisabled = !linkOpen || !available || run?.kind === "running";
 
@@ -187,7 +217,8 @@ export function DistanceCalibrationWizard({ device }: DistanceCalibrationWizardP
     if (goDisabled) {
       return;
     }
-    setRunStartIndex(log.length);
+    const last = log[log.length - 1];
+    setRunStartId(last ? last.id + 1 : 0);
     sendCommand(endpointId, "RUN", ["calx"]);
   }
 

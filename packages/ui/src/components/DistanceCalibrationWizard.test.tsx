@@ -293,6 +293,40 @@ describe("DistanceCalibrationWizard wheel diameter derivation (OOP 2026-09-10)",
   });
 });
 
+describe("DistanceCalibrationWizard with the apply line dropped over WiFi (OOP 2026-09-10)", () => {
+  it("reaches the result from CALX:calib + CALX:diameter when CALX:apply never arrives", () => {
+    const { el, socket } = mountWizard(baseDevice([{ name: "calx" }]));
+    clickGo(el);
+    emitLine(socket, "CALX:begin true=90cm baseline=0.7878mm/deg");
+    emitLine(socket, "CALX:measured=89.61cm true=90cm error=-0.39cm");
+    emitLine(socket, "CALX:calib=0.7912 mm/deg  (was 0.7878)");
+    expect(el.querySelector('[data-testid="distance-calibration-snippet"]')).toBeNull();
+    emitLine(socket, "CALX:diameter=90.68 mm");
+    expect(el.querySelector('[data-testid="distance-calibration-diameter"]')?.textContent).toBe("Wheel diameter: 90.68 mm (was 90.28 mm)");
+    expect(el.querySelector('[data-testid="distance-calibration-snippet"]')?.textContent).toBe(
+      "diffDrive.setWheelCalibration(90.68 * Math.PI / 360)",
+    );
+  });
+});
+
+describe("DistanceCalibrationWizard in a long-lived tab (OOP 2026-09-10 regression)", () => {
+  it("still reaches the result when the log ring was already full at Go", () => {
+    const { el, socket } = mountWizard(baseDevice([{ name: "calx" }]));
+    act(() => {
+      for (let i = 0; i < 520; i += 1) {
+        socket.emitMessage({ type: "line", endpointId: "usb-ROBOT-A", direction: "rx", line: `status ready=1 cyc=${i}` });
+      }
+    });
+    clickGo(el);
+    emitLine(socket, "CALX:begin true=90cm baseline=0.7878mm/deg");
+    emitLine(socket, "CALX:diameter=90.68 mm");
+    emitLine(socket, "CALX:apply diffDrive.setWheelCalibration(0.7912)");
+    expect(el.querySelector('[data-testid="distance-calibration-snippet"]')?.textContent).toBe(
+      "diffDrive.setWheelCalibration(90.68 * Math.PI / 360)",
+    );
+  });
+});
+
 describe("DistanceCalibrationWizard regression: no nudge/beam-pointer UI", () => {
   it("never renders a nudge control or beam-pointer affordance in any state", () => {
     const { el, socket } = mountWizard(baseDevice([{ name: "calx" }]));

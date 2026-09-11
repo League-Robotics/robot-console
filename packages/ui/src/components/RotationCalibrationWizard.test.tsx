@@ -465,6 +465,75 @@ describe("RotationCalibrationWizard terminal states", () => {
   });
 });
 
+describe("RotationCalibrationWizard with the apply line dropped over WiFi (OOP 2026-09-10)", () => {
+  it("reconstructs the snippet from CALA:derived when CALA:apply and the check marker never arrive (live gopiv capture)", () => {
+    const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
+    clickGo(el);
+    for (const line of [
+      "CALA:begin track=11.5cm slip=0.952 b=12.08cm",
+      "CALA:pass clockwise",
+      "CALA:armed at 2.8deg",
+      "CALA:centring scatter=21.1deg  HIGH -- b reads low, re-centre",
+      "CALA:pass counter-clockwise",
+      "CALA:centring scatter=11.3deg",
+      "CALA:slope cw=0.7693 ccw=0.6945 gap=26.9deg/turn",
+      "CALA:measured b=8.84cm  (anchor was 12.08)",
+      "CALA:derived slip=1.301 = track 11.5 / b 8.84",
+      // apply + "check clockwise" dropped by the WiFi module here
+      "CALA:armed at 4deg",
+    ]) {
+      emitLine(socket, line);
+    }
+    expect(el.querySelector('[data-testid="rotation-calibration-snippet"]')?.textContent).toBe(
+      "diffDrive.setConfigValue(ConfigField.RotationalSlip, 1.301)",
+    );
+    // A later fail during the check still overrides it.
+    emitLine(socket, "CALA:fail gap 148deg before 270 -- missed an arm, re-centre the robot");
+    expect(el.querySelector('[data-testid="rotation-calibration-snippet"]')).toBeNull();
+    expect(el.querySelector('[data-testid="rotation-calibration-failed"]')?.textContent).toContain("re-centre the robot");
+  });
+
+  it("prefers the real apply line when it does arrive", () => {
+    expect(
+      deriveRotationCalibrationRun([
+        { direction: "rx", line: "CALA:derived slip=1.301 = track 11.5 / b 8.84" },
+        { direction: "rx", line: "CALA:apply diffDrive.setConfigValue(ConfigField.RotationalSlip, 1.302)" },
+      ]),
+    ).toMatchObject({ kind: "succeeded", snippet: "diffDrive.setConfigValue(ConfigField.RotationalSlip, 1.302)" });
+  });
+});
+
+describe("RotationCalibrationWizard in a long-lived tab (OOP 2026-09-10 regression)", () => {
+  it("still reaches the result when the log ring was already full at Go and keeps filling during the run", () => {
+    const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
+    // A tab open for hours: the ring is at capacity before Go.
+    act(() => {
+      for (let i = 0; i < 520; i += 1) {
+        socket.emitMessage({ type: "line", endpointId: "usb-ROBOT-A", direction: "rx", line: `status ready=1 cyc=${i}` });
+      }
+    });
+    clickGo(el);
+    emitLine(socket, "CALA:begin track=11.5cm slip=0.952 b=12.08cm");
+    emitLine(socket, "CALA:pass clockwise");
+    emitLine(socket, "CALA:pass counter-clockwise");
+    emitLine(socket, "CALA:apply diffDrive.setConfigValue(ConfigField.RotationalSlip, 0.957)");
+    emitLine(socket, "CALA:check clockwise");
+    // Plenty more traffic after the apply line -- enough to push every
+    // run line out of an index-based window.
+    act(() => {
+      for (let i = 0; i < 600; i += 1) {
+        socket.emitMessage({ type: "line", endpointId: "usb-ROBOT-A", direction: "rx", line: `status ready=1 cyc=${1000 + i}` });
+      }
+    });
+    emitLine(socket, "CALA:check counter-clockwise");
+    emitLine(socket, "CALA:error cw=0.1deg ccw=-0.2deg per turn");
+
+    const snippet = el.querySelector('[data-testid="rotation-calibration-snippet"]');
+    expect(snippet).not.toBeNull();
+    expect(snippet!.textContent).toBe("diffDrive.setConfigValue(ConfigField.RotationalSlip, 0.957)");
+  });
+});
+
 describe("RotationCalibrationWizard regression: no nudge/beam-pointer UI", () => {
   it("never renders a nudge control or beam-pointer affordance in any state", () => {
     const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));

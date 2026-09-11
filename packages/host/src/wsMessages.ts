@@ -362,6 +362,32 @@ export interface EndpointListEntry {
    * candidate tried already succeeded. Present under the exact same
    * condition as {@link addressSource}. */
   failoverTrail?: FailoverTrailEntry[];
+  /** Sprint 13 ticket 001: present only while the relay's own entry has
+   * an in-flight or recently-failed radio-bridging attempt -- absent
+   * once the attempt succeeds (at that point "connected" is derived
+   * from the synthesized `-via-<name>` child endpoint's existence + open
+   * session, not from this field) or once superseded by a later
+   * attempt. Mirrors {@link sessionError}'s present-only-when-relevant
+   * discipline. See `deviceRegistry.ts`'s `openRobotViaRelay` for where
+   * this is set and cleared, and `sprint.md` (sprint 013) Architecture
+   * for the full state flow (Idle/Connecting/Connected/Failed). */
+  relayBridge?: {
+    state: "connecting" | "failed";
+    /** The robot name the attempt is/was targeting. Absent for a
+     * no-pick default-failover attempt where the eventual candidate
+     * name isn't known yet (see sprint 013 sprint.md, Open
+     * Questions). */
+    robotName?: string;
+    /** Every candidate name considered for this attempt, in order. Only
+     * populated once known -- see sprint.md's Open Questions for when
+     * ticket 002 populates this (expected: only at `state: "failed"`,
+     * not during `"connecting"`). */
+    triedNames?: string[];
+    /** Present only when `state === "failed"` -- the same message text
+     * `openRobotViaRelay` already builds for `emitError`, reused
+     * verbatim (see sprint.md Open Questions: one message, not two). */
+    error?: string;
+  };
 }
 
 /** A parsed `status k=v ...` reply (robot firmware `wire_handler.cpp`

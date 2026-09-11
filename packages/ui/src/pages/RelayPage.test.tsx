@@ -237,25 +237,55 @@ describe("RelayPage -- not connected", () => {
     ]);
   });
 
-  it("shows a transient 'trying' status while a no-pick Connect is outstanding, cleared once a host error for this relay arrives", () => {
+  it("shows 'Trying remembered robots…' as soon as the host reports relayBridge connecting with no robotName (no-pick attempt)", () => {
     const relay = relayFixture();
     const { el, socket } = mountRelayPage(relay, { rememberedRobots: [rememberedRobotFixture("vevav")] });
 
-    act(() => {
-      connectButton(el).click();
-    });
+    emitEndpoints(socket, [relayFixture({ relayBridge: { state: "connecting" } })]);
+
+    const status = el.querySelector('[data-testid="relay-autoconnecting"]');
+    expect(status).not.toBeNull();
+    expect(status!.getAttribute("role")).toBe("status");
+    expect(status!.textContent).toBe("Trying remembered robots…");
+  });
+
+  it("shows 'Connecting to <name>…' when relayBridge carries a robotName (named-pick attempt)", () => {
+    const relay = relayFixture();
+    const { el, socket } = mountRelayPage(relay, { rememberedRobots: [rememberedRobotFixture("vevav")] });
+
+    emitEndpoints(socket, [relayFixture({ relayBridge: { state: "connecting", robotName: "vevav" } })]);
+
+    const status = el.querySelector('[data-testid="relay-autoconnecting"]');
+    expect(status).not.toBeNull();
+    expect(status!.textContent).toBe("Connecting to vevav…");
+  });
+
+  it("clears the 'trying' status once the child appears (relayBridge absent from the fresh snapshot)", () => {
+    const relay = relayFixture();
+    const { el, socket } = mountRelayPage(relay, { rememberedRobots: [rememberedRobotFixture("vevav")] });
+
+    emitEndpoints(socket, [relayFixture({ relayBridge: { state: "connecting", robotName: "vevav" } })]);
     expect(el.querySelector('[data-testid="relay-autoconnecting"]')).not.toBeNull();
 
-    // deviceRegistry.ts's openRobotViaRelay reports failover exhaustion
-    // via emitError -- WsProvider.appendHostError lands that in this
-    // relay's own console log as an origin: "host" entry, which is what
-    // this page actually watches (see RelayPage.tsx's own doc comment).
-    emitEndpoints(socket, [relay]);
-    act(() => {
-      socket.emitMessage({ type: "error", endpointId: relay.endpointId, message: "gave up on every candidate" });
-    });
+    const child = childFixture();
+    emitEndpoints(socket, [relayFixture({ sessionOpen: false }), child]);
 
     expect(el.querySelector('[data-testid="relay-autoconnecting"]')).toBeNull();
+  });
+
+  it("shows the failure reason from relayBridge.error when relayBridge.state is 'failed', instead of a bare connect bar", () => {
+    const relay = relayFixture();
+    const { el, socket } = mountRelayPage(relay, { rememberedRobots: [rememberedRobotFixture("vevav")] });
+
+    emitEndpoints(socket, [
+      relayFixture({ relayBridge: { state: "failed", robotName: "vevav", error: "gave up on every candidate" } }),
+    ]);
+
+    expect(el.querySelector('[data-testid="relay-autoconnecting"]')).toBeNull();
+    const failed = el.querySelector('[data-testid="relay-bridge-failed"]');
+    expect(failed).not.toBeNull();
+    expect(failed!.getAttribute("role")).toBe("alert");
+    expect(failed!.textContent).toBe("gave up on every candidate");
   });
 
   it("lists discovered-only mbserial names alongside the roster, marked '(on the network)'", () => {
@@ -426,6 +456,27 @@ describe("RelayPage -- connected", () => {
     const alert = el.querySelector('[role="alert"]');
     expect(alert).not.toBeNull();
     expect(alert!.textContent).toContain("robot did not answer HELLO");
+  });
+
+  it("sprint 013 follow-up (013-004): a child that still exists but whose session has dropped shows 'Connection to <name> lost', not 'Connected to'", () => {
+    const relay = relayFixture({ sessionOpen: false });
+    const droppedChild = childFixture({
+      sessionOpen: false,
+      sessionError: "no reply from vevav -- is it on and listening?",
+    });
+    const { el } = mountRelayPage(relay, { endpoints: [relay, droppedChild] });
+
+    expect(el.querySelector('[data-testid="relay-connected"]')).toBeNull();
+    const lost = el.querySelector('[data-testid="relay-lost"]');
+    expect(lost).not.toBeNull();
+    expect(lost!.textContent).toBe("Connection to vevav lost: no reply from vevav -- is it on and listening?");
+    expect(lost!.classList.contains("relay-page-alert")).toBe(true);
+    expect(lost!.getAttribute("role")).toBe("alert");
+
+    // The connect bar and Disconnect stay available -- the child still exists.
+    expect(el.querySelector('[data-testid="relay-connect"]')).not.toBeNull();
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="relay-connect"]')!.disabled).toBe(false);
+    expect(el.querySelector('[data-testid="relay-disconnect"]')).not.toBeNull();
   });
 
   it("mounts AddressSourceChip above RobotPage, fed from the child's own addressSource/viaRelay/transport", () => {

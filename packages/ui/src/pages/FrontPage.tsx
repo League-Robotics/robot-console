@@ -85,6 +85,38 @@
  * old Devices tab's own split, so the list states can be exercised
  * directly in tests against plain `EndpointListEntry` fixtures.
  *
+ * **Relay-bridging attempt state (sprint 013, 2026-09-11):**
+ * `RelayQuickConnect` additionally reads the relay's own
+ * `EndpointListEntry.relayBridge` field (set/cleared host-side by
+ * `deviceRegistry.ts`'s `openRobotViaRelay`) to show "Connecting to
+ * `<name>`…" (or "Trying remembered robots…" for a no-pick attempt) the
+ * instant a Connect press starts a bridging attempt, and the failure
+ * reason (`relayBridge.error`) once the attempt is exhausted -- both
+ * states render before any `-via-<name>` child endpoint exists, closing
+ * the gap where an exhausted connect only ever reached the console log.
+ * `connectionState` (the relay's own "Linked"/"Unreachable: .../Not
+ * linked" row) reads only `sessionOpen`/`sessionError` and is
+ * deliberately never touched by `relayBridge` -- see `sprint.md` (sprint
+ * 013)'s Architecture, "`relayBridge` is a different field, read
+ * separately". The existing `child?.viaRelay` "Connected to `<name>`"
+ * paragraph takes rendering priority over `relayBridge` if both were
+ * ever present in one snapshot -- this should not happen per ticket
+ * 002's contract, but the card degrades sensibly rather than
+ * double-rendering if it does.
+ *
+ * **"Connected to `<name>`" requires an open session, not just a child
+ * endpoint (sprint 013 follow-up, 013-003/013-004, 2026-09-11):** the
+ * synthesized `-via-<name>` child is not deleted when its radio link
+ * drops -- `deviceRegistry.ts#handleLinkError` leaves it listed with
+ * `sessionOpen: false` and `sessionError` set; only a deliberate
+ * Disconnect/`requestClose`, or the WiFi auto-switch, removes it. So
+ * "Connected to `<name>` on channel X, group Y" renders only when
+ * `child.viaRelay` exists **and** `child.sessionOpen === true`; when the
+ * child exists with `sessionOpen === false`, the card instead renders
+ * "Connection to `<name>` lost" (plus `child.sessionError` when
+ * present), styled like the failed-bridge line, with Switch/Disconnect
+ * still available so the student can retry or clean up.
+ *
  * **Calibration classification (sprint 011 ticket 002):** a
  * `classification.type === "calibration"` card renders an additional
  * `data-testid="calibration-badge"` label ("Calibration robot", plus
@@ -471,11 +503,43 @@ function RelayQuickConnect({
     }
   }, [child?.viaRelay?.robotName]);
 
+  // Sprint 13 ticket 003: `relayBridge` covers the two states that have
+  // no other representation -- "connecting" and "failed" -- both of
+  // which can occur before any `-via-<name>` child exists. `child
+  // ?.viaRelay`'s "Connected to <name>"/"Connection to <name> lost"
+  // paragraph above takes priority if both were somehow present in the
+  // same snapshot (should not happen per ticket 002's contract; this
+  // just avoids double-rendering if it ever does).
+  const bridge = child?.viaRelay ? undefined : relay.relayBridge;
+
+  // Sprint 013 follow-up (013-003/013-004): a child endpoint existing is
+  // not the same as being connected -- `deviceRegistry.ts#handleLinkError`
+  // leaves a dropped radio link's synthesized child listed with
+  // `sessionOpen: false` and `sessionError` set rather than deleting it
+  // (only Disconnect/`requestClose`, or the WiFi auto-switch, removes the
+  // child outright), so "Connected to <name>" must require
+  // `child.sessionOpen === true`, not just the child's existence.
+
   return (
     <div className="device-relay-connect" data-testid={`relay-quick-connect-${relay.endpointId}`}>
-      {child?.viaRelay && (
+      {child?.viaRelay && child.sessionOpen && (
         <p className="device-relay-connected">
           Connected to {child.viaRelay.robotName} on channel {child.viaRelay.channel}, group {child.viaRelay.group}
+        </p>
+      )}
+      {child?.viaRelay && !child.sessionOpen && (
+        <p className="device-relay-failed" data-testid={`relay-quick-lost-${relay.endpointId}`}>
+          Connection to {child.viaRelay.robotName} lost{child.sessionError ? `: ${child.sessionError}` : ""}
+        </p>
+      )}
+      {bridge?.state === "connecting" && (
+        <p className="device-relay-connecting" data-testid={`relay-quick-connecting-${relay.endpointId}`}>
+          {bridge.robotName ? `Connecting to ${bridge.robotName}…` : "Trying remembered robots…"}
+        </p>
+      )}
+      {bridge?.state === "failed" && (
+        <p className="device-relay-failed" data-testid={`relay-quick-failed-${relay.endpointId}`}>
+          {bridge.error}
         </p>
       )}
       <div className="device-relay-connect-row">

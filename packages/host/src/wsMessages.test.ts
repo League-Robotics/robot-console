@@ -242,6 +242,7 @@ describe("EndpointListEntry", () => {
     expect(entry.nameError).toBeUndefined();
     expect(entry.sessionError).toBeUndefined();
     expect(entry.sequencing).toBeUndefined();
+    expect(entry.relayBridge).toBeUndefined();
   });
 
   it("carries a zero-state sequencing field distinguishable from absent", () => {
@@ -260,6 +261,43 @@ describe("EndpointListEntry", () => {
       sequencing: { seq: 0, pendingCount: 0, lastDone: 0, lastDoneReason: "none" },
     };
     expect(entry.sequencing).toEqual({ seq: 0, pendingCount: 0, lastDone: 0, lastDoneReason: "none" });
+  });
+
+  it("carries a connecting relayBridge state (sprint 013 ticket 001)", () => {
+    // Type-level + shape fixture: relayBridge is present only while a
+    // radio-bridging attempt is in flight or recently failed -- see
+    // wsMessages.ts's own doc comment on the field. robotName/triedNames
+    // are optional even within relayBridge (a no-pick default-failover
+    // attempt may not know a name yet).
+    const entry: EndpointListEntry = {
+      endpointId: "usb-SERIAL-A",
+      transport: "usb",
+      resourceKey: "usb-SERIAL-A",
+      classification: { type: "relay", role: "RADIOBRIDGE", commonName: "relay", dialect: "space", evidence: "role" },
+      role: "RADIOBRIDGE",
+      name: "zeguz",
+      sessionOpen: true,
+      relayBridge: { state: "connecting", robotName: "abcde" },
+    };
+    expect(entry.relayBridge).toEqual({ state: "connecting", robotName: "abcde" });
+  });
+
+  it("carries a failed relayBridge state with error and triedNames (sprint 013 ticket 001)", () => {
+    const entry: EndpointListEntry = {
+      endpointId: "usb-SERIAL-A",
+      transport: "usb",
+      resourceKey: "usb-SERIAL-A",
+      classification: { type: "relay", role: "RADIOBRIDGE", commonName: "relay", dialect: "space", evidence: "role" },
+      role: "RADIOBRIDGE",
+      name: "zeguz",
+      sessionOpen: true,
+      relayBridge: { state: "failed", triedNames: ["abcde", "fghij"], error: "no candidates responded" },
+    };
+    expect(entry.relayBridge).toEqual({
+      state: "failed",
+      triedNames: ["abcde", "fghij"],
+      error: "no candidates responded",
+    });
   });
 });
 

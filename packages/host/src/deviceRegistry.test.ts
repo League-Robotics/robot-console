@@ -1991,6 +1991,24 @@ describe("robot-via-relay endpoints (OOP 2026-09-09, coordinator-driven since sp
     };
   }
 
+  /** A `KnownRobotsStore`-shaped fake with no remembered robots at all --
+   * for a deterministic "zero candidates" default-failover attempt.
+   * `DeviceRegistry`'s own default (`new KnownRobotsStore()`, used when
+   * no `knownRobotsStore` option is given at all) reads a real on-disk
+   * file under the developer's actual home/state directory, which may
+   * legitimately contain remembered robots from other work on this
+   * machine -- never a safe "empty" fixture for a test. */
+  function emptyKnownRobotsStore(): KnownRobotsStore {
+    return {
+      list: () => [],
+      get: () => undefined,
+      recordSighting: () => {},
+      forget: () => false,
+      flush: async () => {},
+      isReadOnly: false,
+    } as unknown as KnownRobotsStore;
+  }
+
   /** Attach `order.push(label)` onto an already-constructed `FakeLink`'s
    * `close()`, so a test can observe *when* a specific link was closed
    * relative to other events (`resetOverSwd`, the coordinator's own
@@ -2279,6 +2297,10 @@ describe("robot-via-relay endpoints (OOP 2026-09-09, coordinator-driven since sp
 
     expect(snap.find((e) => e.endpointId === "usb-SERIAL-RELAY")?.sessionOpen).toBe(true);
     expect(usbLinkCreations).toBe(2); // a fresh plain USB link was opened for the relay again.
+    // Sprint 13 ticket 002: relayBridge was already cleared by the prior
+    // success (openRobotViaRelay step 4) -- requestClose is deliberately
+    // unmodified by this ticket, so confirm nothing stale survives it.
+    expect(snap.find((e) => e.endpointId === "usb-SERIAL-RELAY")?.relayBridge).toBeUndefined();
 
     await registry.stop();
   });
@@ -2672,6 +2694,451 @@ describe("robot-via-relay endpoints (OOP 2026-09-09, coordinator-driven since sp
   // this test file) calls a retarget-shaped method on Link -- the
   // Link interface (link/Link.ts) has no such method at all, so this
   // is enforced by the type system, not a runtime check exercised here.
+
+  // -------------------------------------------------------------------
+  // relayBridge state across openRobotViaRelay's connect/reset/handshake
+  // sequence (sprint 13 ticket 002) -- see sprint.md (sprint 013)
+  // Architecture for the state-flow diagram these tests exercise.
+  // -------------------------------------------------------------------
+
+  it('sets relayBridge to "connecting" (with robotName) immediately on a named-pick Connect, before the reset/boot-delay/handshake sequence resolves', async () => {
+    const devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+    const relayUsbLink = new FakeLink(async () => banner());
+    const createLink = usbOnlyCreateLink(relayUsbLink);
+
+    // The coordinator's connect() resolves on a later tick, under this
+    // test's own control -- the assertion below must catch "connecting"
+    // while it is still pending.
+    let releaseCoordinator: (() => void) | undefined;
+    const coordinatorGate = new Promise<void>((resolve) => {
+      releaseCoordinator = resolve;
+    });
+    const robotLink = new FakeLink(async () => robotBanner());
+    const coordinator = fakeCoordinator(async (candidates) => {
+      await coordinatorGate;
+      return {
+        outcome: "connected",
+        link: robotLink,
+        name: candidates[0]!.name,
+        classification: classifyBanner(robotBanner()),
+        failoverTrail: [],
+      };
+    });
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    const openPromise = registry.requestOpen("usb-SERIAL-RELAY", { robotName: "gopiv" });
+
+    const snap = await waitForSnapshot(
+      registry,
+      (s) => s.find((e) => e.endpointId === "usb-SERIAL-RELAY")?.relayBridge?.state === "connecting",
+    );
+    expect(snap.find((e) => e.endpointId === "usb-SERIAL-RELAY")?.relayBridge).toEqual({
+      state: "connecting",
+      robotName: "gopiv",
+    });
+
+    releaseCoordinator?.();
+    await openPromise;
+    await registry.stop();
+  });
+
+  it('sets relayBridge to "connecting" with no robotName on a no-pick Connect', async () => {
+    const devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+    const relayUsbLink = new FakeLink(async () => banner());
+    const createLink = usbOnlyCreateLink(relayUsbLink);
+    // One discovered _mbserial._tcp candidate so the no-pick attempt has
+    // something to hand the coordinator (a zero-candidate no-pick takes
+    // the "failed" branch instead -- covered by a separate test below).
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [{ instanceName: "mmmmm", host: "mmmmm.local", port: 9000 }],
+    });
+
+    let releaseCoordinator: (() => void) | undefined;
+    const coordinatorGate = new Promise<void>((resolve) => {
+      releaseCoordinator = resolve;
+    });
+    const robotLink = new FakeLink(async () => robotBanner({ name: "mmmmm" }));
+    const coordinator = fakeCoordinator(async (candidates) => {
+      await coordinatorGate;
+      return {
+        outcome: "connected",
+        link: robotLink,
+        name: candidates[0]!.name,
+        classification: classifyBanner(robotBanner({ name: "mmmmm" })),
+        failoverTrail: [],
+      };
+    });
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
+      mdnsDiscovery,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    const openPromise = registry.requestOpen("usb-SERIAL-RELAY", {});
+
+    const snap = await waitForSnapshot(
+      registry,
+      (s) => s.find((e) => e.endpointId === "usb-SERIAL-RELAY")?.relayBridge?.state === "connecting",
+    );
+    expect(snap.find((e) => e.endpointId === "usb-SERIAL-RELAY")?.relayBridge).toEqual({ state: "connecting" });
+
+    releaseCoordinator?.();
+    await openPromise;
+    await registry.stop();
+  });
+
+  it("clears relayBridge in the exact same snapshot that introduces the synthesized child on success", async () => {
+    const devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+    const relayUsbLink = new FakeLink(async () => banner());
+    const createLink = usbOnlyCreateLink(relayUsbLink);
+    const robotLink = new FakeLink(async () => robotBanner());
+    const coordinator = fakeCoordinator(async (candidates) => ({
+      outcome: "connected",
+      link: robotLink,
+      name: candidates[0]!.name,
+      classification: classifyBanner(robotBanner()),
+      failoverTrail: [],
+    }));
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    // Watch every emitted snapshot, not just the final one -- the
+    // invariant under test is that no *intermediate* snapshot ever shows
+    // the child present alongside a still-set relayBridge.
+    let sawChildWithStaleBridge = false;
+    const unsubscribe = registry.onDevicesChanged((snap) => {
+      const relayEntry = snap.find((e) => e.endpointId === "usb-SERIAL-RELAY");
+      const childPresent = snap.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv");
+      if (childPresent && relayEntry?.relayBridge !== undefined) {
+        sawChildWithStaleBridge = true;
+      }
+    });
+
+    await registry.requestOpen("usb-SERIAL-RELAY", { robotName: "gopiv" });
+    const snap = await waitForSnapshot(registry, (s) => s.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv"));
+
+    expect(sawChildWithStaleBridge).toBe(false);
+    expect(snap.find((e) => e.endpointId === "usb-SERIAL-RELAY")?.relayBridge).toBeUndefined();
+
+    unsubscribe();
+    await registry.stop();
+  });
+
+  it('no-candidates path sets relayBridge to "failed" with an error message before reopening the relay\'s own session (emitError still fires too)', async () => {
+    const devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+    const relayUsbLink = new FakeLink(async () => banner());
+    const createLink = usbOnlyCreateLink(relayUsbLink);
+    // Explicitly empty knownRobotsStore/mdnsDiscovery -- no remembered
+    // robots, no discovered _mbserial._tcp services -- so a no-pick
+    // Connect has zero candidates.
+    const coordinator = fakeCoordinator(async () => {
+      throw new Error("coordinator must not be called on the no-candidates path");
+    });
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
+      knownRobotsStore: emptyKnownRobotsStore(),
+      mdnsDiscovery: fakeMdnsDiscovery({ relays: [], robots: [] }),
+    });
+    const errors: Array<{ endpointId: string | undefined; message: string }> = [];
+    registry.onError((endpointId, message) => errors.push({ endpointId, message }));
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    await registry.requestOpen("usb-SERIAL-RELAY", {});
+
+    const relayEntry = registry.snapshot().find((e) => e.endpointId === "usb-SERIAL-RELAY");
+    expect(relayEntry?.relayBridge?.state).toBe("failed");
+    expect(relayEntry?.relayBridge?.error).toEqual(expect.stringContaining("no candidate robot names available"));
+    expect(errors).toContainEqual(
+      expect.objectContaining({ endpointId: "usb-SERIAL-RELAY", message: relayEntry?.relayBridge?.error }),
+    );
+
+    await registry.stop();
+  });
+
+  it('exhausted path sets relayBridge to "failed" with triedNames and error before reopening the relay\'s own session (emitError still fires too)', async () => {
+    const devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+    const relayUsbLink = new FakeLink(async () => banner());
+    const createLink = usbOnlyCreateLink(relayUsbLink);
+    const coordinator = fakeCoordinator(async (candidates) => ({
+      outcome: "exhausted",
+      failoverTrail: candidates.map((c) => ({ name: c.name, transport: c.transport, reason: "mock: no reply" })),
+    }));
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
+    });
+    const errors: Array<{ endpointId: string | undefined; message: string }> = [];
+    registry.onError((endpointId, message) => errors.push({ endpointId, message }));
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    await registry.requestOpen("usb-SERIAL-RELAY", { robotName: "gopiv" });
+
+    const relayEntry = registry.snapshot().find((e) => e.endpointId === "usb-SERIAL-RELAY");
+    expect(relayEntry?.relayBridge).toEqual({
+      state: "failed",
+      robotName: "gopiv",
+      triedNames: ["gopiv"],
+      error: expect.stringContaining("gopiv"),
+    });
+    expect(errors).toContainEqual(
+      expect.objectContaining({ endpointId: "usb-SERIAL-RELAY", message: relayEntry?.relayBridge?.error }),
+    );
+
+    await registry.stop();
+  });
+
+  it("a second Connect after a failure overwrites the failed relayBridge with a fresh connecting state (no stale failure lingers)", async () => {
+    const devices = [relayDevice()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("rly01");
+    const relayUsbLink = new FakeLink(async () => banner());
+    const createLink = usbOnlyCreateLink(relayUsbLink);
+
+    let releaseCoordinator: (() => void) | undefined;
+    const coordinatorGate = new Promise<void>((resolve) => {
+      releaseCoordinator = resolve;
+    });
+    const robotLink = new FakeLink(async () => robotBanner());
+    const coordinator = fakeCoordinator(async (candidates) => {
+      await coordinatorGate;
+      return {
+        outcome: "connected",
+        link: robotLink,
+        name: candidates[0]!.name,
+        classification: classifyBanner(robotBanner()),
+        failoverTrail: [],
+      };
+    });
+
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink,
+      resetOverSwd: async () => ({ ok: true }),
+      relayBootDelayMs: 0,
+      relayConnectionCoordinator: coordinator,
+      knownRobotsStore: emptyKnownRobotsStore(),
+      mdnsDiscovery: fakeMdnsDiscovery({ relays: [], robots: [] }),
+    });
+    registry.start();
+    await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+
+    // First attempt: no-pick, zero candidates (explicitly empty
+    // knownRobotsStore/mdnsDiscovery) -- fails immediately.
+    await registry.requestOpen("usb-SERIAL-RELAY", {});
+    expect(registry.snapshot().find((e) => e.endpointId === "usb-SERIAL-RELAY")?.relayBridge?.state).toBe("failed");
+
+    // Second attempt: a named pick, coordinator stalled -- must overwrite
+    // the stale "failed" with a fresh "connecting", not merge with it.
+    const openPromise = registry.requestOpen("usb-SERIAL-RELAY", { robotName: "gopiv" });
+    const snap = await waitForSnapshot(
+      registry,
+      (s) => s.find((e) => e.endpointId === "usb-SERIAL-RELAY")?.relayBridge?.state === "connecting",
+    );
+    expect(snap.find((e) => e.endpointId === "usb-SERIAL-RELAY")?.relayBridge).toEqual({
+      state: "connecting",
+      robotName: "gopiv",
+    });
+
+    releaseCoordinator?.();
+    await openPromise;
+    await registry.stop();
+  });
+
+  describe("early-validation returns never set relayBridge (emitError alone)", () => {
+    it("no such device", async () => {
+      const registry = new DeviceRegistry({
+        statusPollIntervalMs: 0,
+        autoRequestFunctions: false,
+        watcher: fixtureWatcher(() => []),
+        relayConnectionCoordinator: fakeCoordinator(async () => {
+          throw new Error("coordinator must not be called");
+        }),
+      });
+      registry.start();
+      const errors: Array<{ endpointId: string | undefined; message: string }> = [];
+      registry.onError((endpointId, message) => errors.push({ endpointId, message }));
+
+      await registry.requestOpen("no-such-device", { robotName: "x" });
+
+      expect(errors).toContainEqual({ endpointId: "no-such-device", message: "no such device: no-such-device" });
+      expect(registry.snapshot().find((e) => e.endpointId === "no-such-device")).toBeUndefined();
+
+      await registry.stop();
+    });
+
+    it("wrong classification (not a relay)", async () => {
+      const robotDevices = [
+        device({ serialNumber: "SERIAL-BOT", displaySerial: "SHORT-BOT", serialPort: { path: "/dev/cu.usbmodemBOT" } }),
+      ];
+      const watcher = fixtureWatcher(() => robotDevices);
+      const resolveName = async () => namedResult("zeguz");
+      const createLink = () => new FakeLink(async () => robotBanner());
+
+      const registry = new DeviceRegistry({
+        statusPollIntervalMs: 0,
+        autoRequestFunctions: false,
+        watcher,
+        resolveName,
+        createLink,
+        relayConnectionCoordinator: fakeCoordinator(async () => {
+          throw new Error("coordinator must not be called");
+        }),
+      });
+      const errors: Array<{ endpointId: string | undefined; message: string }> = [];
+      registry.onError((endpointId, message) => errors.push({ endpointId, message }));
+      registry.start();
+      await waitForSnapshot(registry, (s) => s[0]?.classification.type === "robot");
+
+      await registry.requestOpen("usb-SERIAL-BOT", { robotName: "someone" });
+
+      expect(errors).toContainEqual(
+        expect.objectContaining({
+          endpointId: "usb-SERIAL-BOT",
+          message: expect.stringContaining("is not classified as a relay"),
+        }),
+      );
+      expect(registry.snapshot().find((e) => e.endpointId === "usb-SERIAL-BOT")?.relayBridge).toBeUndefined();
+
+      await registry.stop();
+    });
+
+    // The remaining two early returns (no physical device / no serial
+    // port) are unreachable through the normal attach/detach flow -- a
+    // relay classification is only ever set after a successful identify
+    // over its own device's port in the first place (see
+    // openRobotViaRelay's own doc comment) -- but both checks are
+    // defensive (device is optional on EndpointState since sprint 10
+    // ticket 003) and still guard relayBridge. Exercised by seeding the
+    // private states map directly, the only way to reach them at all.
+
+    it("no physical device recorded for the relay (defensive)", async () => {
+      const registry = new DeviceRegistry({
+        statusPollIntervalMs: 0,
+        autoRequestFunctions: false,
+        watcher: fixtureWatcher(() => []),
+        relayConnectionCoordinator: fakeCoordinator(async () => {
+          throw new Error("coordinator must not be called");
+        }),
+      });
+      registry.start();
+      const relayId = "usb-SYNTHETIC-RELAY-NO-DEVICE";
+      const states = (registry as unknown as { states: Map<string, unknown> }).states;
+      states.set(relayId, {
+        endpointId: relayId,
+        resourceKey: relayId,
+        name: null,
+        classification: classifyBanner(banner()), // banner()'s default fixture classifies as "relay".
+        sessionOpen: false,
+      });
+      const errors: Array<{ endpointId: string | undefined; message: string }> = [];
+      registry.onError((endpointId, message) => errors.push({ endpointId, message }));
+
+      await registry.requestOpen(relayId, { robotName: "gopiv" });
+
+      expect(errors).toContainEqual(
+        expect.objectContaining({ endpointId: relayId, message: expect.stringContaining("no physical device recorded") }),
+      );
+      expect(registry.snapshot().find((e) => e.endpointId === relayId)?.relayBridge).toBeUndefined();
+
+      await registry.stop();
+    });
+
+    it("no serial port available for the relay (defensive)", async () => {
+      const registry = new DeviceRegistry({
+        statusPollIntervalMs: 0,
+        autoRequestFunctions: false,
+        watcher: fixtureWatcher(() => []),
+        relayConnectionCoordinator: fakeCoordinator(async () => {
+          throw new Error("coordinator must not be called");
+        }),
+      });
+      registry.start();
+      const relayId = "usb-SYNTHETIC-RELAY-NO-PORT";
+      const states = (registry as unknown as { states: Map<string, unknown> }).states;
+      states.set(relayId, {
+        endpointId: relayId,
+        resourceKey: relayId,
+        name: null,
+        classification: classifyBanner(banner()),
+        sessionOpen: false,
+        device: relayDevice({ serialPort: undefined }),
+      });
+      const errors: Array<{ endpointId: string | undefined; message: string }> = [];
+      registry.onError((endpointId, message) => errors.push({ endpointId, message }));
+
+      await registry.requestOpen(relayId, { robotName: "gopiv" });
+
+      expect(errors).toContainEqual(
+        expect.objectContaining({ endpointId: relayId, message: expect.stringContaining("no serial port available") }),
+      );
+      expect(registry.snapshot().find((e) => e.endpointId === relayId)?.relayBridge).toBeUndefined();
+
+      await registry.stop();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -3571,6 +4038,12 @@ describe("Auto-switch radio -> WiFi (sprint 10 ticket 004)", () => {
     expect(snap.some((e) => e.endpointId === "usb-SERIAL-RELAY-via-gopiv")).toBe(false);
     const relayEntry = snap.find((e) => e.endpointId === "usb-SERIAL-RELAY");
     expect(relayEntry).toEqual(expect.objectContaining({ sessionOpen: true, transport: "usb" }));
+    // Sprint 13 ticket 002: relayBridge was already cleared by the prior
+    // success (openRobotViaRelay step 4) that produced the open radio
+    // child this switch starts from -- autoSwitchRadioToWifi is
+    // deliberately unmodified by this ticket, so confirm nothing stale
+    // survives it.
+    expect(relayEntry?.relayBridge).toBeUndefined();
     const wifiEntry = snap.find((e) => e.endpointId === "wifi-gopiv");
     expect(wifiEntry).toEqual(
       expect.objectContaining({

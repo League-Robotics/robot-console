@@ -21,11 +21,11 @@
   font-size: 0.9rem;
 }
 
-/* Sprint 8 ticket 005 (SUC-005): transient status while a no-pick
- * Connect's default-failover attempt is outstanding -- see
- * RelayPage.tsx's own doc comment ("In-flight failover visibility").
- * Styled like `.relay-page-hint` (muted, not alarming) since this is a
- * normal in-progress state, not an error. */
+/* Sprint 8 ticket 005 (SUC-005), rendering driven by `relayBridge` since
+ * sprint 13 ticket 004: transient status while a Connect attempt is
+ * outstanding -- see RelayPage.tsx's own doc comment ("In-flight/failed
+ * bridging visibility"). Styled like `.relay-page-hint` (muted, not
+ * alarming) since this is a normal in-progress state, not an error. */
 .relay-autoconnecting-status {
   margin: 0;
   color: var(--rc-text-muted);

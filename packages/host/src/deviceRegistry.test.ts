@@ -3240,6 +3240,71 @@ describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", 
       await registry.stop();
     }
   });
+
+  it("OOP 2026-09-10: a WiFi robot that stops answering STATUS polls is declared dead and reconnected (the socket itself never errors)", async () => {
+    const watcher = fixtureWatcher(() => []);
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+    // Identifies fine, then never answers a single STATUS.
+    const wifiLink = new FakeLink(async () => wifiRobotBanner());
+    const createLink = wifiOnlyCreateLink(new Map([["gopiv.local.:7654", wifiLink]]));
+    const errors: string[] = [];
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 15,
+      autoRequestFunctions: false,
+      watcher,
+      knownRobotsStore: fakeRoster(["gopiv"]),
+      mdnsDiscovery,
+      createLink,
+      wifiRetryIntervalMs: 20,
+    });
+    registry.onError((_endpointId, message) => errors.push(message));
+    registry.start();
+    try {
+      await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true);
+      expect(wifiLink.connectCalls).toBe(1);
+
+      const dead = await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionError !== undefined);
+      expect(dead.find((e) => e.endpointId === "wifi-gopiv")?.sessionError).toContain("STATUS polls over WiFi");
+      expect(errors.some((m) => m.includes("link presumed dead"))).toBe(true);
+
+      // The retry timer brings it back with a fresh connect + HELLO.
+      await waitForSnapshot(
+        registry,
+        (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true && wifiLink.connectCalls >= 2,
+      );
+      expect(wifiLink.identifyCalls).toBeGreaterThanOrEqual(2);
+    } finally {
+      await registry.stop();
+    }
+  });
+
+  it("OOP 2026-09-10: a USB robot that stops answering STATUS polls is left alone (its port errors out on its own)", async () => {
+    const devices = [device()];
+    const watcher = fixtureWatcher(() => devices);
+    const resolveName = async () => namedResult("tovez");
+    const usbLink = new FakeLink(async () => robotBanner());
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 10,
+      autoRequestFunctions: false,
+      watcher,
+      resolveName,
+      createLink: () => usbLink,
+    });
+    registry.start();
+    try {
+      await waitForSnapshot(registry, (s) => s[0]?.sessionOpen === true);
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(registry.snapshot()[0]?.sessionOpen).toBe(true);
+      expect(registry.snapshot()[0]?.sessionError).toBeUndefined();
+      expect(usbLink.connectCalls).toBe(1);
+    } finally {
+      await registry.stop();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------

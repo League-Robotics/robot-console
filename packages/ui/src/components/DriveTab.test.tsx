@@ -127,6 +127,9 @@ describe("DriveTab keyboard", () => {
     const { socket } = mountTab();
     key("keydown", "ArrowUp");
     key("keydown", "ArrowRight");
+    act(() => {
+      vi.advanceTimersByTime(150);
+    });
     expect(sent(socket).at(-1)).toEqual({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "WHEELS_V", fields: [150, 0, 400] });
     key("keydown", "Space");
     const tail = sent(socket).slice(-2);
@@ -190,6 +193,31 @@ describe("DriveTab gamepad", () => {
       vi.advanceTimersByTime(60);
     });
     expect(sent(socket).at(-1)).toEqual({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "STOP" });
+  });
+
+  it("never sends more often than the resend cadence while the stick keeps moving; the latest position rides the next tick", () => {
+    stubGamepad([0, 0]);
+    const { socket } = mountTab();
+    stubGamepad([0, -0.5]);
+    act(() => {
+      vi.advanceTimersByTime(60);
+    });
+    expect(sent(socket)).toEqual([{ type: "send-command", endpointId: "usb-ROBOT-A", verb: "WHEELS_V", fields: [75, 75, 400] }]);
+    stubGamepad([0, -0.7]);
+    act(() => {
+      vi.advanceTimersByTime(50);
+    });
+    stubGamepad([0, -1]);
+    act(() => {
+      vi.advanceTimersByTime(30);
+    });
+    // 140 ms in (90 ms after the first send): still only the first send.
+    expect(sent(socket)).toHaveLength(1);
+    act(() => {
+      vi.advanceTimersByTime(60);
+    });
+    expect(sent(socket)).toHaveLength(2);
+    expect(sent(socket)[1]).toEqual({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "WHEELS_V", fields: [150, 150, 400] });
   });
 
   it("says none detected without a pad", () => {

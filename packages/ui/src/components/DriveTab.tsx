@@ -34,8 +34,13 @@ export const GAMEPAD_DEADZONE = 0.12;
 
 export type WheelTarget = readonly [left: number, right: number];
 
+/** Speeds are quantised to 5 mm/s so stick jitter does not read as a
+ * new target every sample. */
+const SPEED_STEP_MM_S = 5;
+
 function clamp(value: number): number {
-  return Math.max(-DRIVE_VELOCITY_MM_S, Math.min(DRIVE_VELOCITY_MM_S, Math.round(value)));
+  const stepped = Math.round(value / SPEED_STEP_MM_S) * SPEED_STEP_MM_S;
+  return Math.max(-DRIVE_VELOCITY_MM_S, Math.min(DRIVE_VELOCITY_MM_S, stepped));
 }
 
 /** `[left, right]` mm/s for a forward demand `v` and a turn demand `w`
@@ -105,15 +110,22 @@ function useDriveEngine(endpointId: string, linkOpen: boolean) {
       active.current = null;
       return;
     }
-    if (was !== null && was[0] === next[0] && was[1] === next[1]) {
+    active.current = next;
+    if (was !== null) {
+      // Already driving: the running resend picks up the new target at
+      // its next tick. Never send per stick sample -- the gamepad is
+      // polled every 50 ms and a moving stick would otherwise flood the
+      // link at 20 commands a second (observed to knock gopiv's WiFi
+      // module off the network).
       return;
     }
-    active.current = next;
-    const resend = () => sendRef.current(endpointId, "WHEELS_V", [next[0], next[1], DRIVE_LEASE_MS]);
+    const resend = () => {
+      const target = active.current;
+      if (target !== null) {
+        sendRef.current(endpointId, "WHEELS_V", [target[0], target[1], DRIVE_LEASE_MS]);
+      }
+    };
     resend();
-    if (timer.current !== undefined) {
-      clearInterval(timer.current);
-    }
     timer.current = setInterval(resend, DRIVE_RESEND_INTERVAL_MS);
   }
 

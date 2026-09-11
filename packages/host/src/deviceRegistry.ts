@@ -828,6 +828,9 @@ interface EndpointState {
    * hidden by a console; a user-initiated `STATUS` reply arriving in
    * that window is tagged the same way, which is harmless. */
   pollAwaitingStatus?: boolean;
+  /** OOP 2026-09-10: consecutive host `STATUS` polls that went
+   * unanswered -- see {@link DeviceRegistry.pollStatus}'s watchdog. */
+  pollMisses?: number;
   /** True while a `HELLO` round trip ({@link DeviceRegistry.resyncSession})
    * is in flight, so the status poll stays quiet -- a `status` reply
    * arriving mid-banner-wait would be swallowed by the link's banner
@@ -1230,6 +1233,13 @@ export const DEFAULT_WIFI_RETRY_INTERVAL_MS = 10_000;
 /** Default period of the host's own `STATUS` poll on an open robot
  * session (see {@link DeviceRegistryOptions.statusPollIntervalMs}). */
 export const DEFAULT_STATUS_POLL_INTERVAL_MS = 5000;
+
+/** OOP 2026-09-10: consecutive unanswered `STATUS` polls after which a
+ * WiFi link is declared dead -- see {@link DeviceRegistry.pollStatus}.
+ * Three polls at the default period is 15 s: long enough to ride out
+ * the WiFi module's own burst drops, short enough that a power-cycled
+ * robot is back on the page within half a minute. */
+export const WIFI_POLL_MISS_LIMIT = 3;
 
 /**
  * Live registry of attached devices, their resolved identity/
@@ -3179,6 +3189,7 @@ export class DeviceRegistry {
         state.pollAwaitingStatus = false;
         origin = "poll";
       }
+      state.pollMisses = 0;
       state.robotStatus = parseStatusReply(decoded.fields);
       this.adoptStatusNext(state, state.robotStatus);
       this.emitLine(state.endpointId, "rx", text, origin);
@@ -3431,6 +3442,28 @@ export class DeviceRegistry {
   private pollStatus(state: EndpointState): void {
     if (!this.isLive(state) || !state.sessionOpen || !state.session || state.identifying) {
       return;
+    }
+    // OOP 2026-09-10: liveness watchdog. A WiFi robot that reboots (or
+    // whose WiFi module dies) never closes the TCP connection from its
+    // side, so the host's socket stays "open" until the OS gives up on
+    // retransmits -- many minutes -- while every command vanishes into
+    // it. Observed live on gopiv: pendingCount 41, no reply to anything,
+    // robot answering instantly over serial. The host's own STATUS poll
+    // is the heartbeat: after WIFI_POLL_MISS_LIMIT consecutive polls with
+    // no reply, the link is declared dead and torn down so the retry
+    // timer reconnects (a fresh HELLO, a fresh sequence). Only for WiFi:
+    // a USB serial port errors out on its own when the board goes away.
+    if (state.pollAwaitingStatus) {
+      state.pollMisses = (state.pollMisses ?? 0) + 1;
+      if (state.wifiTarget && state.pollMisses >= WIFI_POLL_MISS_LIMIT) {
+        state.pollAwaitingStatus = false;
+        state.pollMisses = 0;
+        this.handleLinkError(
+          state,
+          new Error(`no reply to ${WIFI_POLL_MISS_LIMIT} STATUS polls over WiFi -- link presumed dead, reconnecting`),
+        );
+        return;
+      }
     }
     try {
       const line = state.session.link.sendUnsequenced("STATUS");

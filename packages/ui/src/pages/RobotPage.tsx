@@ -101,6 +101,7 @@ import { ChartsPanel } from "../components/ChartsPanel";
 import { CommandStrip } from "../components/CommandStrip";
 import { DeviceConsole } from "../components/DeviceConsole";
 import { DriveControls } from "../components/DriveControls";
+import { DriveTab } from "../components/DriveTab";
 import { FunctionsPanel } from "../components/FunctionsPanel";
 import { PathTracePanel } from "../components/PathTracePanel";
 import { StatusPanel } from "../components/StatusPanel";
@@ -112,11 +113,12 @@ export interface RobotPageProps {
 
 /** OOP 2026-09-10: the robot page is split into tabs next to the
  * robot's name (stakeholder direction): Main (status, drive, console),
+ * Drive (`DriveTab`: the pad alone, plus cursor keys and a gamepad),
  * Calibration (`CalibrationPage`: both wizards feeding one code block
  * -- only offered for a calibration-classified robot), and Functions & charts (functions and the drive pad on one side,
  * charts and the path trace on the other). Sequencing state moved into the console's
  * own header (`DeviceConsole`) rather than a page panel. */
-export type RobotTab = "main" | "calibration" | "functions";
+export type RobotTab = "main" | "drive" | "calibration" | "functions";
 
 export function RobotPage({ endpoint }: RobotPageProps) {
   const hasCalibration = endpoint.classification.type === "calibration";
@@ -124,6 +126,7 @@ export function RobotPage({ endpoint }: RobotPageProps) {
   const tab: RobotTab = selectedTab === "calibration" && !hasCalibration ? "main" : selectedTab;
   const tabs: Array<{ id: RobotTab; label: string }> = [
     { id: "main", label: "Main" },
+    { id: "drive", label: "Drive" },
     ...(hasCalibration ? [{ id: "calibration" as const, label: "Calibration" }] : []),
     { id: "functions", label: "Functions & charts" },
   ];
@@ -176,6 +179,8 @@ export function RobotPage({ endpoint }: RobotPageProps) {
           </div>
         </div>
       )}
+
+      {tab === "drive" && <DriveTab device={endpoint} />}
 
       {tab === "calibration" && <CalibrationPage device={endpoint} />}
 

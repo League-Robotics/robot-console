@@ -114,11 +114,11 @@ describe("RobotPage", () => {
     expect(el.textContent).not.toContain("Hold a direction");
   });
 
-  it("OOP 2026-09-10: tabs sit beside the name; a plain robot gets Main and Functions & charts only", () => {
+  it("OOP 2026-09-10: tabs sit beside the name; a plain robot gets Main, Drive and Functions & charts", () => {
     const { el } = mountRobotPage(robotFixture());
     const row = el.querySelector(".robot-page-title-row")!;
     expect(row.querySelector("h2")?.textContent).toBe("vevav");
-    expect(Array.from(row.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Functions & charts"]);
+    expect(Array.from(row.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Functions & charts"]);
     expect(el.querySelector('[data-testid="robot-tab-main"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
@@ -144,7 +144,7 @@ describe("RobotPage", () => {
         classification: { type: "calibration", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: "calibration-1", version: "1" },
       }),
     );
-    expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Calibration", "Functions & charts"]);
+    expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Calibration", "Functions & charts"]);
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
     });

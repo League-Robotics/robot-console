@@ -186,11 +186,37 @@ export function deriveRotationCalibrationRun(
   return { kind: "running", leadingEvents, stages };
 }
 
-export interface RotationCalibrationWizardProps {
-  device: EndpointListEntry;
+/** The robot's own `measured b=<n>cm` line -- the effective track
+ * width as the calibration image measured it, uncorrected for the
+ * wheel diameter it assumed (see `CalibrationPage.correctTrackWidth`). */
+export function reportedTrackWidthCm(run: RotationCalibrationRun): number | undefined {
+  if (run.kind !== "succeeded" && run.kind !== "running") {
+    return undefined;
+  }
+  const texts = [...run.leadingEvents, ...run.stages.flatMap((stage) => stage.events)];
+  for (const text of texts) {
+    const match = /^measured b=\s*(-?\d+(?:\.\d+)?)/.exec(text.trim());
+    if (match) {
+      return Number(match[1]);
+    }
+  }
+  return undefined;
 }
 
-export function RotationCalibrationWizard({ device }: RotationCalibrationWizardProps) {
+export interface RotationCalibrationWizardProps {
+  device: EndpointListEntry;
+  /** OOP 2026-09-10: called whenever the current run's derived state
+   * changes -- `CalibrationPage` folds a succeeded run's reported track
+   * width into the robot's calibration state, and drops it again on a
+   * failed re-verification. */
+  onRun?: (run: RotationCalibrationRun | undefined) => void;
+  /** OOP 2026-09-10: the rotation run is meaningless without a wheel
+   * diameter -- `CalibrationPage` blocks Go until one is known. */
+  disabled?: boolean;
+  disabledReason?: string;
+}
+
+export function RotationCalibrationWizard({ device, onRun, disabled = false, disabledReason }: RotationCalibrationWizardProps) {
   const endpointId = device.endpointId;
   const linkOpen = device.sessionOpen;
   const { sendCommand } = useWsActions();
@@ -234,7 +260,17 @@ export function RotationCalibrationWizard({ device }: RotationCalibrationWizardP
   const run =
     derived?.kind === "running" && latched && latched.startId === runStartId ? latched.run : derived;
 
-  const goDisabled = !linkOpen || !available || run?.kind === "running";
+  const goDisabled = !linkOpen || !available || disabled || run?.kind === "running";
+
+  const onRunRef = useRef(onRun);
+  onRunRef.current = onRun;
+  const runKey = run
+    ? `${run.kind}:${run.kind === "succeeded" ? run.snippet : ""}:${run.kind === "failed" ? run.reason : ""}`
+    : "";
+  useEffect(() => {
+    onRunRef.current?.(run);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the run's identity, not the object
+  }, [runKey]);
 
   function handleGo(): void {
     if (goDisabled) {
@@ -243,16 +279,6 @@ export function RotationCalibrationWizard({ device }: RotationCalibrationWizardP
     const last = log[log.length - 1];
     setRunStartId(last ? last.id + 1 : 0);
     sendCommand(endpointId, "RUN", ["cala"]);
-  }
-
-  function handleCopy(snippet: string): void {
-    try {
-      void navigator.clipboard?.writeText(snippet);
-    } catch {
-      // Clipboard unavailable (permissions, non-secure context, or no
-      // Clipboard API at all in a test's jsdom) -- the snippet text is
-      // still visible and selectable either way.
-    }
   }
 
   return (
@@ -269,7 +295,13 @@ export function RotationCalibrationWizard({ device }: RotationCalibrationWizardP
         </p>
       )}
 
-      {available && run === undefined && (
+      {available && disabled && (
+        <p className="rotation-calibration-hint" data-testid="rotation-calibration-blocked" role="status">
+          {disabledReason ?? "Not available yet."}
+        </p>
+      )}
+
+      {available && !disabled && run === undefined && (
         <ol className="rotation-calibration-setup" data-testid="rotation-calibration-setup">
           <li>Lay two strips of black tape crossing at right angles on the floor.</li>
           <li>Place the robot at the centre of the cross, then press Go.</li>
@@ -331,18 +363,16 @@ export function RotationCalibrationWizard({ device }: RotationCalibrationWizardP
 
       {run?.kind === "succeeded" && (
         <div className="rotation-calibration-result" data-testid="rotation-calibration-result">
-          <p>Calibration complete — paste this into your program:</p>
-          <code className="rotation-calibration-snippet" data-testid="rotation-calibration-snippet">
-            {run.snippet}
-          </code>
-          <button
-            type="button"
-            className="rotation-calibration-copy"
-            data-testid="rotation-calibration-copy"
-            onClick={() => handleCopy(run.snippet)}
-          >
-            Copy
-          </button>
+          {reportedTrackWidthCm(run) !== undefined ? (
+            <p className="rotation-calibration-track" data-testid="rotation-calibration-track">
+              Effective track width as the robot measured it: <strong>{reportedTrackWidthCm(run)} cm</strong>
+            </p>
+          ) : (
+            <p className="rotation-calibration-track">Calibration complete.</p>
+          )}
+          <p className="rotation-calibration-note">
+            Robot reported: <code data-testid="rotation-calibration-snippet">{run.snippet}</code>
+          </p>
         </div>
       )}
     </section>

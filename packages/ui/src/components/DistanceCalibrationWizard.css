@@ -130,3 +130,9 @@
   font-size: 0.8rem;
   color: var(--rc-text-muted);
 }
+
+.distance-calibration-note {
+  margin: 0.3rem 0 0;
+  font-size: 0.8rem;
+  color: var(--rc-text-muted);
+}

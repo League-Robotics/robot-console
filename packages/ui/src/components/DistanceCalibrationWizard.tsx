@@ -165,9 +165,13 @@ function round2(value: number): number {
 
 export interface DistanceCalibrationWizardProps {
   device: EndpointListEntry;
+  /** OOP 2026-09-10: called whenever the current run's derived state
+   * changes, so `CalibrationPage` can fold a succeeded run's wheel
+   * diameter into the robot's calibration state. */
+  onRun?: (run: DistanceCalibrationRun | undefined) => void;
 }
 
-export function DistanceCalibrationWizard({ device }: DistanceCalibrationWizardProps) {
+export function DistanceCalibrationWizard({ device, onRun }: DistanceCalibrationWizardProps) {
   const endpointId = device.endpointId;
   const linkOpen = device.sessionOpen;
   const { sendCommand } = useWsActions();
@@ -224,17 +228,14 @@ export function DistanceCalibrationWizard({ device }: DistanceCalibrationWizardP
 
   const diameterMm = run?.kind === "succeeded" ? deriveWheelDiameterMm(run.events, run.snippet) : undefined;
   const baselineMm = run?.kind === "succeeded" ? deriveBaselineDiameterMm(run.events) : undefined;
-  const snippet = run?.kind === "succeeded" ? (diameterMm !== undefined ? wheelDiameterSnippet(diameterMm) : run.snippet) : "";
 
-  function handleCopy(snippet: string): void {
-    try {
-      void navigator.clipboard?.writeText(snippet);
-    } catch {
-      // Clipboard unavailable (permissions, non-secure context, or no
-      // Clipboard API at all in a test's jsdom) -- the snippet text is
-      // still visible and selectable either way.
-    }
-  }
+  const onRunRef = useRef(onRun);
+  onRunRef.current = onRun;
+  const runKey = run ? `${run.kind}:${run.kind === "succeeded" ? run.snippet : ""}` : "";
+  useEffect(() => {
+    onRunRef.current?.(run);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the run's identity, not the object
+  }, [runKey]);
 
   return (
     <section className="distance-calibration-wizard" aria-label="Distance calibration">
@@ -294,30 +295,17 @@ export function DistanceCalibrationWizard({ device }: DistanceCalibrationWizardP
 
       {run?.kind === "succeeded" && (
         <div className="distance-calibration-result" data-testid="distance-calibration-result">
-          {diameterMm !== undefined && (
+          {diameterMm !== undefined ? (
             <p className="distance-calibration-diameter" data-testid="distance-calibration-diameter">
               Wheel diameter: <strong>{diameterMm} mm</strong>
               {baselineMm !== undefined && baselineMm !== diameterMm ? ` (was ${baselineMm} mm)` : ""}
             </p>
+          ) : (
+            <p className="distance-calibration-diameter">Calibration complete.</p>
           )}
-          <p>Paste this into your program's setup:</p>
-          <code className="distance-calibration-snippet" data-testid="distance-calibration-snippet">
-            {snippet}
-          </code>
-          {diameterMm !== undefined && (
-            <p className="distance-calibration-note">
-              The number is your wheel diameter in millimetres; the rest converts it to the
-              millimetres-per-degree the extension stores.
-            </p>
-          )}
-          <button
-            type="button"
-            className="distance-calibration-copy"
-            data-testid="distance-calibration-copy"
-            onClick={() => handleCopy(snippet)}
-          >
-            Copy
-          </button>
+          <p className="distance-calibration-note">
+            Robot reported: <code data-testid="distance-calibration-snippet">{run.snippet}</code>
+          </p>
         </div>
       )}
     </section>

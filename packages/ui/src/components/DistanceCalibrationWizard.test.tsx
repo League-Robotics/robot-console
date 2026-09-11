@@ -231,8 +231,10 @@ describe("DistanceCalibrationWizard terminal states", () => {
 
     const diameter = el.querySelector('[data-testid="distance-calibration-diameter"]')!;
     expect(diameter.textContent).toBe("Wheel diameter: 90.68 mm (was 90.28 mm)");
+    // The paste-ready code now lives in CalibrationPage's single block;
+    // the wizard just shows what the robot itself reported.
     const snippet = el.querySelector('[data-testid="distance-calibration-snippet"]')!;
-    expect(snippet.textContent).toBe("diffDrive.setWheelCalibration(90.68 * Math.PI / 360)");
+    expect(snippet.textContent).toBe("diffDrive.setWheelCalibration(0.7912)");
     expect(el.querySelector('[data-testid="distance-calibration-failed"]')).toBeNull();
     expect(el.querySelector('[data-testid="distance-calibration-run-error"]')).toBeNull();
     // Go re-enables so the student can run again if they want to.
@@ -264,26 +266,6 @@ describe("DistanceCalibrationWizard terminal states", () => {
     expect(el.querySelector('[data-testid="distance-calibration-snippet"]')).toBeNull();
   });
 
-  it("offers a Copy button alongside the snippet in the succeeded state", () => {
-    const { el, socket } = mountWizard(baseDevice([{ name: "calx" }]));
-    clickGo(el);
-    emitLine(socket, "CALX:apply diffDrive.setWheelCalibration(0.8)");
-    const copyButton = el.querySelector<HTMLButtonElement>('[data-testid="distance-calibration-copy"]');
-    expect(copyButton).not.toBeNull();
-    // Clicking must not throw even without a real Clipboard API in jsdom.
-    expect(() => act(() => copyButton!.click())).not.toThrow();
-  });
-});
-
-describe("DistanceCalibrationWizard wheel diameter derivation (OOP 2026-09-10)", () => {
-  it("derives the diameter from an older build's apply line when no CALX:diameter line was sent", () => {
-    expect(deriveWheelDiameterMm([], "diffDrive.setWheelCalibration(0.7912)")).toBe(90.66);
-    expect(deriveWheelDiameterMm(["diameter=91.5 mm"], "diffDrive.setWheelCalibration(0.7912)")).toBe(91.5);
-    expect(deriveWheelDiameterMm(["start line found"], "something else entirely")).toBeUndefined();
-    expect(deriveBaselineDiameterMm(["begin true=90cm baseline=0.7878mm/deg"])).toBe(90.28);
-    expect(wheelDiameterSnippet(90.68)).toBe("diffDrive.setWheelCalibration(90.68 * Math.PI / 360)");
-  });
-
   it("falls back to the firmware's raw snippet, with no diameter line, when nothing derivable was sent", () => {
     const { el, socket } = mountWizard(baseDevice([{ name: "calx" }]));
     clickGo(el);
@@ -304,7 +286,7 @@ describe("DistanceCalibrationWizard with the apply line dropped over WiFi (OOP 2
     emitLine(socket, "CALX:diameter=90.68 mm");
     expect(el.querySelector('[data-testid="distance-calibration-diameter"]')?.textContent).toBe("Wheel diameter: 90.68 mm (was 90.28 mm)");
     expect(el.querySelector('[data-testid="distance-calibration-snippet"]')?.textContent).toBe(
-      "diffDrive.setWheelCalibration(90.68 * Math.PI / 360)",
+      "diffDrive.setWheelCalibration(0.7912)",
     );
   });
 });
@@ -321,8 +303,8 @@ describe("DistanceCalibrationWizard in a long-lived tab (OOP 2026-09-10 regressi
     emitLine(socket, "CALX:begin true=90cm baseline=0.7878mm/deg");
     emitLine(socket, "CALX:diameter=90.68 mm");
     emitLine(socket, "CALX:apply diffDrive.setWheelCalibration(0.7912)");
-    expect(el.querySelector('[data-testid="distance-calibration-snippet"]')?.textContent).toBe(
-      "diffDrive.setWheelCalibration(90.68 * Math.PI / 360)",
+    expect(el.querySelector('[data-testid="distance-calibration-diameter"]')?.textContent).toBe(
+      "Wheel diameter: 90.68 mm (was 90.28 mm)",
     );
   });
 });

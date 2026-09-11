@@ -37,7 +37,7 @@ import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import type { EndpointListEntry, RobotFunction } from "@robot-console/host/src/wsMessages.js";
-import { RotationCalibrationWizard, deriveRotationCalibrationRun } from "./RotationCalibrationWizard";
+import { RotationCalibrationWizard, deriveRotationCalibrationRun, reportedTrackWidthCm } from "./RotationCalibrationWizard";
 import { WsProvider, useWsActions } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 
@@ -406,15 +406,6 @@ describe("RotationCalibrationWizard terminal states", () => {
     expect(el.querySelector('[data-testid="rotation-calibration-snippet"]')).toBeNull();
   });
 
-  it("offers a Copy button alongside the snippet in the succeeded state", () => {
-    const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
-    clickGo(el);
-    emitLine(socket, "CALA:apply diffDrive.setConfigValue(ConfigField.RotationalSlip, 0.96)");
-    const copyButton = el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-copy"]');
-    expect(copyButton).not.toBeNull();
-    expect(() => act(() => copyButton!.click())).not.toThrow();
-  });
-
   it("starts a fresh run on a second Go press, with no stale stages or snippet from the first run", () => {
     const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
     clickGo(el);
@@ -611,5 +602,47 @@ describe("deriveRotationCalibrationRun (pure derivation)", () => {
       { direction: "rx", line: "CALA:fail STALLED, power-cycle the robot" },
     ]);
     expect(run).toEqual({ kind: "failed", reason: "STALLED, power-cycle the robot" });
+  });
+});
+
+describe("RotationCalibrationWizard as CalibrationPage drives it (OOP 2026-09-10)", () => {
+  it("is blocked, with the reason shown and Go disabled, until the page says a wheel diameter is known", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+        <RotationCalibrationWizard device={baseDevice([{ name: "cala" }])} disabled disabledReason="Run the distance calibration first." />
+      </WsProvider>,
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    expect(el.querySelector('[data-testid="rotation-calibration-blocked"]')?.textContent).toBe("Run the distance calibration first.");
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(true);
+    expect(el.querySelector('[data-testid="rotation-calibration-setup"]')).toBeNull();
+  });
+
+  it("reports the run to onRun and exposes the robot's measured track width", () => {
+    const runs: string[] = [];
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+        <RotationCalibrationWizard device={baseDevice([{ name: "cala" }])} onRun={(run) => runs.push(run ? run.kind : "none")} />
+      </WsProvider>,
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    clickGo(el);
+    emitLine(socket!, "CALA:begin track=11.5cm slip=0.952 b=12.08cm");
+    emitLine(socket!, "CALA:pass clockwise");
+    emitLine(socket!, "CALA:measured b=8.84cm  (anchor was 12.08)");
+    emitLine(socket!, "CALA:apply diffDrive.setConfigValue(ConfigField.RotationalSlip, 1.301)");
+    expect(el.querySelector('[data-testid="rotation-calibration-track"]')?.textContent).toContain("8.84 cm");
+    expect(runs.at(-1)).toBe("succeeded");
+    expect(
+      reportedTrackWidthCm(
+        deriveRotationCalibrationRun([{ direction: "rx", line: "CALA:measured b=8.84cm  (anchor was 12.08)" }]),
+      ),
+    ).toBe(8.84);
   });
 });

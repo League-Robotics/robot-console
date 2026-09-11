@@ -1,0 +1,83 @@
+.calibration-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.9rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 0.4rem;
+  overflow: hidden;
+  background: var(--rc-surface);
+}
+
+.calibration-table th,
+.calibration-table td {
+  padding: 0.4rem 0.7rem;
+  border-top: 1px solid var(--rc-border);
+  text-align: left;
+  vertical-align: baseline;
+}
+
+.calibration-table tr:first-child th,
+.calibration-table tr:first-child td {
+  border-top: none;
+}
+
+.calibration-table th {
+  font-weight: 500;
+  color: var(--rc-text-muted);
+  width: 12rem;
+  white-space: nowrap;
+}
+
+.calibration-table input {
+  width: 7rem;
+  font: inherit;
+  padding: 0.2rem 0.4rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 0.3rem;
+  background: var(--rc-surface);
+  color: var(--rc-text);
+}
+
+.calibration-source {
+  color: var(--rc-text-muted);
+  font-size: 0.8rem;
+}
+
+.calibration-reset,
+.calibration-code-copy {
+  align-self: flex-start;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.3rem 0.8rem;
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.calibration-reset:disabled {
+  color: var(--rc-text-muted);
+  cursor: default;
+}
+
+.calibration-code {
+  margin: 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 0.4rem;
+  background: var(--rc-surface);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.calibration-code-empty {
+  margin: 0;
+  color: var(--rc-text-muted);
+  font-size: 0.85rem;
+}
+
+.calibration-page .device-console {
+  max-width: none;
+}

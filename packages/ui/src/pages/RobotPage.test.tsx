@@ -138,7 +138,7 @@ describe("RobotPage", () => {
     expect(el.querySelector('[data-testid="robot-tab-functions"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("OOP 2026-09-10: a calibration robot gets a Calibration tab with both wizards side by side", () => {
+  it("OOP 2026-09-10: a calibration robot gets a Calibration tab with both wizards, the code block, and the current calibration", () => {
     const { el } = mountRobotPage(
       robotFixture({
         classification: { type: "calibration", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: "calibration-1", version: "1" },
@@ -148,8 +148,12 @@ describe("RobotPage", () => {
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
     });
+    // CalibrationPage: both wizards and the code block on the left, the
+    // current-calibration table on the right.
     expect(el.querySelector(".robot-page-column-left [aria-label=\"Distance calibration\"]")).not.toBeNull();
-    expect(el.querySelector(".robot-page-column-right [aria-label=\"Rotation calibration\"]")).not.toBeNull();
+    expect(el.querySelector(".robot-page-column-left [aria-label=\"Rotation calibration\"]")).not.toBeNull();
+    expect(el.querySelector(".robot-page-column-left [aria-label=\"Calibration code\"]")).not.toBeNull();
+    expect(el.querySelector(".robot-page-column-right [aria-label=\"Current calibration\"]")).not.toBeNull();
   });
 
   it("renders exactly one console and a command strip in the right column", () => {

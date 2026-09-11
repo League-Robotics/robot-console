@@ -96,14 +96,13 @@
  */
 import { useState } from "react";
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import { CalibrationPage } from "../components/CalibrationPage";
 import { ChartsPanel } from "../components/ChartsPanel";
 import { CommandStrip } from "../components/CommandStrip";
 import { DeviceConsole } from "../components/DeviceConsole";
-import { DistanceCalibrationWizard } from "../components/DistanceCalibrationWizard";
 import { DriveControls } from "../components/DriveControls";
 import { FunctionsPanel } from "../components/FunctionsPanel";
 import { PathTracePanel } from "../components/PathTracePanel";
-import { RotationCalibrationWizard } from "../components/RotationCalibrationWizard";
 import { StatusPanel } from "../components/StatusPanel";
 import "./RobotPage.css";
 
@@ -113,8 +112,8 @@ export interface RobotPageProps {
 
 /** OOP 2026-09-10: the robot page is split into tabs next to the
  * robot's name (stakeholder direction): Main (status, drive, console),
- * Calibration (both wizards -- only offered for a calibration-classified
- * robot), and Functions & charts (functions and the drive pad on one side,
+ * Calibration (`CalibrationPage`: both wizards feeding one code block
+ * -- only offered for a calibration-classified robot), and Functions & charts (functions and the drive pad on one side,
  * charts and the path trace on the other). Sequencing state moved into the console's
  * own header (`DeviceConsole`) rather than a page panel. */
 export type RobotTab = "main" | "calibration" | "functions";
@@ -178,22 +177,7 @@ export function RobotPage({ endpoint }: RobotPageProps) {
         </div>
       )}
 
-      {tab === "calibration" && (
-        <div className="robot-page-columns" data-testid="robot-tab-panel-calibration">
-          <div className="robot-page-column robot-page-column-left">
-            <div className="robot-page-panel" aria-label="Distance calibration">
-              <h3>Distance calibration</h3>
-              <DistanceCalibrationWizard device={endpoint} />
-            </div>
-          </div>
-          <div className="robot-page-column robot-page-column-right">
-            <div className="robot-page-panel" aria-label="Rotation calibration">
-              <h3>Rotation calibration</h3>
-              <RotationCalibrationWizard device={endpoint} />
-            </div>
-          </div>
-        </div>
-      )}
+      {tab === "calibration" && <CalibrationPage device={endpoint} />}
 
       {tab === "functions" && (
         <div className="robot-page-columns" data-testid="robot-tab-panel-functions">

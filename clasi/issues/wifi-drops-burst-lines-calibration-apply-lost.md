@@ -37,3 +37,22 @@ module's send is slow: block the emitting fiber briefly (bounded) when
 the ring is full instead of refusing the line, or grow the ring for the
 WiFi sink, or coalesce a burst into one TCP send. Count and report
 drops on `STATUS` so the host can show them.
+
+## Addendum 2026-09-10: the module drops off the network under sustained command rate
+
+Driving `gopiv` from a gamepad (the console was sending a fresh
+`WHEELS_V` on every 50 ms stick sample, so up to 20 commands and 20
+`ack` replies a second over WiFi) worked for a while and then the WiFi
+module went silent: no reply to anything over TCP, `gopiv.local`
+stopped answering ping, the host's session showed 41 pending commands,
+while the MCU answered `PING`/`STATUS` instantly over the farm serial
+(`next=1 done=20 reason=timeout`). The `DBG:wifi` line earlier that
+day already read `restarts=252`. The firmware's module restart loop
+does not recover it; only a power cycle does.
+
+The console now caps its drive sends at one per 150 ms (the same
+cadence as a held pad button) and declares a silent WiFi link dead
+after three unanswered `STATUS` polls so it reconnects after a power
+cycle. The firmware side still needs a look: the module should survive
+a sustained ~7 lines/s each way, and the MCU should notice a wedged
+module (no `AT` reply) and power-cycle it itself.

@@ -2433,8 +2433,9 @@ export class DeviceRegistry {
   /**
    * OOP 2026-09-10: write one WiFi credential slot on a robot --
    * `WIFICRED SET <slot> <ssid> <password>` over its open link (USB,
-   * relay radio or WiFi alike) -- and wait for the firmware's `wificred
-   * <slot> <ssid> <haspw>` confirmation. The console echo of the sent
+   * relay radio or WiFi alike), then query the slot back (`WIFICRED`)
+   * and wait for the firmware's `wificred <slot> <ssid> <haspw>` line,
+   * since the SET itself is answered with a bare ack. The console echo of the sent
    * line has the password blanked: this method is the one place a
    * password crosses the wire, and the log must never carry it. The
    * robot picks the slot up at its next boot (`credsrc=2`), so the
@@ -2474,6 +2475,12 @@ export class DeviceRegistry {
         const line = link.sendCommand("WIFICRED", ["SET", slot, ssid, password]);
         const redacted = line.replace(/\n$/, "").replace(password, "•".repeat(Math.min(8, password.length)));
         this.emitLine(endpointId, "tx", redacted);
+        // The firmware answers SET with a bare ack; the slot's contents
+        // come back only for the query form, so ask for them -- the two
+        // are sequenced, so the robot processes them in order and the
+        // reply reflects the write.
+        const query = link.sendCommand("WIFICRED", []);
+        this.emitLine(endpointId, "tx", query.replace(/\n$/, ""));
       } catch (error) {
         state.wificredWaiter = undefined;
         return { ok: false, message: error instanceof Error ? error.message : String(error) };

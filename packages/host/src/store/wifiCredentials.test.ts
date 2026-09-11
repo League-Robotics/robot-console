@@ -27,8 +27,13 @@ describe("WifiCredentialsStore", () => {
     expect(store.describe()).toEqual({ ssid: "Busboom_Garage", hasPassword: true, source: "env" });
   });
 
+  it("reads WIFI_SSID/WIFI_PASSWORD from the repo's .env file when the process environment lacks them", () => {
+    const store = new WifiCredentialsStore({ stateDir: tempDir(), env: {}, envFile: () => ({ WIFI_SSID: '"Garage"', WIFI_PASSWORD: "pw" }) });
+    expect(store.read()).toEqual({ ssid: "Garage", password: "pw", source: "env" });
+  });
+
   it("reports none with nothing stored and nothing in the environment", () => {
-    const store = new WifiCredentialsStore({ stateDir: tempDir(), env: {} });
+    const store = new WifiCredentialsStore({ stateDir: tempDir(), env: {}, envFile: () => ({}) });
     expect(store.read()).toBeUndefined();
     expect(store.describe()).toEqual({ ssid: null, hasPassword: false, source: "none" });
   });

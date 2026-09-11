@@ -5,15 +5,18 @@
  * robot").
  *
  * Resolution order for a read: the stored file (`wifi-credentials.json`
- * beside `known-robots.json` in the host's state dir), else the
- * `WIFI_SSID`/`WIFI_PASSWORD` environment variables the repo's `.env`
- * provides (surrounding quotes stripped), else nothing. A write always
+ * beside `known-robots.json` in the host's state dir), else
+ * `WIFI_SSID`/`WIFI_PASSWORD` from the process environment or, failing
+ * that, straight from the repo's `.env` file (the host never loads that
+ * file into its environment; `config.ts`'s `parseEnvFile` reads it on
+ * demand), surrounding quotes stripped; else nothing. A write always
  * goes to the file, created `0600`, since it holds a password. The
  * password is never sent to a browser: {@link WifiCredentialsStore.describe}
  * reports only whether one is held.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { parseEnvFile } from "../config.js";
 import { resolveKnownRobotsFilePath } from "./knownRobots.js";
 
 export interface WifiCredentials {
@@ -53,9 +56,13 @@ export function resolveWifiCredentialsFilePath(
 export class WifiCredentialsStore {
   private readonly filePath: string;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly envFile: () => Record<string, string>;
 
-  constructor(options: { filePath?: string; stateDir?: string; env?: NodeJS.ProcessEnv } = {}) {
+  constructor(
+    options: { filePath?: string; stateDir?: string; env?: NodeJS.ProcessEnv; envFile?: () => Record<string, string> } = {},
+  ) {
     this.env = options.env ?? process.env;
+    this.envFile = options.envFile ?? (() => parseEnvFile());
     this.filePath = resolveWifiCredentialsFilePath(options, this.env);
   }
 
@@ -65,8 +72,11 @@ export class WifiCredentialsStore {
     if (stored) {
       return { ...stored, source: "stored" };
     }
-    const ssid = this.env.WIFI_SSID !== undefined ? stripQuotes(this.env.WIFI_SSID) : "";
-    const password = this.env.WIFI_PASSWORD !== undefined ? stripQuotes(this.env.WIFI_PASSWORD) : "";
+    const fromFile = this.env.WIFI_SSID === undefined ? this.envFile() : {};
+    const rawSsid = this.env.WIFI_SSID ?? fromFile.WIFI_SSID;
+    const rawPassword = this.env.WIFI_PASSWORD ?? fromFile.WIFI_PASSWORD;
+    const ssid = rawSsid !== undefined ? stripQuotes(rawSsid) : "";
+    const password = rawPassword !== undefined ? stripQuotes(rawPassword) : "";
     if (ssid.length > 0) {
       return { ssid, password, source: "env" };
     }

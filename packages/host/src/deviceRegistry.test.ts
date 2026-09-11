@@ -3335,8 +3335,10 @@ describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", 
 
       const pending = registry.provisionWifi("wifi-gopiv", 0, "Busboom_Garage", "s3cret-pw");
       await new Promise((resolve) => setTimeout(resolve, 5));
-      const sentLine = wifiLink.sentLines.find((line) => line.startsWith("WIFICRED"));
-      expect(sentLine).toMatch(/^WIFICRED SET 0 Busboom_Garage s3cret-pw #\d+\n$/);
+      const wifiLines = wifiLink.sentLines.filter((line) => line.startsWith("WIFICRED"));
+      expect(wifiLines[0]).toMatch(/^WIFICRED SET 0 Busboom_Garage s3cret-pw #\d+\n$/);
+      // The SET is acked bare; the slot is read back with the query form.
+      expect(wifiLines[1]).toMatch(/^WIFICRED #\d+\n$/);
       expect(echoed.find((line) => line.startsWith("WIFICRED"))).toMatch(/^WIFICRED SET 0 Busboom_Garage •+ #\d+$/);
       expect(echoed.some((line) => line.includes("s3cret-pw"))).toBe(false);
 

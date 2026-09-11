@@ -91,7 +91,17 @@ const STATUS_FIELDS: ReadonlyArray<{ key: string; label: string }> = [
   { key: "reason", label: "Last completion" },
 ];
 
-const FLAG_NAMES = ["Ready", "E-stop", "Stall halted", "Lease expired"];
+/** Bit names from `wire_adapter.cpp`'s `kFlag*` constants. */
+const FLAG_NAMES = [
+  "Ready",
+  "E-stop",
+  "Stall halted",
+  "Lease expired",
+  "Left motor connected",
+  "Right motor connected",
+  "Left wedge",
+  "Right wedge",
+];
 
 function describeFlags(raw: string): string {
   const value = Number.parseInt(raw, 16);

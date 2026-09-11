@@ -2492,7 +2492,12 @@ export class DeviceRegistry {
       if (answer.verb === "err") {
         return { ok: false, message: `the robot rejected the request (err ${answer.fields.join(" ")})` };
       }
-      const [replySlot, replySsid, hasPw] = answer.fields;
+      // Field order differs between extension builds: 1.20260909.2 says
+      // `wificred <slot> <ssid> <haspw>`, 1.20260910.2 says `wificred
+      // <slot> <haspw> <ssid>`. Accept either.
+      const [replySlot, second, third] = answer.fields;
+      const replySsid = second === ssid ? second : third;
+      const hasPw = second === ssid ? third : second;
       if (replySlot !== String(slot) || replySsid !== ssid) {
         return { ok: false, message: `the robot answered for a different slot or network (${answer.fields.join(" ")})` };
       }

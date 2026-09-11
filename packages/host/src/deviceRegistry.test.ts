@@ -3346,6 +3346,12 @@ describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", 
       const result = await pending;
       expect(result.ok).toBe(true);
       expect(result.message).toContain("power-cycle");
+
+      // Extension 1.20260910.2 orders the reply `<slot> <haspw> <ssid>`.
+      const pendingNewer = registry.provisionWifi("wifi-gopiv", 0, "Busboom_Garage", "s3cret-pw");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      wifiLink.emitLine({ kind: "line", verb: "wificred", fields: ["0", "1", "Busboom_Garage"] });
+      expect((await pendingNewer).ok).toBe(true);
     } finally {
       await registry.stop();
     }

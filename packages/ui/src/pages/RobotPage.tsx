@@ -94,6 +94,7 @@
  * alone, because sprint 7's "same page, no rewrite" claim for a
  * relay-connected robot depends entirely on this property holding.
  */
+import { useState } from "react";
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
 import { ChartsPanel } from "../components/ChartsPanel";
 import { CommandStrip } from "../components/CommandStrip";
@@ -103,7 +104,6 @@ import { DriveControls } from "../components/DriveControls";
 import { FunctionsPanel } from "../components/FunctionsPanel";
 import { PathTracePanel } from "../components/PathTracePanel";
 import { RotationCalibrationWizard } from "../components/RotationCalibrationWizard";
-import { SequencingIndicator } from "../components/SequencingIndicator";
 import { StatusPanel } from "../components/StatusPanel";
 import "./RobotPage.css";
 
@@ -111,10 +111,44 @@ export interface RobotPageProps {
   endpoint: EndpointListEntry;
 }
 
+/** OOP 2026-09-10: the robot page is split into tabs next to the
+ * robot's name (stakeholder direction): Main (status, drive, console),
+ * Calibration (both wizards -- only offered for a calibration-classified
+ * robot), and Functions & charts (functions on one side, charts and the
+ * path trace on the other). Sequencing state moved into the console's
+ * own header (`DeviceConsole`) rather than a page panel. */
+export type RobotTab = "main" | "calibration" | "functions";
+
 export function RobotPage({ endpoint }: RobotPageProps) {
+  const hasCalibration = endpoint.classification.type === "calibration";
+  const [selectedTab, setSelectedTab] = useState<RobotTab>("main");
+  const tab: RobotTab = selectedTab === "calibration" && !hasCalibration ? "main" : selectedTab;
+  const tabs: Array<{ id: RobotTab; label: string }> = [
+    { id: "main", label: "Main" },
+    ...(hasCalibration ? [{ id: "calibration" as const, label: "Calibration" }] : []),
+    { id: "functions", label: "Functions & charts" },
+  ];
+
   return (
     <section className="robot-page" aria-label="Robot device">
-      <h2>{endpoint.name ?? endpoint.endpointId}</h2>
+      <div className="robot-page-title-row">
+        <h2>{endpoint.name ?? endpoint.endpointId}</h2>
+        <div className="robot-page-tabs" role="tablist" aria-label="Robot pages">
+          {tabs.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              role="tab"
+              aria-selected={tab === entry.id}
+              className={tab === entry.id ? "robot-page-tab robot-page-tab-active" : "robot-page-tab"}
+              data-testid={`robot-tab-${entry.id}`}
+              onClick={() => setSelectedTab(entry.id)}
+            >
+              {entry.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {endpoint.classification.program !== null && (
         <p className="robot-page-diagnostics" data-testid="robot-page-diagnostics">
@@ -124,54 +158,63 @@ export function RobotPage({ endpoint }: RobotPageProps) {
         </p>
       )}
 
-      <div className="robot-page-columns">
-        <div className="robot-page-column robot-page-column-left">
-          <div className="robot-page-panel">
-            <h3>Status</h3>
-            <StatusPanel device={endpoint} />
+      {tab === "main" && (
+        <div className="robot-page-columns" data-testid="robot-tab-panel-main">
+          <div className="robot-page-column robot-page-column-left">
+            <div className="robot-page-panel">
+              <StatusPanel device={endpoint} />
+            </div>
+
+            <div className="robot-page-panel">
+              <h3>Drive</h3>
+              <DriveControls device={endpoint} />
+            </div>
           </div>
 
-          <div className="robot-page-panel">
-            <h3>Drive</h3>
-            <DriveControls device={endpoint} />
-          </div>
-
-          <div className="robot-page-panel">
-            <h3>Sequencing</h3>
-            <SequencingIndicator endpointId={endpoint.endpointId} />
-          </div>
-
-          <div className="robot-page-panel">
-            <h3>Functions</h3>
-            <FunctionsPanel device={endpoint} />
-          </div>
-
-          <div className="robot-page-panel" aria-label="Charts">
-            <h3>Charts</h3>
-            <ChartsPanel endpointId={endpoint.endpointId} />
-          </div>
-
-          <div className="robot-page-panel" aria-label="Path trace">
-            <h3>Path trace</h3>
-            <PathTracePanel endpointId={endpoint.endpointId} />
-          </div>
-
-          <div className="robot-page-panel" aria-label="Distance calibration">
-            <h3>Distance calibration</h3>
-            <DistanceCalibrationWizard device={endpoint} />
-          </div>
-
-          <div className="robot-page-panel" aria-label="Rotation calibration">
-            <h3>Rotation calibration</h3>
-            <RotationCalibrationWizard device={endpoint} />
+          <div className="robot-page-column robot-page-column-right robot-page-column-console">
+            <DeviceConsole device={endpoint} />
+            <CommandStrip device={endpoint} />
           </div>
         </div>
+      )}
 
-        <div className="robot-page-column robot-page-column-right">
-          <DeviceConsole device={endpoint} />
-          <CommandStrip device={endpoint} />
+      {tab === "calibration" && (
+        <div className="robot-page-columns" data-testid="robot-tab-panel-calibration">
+          <div className="robot-page-column robot-page-column-left">
+            <div className="robot-page-panel" aria-label="Distance calibration">
+              <h3>Distance calibration</h3>
+              <DistanceCalibrationWizard device={endpoint} />
+            </div>
+          </div>
+          <div className="robot-page-column robot-page-column-right">
+            <div className="robot-page-panel" aria-label="Rotation calibration">
+              <h3>Rotation calibration</h3>
+              <RotationCalibrationWizard device={endpoint} />
+            </div>
+          </div>
         </div>
-      </div>
+      )}
+
+      {tab === "functions" && (
+        <div className="robot-page-columns" data-testid="robot-tab-panel-functions">
+          <div className="robot-page-column robot-page-column-left">
+            <div className="robot-page-panel">
+              <h3>Functions</h3>
+              <FunctionsPanel device={endpoint} />
+            </div>
+          </div>
+          <div className="robot-page-column robot-page-column-right">
+            <div className="robot-page-panel" aria-label="Charts">
+              <h3>Charts</h3>
+              <ChartsPanel endpointId={endpoint.endpointId} />
+            </div>
+            <div className="robot-page-panel" aria-label="Path trace">
+              <h3>Path trace</h3>
+              <PathTracePanel endpointId={endpoint.endpointId} />
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

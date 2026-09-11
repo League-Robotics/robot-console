@@ -5,7 +5,7 @@
 
 .sequencing-none {
   margin: 0;
-  padding: 0.5rem 0.75rem;
+  padding: 0.3rem 0.75rem;
   border-radius: 0.4rem;
   background: var(--rc-warn-bg);
   border: 1px solid var(--rc-warn-border);
@@ -18,7 +18,7 @@
   flex-wrap: wrap;
   gap: 0.9rem;
   margin: 0;
-  padding: 0.5rem 0.75rem;
+  padding: 0.3rem 0.75rem;
   border: 1px solid var(--rc-border);
   background: var(--rc-surface);
   border-radius: 0.4rem;

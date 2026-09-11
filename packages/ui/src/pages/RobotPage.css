@@ -68,9 +68,51 @@
  * and CommandStrip's own height below the console -- it does not need
  * to be exact, only to keep the column from overflowing the viewport on
  * ordinary window sizes. */
-.robot-page-column-right {
+/* Only the Main tab's console column takes the viewport height. */
+.robot-page-column-console {
   height: calc(100vh - 11rem);
   min-height: 24rem;
+}
+
+/* OOP 2026-09-10: tabs beside the robot's name. */
+.robot-page-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
+}
+
+.robot-page-title-row h2 {
+  margin: 0;
+}
+
+.robot-page-tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--rc-border);
+}
+
+.robot-page-tab {
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: transparent;
+  color: var(--rc-text-muted);
+  padding: 0.4rem 0.9rem;
+  border-radius: 0.4rem 0.4rem 0 0;
+  font-size: 0.9rem;
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+
+.robot-page-tab:hover {
+  color: var(--rc-text);
+}
+
+.robot-page-tab-active {
+  border-color: var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-accent);
+  font-weight: 600;
 }
 
 .robot-page-panel {

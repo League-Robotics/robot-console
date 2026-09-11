@@ -93,34 +93,61 @@ describe("RobotPage", () => {
     expect(el.textContent).toContain("vevav");
   });
 
-  it("renders the left column with status, drive controls, a sequencing indicator, functions, a charts placeholder, a path trace panel, and both calibration wizards", () => {
+  it("OOP 2026-09-10: the Main tab shows status and drive on the left, console (with sequencing at its top) and command strip on the right", () => {
     const { el } = mountRobotPage(robotFixture());
     const left = el.querySelector(".robot-page-column-left");
     expect(left).not.toBeNull();
     expect(left!.querySelector('[aria-label="Robot status"]')).not.toBeNull();
     expect(left!.querySelector('[aria-label="Drive controls"]')).not.toBeNull();
-    expect(left!.querySelector('[aria-label="Sequencing state"]')).not.toBeNull();
-    expect(left!.querySelector('[aria-label="Functions"]')).not.toBeNull();
-    expect(left!.querySelector('[aria-label="Charts"]')).not.toBeNull();
-    expect(left!.querySelector('[aria-label="Path trace"]')).not.toBeNull();
-    expect(left!.querySelector('[aria-label="Distance calibration"]')).not.toBeNull();
-    expect(left!.querySelector('[aria-label="Rotation calibration"]')).not.toBeNull();
+    expect(Array.from(left!.querySelectorAll("h3")).map((h) => h.textContent)).toEqual(["Status", "Drive"]);
+    const console = el.querySelector('[aria-label="Console"]')!;
+    expect(console.querySelector('[aria-label="Sequencing state"]')).not.toBeNull();
+    // Sequencing precedes the log inside the console.
+    const seq = console.querySelector('[aria-label="Sequencing state"]')!;
+    const log = console.querySelector('[data-testid="console-log"]')!;
+    expect(seq.compareDocumentPosition(log) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Nothing from the other tabs is mounted.
+    expect(el.querySelector('[aria-label="Functions"]')).toBeNull();
+    expect(el.querySelector('[aria-label="Charts"]')).toBeNull();
+    expect(el.querySelector('[aria-label="Distance calibration"]')).toBeNull();
+    expect(el.textContent).not.toContain("Showing up to");
+    expect(el.textContent).not.toContain("Hold a direction");
   });
 
-  it("orders the left column's panels Status, Drive, Sequencing, Functions, Charts, Path trace, Distance calibration, Rotation calibration", () => {
+  it("OOP 2026-09-10: tabs sit beside the name; a plain robot gets Main and Functions & charts only", () => {
     const { el } = mountRobotPage(robotFixture());
+    const row = el.querySelector(".robot-page-title-row")!;
+    expect(row.querySelector("h2")?.textContent).toBe("vevav");
+    expect(Array.from(row.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Functions & charts"]);
+    expect(el.querySelector('[data-testid="robot-tab-main"]')?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("OOP 2026-09-10: the Functions & charts tab shows functions on the left and charts plus path trace on the right", () => {
+    const { el } = mountRobotPage(robotFixture());
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-functions"]')!.click();
+    });
+    expect(el.querySelector('[data-testid="robot-tab-panel-main"]')).toBeNull();
     const left = el.querySelector(".robot-page-column-left")!;
-    const headings = Array.from(left.querySelectorAll("h3")).map((h) => h.textContent);
-    expect(headings).toEqual([
-      "Status",
-      "Drive",
-      "Sequencing",
-      "Functions",
-      "Charts",
-      "Path trace",
-      "Distance calibration",
-      "Rotation calibration",
-    ]);
+    const right = el.querySelector(".robot-page-column-right")!;
+    expect(left.querySelector('[aria-label="Functions"]')).not.toBeNull();
+    expect(right.querySelector('[aria-label="Charts"]')).not.toBeNull();
+    expect(right.querySelector('[aria-label="Path trace"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="robot-tab-functions"]')?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("OOP 2026-09-10: a calibration robot gets a Calibration tab with both wizards side by side", () => {
+    const { el } = mountRobotPage(
+      robotFixture({
+        classification: { type: "calibration", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: "calibration-1", version: "1" },
+      }),
+    );
+    expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Calibration", "Functions & charts"]);
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
+    });
+    expect(el.querySelector(".robot-page-column-left [aria-label=\"Distance calibration\"]")).not.toBeNull();
+    expect(el.querySelector(".robot-page-column-right [aria-label=\"Rotation calibration\"]")).not.toBeNull();
   });
 
   it("renders exactly one console and a command strip in the right column", () => {

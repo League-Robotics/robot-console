@@ -57,6 +57,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
 import { MAX_LINES_PER_DEVICE, useEndpointLog, useWsActions } from "../ws/WsProvider";
+import { SequencingIndicator } from "./SequencingIndicator";
 import "./DeviceConsole.css";
 
 /** How long the send box stays disabled after a submit. A simple
@@ -195,6 +196,9 @@ export function DeviceConsole({ device }: DeviceConsoleProps) {
         </p>
       )}
 
+      {/* OOP 2026-09-10: sequencing state sits at the top of the log
+          (stakeholder direction), not in its own page panel. */}
+      <SequencingIndicator endpointId={device.endpointId} />
       <div className="console-log" ref={logRef} data-testid="console-log">
         {visibleLog.length === 0 ? (
           <p className="console-log-empty">
@@ -234,11 +238,6 @@ export function DeviceConsole({ device }: DeviceConsoleProps) {
         )}
       </div>
 
-      <p className="console-log-note">
-        Showing up to {MAX_LINES_PER_DEVICE} lines for this device. » = sent by you, « = received
-        from the device. Some commands get no reply at all on some boards — that is normal, not a
-        stuck connection.
-      </p>
 
       <form
         className="console-send"

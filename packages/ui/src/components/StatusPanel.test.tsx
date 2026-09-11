@@ -14,7 +14,7 @@ import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import type { EndpointListEntry, RobotStatus } from "@robot-console/host/src/wsMessages.js";
-import { StatusPanel } from "./StatusPanel";
+import { StatusPanel, describeStatusValue, statusRows } from "./StatusPanel";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 
@@ -73,15 +73,11 @@ function baseStatus(overrides: Partial<RobotStatus> = {}): RobotStatus {
 
 function mountPanel(
   device: EndpointListEntry,
-  now?: () => number,
 ): { el: HTMLDivElement; socket: FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      {/* `exactOptionalPropertyTypes` forbids `now={undefined}` -- omit
-          the prop entirely when the caller didn't pass one, letting
-          StatusPanel's own default (`Date.now`) apply. */}
-      {now !== undefined ? <StatusPanel device={device} now={now} /> : <StatusPanel device={device} />}
+      <StatusPanel device={device} />
     </WsProvider>,
   );
   act(() => {
@@ -133,25 +129,45 @@ describe("StatusPanel state word", () => {
   });
 });
 
-describe("StatusPanel fields and refresh", () => {
-  it("renders the raw fields verbatim", () => {
+describe("StatusPanel fields (OOP 2026-09-10: a named table, no refresh, no counter)", () => {
+  it("renders the firmware's keys as labelled rows with decoded values, unknown keys raw", () => {
     const { el } = mountPanel(
       baseDevice({
-        robotStatus: baseStatus({ fields: { ready: "1", cyc: "1234", reason: "stop" } }),
+        robotStatus: baseStatus({
+          fields: { ready: "1", connL: "1", connR: "0", otos: "1", flags: "5", cyc: "1234", tlm: "off", reason: "stop", zzz: "7" },
+        }),
       }),
     );
-    const fields = el.querySelector('[data-testid="status-panel-fields"]')!;
-    expect(fields.textContent).toContain("ready");
-    expect(fields.textContent).toContain("1234");
-    expect(fields.textContent).toContain("stop");
+    const table = el.querySelector('[data-testid="status-panel-fields"]')!;
+    expect(table.tagName).toBe("TABLE");
+    const rows = Array.from(table.querySelectorAll("tr")).map((tr) => [tr.querySelector("th")?.textContent, tr.querySelector("td")?.textContent]);
+    expect(rows).toEqual([
+      ["Ready", "Yes"],
+      ["Left motor", "Connected"],
+      ["Right motor", "Not connected"],
+      ["Odometry sensor", "Detected"],
+      ["Flags", "Ready, Stall halted (0x5)"],
+      ["Control cycles", "1234"],
+      ["Telemetry", "OFF"],
+      ["Last completion", "stop"],
+      ["zzz", "7"],
+    ]);
   });
 
-  it("shows a deterministic 'Last updated Ns ago' using the injected clock", () => {
-    const { el } = mountPanel(
-      baseDevice({ robotStatus: baseStatus({ receivedAt: 2000 }) }),
-      () => 5000,
-    );
-    expect(el.textContent).toContain("Last updated 3s ago");
+  it("statusRows/describeStatusValue: e-stop flag bit and a no-flags word", () => {
+    expect(describeStatusValue("flags", "2")).toBe("E-stop (0x2)");
+    expect(describeStatusValue("flags", "0")).toBe("none (0x0)");
+    expect(statusRows({ wedge: "0" })).toEqual([{ key: "wedge", label: "Bus wedged", value: "No" }]);
+  });
+
+  it("puts the state word on the same line as the Status heading and shows no Refresh button or last-updated counter", () => {
+    const { el } = mountPanel(baseDevice({ robotStatus: baseStatus({ receivedAt: 2000 }) }));
+    const heading = el.querySelector(".status-panel-heading")!;
+    expect(heading.querySelector("h3")?.textContent).toBe("Status");
+    expect(heading.querySelector('[data-testid="status-panel-state"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="status-panel-refresh"]')).toBeNull();
+    expect(el.textContent).not.toContain("Last updated");
+    expect(el.textContent).not.toContain("Refresh");
   });
 
   it("asks for STATUS itself on mount when the link is already open, and again on a closed->open transition", () => {
@@ -197,23 +213,6 @@ describe("StatusPanel fields and refresh", () => {
     expect(stateText(el)).toContain("no link open");
   });
 
-  it("sends a bare STATUS on Refresh", () => {
-    const { el, socket } = mountPanel(baseDevice({ robotStatus: baseStatus() }));
-    socket.sent.length = 0;
-    act(() => {
-      el.querySelector<HTMLButtonElement>('[data-testid="status-panel-refresh"]')!.click();
-    });
-    expect(socket.sent).toEqual([
-      JSON.stringify({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "STATUS" }),
-    ]);
-  });
-
-  it("disables Refresh when there is no open session", () => {
-    const { el } = mountPanel(baseDevice({ sessionOpen: false, robotStatus: baseStatus() }));
-    expect(el.querySelector<HTMLButtonElement>('[data-testid="status-panel-refresh"]')!.disabled).toBe(
-      true,
-    );
-  });
 });
 
 describe("StatusPanel Clear E-STOP", () => {

@@ -7,9 +7,21 @@
   gap: 0.5rem;
 }
 
+.status-panel-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.status-panel-heading h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
 .status-panel-state {
   margin: 0;
-  padding: 0.4rem 0.75rem;
+  padding: 0.25rem 0.7rem;
   border-radius: 0.4rem;
   background: var(--rc-surface);
   border: 1px solid var(--rc-border);
@@ -28,40 +40,41 @@
   color: var(--rc-danger-contrast);
 }
 
-.status-panel-fields {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem 0.9rem;
-  margin: 0;
-  padding: 0.5rem 0.75rem;
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  border-radius: 0.4rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+/* OOP 2026-09-10: a real two-column table with named rows. */
+.status-panel-table {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 28rem;
   font-size: 0.85rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 0.4rem;
+  overflow: hidden;
+  background: var(--rc-surface);
 }
 
-.status-panel-field {
-  display: flex;
-  align-items: baseline;
-  gap: 0.3rem;
-  margin: 0;
+.status-panel-table th,
+.status-panel-table td {
+  padding: 0.28rem 0.7rem;
+  border-top: 1px solid var(--rc-border);
+  text-align: left;
+  vertical-align: baseline;
 }
 
-.status-panel-field dt {
+.status-panel-table tr:first-child th,
+.status-panel-table tr:first-child td {
+  border-top: none;
+}
+
+.status-panel-table th {
+  font-weight: 500;
   color: var(--rc-text-muted);
+  width: 11rem;
+  white-space: nowrap;
 }
 
-.status-panel-field dd {
-  margin: 0;
+.status-panel-table td {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--rc-text);
-  font-weight: 600;
-}
-
-.status-panel-updated {
-  margin: 0;
-  color: var(--rc-text-muted);
-  font-size: 0.78rem;
 }
 
 .status-panel-actions {

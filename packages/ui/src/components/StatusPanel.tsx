@@ -42,7 +42,7 @@
  * (`() => number`, defaulting to `Date.now`) purely so tests can pin
  * down an exact "Ns ago" string instead of racing a real clock.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { EndpointListEntry, RobotStatus } from "@robot-console/host/src/wsMessages.js";
 import { useWsActions } from "../ws/WsProvider";
 import "./StatusPanel.css";
@@ -69,26 +69,98 @@ function stateWord(status: RobotStatus | undefined, linkOpen: boolean): string {
   return "Ready";
 }
 
-export interface StatusPanelProps {
-  device: EndpointListEntry;
-  /** Injectable clock for the "Last updated Ns ago" text -- tests only;
-   * production always defaults to `Date.now`. */
-  now?: () => number;
+/** OOP 2026-09-10: the firmware's `status k=v` keys, given real names
+ * and decoded values (stakeholder: "make that a real little table with
+ * actual names for things"). The key set comes from
+ * `wire_handler.cpp`'s STATUS format string; an unlisted key falls
+ * through with its raw key and value so a newer firmware never hides a
+ * field. Order here is display order. */
+const STATUS_FIELDS: ReadonlyArray<{ key: string; label: string }> = [
+  { key: "ready", label: "Ready" },
+  { key: "active", label: "Moving" },
+  { key: "connL", label: "Left motor" },
+  { key: "connR", label: "Right motor" },
+  { key: "otos", label: "Odometry sensor" },
+  { key: "wedge", label: "Bus wedged" },
+  { key: "flags", label: "Flags" },
+  { key: "i2cf", label: "I2C faults" },
+  { key: "cyc", label: "Control cycles" },
+  { key: "tlm", label: "Telemetry" },
+  { key: "next", label: "Next command id" },
+  { key: "done", label: "Last completed id" },
+  { key: "reason", label: "Last completion" },
+];
+
+const FLAG_NAMES = ["Ready", "E-stop", "Stall halted", "Lease expired"];
+
+function describeFlags(raw: string): string {
+  const value = Number.parseInt(raw, 16);
+  if (!Number.isFinite(value)) {
+    return raw;
+  }
+  const names: string[] = [];
+  for (let bit = 0; bit < 32; bit += 1) {
+    if (value & (1 << bit)) {
+      names.push(FLAG_NAMES[bit] ?? `bit ${bit}`);
+    }
+  }
+  return `${names.length === 0 ? "none" : names.join(", ")} (0x${raw})`;
 }
 
-export function StatusPanel({ device, now = Date.now }: StatusPanelProps) {
+function yesNo(raw: string): string {
+  return raw === "1" ? "Yes" : raw === "0" ? "No" : raw;
+}
+
+/** Exported for `StatusPanel.test.tsx`. */
+export function describeStatusValue(key: string, raw: string): string {
+  switch (key) {
+    case "ready":
+    case "active":
+    case "wedge":
+      return yesNo(raw);
+    case "connL":
+    case "connR":
+      return raw === "1" ? "Connected" : raw === "0" ? "Not connected" : raw;
+    case "otos":
+      return raw === "1" ? "Detected" : raw === "0" ? "Not detected" : raw;
+    case "flags":
+      return describeFlags(raw);
+    case "tlm":
+      return raw.toUpperCase();
+    default:
+      return raw;
+  }
+}
+
+/** Exported for `StatusPanel.test.tsx`: the table rows in display
+ * order -- known keys first with their labels, then anything else the
+ * firmware sent, raw. */
+export function statusRows(fields: Record<string, string>): Array<{ key: string; label: string; value: string }> {
+  const rows: Array<{ key: string; label: string; value: string }> = [];
+  const seen = new Set<string>();
+  for (const { key, label } of STATUS_FIELDS) {
+    if (key in fields) {
+      rows.push({ key, label, value: describeStatusValue(key, fields[key]!) });
+      seen.add(key);
+    }
+  }
+  for (const [key, value] of Object.entries(fields)) {
+    if (!seen.has(key)) {
+      rows.push({ key, label: key, value });
+    }
+  }
+  return rows;
+}
+
+export interface StatusPanelProps {
+  device: EndpointListEntry;
+}
+
+export function StatusPanel({ device }: StatusPanelProps) {
   const endpointId = device.endpointId;
   const linkOpen = device.sessionOpen;
   const { sendCommand } = useWsActions();
   const status = device.robotStatus;
-
-  // Forces one re-render per second so "Last updated Ns ago" stays
-  // live -- the tick count itself is never read anywhere.
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    const interval = setInterval(() => setTick((value) => value + 1), 1000);
-    return () => clearInterval(interval);
-  }, []);
 
   // OOP 2026-09-09: never sit on "Unknown" -- ask. The host polls STATUS
   // on its own once a robot identifies, but this panel also requests one
@@ -96,6 +168,8 @@ export function StatusPanel({ device, now = Date.now }: StatusPanelProps) {
   // closed->open transition, exactly as CommandStrip's discovery GET
   // does, so a freshly opened page shows a real state within one round
   // trip regardless of where the host's poll timer happens to be.
+  // (OOP 2026-09-10: the Refresh button and the "last updated" counter
+  // are gone -- the host's own poll keeps this current.)
   const wasOpenRef = useRef(false);
   useEffect(() => {
     const wasOpen = wasOpenRef.current;
@@ -108,10 +182,6 @@ export function StatusPanel({ device, now = Date.now }: StatusPanelProps) {
   const word = stateWord(status, linkOpen);
   const isEstopped = status?.estopped === true;
 
-  function handleRefresh(): void {
-    sendCommand(endpointId, "STATUS");
-  }
-
   function handleClearEstop(): void {
     sendCommand(endpointId, "SET", ["estop_clear", "1"]);
     sendCommand(endpointId, "STATUS");
@@ -120,46 +190,16 @@ export function StatusPanel({ device, now = Date.now }: StatusPanelProps) {
   return (
     // Deliberately not classed "status-panel" -- that class name belongs
     // to sprint 006's retired status-request panel, and
-    // `RobotPage.test.tsx` guards against its reappearance
-    // (`el.querySelector(".status-panel")` must stay null). This
-    // component's own class is "robot-status-panel"; every inner class
-    // below is still prefixed "status-panel-*" purely for local naming
-    // consistency and does not collide (a CSS class selector matches
-    // whole tokens, not prefixes).
+    // `RobotPage.test.tsx` guards against its reappearance.
     <section className="robot-status-panel" aria-label="Robot status">
-      <p
-        className={`status-panel-state${isEstopped ? " status-panel-state-danger" : ""}`}
-        data-testid="status-panel-state"
-      >
-        {word}
-      </p>
-
-      {status && (
-        <>
-          <dl className="status-panel-fields" data-testid="status-panel-fields">
-            {Object.entries(status.fields).map(([key, value]) => (
-              <div className="status-panel-field" key={key}>
-                <dt>{key}</dt>
-                <dd>{value}</dd>
-              </div>
-            ))}
-          </dl>
-          <p className="status-panel-updated">
-            Last updated {Math.max(0, Math.floor((now() - status.receivedAt) / 1000))}s ago
-          </p>
-        </>
-      )}
-
-      <div className="status-panel-actions">
-        <button
-          type="button"
-          className="status-panel-button"
-          data-testid="status-panel-refresh"
-          disabled={!linkOpen}
-          onClick={handleRefresh}
+      <div className="status-panel-heading">
+        <h3>Status</h3>
+        <span
+          className={`status-panel-state${isEstopped ? " status-panel-state-danger" : ""}`}
+          data-testid="status-panel-state"
         >
-          Refresh
-        </button>
+          {word}
+        </span>
         {isEstopped && (
           <button
             type="button"
@@ -172,6 +212,19 @@ export function StatusPanel({ device, now = Date.now }: StatusPanelProps) {
           </button>
         )}
       </div>
+
+      {status && (
+        <table className="status-panel-table" data-testid="status-panel-fields">
+          <tbody>
+            {statusRows(status.fields).map((row) => (
+              <tr key={row.key}>
+                <th scope="row">{row.label}</th>
+                <td>{row.value}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </section>
   );
 }

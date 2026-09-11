@@ -468,11 +468,6 @@ export function DriveControls({ device }: DriveControlsProps) {
           No link open — open a link before driving.
         </p>
       )}
-      <p className="drive-controls-note">
-        <strong>Hold</strong> a direction to drive; release to stop. Click a turn button for a
-        fixed turn.{" "}
-        {activeDirection ? `Holding: ${DIRECTION_LABELS[activeDirection]}.` : ""}
-      </p>
       <div className="drive-controls-pad">
         {turnButton(TURN_90_LEFT)}
         {directionButton("forward")}

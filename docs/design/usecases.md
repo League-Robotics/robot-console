@@ -411,3 +411,177 @@ longer in use for that robot.
 - Because the console has no runtime WiFi provisioning path, an
   unprovisioned robot never advertises `_robotlink._tcp`/`._udp` and this
   use case does not apply to it; the console cannot provision it itself.
+
+---
+
+## Presence and awareness (added 2026-09-11)
+
+The use cases above describe what a student does once a machine is
+reachable. The ones below describe how the console *knows* a machine is
+reachable, which is the part `architecture.md` redesigns. Times are
+acceptance targets, not implementation details. "Card" means the front
+page's one-per-device card; "link row" means one line under it.
+
+## UC-011 — Plug a micro:bit into USB and see it
+
+**Actor:** Student
+
+**Preconditions:** The host is running. The board may be blank, a relay,
+or a robot.
+
+**Main flow:**
+1. Student plugs the board in.
+2. Within 2 s a card appears with the five-letter name (from SWD) and
+   a `USB` link row in state `connecting`.
+3. Within 5 s the row is `connected` and the card shows the role
+   (relay / robot / calibration robot) or "No role announced" for a blank
+   board.
+4. The board was reset once and identified once. It is now `owned`.
+
+**Error flows:**
+- SWD naming fails → card shows "Unnamed device" with the reason; the USB
+  row still connects and identifies by banner.
+- Port open fails (held by another program, permission) → row is
+  `failed` with the reason and retries with backoff; the card never
+  disappears while the board stays enumerated.
+- No banner (silent firmware) → row is `connected` with reason
+  "unresponsive"; a Re-identify control is offered.
+
+## UC-012 — Power on a provisioned robot and see it over WiFi
+
+**Actor:** Student
+
+**Preconditions:** The robot has been plugged into this host at least once
+(UC-011), so it is `owned`. It has WiFi credentials and is on the network.
+
+**Main flow:**
+1. Robot boots and announces `_robotlink._tcp`/`_udp`.
+2. Within 10 s of the announcement a `WiFi` link row appears on the
+   robot's card and goes `connecting` → `connected`.
+3. If the robot booted before the console, or its announcement was
+   missed, the periodic mDNS re-query finds it within one interval
+   (≤ 60 s).
+
+**Error flows:**
+- The robot is not `owned` (never plugged into this host) → no card, no
+  row, no connection attempt. Another student's robot stays invisible.
+- The robot's IP changed → the row's address updates on the next
+  announcement or re-query; an open session is marked `unresponsive` and
+  reconnected to the new address. No repeated errors against the old
+  address.
+
+## UC-013 — A robot that was plugged in earlier is remembered
+
+**Actor:** Student
+
+**Main flow:**
+1. Student opens the console on a host that has seen robots before.
+2. Every previously-owned robot has a card immediately, from the DB,
+   showing "last seen <time> over <transport>" and "last checked
+   <time>" even before any watcher has run.
+3. Live links attach to those cards as watchers report them.
+
+**Error flows:**
+- A remembered robot that is never seen again keeps its card with
+  `stale` link rows; Forget removes it.
+
+## UC-014 — A robot goes away
+
+**Actor:** robot-console host (automatic)
+
+**Main flow:**
+1. A robot is unplugged, powered off, or leaves the network.
+2. USB: the row goes `stale` within one enumeration poll (1 s); any
+   session closes; controls disable.
+3. WiFi: a silent open session is marked `unresponsive` within three
+   status polls (15 s); the advertisement ages out after its TTL and the
+   row goes `stale`.
+4. The card remains with the last-seen time. One notice, not one per poll.
+
+## UC-015 — Relay probes remembered robots over radio while idle
+
+**Actor:** robot-console host (automatic)
+
+**Preconditions:** A RADIORELAY is attached over USB and no student is
+bridged through it.
+
+**Main flow:**
+1. The relay's card shows "idle · sweeping".
+2. For each owned robot with no connected USB or WiFi link, the host
+   retunes the relay (`!CG`), sends `> ID`, and waits ≤ 500 ms.
+3. A robot that answers gets a `Radio via <relay>` link row in state
+   `connectable` with "last checked <time>"; one that doesn't keeps its
+   previous state with an updated last-checked time.
+4. Names that fail repeatedly are probed less often.
+
+**Error flows:**
+- Relay enumerated without HID and found parked in the data plane → the
+  host sends a serial break to reset it before sweeping.
+- Firmware without a non-persisting tune → sweep rate is limited to
+  protect the relay's flash, and the relay card says so.
+
+## UC-016 — Student connects through a relay while it is sweeping
+
+**Actor:** Student
+
+**Main flow:**
+1. Student picks a robot on the relay card or page and presses Connect.
+2. The sweep is interrupted within one probe (≤ 1 s) and releases the
+   relay.
+3. The bridge proceeds exactly as UC-004: reset, preamble, `!CG`, `!GO`,
+   HELLO. If the robot was sighted by the sweep, its channel/group are
+   used first.
+4. On Disconnect the relay returns to idle and, after a quiet period,
+   resumes sweeping.
+
+**Error flows:**
+- Default failover (no robot picked) tries remembered robots most-recent
+  first and **resets the relay between candidates**, so a failed
+  candidate never leaves the relay in the data plane for the next one.
+
+## UC-017 — A link drops under an open session
+
+**Actor:** robot-console host (automatic)
+
+**Main flow:**
+1. The serial port or TCP socket closes cleanly, or the peer goes silent.
+2. The link row goes `unresponsive` immediately (close) or within three
+   polls (silence); controls disable; one notice is shown.
+3. The reconciler reconnects with backoff (1 s, 2 s, … capped at 60 s)
+   unless the user closed the link.
+4. On success the row returns to `connected` and the sequence state is
+   reset by the fresh HELLO.
+
+## UC-018 — Student opens a robot that is reachable several ways
+
+**Actor:** Student
+
+**Main flow:**
+1. The card shows every link row for the robot with its state.
+2. Student presses the card's arrow. The host has already connected the
+   preferred link (USB > WiFi > mbserial > radio); the robot page opens
+   on it.
+3. Student may pick a different link row to open instead.
+
+## UC-019 — Radio address override
+
+**Actor:** Instructor
+
+**Main flow:**
+1. Instructor sets a channel/group for a robot on its Configuration tab
+   (or the header's Set Radio).
+2. The override is stored in the host DB for that device; every host
+   connect, sweep, and bridge uses it; the card shows the source
+   (override / registry / derived).
+3. Clearing the override returns to the derived default.
+
+## UC-020 — Browser tab loses the host
+
+**Actor:** Student
+
+**Main flow:**
+1. The host restarts or the socket drops.
+2. The tab shows a persistent "Disconnected from the console host —
+   reconnecting" banner and disables every send-capable control.
+3. On reconnect a fresh snapshot replaces the stale one; controls
+   re-enable only for links the new snapshot says are `connected`.

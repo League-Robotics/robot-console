@@ -99,6 +99,7 @@ import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
 import { CalibrationPage } from "../components/CalibrationPage";
 import { ChartsPanel } from "../components/ChartsPanel";
 import { CommandStrip } from "../components/CommandStrip";
+import { ConfigurationPage } from "../components/ConfigurationPage";
 import { DeviceConsole } from "../components/DeviceConsole";
 import { DriveControls } from "../components/DriveControls";
 import { DriveTab } from "../components/DriveTab";
@@ -118,7 +119,7 @@ export interface RobotPageProps {
  * -- only offered for a calibration-classified robot), and Functions & charts (functions and the drive pad on one side,
  * charts and the path trace on the other). Sequencing state moved into the console's
  * own header (`DeviceConsole`) rather than a page panel. */
-export type RobotTab = "main" | "drive" | "calibration" | "functions";
+export type RobotTab = "main" | "drive" | "calibration" | "functions" | "configuration";
 
 export function RobotPage({ endpoint }: RobotPageProps) {
   const hasCalibration = endpoint.classification.type === "calibration";
@@ -129,6 +130,7 @@ export function RobotPage({ endpoint }: RobotPageProps) {
     { id: "drive", label: "Drive" },
     ...(hasCalibration ? [{ id: "calibration" as const, label: "Calibration" }] : []),
     { id: "functions", label: "Functions & charts" },
+    { id: "configuration", label: "Configuration" },
   ];
 
   return (
@@ -183,6 +185,8 @@ export function RobotPage({ endpoint }: RobotPageProps) {
       {tab === "drive" && <DriveTab device={endpoint} />}
 
       {tab === "calibration" && <CalibrationPage device={endpoint} />}
+
+      {tab === "configuration" && <ConfigurationPage device={endpoint} />}
 
       {tab === "functions" && (
         <div className="robot-page-columns" data-testid="robot-tab-panel-functions">

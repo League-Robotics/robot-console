@@ -784,6 +784,10 @@ export type ClientMessage =
  * onto -- answered to this client alone with {@link WifiCredentialsMessage}. */
 export interface GetWifiCredentialsMessage {
   type: "get-wifi-credentials";
+  /** OOP 2026-09-11: include the password in the reply -- only ever at
+   * a person's explicit request (the Configuration tab's "show the
+   * password in the code" control). */
+  reveal?: boolean;
 }
 
 /** OOP 2026-09-10: store a network in the host's persistent state. An
@@ -811,6 +815,8 @@ export interface WifiCredentialsMessage {
   ssid: string | null;
   hasPassword: boolean;
   source: "stored" | "env" | "none";
+  /** Present only in reply to a `reveal: true` request. */
+  password?: string;
 }
 
 /** OOP 2026-09-10: the outcome of one {@link ProvisionWifiMessage}. */
@@ -930,7 +936,7 @@ export function parseClientMessage(value: unknown): ClientMessage | undefined {
         ? { type: "session-close", endpointId: value.endpointId }
         : undefined;
     case "get-wifi-credentials":
-      return { type: "get-wifi-credentials" };
+      return value.reveal === true ? { type: "get-wifi-credentials", reveal: true } : { type: "get-wifi-credentials" };
     case "set-wifi-credentials":
       return isNonEmptyString(value.ssid) && typeof value.password === "string"
         ? { type: "set-wifi-credentials", ssid: value.ssid, password: value.password }

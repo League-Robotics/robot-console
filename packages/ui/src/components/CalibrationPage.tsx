@@ -139,7 +139,7 @@ export function readCalibrationState(name: string): CalibrationState {
   }
 }
 
-function writeCalibrationState(name: string, state: CalibrationState): void {
+export function writeCalibrationState(name: string, state: CalibrationState): void {
   try {
     window.localStorage.setItem(storageKey(name), JSON.stringify(state));
   } catch {
@@ -147,7 +147,7 @@ function writeCalibrationState(name: string, state: CalibrationState): void {
   }
 }
 
-function parseNumber(raw: string): number | undefined {
+export function parsePositiveNumber(raw: string): number | undefined {
   if (raw.trim() === "") {
     return undefined;
   }
@@ -281,7 +281,7 @@ export function CalibrationPage({ device }: CalibrationPageProps) {
                     placeholder="not calibrated"
                     value={state.wheelDiameterMm ?? ""}
                     onChange={(event) => {
-                      const value = parseNumber(event.target.value);
+                      const value = parsePositiveNumber(event.target.value);
                       update({ wheelDiameterMm: value, wheelDiameterSource: value === undefined ? undefined : "entered" });
                     }}
                   />{" "}
@@ -304,7 +304,7 @@ export function CalibrationPage({ device }: CalibrationPageProps) {
                     min="1"
                     placeholder="optional"
                     value={state.measuredTrackWidthCm ?? ""}
-                    onChange={(event) => update({ measuredTrackWidthCm: parseNumber(event.target.value) })}
+                    onChange={(event) => update({ measuredTrackWidthCm: parsePositiveNumber(event.target.value) })}
                   />{" "}
                   cm
                   <span className="calibration-source"> wheel centre to wheel centre, if you measured it</span>

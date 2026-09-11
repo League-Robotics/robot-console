@@ -440,9 +440,18 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
         case "session-close":
           void registry.requestClose(message.endpointId);
           break;
-        case "get-wifi-credentials":
-          ws.send(JSON.stringify({ type: "wifi-credentials", ...wifiCredentials.describe() } satisfies ServerMessage));
+        case "get-wifi-credentials": {
+          const described = wifiCredentials.describe();
+          const revealed = message.reveal ? wifiCredentials.read()?.password : undefined;
+          ws.send(
+            JSON.stringify({
+              type: "wifi-credentials",
+              ...described,
+              ...(revealed !== undefined ? { password: revealed } : {}),
+            } satisfies ServerMessage),
+          );
           break;
+        }
         case "set-wifi-credentials":
           try {
             wifiCredentials.write(message.ssid, message.password);

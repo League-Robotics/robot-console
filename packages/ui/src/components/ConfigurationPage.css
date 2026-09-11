@@ -1,0 +1,34 @@
+.configuration-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.configuration-actions button {
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.3rem 0.8rem;
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.configuration-actions button:disabled {
+  color: var(--rc-text-muted);
+  cursor: default;
+}
+
+.configuration-reveal {
+  font-size: 0.85rem;
+  color: var(--rc-text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.configuration-page .calibration-table input[type="password"],
+.configuration-page .calibration-table input:not([type="number"]) {
+  width: 14rem;
+}

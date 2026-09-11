@@ -88,6 +88,38 @@ removing the import/hook entirely).
 - [x] `RelayPage.test.tsx`'s tests built around `autoConnecting`/log
       baselines are rewritten against `relayBridge` fixtures instead of
       simulated log entries.
+- [x] Sprint review follow-up: the connected branch's status line reads
+      "Connected to `<name>` via `<relay>` on channel X, group Y" only
+      when `child.sessionOpen === true` -- a child left listed with
+      `sessionOpen: false` after `deviceRegistry.ts#handleLinkError`
+      drops the radio link (not deleted, only Disconnect/`requestClose`/
+      the WiFi auto-switch removes it) instead renders "Connection to
+      `<name>` lost" (plus `child.sessionError` when present) as a
+      `.relay-page-alert` line, `data-testid="relay-lost"`, with the
+      connect bar and Disconnect still available.
+
+## Completion Notes
+
+Sprint review found one gap after this ticket first shipped: the
+connected branch rendered "Connected to `<name>` via `<relay>` …"
+whenever the synthesized child endpoint existed at all, regardless of
+whether its session was actually open. `deviceRegistry.ts#handleLinkError`
+leaves a dropped child listed with `sessionOpen: false` and
+`sessionError` set rather than deleting it, so after a radio link died
+this page kept saying "Connected" while the robot's own card said
+"Unreachable: …". Fixed by branching the status line in `RelayPage.tsx`
+on `child.sessionOpen`: `true` keeps the existing "Connected to" text,
+`false` renders a new `.relay-page-alert` "Connection to `<name>` lost"
+paragraph (`data-testid="relay-lost"`) folding in `child.sessionError`
+when present. The pre-existing `child.sessionError` alert block (for a
+transient error while still connected) is now gated on
+`child.sessionOpen` too, so it no longer double-renders alongside the
+new lost line. The connect bar, Disconnect, and `RobotPage` for the
+child all stay mounted in that state (unchanged, still driven by the
+child's existence). Fixed together with ticket 003 (same gap, same
+commit) since both surfaces share the wording. Regression test added in
+`RelayPage.test.tsx`; module doc comment's "Connected" section and
+"In-flight failover visibility" section updated.
 
 ## Implementation Plan
 

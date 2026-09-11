@@ -11,9 +11,14 @@
  * `viaRelay: { relayEndpointId, robotName, channel, group }`
  * (`wsMessages.ts`, frozen elsewhere). While that child exists the
  * relay's own session is closed (the radio link owns the port), so
- * this page's two states are driven entirely by whether such a child is
- * present in `useEndpoints()` — never by the relay's own `sessionOpen`
- * alone, which may legitimately be `false` in either state.
+ * this page's two top-level branches (connect bar vs. connected layout,
+ * including `RobotPage` mounting for the child) are driven entirely by
+ * whether such a child is present in `useEndpoints()` — never by the
+ * relay's own `sessionOpen` alone, which may legitimately be `false` in
+ * either branch. Within the child-present branch, "Connected to `<name>`"
+ * additionally requires `child.sessionOpen === true` (sprint 013
+ * follow-up, 013-004, see below) — a dropped radio link does not delete
+ * the child, so the child's own session state still matters.
  *
  * ## Sprint 8 ticket 005 additions
  *
@@ -75,6 +80,22 @@
  * (`RobotPage.transportBlind.test.ts`). The relay's own `DeviceConsole`
  * is not rendered here (its session is closed while a child owns the
  * port) — a one-line note says it returns after Disconnect.
+ *
+ * **"Connected to `<name>`" requires an open session, not just a child
+ * endpoint (sprint 013 follow-up, 013-003/013-004, 2026-09-11):** the
+ * synthesized child is not deleted when its radio link drops --
+ * `deviceRegistry.ts#handleLinkError` leaves it listed with
+ * `sessionOpen: false` and `sessionError` set; only a deliberate
+ * Disconnect/`requestClose`, or the WiFi auto-switch, removes it. So the
+ * status line above reads "Connected to `<name>` via `<relay>` on
+ * channel X, group Y" only when `child.sessionOpen === true`; when the
+ * child exists with `sessionOpen === false`, this page instead renders
+ * "Connection to `<name>` lost" (plus `child.sessionError` when
+ * present, `data-testid="relay-lost"`) as a `.relay-page-alert` line in
+ * its place -- the connect bar and Disconnect stay available in that
+ * state (the connected layout, including `RobotPage` for the child,
+ * stays mounted throughout, driven by the child's existence, not its
+ * session state) so the student can retry or clean up.
  */
 import { useEffect, useState } from "react";
 import type {
@@ -301,15 +322,21 @@ export function RelayPage({ endpoint }: RelayPageProps) {
 
       {child ? (
         <>
-          {child.sessionError && (
+          {child.sessionOpen && child.sessionError && (
             <p className="relay-page-alert" role="alert">
               {child.sessionError}
             </p>
           )}
-          <p className="relay-connected-status" data-testid="relay-connected">
-            Connected to {child.viaRelay.robotName} via {relayName} on channel {child.viaRelay.channel}, group{" "}
-            {child.viaRelay.group}
-          </p>
+          {child.sessionOpen ? (
+            <p className="relay-connected-status" data-testid="relay-connected">
+              Connected to {child.viaRelay.robotName} via {relayName} on channel {child.viaRelay.channel}, group{" "}
+              {child.viaRelay.group}
+            </p>
+          ) : (
+            <p className="relay-page-alert" role="alert" data-testid="relay-lost">
+              Connection to {child.viaRelay.robotName} lost{child.sessionError ? `: ${child.sessionError}` : ""}
+            </p>
+          )}
 
           <div className="relay-connect-bar">
             <RobotSelect options={robotOptions} value={selectedName} onChange={handleSelectName} />

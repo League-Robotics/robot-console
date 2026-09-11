@@ -89,6 +89,36 @@ logic.
       sprint doesn't touch that structure, but don't regress it --
       reference sprint 012's `FrontPage.test.tsx` DOM-structure
       assertion if extending near it).
+- [x] Sprint review follow-up: "Connected to `<name>`" renders only when
+      `child.viaRelay` exists **and** `child.sessionOpen === true` -- a
+      child left listed with `sessionOpen: false` after
+      `deviceRegistry.ts#handleLinkError` drops the radio link (not
+      deleted, only Disconnect/`requestClose`/the WiFi auto-switch
+      removes it) instead renders "Connection to `<name>` lost" (plus
+      `child.sessionError` when present) as a `.device-relay-failed`
+      line, `data-testid="relay-quick-lost-<relayId>"`, with
+      Switch/Disconnect still available.
+
+## Completion Notes
+
+Sprint review found one gap after this ticket first shipped: the relay
+card rendered "Connected to `<name>`" whenever the synthesized
+`-via-<name>` child endpoint existed at all, not only when its session
+was actually open. `deviceRegistry.ts#handleLinkError` leaves a dropped
+child listed with `sessionOpen: false` and `sessionError` set rather
+than deleting it, so after a radio link died the relay card kept saying
+"Connected to GoPiv" while the robot's own card said "Unreachable: …".
+Fixed in `RelayQuickConnect` (`FrontPage.tsx`) by gating the "Connected
+to" paragraph on `child.sessionOpen === true` and adding a new
+`.device-relay-failed` "Connection to `<name>` lost" paragraph
+(`data-testid="relay-quick-lost-<relayId>"`) for the
+child-exists-but-session-closed case, folding in `child.sessionError`
+when present. Switch/Disconnect remain enabled in that state since the
+child still exists. `connectionState()`/"Linked"/"Not linked" semantics
+and the relay-bridge connecting/failed rendering are unchanged. Fixed
+together with ticket 004 (same gap, same commit) since both surfaces
+share the wording. Regression test added in `FrontPage.test.tsx`; module
+doc comment updated.
 
 ## Implementation Plan
 

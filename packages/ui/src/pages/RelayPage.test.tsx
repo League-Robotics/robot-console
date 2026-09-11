@@ -458,6 +458,27 @@ describe("RelayPage -- connected", () => {
     expect(alert!.textContent).toContain("robot did not answer HELLO");
   });
 
+  it("sprint 013 follow-up (013-004): a child that still exists but whose session has dropped shows 'Connection to <name> lost', not 'Connected to'", () => {
+    const relay = relayFixture({ sessionOpen: false });
+    const droppedChild = childFixture({
+      sessionOpen: false,
+      sessionError: "no reply from vevav -- is it on and listening?",
+    });
+    const { el } = mountRelayPage(relay, { endpoints: [relay, droppedChild] });
+
+    expect(el.querySelector('[data-testid="relay-connected"]')).toBeNull();
+    const lost = el.querySelector('[data-testid="relay-lost"]');
+    expect(lost).not.toBeNull();
+    expect(lost!.textContent).toBe("Connection to vevav lost: no reply from vevav -- is it on and listening?");
+    expect(lost!.classList.contains("relay-page-alert")).toBe(true);
+    expect(lost!.getAttribute("role")).toBe("alert");
+
+    // The connect bar and Disconnect stay available -- the child still exists.
+    expect(el.querySelector('[data-testid="relay-connect"]')).not.toBeNull();
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="relay-connect"]')!.disabled).toBe(false);
+    expect(el.querySelector('[data-testid="relay-disconnect"]')).not.toBeNull();
+  });
+
   it("mounts AddressSourceChip above RobotPage, fed from the child's own addressSource/viaRelay/transport", () => {
     const relay = relayFixture({ sessionOpen: false });
     const child = childFixture({ addressSource: "local-derived" });

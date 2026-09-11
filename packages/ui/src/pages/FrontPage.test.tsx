@@ -1035,4 +1035,31 @@ describe("relay card relayBridge connecting/connected/failed states (sprint 013 
     expect(childRow?.querySelector(".device-connection-label")?.textContent).toBe("Radio via relay rly02");
     expect(childRow?.querySelector(".device-connection-state")?.textContent).toBe("Linked");
   });
+
+  it("sprint 013 follow-up (013-003): a child that still exists but whose session has dropped shows 'Connection to <name> lost', not 'Connected to'", () => {
+    const droppedChild: EndpointListEntry = {
+      endpointId: "usb-RELAY-R-via-gopiv",
+      transport: "relay-radio",
+      resourceKey: "usb-RELAY-R",
+      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
+      name: "gopiv",
+      role: "NEZHA2",
+      sessionOpen: false,
+      sessionError: "no reply from gopiv -- is it on and listening?",
+      viaRelay: { relayEndpointId: "usb-RELAY-R", robotName: "gopiv", channel: 12, group: 3 },
+    };
+    const el = mount(withRouter(<EndpointsList status="open" devices={[relay(), droppedChild]} />));
+
+    const quick = el.querySelector('[data-testid="relay-quick-connect-usb-RELAY-R"]');
+    expect(quick?.textContent).not.toContain("Connected to gopiv");
+    const lost = quick?.querySelector('[data-testid="relay-quick-lost-usb-RELAY-R"]');
+    expect(lost).not.toBeNull();
+    expect(lost?.textContent).toBe("Connection to gopiv lost: no reply from gopiv -- is it on and listening?");
+    expect(lost?.classList.contains("device-relay-failed")).toBe(true);
+
+    // Switch/Disconnect stay available -- the child still exists.
+    const buttons = Array.from(quick?.querySelectorAll("button") ?? []).map((b) => b.textContent);
+    expect(buttons).toContain("Switch");
+    expect(buttons).toContain("Disconnect");
+  });
 });

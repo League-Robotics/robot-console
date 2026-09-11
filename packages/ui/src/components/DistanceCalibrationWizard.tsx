@@ -101,6 +101,53 @@ export function deriveDistanceCalibrationRun(
   return { kind: "running", events };
 }
 
+/**
+ * OOP 2026-09-10 (stakeholder): the wizard's answer is the wheel
+ * diameter, not a "calibration" number -- this routine *is* how the
+ * diameter gets measured. The template's `calx` reports it directly
+ * (`CALX:diameter=90.3 mm`); an older build that only sends the
+ * `CALX:apply diffDrive.setWheelCalibration(<mm per degree>)` line is
+ * converted (diameter = mm/deg × 360 / π). `undefined` when neither is
+ * present, in which case the raw firmware snippet is shown as-is.
+ */
+export function deriveWheelDiameterMm(events: readonly string[], snippet: string): number | undefined {
+  for (const text of events) {
+    const match = /^diameter=\s*(-?\d+(?:\.\d+)?)/.exec(text.trim());
+    if (match) {
+      return round2(Number(match[1]));
+    }
+  }
+  const applied = /setWheelCalibration\(\s*(-?\d+(?:\.\d+)?)\s*\)/.exec(snippet);
+  if (applied) {
+    return round2((Number(applied[1]) * 360) / Math.PI);
+  }
+  return undefined;
+}
+
+/** The wheel diameter the robot was running with before this run, from
+ * `CALX:begin ... baseline=<mm per degree>mm/deg`. */
+export function deriveBaselineDiameterMm(events: readonly string[]): number | undefined {
+  for (const text of events) {
+    const match = /baseline=\s*(-?\d+(?:\.\d+)?)/.exec(text);
+    if (match) {
+      return round2((Number(match[1]) * 360) / Math.PI);
+    }
+  }
+  return undefined;
+}
+
+/** The line a student pastes: the extension's only geometry setter
+ * takes mm per shaft degree, so the diameter is written literally and
+ * the conversion (π·D/360) is spelled out in the code itself rather
+ * than hidden in a pre-multiplied constant. */
+export function wheelDiameterSnippet(diameterMm: number): string {
+  return `diffDrive.setWheelCalibration(${diameterMm} * Math.PI / 360)`;
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
 export interface DistanceCalibrationWizardProps {
   device: EndpointListEntry;
 }
@@ -143,6 +190,10 @@ export function DistanceCalibrationWizard({ device }: DistanceCalibrationWizardP
     setRunStartIndex(log.length);
     sendCommand(endpointId, "RUN", ["calx"]);
   }
+
+  const diameterMm = run?.kind === "succeeded" ? deriveWheelDiameterMm(run.events, run.snippet) : undefined;
+  const baselineMm = run?.kind === "succeeded" ? deriveBaselineDiameterMm(run.events) : undefined;
+  const snippet = run?.kind === "succeeded" ? (diameterMm !== undefined ? wheelDiameterSnippet(diameterMm) : run.snippet) : "";
 
   function handleCopy(snippet: string): void {
     try {
@@ -212,15 +263,27 @@ export function DistanceCalibrationWizard({ device }: DistanceCalibrationWizardP
 
       {run?.kind === "succeeded" && (
         <div className="distance-calibration-result" data-testid="distance-calibration-result">
-          <p>Calibration complete — paste this into your program:</p>
+          {diameterMm !== undefined && (
+            <p className="distance-calibration-diameter" data-testid="distance-calibration-diameter">
+              Wheel diameter: <strong>{diameterMm} mm</strong>
+              {baselineMm !== undefined && baselineMm !== diameterMm ? ` (was ${baselineMm} mm)` : ""}
+            </p>
+          )}
+          <p>Paste this into your program's setup:</p>
           <code className="distance-calibration-snippet" data-testid="distance-calibration-snippet">
-            {run.snippet}
+            {snippet}
           </code>
+          {diameterMm !== undefined && (
+            <p className="distance-calibration-note">
+              The number is your wheel diameter in millimetres; the rest converts it to the
+              millimetres-per-degree the extension stores.
+            </p>
+          )}
           <button
             type="button"
             className="distance-calibration-copy"
             data-testid="distance-calibration-copy"
-            onClick={() => handleCopy(run.snippet)}
+            onClick={() => handleCopy(snippet)}
           >
             Copy
           </button>

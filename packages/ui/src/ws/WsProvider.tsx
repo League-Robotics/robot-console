@@ -149,6 +149,8 @@ import type {
   RememberedRobotEntry,
   ServerMessage,
   TelemetryMessage,
+  WifiCredentialsMessage,
+  WifiProvisionResultMessage,
 } from "@robot-console/host/src/wsMessages.js";
 import type { WireField } from "@robot-console/protocol";
 
@@ -468,6 +470,11 @@ interface Store {
   logOrder: string[];
   flashProgressByEndpoint: Map<string, FlashProgressState>;
   flashResultHandlers: Set<(message: FlashResultMessage) => void>;
+  /** OOP 2026-09-10: the host's stored WiFi network (never the
+   * password) -- `undefined` until asked for. */
+  wifiCredentials: WifiCredentialsMessage | undefined;
+  /** OOP 2026-09-10: the most recent provisioning outcome per endpoint. */
+  wifiProvisionResultByEndpoint: Map<string, WifiProvisionResultMessage>;
   /** Subscribers to the local-hex upload handshake's `flash-local-ready`
    * reply (ticket 008) -- see `WsActions.onFlashLocalReady`'s own doc
    * comment. Not store-backed state (no `endpoints`/log-buffer slice
@@ -779,6 +786,8 @@ function createStore(): Store {
     logsByEndpoint: new Map(),
     logOrder: [],
     flashProgressByEndpoint: new Map(),
+    wifiCredentials: undefined,
+    wifiProvisionResultByEndpoint: new Map(),
     flashResultHandlers: new Set(),
     flashLocalReadyHandlers: new Set(),
     telemetryByEndpoint: new Map(),
@@ -987,6 +996,14 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
               handler(parsed);
             }
             break;
+          case "wifi-credentials":
+            store.wifiCredentials = parsed;
+            notify(store);
+            break;
+          case "wifi-provision-result":
+            store.wifiProvisionResultByEndpoint.set(parsed.endpointId, parsed);
+            notify(store);
+            break;
           case "telemetry":
             // Sprint 9 ticket 003: deliberately does not call
             // `notify(store)` itself here -- `handleTelemetryMessage`
@@ -1127,6 +1144,26 @@ export function useDiscoveredServices(): DiscoveredServicesSnapshot {
  * frozen to `{ firmware, phase }` and cannot represent local-hex). See
  * this module's doc comment ("Flash progress for both source kinds")
  * for the reconnect-gap this does not close. */
+/** OOP 2026-09-10: the host's stored WiFi network description (see
+ * `wsMessages.ts`'s `WifiCredentialsMessage`), `undefined` until a
+ * `get-wifi-credentials` has been answered. */
+export function useWifiCredentials(): WifiCredentialsMessage | undefined {
+  const store = useStore();
+  return useSyncExternalStore(
+    store.subscribe,
+    useCallback(() => store.wifiCredentials, [store]),
+  );
+}
+
+/** OOP 2026-09-10: the latest `wifi-provision-result` for one endpoint. */
+export function useWifiProvisionResult(endpointId: string): WifiProvisionResultMessage | undefined {
+  const store = useStore();
+  return useSyncExternalStore(
+    store.subscribe,
+    useCallback(() => store.wifiProvisionResultByEndpoint.get(endpointId), [store, endpointId]),
+  );
+}
+
 export function useFlashProgress(endpointId: string): FlashProgressState | undefined {
   const store = useStore();
   return useSyncExternalStore(

@@ -831,6 +831,9 @@ interface EndpointState {
   /** OOP 2026-09-10: consecutive host `STATUS` polls that went
    * unanswered -- see {@link DeviceRegistry.pollStatus}'s watchdog. */
   pollMisses?: number;
+  /** OOP 2026-09-10: resolves the `wificred` reply (or `err`) a pending
+   * {@link DeviceRegistry.provisionWifi} is waiting for. */
+  wificredWaiter?: ((reply: { verb: string; fields: readonly string[] }) => void) | undefined;
   /** True while a `HELLO` round trip ({@link DeviceRegistry.resyncSession})
    * is in flight, so the status poll stays quiet -- a `status` reply
    * arriving mid-banner-wait would be swallowed by the link's banner
@@ -1240,6 +1243,10 @@ export const DEFAULT_STATUS_POLL_INTERVAL_MS = 5000;
  * the WiFi module's own burst drops, short enough that a power-cycled
  * robot is back on the page within half a minute. */
 export const WIFI_POLL_MISS_LIMIT = 3;
+
+/** OOP 2026-09-10: how long {@link DeviceRegistry.provisionWifi} waits
+ * for the firmware's `wificred` confirmation. */
+export const WIFICRED_REPLY_TIMEOUT_MS = 4000;
 
 /**
  * Live registry of attached devices, their resolved identity/
@@ -2423,6 +2430,72 @@ export class DeviceRegistry {
    * {@link emitDevices} itself once the resync settles, since a `HELLO`
    * always changes `seq`/`pendingCount`.
    */
+  /**
+   * OOP 2026-09-10: write one WiFi credential slot on a robot --
+   * `WIFICRED SET <slot> <ssid> <password>` over its open link (USB,
+   * relay radio or WiFi alike) -- and wait for the firmware's `wificred
+   * <slot> <ssid> <haspw>` confirmation. The console echo of the sent
+   * line has the password blanked: this method is the one place a
+   * password crosses the wire, and the log must never carry it. The
+   * robot picks the slot up at its next boot (`credsrc=2`), so the
+   * result message says so. Never throws; every failure is an `ok:
+   * false` with a reason.
+   */
+  async provisionWifi(
+    endpointId: string,
+    slot: number,
+    ssid: string,
+    password: string,
+  ): Promise<{ ok: boolean; message: string }> {
+    return this.mutex.run(endpointId, async () => {
+      const state = this.states.get(endpointId);
+      if (!state?.sessionOpen || !state.session) {
+        return { ok: false, message: `${endpointId} has no open link` };
+      }
+      if (/\s/.test(ssid) || /\s/.test(password)) {
+        return { ok: false, message: "the network name and password cannot contain spaces (the wire splits on them)" };
+      }
+      const link = state.session.link;
+      const reply = new Promise<{ verb: string; fields: readonly string[] } | undefined>((resolve) => {
+        const timer = setTimeout(() => {
+          if (state.wificredWaiter === waiter) {
+            state.wificredWaiter = undefined;
+          }
+          resolve(undefined);
+        }, WIFICRED_REPLY_TIMEOUT_MS);
+        timer.unref?.();
+        const waiter = (value: { verb: string; fields: readonly string[] }) => {
+          clearTimeout(timer);
+          resolve(value);
+        };
+        state.wificredWaiter = waiter;
+      });
+      try {
+        const line = link.sendCommand("WIFICRED", ["SET", slot, ssid, password]);
+        const redacted = line.replace(/\n$/, "").replace(password, "•".repeat(Math.min(8, password.length)));
+        this.emitLine(endpointId, "tx", redacted);
+      } catch (error) {
+        state.wificredWaiter = undefined;
+        return { ok: false, message: error instanceof Error ? error.message : String(error) };
+      }
+      const answer = await reply;
+      if (!answer) {
+        return { ok: false, message: "the robot did not confirm within a few seconds -- is it running a build with WiFi support?" };
+      }
+      if (answer.verb === "err") {
+        return { ok: false, message: `the robot rejected the request (err ${answer.fields.join(" ")})` };
+      }
+      const [replySlot, replySsid, hasPw] = answer.fields;
+      if (replySlot !== String(slot) || replySsid !== ssid) {
+        return { ok: false, message: `the robot answered for a different slot or network (${answer.fields.join(" ")})` };
+      }
+      if (password.length > 0 && hasPw !== "1") {
+        return { ok: false, message: "the robot stored the network name but not the password" };
+      }
+      return { ok: true, message: `wrote ${ssid} to slot ${slot} -- power-cycle the robot and it will join` };
+    });
+  }
+
   async sendCommand(endpointId: string, verb: string, fields: readonly WireField[] = []): Promise<void> {
     await this.mutex.run(endpointId, async () => {
       const state = this.states.get(endpointId);
@@ -3183,6 +3256,11 @@ export class DeviceRegistry {
    */
   private handleInboundLine(state: EndpointState, decoded: DecodedLine): void {
     const text = reconstructLineText(decoded);
+    if ((decoded.verb === "wificred" || decoded.verb === "err") && state.wificredWaiter) {
+      const waiter = state.wificredWaiter;
+      state.wificredWaiter = undefined;
+      waiter({ verb: decoded.verb, fields: decoded.fields.map(String) });
+    }
     if (decoded.verb === "status") {
       let origin: LineOrigin | undefined;
       if (state.pollAwaitingStatus) {

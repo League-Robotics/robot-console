@@ -74,6 +74,8 @@
 import { Link, useMatch } from "react-router";
 import { useEndpoint } from "../ws/WsProvider";
 import { FlashDialog } from "./FlashDialog";
+import { RadioAddressDialog } from "./RadioAddressDialog";
+import { WifiCredentialsDialog } from "./WifiCredentialsDialog";
 import "./AppHeader.css";
 
 export function AppHeader() {
@@ -95,11 +97,22 @@ export function AppHeader() {
           </Link>
         )}
         {endpoint && (
-          <FlashDialog
-            endpoint={endpoint}
-            forceShow
-            triggerClassName="app-header-flash-toggle"
-          />
+          <div className="app-header-actions">
+            {/* OOP 2026-09-10: Set Radio / Set Wi-Fi beside Flash for any
+                robot (not a relay) -- see RadioAddressDialog and
+                WifiCredentialsDialog. */}
+            {endpoint.classification.type !== "relay" && endpoint.name !== null && (
+              <RadioAddressDialog endpoint={endpoint} triggerClassName="app-header-flash-toggle" />
+            )}
+            {endpoint.classification.type !== "relay" && (
+              <WifiCredentialsDialog endpoint={endpoint} triggerClassName="app-header-flash-toggle" />
+            )}
+            <FlashDialog
+              endpoint={endpoint}
+              forceShow
+              triggerClassName="app-header-flash-toggle"
+            />
+          </div>
         )}
       </div>
     </header>

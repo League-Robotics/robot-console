@@ -239,3 +239,31 @@ describe("AppHeader Flash trigger", () => {
     expect(el.textContent).toContain("will interrupt");
   });
 });
+
+describe("AppHeader Set Radio / Set Wi-Fi (OOP 2026-09-10)", () => {
+  it("shows Set Radio and Set Wi-Fi beside Flash on a robot page, and neither on a relay page", () => {
+    const robot = endpoint({
+      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
+      role: "NEZHA2",
+      sessionOpen: true,
+    });
+    const { el } = mountAt("/d/usb-SERIAL-A", { snapshot: [robot] });
+    const labels = Array.from(el.querySelectorAll("button")).map((b) => b.textContent);
+    expect(labels).toEqual(["Set Radio", "Set Wi-Fi", "Flash"]);
+
+    act(() => {
+      root!.unmount();
+    });
+    root = null;
+    container?.remove();
+    container = null;
+
+    const relay = endpoint({
+      classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role", program: null, version: null },
+      role: "RADIORELAY",
+      sessionOpen: true,
+    });
+    const relayMount = mountAt("/d/usb-SERIAL-A", { snapshot: [relay] });
+    expect(Array.from(relayMount.el.querySelectorAll("button")).map((b) => b.textContent)).toEqual(["Flash"]);
+  });
+});

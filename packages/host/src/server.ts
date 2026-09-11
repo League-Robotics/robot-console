@@ -60,6 +60,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocket, WebSocketServer } from "ws";
+import { WifiCredentialsStore } from "./store/wifiCredentials.js";
 import { DeviceRegistry } from "./deviceRegistry.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
 import { FirmwareAvailabilityCache } from "./releases.js";
@@ -96,6 +97,8 @@ function defaultStaticDir(): string {
 }
 
 export interface StartServerOptions {
+  /** OOP 2026-09-10: injectable WiFi credential store (tests). */
+  wifiCredentials?: WifiCredentialsStore;
   /** Port to listen on. Defaults to {@link DEFAULT_PORT}. */
   port?: number;
   /** Directory of the built UI to serve as static files. Defaults to
@@ -231,6 +234,9 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     options.registry ??
     new DeviceRegistry({ consumeUpload: (uploadId) => localHexUpload.consumeUpload(uploadId) });
   const firmwareConfig = options.firmwareConfig ?? getFirmwareConfig();
+  // OOP 2026-09-10: the one network robots get provisioned onto -- see
+  // store/wifiCredentials.ts.
+  const wifiCredentials = options.wifiCredentials ?? new WifiCredentialsStore();
   // `loadConfig` is passed only for the default (real) cache, and only
   // when the caller did not pin `firmwareConfig` itself: a host started
   // before `dotconfig load` wrote `.env` must still pick the file up,
@@ -434,6 +440,44 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
         case "session-close":
           void registry.requestClose(message.endpointId);
           break;
+        case "get-wifi-credentials":
+          ws.send(JSON.stringify({ type: "wifi-credentials", ...wifiCredentials.describe() } satisfies ServerMessage));
+          break;
+        case "set-wifi-credentials":
+          try {
+            wifiCredentials.write(message.ssid, message.password);
+          } catch (error) {
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                message: `could not save the WiFi credentials: ${error instanceof Error ? error.message : String(error)}`,
+              } satisfies ServerMessage),
+            );
+            break;
+          }
+          ws.send(JSON.stringify({ type: "wifi-credentials", ...wifiCredentials.describe() } satisfies ServerMessage));
+          break;
+        case "provision-wifi": {
+          const credentials = wifiCredentials.read();
+          const endpointId = message.endpointId;
+          if (!credentials) {
+            ws.send(
+              JSON.stringify({
+                type: "wifi-provision-result",
+                endpointId,
+                ok: false,
+                message: "no WiFi network is stored yet -- enter one first",
+              } satisfies ServerMessage),
+            );
+            break;
+          }
+          void registry.provisionWifi(endpointId, message.slot ?? 0, credentials.ssid, credentials.password).then((result) => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "wifi-provision-result", endpointId, ...result } satisfies ServerMessage));
+            }
+          });
+          break;
+        }
         case "line":
           void registry.sendLine(message.endpointId, message.line);
           break;

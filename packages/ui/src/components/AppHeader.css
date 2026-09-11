@@ -40,8 +40,13 @@
   color: var(--rc-accent-contrast);
 }
 
-.app-header-flash-toggle {
+.app-header-actions {
   margin-left: auto;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.app-header-flash-toggle {
   border: 1px solid var(--rc-border);
   background: var(--rc-surface);
   color: var(--rc-text);

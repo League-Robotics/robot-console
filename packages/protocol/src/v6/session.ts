@@ -155,6 +155,11 @@ export const SEQUENCED_VERBS: ReadonlySet<string> = new Set([
   // at all (verified on hardware: `captures/funcs-run-acceptance-
   // 20260907`).
   "FUNCS",
+  // WIFICRED (OOP 2026-09-10): `WIFICRED #<id>` lists the credential
+  // slots, `WIFICRED SET <slot> <ssid> <password> #<id>` writes one;
+  // sequenced in the firmware, replied with `wificred <slot> <ssid>
+  // <haspw>` then the ack.
+  "WIFICRED",
 ]);
 
 /** Is `verb` one of the 11 id-bearing verbs ({@link SEQUENCED_VERBS})?

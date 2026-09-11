@@ -3305,6 +3305,80 @@ describe("WiFi endpoint synthesis and connect-on-click (sprint 10 ticket 003)", 
       await registry.stop();
     }
   });
+
+  it("OOP 2026-09-10: provisionWifi writes WIFICRED SET over the open link, echoes the line with the password blanked, and reports the robot's confirmation", async () => {
+    const watcher = fixtureWatcher(() => []);
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+    const wifiLink = new FakeLink(async () => wifiRobotBanner());
+    const createLink = wifiOnlyCreateLink(new Map([["gopiv.local.:7654", wifiLink]]));
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      knownRobotsStore: fakeRoster(["gopiv"]),
+      mdnsDiscovery,
+      createLink,
+    });
+    const echoed: string[] = [];
+    registry.onLine((_endpointId, direction, line) => {
+      if (direction === "tx") {
+        echoed.push(line);
+      }
+    });
+    registry.start();
+    try {
+      await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true);
+
+      const pending = registry.provisionWifi("wifi-gopiv", 0, "Busboom_Garage", "s3cret-pw");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const sentLine = wifiLink.sentLines.find((line) => line.startsWith("WIFICRED"));
+      expect(sentLine).toMatch(/^WIFICRED SET 0 Busboom_Garage s3cret-pw #\d+\n$/);
+      expect(echoed.find((line) => line.startsWith("WIFICRED"))).toMatch(/^WIFICRED SET 0 Busboom_Garage •+ #\d+$/);
+      expect(echoed.some((line) => line.includes("s3cret-pw"))).toBe(false);
+
+      wifiLink.emitLine({ kind: "line", verb: "wificred", fields: ["0", "Busboom_Garage", "1"] });
+      const result = await pending;
+      expect(result.ok).toBe(true);
+      expect(result.message).toContain("power-cycle");
+    } finally {
+      await registry.stop();
+    }
+  });
+
+  it("OOP 2026-09-10: provisionWifi reports a robot that never confirms, and refuses names or passwords with spaces", async () => {
+    const watcher = fixtureWatcher(() => []);
+    const mdnsDiscovery = fakeMdnsDiscovery({
+      relays: [],
+      robots: [],
+      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654 }],
+    });
+    const wifiLink = new FakeLink(async () => wifiRobotBanner());
+    const createLink = wifiOnlyCreateLink(new Map([["gopiv.local.:7654", wifiLink]]));
+    const registry = new DeviceRegistry({
+      statusPollIntervalMs: 0,
+      autoRequestFunctions: false,
+      watcher,
+      knownRobotsStore: fakeRoster(["gopiv"]),
+      mdnsDiscovery,
+      createLink,
+    });
+    registry.start();
+    try {
+      await waitForSnapshot(registry, (s) => s.find((e) => e.endpointId === "wifi-gopiv")?.sessionOpen === true);
+      expect((await registry.provisionWifi("wifi-gopiv", 0, "Busboom Mesh", "pw")).ok).toBe(false);
+      expect((await registry.provisionWifi("wifi-nobody", 0, "Net", "pw")).message).toContain("no open link");
+      const pending = registry.provisionWifi("wifi-gopiv", 0, "Net", "pw");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      wifiLink.emitLine({ kind: "line", verb: "err", fields: ["1"] });
+      expect((await pending).message).toContain("rejected");
+    } finally {
+      await registry.stop();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------

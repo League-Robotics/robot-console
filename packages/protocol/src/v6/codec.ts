@@ -384,6 +384,9 @@ export const REPLY_VERBS: ReadonlySet<string> = new Set([
   // out-of-process, 2026-09-09; without it these lines classified as
   // "foreign" and never reached a listener).
   "funcs",
+  // `wificred <slot> <ssid> <haspw>` -- the reply to `WIFICRED` (OOP
+  // 2026-09-10).
+  "wificred",
   // `thdr <col> <col> ...` -- the telemetry column-name header
   // (protocol.md S10.2), emitted whenever the column set changes or the
   // wire's own 20-frame auto-refresh fires (sprint 009 ticket 002).

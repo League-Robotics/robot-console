@@ -775,7 +775,51 @@ export type ClientMessage =
   | SendCommandMessage
   | FlashStartMessage
   | FlashLocalBeginMessage
-  | ForgetKnownRobotMessage;
+  | ForgetKnownRobotMessage
+  | GetWifiCredentialsMessage
+  | SetWifiCredentialsMessage
+  | ProvisionWifiMessage;
+
+/** OOP 2026-09-10: ask what network the host would provision robots
+ * onto -- answered to this client alone with {@link WifiCredentialsMessage}. */
+export interface GetWifiCredentialsMessage {
+  type: "get-wifi-credentials";
+}
+
+/** OOP 2026-09-10: store a network in the host's persistent state. An
+ * empty `password` keeps the one already held for the same SSID. Answered
+ * with a fresh {@link WifiCredentialsMessage}. */
+export interface SetWifiCredentialsMessage {
+  type: "set-wifi-credentials";
+  ssid: string;
+  password: string;
+}
+
+/** OOP 2026-09-10: write the stored network to one robot's credential
+ * slot (`WIFICRED SET`) over its open link. Answered with
+ * {@link WifiProvisionResultMessage}. */
+export interface ProvisionWifiMessage {
+  type: "provision-wifi";
+  endpointId: string;
+  slot?: number;
+}
+
+/** OOP 2026-09-10: what a browser may know about the stored network --
+ * the SSID and whether a password is held, never the password. */
+export interface WifiCredentialsMessage {
+  type: "wifi-credentials";
+  ssid: string | null;
+  hasPassword: boolean;
+  source: "stored" | "env" | "none";
+}
+
+/** OOP 2026-09-10: the outcome of one {@link ProvisionWifiMessage}. */
+export interface WifiProvisionResultMessage {
+  type: "wifi-provision-result";
+  endpointId: string;
+  ok: boolean;
+  message: string;
+}
 
 /** Every message shape the server may send. */
 export type ServerMessage =
@@ -785,7 +829,9 @@ export type ServerMessage =
   | FlashProgressMessage
   | FlashResultMessage
   | FlashLocalReadyMessage
-  | TelemetryMessage;
+  | TelemetryMessage
+  | WifiCredentialsMessage
+  | WifiProvisionResultMessage;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -883,6 +929,23 @@ export function parseClientMessage(value: unknown): ClientMessage | undefined {
       return isNonEmptyString(value.endpointId)
         ? { type: "session-close", endpointId: value.endpointId }
         : undefined;
+    case "get-wifi-credentials":
+      return { type: "get-wifi-credentials" };
+    case "set-wifi-credentials":
+      return isNonEmptyString(value.ssid) && typeof value.password === "string"
+        ? { type: "set-wifi-credentials", ssid: value.ssid, password: value.password }
+        : undefined;
+    case "provision-wifi": {
+      if (!isNonEmptyString(value.endpointId)) {
+        return undefined;
+      }
+      if (value.slot !== undefined && !(Number.isInteger(value.slot) && (value.slot as number) >= 0)) {
+        return undefined;
+      }
+      return value.slot !== undefined
+        ? { type: "provision-wifi", endpointId: value.endpointId, slot: value.slot as number }
+        : { type: "provision-wifi", endpointId: value.endpointId };
+    }
     case "line":
       return isNonEmptyString(value.endpointId) &&
         value.direction === "tx" &&

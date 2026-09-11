@@ -32,3 +32,7 @@ component renders it: `AppHeader` and `App` never read it.
   socket that isn't there.
 - Tests: FakeSocket close → banner shown, controls disabled, a send
   produces the console line; emitOpen → banner gone.
+
+## Folded into (2026-09-11)
+
+`rearch-07-ui-renders-snapshot-drops-client-policy.md` implements this banner and the disable-on-disconnect rule on top of the new `seq`/snapshot contract (see UC-020 in `docs/design/usecases.md`).

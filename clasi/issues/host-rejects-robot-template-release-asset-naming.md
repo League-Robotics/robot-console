@@ -114,3 +114,7 @@ What is still open, and why this issue stays pending:
   `nezha-robot-template`.
 - Documenting the two-name convention in `docs/design/specification.md`
   so the next image repo publishes both from day one.
+
+## Remaining step folded into (2026-09-11)
+
+Step 3 (list the assets found in the `no-asset` message) is part of `rearch-13-firmware-availability-watcher-etag-backoff.md`.

@@ -10,7 +10,8 @@ Cross-repository request against
 `https://github.com/League-Robotics/microbit-radio-relay`. Tracked here
 because the robot-console sweeper (rearch-10) is the consumer; the
 firmware change itself is a PR in that repo (stakeholder approved
-firmware changes on 2026-09-11).
+firmware changes on 2026-09-11). Filed upstream as
+https://github.com/League-Robotics/microbit-radio-relay/issues/1.
 
 The relay's command plane already lets a host send one line over the
 radio (`> <text>`) and receive (`< <text>`) without `!GO`

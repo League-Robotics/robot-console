@@ -51,15 +51,13 @@
  * connecting/failed states are carried over as `SnapshotRelay.bridging`,
  * looked up by the relay's own connectivity link id.
  *
- * **Dropped this ticket, not carried over:** the front-page Flash
- * trigger (`04-ui.md` §1.2, "Flash trigger (dialog) on card when role
- * === null"). `FlashDialog`/`FlashControls` still speak the retired
- * per-endpoint contract (`useFirmwareStatus`'s old shape, `endpointId`
- * on `flash-start`, `EndpointListEntry` in their own prop types) and
- * are not in this ticket's file scope; wiring them to the new
- * `SnapshotLink`-based flash state (`link.capabilities.flash`,
- * `useFlashProgress(linkId)`) is left for ticket 008/009, alongside
- * `AppHeader`'s own Flash entry which has the identical dependency.
+ * **Flash trigger restored (sprint 015 ticket 008)**: `FlashDialog`/
+ * `FlashControls` now speak `SnapshotLink` (`link.capabilities.flash`,
+ * `useFlashProgress(linkId)`) -- the front-page Flash trigger this
+ * ticket had dropped pending that migration (`04-ui.md` §1.2, "Flash
+ * trigger (dialog) on card when role === null") is back, on
+ * `UnassignedCard` (the direct successor of "role === null" under the
+ * new contract -- see that component's own doc comment).
  */
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
@@ -67,6 +65,7 @@ import type { SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console
 import type { ConnectionStatus, PendingRadioMigration } from "../ws/WsProvider";
 import { useConnectionStatus, useDevices, useRadioMigrationOffers, useRelays, useUnassigned, useWsActions } from "../ws/WsProvider";
 import { isCalibrationProgram } from "../deviceDisplay";
+import { FlashDialog } from "../components/FlashDialog";
 import "./FrontPage.css";
 
 export function FrontPage() {
@@ -379,7 +378,17 @@ function DeviceCard({
 
 /** A USB board not yet identified to any device
  * (`Snapshot.unassigned[]`) -- its own, simpler card: no name, role, or
- * calibration badge to show yet, just the link's own label and status. */
+ * calibration badge to show yet, just the link's own label and status.
+ *
+ * **Flash trigger restored (sprint 015 ticket 008)**: the pre-ticket-007
+ * front-page card offered a Flash trigger (dialog) whenever `role ===
+ * null` -- the direct successor of that state is exactly this card (a
+ * board with no `devices` row at all yet), so `FlashDialog` is mounted
+ * here, self-gated on `canBeFlashed(link)` exactly as it is on
+ * `UnknownDevicePage`. Ticket 007 dropped this pending `FlashDialog`'s
+ * own migration off the retired `EndpointListEntry` contract (this
+ * ticket's own file scope); it's back now that `FlashDialog` speaks
+ * `SnapshotLink`. */
 function UnassignedCard({ link }: { link: SnapshotLink }) {
   return (
     <div className="device-card" data-testid={`unassigned-card-${link.id}`}>
@@ -397,6 +406,7 @@ function UnassignedCard({ link }: { link: SnapshotLink }) {
           <p className="device-connection-state" data-testid={`unassigned-status-${link.id}`}>
             {linkStatusText(link)}
           </p>
+          <FlashDialog link={link} name={link.label} />
         </div>
         <Link
           to={`/d/${link.id}`}

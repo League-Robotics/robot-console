@@ -47,6 +47,17 @@
   font-size: 0.95rem;
 }
 
+/* Sprint 015 ticket 008: the relay's own "nothing bridging right now"
+ * state -- `relays[].lease` is `null` ("idle") or `"sweep"` ("idle ·
+ * sweeping"), shown only while no `bridging` is in flight. Styled like
+ * `.relay-page-hint` (muted, not alarming) -- an idle relay is the
+ * ordinary resting state, not a problem. */
+.relay-idle-status {
+  margin: 0;
+  color: var(--rc-text-muted);
+  font-size: 0.9rem;
+}
+
 .relay-connect-bar {
   display: flex;
   flex-wrap: wrap;

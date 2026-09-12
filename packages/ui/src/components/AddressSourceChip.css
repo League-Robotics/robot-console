@@ -1,10 +1,10 @@
-/* AddressSourceChip.css — see AddressSourceChip.tsx's doc comment for
- * the neutral/warning decision rule this styling reflects. Neutral uses
- * the same surface/border/text tokens as StatusPanel's own headline
- * state pill; warning reuses CommandStrip/DriveControls/EstopControl's
- * shared --rc-warn-* tokens, so this chip's warning state reads exactly
- * like every other warning surface in the app -- no new color decision
- * introduced here. */
+/* AddressSourceChip.css — see AddressSourceChip.tsx's doc comment.
+ * Sprint 015 ticket 008: the old neutral/warning distinction is retired
+ * along with the five-outcome `AddressSource` model it graded -- the
+ * new three-way `RadioSourceWire` has no host-reported "this fell back
+ * unexpectedly" signal left to justify a warning style, so this chip now
+ * has exactly one, neutral, presentation. Uses the same surface/border/
+ * text tokens as StatusPanel's own headline state pill. */
 
 .address-source-chip {
   display: inline-flex;
@@ -15,34 +15,11 @@
   border-radius: 999px;
   font-size: 0.82rem;
   line-height: 1.3;
-}
-
-.address-source-chip-neutral {
   background: var(--rc-surface);
   border: 1px solid var(--rc-border);
   color: var(--rc-text);
 }
 
-.address-source-chip-warning {
-  background: var(--rc-warn-bg);
-  border: 1px solid var(--rc-warn-border);
-  color: var(--rc-warn-text);
-}
-
 .address-source-chip-text {
   font-weight: 600;
-}
-
-/* The failover trail is deliberately plain, always-visible text, never
- * behind a disclosure -- see the ticket / sprint.md's "the chip must
- * never be silent" rule. Kept visually secondary (muted, not bold) so
- * it reads as supporting detail rather than competing with the
- * source-text headline above. */
-.address-source-chip-trail {
-  color: var(--rc-text-muted);
-}
-
-.address-source-chip-warning .address-source-chip-trail {
-  color: inherit;
-  opacity: 0.85;
 }

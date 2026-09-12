@@ -3,14 +3,17 @@
  * FlashControls.test.tsx — component-level tests for the shared flash
  * component (ticket 012-002 / SUC-002, SUC-003, SUC-004), migrated from
  * `UnknownDevicePage.test.tsx` now that the flash UI itself lives here
- * rather than trapped inside that page.
+ * rather than trapped inside that page. Rewritten sprint 015 ticket 008
+ * against the `Snapshot` contract: a `SnapshotLink` in place of an
+ * `EndpointListEntry`, `linkId` in place of `endpointId` on every
+ * message, `type: "snapshot"` in place of `type: "endpoints"`.
  *
  * **Out-of-process modal work (2026-09-08):** `FlashControls` no longer
  * gates itself on `canBeFlashed`, and dropped its `forceShow` escape
  * hatch -- that gating now lives on `FlashDialog`'s trigger button (see
  * `FlashDialog.test.tsx`). This file exercises `FlashControls` mounted
  * directly (as `FlashDialog` mounts it once its dialog is open), always
- * rendering its full UI regardless of `endpoint.role`.
+ * rendering its full UI regardless of the link's own capabilities.
  *
  * Three groups:
  *  - Release-flash button/progress rendering (firmware availability
@@ -18,9 +21,9 @@
  *  - The local-hex upload handshake against a fake socket, capturing
  *    both JSON messages (`sent`) and the one binary frame
  *    (`sentBinary`) `FakeSocket` records separately.
- *  - Post-flash navigation: `ok` navigates to `/`, a different
- *    endpoint's result does not, and `reidentify: "timeout"` renders
- *    the required wording without navigating.
+ *  - Post-flash navigation: `ok` navigates to `/`, a different link's
+ *    result does not, and `reidentify: "timeout"` renders the required
+ *    wording without navigating.
  *
  * **The flake, root-caused (not just relocated):** the pre-existing
  * `UnknownDevicePage.test.tsx` intermittently failed under full-suite
@@ -55,11 +58,7 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import type {
-  EndpointListEntry,
-  FirmwareAvailability,
-  FirmwareKind,
-} from "@robot-console/host/src/wsMessages.js";
+import type { FirmwareAvailability, FirmwareKind, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { UPLOAD_ID_BYTE_LENGTH } from "@robot-console/host/src/wsMessages.js";
 import { FlashControls, MAX_LOCAL_HEX_BYTES } from "./FlashControls";
 import { WsProvider } from "../ws/WsProvider";
@@ -92,32 +91,19 @@ afterEach(() => {
   }
 });
 
-function baseDevice(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+function baseLink(overrides: Partial<SnapshotLink> = {}): SnapshotLink {
   return {
-    endpointId: "usb-SERIAL-A",
+    id: "usb-SERIAL-UNRESPONSIVE",
     transport: "usb",
-    resourceKey: "usb-SERIAL-A",
-    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
-    name: "zeguz",
-    role: null,
-    sessionOpen: false,
-    usb: { serialNumber: "SERIAL-A-FULL", displaySerial: "0002", port: "/dev/cu.usbmodemA" },
+    label: "USB · /dev/cu.usbmodemA",
+    state: "failed",
+    reason: "HELLO reply timed out after 2000ms",
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: true, close: false, flash: true, provisionWifi: false },
     ...overrides,
   };
-}
-
-/** A failed-identify device -- `role: null`, `sessionError` set -- one
- * of the two states `canBeFlashed` covers (mirrors
- * `DevicesTab.test.tsx`'s own helper of the same name, carried forward
- * through `UnknownDevicePage.test.tsx`). */
-function failedIdentifyDevice(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
-  return baseDevice({
-    endpointId: "usb-SERIAL-UNRESPONSIVE",
-    resourceKey: "usb-SERIAL-UNRESPONSIVE",
-    sessionOpen: false,
-    sessionError: "HELLO reply timed out after 2000ms",
-    ...overrides,
-  });
 }
 
 function firmwareStatusFixture(
@@ -142,16 +128,16 @@ function firmwareStatusFixture(
 }
 
 function mountFlashControls(
-  endpoint: EndpointListEntry,
+  link: SnapshotLink,
   options: { firmwareStatus?: Record<FirmwareKind, FirmwareAvailability>; initialEntries?: string[] } = {},
 ): { el: HTMLDivElement; socket: () => FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     withRouter(
       <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-        <FlashControls endpoint={endpoint} />
+        <FlashControls link={link} />
       </WsProvider>,
-      { initialEntries: options.initialEntries ?? [`/d/${endpoint.endpointId}`] },
+      { initialEntries: options.initialEntries ?? [`/d/${link.id}`] },
     ),
   );
   act(() => {
@@ -159,7 +145,17 @@ function mountFlashControls(
   });
   if (options.firmwareStatus) {
     act(() => {
-      socket!.emitMessage({ type: "endpoints", endpoints: [endpoint], firmwareStatus: options.firmwareStatus });
+      socket!.emitMessage({
+        type: "snapshot",
+        seq: 1,
+        at: 0,
+        devices: [],
+        unassigned: [link],
+        relays: [],
+        firmware: options.firmwareStatus,
+        wifi: { ssid: null, source: null },
+        tasks: [],
+      });
     });
   }
   return { el, socket: () => socket! };
@@ -202,20 +198,20 @@ describe("FlashControls release-flash rendering", () => {
   // case (and the ticket 012-001 regression it must not break) now
   // lives at `FlashDialog`'s trigger -- see `FlashDialog.test.tsx`.
   // `FlashControls` itself always renders its full UI once mounted.
-  it("shows both flash buttons for an unprobed device (no role, no sessionError)", () => {
-    const { el } = mountFlashControls(baseDevice({ role: null }), { firmwareStatus: firmwareStatusFixture() });
+  it("shows both flash buttons for an unprobed link", () => {
+    const { el } = mountFlashControls(baseLink({ state: "connectable", reason: null }), { firmwareStatus: firmwareStatusFixture() });
     expect(el.textContent).toContain("Flash relay firmware");
     expect(el.textContent).toContain("Flash robot firmware");
   });
 
-  it("shows both flash buttons for a failed-identify device", () => {
-    const { el } = mountFlashControls(failedIdentifyDevice(), { firmwareStatus: firmwareStatusFixture() });
+  it("shows both flash buttons for a failed-identify link", () => {
+    const { el } = mountFlashControls(baseLink(), { firmwareStatus: firmwareStatusFixture() });
     expect(el.textContent).toContain("Flash relay firmware");
     expect(el.textContent).toContain("Flash robot firmware");
   });
 
   it("disables the robot button with a readable reason on the zero-release fixture", () => {
-    const { el } = mountFlashControls(failedIdentifyDevice(), { firmwareStatus: firmwareStatusFixture() });
+    const { el } = mountFlashControls(baseLink(), { firmwareStatus: firmwareStatusFixture() });
     const buttons = Array.from(el.querySelectorAll("button"));
     const robotButton = buttons.find((b) => b.textContent === "Flash robot firmware");
     expect(robotButton?.disabled).toBe(true);
@@ -223,14 +219,14 @@ describe("FlashControls release-flash rendering", () => {
   });
 
   it("enables the relay button when its release is available", () => {
-    const { el } = mountFlashControls(failedIdentifyDevice(), { firmwareStatus: firmwareStatusFixture() });
+    const { el } = mountFlashControls(baseLink(), { firmwareStatus: firmwareStatusFixture() });
     const buttons = Array.from(el.querySelectorAll("button"));
     const relayButton = buttons.find((b) => b.textContent === "Flash relay firmware");
     expect(relayButton?.disabled).toBe(false);
   });
 
   it("flips the robot button to enabled with no code change when availability flips", () => {
-    const { el } = mountFlashControls(failedIdentifyDevice(), {
+    const { el } = mountFlashControls(baseLink(), {
       firmwareStatus: firmwareStatusFixture({
         robot: {
           configured: true,
@@ -246,7 +242,7 @@ describe("FlashControls release-flash rendering", () => {
   });
 
   it("surfaces the host's specific 'no-asset' diagnostic in a details disclosure, while the calm student-facing summary is unchanged -- the wire-detail fix", () => {
-    const { el } = mountFlashControls(failedIdentifyDevice(), {
+    const { el } = mountFlashControls(baseLink(), {
       firmwareStatus: firmwareStatusFixture({
         robot: {
           configured: true,
@@ -276,7 +272,7 @@ describe("FlashControls release-flash rendering", () => {
   });
 
   it("shows a not-broken message before the first availability poll completes", () => {
-    const { el } = mountFlashControls(failedIdentifyDevice(), {
+    const { el } = mountFlashControls(baseLink(), {
       firmwareStatus: firmwareStatusFixture({
         robot: {
           configured: true,
@@ -291,7 +287,7 @@ describe("FlashControls release-flash rendering", () => {
   });
 
   it("sends a well-formed flash-start message when Flash relay firmware is clicked", () => {
-    const { el, socket } = mountFlashControls(failedIdentifyDevice(), { firmwareStatus: firmwareStatusFixture() });
+    const { el, socket } = mountFlashControls(baseLink(), { firmwareStatus: firmwareStatusFixture() });
     const relayButton = Array.from(el.querySelectorAll("button")).find(
       (b) => b.textContent === "Flash relay firmware",
     );
@@ -301,20 +297,21 @@ describe("FlashControls release-flash rendering", () => {
     expect(socket().sent).toEqual([
       JSON.stringify({
         type: "flash-start",
-        endpointId: "usb-SERIAL-UNRESPONSIVE",
+        linkId: "usb-SERIAL-UNRESPONSIVE",
         source: { kind: "release", firmware: "relay" },
       }),
     ]);
   });
 
   it("hides the flash buttons and shows phase-derived progress once flash-progress arrives", () => {
-    const { el, socket } = mountFlashControls(failedIdentifyDevice(), { firmwareStatus: firmwareStatusFixture() });
+    const { el, socket } = mountFlashControls(baseLink(), { firmwareStatus: firmwareStatusFixture() });
     act(() => {
       socket().emitMessage({
         type: "flash-progress",
-        endpointId: "usb-SERIAL-UNRESPONSIVE",
+        linkId: "usb-SERIAL-UNRESPONSIVE",
         source: { kind: "release", firmware: "relay" },
         phase: "writing",
+        seq: 1,
       });
     });
 
@@ -324,13 +321,14 @@ describe("FlashControls release-flash rendering", () => {
   });
 
   it("shows progress for a local-hex flash the same way as a release flash", () => {
-    const { el, socket } = mountFlashControls(failedIdentifyDevice(), { firmwareStatus: firmwareStatusFixture() });
+    const { el, socket } = mountFlashControls(baseLink(), { firmwareStatus: firmwareStatusFixture() });
     act(() => {
       socket().emitMessage({
         type: "flash-progress",
-        endpointId: "usb-SERIAL-UNRESPONSIVE",
+        linkId: "usb-SERIAL-UNRESPONSIVE",
         source: { kind: "local-hex", uploadId: "u-1", fileName: "custom.hex", sha256: "abc" },
         phase: "erasing",
+        seq: 1,
       });
     });
 
@@ -338,14 +336,15 @@ describe("FlashControls release-flash rendering", () => {
   });
 
   it("surfaces a terminal flash-result error's message", () => {
-    const { el, socket } = mountFlashControls(failedIdentifyDevice(), { firmwareStatus: firmwareStatusFixture() });
+    const { el, socket } = mountFlashControls(baseLink(), { firmwareStatus: firmwareStatusFixture() });
     act(() => {
       socket().emitMessage({
         type: "flash-result",
-        endpointId: "usb-SERIAL-UNRESPONSIVE",
+        linkId: "usb-SERIAL-UNRESPONSIVE",
         source: { kind: "release", firmware: "relay" },
         status: "error",
         message: "sha256 mismatch on downloaded hex",
+        seq: 1,
       });
     });
     expect(el.textContent).toContain("sha256 mismatch on downloaded hex");
@@ -354,7 +353,7 @@ describe("FlashControls release-flash rendering", () => {
 
 describe("FlashControls local-hex flow", () => {
   it("computes fileName/byteLength/sha256 and sends flash-local-begin", async () => {
-    const { el, socket } = mountFlashControls(failedIdentifyDevice(), { firmwareStatus: firmwareStatusFixture() });
+    const { el, socket } = mountFlashControls(baseLink(), { firmwareStatus: firmwareStatusFixture() });
     const input = el.querySelector<HTMLInputElement>('[data-testid="local-hex-file-input"]')!;
     const content = ":020000040000FA\n:00000001FF\n";
     const file = new File([content], "custom.hex");
@@ -376,7 +375,7 @@ describe("FlashControls local-hex flow", () => {
   });
 
   it("sends one binary frame (uploadId prefix + payload) on flash-local-ready, then flash-start on 'Flash this file'", async () => {
-    const { el, socket } = mountFlashControls(failedIdentifyDevice(), { firmwareStatus: firmwareStatusFixture() });
+    const { el, socket } = mountFlashControls(baseLink(), { firmwareStatus: firmwareStatusFixture() });
     const input = el.querySelector<HTMLInputElement>('[data-testid="local-hex-file-input"]')!;
     const content = ":020000040000FA\n:00000001FF\n";
     const file = new File([content], "custom.hex");
@@ -392,7 +391,7 @@ describe("FlashControls local-hex flow", () => {
     expect(uploadId.length).toBe(UPLOAD_ID_BYTE_LENGTH);
 
     act(() => {
-      socket().emitMessage({ type: "flash-local-ready", uploadId });
+      socket().emitMessage({ type: "flash-local-ready", uploadId, seq: 1 });
     });
 
     expect(socket().sentBinary).toHaveLength(1);
@@ -412,13 +411,13 @@ describe("FlashControls local-hex flow", () => {
     expect(socket().sent).toHaveLength(2);
     expect(JSON.parse(socket().sent[1]!)).toEqual({
       type: "flash-start",
-      endpointId: "usb-SERIAL-UNRESPONSIVE",
+      linkId: "usb-SERIAL-UNRESPONSIVE",
       source: { kind: "local-hex", uploadId, fileName: "custom.hex", sha256: expectedSha256 },
     });
   });
 
   it("rejects an oversized file client-side, sending nothing", () => {
-    const { el, socket } = mountFlashControls(failedIdentifyDevice(), { firmwareStatus: firmwareStatusFixture() });
+    const { el, socket } = mountFlashControls(baseLink(), { firmwareStatus: firmwareStatusFixture() });
     const input = el.querySelector<HTMLInputElement>('[data-testid="local-hex-file-input"]')!;
     const oversizedFile = new File([new Uint8Array(MAX_LOCAL_HEX_BYTES + 1)], "too-big.hex");
     Object.defineProperty(input, "files", { value: [oversizedFile], configurable: true });
@@ -434,30 +433,32 @@ describe("FlashControls local-hex flow", () => {
 });
 
 describe("FlashControls post-flash navigation", () => {
-  it("navigates to / when flash-result arrives ok for this endpoint", () => {
-    const { el, socket } = mountFlashControls(failedIdentifyDevice());
+  it("navigates to / when flash-result arrives ok for this link", () => {
+    const { el, socket } = mountFlashControls(baseLink());
     act(() => {
       socket().emitMessage({
         type: "flash-result",
-        endpointId: "usb-SERIAL-UNRESPONSIVE",
+        linkId: "usb-SERIAL-UNRESPONSIVE",
         source: { kind: "release", firmware: "relay" },
         status: "ok",
-        classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role", program: null, version: null },
+        role: "RADIORELAY",
         name: "zeguz",
+        seq: 1,
       });
     });
 
     expect(location(el)).toBe("/");
   });
 
-  it("does not navigate for a flash-result on a different endpoint", () => {
-    const { el, socket } = mountFlashControls(failedIdentifyDevice());
+  it("does not navigate for a flash-result on a different link", () => {
+    const { el, socket } = mountFlashControls(baseLink());
     act(() => {
       socket().emitMessage({
         type: "flash-result",
-        endpointId: "usb-SOME-OTHER-DEVICE",
+        linkId: "usb-SOME-OTHER-DEVICE",
         source: { kind: "release", firmware: "relay" },
         status: "ok",
+        seq: 1,
       });
     });
 
@@ -465,15 +466,15 @@ describe("FlashControls post-flash navigation", () => {
   });
 
   it("renders 'Flashed. Waiting for the board to come back…' and does not navigate when reidentify times out", () => {
-    const { el, socket } = mountFlashControls(failedIdentifyDevice());
+    const { el, socket } = mountFlashControls(baseLink());
     act(() => {
       socket().emitMessage({
         type: "flash-result",
-        endpointId: "usb-SERIAL-UNRESPONSIVE",
+        linkId: "usb-SERIAL-UNRESPONSIVE",
         source: { kind: "release", firmware: "relay" },
         status: "ok",
-        classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
         reidentify: "timeout",
+        seq: 1,
       });
     });
 

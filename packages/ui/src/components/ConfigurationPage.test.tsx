@@ -3,7 +3,7 @@ import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
-import { ConfigurationPage, MASKED_PASSWORD, configurationCode, radioSourceLabel } from "./ConfigurationPage";
+import { ConfigurationPage, MASKED_PASSWORD, configurationCode } from "./ConfigurationPage";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 
@@ -176,7 +176,7 @@ describe("ConfigurationPage", () => {
     expect(sent(socket).at(-1)).toEqual({ type: "provision-wifi", linkId: "usb-ROBOT-A", slot: 0 });
   });
 
-  it("seeds the radio draft from device.radio and shows its source", () => {
+  it("seeds the radio draft from device.radio and shows its source via the shared AddressSourceChip", () => {
     const el = mount(
       <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
         <ConfigurationPage device={robot({ radio: { channel: 55, group: 114, source: "override" } })} />
@@ -184,7 +184,9 @@ describe("ConfigurationPage", () => {
     );
     expect(el.querySelector<HTMLInputElement>('[data-testid="configuration-radio-channel"]')!.value).toBe("55");
     expect(el.querySelector<HTMLInputElement>('[data-testid="configuration-radio-group"]')!.value).toBe("114");
-    expect(el.querySelector('[data-testid="configuration-radio-source"]')?.textContent).toBe(radioSourceLabel("override"));
+    const chip = el.querySelector('[data-testid="address-source-chip"]');
+    expect(chip?.textContent).toContain("ch 55 / grp 114");
+    expect(chip?.textContent).toContain("set for this device");
   });
 
   it("edits to the calibration values persist to the same per-robot state the Calibration tab uses and show up in the code", () => {

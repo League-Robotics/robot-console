@@ -90,32 +90,38 @@
  * comment's to close, not this component's).
  *
  * **Post-flash navigation** (SUC-002 step 4, SUC-004): subscribes to
- * `onFlashResult` for this endpoint only. `status: "ok"` with no
+ * `onFlashResult` for this link only. `status: "ok"` with no
  * `reidentify` field navigates to the front page immediately -- the
- * message's own `classification` is already folded into the next
- * `endpoints` snapshot by the time this arrives (reidentify-before-
- * result sequencing), so there is no stale-type flash to land on.
- * Mounted from the front page itself (`FrontPage.tsx`'s `EndpointCard`)
- * this is a harmless no-op navigation, not a special case this
- * component needs to know about -- exactly the kind of caller-blindness
- * the "no knowledge of caller" contract above is meant to buy.
- * `status: "ok", reidentify: "timeout"` deliberately does **not**
- * navigate -- SUC-004 calls for rendering "waiting for the board to
- * come back" in place instead. `status: "error"` never navigates; the
- * message surfaces as a flash-error note instead. A result for a
- * *different* endpoint (the student navigated to another device while
- * a flash from this one was still in flight) is ignored -- checked via
- * a closure over the current `endpoint.endpointId`, kept fresh by this
- * effect's own dependency array, since `react-router` does not unmount
- * a component just because its `endpoint` prop changed to a different
- * device.
+ * message's own re-identify is already folded into the next `snapshot`
+ * by the time this arrives (reidentify-before-result sequencing), so
+ * there is no stale-type flash to land on. Mounted from the front page
+ * itself (`FrontPage.tsx`'s unassigned-board card) this is a harmless
+ * no-op navigation, not a special case this component needs to know
+ * about -- exactly the kind of caller-blindness the "no knowledge of
+ * caller" contract above is meant to buy. `status: "ok", reidentify:
+ * "timeout"` deliberately does **not** navigate -- SUC-004 calls for
+ * rendering "waiting for the board to come back" in place instead.
+ * `status: "error"` never navigates; the message surfaces as a
+ * flash-error note instead. A result for a *different* link (the
+ * student navigated to another device while a flash from this one was
+ * still in flight) is ignored -- checked via a closure over the current
+ * `link.id`, kept fresh by this effect's own dependency array, since
+ * `react-router` does not unmount a component just because its `link`
+ * prop changed to a different one.
+ *
+ * ## Sprint 015 ticket 008: takes a `SnapshotLink`, not an `EndpointListEntry`
+ *
+ * `link.id` replaces `endpoint.endpointId` throughout (`flash-start`'s
+ * `linkId` field, `useFlashProgress(link.id)`, `onFlashResult`'s own
+ * `linkId` field) -- `useFirmwareStatus` is unaffected (still one
+ * global `Record<FirmwareKind, FirmwareAvailability>`, not per-link).
  */
 import { useCallback, useEffect, useState, type ChangeEvent } from "react";
 import { useNavigate } from "react-router";
 import type {
-  EndpointListEntry,
   FirmwareKind,
   FlashLocalReadyMessage,
+  SnapshotLink,
 } from "@robot-console/host/src/wsMessages.js";
 import { useFirmwareStatus, useFlashProgress, useWsActions, type FlashProgressState } from "../ws/WsProvider";
 import { FIRMWARE_LABEL, PHASE_LABEL, firmwareDiagnosticDetail, firmwareDisabledReason } from "../deviceDisplay";
@@ -169,12 +175,12 @@ function flashProgressText(progress: FlashProgressState): string {
 }
 
 export interface FlashControlsProps {
-  endpoint: EndpointListEntry;
+  link: SnapshotLink;
 }
 
-export function FlashControls({ endpoint }: FlashControlsProps) {
+export function FlashControls({ link }: FlashControlsProps) {
   const firmwareStatus = useFirmwareStatus();
-  const progress = useFlashProgress(endpoint.endpointId);
+  const progress = useFlashProgress(link.id);
   const { send, sendBinary, onFlashResult, onFlashLocalReady } = useWsActions();
   const navigate = useNavigate();
 
@@ -184,7 +190,7 @@ export function FlashControls({ endpoint }: FlashControlsProps) {
 
   useEffect(() => {
     return onFlashResult((message) => {
-      if (message.endpointId !== endpoint.endpointId) {
+      if (message.linkId !== link.id) {
         return;
       }
       if (message.status === "error") {
@@ -201,7 +207,7 @@ export function FlashControls({ endpoint }: FlashControlsProps) {
       }
       navigate("/");
     });
-  }, [endpoint.endpointId, navigate, onFlashResult]);
+  }, [link.id, navigate, onFlashResult]);
 
   useEffect(() => {
     return onFlashLocalReady((message: FlashLocalReadyMessage) => {
@@ -222,9 +228,9 @@ export function FlashControls({ endpoint }: FlashControlsProps) {
     (firmware: FirmwareKind) => {
       setFlashError(null);
       setReidentifyTimedOut(false);
-      send({ type: "flash-start", endpointId: endpoint.endpointId, source: { kind: "release", firmware } });
+      send({ type: "flash-start", linkId: link.id, source: { kind: "release", firmware } });
     },
-    [endpoint.endpointId, send],
+    [link.id, send],
   );
 
   const handleFileSelected = useCallback(
@@ -260,11 +266,11 @@ export function FlashControls({ endpoint }: FlashControlsProps) {
     setReidentifyTimedOut(false);
     send({
       type: "flash-start",
-      endpointId: endpoint.endpointId,
+      linkId: link.id,
       source: { kind: "local-hex", uploadId: localHex.uploadId, fileName: localHex.fileName, sha256: localHex.sha256 },
     });
     setLocalHex({ phase: "idle" });
-  }, [endpoint.endpointId, localHex, send]);
+  }, [link.id, localHex, send]);
 
   const relayReason = firmwareDisabledReason(firmwareStatus.relay);
   const robotReason = firmwareDisabledReason(firmwareStatus.robot);

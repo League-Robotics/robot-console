@@ -1,270 +1,171 @@
 /**
- * RelayPage.tsx — `/d/:endpointId` for a `relay`-classified endpoint
- * (SUC-003, SUC-004, SUC-005, SUC-006).
+ * RelayPage.tsx — `/d/:linkId` for a `kind: "relay"` device (sprint 015
+ * ticket 008; SUC-003, SUC-004, SUC-005, SUC-006, SUC-009; issue
+ * `rearch-07-ui-renders-snapshot-drops-client-policy.md`).
  *
- * Rewritten out-of-process (2026-09-09) now that the host actually
- * tunes a relay and publishes a child endpoint for it: on
- * `session-open { endpointId: <relay>, robotName, radio }` the host
- * tunes the relay's radio and, once the robot answers (or times out),
- * publishes a new `EndpointListEntry` with `endpointId =
- * "<relayEndpointId>-via-<robotName>"`, `transport: "relay-radio"`, and
- * `viaRelay: { relayEndpointId, robotName, channel, group }`
- * (`wsMessages.ts`, frozen elsewhere). While that child exists the
- * relay's own session is closed (the radio link owns the port), so
- * this page's two top-level branches (connect bar vs. connected layout,
- * including `RobotPage` mounting for the child) are driven entirely by
- * whether such a child is present in `useEndpoints()` — never by the
- * relay's own `sessionOpen` alone, which may legitimately be `false` in
- * either branch. Within the child-present branch, "Connected to `<name>`"
- * additionally requires `child.sessionOpen === true` (sprint 013
- * follow-up, 013-004, see below) — a dropped radio link does not delete
- * the child, so the child's own session state still matters.
+ * ## Rewritten against `relays[]`/`links[]` in the snapshot -- no more
+ * `-via-` id parsing
  *
- * ## Sprint 8 ticket 005 additions
+ * The pre-rearch version scanned `useEndpoints()` for a synthesized
+ * `"<relayEndpointId>-via-<robotName>"` id to find the relay's current
+ * child. Under the `Snapshot` contract the host already does that
+ * grouping: a bridged robot is an ordinary `SnapshotDevice` somewhere in
+ * `devices[]` whose own radio link carries `via.relayLinkId` naming this
+ * relay's connectivity link (`device.links[0]`) -- `findRelayChild`
+ * below is a plain `Array.find` over that, not id parsing. `relays[]`
+ * (`SnapshotRelay`, keyed by the same `relayLinkId`) carries the two
+ * states that have no other representation -- `bridging` ("connecting"/
+ * "failed", server-side ephemeral state, `server.ts`'s own overlay) and
+ * `lease` (`"sweep"|"session"|null`, sprint 016's sweeper concept
+ * landing early on the wire per this sprint's own scope).
  *
- * Layered onto the OOP shell above, completing this ticket's contract:
+ * ## Connect/Switch sends exactly one message (ticket 002, SUC-009)
  *
- * - **Dropdown sourcing**: the robot `<select>` lists
- *   `useRememberedRobots()`'s roster **plus** any name currently visible
- *   in `useDiscoveredServices().robots` (a live `_mbserial._tcp`
- *   snapshot) — a name present only in discovery is marked `(on the
- *   network)` in its option text so a student can tell "seen before"
- *   apart from "seen live this session" without either becoming a
- *   second, separate control. Rendering or opening this dropdown never
- *   sends anything over the socket — both lists are passive mirrors of
- *   snapshots the host already pushed (`sprint.md`'s Solution: "never a
- *   speculative registry lookup just to populate the list").
- * - **Connect with no pick = default failover**: with the dropdown's
- *   placeholder still selected, Connect sends exactly `{ type:
- *   "session-open", endpointId, autoRobot: true }` — no `robotName`, no
- *   `radio` — which `server.ts` routes to
- *   `deviceRegistry.ts#requestOpen(endpointId, {})`, the same
- *   default-failover candidate list (`buildDefaultFailoverCandidates`)
- *   ticket 004 already implements. An explicit pick still sends
- *   `robotName` (+ the editable `radio` override) exactly as before.
- * - **`AddressSourceChip`** (ticket 006) is mounted above `RobotPage` —
- *   never inside it, preserving `RobotPage`'s transport-blindness — fed
- *   from the child endpoint's own `addressSource`/`viaRelay`/
- *   `failoverTrail`/`transport` fields. `registryWasConsidered` is
- *   derived from whether any `_mbrelay._tcp` service is currently
- *   discovered at all (`discoveredServices.relays.length > 0`), per that
- *   component's own neutral/warning rule.
- * - **In-flight/failed bridging visibility** (SUC-005, sprint 13 ticket
- *   004): driven directly by the host's own `endpoint.relayBridge` field
- *   (set/cleared by `deviceRegistry.ts`'s `openRobotViaRelay` across its
- *   reset/boot-delay/handshake sequence) -- no local state and no log
- *   scanning. `relayBridge?.state === "connecting"` renders a transient
- *   `role="status"` line, "Connecting to `<name>`…" for a named pick or
- *   "Trying remembered robots…" for a no-pick default-failover attempt
- *   with no candidate name yet. `relayBridge?.state === "failed"` renders
- *   `relayBridge.error` visibly instead of silently reverting to a bare
- *   connect bar. Both clear the moment the child endpoint appears
- *   (success) or a fresh attempt starts, since `openRobotViaRelay` clears
- *   `relayBridge` itself at that point (sprint 013 `sprint.md`
- *   Architecture) -- this replaces the sprint 8 `autoConnecting`/
- *   `autoConnectLogBaseline` mechanism that used to infer the failure
- *   case from a host-origin line landing in
- *   `useEndpointLog(endpoint.endpointId)`; that log-scanning approach is
- *   gone from this page entirely.
+ * The old two-step "send session-close for the current child, then
+ * session-open for the new one" (`sprint.md`'s own retired Design
+ * Rationale entry) is gone: `handleConnect` below sends exactly
+ * `{ type: "session-open", relayLinkId, name }` whether or not a child
+ * is already bridged -- `connect/reconciler.ts`'s `planUserOpen` is what
+ * turns that single request into a close-old + open-new pair, executed
+ * as one job, host-side. This page never sequences two messages of its
+ * own for a switch. The no-pick "default failover" request
+ * (`autoRobot: true`) has no replacement in the new wire contract
+ * either (`wsMessages.ts`'s own `SessionOpenMessage` doc comment) -- a
+ * name must be picked before Connect is enabled.
  *
- * **Connected**: a status line, a "Disconnect" button
- * (`session-close` on the child), the same connect bar (prefilled to
- * the current name/address) so switching robots is just "pick a
- * different name, press Connect" — which sends `session-close` for the
- * current child *then* `session-open` for the new one, in that order,
- * from one `handleConnect` (never a single "retarget" message — see
- * `sprint.md`'s Design Rationale, "Switching robots is close-session →
- * new `LinkSpec` → open-session"). `RobotPage` is mounted for the child
- * endpoint completely unmodified — no relay-aware prop, per
- * `RobotPage.tsx`'s transport-blindness contract
- * (`RobotPage.transportBlind.test.ts`). The relay's own `DeviceConsole`
- * is not rendered here (its session is closed while a child owns the
- * port) — a one-line note says it returns after Disconnect.
+ * ## `lease` rendering (this ticket's own scope item)
  *
- * **"Connected to `<name>`" requires an open session, not just a child
- * endpoint (sprint 013 follow-up, 013-003/013-004, 2026-09-11):** the
- * synthesized child is not deleted when its radio link drops --
- * `deviceRegistry.ts#handleLinkError` leaves it listed with
- * `sessionOpen: false` and `sessionError` set; only a deliberate
- * Disconnect/`requestClose`, or the WiFi auto-switch, removes it. So the
- * status line above reads "Connected to `<name>` via `<relay>` on
- * channel X, group Y" only when `child.sessionOpen === true`; when the
- * child exists with `sessionOpen === false`, this page instead renders
- * "Connection to `<name>` lost" (plus `child.sessionError` when
- * present, `data-testid="relay-lost"`) as a `.relay-page-alert` line in
- * its place -- the connect bar and Disconnect stay available in that
- * state (the connected layout, including `RobotPage` for the child,
- * stays mounted throughout, driven by the child's existence, not its
- * session state) so the student can retry or clean up.
+ * While no child is bridged: `lease === "sweep"` renders "idle ·
+ * sweeping" (the sprint 016 sweeper holds the port); `lease === null`
+ * (or `"session"`, which in practice never coincides with "no child
+ * found" -- a session lease implies an open session somewhere) renders
+ * plain "idle". Both only when there is no in-flight `bridging` to show
+ * instead.
  *
- * ## Sprint 015 ticket 006: per-connect channel/group inputs removed
+ * ## `AddressSourceChip` reads `child.device.radio.source`
  *
- * Per `rearch-08-radio-address-overrides-in-host-db.md`'s default
- * (confirmed by the stakeholder, `sprint.md`'s Open Question 2): this
- * page no longer has its own editable channel/group fields, and
- * `session-open` no longer carries a `radio` override -- a robot's
- * radio address is now a device-level property, set once via the
- * device page's "Set Radio" dialog (`RadioAddressDialog`, which now
- * sends `set-radio-override` to the host DB instead of writing
- * `localStorage`) and resolved host-side (`override -> registry ->
- * derived`, `radioOverride.ts`). `readStoredAddress`/`writeStoredAddress`
- * (this module's own former per-name `localStorage` cache, also used by
- * `ConfigurationPage`/`RadioAddressDialog`) are gone entirely -- see
- * ticket 006's acceptance criterion that `grep -rn "localStorage"
- * packages/ui/src` shows no key holding a channel or group value.
+ * The retired `addressSource`/`failoverTrail` fields (reconstructed
+ * client-side from a per-attempt registry lookup and abandoned-
+ * candidate trail) are gone; the connected child's own already-resolved
+ * `radio` field (`SnapshotDevice.radio`, `override -> registry ->
+ * derived`, `radioOverride.ts`) is the single source of truth this page
+ * hands the shared chip -- see `AddressSourceChip.tsx`'s own doc
+ * comment for why that component itself no longer distinguishes a
+ * warning case.
+ *
+ * **Connected**: a status line, a "Disconnect" button (`session-close`
+ * on the child's own link), the same connect bar (prefilled to the
+ * current child's name) so switching robots is just "pick a different
+ * name, press Switch" -- one `session-open`, never a "retarget" message
+ * of its own and never a client-sequenced close-then-open (see above).
+ * `RobotPage` is mounted for the child device completely unmodified --
+ * no relay-aware prop, per `RobotPage.tsx`'s transport-blindness
+ * contract. The relay's own `DeviceConsole` is not rendered here (no
+ * console makes sense for a link with no session while a child owns the
+ * port) -- a one-line note says it returns after Disconnect.
+ *
+ * **"Connected to `<name>`" requires the child's link to actually be
+ * `connected`, not just present** (mirrors sprint 013's own follow-up):
+ * the child device is not removed from `devices[]` when its radio link
+ * drops (`links.state` moves to `failed`/`unresponsive` instead;
+ * `harvester`/watchers age it out separately) -- only a deliberate
+ * Disconnect removes the bridge. So the status line reads "Connected to
+ * `<name>` …" only when `child.link.state === "connected"`; otherwise
+ * this page renders "Connection to `<name>` lost" (plus `child.link
+ * .reason` when present, `data-testid="relay-lost"`) in its place -- the
+ * connect bar and Disconnect stay available in that state (the
+ * connected layout, including `RobotPage` for the child, stays mounted
+ * throughout, driven by the child's existence, not its link's state) so
+ * the student can retry or clean up.
  */
 import { useEffect, useState } from "react";
-import type {
-  DiscoveredRobotEntry,
-  EndpointListEntry,
-  RememberedRobotEntry,
-} from "@robot-console/host/src/wsMessages.js";
+import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { AddressSourceChip } from "../components/AddressSourceChip";
 import { DeviceConsole } from "../components/DeviceConsole";
 import { RobotPage } from "./RobotPage";
-import {
-  useDiscoveredServices,
-  useEndpoints,
-  useRememberedRobots,
-  useWsActions,
-} from "../ws/WsProvider";
+import { useDevices, useRelays, useWsActions } from "../ws/WsProvider";
 import "./RelayPage.css";
 
 export interface RelayPageProps {
-  endpoint: EndpointListEntry;
+  device: SnapshotDevice;
 }
-
-type ChildEndpoint = EndpointListEntry & { viaRelay: NonNullable<EndpointListEntry["viaRelay"]> };
 
 /** A `(channel, group)` pair -- kept here (rather than moved wholesale
  * into `@robot-console/protocol`) only because `ConfigurationPage.tsx`
  * still imports this exact shape as a type; no runtime logic of this
- * module's own depends on it any more (ticket 006 removed this page's
- * own editable channel/group fields -- see the module doc comment's
- * "per-connect channel/group inputs removed" section). */
+ * module's own depends on it any more. */
 export interface RadioAddress {
   channel: number;
   group: number;
 }
 
-/** One dropdown entry: a bare name string, plus whether it came only
- * from live mDNS discovery (never the sprint 5 roster) -- see
- * `RobotSelect`'s own doc comment for how that distinction is rendered.
- * No address is attached to either kind -- resolving one is deferred
- * entirely to connect time, per this module's own doc comment. */
-export interface RobotOption {
-  name: string;
-  discoveredOnly: boolean;
-}
-
-/** Merge the roster (`useRememberedRobots()`) with any name currently
- * visible in `useDiscoveredServices().robots` into one deduplicated,
- * sorted option list -- a name in both sources counts as roster (not
- * discovered-only), since it is exactly as known as any other
- * remembered name. Pure and synchronous: no lookup of any kind, per
- * this module's own doc comment ("never a speculative registry
- * lookup"). */
-export function buildRobotOptions(
-  rememberedRobots: RememberedRobotEntry[],
-  discoveredRobots: DiscoveredRobotEntry[],
-): RobotOption[] {
-  const discoveredOnlyByName = new Map<string, boolean>();
-  for (const robot of rememberedRobots) {
-    discoveredOnlyByName.set(robot.name, false);
-  }
-  for (const robot of discoveredRobots) {
-    if (!discoveredOnlyByName.has(robot.instanceName)) {
-      discoveredOnlyByName.set(robot.instanceName, true);
+/** The device (and its own radio link) currently bridged through
+ * `relayLinkId`, if any -- a `radio`/`mbrelay` link on some other device
+ * whose `via.relayLinkId` matches this relay's own connectivity link. */
+function findRelayChild(
+  devices: readonly SnapshotDevice[],
+  relayLinkId: string,
+): { device: SnapshotDevice; link: SnapshotLink } | undefined {
+  for (const candidate of devices) {
+    for (const link of candidate.links) {
+      if (link.via?.relayLinkId === relayLinkId) {
+        return { device: candidate, link };
+      }
     }
   }
-  return [...discoveredOnlyByName.entries()]
-    .map(([name, discoveredOnly]) => ({ name, discoveredOnly }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  return undefined;
 }
 
-export function RelayPage({ endpoint }: RelayPageProps) {
-  const endpoints = useEndpoints();
-  const rememberedRobots = useRememberedRobots();
-  const discoveredServices = useDiscoveredServices();
+export function RelayPage({ device }: RelayPageProps) {
+  const devices = useDevices();
+  const relays = useRelays();
   const { send } = useWsActions();
 
-  const child = endpoints.find(
-    (candidate): candidate is ChildEndpoint => candidate.viaRelay?.relayEndpointId === endpoint.endpointId,
-  );
+  const relayLink = device.links[0];
+  const relayLinkId = relayLink?.id;
+  const relayInfo = relayLinkId ? relays.find((candidate) => candidate.linkId === relayLinkId) : undefined;
+  const bridging = relayInfo?.bridging;
+  const lease = relayInfo?.lease ?? null;
+
+  const child = relayLinkId ? findRelayChild(devices, relayLinkId) : undefined;
 
   const [selectedName, setSelectedName] = useState<string>("");
-
-  // Sprint 13 ticket 004: `relayBridge` covers the two states that have
-  // no other representation -- "connecting" and "failed" -- both of
-  // which can occur only while no child exists yet (`openRobotViaRelay`
-  // clears `relayBridge` the moment the child is synthesized). Looked up
-  // from the live `endpoints` snapshot (`useEndpoints()`) by id, exactly
-  // like `child` above, rather than off the `endpoint` prop directly --
-  // the prop is normally kept fresh by the router-level parent
-  // (`DevicePage.tsx`) re-deriving it from the same snapshot on every
-  // render, but reading it via `endpoints` here makes this page reactive
-  // to a `relayBridge` transition on its own, without depending on that
-  // parent behavior. The `child`-present branch below never reads this;
-  // it stays driven purely by the child's own existence, exactly as
-  // before this ticket.
-  const liveEndpoint = endpoints.find((candidate) => candidate.endpointId === endpoint.endpointId) ?? endpoint;
-  const bridge = child ? undefined : liveEndpoint.relayBridge;
 
   // Sync the connect bar to the live child's own name whenever it
   // appears or changes -- covers both "this page mounted while already
   // connected" and "the host just confirmed a fresh session-open" with
-  // the same logic. Ticket 006: no longer syncs channel/group -- this
-  // page has no editable address fields of its own any more (see the
-  // module doc comment); `child.viaRelay.channel`/`group` are still read
-  // directly (not through local state) by the connected status line
-  // below.
+  // the same logic.
   useEffect(() => {
     if (child) {
-      setSelectedName(child.viaRelay.robotName);
+      setSelectedName(child.device.name);
     }
-  }, [child?.viaRelay.robotName]);
+  }, [child?.device.name]);
 
-  const robotOptions = buildRobotOptions(rememberedRobots, discoveredServices.robots);
-
-  function handleSelectName(name: string): void {
-    setSelectedName(name);
-  }
+  const robotOptions = devices
+    .filter((candidate) => candidate.kind === "robot")
+    .map((candidate) => candidate.name)
+    .sort((a, b) => a.localeCompare(b));
 
   function handleConnect(): void {
-    if (child) {
-      send({ type: "session-close", endpointId: child.endpointId });
-    }
-    if (selectedName) {
-      // Ticket 006: no `radio` override sent here any more -- the
-      // robot's radio address is resolved host-side from a device-level
-      // override (set via `RadioAddressDialog`'s `set-radio-override`),
-      // the mbrelay registry, or the name-derived default, in that order
-      // (`radioOverride.ts`'s `override -> registry -> derived`).
-      send({
-        type: "session-open",
-        endpointId: endpoint.endpointId,
-        robotName: selectedName,
-      });
+    if (!relayLinkId || !selectedName) {
       return;
     }
-    // No pick: sprint 8 ticket 004's default-failover candidate list,
-    // requested over the wire by `autoRobot: true` with no `robotName`
-    // and no `radio` -- see this module's own doc comment. The host
-    // reports the resulting "connecting" state back via
-    // `endpoint.relayBridge`, not any local state set here.
-    send({ type: "session-open", endpointId: endpoint.endpointId, autoRobot: true });
+    // Exactly one message -- see this module's own doc comment. The
+    // reconciler (ticket 002's `planUserOpen`) treats this as a
+    // close-old-child + open-new-child job when a child already exists,
+    // never a client-sequenced session-close then session-open.
+    send({ type: "session-open", relayLinkId, name: selectedName });
   }
 
   function handleDisconnect(): void {
     if (!child) {
       return;
     }
-    send({ type: "session-close", endpointId: child.endpointId });
+    send({ type: "session-close", linkId: child.link.id });
   }
 
-  const connectDisabled = !endpoint.sessionOpen && !child;
-  const relayName = endpoint.name ?? endpoint.endpointId;
-  const registryWasConsidered = discoveredServices.relays.length > 0;
+  const connectDisabled = selectedName === "" || relayLinkId === undefined;
+  const relayName = device.name;
 
   return (
     <section className={`relay-page${child ? " relay-page-connected" : ""}`} aria-label="Relay device">
@@ -272,26 +173,21 @@ export function RelayPage({ endpoint }: RelayPageProps) {
 
       {child ? (
         <>
-          {child.sessionOpen && child.sessionError && (
-            <p className="relay-page-alert" role="alert">
-              {child.sessionError}
-            </p>
-          )}
-          {child.sessionOpen ? (
+          {child.link.state === "connected" ? (
             <p className="relay-connected-status" data-testid="relay-connected">
-              Connected to {child.viaRelay.robotName} via {relayName} on channel {child.viaRelay.channel}, group{" "}
-              {child.viaRelay.group}
+              Connected to {child.device.name} via {relayName}
+              {child.link.via ? ` on channel ${child.link.via.channel}, group ${child.link.via.group}` : ""}
             </p>
           ) : (
             <p className="relay-page-alert" role="alert" data-testid="relay-lost">
-              Connection to {child.viaRelay.robotName} lost{child.sessionError ? `: ${child.sessionError}` : ""}
+              Connection to {child.device.name} lost{child.link.reason ? `: ${child.link.reason}` : ""}
             </p>
           )}
 
           <div className="relay-connect-bar">
-            <RobotSelect options={robotOptions} value={selectedName} onChange={handleSelectName} />
+            <RobotSelect options={robotOptions} value={selectedName} onChange={setSelectedName} />
             <button type="button" data-testid="relay-connect" disabled={connectDisabled} onClick={handleConnect}>
-              Connect
+              Switch
             </button>
             <button type="button" data-testid="relay-disconnect" onClick={handleDisconnect}>
               Disconnect
@@ -299,51 +195,44 @@ export function RelayPage({ endpoint }: RelayPageProps) {
           </div>
           <p className="relay-page-hint">The relay's own console returns after Disconnect.</p>
 
-          {/* AddressSourceChip (ticket 006) mounts above RobotPage, never
-           * inside it -- RobotPage's own transport-blindness contract
-           * forbids a relay-aware prop reaching it. `addressSource`/
-           * `failoverTrail` are only conditionally spread (rather than
-           * passed as `child.addressSource`/`child.failoverTrail`
-           * directly) because `exactOptionalPropertyTypes` forbids an
-           * optional prop receiving an explicit `undefined` -- the key
-           * must be entirely absent when the endpoint has none, exactly
-           * as `wsMessages.ts`'s own present-only-when-relevant fields
-           * are handled elsewhere in this codebase. */}
-          <AddressSourceChip
-            {...(child.addressSource !== undefined ? { addressSource: child.addressSource } : {})}
-            viaRelay={child.viaRelay}
-            transport={child.transport}
-            registryWasConsidered={registryWasConsidered}
-            {...(child.failoverTrail !== undefined ? { failoverTrail: child.failoverTrail } : {})}
-          />
+          {/* Mounted above RobotPage, never inside it -- RobotPage's own
+           * transport-blindness contract forbids a relay-aware prop
+           * reaching it. Reads the child device's own already-resolved
+           * radio field directly -- see this module's own doc comment. */}
+          <AddressSourceChip radio={child.device.radio} />
 
-          <RobotPage endpoint={child} />
+          <RobotPage endpoint={child.device} />
         </>
       ) : (
         <>
           <div className="relay-connect-bar">
-            <RobotSelect options={robotOptions} value={selectedName} onChange={handleSelectName} />
+            <RobotSelect options={robotOptions} value={selectedName} onChange={setSelectedName} />
             <button type="button" data-testid="relay-connect" disabled={connectDisabled} onClick={handleConnect}>
               Connect
             </button>
           </div>
           <p className="relay-page-hint">
             Uses the picked robot's radio address as configured on its device page (Set Radio), or the name-derived
-            default if none is set. Leave the robot unpicked and press Connect to try every remembered/discovered
-            robot in turn.
+            default if none is set.
           </p>
-          {bridge?.state === "connecting" && (
+
+          {bridging?.state === "connecting" && (
             <p className="relay-autoconnecting-status" role="status" data-testid="relay-autoconnecting">
-              {bridge.robotName ? `Connecting to ${bridge.robotName}…` : "Trying remembered robots…"}
+              {bridging.robotName ? `Connecting to ${bridging.robotName}…` : "Connecting…"}
             </p>
           )}
-          {bridge?.state === "failed" && (
+          {bridging?.state === "failed" && (
             <p className="relay-page-alert" role="alert" data-testid="relay-bridge-failed">
-              {bridge.error}
+              {bridging.error ?? `Could not reach ${bridging.robotName ?? "the robot"}`}
+            </p>
+          )}
+          {!bridging && (
+            <p className="relay-idle-status" role="status" data-testid="relay-idle">
+              {lease === "sweep" ? "idle · sweeping" : "idle"}
             </p>
           )}
 
-          <DeviceConsole device={endpoint} />
+          {relayLink && <DeviceConsole link={relayLink} name={relayName} />}
         </>
       )}
     </section>
@@ -351,20 +240,18 @@ export function RelayPage({ endpoint }: RelayPageProps) {
 }
 
 /** The robot-name picker, shared by both the not-connected and
- * connected connect bars. Empty-roster-and-discovery case renders a
- * disabled placeholder option plus a hint rather than an empty,
- * silently unusable `<select>` -- mirrors this module's own doc comment
- * on never rendering a control that looks live but goes nowhere. A
- * discovered-only name (`discoveredOnly: true` -- seen live over mDNS
- * this session, never remembered from a prior USB connection) is
- * marked `(on the network)` in its own option text so a student can
- * tell the two sources apart without a second control. */
+ * connected connect bars -- every `kind: "robot"` device's name, host
+ * order sorted (no separate "remembered vs. discovered" distinction any
+ * more; that whole roster/discovery side-list pair is retired along
+ * with `EndpointsMessage`, see `wsMessages.ts`'s module doc comment).
+ * Empty-roster case renders a disabled placeholder option plus a hint
+ * rather than an empty, silently unusable `<select>`. */
 export function RobotSelect({
   options,
   value,
   onChange,
 }: {
-  options: RobotOption[];
+  options: string[];
   value: string;
   onChange: (name: string) => void;
 }) {
@@ -380,14 +267,14 @@ export function RobotSelect({
       >
         {empty ? (
           <option value="" disabled>
-            No robots remembered yet — connect one over USB once
+            No robots known yet — connect one over USB once
           </option>
         ) : (
           <>
             <option value="">Choose a robot…</option>
-            {options.map(({ name, discoveredOnly }) => (
+            {options.map((name) => (
               <option key={name} value={name}>
-                {discoveredOnly ? `${name} (on the network)` : name}
+                {name}
               </option>
             ))}
           </>
@@ -396,4 +283,3 @@ export function RobotSelect({
     </label>
   );
 }
-

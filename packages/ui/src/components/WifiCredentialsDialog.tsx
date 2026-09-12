@@ -13,9 +13,19 @@
  * splits on them. Mirrors `FlashDialog`'s native `<dialog>` pattern
  * (`showModal()` with a test-environment fallback) and reuses its
  * panel styles.
+ *
+ * ## Sprint 015 ticket 008: keyed by `linkId`, not an `EndpointListEntry`
+ *
+ * `provision-wifi` now carries `linkId` (`wsMessages.ts`), and whether a
+ * session is open is a per-link fact (`SnapshotLink.session !==
+ * undefined`) rather than a device-level `sessionOpen` flag -- a device
+ * can have more than one link under the new contract. This component no
+ * longer reaches into an `EndpointListEntry` for either fact: the
+ * caller (which already knows which link it is opening this dialog
+ * for) passes `linkId` and `linkOpen` directly, plus `name` for the
+ * dialog's own title text (a link has no name of its own).
  */
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
 import { useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
 import "./FlashDialog.css";
 import "./CredentialsDialog.css";
@@ -44,14 +54,20 @@ export function validateWifiInput(ssid: string, password: string, hasStoredPassw
 }
 
 export interface WifiCredentialsDialogProps {
-  endpoint: EndpointListEntry;
+  linkId: string;
+  /** Whether a session is currently open on `linkId` -- gates the
+   * "Save and write to robot" button. */
+  linkOpen: boolean;
+  /** Display label for this dialog's title -- the owning device's name;
+   * a link has none of its own. */
+  name: string;
   triggerClassName?: string;
 }
 
-export function WifiCredentialsDialog({ endpoint, triggerClassName = "device-button" }: WifiCredentialsDialogProps) {
+export function WifiCredentialsDialog({ linkId, linkOpen, name, triggerClassName = "device-button" }: WifiCredentialsDialogProps) {
   const { send } = useWsActions();
   const stored = useWifiCredentials();
-  const result = useWifiProvisionResult(endpoint.endpointId);
+  const result = useWifiProvisionResult(linkId);
   const [open, setOpen] = useState(false);
   const [ssid, setSsid] = useState("");
   const [password, setPassword] = useState("");
@@ -113,11 +129,10 @@ export function WifiCredentialsDialog({ endpoint, triggerClassName = "device-but
     setError(null);
     setWriting(true);
     send({ type: "set-wifi-credentials", ssid: trimmedSsid, password });
-    send({ type: "provision-wifi", endpointId: endpoint.endpointId, slot: 0 });
+    send({ type: "provision-wifi", linkId, slot: 0 });
     setPassword("");
   }
 
-  const linkOpen = endpoint.sessionOpen;
   const hasStored = stored?.hasPassword === true && stored.ssid === ssid.trim();
 
   return (
@@ -146,7 +161,7 @@ export function WifiCredentialsDialog({ endpoint, triggerClassName = "device-but
         >
           <div className="flash-dialog-panel credentials-panel">
             <div className="flash-dialog-header">
-              <h2>Set Wi-Fi on {endpoint.name ?? endpoint.endpointId}</h2>
+              <h2>Set Wi-Fi on {name}</h2>
               <button type="button" className="flash-dialog-close" onClick={close} aria-label="Close">
                 ×
               </button>

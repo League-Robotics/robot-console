@@ -1,23 +1,24 @@
 // @vitest-environment jsdom
 /**
  * DeviceConsole.test.tsx — component-level tests for the per-device
- * console (ticket 008 / SUC-002, SUC-007).
+ * console (ticket 008 / SUC-002, SUC-007; rewritten against the
+ * `Snapshot` contract).
  *
  * Ported from `ConsoleTab.test.tsx` (sprint 1's flat Console tab),
- * dropped down to a single fixed `device` prop instead of a
- * device-picker dropdown -- so there is no device-switching test here
- * (nothing to switch between); every other behavior in the ticket's
- * "preserves" list is re-verified against the new component: line
+ * dropped down to a single fixed `link` prop instead of a device-picker
+ * dropdown -- so there is no device-switching test here (nothing to
+ * switch between); every other behavior in the ticket's "preserves"
+ * list is re-verified against the new component: line
  * classification/rendering, autoscroll toggle, clear log, send-box
  * submission and cooldown, the no-open-link send-disabled state, and
- * the per-device line cap.
+ * the per-link line cap.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { DeviceConsole, classifyLine } from "./DeviceConsole";
-import { MAX_LINES_PER_DEVICE, WsProvider } from "../ws/WsProvider";
+import { MAX_LINES_PER_LINK, WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 
 let container: HTMLDivElement | null = null;
@@ -60,25 +61,45 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function baseDevice(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
-  return {
-    endpointId: "usb-SERIAL-A",
+/** Open by default (mirrors the retired fixture's `sessionOpen: true`).
+ * Pass `{ session: undefined }` for the no-open-session variant --
+ * `exactOptionalPropertyTypes` forbids that key existing with an
+ * explicit `undefined` value on the returned object, so it is deleted
+ * outright rather than spread in, exactly as `wsMessages.ts`'s own
+ * present-only-when-relevant fields are handled elsewhere in this
+ * codebase. */
+function baseLink(
+  overrides: Partial<Omit<SnapshotLink, "session">> & { session?: SnapshotLink["session"] | undefined } = {},
+): SnapshotLink {
+  const { session, ...rest } = overrides;
+  const link: SnapshotLink = {
+    id: "usb-SERIAL-A",
     transport: "usb",
-    resourceKey: "usb-SERIAL-A",
-    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
-    name: "zeguz",
-    role: "NEZHA2",
-    sessionOpen: true,
-    usb: { serialNumber: "SERIAL-A-FULL", displaySerial: "0002", port: "/dev/cu.usbmodemA" },
-    ...overrides,
+    label: "USB · /dev/cu.usbmodemA",
+    state: "connected",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+    capabilities: { open: false, close: true, flash: true, provisionWifi: true },
+    ...rest,
   };
+  if ("session" in overrides) {
+    if (session === undefined) {
+      delete (link as { session?: unknown }).session;
+    } else {
+      link.session = session;
+    }
+  }
+  return link;
 }
 
-function mountConsole(device: EndpointListEntry): { el: HTMLDivElement; socket: FakeSocket } {
+function mountConsole(link: SnapshotLink, name = "zeguz"): { el: HTMLDivElement; socket: FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <DeviceConsole device={device} />
+      <DeviceConsole link={link} name={name} />
     </WsProvider>,
   );
   act(() => {
@@ -111,19 +132,19 @@ describe("classifyLine", () => {
 });
 
 describe("DeviceConsole", () => {
-  it("shows this device's log, with no device picker", () => {
-    const { el } = mountConsole(baseDevice({ name: "zeguz" }));
+  it("shows this link's log, with no device picker", () => {
+    const { el } = mountConsole(baseLink(), "zeguz");
 
     expect(el.querySelector('[data-testid="console-device-select"]')).toBeNull();
     expect(el.textContent).toContain("No traffic yet for this device");
   });
 
   it("shows both tx and rx lines the host forwards, marked by direction", () => {
-    const { el, socket } = mountConsole(baseDevice());
+    const { el, socket } = mountConsole(baseLink());
 
     act(() => {
-      socket.emitMessage({ type: "line", endpointId: "usb-SERIAL-A", direction: "tx", line: "HELLO" });
-      socket.emitMessage({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: "ack HELLO" });
+      socket.emitMessage({ type: "line", linkId: "usb-SERIAL-A", direction: "tx", line: "HELLO" });
+      socket.emitMessage({ type: "line", linkId: "usb-SERIAL-A", direction: "rx", line: "ack HELLO" });
     });
 
     const txLine = el.querySelector('[data-testid="console-line-tx"]');
@@ -133,19 +154,19 @@ describe("DeviceConsole", () => {
     expect(rxLine?.className).toContain("console-line-kind-ack");
   });
 
-  it("ignores a line for a different endpoint", () => {
-    const { el, socket } = mountConsole(baseDevice());
+  it("ignores a line for a different link", () => {
+    const { el, socket } = mountConsole(baseLink());
 
     act(() => {
-      socket.emitMessage({ type: "line", endpointId: "usb-OTHER", direction: "rx", line: "not mine" });
+      socket.emitMessage({ type: "line", linkId: "usb-OTHER", direction: "rx", line: "not mine" });
     });
 
     expect(el.textContent).not.toContain("not mine");
     expect(el.textContent).toContain("No traffic yet for this device");
   });
 
-  it("submits a typed line as an outbound tx WebSocket message for this device", () => {
-    const { el, socket } = mountConsole(baseDevice({ sessionOpen: true }));
+  it("submits a typed line as an outbound tx WebSocket message for this link", () => {
+    const { el, socket } = mountConsole(baseLink());
 
     const input = el.querySelector<HTMLInputElement>('[data-testid="console-send-input"]')!;
     const button = el.querySelector<HTMLButtonElement>('[data-testid="console-send-button"]')!;
@@ -160,7 +181,7 @@ describe("DeviceConsole", () => {
     expect(socket.sent).toHaveLength(1);
     expect(JSON.parse(socket.sent[0]!)).toEqual({
       type: "line",
-      endpointId: "usb-SERIAL-A",
+      linkId: "usb-SERIAL-A",
       direction: "tx",
       line: "STATUS",
     });
@@ -169,14 +190,14 @@ describe("DeviceConsole", () => {
     expect(el.querySelector('[data-testid="console-line-tx"]')).toBeNull();
 
     act(() => {
-      socket.emitMessage({ type: "line", endpointId: "usb-SERIAL-A", direction: "tx", line: "STATUS" });
+      socket.emitMessage({ type: "line", linkId: "usb-SERIAL-A", direction: "tx", line: "STATUS" });
     });
     expect(el.querySelector('[data-testid="console-line-tx"]')?.textContent).toContain("STATUS");
   });
 
   it("throttles rapid repeated submission client-side instead of firing unpaced writes", () => {
     vi.useFakeTimers();
-    const { el, socket } = mountConsole(baseDevice({ sessionOpen: true }));
+    const { el, socket } = mountConsole(baseLink());
 
     const input = el.querySelector<HTMLInputElement>('[data-testid="console-send-input"]')!;
     const button = el.querySelector<HTMLButtonElement>('[data-testid="console-send-button"]')!;
@@ -209,8 +230,8 @@ describe("DeviceConsole", () => {
     expect(socket.sent).toHaveLength(2);
   });
 
-  it("disables sending with a clear reason when this device has no open link", () => {
-    const { el } = mountConsole(baseDevice({ sessionOpen: false }));
+  it("disables sending with a clear reason when this link has no open session", () => {
+    const { el } = mountConsole(baseLink({ session: undefined }), "zeguz");
 
     const input = el.querySelector<HTMLInputElement>('[data-testid="console-send-input"]')!;
     const button = el.querySelector<HTMLButtonElement>('[data-testid="console-send-button"]')!;
@@ -222,7 +243,7 @@ describe("DeviceConsole", () => {
   });
 
   it("sends session-open when the 'open a link' hint is clicked", () => {
-    const { el, socket } = mountConsole(baseDevice({ sessionOpen: false }));
+    const { el, socket } = mountConsole(baseLink({ session: undefined }));
 
     const openButton = el.querySelector<HTMLButtonElement>(".console-link-button")!;
     act(() => {
@@ -230,15 +251,15 @@ describe("DeviceConsole", () => {
     });
 
     expect(socket.sent).toEqual([
-      JSON.stringify({ type: "session-open", endpointId: "usb-SERIAL-A" }),
+      JSON.stringify({ type: "session-open", linkId: "usb-SERIAL-A" }),
     ]);
   });
 
-  it("clears this device's log", () => {
-    const { el, socket } = mountConsole(baseDevice());
+  it("clears this link's log", () => {
+    const { el, socket } = mountConsole(baseLink());
 
     act(() => {
-      socket.emitMessage({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: "line-a" });
+      socket.emitMessage({ type: "line", linkId: "usb-SERIAL-A", direction: "rx", line: "line-a" });
     });
     expect(el.textContent).toContain("line-a");
 
@@ -251,24 +272,24 @@ describe("DeviceConsole", () => {
     expect(el.textContent).not.toContain("line-a");
   });
 
-  it("caps retained lines per device at MAX_LINES_PER_DEVICE, dropping the oldest", () => {
-    const { el, socket } = mountConsole(baseDevice());
+  it("caps retained lines per link at MAX_LINES_PER_LINK, dropping the oldest", () => {
+    const { el, socket } = mountConsole(baseLink());
 
     act(() => {
-      for (let i = 0; i < MAX_LINES_PER_DEVICE + 5; i++) {
-        socket.emitMessage({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: `n${i}` });
+      for (let i = 0; i < MAX_LINES_PER_LINK + 5; i++) {
+        socket.emitMessage({ type: "line", linkId: "usb-SERIAL-A", direction: "rx", line: `n${i}` });
       }
     });
 
     const lines = el.querySelectorAll('[data-testid="console-line-rx"]');
-    expect(lines.length).toBe(MAX_LINES_PER_DEVICE);
+    expect(lines.length).toBe(MAX_LINES_PER_LINK);
     expect(lines[0]?.textContent).toContain("n5");
     expect(lines[0]?.textContent).not.toContain("n0");
-    expect(lines[lines.length - 1]?.textContent).toContain(`n${MAX_LINES_PER_DEVICE + 4}`);
+    expect(lines[lines.length - 1]?.textContent).toContain(`n${MAX_LINES_PER_LINK + 4}`);
   });
 
   it("toggles the autoscroll pause control", () => {
-    const { el } = mountConsole(baseDevice());
+    const { el } = mountConsole(baseLink());
 
     const toggle = Array.from(el.querySelectorAll("button")).find(
       (b) => b.textContent === "Pause autoscroll",
@@ -281,25 +302,25 @@ describe("DeviceConsole", () => {
   });
 
   it("shows no drive-specific motor/wheel controls", () => {
-    const { el } = mountConsole(baseDevice());
+    const { el } = mountConsole(baseLink());
     expect(el.textContent).not.toMatch(/WHEELS_X|WHEELS_V/);
   });
 
   describe("status-poll traffic hidden by default (added out-of-process, 2026-09-09)", () => {
     it("hides a poll-origin line by default while still showing ordinary traffic", () => {
-      const { el, socket } = mountConsole(baseDevice());
+      const { el, socket } = mountConsole(baseLink());
 
       act(() => {
         socket.emitMessage({
           type: "line",
-          endpointId: "usb-SERIAL-A",
+          linkId: "usb-SERIAL-A",
           direction: "rx",
           line: "status ready=1",
           origin: "poll",
         });
         socket.emitMessage({
           type: "line",
-          endpointId: "usb-SERIAL-A",
+          linkId: "usb-SERIAL-A",
           direction: "rx",
           line: "ack HELLO",
         });
@@ -311,12 +332,12 @@ describe("DeviceConsole", () => {
     });
 
     it("shows poll-origin lines, muted, once the toggle is checked", () => {
-      const { el, socket } = mountConsole(baseDevice());
+      const { el, socket } = mountConsole(baseLink());
 
       act(() => {
         socket.emitMessage({
           type: "line",
-          endpointId: "usb-SERIAL-A",
+          linkId: "usb-SERIAL-A",
           direction: "rx",
           line: "status ready=1",
           origin: "poll",
@@ -343,10 +364,10 @@ describe("DeviceConsole", () => {
     });
 
     it("leaves non-poll lines completely unaffected by the toggle", () => {
-      const { el, socket } = mountConsole(baseDevice());
+      const { el, socket } = mountConsole(baseLink());
 
       act(() => {
-        socket.emitMessage({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: "ack HELLO" });
+        socket.emitMessage({ type: "line", linkId: "usb-SERIAL-A", direction: "rx", line: "ack HELLO" });
       });
       const toggle = el.querySelector<HTMLInputElement>('[data-testid="console-show-polls"]')!;
 
@@ -360,18 +381,21 @@ describe("DeviceConsole", () => {
     });
   });
 
-  describe("host error messages (ticket 012-003)", () => {
-    it("renders a host type: 'error' message in this device's log with the error kind styling, distinct from ordinary rx traffic", () => {
-      const { el, socket } = mountConsole(baseDevice());
+  describe("host notice messages (ticket 012-003)", () => {
+    it("renders a link-scoped host notice in this link's log with the error kind styling, distinct from ordinary rx traffic", () => {
+      const { el, socket } = mountConsole(baseLink());
 
       act(() => {
         // Plain text with no "err"/"nack" prefix -- `classifyLine` alone
         // would classify this as ordinary `data`, indistinguishable from
         // a device reply. The point of this ticket is that it isn't.
         socket.emitMessage({
-          type: "error",
-          endpointId: "usb-SERIAL-A",
-          message: "device usb-SERIAL-A has no open link",
+          type: "notice",
+          level: "error",
+          linkId: "usb-SERIAL-A",
+          text: "device usb-SERIAL-A has no open link",
+          at: 0,
+          seq: 1,
         });
       });
 
@@ -383,26 +407,29 @@ describe("DeviceConsole", () => {
       expect(errorLine.getAttribute("data-host-error")).toBe("true");
     });
 
-    it("does not attach a host error meant for a different endpoint to this device's log", () => {
-      const { el, socket } = mountConsole(baseDevice());
+    it("does not attach a host notice meant for a different link to this link's log", () => {
+      const { el, socket } = mountConsole(baseLink());
 
       act(() => {
-        socket.emitMessage({ type: "error", endpointId: "usb-OTHER", message: "not mine" });
+        socket.emitMessage({ type: "notice", level: "warn", linkId: "usb-OTHER", text: "not mine", at: 0, seq: 1 });
       });
 
       expect(el.textContent).not.toContain("not mine");
       expect(el.textContent).toContain("No traffic yet for this device");
     });
 
-    it("distinguishes a host error from a device-classified err/nack line: both get error styling, only the host one is flagged data-host-error", () => {
-      const { el, socket } = mountConsole(baseDevice());
+    it("distinguishes a host notice from a device-classified err/nack line: both get error styling, only the host one is flagged data-host-error", () => {
+      const { el, socket } = mountConsole(baseLink());
 
       act(() => {
-        socket.emitMessage({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: "err 3 bad-arg" });
+        socket.emitMessage({ type: "line", linkId: "usb-SERIAL-A", direction: "rx", line: "err 3 bad-arg" });
         socket.emitMessage({
-          type: "error",
-          endpointId: "usb-SERIAL-A",
-          message: '"HELLO" cannot be sent as a live command',
+          type: "notice",
+          level: "error",
+          linkId: "usb-SERIAL-A",
+          text: '"HELLO" cannot be sent as a live command',
+          at: 0,
+          seq: 1,
         });
       });
 

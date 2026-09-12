@@ -2,7 +2,6 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
 import { WifiCredentialsDialog, validateWifiInput } from "./WifiCredentialsDialog";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
@@ -34,25 +33,17 @@ afterEach(() => {
   window.localStorage.clear();
 });
 
-function robot(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
-  return {
-    endpointId: "usb-ROBOT-A",
-    transport: "usb",
-    resourceKey: "usb-ROBOT-A",
-    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
-    name: "tigez",
-    role: "NEZHA2",
-    sessionOpen: true,
-    usb: { serialNumber: "ROBOT-A-FULL", displaySerial: "0004", port: "/dev/cu.usbmodemC" },
-    ...overrides,
-  };
-}
-
-function mountWifi(endpoint = robot()): { el: HTMLDivElement; socket: FakeSocket } {
+function mountWifi(
+  props: { linkId?: string; linkOpen?: boolean; name?: string } = {},
+): { el: HTMLDivElement; socket: FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <WifiCredentialsDialog endpoint={endpoint} />
+      <WifiCredentialsDialog
+        linkId={props.linkId ?? "usb-ROBOT-A"}
+        linkOpen={props.linkOpen ?? true}
+        name={props.name ?? "tigez"}
+      />
     </WsProvider>,
   );
   act(() => {
@@ -94,7 +85,7 @@ describe("WifiCredentialsDialog", () => {
     });
     expect(sent(socket)).toEqual([{ type: "get-wifi-credentials" }]);
     act(() => {
-      socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "env" });
+      socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "env", seq: 1 });
     });
     expect(el.querySelector<HTMLInputElement>('[data-testid="wifi-ssid"]')!.value).toBe("Busboom_Garage");
     expect(el.querySelector<HTMLInputElement>('[data-testid="wifi-password"]')!.placeholder).toContain("leave blank");
@@ -104,16 +95,17 @@ describe("WifiCredentialsDialog", () => {
     });
     expect(sent(socket).slice(1)).toEqual([
       { type: "set-wifi-credentials", ssid: "Busboom_Garage", password: "" },
-      { type: "provision-wifi", endpointId: "usb-ROBOT-A", slot: 0 },
+      { type: "provision-wifi", linkId: "usb-ROBOT-A", slot: 0 },
     ]);
     expect(el.querySelector('[data-testid="wifi-write"]')?.textContent).toBe("Writing…");
 
     act(() => {
       socket.emitMessage({
         type: "wifi-provision-result",
-        endpointId: "usb-ROBOT-A",
+        linkId: "usb-ROBOT-A",
         ok: true,
         message: "wrote Busboom_Garage to slot 0 -- power-cycle the robot and it will join",
+        seq: 2,
       });
     });
     expect(el.querySelector('[data-testid="wifi-result"]')?.textContent).toContain("power-cycle");
@@ -126,7 +118,7 @@ describe("WifiCredentialsDialog", () => {
       el.querySelector<HTMLButtonElement>('[data-testid="wifi-credentials-trigger"]')!.click();
     });
     act(() => {
-      socket.emitMessage({ type: "wifi-credentials", ssid: null, hasPassword: false, source: "none" });
+      socket.emitMessage({ type: "wifi-credentials", ssid: null, hasPassword: false, source: "none", seq: 1 });
     });
     type(el, '[data-testid="wifi-ssid"]', "Busboom Mesh");
     type(el, '[data-testid="wifi-password"]', "topsecret");
@@ -139,7 +131,7 @@ describe("WifiCredentialsDialog", () => {
   });
 
   it("disables the write button without an open link", () => {
-    const { el } = mountWifi(robot({ sessionOpen: false }));
+    const { el } = mountWifi({ linkOpen: false });
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="wifi-credentials-trigger"]')!.click();
     });

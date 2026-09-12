@@ -26,7 +26,7 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { FlashDialog } from "./FlashDialog";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
@@ -58,31 +58,32 @@ afterEach(() => {
   }
 });
 
-function baseDevice(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+function baseLink(overrides: Partial<SnapshotLink> = {}): SnapshotLink {
   return {
-    endpointId: "usb-SERIAL-A",
+    id: "usb-SERIAL-A",
     transport: "usb",
-    resourceKey: "usb-SERIAL-A",
-    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
-    name: "zeguz",
-    role: null,
-    sessionOpen: false,
-    usb: { serialNumber: "SERIAL-A-FULL", displaySerial: "0002", port: "/dev/cu.usbmodemA" },
+    label: "USB · /dev/cu.usbmodemA",
+    state: "connectable",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: true, close: false, flash: true, provisionWifi: false },
     ...overrides,
   };
 }
 
 function mountFlashDialog(
-  endpoint: EndpointListEntry,
-  props: { forceShow?: boolean } = {},
+  link: SnapshotLink,
+  props: { forceShow?: boolean; name?: string } = {},
 ): { el: HTMLDivElement; socket: () => FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     withRouter(
       <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-        <FlashDialog endpoint={endpoint} forceShow={props.forceShow ?? false} />
+        <FlashDialog link={link} name={props.name ?? "zeguz"} forceShow={props.forceShow ?? false} />
       </WsProvider>,
-      { initialEntries: [`/d/${endpoint.endpointId}`] },
+      { initialEntries: [`/d/${link.id}`] },
     ),
   );
   act(() => {
@@ -104,42 +105,48 @@ function dialog(el: HTMLDivElement): HTMLDialogElement | null {
 }
 
 describe("FlashDialog trigger gating", () => {
-  it("offers no trigger for an identified device", () => {
-    const { el } = mountFlashDialog(baseDevice({ role: "NEZHA2", sessionOpen: true }));
+  it("offers no trigger for an identified device (link.capabilities.flash false)", () => {
+    const { el } = mountFlashDialog(baseLink({ state: "connected", capabilities: { open: false, close: true, flash: false, provisionWifi: true } }));
     expect(trigger(el)).toBeNull();
   });
 
   // Regression test for the bug ticket 012-001 fixed, now pinned at the
   // trigger layer: a silent, unflashed board's session opens fine and
-  // `identify()` resolves `null` without throwing, so `sessionError` is
-  // never set. This must still get a Flash trigger -- `canBeFlashed`
-  // depends only on `role`, not `sessionError`.
-  it("offers a trigger for an unprobed device (no role, no sessionError)", () => {
-    const { el } = mountFlashDialog(baseDevice({ role: null }));
+  // `identify()` resolves `null` without throwing, so no failure state
+  // is ever set. This must still get a Flash trigger --
+  // `canBeFlashed` depends only on `link.capabilities.flash`, not on
+  // whether the link failed.
+  it("offers a trigger for an unprobed link (connectable, capabilities.flash true)", () => {
+    const { el } = mountFlashDialog(baseLink());
     expect(trigger(el)).not.toBeNull();
   });
 
-  it("offers a trigger for a failed-identify device", () => {
-    const { el } = mountFlashDialog(
-      baseDevice({ role: null, sessionError: "HELLO reply timed out after 2000ms" }),
-    );
+  it("offers a trigger for a failed-identify link", () => {
+    const { el } = mountFlashDialog(baseLink({ state: "failed", reason: "HELLO reply timed out after 2000ms" }));
     expect(trigger(el)).not.toBeNull();
   });
 
   it("offers no trigger for an identified device when forceShow is explicitly false", () => {
-    const { el } = mountFlashDialog(baseDevice({ role: "NEZHA2", sessionOpen: true }), { forceShow: false });
+    const { el } = mountFlashDialog(
+      baseLink({ state: "connected", capabilities: { open: false, close: true, flash: false, provisionWifi: true } }),
+      { forceShow: false },
+    );
     expect(trigger(el)).toBeNull();
   });
 
   it("offers a trigger for an identified device when forceShow is true", () => {
-    const { el } = mountFlashDialog(baseDevice({ role: "NEZHA2", sessionOpen: true }), { forceShow: true });
+    const { el } = mountFlashDialog(
+      baseLink({ state: "connected", capabilities: { open: false, close: true, flash: false, provisionWifi: true } }),
+      { forceShow: true },
+    );
     expect(trigger(el)).not.toBeNull();
   });
 
   it("shows a reflash warning inside the dialog for an identified device opened via forceShow", () => {
-    const { el } = mountFlashDialog(baseDevice({ role: "NEZHA2", sessionOpen: true, name: "kivon" }), {
-      forceShow: true,
-    });
+    const { el } = mountFlashDialog(
+      baseLink({ state: "connected", capabilities: { open: false, close: true, flash: false, provisionWifi: true } }),
+      { forceShow: true, name: "kivon" },
+    );
     act(() => {
       trigger(el)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -147,7 +154,7 @@ describe("FlashDialog trigger gating", () => {
   });
 
   it("shows no reflash warning for a canBeFlashed device", () => {
-    const { el } = mountFlashDialog(baseDevice({ role: null }));
+    const { el } = mountFlashDialog(baseLink());
     act(() => {
       trigger(el)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -157,13 +164,13 @@ describe("FlashDialog trigger gating", () => {
 
 describe("FlashDialog open/close roundtrip", () => {
   it("is closed initially, with no FlashControls content mounted", () => {
-    const { el } = mountFlashDialog(baseDevice({ role: null }));
+    const { el } = mountFlashDialog(baseLink());
     expect(dialog(el)).toBeNull();
     expect(el.querySelector(".flash-controls")).toBeNull();
   });
 
   it("opens the dialog and mounts FlashControls when the trigger is clicked", () => {
-    const { el } = mountFlashDialog(baseDevice({ role: null }));
+    const { el } = mountFlashDialog(baseLink());
     act(() => {
       trigger(el)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -173,7 +180,7 @@ describe("FlashDialog open/close roundtrip", () => {
   });
 
   it("moves focus into the dialog on open", () => {
-    const { el } = mountFlashDialog(baseDevice({ role: null }));
+    const { el } = mountFlashDialog(baseLink());
     act(() => {
       trigger(el)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -181,7 +188,7 @@ describe("FlashDialog open/close roundtrip", () => {
   });
 
   it("closes the dialog and returns focus to the trigger when Close is clicked", () => {
-    const { el } = mountFlashDialog(baseDevice({ role: null }));
+    const { el } = mountFlashDialog(baseLink());
     const triggerButton = trigger(el)!;
     act(() => {
       triggerButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -194,13 +201,14 @@ describe("FlashDialog open/close roundtrip", () => {
     expect(document.activeElement).toBe(triggerButton);
   });
 
-  it("resets to closed if the matched endpoint's id changes (AppHeader carry-over guard)", () => {
+  it("resets to closed if the matched link's id changes (AppHeader carry-over guard)", () => {
     let socket: FakeSocket | null = null;
-    const deviceA = baseDevice({ endpointId: "usb-A", resourceKey: "usb-A", role: "NEZHA2", sessionOpen: true });
+    const identified = { open: false, close: true, flash: false, provisionWifi: true };
+    const linkA = baseLink({ id: "usb-A", state: "connected", capabilities: identified });
     const el = mount(
       withRouter(
         <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-          <FlashDialog endpoint={deviceA} forceShow />
+          <FlashDialog link={linkA} name="zeguz" forceShow />
         </WsProvider>,
         { initialEntries: ["/d/usb-A"] },
       ),
@@ -213,12 +221,12 @@ describe("FlashDialog open/close roundtrip", () => {
     });
     expect(dialog(el)).not.toBeNull();
 
-    const deviceB = baseDevice({ endpointId: "usb-B", resourceKey: "usb-B", role: "NEZHA2", sessionOpen: true });
+    const linkB = baseLink({ id: "usb-B", state: "connected", capabilities: identified });
     act(() => {
       root!.render(
         withRouter(
           <WsProvider url="ws://test/" socketFactory={() => socket!}>
-            <FlashDialog endpoint={deviceB} forceShow />
+            <FlashDialog link={linkB} name="zeguz" forceShow />
           </WsProvider>,
           { initialEntries: ["/d/usb-A"] },
         ),
@@ -230,22 +238,23 @@ describe("FlashDialog open/close roundtrip", () => {
 });
 
 describe("FlashDialog dismissal while a flash is in progress", () => {
-  function openAndStartFlash(el: HTMLDivElement, socket: () => FakeSocket, endpointId: string) {
+  function openAndStartFlash(el: HTMLDivElement, socket: () => FakeSocket, linkId: string) {
     act(() => {
       trigger(el)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     act(() => {
       socket().emitMessage({
         type: "flash-progress",
-        endpointId,
+        linkId,
         source: { kind: "release", firmware: "relay" },
         phase: "writing",
+        seq: 1,
       });
     });
   }
 
   it("suppresses Escape (the dialog's cancel event) while a flash is in progress", () => {
-    const { el, socket } = mountFlashDialog(baseDevice({ role: null }));
+    const { el, socket } = mountFlashDialog(baseLink());
     openAndStartFlash(el, socket, "usb-SERIAL-A");
 
     act(() => {
@@ -255,7 +264,7 @@ describe("FlashDialog dismissal while a flash is in progress", () => {
   });
 
   it("suppresses a backdrop click while a flash is in progress", () => {
-    const { el, socket } = mountFlashDialog(baseDevice({ role: null }));
+    const { el, socket } = mountFlashDialog(baseLink());
     openAndStartFlash(el, socket, "usb-SERIAL-A");
 
     act(() => {
@@ -265,7 +274,7 @@ describe("FlashDialog dismissal while a flash is in progress", () => {
   });
 
   it("still closes on an explicit Close-button click while a flash is in progress", () => {
-    const { el, socket } = mountFlashDialog(baseDevice({ role: null }));
+    const { el, socket } = mountFlashDialog(baseLink());
     const triggerButton = trigger(el)!;
     openAndStartFlash(el, socket, "usb-SERIAL-A");
 
@@ -277,17 +286,17 @@ describe("FlashDialog dismissal while a flash is in progress", () => {
   });
 
   it("re-enables Escape once flash-result arrives and progress clears", () => {
-    const { el, socket } = mountFlashDialog(baseDevice({ role: null }));
+    const { el, socket } = mountFlashDialog(baseLink());
     openAndStartFlash(el, socket, "usb-SERIAL-A");
 
     act(() => {
       socket().emitMessage({
         type: "flash-result",
-        endpointId: "usb-SERIAL-A",
+        linkId: "usb-SERIAL-A",
         source: { kind: "release", firmware: "relay" },
         status: "ok",
-        classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
         reidentify: "timeout",
+        seq: 2,
       });
     });
 
@@ -298,17 +307,17 @@ describe("FlashDialog dismissal while a flash is in progress", () => {
   });
 
   it("re-enables a backdrop click once flash-result arrives and progress clears", () => {
-    const { el, socket } = mountFlashDialog(baseDevice({ role: null }));
+    const { el, socket } = mountFlashDialog(baseLink());
     openAndStartFlash(el, socket, "usb-SERIAL-A");
 
     act(() => {
       socket().emitMessage({
         type: "flash-result",
-        endpointId: "usb-SERIAL-A",
+        linkId: "usb-SERIAL-A",
         source: { kind: "release", firmware: "relay" },
         status: "ok",
-        classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
         reidentify: "timeout",
+        seq: 2,
       });
     });
 
@@ -319,7 +328,7 @@ describe("FlashDialog dismissal while a flash is in progress", () => {
   });
 
   it("closes on Escape when no flash is in progress at all", () => {
-    const { el } = mountFlashDialog(baseDevice({ role: null }));
+    const { el } = mountFlashDialog(baseLink());
     act(() => {
       trigger(el)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -330,7 +339,7 @@ describe("FlashDialog dismissal while a flash is in progress", () => {
   });
 
   it("closes on a backdrop click when no flash is in progress at all", () => {
-    const { el } = mountFlashDialog(baseDevice({ role: null }));
+    const { el } = mountFlashDialog(baseLink());
     act(() => {
       trigger(el)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -341,7 +350,7 @@ describe("FlashDialog dismissal while a flash is in progress", () => {
   });
 
   it("does not close on a click that lands on dialog content, not the backdrop", () => {
-    const { el } = mountFlashDialog(baseDevice({ role: null }));
+    const { el } = mountFlashDialog(baseLink());
     act(() => {
       trigger(el)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -355,7 +364,7 @@ describe("FlashDialog dismissal while a flash is in progress", () => {
 
 describe("FlashDialog focus trap", () => {
   it("cycles Tab from the last focusable element back to the first", () => {
-    const { el } = mountFlashDialog(baseDevice({ role: null }));
+    const { el } = mountFlashDialog(baseLink());
     act(() => {
       trigger(el)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -374,7 +383,7 @@ describe("FlashDialog focus trap", () => {
   });
 
   it("cycles Shift+Tab from the first focusable element back to the last", () => {
-    const { el } = mountFlashDialog(baseDevice({ role: null }));
+    const { el } = mountFlashDialog(baseLink());
     act(() => {
       trigger(el)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });

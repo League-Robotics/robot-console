@@ -242,13 +242,57 @@ describe("multi-link device (host already groups links under one device)", () =>
 describe("unassigned USB boards (acceptance: un-owned WiFi absent, unassigned present -> card renders)", () => {
   it("renders the unassigned board's card via DevicesList directly", () => {
     const el = mount(
-      withRouter(<DevicesList status="open" devices={[]} unassigned={[link("usb-unknown-1", { state: "discovered", label: "USB · /dev/tty.usbmodem-unknown" })]} />),
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
+          <DevicesList status="open" devices={[]} unassigned={[link("usb-unknown-1", { state: "discovered", label: "USB · /dev/tty.usbmodem-unknown" })]} />
+        </WsProvider>,
+      ),
     );
     const card = el.querySelector('[data-testid="unassigned-card-usb-unknown-1"]');
     expect(card).not.toBeNull();
     expect(card!.textContent).toContain("Unidentified board");
     expect(card!.textContent).toContain("USB · /dev/tty.usbmodem-unknown");
     expect(el.querySelector('[data-testid="unassigned-open-usb-unknown-1"]')?.getAttribute("href")).toBe("/d/usb-unknown-1");
+  });
+
+  it("restores the Flash trigger on an unassigned board's card (sprint 015 ticket 008)", () => {
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
+          <DevicesList
+            status="open"
+            devices={[]}
+            unassigned={[link("usb-unknown-1", { state: "discovered", label: "USB · /dev/tty.usbmodem-unknown" })]}
+          />
+        </WsProvider>,
+      ),
+    );
+    const card = el.querySelector('[data-testid="unassigned-card-usb-unknown-1"]')!;
+    const flashTrigger = Array.from(card.querySelectorAll("button")).find((b) => b.textContent === "Flash");
+    expect(flashTrigger).toBeDefined();
+  });
+
+  it("offers no Flash trigger for an unassigned board whose link capabilities say flash is unavailable", () => {
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
+          <DevicesList
+            status="open"
+            devices={[]}
+            unassigned={[
+              link("usb-unknown-1", {
+                state: "discovered",
+                label: "USB · /dev/tty.usbmodem-unknown",
+                capabilities: { open: true, close: false, flash: false, provisionWifi: false },
+              }),
+            ]}
+          />
+        </WsProvider>,
+      ),
+    );
+    const card = el.querySelector('[data-testid="unassigned-card-usb-unknown-1"]')!;
+    const flashTrigger = Array.from(card.querySelectorAll("button")).find((b) => b.textContent === "Flash");
+    expect(flashTrigger).toBeUndefined();
   });
 
   it("renders the unassigned board's card end-to-end through WsProvider + FrontPage, with no un-owned wifi device present", () => {

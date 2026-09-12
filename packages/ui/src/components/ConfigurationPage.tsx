@@ -24,24 +24,27 @@
  * Ticket 007 migrates this page to `SnapshotDevice`, so the panel now
  * seeds its draft from `device.radio` (`override -> registry ->
  * derived`, always a concrete `{channel, group, source}` --
- * `projection.ts`'s own resolution) and shows the source next to the
- * inputs (`radioSourceLabel` below) -- not through the shared
- * `AddressSourceChip` component, which still imports the retired
- * `AddressSource`/`EndpointTransport`/`FailoverTrailEntry` types tied to
- * the old relay-registry failover-trail model (`RelayPage.tsx`'s own
- * concept, replaced host-side by `SnapshotRelay.bridging`); adapting
- * that shared component is ticket 008's job, alongside the `RelayPage`
- * rewrite it actually serves. Saving still only updates this
+ * `projection.ts`'s own resolution). Saving still only updates this
  * component's own in-memory draft (feeding the code panel on the
  * right) -- it does not itself send `set-radio-override`; use the
  * device page's "Set Radio" dialog (`RadioAddressDialog`) for a
  * durable, host-side override.
+ *
+ * ## Sprint 015 ticket 008: back onto the shared `AddressSourceChip`
+ *
+ * Ticket 007's own inline `radioSourceLabel` paragraph was a stand-in
+ * for the ticket 006 gap that adapting `AddressSourceChip` to the
+ * `Snapshot` contract closed -- this panel now mounts that shared
+ * component directly (`<AddressSourceChip radio={device.radio} />`),
+ * matching `RelayPage.tsx`'s own connected-child chip, rather than
+ * duplicating its wording locally.
  */
 import { useEffect, useMemo, useState } from "react";
 import { nameToRadioAddress } from "@robot-console/protocol";
-import type { RadioSourceWire, SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
+import type { SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
 import { useConnectionStatus, useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
 import type { RadioAddress } from "../pages/RelayPage";
+import { AddressSourceChip } from "./AddressSourceChip";
 import {
   calibrationCode,
   deriveCalibration,
@@ -86,21 +89,6 @@ export function configurationCode(input: ConfigurationCodeInput): string {
     lines.push(...calibration.split("\n").slice(1));
   }
   return lines.length === 1 ? "" : lines.join("\n");
-}
-
-/** Student-facing label for one `RadioSourceWire` outcome -- shown next
- * to the Radio panel's channel/group inputs so a value pulled from a
- * host-side override or the mbrelay registry reads differently from
- * one that is only ever a name-derived guess. */
-export function radioSourceLabel(source: RadioSourceWire): string {
-  switch (source) {
-    case "override":
-      return "set for this device";
-    case "registry":
-      return "confirmed by registry";
-    case "derived":
-      return "derived from the name";
-  }
 }
 
 export interface ConfigurationPageProps {
@@ -341,9 +329,7 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
 
         <div className="robot-page-panel" aria-label="Radio values">
           <h3>Radio</h3>
-          <p className="credentials-note" data-testid="configuration-radio-source">
-            {radioSourceLabel(device.radio.source)}
-          </p>
+          <AddressSourceChip radio={device.radio} />
           <table className="calibration-table" data-testid="configuration-radio">
             <tbody>
               <tr>

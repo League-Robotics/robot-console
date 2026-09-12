@@ -1,7 +1,7 @@
 ---
 id: '004'
 title: Sweep takeover within one probe, plus relay/robot projection and UI
-status: open
+status: in-progress
 use-cases:
 - SUC-004
 depends-on:

@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { deviceIdToName } from "@robot-console/protocol";
 import { FICR_DEVICEID1, readSwdName, swdNameResultFromDeviceId } from "./swdName.js";
+import type { CortexM } from "./vendor/dapjs/index.js";
 import type { DaplinkDevice } from "./devices.js";
 
 // Per the ticket's Testing section: the SWD read itself is a thin wrapper
@@ -85,6 +86,44 @@ describe("readSwdName", () => {
         },
       }),
     ).resolves.toMatchObject({ status: "unnamed" });
+  });
+
+  // Sprint 017 ticket 003: `processor.connect()`/`readMem32()` are now
+  // bound by `lib/withTimeout.ts`'s `withTimeout` -- a wedged transport
+  // used to hang this call (and the naming `board_owner` slot) forever.
+
+  it("classifies a wedged processor.connect() as a timeout, and still disconnects (the existing finally block)", async () => {
+    const disconnect = vi.fn(async () => {});
+    const fakeProcessor = {
+      connect: () => new Promise<void>(() => {}),
+      readMem32: vi.fn(),
+      disconnect,
+    } as unknown as CortexM;
+    const result = await readSwdName(device({ hid: { path: "IOHIDDevice@fake" } }), {
+      createCortexM: () => fakeProcessor,
+      connectTimeoutMs: 15,
+    });
+
+    expect(result).toMatchObject({ status: "unnamed", reason: "timeout" });
+    expect((result as { error: string }).error).toMatch(/processor\.connect\(\) timed out after 15ms/);
+    expect(disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies a wedged processor.readMem32() as a timeout, and still disconnects", async () => {
+    const disconnect = vi.fn(async () => {});
+    const fakeProcessor = {
+      connect: async () => {},
+      readMem32: () => new Promise<number>(() => {}),
+      disconnect,
+    } as unknown as CortexM;
+    const result = await readSwdName(device({ hid: { path: "IOHIDDevice@fake" } }), {
+      createCortexM: () => fakeProcessor,
+      readTimeoutMs: 15,
+    });
+
+    expect(result).toMatchObject({ status: "unnamed", reason: "timeout" });
+    expect((result as { error: string }).error).toMatch(/processor\.readMem32\(\) timed out after 15ms/);
+    expect(disconnect).toHaveBeenCalledTimes(1);
   });
 });
 

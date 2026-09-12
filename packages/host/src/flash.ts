@@ -20,7 +20,7 @@
  *      validation failed after the erase began — see
  *      {@link isValidIntelHexText} and its call site in {@link flash}.
  *   2. **Failure is a value, not an exception**, matching `swdName.ts`'s
- *      and `releases.ts`'s convention: {@link flashOverSwd} and
+ *      and `releases.ts`'s convention: {@link flashViaDapLink} and
  *      {@link flash} always resolve to a classified {@link FlashOutcome},
  *      never throw and never reject, so a caller can report precisely
  *      what state the board is in rather than catching an uncaught
@@ -32,8 +32,8 @@
  *
  * `swdName.ts` deliberately attaches to a target *without* halting or
  * resetting it, so reading a five-letter name never disturbs firmware a
- * student might be mid-session with. `flashOverSwd` in this module does
- * the opposite on purpose: flashing fundamentally requires halting,
+ * student might be mid-session with. `flashViaDapLink` in this module
+ * does the opposite on purpose: flashing fundamentally requires halting,
  * erasing, writing, and resetting the target — there is no way to
  * program new firmware without interrupting whatever is currently
  * running. Do not "fix" one module by copying the other's constraint:
@@ -42,6 +42,31 @@
  * exists for a use case (recovering a board that already failed to
  * identify) where the target is not expected to have anything running
  * worth preserving.
+ *
+ * ## Naming: DAPLink vendor commands, not SWD (sprint 017 ticket 003)
+ *
+ * `flashViaDapLink`/`resetViaDapLink` were previously named
+ * `flashOverSwd`/`resetOverSwd` — a misnomer the 2026-09-11 review
+ * called out (`03-host-server-flash-releases.md` §2): both drive
+ * `dapjs`'s `DAPLink` class, which talks to the DAPLink *interface
+ * chip's own vendor-specific HID commands*, not the target's SWD debug
+ * port directly the way `swdName.ts`'s `CortexM`-based `readSwdName`
+ * does. The distinction is not pedantic: it is why
+ * {@link resetViaDapLink}'s reset never re-enumerates USB (that
+ * function's own doc comment) — a fact that is true of the DAPLink
+ * vendor reset command and would not necessarily be true of a genuine
+ * SWD-level reset.
+ *
+ * ## Every dapjs/HID call is time-bounded (sprint 017 ticket 003)
+ *
+ * `daplink.connect()` and `daplink.flash()` are each wrapped in
+ * {@link withTimeout} (`lib/withTimeout.ts`) — `node-hid`/`dapjs` give no
+ * bounded-wait or cancellation of their own, so a wedged USB transport
+ * used to hang the caller (and the board's `board_owner` slot) forever.
+ * A timeout classifies as `reason: "timeout"` in the returned
+ * {@link FlashFailure}, and the DAPLink handle is disconnected
+ * best-effort before returning (never left open) — see each function's
+ * own doc comment for exactly where.
  *
  * ## DAPjs's `DAPLink.flash()` is one atomic vendor-command sequence
  *
@@ -99,6 +124,7 @@ import { HID as NodeHidDevice } from "node-hid";
 // package's own `tsc`, resolves `events` to Node's real `EventEmitter`,
 // which has it).
 import { HID as HidTransport, DAPLink } from "./vendor/dapjs/index.js";
+import { TimeoutError, withTimeout } from "./lib/withTimeout.js";
 import type { DaplinkDevice } from "./devices.js";
 import type { FlashPhase } from "./wsMessages.js";
 
@@ -266,6 +292,19 @@ export interface FlashSuccess {
  *   - `"no-volume"` — SWD flashing failed and no mounted MSD volume
  *     could be resolved for this device, so no fallback was attempted.
  *   - `"write-failed"` — the MSD fallback's file write itself failed.
+ *   - `"timeout"` (sprint 017 ticket 003) — `daplink.connect()` or
+ *     `daplink.flash()` did not settle within its configured budget (see
+ *     the module doc's "Every dapjs/HID call is time-bounded" section).
+ *     The DAPLink handle is disconnected best-effort before this is
+ *     returned.
+ *   - `"owner-unavailable"` (sprint 017 ticket 003) — produced only by
+ *     `connect/flasher.ts`, never by this module directly: `board_owner
+ *     = 'flash'` could not be acquired for this device within that
+ *     module's own acquire-retry budget, even after closing any open
+ *     session first. Listed here (rather than in a separate type)
+ *     because `connect/flasher.ts` returns the same {@link FlashOutcome}
+ *     type this module does, per its own "thin orchestrator" design
+ *     (`sprint.md`'s Design Rationale).
  */
 export interface FlashFailure {
   status: "error";
@@ -277,7 +316,9 @@ export interface FlashFailure {
     | "attach-failed"
     | "program-failed"
     | "no-volume"
-    | "write-failed";
+    | "write-failed"
+    | "timeout"
+    | "owner-unavailable";
   error: string;
 }
 
@@ -313,12 +354,41 @@ function defaultDapLinkFactory(hidPath: string): DAPLink {
   return new DAPLink(transport);
 }
 
+/** Default bound on `daplink.connect()` — see the module doc's "Every
+ * dapjs/HID call is time-bounded" section. Overridable per call via
+ * {@link FlashViaDapLinkOptions.connectTimeoutMs} (tests shrink this to
+ * avoid a slow suite). */
+export const DEFAULT_DAPLINK_CONNECT_TIMEOUT_MS = 5_000;
+
+/** Default bound on the single `daplink.flash()` call, which erases,
+ * writes, and resets the target as one atomic sequence (module doc's
+ * "DAPjs's DAPLink.flash() is one atomic vendor-command sequence"
+ * section) — generous, since a full micro:bit v2 image can take several
+ * seconds to program page-by-page over HID. Overridable per call via
+ * {@link FlashViaDapLinkOptions.flashTimeoutMs}. */
+export const DEFAULT_DAPLINK_FLASH_TIMEOUT_MS = 30_000;
+
+/** Default bound on `daplink.connect()`/`daplink.reset()` inside
+ * {@link resetViaDapLink}. Overridable via
+ * {@link ResetViaDapLinkOptions}. */
+export const DEFAULT_DAPLINK_RESET_TIMEOUT_MS = 5_000;
+
+export interface FlashViaDapLinkOptions {
+  createDapLink?: DapLinkFactory;
+  /** See {@link DEFAULT_DAPLINK_CONNECT_TIMEOUT_MS}. */
+  connectTimeoutMs?: number;
+  /** See {@link DEFAULT_DAPLINK_FLASH_TIMEOUT_MS}. */
+  flashTimeoutMs?: number;
+}
+
 /**
  * Flash `hex` (already extracted to a plain, v2-only Intel hex — see
  * {@link flash}, which is the caller that does that extraction) onto
- * `device` over SWD, using `dapjs`'s `DAPLink` vendor-command flash
- * protocol against the same CMSIS-DAP HID handle `swdName.ts` uses
- * (`device.hid.path`).
+ * `device` via `dapjs`'s `DAPLink` vendor-command flash protocol,
+ * against the same CMSIS-DAP HID handle `swdName.ts` uses
+ * (`device.hid.path`) — see the module doc's "Naming" section for why
+ * this is not itself an SWD-level operation despite the vendored `dapjs`
+ * package's own class name.
  *
  * Unlike `swdName.ts`, this **does** halt, erase, write, and reset the
  * target -- see the module doc's "Attach-and-may-halt" section for why
@@ -329,12 +399,20 @@ function defaultDapLinkFactory(hidPath: string): DAPLink {
  * internally, and `"resetting"` once that call resolves (see the module
  * doc for why finer-grained phase boundaries aren't available from
  * `dapjs`). Always resolves to a {@link FlashOutcome}, never throws.
+ *
+ * `daplink.connect()` and `daplink.flash()` are each wrapped in
+ * {@link withTimeout}; either one timing out classifies as
+ * `reason: "timeout"`. A `connect()` timeout disconnects the (possibly
+ * still-opening) handle best-effort before returning, since that call
+ * never reaches this function's own `finally` block below; a
+ * `flash()` timeout is already covered by that `finally`, same as every
+ * other error thrown from within it.
  */
-export async function flashOverSwd(
+export async function flashViaDapLink(
   device: DaplinkDevice,
   hex: string,
   onProgress: (phase: FlashPhase) => void,
-  options?: { createDapLink?: DapLinkFactory },
+  options?: FlashViaDapLinkOptions,
 ): Promise<FlashOutcome> {
   const hidPath = device.hid?.path;
   if (hidPath === undefined) {
@@ -347,6 +425,9 @@ export async function flashOverSwd(
   }
 
   const createDapLink = options?.createDapLink ?? defaultDapLinkFactory;
+  const connectTimeoutMs = options?.connectTimeoutMs ?? DEFAULT_DAPLINK_CONNECT_TIMEOUT_MS;
+  const flashTimeoutMs = options?.flashTimeoutMs ?? DEFAULT_DAPLINK_FLASH_TIMEOUT_MS;
+
   let daplink: DAPLink;
   try {
     daplink = createDapLink(hidPath);
@@ -356,8 +437,18 @@ export async function flashOverSwd(
   }
 
   try {
-    await daplink.connect();
+    await withTimeout(daplink.connect(), connectTimeoutMs, "daplink.connect()");
   } catch (error) {
+    if (error instanceof TimeoutError) {
+      try {
+        await daplink.disconnect();
+      } catch {
+        // Best-effort cleanup only -- see this function's own `finally`
+        // block below for why a failed disconnect must never mask or
+        // replace whatever result was already determined.
+      }
+      return { status: "error", method: "swd", reason: "timeout", error: error.message };
+    }
     const { reason, error: message } = classifyAttachError(error);
     return { status: "error", method: "swd", reason, error: message };
   }
@@ -366,10 +457,13 @@ export async function flashOverSwd(
   try {
     onProgress("erasing");
     daplink.on(DAPLink.EVENT_PROGRESS, reportWriting);
-    await daplink.flash(Buffer.from(hex, "utf-8"));
+    await withTimeout(daplink.flash(Buffer.from(hex, "utf-8")), flashTimeoutMs, "daplink.flash()");
     onProgress("resetting");
     return { status: "ok", method: "swd" };
   } catch (error) {
+    if (error instanceof TimeoutError) {
+      return { status: "error", method: "swd", reason: "timeout", error: error.message };
+    }
     return {
       status: "error",
       method: "swd",
@@ -398,7 +492,7 @@ export async function flashOverSwd(
 /**
  * Reset `device` via its DAPLink interface chip's own vendor reset
  * command (`dapjs`'s `CmsisDAP#reset()`, which `DAPLink` inherits) --
- * **not** a flash, and not the same operation as {@link flashOverSwd}'s
+ * **not** a flash, and not the same operation as {@link flashViaDapLink}'s
  * own post-write reset (which is the last step of `DAPLink#flash()`'s
  * one atomic sequence, not separately callable).
  *
@@ -415,16 +509,28 @@ export async function flashOverSwd(
  * (possibly different) robot, without the serial port the caller is
  * about to reopen ever disappearing out from under it mid-sequence.
  *
- * Mirrors {@link flashOverSwd}'s own shape and "failure is a value,
+ * Mirrors {@link flashViaDapLink}'s own shape and "failure is a value,
  * never throws" contract exactly (HID-path-first, injectable
  * `createDapLink`, best-effort `disconnect()` in a `finally` that can
- * never mask an already-determined result) but with nothing to write
- * and no {@link FlashPhase} progress to report -- just connect, reset,
- * disconnect.
+ * never mask an already-determined result, every dapjs call bound by
+ * {@link withTimeout}) but with nothing to write and no
+ * {@link FlashPhase} progress to report -- just connect, reset,
+ * disconnect. A `connect()` or `reset()` timeout is reported as
+ * `{ ok: false, error }` — this function has no typed failure-reason
+ * union of its own (unlike {@link FlashOutcome}), so a timeout here is
+ * just another rejected-then-classified error, distinguishable by the
+ * `TimeoutError`-shaped message.
  */
-export async function resetOverSwd(
+export interface ResetViaDapLinkOptions {
+  createDapLink?: DapLinkFactory;
+  /** See {@link DEFAULT_DAPLINK_RESET_TIMEOUT_MS}. Bounds both
+   * `daplink.connect()` and `daplink.reset()`. */
+  timeoutMs?: number;
+}
+
+export async function resetViaDapLink(
   device: DaplinkDevice,
-  options?: { createDapLink?: DapLinkFactory },
+  options?: ResetViaDapLinkOptions,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const hidPath = device.hid?.path;
   if (hidPath === undefined) {
@@ -435,6 +541,7 @@ export async function resetOverSwd(
   }
 
   const createDapLink = options?.createDapLink ?? defaultDapLinkFactory;
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_DAPLINK_RESET_TIMEOUT_MS;
   let daplink: DAPLink;
   try {
     daplink = createDapLink(hidPath);
@@ -443,20 +550,28 @@ export async function resetOverSwd(
   }
 
   try {
-    await daplink.connect();
+    await withTimeout(daplink.connect(), timeoutMs, "daplink.connect()");
   } catch (error) {
+    if (error instanceof TimeoutError) {
+      try {
+        await daplink.disconnect();
+      } catch {
+        // Best-effort cleanup only -- see this function's own `finally`
+        // block below.
+      }
+    }
     return { ok: false, error: errorMessage(error) };
   }
 
   try {
-    await daplink.reset();
+    await withTimeout(daplink.reset(), timeoutMs, "daplink.reset()");
     return { ok: true };
   } catch (error) {
     return { ok: false, error: errorMessage(error) };
   } finally {
-    // Best-effort cleanup only -- see flashOverSwd's own `finally` block
-    // for why a failed disconnect must never mask or replace whatever
-    // result was already determined above.
+    // Best-effort cleanup only -- see flashViaDapLink's own `finally`
+    // block for why a failed disconnect must never mask or replace
+    // whatever result was already determined above.
     try {
       await daplink.disconnect();
     } catch {
@@ -639,7 +754,7 @@ export async function defaultResolveVolumePath(
 }
 
 export interface FlashOptions {
-  /** Injectable `dapjs`/`node-hid` factory for {@link flashOverSwd}.
+  /** Injectable `dapjs`/`node-hid` factory for {@link flashViaDapLink}.
    * Defaults to the real stack. */
   createDapLink?: DapLinkFactory;
   /** Injectable filesystem write for {@link flashViaMsd}. Defaults to
@@ -650,21 +765,29 @@ export interface FlashOptions {
    * real `DETAILS.TXT`-to-serial join (see the module doc). Tests always
    * inject their own. */
   resolveVolumePath?: (device: DaplinkDevice) => Promise<string | undefined>;
+  /** Forwarded to {@link flashViaDapLink}'s own
+   * {@link FlashViaDapLinkOptions.connectTimeoutMs}. Defaults to
+   * {@link DEFAULT_DAPLINK_CONNECT_TIMEOUT_MS}. */
+  connectTimeoutMs?: number;
+  /** Forwarded to {@link flashViaDapLink}'s own
+   * {@link FlashViaDapLinkOptions.flashTimeoutMs}. Defaults to
+   * {@link DEFAULT_DAPLINK_FLASH_TIMEOUT_MS}. */
+  flashTimeoutMs?: number;
 }
 
 /**
  * Orchestrate a full flash: extract the universal-hex v2 block (if
  * `hexText` is a universal hex at all -- a plain Intel hex passes
  * through unchanged), validate the result structurally, try
- * {@link flashOverSwd}, and fall back to {@link flashViaMsd} only when
- * the SWD attempt itself failed to attach or program (never on a
- * successful-but-slow write -- a `FlashSuccess` from `flashOverSwd` is
- * returned as-is, with no fallback attempted).
+ * {@link flashViaDapLink}, and fall back to {@link flashViaMsd} only
+ * when the SWD attempt itself failed to attach or program (never on a
+ * successful-but-slow write -- a `FlashSuccess` from `flashViaDapLink`
+ * is returned as-is, with no fallback attempted).
  *
  * Per the module doc's "Validate before erasing anything" rule: hex
  * extraction and structural validation both happen **before**
- * {@link flashOverSwd} is called at all, so a malformed hex is rejected
- * with no board ever attached to, let alone erased.
+ * {@link flashViaDapLink} is called at all, so a malformed hex is
+ * rejected with no board ever attached to, let alone erased.
  *
  * The MSD fallback is skipped (the original SWD failure is returned
  * unchanged) whenever `resolveVolumePath` cannot find a mounted volume
@@ -689,8 +812,10 @@ export async function flash(
     };
   }
 
-  const swdOutcome = await flashOverSwd(device, extracted, onProgress, {
+  const swdOutcome = await flashViaDapLink(device, extracted, onProgress, {
     ...(options?.createDapLink !== undefined ? { createDapLink: options.createDapLink } : {}),
+    ...(options?.connectTimeoutMs !== undefined ? { connectTimeoutMs: options.connectTimeoutMs } : {}),
+    ...(options?.flashTimeoutMs !== undefined ? { flashTimeoutMs: options.flashTimeoutMs } : {}),
   });
   if (swdOutcome.status === "ok") {
     return swdOutcome;

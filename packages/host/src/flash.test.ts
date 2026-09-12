@@ -5,12 +5,12 @@ import {
   extractV2Hex,
   findMatchingVolume,
   flash,
-  flashOverSwd,
+  flashViaDapLink,
   flashViaMsd,
   isUniversalHex,
   isValidIntelHexText,
   parseDetailsTxt,
-  resetOverSwd,
+  resetViaDapLink,
 } from "./flash.js";
 import type { VolumeCandidate } from "./flash.js";
 import type { FlashPhase } from "./flash.js";
@@ -22,7 +22,7 @@ import type { DaplinkDevice } from "./devices.js";
 // are pure data transformation and are tested thoroughly here against
 // synthetic fixtures -- this is the part that is genuinely proven.
 //
-// `flashOverSwd`'s own describe block below stays narrow -- factory-seam
+// `flashViaDapLink`'s own describe block below stays narrow -- factory-seam
 // wiring/error-propagation only, mirroring `swdName.test.ts`'s explicit
 // "not unit-tested against a mock beyond the seam itself" precedent for
 // its own `CortexMFactory` injection point. `flash()`'s describe block
@@ -331,14 +331,14 @@ describe("defaultResolveVolumePath", () => {
   });
 });
 
-describe("flashOverSwd", () => {
+describe("flashViaDapLink", () => {
   // Seam-level only, per this ticket's explicit precedent (see this
   // file's top doc comment) -- mirrors `swdName.test.ts`'s own
   // `CortexMFactory` coverage exactly.
 
   it("reports a classified failure without calling the factory when no HID path is available", async () => {
     const createDapLink = vi.fn();
-    const result = await flashOverSwd(device({ hid: {} }), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
+    const result = await flashViaDapLink(device({ hid: {} }), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
       createDapLink,
     });
     expect(result).toEqual({
@@ -352,7 +352,7 @@ describe("flashOverSwd", () => {
 
   it("never throws, and reports attach-failed, when the DAPLink factory throws", async () => {
     const boom = new Error("mock: CMSIS-DAP open failed");
-    const result = await flashOverSwd(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
+    const result = await flashViaDapLink(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
       createDapLink: () => {
         throw boom;
       },
@@ -366,7 +366,7 @@ describe("flashOverSwd", () => {
   });
 
   it("classifies a permission-flavored error message distinctly from a generic attach failure", async () => {
-    const result = await flashOverSwd(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
+    const result = await flashViaDapLink(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
       createDapLink: () => {
         throw new Error("EACCES: permission denied opening HID device");
       },
@@ -376,7 +376,7 @@ describe("flashOverSwd", () => {
 
   it("never rejects the returned promise even when the factory throws synchronously", async () => {
     await expect(
-      flashOverSwd(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
+      flashViaDapLink(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
         createDapLink: () => {
           throw new Error("boom");
         },
@@ -400,17 +400,57 @@ describe("flashOverSwd", () => {
     // see that directory's README.md. `createFakeDapLink`'s `off` now
     // mirrors that real, fixed shape, so this asserts the happy path
     // stays `{ status: "ok" }` and that `.off` was actually called
-    // (proving `flashOverSwd` no longer avoids it).
+    // (proving `flashViaDapLink` no longer avoids it).
     const dapLink = createFakeDapLink();
-    const result = await flashOverSwd(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
+    const result = await flashViaDapLink(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
       createDapLink: () => dapLink,
     });
     expect(result).toEqual({ status: "ok", method: "swd" });
     expect(dapLink.offCalls).toEqual([DAPLink.EVENT_PROGRESS]);
   });
+
+  // Sprint 017 ticket 003: every dapjs call is now bound by
+  // `lib/withTimeout.ts`'s `withTimeout` -- these two cases are this
+  // ticket's own acceptance criterion ("Fake dapjs that never resolves
+  // flash() -> timeout failure within the configured budget, HID handle
+  // closed") plus the analogous case for `daplink.connect()` itself.
+
+  it("returns a typed timeout failure and disconnects the HID handle best-effort when daplink.flash() never resolves within the configured budget", async () => {
+    const disconnect = vi.fn(async () => {});
+    const dapLink = createFakeDapLink({
+      flash: () => new Promise<void>(() => {}),
+      disconnect,
+    });
+
+    const result = await flashViaDapLink(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
+      createDapLink: () => dapLink,
+      flashTimeoutMs: 15,
+    });
+
+    expect(result).toMatchObject({ status: "error", method: "swd", reason: "timeout" });
+    expect((result as { error: string }).error).toMatch(/daplink\.flash\(\) timed out after 15ms/);
+    expect(disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a typed timeout failure and disconnects the HID handle best-effort when daplink.connect() never resolves within the configured budget", async () => {
+    const disconnect = vi.fn(async () => {});
+    const dapLink = createFakeDapLink({
+      connect: () => new Promise<void>(() => {}),
+      disconnect,
+    });
+
+    const result = await flashViaDapLink(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
+      createDapLink: () => dapLink,
+      connectTimeoutMs: 15,
+    });
+
+    expect(result).toMatchObject({ status: "error", method: "swd", reason: "timeout" });
+    expect((result as { error: string }).error).toMatch(/daplink\.connect\(\) timed out after 15ms/);
+    expect(disconnect).toHaveBeenCalledTimes(1);
+  });
 });
 
-/** A fake satisfying only the `DAPLink` surface `flashOverSwd` actually
+/** A fake satisfying only the `DAPLink` surface `flashViaDapLink` actually
  * calls (`connect`, `on`, `off`, `flash`, `disconnect`) -- not a
  * simulation of real `dapjs`/hardware behavior. The default `flash`
  * implementation fires one registered `EVENT_PROGRESS` listener before
@@ -466,9 +506,9 @@ function createFakeDapLink(overrides?: {
   return fake as unknown as DAPLink & { offCalls: string[] };
 }
 
-describe("resetOverSwd", () => {
+describe("resetViaDapLink", () => {
   // OOP 2026-09-09: relay-via-radio support -- see this function's own
-  // doc comment. Seam-level only, same precedent as flashOverSwd's own
+  // doc comment. Seam-level only, same precedent as flashViaDapLink's own
   // describe block above.
 
   it("calls connect, then reset, then disconnect, in that order, and resolves ok", async () => {
@@ -486,7 +526,7 @@ describe("resetOverSwd", () => {
       },
     });
 
-    const result = await resetOverSwd(device(), { createDapLink: () => dapLink });
+    const result = await resetViaDapLink(device(), { createDapLink: () => dapLink });
 
     expect(result).toEqual({ ok: true });
     expect(calls).toEqual(["connect", "reset", "disconnect"]);
@@ -494,7 +534,7 @@ describe("resetOverSwd", () => {
 
   it("reports a classified failure without calling the factory when no HID path is available", async () => {
     const createDapLink = vi.fn();
-    const result = await resetOverSwd(device({ hid: {} }), { createDapLink });
+    const result = await resetViaDapLink(device({ hid: {} }), { createDapLink });
     expect(result).toEqual({ ok: false, error: expect.any(String) });
     expect(createDapLink).not.toHaveBeenCalled();
   });
@@ -507,7 +547,7 @@ describe("resetOverSwd", () => {
       },
     });
 
-    const result = await resetOverSwd(device(), { createDapLink: () => dapLink });
+    const result = await resetViaDapLink(device(), { createDapLink: () => dapLink });
 
     expect(result).toEqual({ ok: false, error: boom.message });
   });
@@ -528,7 +568,7 @@ describe("resetOverSwd", () => {
       },
     });
 
-    const result = await resetOverSwd(device(), { createDapLink: () => dapLink });
+    const result = await resetViaDapLink(device(), { createDapLink: () => dapLink });
 
     expect(result).toEqual({ ok: false, error: boom.message });
     expect(calls).toEqual(["connect", "reset", "disconnect"]);
@@ -536,12 +576,26 @@ describe("resetOverSwd", () => {
 
   it("never rejects the returned promise even when the factory throws synchronously", async () => {
     await expect(
-      resetOverSwd(device(), {
+      resetViaDapLink(device(), {
         createDapLink: () => {
           throw new Error("boom");
         },
       }),
     ).resolves.toMatchObject({ ok: false });
+  });
+
+  it("reports a timeout error and still disconnects best-effort when reset() never resolves within the configured budget", async () => {
+    const disconnect = vi.fn(async () => {});
+    const dapLink = createFakeDapLink({
+      reset: () => new Promise<boolean>(() => {}),
+      disconnect,
+    });
+
+    const result = await resetViaDapLink(device(), { createDapLink: () => dapLink, timeoutMs: 15 });
+
+    expect(result.ok).toBe(false);
+    expect((result as { error: string }).error).toMatch(/daplink\.reset\(\) timed out after 15ms/);
+    expect(disconnect).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -735,5 +789,20 @@ describe("flash", () => {
 
     expect(result).toEqual({ status: "ok", method: "swd" });
     expect(resolveVolumePath).not.toHaveBeenCalled();
+  });
+
+  it("classifies a wedged daplink.flash() as a timeout, forwarding flashTimeoutMs through to flashViaDapLink", async () => {
+    const createDapLink = () =>
+      createFakeDapLink({
+        flash: () => new Promise<void>(() => {}),
+      });
+
+    const result = await flash(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
+      createDapLink,
+      flashTimeoutMs: 15,
+      resolveVolumePath: async () => undefined,
+    });
+
+    expect(result).toMatchObject({ status: "error", method: "swd", reason: "timeout" });
   });
 });

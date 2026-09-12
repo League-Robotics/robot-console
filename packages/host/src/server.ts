@@ -67,6 +67,14 @@
  * `role`/`name`/`reidentify` fields (`wsMessages.ts`) are accordingly
  * never populated by this implementation — the next `snapshot` broadcast
  * carries the same information once the board reconnects.
+ *
+ * Sprint 017 ticket 003: `board_owner = 'flash'` exclusivity and the
+ * session-close-first handoff around the actual `flash.ts#flash()` call
+ * now live in `connect/flasher.ts`, not here — `runFlashTask` below
+ * still resolves the device and the hex bytes (this module's own job,
+ * per the paragraph above) but calls `flasher.flash(...)` rather than
+ * `flashFn(...)` directly, so a flash can never start while this link's
+ * session is still open on the wire.
  */
 
 import { createServer, type Server as HttpServer } from "node:http";
@@ -86,11 +94,13 @@ import { isValidRadioOverride, resolveDeviceRadio, type DeviceRadioOverride } fr
 import type { RegistryLocation } from "./mbrelayRegistry.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
 import { resolveRelease as defaultResolveRelease, fetchAndVerifyHex as defaultFetchAndVerifyHex } from "./releases.js";
-import { LocalHexUploadManager } from "./localHexUpload.js";
+import { LocalHexUploadManager, MAX_UPLOAD_BYTE_LENGTH } from "./localHexUpload.js";
 import { flash as defaultFlash, type FlashOutcome } from "./flash.js";
+import { createFlasher } from "./connect/flasher.js";
 import { enumerateDaplinkDevices as defaultEnumerateDaplinkDevices, type DaplinkDeviceLister } from "./devices.js";
 import {
   parseClientMessage,
+  UPLOAD_ID_BYTE_LENGTH,
   type ClientMessage,
   type FirmwareSourceRef,
   type FlashPhase,
@@ -112,11 +122,18 @@ export const DEFAULT_PORT = 4795;
 const DEFAULT_HOST = "127.0.0.1";
 
 /** Bound on one incoming WebSocket frame (ticket 005 AC / review finding
- * `03-host-server-flash-releases.md` §1). Comfortably above the
- * local-hex upload's own {@link MAX_UPLOAD_BYTE_LENGTH} (4 MiB) plus its
- * `uploadId` prefix, well below anything that would let one client stall
- * the process parsing an oversized frame. */
-export const DEFAULT_MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
+ * `03-host-server-flash-releases.md` §1, F9). Sprint 017 ticket 003: tied
+ * directly to `localHexUpload.ts`'s own {@link MAX_UPLOAD_BYTE_LENGTH}
+ * cap (plus the `uploadId` prefix every binary upload frame carries and
+ * a small slack for ordinary JSON control-message framing overhead) so
+ * `WebSocketServer`'s own `maxPayload` is the *real* enforcement
+ * boundary for an oversized upload -- not a separately-chosen,
+ * coincidentally-larger magic number that happens to bound it (F9: "cap
+ * checks declared `byteLength` only ... `ws` default `maxPayload` (100
+ * MiB) is the real bound"). Every other incoming client message
+ * (`flash-start`, `session-open`, ...) is a small JSON object, well
+ * under this. */
+export const DEFAULT_MAX_PAYLOAD_BYTES = MAX_UPLOAD_BYTE_LENGTH + UPLOAD_ID_BYTE_LENGTH + 4096;
 
 /** `bufferedAmount` (bytes still queued in `ws`'s own send buffer, not
  * yet flushed to the OS socket) above which a stalled client stops
@@ -407,6 +424,12 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   const resolveReleaseFn = options.resolveRelease ?? defaultResolveRelease;
   const fetchAndVerifyHexFn = options.fetchAndVerifyHex ?? defaultFetchAndVerifyHex;
   const flashFn = options.flash ?? defaultFlash;
+  // Sprint 017 ticket 003: flash orchestration's board_owner exclusivity
+  // and session close-first handoff now live in `connect/flasher.ts`,
+  // not inline here -- see that module's own doc comment. `flashFn`
+  // (still the injectable seam `server.test.ts` uses) is what the
+  // flasher actually calls once it has acquired the owner.
+  const flasher = createFlasher(store, { reconciler: runtime.reconciler, flash: flashFn });
 
   const app = buildApp(staticDir);
   const httpServer = createServer(app);
@@ -618,7 +641,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
         hexText = uploaded.toString("utf-8");
       }
 
-      const outcome = await flashFn(device, hexText, (phase) => setFlashPhase(linkId, source, phase));
+      const outcome = await flasher.flash(linkId, usbSerial, device, hexText, (phase) => setFlashPhase(linkId, source, phase));
       finishFlash(linkId, source, outcome);
     } catch (error) {
       failFlash(linkId, source, errorMessage(error));

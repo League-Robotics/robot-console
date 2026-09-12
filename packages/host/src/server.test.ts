@@ -20,6 +20,7 @@ import { WebSocket as RealWebSocket } from "ws";
 import {
   startServer,
   DEFAULT_BUFFERED_AMOUNT_THRESHOLD_BYTES,
+  DEFAULT_MAX_PAYLOAD_BYTES,
   type RunningServer,
   type ServerRuntime,
   type StartServerOptions,
@@ -29,6 +30,8 @@ import {
 import { deviceIdToName, nameToRadioAddress } from "@robot-console/protocol";
 import { openStoreDb } from "./store/db.js";
 import { Store } from "./store/index.js";
+import { MAX_UPLOAD_BYTE_LENGTH } from "./localHexUpload.js";
+import { UPLOAD_ID_BYTE_LENGTH } from "./wsMessages.js";
 import type { ConnectedSession } from "./connect/connector.js";
 import type { HarvesterTelemetryEvent } from "./connect/harvester.js";
 import type { Snapshot, ServerMessage, FirmwareSourceRef } from "./wsMessages.js";
@@ -679,6 +682,24 @@ describe("server.ts: line/send-command via runtime.reconciler.sessions", () => {
 // flash-start
 // ---------------------------------------------------------------------
 
+describe("server.ts: DEFAULT_MAX_PAYLOAD_BYTES ties WebSocketServer's own maxPayload to the local-hex upload cap", () => {
+  // Sprint 017 ticket 003 / review finding F9
+  // (`03-host-server-flash-releases.md`): the real enforcement boundary
+  // for an oversized local-hex upload must be `WebSocketServer`'s own
+  // `maxPayload`, not only `localHexUpload.ts`'s post-hoc declared-vs-
+  // actual `byteLength` check -- so `maxPayload` must actually be tied
+  // to that cap, not merely "comfortably above" it by some separately
+  // chosen, coincidentally larger number.
+  it("is at least MAX_UPLOAD_BYTE_LENGTH plus the uploadId prefix, and not wildly larger than that", () => {
+    const floor = MAX_UPLOAD_BYTE_LENGTH + UPLOAD_ID_BYTE_LENGTH;
+    expect(DEFAULT_MAX_PAYLOAD_BYTES).toBeGreaterThanOrEqual(floor);
+    // "tied to the cap", not merely "large enough" -- the slack above
+    // the floor is only for ordinary JSON control-message framing
+    // overhead, not megabytes of headroom.
+    expect(DEFAULT_MAX_PAYLOAD_BYTES - floor).toBeLessThan(64 * 1024);
+  });
+});
+
 describe("server.ts: flash-start", () => {
   const FAKE_DEVICE: DaplinkDevice = { serialNumber: "SERIAL123", displaySerial: "IAL1" } as unknown as DaplinkDevice;
 
@@ -744,6 +765,62 @@ describe("server.ts: flash-start", () => {
 
     const result = ws.sent.find((m) => m.type === "flash-result");
     expect(result).toMatchObject({ type: "flash-result", status: "error" });
+  });
+
+  // Sprint 017 ticket 003: flash-start now routes through
+  // `connect/flasher.ts`, which closes an already-open session first
+  // (via `runtime.reconciler.requestClose`) and acquires
+  // `board_owner = 'flash'` for the duration of the flash -- "the owner
+  // handoff visible in the store" this ticket's own AC describes.
+  it("closes an already-open session first, holds board_owner='flash' only while flash() runs, and releases it afterward", async () => {
+    let storeRef: Store | undefined;
+    const flashMock = vi.fn(async (_device, _hex, onProgress: (phase: string) => void) => {
+      // While flash() itself runs, board_owner must already be held by
+      // 'flash' -- a different owner's acquire attempt must fail.
+      expect(storeRef!.acquireBoardOwner("SERIAL123", "someone-else", Date.now())).toBe(false);
+      onProgress("erasing");
+      return { status: "ok", method: "swd" } satisfies FlashOutcome;
+    });
+    const h = await harness({
+      enumerateDaplinkDevices: async () => [FAKE_DEVICE],
+      flash: flashMock as unknown as StartServerOptions["flash"],
+    });
+    storeRef = h.store;
+    h.store.upsertLink({ id: "usb-SERIAL123", transport: "usb", address: { path: "/dev/x" }, at: 1 });
+    await flush();
+
+    // Simulate a session already open on this link before the flash.
+    h.runtime.sessionsByLink.set("usb-SERIAL123", fakeSession("usb-SERIAL123"));
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const sha256 = createHash("sha256").update("hello").digest("hex");
+    ws.emit(
+      "message",
+      Buffer.from(JSON.stringify({ type: "flash-local-begin", fileName: "a.hex", byteLength: 5, sha256 })),
+      false,
+    );
+    await flush();
+    const ready = ws.sent.find((m) => m.type === "flash-local-ready") as { uploadId: string } | undefined;
+    const uploadId = ready!.uploadId;
+    ws.emit("message", Buffer.concat([Buffer.from(uploadId, "ascii"), Buffer.from("hello")]), true);
+    await flush();
+
+    const source: FirmwareSourceRef = { kind: "local-hex", uploadId, fileName: "a.hex", sha256 };
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId: "usb-SERIAL123", source })), false);
+    await flush();
+    await flush();
+
+    expect(h.runtime.requestClose).toHaveBeenCalledWith("usb-SERIAL123");
+    expect(flashMock).toHaveBeenCalled();
+    // board_owner released once the flash finished -- a fresh acquire by
+    // a different owner now succeeds.
+    expect(h.store.acquireBoardOwner("SERIAL123", "someone-else", Date.now())).toBe(true);
+    const result = ws.sent.find((m) => m.type === "flash-result");
+    expect(result).toMatchObject({ type: "flash-result", status: "ok" });
   });
 });
 

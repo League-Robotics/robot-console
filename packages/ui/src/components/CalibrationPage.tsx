@@ -24,7 +24,7 @@
  *    measured width.
  */
 import { useEffect, useMemo, useState } from "react";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { DeviceConsole } from "./DeviceConsole";
 import {
   DistanceCalibrationWizard,
@@ -156,11 +156,16 @@ export function parsePositiveNumber(raw: string): number | undefined {
 }
 
 export interface CalibrationPageProps {
-  device: EndpointListEntry;
+  link: SnapshotLink;
+  /** The owning device's already-resolved name -- see `RobotPage.tsx`'s
+   * doc comment ("Sprint 015 ticket 009") for why the caller resolves
+   * both `link` and `name` rather than this page re-deriving them from
+   * a retired flat endpoint shape. */
+  name: string;
 }
 
-export function CalibrationPage({ device }: CalibrationPageProps) {
-  const robotName = device.name ?? device.endpointId;
+export function CalibrationPage({ link, name }: CalibrationPageProps) {
+  const robotName = name;
   const [state, setState] = useState<CalibrationState>(() => readCalibrationState(robotName));
   useEffect(() => {
     writeCalibrationState(robotName, state);
@@ -230,13 +235,13 @@ export function CalibrationPage({ device }: CalibrationPageProps) {
       <div className="robot-page-column robot-page-column-left">
         <div className="robot-page-panel" aria-label="Distance calibration">
           <h3>Distance calibration</h3>
-          <DistanceCalibrationWizard device={device} onRun={handleDistanceRun} />
+          <DistanceCalibrationWizard link={link} onRun={handleDistanceRun} />
         </div>
 
         <div className="robot-page-panel" aria-label="Rotation calibration">
           <h3>Rotation calibration</h3>
           <RotationCalibrationWizard
-            device={device}
+            link={link}
             onRun={handleRotationRun}
             disabled={rotationBlocked}
             disabledReason="Run the distance calibration first — the rotation run needs the wheel diameter."
@@ -341,7 +346,7 @@ export function CalibrationPage({ device }: CalibrationPageProps) {
           </button>
         </div>
 
-        <DeviceConsole device={device} />
+        <DeviceConsole link={link} name={robotName} />
       </div>
     </div>
   );

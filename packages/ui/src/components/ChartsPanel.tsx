@@ -84,7 +84,7 @@ import {
 import "./ChartsPanel.css";
 
 export interface ChartsPanelProps {
-  endpointId: string;
+  linkId: string;
 }
 
 /** Every mode this panel's subscribe control offers — `"HDR"` (re-ask
@@ -214,9 +214,9 @@ function buildChartPoints(
   return result;
 }
 
-export function ChartsPanel({ endpointId }: ChartsPanelProps) {
-  const header = useTelemetryHeader(endpointId);
-  const telemetry = useTelemetry(endpointId);
+export function ChartsPanel({ linkId }: ChartsPanelProps) {
+  const header = useTelemetryHeader(linkId);
+  const telemetry = useTelemetry(linkId);
   const { telemetrySubscribe } = useWsActions();
   const [mode, setMode] = useState<TelemetryMode>("OFF");
   const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
@@ -245,7 +245,7 @@ export function ChartsPanel({ endpointId }: ChartsPanelProps) {
 
   function handleModeClick(next: TelemetryMode): void {
     setMode(next);
-    telemetrySubscribe(endpointId, next);
+    telemetrySubscribe(linkId, next);
   }
 
   function toggleColumn(name: string): void {

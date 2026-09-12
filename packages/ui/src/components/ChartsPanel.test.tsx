@@ -18,7 +18,7 @@ import { ChartsPanel } from "./ChartsPanel";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 
-const ENDPOINT_ID = "usb-ROBOT-A";
+const LINK_ID = "usb-ROBOT-A";
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -54,7 +54,7 @@ function mountPanel(): { el: HTMLDivElement; socket: FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <ChartsPanel endpointId={ENDPOINT_ID} />
+      <ChartsPanel linkId={LINK_ID} />
     </WsProvider>,
   );
   act(() => {
@@ -65,13 +65,13 @@ function mountPanel(): { el: HTMLDivElement; socket: FakeSocket } {
 
 function emitHeader(socket: FakeSocket, header: string[]): void {
   act(() => {
-    socket.emitMessage({ type: "telemetry", endpointId: ENDPOINT_ID, header });
+    socket.emitMessage({ type: "telemetry", linkId: LINK_ID, header });
   });
 }
 
 function emitFrame(socket: FakeSocket, fields: Record<string, string>): void {
   act(() => {
-    socket.emitMessage({ type: "telemetry", endpointId: ENDPOINT_ID, frame: fields });
+    socket.emitMessage({ type: "telemetry", linkId: LINK_ID, frame: fields });
   });
 }
 
@@ -125,21 +125,21 @@ describe("ChartsPanel — subscribe control", () => {
       el.querySelector<HTMLButtonElement>('[data-testid="telemetry-mode-pose"]')!.click();
     });
     expect(socket.sent).toEqual([
-      JSON.stringify({ type: "send-command", endpointId: ENDPOINT_ID, verb: "TLM", fields: ["POSE"] }),
+      JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "TLM", fields: ["POSE"] }),
     ]);
 
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="telemetry-mode-full"]')!.click();
     });
     expect(socket.sent[1]).toEqual(
-      JSON.stringify({ type: "send-command", endpointId: ENDPOINT_ID, verb: "TLM", fields: ["FULL"] }),
+      JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "TLM", fields: ["FULL"] }),
     );
 
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="telemetry-mode-off"]')!.click();
     });
     expect(socket.sent[2]).toEqual(
-      JSON.stringify({ type: "send-command", endpointId: ENDPOINT_ID, verb: "TLM", fields: ["OFF"] }),
+      JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "TLM", fields: ["OFF"] }),
     );
   });
 });

@@ -21,7 +21,7 @@ import { PathTracePanel } from "./PathTracePanel";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 
-const ENDPOINT_ID = "usb-ROBOT-A";
+const LINK_ID = "usb-ROBOT-A";
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -57,7 +57,7 @@ function mountPanel(): { el: HTMLDivElement; socket: FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <PathTracePanel endpointId={ENDPOINT_ID} />
+      <PathTracePanel linkId={LINK_ID} />
     </WsProvider>,
   );
   act(() => {
@@ -68,13 +68,13 @@ function mountPanel(): { el: HTMLDivElement; socket: FakeSocket } {
 
 function emitHeader(socket: FakeSocket, header: string[]): void {
   act(() => {
-    socket.emitMessage({ type: "telemetry", endpointId: ENDPOINT_ID, header });
+    socket.emitMessage({ type: "telemetry", linkId: LINK_ID, header });
   });
 }
 
 function emitFrame(socket: FakeSocket, fields: Record<string, string>): void {
   act(() => {
-    socket.emitMessage({ type: "telemetry", endpointId: ENDPOINT_ID, frame: fields });
+    socket.emitMessage({ type: "telemetry", linkId: LINK_ID, frame: fields });
   });
 }
 

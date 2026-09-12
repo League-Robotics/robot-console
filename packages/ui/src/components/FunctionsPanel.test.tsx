@@ -2,7 +2,8 @@
 /**
  * FunctionsPanel.test.tsx — component tests (added out-of-process,
  * 2026-09-09; rewritten out-of-process, same day, for the single-line
- * select + Go layout).
+ * select + Go layout; migrated to the `Snapshot` contract, sprint 015
+ * ticket 009).
  *
  * Proves: the three list states (undefined/empty/populated) and the
  * select's placeholder/disabled behavior; selecting a function shows
@@ -17,7 +18,7 @@
 import { act, useState as useReactState, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import type { EndpointListEntry, RobotFunction } from "@robot-console/host/src/wsMessages.js";
+import type { RobotFunction, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { FunctionsPanel, parseSignature, positionalArgs } from "./FunctionsPanel";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
@@ -85,32 +86,48 @@ afterEach(() => {
   }
 });
 
-function baseDevice(
-  functions: RobotFunction[] | undefined,
-  overrides: Partial<EndpointListEntry> = {},
-): EndpointListEntry {
+const LINK_ID = "usb-ROBOT-A";
+const NAME = "zavaz";
+
+/** `functions === undefined` (`exactOptionalPropertyTypes` forbids
+ * `functions: undefined` -- the key must be entirely absent, not
+ * present-with-undefined) means "no session, or a session with no
+ * `FUNCS` round answered yet". */
+function linkWithFunctions(functions: RobotFunction[] | undefined, overrides: Partial<SnapshotLink> = {}): SnapshotLink {
   return {
-    endpointId: "usb-ROBOT-A",
+    id: LINK_ID,
     transport: "usb",
-    resourceKey: "usb-ROBOT-A",
-    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
-    name: "zavaz",
-    role: "NEZHA2",
-    sessionOpen: true,
-    usb: { serialNumber: "ROBOT-A-FULL", displaySerial: "0004", port: "/dev/cu.usbmodemC" },
-    // `exactOptionalPropertyTypes` forbids `functions: undefined` --
-    // the key must be entirely absent to represent "no FUNCS sent yet",
-    // not present-with-undefined.
-    ...(functions !== undefined ? { functions } : {}),
+    label: "USB · /dev/cu.usbmodemC",
+    state: "connected",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: false, close: true, flash: true, provisionWifi: true },
+    session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: functions ?? null },
     ...overrides,
   };
 }
 
-function mountPanel(device: EndpointListEntry): { el: HTMLDivElement; socket: FakeSocket } {
+function closedLink(): SnapshotLink {
+  return {
+    id: LINK_ID,
+    transport: "usb",
+    label: "USB · /dev/cu.usbmodemC",
+    state: "connectable",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: true, close: false, flash: true, provisionWifi: false },
+  };
+}
+
+function mountPanel(link: SnapshotLink): { el: HTMLDivElement; socket: FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <FunctionsPanel device={device} />
+      <FunctionsPanel link={link} name={NAME} />
     </WsProvider>,
   );
   act(() => {
@@ -121,7 +138,7 @@ function mountPanel(device: EndpointListEntry): { el: HTMLDivElement; socket: Fa
 
 describe("FunctionsPanel list states", () => {
   it("shows a hint and a disabled, empty-of-options select when functions is undefined", () => {
-    const { el } = mountPanel(baseDevice(undefined));
+    const { el } = mountPanel(linkWithFunctions(undefined));
     expect(el.textContent).toContain("No function list yet");
     const dropdown = el.querySelector<HTMLSelectElement>('[data-testid="functions-panel-select"]')!;
     expect(dropdown.disabled).toBe(true);
@@ -129,13 +146,13 @@ describe("FunctionsPanel list states", () => {
   });
 
   it("shows a 'no functions' message and a disabled select when functions is an empty array", () => {
-    const { el } = mountPanel(baseDevice([]));
+    const { el } = mountPanel(linkWithFunctions([]));
     expect(el.textContent).toContain("The robot reported no functions.");
     expect(el.querySelector<HTMLSelectElement>('[data-testid="functions-panel-select"]')!.disabled).toBe(true);
   });
 
   it("lists every function name, in reported order, with a leading placeholder", () => {
-    const { el } = mountPanel(baseDevice([{ name: "beep" }, { name: "spin" }]));
+    const { el } = mountPanel(linkWithFunctions([{ name: "beep" }, { name: "spin" }]));
     const dropdown = el.querySelector<HTMLSelectElement>('[data-testid="functions-panel-select"]')!;
     const options = Array.from(dropdown.querySelectorAll("option"));
     expect(options.map((o) => o.value)).toEqual(["", "beep", "spin"]);
@@ -146,7 +163,7 @@ describe("FunctionsPanel list states", () => {
 
   it("labels each option with the whole declaration so the list says what each function takes", () => {
     const { el } = mountPanel(
-      baseDevice([
+      linkWithFunctions([
         { name: "sense" },
         { name: "cala", signature: "()" },
         { name: "line", signature: "(speed:number=25,max_speed:number=60,kp:number=120)" },
@@ -166,30 +183,28 @@ describe("FunctionsPanel list states", () => {
   });
 
   it("disables the select when there is no open session, even with functions present", () => {
-    const { el } = mountPanel(baseDevice([{ name: "beep" }], { sessionOpen: false }));
+    const { el } = mountPanel(closedLink());
     expect(el.querySelector<HTMLSelectElement>('[data-testid="functions-panel-select"]')!.disabled).toBe(true);
   });
 
   it("disables Go when nothing is selected", () => {
-    const { el } = mountPanel(baseDevice([{ name: "beep" }]));
+    const { el } = mountPanel(linkWithFunctions([{ name: "beep" }]));
     expect(el.querySelector<HTMLButtonElement>('[data-testid="functions-panel-go"]')!.disabled).toBe(true);
   });
 });
 
 describe("FunctionsPanel refresh", () => {
   it("sends FUNCS on Refresh", () => {
-    const { el, socket } = mountPanel(baseDevice(undefined));
+    const { el, socket } = mountPanel(linkWithFunctions(undefined));
     socket.sent.length = 0;
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="functions-panel-refresh"]')!.click();
     });
-    expect(socket.sent).toEqual([
-      JSON.stringify({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "FUNCS" }),
-    ]);
+    expect(socket.sent).toEqual([JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "FUNCS" })]);
   });
 
   it("disables Refresh when there is no open session", () => {
-    const { el } = mountPanel(baseDevice(undefined, { sessionOpen: false }));
+    const { el } = mountPanel(closedLink());
     expect(
       el.querySelector<HTMLButtonElement>('[data-testid="functions-panel-refresh"]')!.disabled,
     ).toBe(true);
@@ -198,18 +213,16 @@ describe("FunctionsPanel refresh", () => {
 
 describe("FunctionsPanel free-form args (no signature)", () => {
   it("shows a free-form input once selected, and Go with it blank sends just [name]", () => {
-    const { el, socket } = mountPanel(baseDevice([{ name: "beep" }]));
+    const { el, socket } = mountPanel(linkWithFunctions([{ name: "beep" }]));
     select(el, "beep");
     expect(el.querySelector('[data-testid="function-args-beep"]')).not.toBeNull();
     socket.sent.length = 0;
     clickGo(el);
-    expect(socket.sent).toEqual([
-      JSON.stringify({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "RUN", fields: ["beep"] }),
-    ]);
+    expect(socket.sent).toEqual([JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "RUN", fields: ["beep"] })]);
   });
 
   it("splits a free-form '10 20' into two args", () => {
-    const { el, socket } = mountPanel(baseDevice([{ name: "move" }]));
+    const { el, socket } = mountPanel(linkWithFunctions([{ name: "move" }]));
     select(el, "move");
     const input = el.querySelector<HTMLInputElement>('[data-testid="function-args-move"]')!;
     act(() => {
@@ -220,7 +233,7 @@ describe("FunctionsPanel free-form args (no signature)", () => {
     expect(socket.sent).toEqual([
       JSON.stringify({
         type: "send-command",
-        endpointId: "usb-ROBOT-A",
+        linkId: LINK_ID,
         verb: "RUN",
         fields: ["move", "10", "20"],
       }),
@@ -228,7 +241,7 @@ describe("FunctionsPanel free-form args (no signature)", () => {
   });
 
   it("disables the free-form input and Go when there is no open session", () => {
-    const { el } = mountPanel(baseDevice([{ name: "beep" }], { sessionOpen: false }));
+    const { el } = mountPanel(closedLink());
     // Select is disabled with no session, so nothing can be chosen --
     // Go stays disabled with nothing selected.
     expect(el.querySelector<HTMLSelectElement>('[data-testid="functions-panel-select"]')!.disabled).toBe(true);
@@ -238,7 +251,7 @@ describe("FunctionsPanel free-form args (no signature)", () => {
 
 describe("FunctionsPanel signature-driven args", () => {
   it("renders one labelled input per parameter name and sends their values in order", () => {
-    const { el, socket } = mountPanel(baseDevice([{ name: "move", signature: "dist speed" }]));
+    const { el, socket } = mountPanel(linkWithFunctions([{ name: "move", signature: "dist speed" }]));
     select(el, "move");
     const distInput = el.querySelector<HTMLInputElement>('[data-testid="function-arg-move-0"]')!;
     const speedInput = el.querySelector<HTMLInputElement>('[data-testid="function-arg-move-1"]')!;
@@ -255,7 +268,7 @@ describe("FunctionsPanel signature-driven args", () => {
     expect(socket.sent).toEqual([
       JSON.stringify({
         type: "send-command",
-        endpointId: "usb-ROBOT-A",
+        linkId: LINK_ID,
         verb: "RUN",
         fields: ["move", "100", "50"],
       }),
@@ -264,7 +277,7 @@ describe("FunctionsPanel signature-driven args", () => {
 
   it("keeps positions: a skipped middle parameter falls back to its default (or 0), trailing empties are dropped", () => {
     const { el, socket } = mountPanel(
-      baseDevice([{ name: "move", signature: "(dist:number, speed:number=60, turn:number)" }]),
+      linkWithFunctions([{ name: "move", signature: "(dist:number, speed:number=60, turn:number)" }]),
     );
     select(el, "move");
     const distInput = el.querySelector<HTMLInputElement>('[data-testid="function-arg-move-0"]')!;
@@ -279,7 +292,7 @@ describe("FunctionsPanel signature-driven args", () => {
     expect(socket.sent).toEqual([
       JSON.stringify({
         type: "send-command",
-        endpointId: "usb-ROBOT-A",
+        linkId: LINK_ID,
         verb: "RUN",
         fields: ["move", "100", "60", "90"],
       }),
@@ -287,23 +300,21 @@ describe("FunctionsPanel signature-driven args", () => {
   });
 
   it("a declared empty signature '()' renders no inputs, a 'no parameters' note, and sends just the name", () => {
-    const { el, socket } = mountPanel(baseDevice([{ name: "abort", signature: "()" }]));
+    const { el, socket } = mountPanel(linkWithFunctions([{ name: "abort", signature: "()" }]));
     select(el, "abort");
     expect(el.querySelector('[data-testid="function-args-abort"]')).toBeNull();
     expect(el.querySelector('[data-testid="function-arg-abort-0"]')).toBeNull();
     expect(el.textContent).toContain("no parameters");
     socket.sent.length = 0;
     clickGo(el);
-    expect(socket.sent).toEqual([
-      JSON.stringify({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "RUN", fields: ["abort"] }),
-    ]);
+    expect(socket.sent).toEqual([JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "RUN", fields: ["abort"] })]);
   });
 });
 
 describe("FunctionsPanel per-function argument memory", () => {
   it("remembers values sent at Go time, gives a never-used function a blank input, and resets on selection switch", () => {
     const { el, socket } = mountPanel(
-      baseDevice([
+      linkWithFunctions([
         { name: "square", signature: "side" },
         { name: "cala", signature: "()" },
         { name: "unused", signature: "x" },
@@ -317,17 +328,13 @@ describe("FunctionsPanel per-function argument memory", () => {
     });
     socket.sent.length = 0;
     clickGo(el);
-    expect(socket.sent).toEqual([
-      JSON.stringify({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "RUN", fields: ["square", "40"] }),
-    ]);
+    expect(socket.sent).toEqual([JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "RUN", fields: ["square", "40"] })]);
 
     select(el, "cala");
     expect(el.querySelector('[data-testid="function-arg-cala-0"]')).toBeNull();
     socket.sent.length = 0;
     clickGo(el);
-    expect(socket.sent).toEqual([
-      JSON.stringify({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "RUN", fields: ["cala"] }),
-    ]);
+    expect(socket.sent).toEqual([JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "RUN", fields: ["cala"] })]);
 
     select(el, "square");
     expect(el.querySelector<HTMLInputElement>('[data-testid="function-arg-square-0"]')!.value).toBe("40");
@@ -337,7 +344,7 @@ describe("FunctionsPanel per-function argument memory", () => {
   });
 
   it("does not remember a value that was typed but never sent with Go", () => {
-    const { el } = mountPanel(baseDevice([{ name: "square", signature: "side" }, { name: "cala" }]));
+    const { el } = mountPanel(linkWithFunctions([{ name: "square", signature: "side" }, { name: "cala" }]));
     select(el, "square");
     const sideInput = el.querySelector<HTMLInputElement>('[data-testid="function-arg-square-0"]')!;
     act(() => {
@@ -349,11 +356,11 @@ describe("FunctionsPanel per-function argument memory", () => {
   });
 
   it("resets the selection to the placeholder when the selected function drops out of a refreshed list", () => {
-    const device = baseDevice([{ name: "beep" }, { name: "spin" }]);
+    const link = linkWithFunctions([{ name: "beep" }, { name: "spin" }]);
     let socket: FakeSocket | null = null;
     const el = mount(
       <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-        <FunctionsPanelHarness device={device} />
+        <FunctionsPanelHarness link={link} />
       </WsProvider>,
     );
     act(() => {
@@ -363,14 +370,14 @@ describe("FunctionsPanel per-function argument memory", () => {
     expect(el.querySelector<HTMLSelectElement>('[data-testid="functions-panel-select"]')!.value).toBe("beep");
 
     act(() => {
-      rerenderWithFunctions(el, [{ name: "spin" }]);
+      rerenderWithFunctions([{ name: "spin" }]);
     });
     expect(el.querySelector<HTMLSelectElement>('[data-testid="functions-panel-select"]')!.value).toBe("");
   });
 
   it("round-trips remembered arguments through localStorage across a remount", () => {
-    const device = baseDevice([{ name: "square", signature: "side" }]);
-    const { el } = mountPanel(device);
+    const link = linkWithFunctions([{ name: "square", signature: "side" }]);
+    const { el } = mountPanel(link);
     select(el, "square");
     act(() => {
       typeInto(el.querySelector<HTMLInputElement>('[data-testid="function-arg-square-0"]')!, "77");
@@ -378,26 +385,31 @@ describe("FunctionsPanel per-function argument memory", () => {
     clickGo(el);
     unmount();
 
-    const { el: el2 } = mountPanel(device);
+    const { el: el2 } = mountPanel(link);
     select(el2, "square");
     expect(el2.querySelector<HTMLInputElement>('[data-testid="function-arg-square-0"]')!.value).toBe("77");
   });
 });
 
-// A tiny harness that lets a test swap the `functions` prop on an
-// already-mounted panel, to exercise the "selection drops out of a
-// refreshed list" reset without remounting (which would also reset
-// selection trivially and prove nothing).
+// A tiny harness that lets a test swap the `functions` slice of the
+// link's `session` on an already-mounted panel, to exercise the
+// "selection drops out of a refreshed list" reset without remounting
+// (which would also reset selection trivially and prove nothing).
 let currentSetFunctions: ((fns: RobotFunction[]) => void) | null = null;
 
-function FunctionsPanelHarness({ device }: { device: EndpointListEntry }) {
-  const [functions, setFunctions] = useReactState<RobotFunction[] | undefined>(device.functions);
+function FunctionsPanelHarness({ link }: { link: SnapshotLink }) {
+  const [functions, setFunctions] = useReactState<RobotFunction[] | undefined>(link.session?.functions ?? undefined);
   currentSetFunctions = setFunctions;
-  const merged: EndpointListEntry = { ...device, ...(functions !== undefined ? { functions } : {}) };
-  return <FunctionsPanel device={merged} />;
+  // This harness is only ever used with a `linkWithFunctions()` fixture,
+  // which always sets `session` -- so `link.session!` is safe here.
+  const merged: SnapshotLink = {
+    ...link,
+    session: { ...link.session!, functions: functions ?? null },
+  };
+  return <FunctionsPanel link={merged} name={NAME} />;
 }
 
-function rerenderWithFunctions(_el: HTMLDivElement, fns: RobotFunction[]): void {
+function rerenderWithFunctions(fns: RobotFunction[]): void {
   currentSetFunctions!(fns);
 }
 

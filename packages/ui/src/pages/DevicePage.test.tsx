@@ -16,12 +16,10 @@
  * reconciler (ticket 002's `planUserOpen`) owns that decision entirely
  * now.
  *
- * `RobotPage.tsx` is not migrated by this ticket (sprint 015 ticket
- * 009's own scope -- it still declares `{ endpoint: EndpointListEntry
- * }`, and its own subtree still imports hooks `WsProvider` no longer
- * exports), so it is mocked here with a thin stub: this file's job is
- * DevicePage's own dispatch logic, not RobotPage's internals (covered,
- * once migrated, by ticket 009's own suite).
+ * `RobotPage.tsx` is mocked here with a thin stub regardless of its own
+ * migration state (sprint 015 ticket 009): this file's job is
+ * `DevicePage`'s own dispatch logic, not `RobotPage`'s internals
+ * (covered by ticket 009's own suite, `RobotPage.test.tsx`).
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -33,9 +31,9 @@ import { FakeSocket } from "../testing/FakeSocket";
 import { withRouter } from "../testing/renderWithRouter";
 
 vi.mock("./RobotPage", () => ({
-  RobotPage: ({ endpoint }: { endpoint: SnapshotDevice }) => (
+  RobotPage: ({ device }: { device: SnapshotDevice }) => (
     <section aria-label="Robot device" data-testid="robot-page-stub">
-      {endpoint.name}
+      {device.name}
     </section>
   ),
 }));

@@ -3,14 +3,28 @@
  * via `FUNCS` and run from here (added out-of-process, 2026-09-09;
  * reshaped to a single compact line out-of-process, same day).
  *
- * Reads `device.functions` (`wsMessages.ts`'s `RobotFunction[]`),
- * populated host-side: reset to `[]` on every `FUNCS` send, then one
- * entry appended per `funcs <name> [signature]` reply line. Three
- * distinct states this component must render, per that lifecycle:
- * `undefined` (no `FUNCS` sent yet this session -- "No function list
- * yet"), `[]` (the robot answered with zero functions -- a real,
- * different fact from "haven't asked"), and a populated array (one
- * `<option>` per function in a `<select>`).
+ * Reads `link.session?.functions` (`wsMessages.ts`'s
+ * `RobotFunction[] | null` on `SnapshotLink.session`), populated
+ * host-side: the harvester (ticket 003) starts a fresh `[]` the moment a
+ * session opens and appends one entry per `funcs <name> [signature]`
+ * reply line thereafter -- `null` (no `FUNCS` round yet this session)
+ * and "session not open at all" both collapse to `undefined` here (see
+ * this component's own destructuring below), since neither has a list
+ * to show. Three distinct states this component must render: `undefined`
+ * ("No function list yet"), `[]` (the robot answered with zero
+ * functions -- a real, different fact from "haven't asked"), and a
+ * populated array (one `<option>` per function in a `<select>`).
+ *
+ * ## Sprint 015 ticket 009: `{ link, name }`, no more probes elsewhere
+ *
+ * This panel never sent its own `FUNCS` probe (only a manual Refresh
+ * button) and is unchanged in that respect -- migrated here only because
+ * `device.functions`/`device.sessionOpen`/`device.endpointId` are all
+ * retired `EndpointListEntry` fields. `name` (the caller's already-
+ * resolved `SnapshotDevice.name`) replaces the old `device.name ??
+ * device.endpointId` fallback for the remembered-arguments storage key --
+ * a `SnapshotDevice.name` is always a resolved string, so there is
+ * nothing left to fall back from.
  *
  * **Layout.** Rather than one row per function, the panel is a single
  * line: a `<select>` choosing which function is "current", the
@@ -25,7 +39,7 @@
  * non-empty parameter list gets one labelled input per parameter name,
  * combined via {@link positionalArgs}; a signature that parses to `[]`
  * (an explicit `()`) gets no inputs at all. All three converge on the
- * same `sendCommand(endpointId, "RUN", [name, ...args])` call.
+ * same `sendCommand(linkId, "RUN", [name, ...args])` call.
  *
  * **Memory of last-used arguments.** Per the stakeholder's spec, this
  * panel remembers, per function name, the raw input values as they
@@ -39,14 +53,12 @@
  * of this panel instance, and is mirrored best-effort to `localStorage`
  * (wrapped in try/catch -- a private-browsing quota error or disabled
  * storage must never break the panel) under a key scoped to the
- * device's friendly name (falling back to its endpoint id, since name
- * can be `null` before SWD resolution), so the memory also survives a
- * remount of this component for the same device. It is loaded once, on
- * mount.
+ * device's friendly `name`, so the memory also survives a remount of
+ * this component for the same device. It is loaded once, on mount.
  */
 import { useEffect, useState } from "react";
-import type { EndpointListEntry, RobotFunction } from "@robot-console/host/src/wsMessages.js";
-import { useWsActions } from "../ws/WsProvider";
+import type { RobotFunction, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import { useSendable, useWsActions } from "../ws/WsProvider";
 import "./FunctionsPanel.css";
 
 /** One parameter parsed out of a `funcs` signature -- see
@@ -142,10 +154,10 @@ export function positionalArgs(params: SignatureParam[], values: string[]): stri
 }
 
 /** Storage key for a device's remembered function arguments -- scoped
- * by friendly name (falling back to endpoint id, since `name` is
- * `null` before SWD resolution or on failure). */
-function storageKeyFor(device: EndpointListEntry): string {
-  return `robot-console:function-args:${device.name ?? device.endpointId}`;
+ * by friendly name (`SnapshotDevice.name` is always a resolved string,
+ * so there is no fallback to fall back to any more). */
+function storageKeyFor(name: string): string {
+  return `robot-console:function-args:${name}`;
 }
 
 /** Best-effort load of the remembered-arguments map. Never throws --
@@ -176,15 +188,19 @@ function saveStoredArgs(key: string, map: Map<string, string[]>): void {
 }
 
 export interface FunctionsPanelProps {
-  device: EndpointListEntry;
+  link: SnapshotLink;
+  /** The owning device's already-resolved name -- see this module's doc
+   * comment ("Sprint 015 ticket 009"). */
+  name: string;
 }
 
-export function FunctionsPanel({ device }: FunctionsPanelProps) {
+export function FunctionsPanel({ link, name }: FunctionsPanelProps) {
   const { sendCommand } = useWsActions();
-  const linkOpen = device.sessionOpen;
-  const functions = device.functions;
+  const sendable = useSendable();
+  const linkOpen = link.session !== undefined && sendable;
+  const functions = link.session?.functions ?? undefined;
 
-  const [argsMap, setArgsMap] = useState<Map<string, string[]>>(() => loadStoredArgs(storageKeyFor(device)));
+  const [argsMap, setArgsMap] = useState<Map<string, string[]>>(() => loadStoredArgs(storageKeyFor(name)));
   const [selectedName, setSelectedName] = useState<string>("");
   const [paramValues, setParamValues] = useState<string[]>([]);
   const [freeformValue, setFreeformValue] = useState("");
@@ -227,12 +243,12 @@ export function FunctionsPanel({ device }: FunctionsPanelProps) {
     const p = parseSignature(selectedFn.signature);
     const args = p ? positionalArgs(p, paramValues) : freeformValue.trim().length > 0 ? freeformValue.trim().split(/\s+/) : [];
     const remembered = p ? p.map((_, index) => paramValues[index] ?? "") : [freeformValue];
-    sendCommand(device.endpointId, "RUN", [selectedFn.name, ...args]);
+    sendCommand(link.id, "RUN", [selectedFn.name, ...args]);
 
     const next = new Map(argsMap);
     next.set(selectedFn.name, remembered);
     setArgsMap(next);
-    saveStoredArgs(storageKeyFor(device), next);
+    saveStoredArgs(storageKeyFor(name), next);
   }
 
   const selectDisabled = !linkOpen || !functions || functions.length === 0;
@@ -245,7 +261,7 @@ export function FunctionsPanel({ device }: FunctionsPanelProps) {
           className="functions-panel-button"
           data-testid="functions-panel-refresh"
           disabled={!linkOpen}
-          onClick={() => sendCommand(device.endpointId, "FUNCS")}
+          onClick={() => sendCommand(link.id, "FUNCS")}
         >
           Refresh
         </button>

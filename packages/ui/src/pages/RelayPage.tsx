@@ -201,7 +201,7 @@ export function RelayPage({ device }: RelayPageProps) {
            * radio field directly -- see this module's own doc comment. */}
           <AddressSourceChip radio={child.device.radio} />
 
-          <RobotPage endpoint={child.device} />
+          <RobotPage device={child.device} link={child.link} />
         </>
       ) : (
         <>

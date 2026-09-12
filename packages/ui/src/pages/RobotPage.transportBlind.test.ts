@@ -35,37 +35,42 @@
  * **Sprint 8 ticket 005 addition**: the static source scan above proves
  * nothing relay-specific was *written* into these files, but says
  * nothing about whether `RobotPage` actually *renders* correctly when
- * handed an endpoint whose `transport` is one of sprint 8's relay-
- * mediated values -- the two are independent claims (a page could pass
- * the source scan yet still crash or render blank for a value the scan
- * has no way to exercise). The second describe block below closes that
+ * handed a link whose `transport` is one of sprint 8's relay-mediated
+ * values -- the two are independent claims (a page could pass the
+ * source scan yet still crash or render blank for a value the scan has
+ * no way to exercise). The second describe block below closes that
  * gap: it mounts the real `RobotPage` (via `WsProvider`/`FakeSocket`,
  * mirroring `RobotPage.test.tsx`'s own harness) against a
- * `transport: "relay-radio"` endpoint fixture -- exactly the shape
- * `RelayPage.tsx` hands it for a robot reached through a relay -- and
- * asserts the same controls a USB fixture would produce actually
- * appear, with **zero changes to `RobotPage.tsx` or any component it
- * mounts**. `sprint.md`'s Success Criteria calls this out by name: "the
- * same `RobotPage.transportBlind.test.ts` source-scan technique...now
- * also exercised against a relay-transport endpoint fixture."
+ * `transport: "radio"` link fixture -- exactly the shape `RelayPage.tsx`
+ * hands it for a robot reached through a relay -- and asserts the same
+ * controls a USB fixture would produce actually appear, with **zero
+ * changes to `RobotPage.tsx` or any component it mounts**. `sprint.md`'s
+ * Success Criteria calls this out by name: "the same
+ * `RobotPage.transportBlind.test.ts` source-scan technique...now also
+ * exercised against a relay-transport endpoint fixture."
  *
  * **Sprint 10 ticket 005 addition**: the same gap, closed again for
- * `transport: "wifi"` -- a WiFi-reachable robot's endpoint (`endpointId:
- * "wifi-<name>"`, a `wifi: { host, port }` block, no `usb` block, once
- * identified) is, per this sprint's Architecture, meant to render on
- * `RobotPage` exactly like any other transport once a session is open
- * and the banner identifies it as a robot -- `DevicePage.tsx`'s
- * dispatch and `RobotPage` itself are both transport-blind, so nothing
- * new needs writing, only proving. The third describe block below
- * mirrors the relay-radio one immediately above it (same fixture shape,
- * same harness, same assertions), against a `transport: "wifi"` fixture
+ * `transport: "wifi"` -- a WiFi-reachable robot's link is, per this
+ * sprint's Architecture, meant to render on `RobotPage` exactly like any
+ * other transport once a session is open -- `DevicePage.tsx`'s dispatch
+ * and `RobotPage` itself are both transport-blind, so nothing new needs
+ * writing, only proving. The third describe block below mirrors the
+ * relay-radio one immediately above it (same fixture shape, same
+ * harness, same assertions), against a `transport: "wifi"` fixture
  * instead -- again with **zero changes to `RobotPage.tsx` or any file in
  * `FILES_UNDER_TEST`**.
+ *
+ * **Sprint 015 ticket 009**: migrated to the `Snapshot` contract --
+ * `RobotPage` now takes `{ device, link }` (a `SnapshotDevice`/
+ * `SnapshotLink` pair) instead of the retired `{ endpoint:
+ * EndpointListEntry }`, so the two render-based describe blocks below
+ * build `SnapshotDevice`/`SnapshotLink` fixtures instead. The source-scan
+ * list and its own three assertions per file are otherwise unchanged.
  */
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import robotPageSource from "./RobotPage.tsx?raw";
 import driveControlsSource from "../components/DriveControls.tsx?raw";
 import commandStripSource from "../components/CommandStrip.tsx?raw";
@@ -109,12 +114,12 @@ const FILES_UNDER_TEST: Record<string, string> = {
   "components/PathTracePanel.tsx": pathTracePanelSource,
   // Sprint 011 ticket 003: the distance-calibration wizard and its
   // shared report parser are held to the same property -- both read
-  // only `device.functions`/`useEndpointLog`/`useWsActions`, never a
-  // transport/link type or `endpoint.transport`.
+  // only `link.session.functions`/`useLinkLog`/`useWsActions`, never a
+  // transport/link type or `link.transport`.
   "components/DistanceCalibrationWizard.tsx": distanceCalibrationWizardSource,
   // Sprint 011 ticket 004: the rotation-calibration wizard is held to
-  // the same property -- it reads only `device.functions`/
-  // `useEndpointLog`/`useWsActions`, never a transport/link type.
+  // the same property -- it reads only `link.session.functions`/
+  // `useLinkLog`/`useWsActions`, never a transport/link type.
   "components/RotationCalibrationWizard.tsx": rotationCalibrationWizardSource,
   "components/CalibrationReport.ts": calibrationReportSource,
 };
@@ -135,57 +140,67 @@ describe("RobotPage transport-blindness", () => {
     });
 
     it(`${label} does not reference endpoint.transport`, () => {
-      expect(source).not.toMatch(/endpoint\.transport|device\.transport/);
+      expect(source).not.toMatch(/endpoint\.transport|device\.transport|link\.transport/);
     });
   }
 });
 
-/** A robot reached through a relay -- exactly the endpoint shape
- * `RelayPage.tsx` synthesizes and hands to `RobotPage` (`viaRelay` set,
- * no `usb` block, `transport: "relay-radio"`). Mirrors
- * `RelayPage.test.tsx`'s own `childFixture` and `RobotPage.test.tsx`'s
- * `robotFixture` shapes, combined -- this file does not import either
- * (both are test-local to their own files), since duplicating a small
- * fixture object is cheaper here than adding a shared-test-fixture
- * module for exactly one caller. */
-function relayTransportRobotFixture(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+const LINK_ID = "usb-RELAY-A-via-vevav";
+
+function baseLink(overrides: Partial<SnapshotLink> = {}): SnapshotLink {
   return {
-    endpointId: "usb-RELAY-A-via-vevav",
-    transport: "relay-radio",
-    resourceKey: "usb-RELAY-A",
-    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
+    id: LINK_ID,
+    transport: "usb",
+    label: "USB",
+    state: "connected",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: false, close: true, flash: true, provisionWifi: true },
+    session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+    ...overrides,
+  };
+}
+
+function baseDevice(link: SnapshotLink, overrides: Partial<Omit<SnapshotDevice, "links">> = {}): SnapshotDevice {
+  return {
+    id: 1,
     name: "vevav",
+    kind: "robot",
     role: "NEZHA2",
-    sessionOpen: true,
-    viaRelay: { relayEndpointId: "usb-RELAY-A", robotName: "vevav", channel: 55, group: 114 },
+    program: null,
+    version: null,
+    owned: true,
+    radio: { channel: 55, group: 114, source: "derived" },
+    lastSeen: 0,
+    lastChecked: null,
+    links: [link],
     ...overrides,
   };
 }
 
-/** A robot reached directly over WiFi -- exactly the endpoint shape
- * ticket 003 synthesizes once such an endpoint has identified (`wifi`
- * set, no `usb` block, `transport: "wifi"`). Mirrors
- * `relayTransportRobotFixture` above; this file does not import a
- * shared fixture module for the same one-caller-each reason that
- * function's own doc comment gives. */
-function wifiTransportRobotFixture(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
-  return {
-    endpointId: "wifi-gopiv",
-    transport: "wifi",
-    resourceKey: "wifi-gopiv",
-    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
-    name: "gopiv",
-    role: "NEZHA2",
-    sessionOpen: true,
-    wifi: { host: "192.168.1.42", port: 8765 },
-    ...overrides,
-  };
+/** A robot reached through a relay -- exactly the link shape
+ * `RelayPage.tsx` finds via `findRelayChild` and hands to `RobotPage`
+ * (`transport: "radio"`, `via` naming the bridging relay). */
+function relayTransportLink(): SnapshotLink {
+  return baseLink({
+    transport: "radio",
+    label: "Radio · ch55/grp114",
+    via: { relayLinkId: "usb-RELAY-A", relayName: "RELAY-A", channel: 55, group: 114, addressSource: "derived" },
+  });
 }
 
-describe("RobotPage renders correctly for a relay-transport endpoint (sprint 8 ticket 005)", () => {
+/** A robot reached directly over WiFi -- exactly the link shape ticket
+ * 003 synthesizes once such a link has identified (`transport: "wifi"`). */
+function wifiTransportLink(): SnapshotLink {
+  return baseLink({ id: "wifi-gopiv", transport: "wifi", label: "WiFi · 192.168.1.42:8765" });
+}
+
+describe("RobotPage renders correctly for a relay-transport link (sprint 8 ticket 005)", () => {
   // Companion to the source scan above: proves RobotPage actually
-  // renders its usual controls for a relay-mediated endpoint too, not
-  // just that its source contains no relay-specific branch -- with zero
+  // renders its usual controls for a relay-mediated link too, not just
+  // that its source contains no relay-specific branch -- with zero
   // changes to RobotPage.tsx or any component it mounts (this describe
   // block only adds a fixture and assertions, on the unmodified
   // `RobotPage` import above).
@@ -205,8 +220,9 @@ describe("RobotPage renders correctly for a relay-transport endpoint (sprint 8 t
     }
   });
 
-  it("renders the usual robot controls (estop, drive, console) for a relay-radio-transport endpoint", () => {
-    const endpoint = relayTransportRobotFixture();
+  it("renders the usual robot controls (estop, drive, console) for a relay-radio-transport link", () => {
+    const link = relayTransportLink();
+    const device = baseDevice(link);
     let socket: FakeSocket | null = null;
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -216,7 +232,7 @@ describe("RobotPage renders correctly for a relay-transport endpoint (sprint 8 t
         createElement(WsProvider, {
           url: "ws://test/",
           socketFactory: () => (socket = new FakeSocket()),
-          children: createElement(RobotPage, { endpoint }),
+          children: createElement(RobotPage, { device, link }),
         }),
       );
     });
@@ -231,13 +247,13 @@ describe("RobotPage renders correctly for a relay-transport endpoint (sprint 8 t
   });
 });
 
-describe("RobotPage renders correctly for a wifi-transport endpoint (sprint 10 ticket 005)", () => {
+describe("RobotPage renders correctly for a wifi-transport link (sprint 10 ticket 005)", () => {
   // Companion to the source scan above, mirroring the relay-transport
   // describe block immediately above this one: proves RobotPage renders
-  // its usual controls for a WiFi-reached endpoint too, with zero
-  // changes to RobotPage.tsx or any component it mounts (this describe
-  // block only adds a fixture and assertions, on the unmodified
-  // `RobotPage` import above).
+  // its usual controls for a WiFi-reached link too, with zero changes
+  // to RobotPage.tsx or any component it mounts (this describe block
+  // only adds a fixture and assertions, on the unmodified `RobotPage`
+  // import above).
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
 
@@ -254,8 +270,9 @@ describe("RobotPage renders correctly for a wifi-transport endpoint (sprint 10 t
     }
   });
 
-  it("renders the usual robot controls (estop, drive, console) for a wifi-transport endpoint", () => {
-    const endpoint = wifiTransportRobotFixture();
+  it("renders the usual robot controls (estop, drive, console) for a wifi-transport link", () => {
+    const link = wifiTransportLink();
+    const device = baseDevice(link, { name: "gopiv" });
     let socket: FakeSocket | null = null;
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -265,7 +282,7 @@ describe("RobotPage renders correctly for a wifi-transport endpoint (sprint 10 t
         createElement(WsProvider, {
           url: "ws://test/",
           socketFactory: () => (socket = new FakeSocket()),
-          children: createElement(RobotPage, { endpoint }),
+          children: createElement(RobotPage, { device, link }),
         }),
       );
     });

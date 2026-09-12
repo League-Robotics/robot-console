@@ -1,15 +1,16 @@
 // @vitest-environment jsdom
 /**
  * CalibrationPage.test.tsx — the Calibration tab's state machine
- * (OOP 2026-09-10): wheel diameter gates the rotation run, the two
- * wizards feed one calibration state, and one code block is built from
- * it. Pure helpers are tested directly; the mounted tests drive the
- * page through a FakeSocket exactly as the wizards' own tests do.
+ * (OOP 2026-09-10; migrated to the `Snapshot` contract, sprint 015
+ * ticket 009): wheel diameter gates the rotation run, the two wizards
+ * feed one calibration state, and one code block is built from it. Pure
+ * helpers are tested directly; the mounted tests drive the page through
+ * a FakeSocket exactly as the wizards' own tests do.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { EndpointListEntry, RobotFunction } from "@robot-console/host/src/wsMessages.js";
+import type { RobotFunction, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import {
   CALIBRATION_IMAGE_BASELINE_DIAMETER_MM,
   CalibrationPage,
@@ -50,17 +51,21 @@ afterEach(() => {
   }
 });
 
-function device(functions: RobotFunction[] = [{ name: "calx" }, { name: "cala" }]): EndpointListEntry {
+const LINK_ID = "usb-ROBOT-A";
+const NAME = "gopiv";
+
+function link(functions: RobotFunction[] = [{ name: "calx" }, { name: "cala" }]): SnapshotLink {
   return {
-    endpointId: "usb-ROBOT-A",
+    id: LINK_ID,
     transport: "usb",
-    resourceKey: "usb-ROBOT-A",
-    classification: { type: "calibration", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: "calibration-1", version: "1" },
-    name: "gopiv",
-    role: "NEZHA2",
-    sessionOpen: true,
-    usb: { serialNumber: "ROBOT-A-FULL", displaySerial: "0004", port: "/dev/cu.usbmodemC" },
-    functions,
+    label: "USB · /dev/cu.usbmodemC",
+    state: "connected",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: false, close: true, flash: true, provisionWifi: true },
+    session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions },
   };
 }
 
@@ -68,7 +73,7 @@ function mountPage(): { el: HTMLDivElement; socket: FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <CalibrationPage device={device()} />
+      <CalibrationPage link={link()} name={NAME} />
     </WsProvider>,
   );
   act(() => {
@@ -79,7 +84,7 @@ function mountPage(): { el: HTMLDivElement; socket: FakeSocket } {
 
 function rx(socket: FakeSocket, line: string): void {
   act(() => {
-    socket.emitMessage({ type: "line", endpointId: "usb-ROBOT-A", direction: "rx", line });
+    socket.emitMessage({ type: "line", linkId: LINK_ID, direction: "rx", line });
   });
 }
 

@@ -14,10 +14,10 @@
  * (`connect/reconciler.ts`'s `planUserOpen`, ticket 002) is what turns
  * that single request into a close-old + open-new job, host-side.
  *
- * `RobotPage.tsx` is not migrated by this ticket (ticket 009's own
- * scope), so it is mocked here with a thin stub for the connected-child
- * branch -- this file's job is `RelayPage`'s own dispatch/rendering,
- * not `RobotPage`'s internals.
+ * `RobotPage.tsx` is mocked here with a thin stub for the connected-
+ * child branch regardless of its own migration state (sprint 015 ticket
+ * 009) -- this file's job is `RelayPage`'s own dispatch/rendering, not
+ * `RobotPage`'s internals.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -29,9 +29,9 @@ import { FakeSocket } from "../testing/FakeSocket";
 import { withRouter } from "../testing/renderWithRouter";
 
 vi.mock("./RobotPage", () => ({
-  RobotPage: ({ endpoint }: { endpoint: SnapshotDevice }) => (
+  RobotPage: ({ device }: { device: SnapshotDevice }) => (
     <section aria-label="Robot device" data-testid="robot-page-stub">
-      {endpoint.name}
+      {device.name}
     </section>
   ),
 }));

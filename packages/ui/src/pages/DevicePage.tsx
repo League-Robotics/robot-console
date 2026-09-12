@@ -32,11 +32,10 @@
  *  - `device.kind === "relay"` -> `RelayPage`.
  *  - `device.kind === "robot"` -> `RobotPage`.
  *
- * `RobotPage.tsx` itself is not migrated by this ticket (sprint 015
- * ticket 009's own scope -- it still declares `{ endpoint:
- * EndpointListEntry }`), so the `"robot"` dispatch arm below is the one
- * expected, unavoidable tsc error this file carries until that ticket
- * lands; every other branch here compiles clean.
+ * `RobotPage.tsx` is migrated by sprint 015 ticket 009 to `{ device,
+ * link }`, so the `"robot"` dispatch arm below passes both the resolved
+ * `device` and the routed `link` this page already holds -- no more
+ * unresolved-type gap at this call site.
  *
  * This module still owns the deep-link states from ticket 007
  * (SUC-001's alternate flow), unchanged in spirit:
@@ -109,11 +108,7 @@ export function DevicePage() {
     case "relay":
       return <RelayPage device={device} />;
     case "robot":
-      // RobotPage.tsx is ticket 009's own migration -- still declares
-      // `{ endpoint: EndpointListEntry }`, so this is an expected,
-      // unavoidable tsc mismatch until that ticket lands (see this
-      // module's own doc comment).
-      return <RobotPage endpoint={device} />;
+      return <RobotPage device={device} link={link} />;
     default: {
       // `SnapshotDevice.kind` is a closed `"robot" | "relay"` union today
       // (wsMessages.ts) -- this arm exists only so a future third kind

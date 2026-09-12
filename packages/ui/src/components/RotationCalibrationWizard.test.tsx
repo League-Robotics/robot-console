@@ -1,31 +1,33 @@
 // @vitest-environment jsdom
 /**
  * RotationCalibrationWizard.test.tsx — component tests for ticket 004's
- * rotation-calibration wizard (SUC-004).
+ * rotation-calibration wizard (SUC-004; migrated to the `Snapshot`
+ * contract and its on-open probe removed, sprint 015 ticket 009).
  *
- * Mirrors `DistanceCalibrationWizard.test.tsx`'s structure exactly:
- * the one-shot `FUNCS` probe on mount, the `cala`-gated availability
- * split into two distinct "not asked yet" / "answered without cala"
- * messages, the black-tape-cross setup instructions (no beam pointer,
- * no nudging), the `RUN cala` dispatch on Go, progressive rendering of
- * `CALA:` lines as four distinct pass stages (not collapsed into one
- * spinner), the terminal `apply` line rendered verbatim as the
- * snippet, a `CALA:fail` line's distinct failure state (at various
- * stages, not just the first), a `RUN` `err 1` reply's own distinct
- * state, a second run after a completed one, and the regression check
- * that no nudge/beam-pointer UI ever appears in this panel.
+ * Mirrors `DistanceCalibrationWizard.test.tsx`'s structure exactly: the
+ * `cala`-gated availability split into two distinct "not asked yet" /
+ * "answered without cala" messages, the black-tape-cross setup
+ * instructions (no beam pointer, no nudging), the `RUN cala` dispatch on
+ * Go, progressive rendering of `CALA:` lines as four distinct pass
+ * stages (not collapsed into one spinner), the terminal `apply` line
+ * rendered verbatim as the snippet, a `CALA:fail` line's distinct
+ * failure state (at various stages, not just the first), a `RUN` `err
+ * 1` reply's own distinct state, a second run after a completed one, and
+ * the regression check that no nudge/beam-pointer UI ever appears in
+ * this panel.
+ *
+ * Ticket 009 deletes the "fires a one-shot FUNCS probe on mount" pinned
+ * test case this file used to carry, not adapting it -- see
+ * `DistanceCalibrationWizard.test.tsx`'s identical note.
  *
  * **`apply` is not the last line on the wire.** `test/calibratea.ts`
  * emits `CALA:apply ...` and then immediately re-runs both directions a
  * second time to verify the fix -- `CALA:check clockwise`/`CALA:check
  * counter-clockwise` and their own progress lines arrive AFTER `apply`,
- * not before it (a bug caught during ticket 005's review: an earlier
- * version of this wizard returned at the first `apply` line and never
- * rendered the two re-verification stages at all). The fixtures below
- * use that real order, and separately cover a `CALA:fail` arriving
- * *after* `apply` -- the run must flip to `failed` and drop the
- * snippet, since a failed re-verification must never leave a green
- * result standing.
+ * not before it. The fixtures below use that real order, and separately
+ * cover a `CALA:fail` arriving *after* `apply` -- the run must flip to
+ * `failed` and drop the snippet, since a failed re-verification must
+ * never leave a green result standing.
  *
  * Marker and progress-line text throughout is taken verbatim from
  * `test/calibratea.ts` (`nezha-robot-template`, read directly) --
@@ -36,19 +38,19 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import type { EndpointListEntry, RobotFunction } from "@robot-console/host/src/wsMessages.js";
+import type { RobotFunction, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { RotationCalibrationWizard, deriveRotationCalibrationRun, reportedTrackWidthCm } from "./RotationCalibrationWizard";
 import { WsProvider, useWsActions } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 
 /** A minimal stand-in for `DeviceConsole`'s own "Clear log" button --
  * mounted alongside the wizard under the same `WsProvider` so a click
- * here exercises the exact `clearEndpointLog` action a real "Clear
- * log" press would fire, without pulling in the whole console. */
-function ClearLogButton({ endpointId }: { endpointId: string }) {
-  const { clearEndpointLog } = useWsActions();
+ * here exercises the exact `clearLinkLog` action a real "Clear log"
+ * press would fire, without pulling in the whole console. */
+function ClearLogButton({ linkId }: { linkId: string }) {
+  const { clearLinkLog } = useWsActions();
   return (
-    <button type="button" data-testid="test-clear-log" onClick={() => clearEndpointLog(endpointId)}>
+    <button type="button" data-testid="test-clear-log" onClick={() => clearLinkLog(linkId)}>
       Clear log
     </button>
   );
@@ -80,31 +82,43 @@ afterEach(() => {
   }
 });
 
-function baseDevice(
-  functions: RobotFunction[] | undefined,
-  overrides: Partial<EndpointListEntry> = {},
-): EndpointListEntry {
+const LINK_ID = "usb-ROBOT-A";
+
+function linkWithFunctions(functions: RobotFunction[] | undefined, overrides: Partial<SnapshotLink> = {}): SnapshotLink {
   return {
-    endpointId: "usb-ROBOT-A",
+    id: LINK_ID,
     transport: "usb",
-    resourceKey: "usb-ROBOT-A",
-    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
-    name: "zavaz",
-    role: "NEZHA2",
-    sessionOpen: true,
-    usb: { serialNumber: "ROBOT-A-FULL", displaySerial: "0004", port: "/dev/cu.usbmodemC" },
-    // `exactOptionalPropertyTypes` forbids `functions: undefined` -- the
-    // key must be entirely absent to represent "no FUNCS sent yet".
-    ...(functions !== undefined ? { functions } : {}),
+    label: "USB · /dev/cu.usbmodemC",
+    state: "connected",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: false, close: true, flash: true, provisionWifi: true },
+    session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: functions ?? null },
     ...overrides,
   };
 }
 
-function mountWizard(device: EndpointListEntry): { el: HTMLDivElement; socket: FakeSocket } {
+function closedLink(): SnapshotLink {
+  return {
+    id: LINK_ID,
+    transport: "usb",
+    label: "USB · /dev/cu.usbmodemC",
+    state: "connectable",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: true, close: false, flash: true, provisionWifi: false },
+  };
+}
+
+function mountWizard(link: SnapshotLink): { el: HTMLDivElement; socket: FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <RotationCalibrationWizard device={device} />
+      <RotationCalibrationWizard link={link} />
     </WsProvider>,
   );
   act(() => {
@@ -113,39 +127,12 @@ function mountWizard(device: EndpointListEntry): { el: HTMLDivElement; socket: F
   return { el, socket: socket! };
 }
 
-/**
- * Mounts `WsProvider` with its socket already open *before* the wizard
- * ever renders -- see `DistanceCalibrationWizard.test.tsx`'s identical
- * `mountReady` for the full rationale.
- */
-function mountReady(device: EndpointListEntry): { el: HTMLDivElement; socket: FakeSocket } {
-  let socket: FakeSocket | null = null;
-  const socketFactory = () => (socket = new FakeSocket());
-  const url = "ws://test/";
-  const el = mount(
-    <WsProvider url={url} socketFactory={socketFactory}>
-      <div />
-    </WsProvider>,
-  );
-  act(() => {
-    socket!.emitOpen();
-  });
-  act(() => {
-    root!.render(
-      <WsProvider url={url} socketFactory={socketFactory}>
-        <RotationCalibrationWizard device={device} />
-      </WsProvider>,
-    );
-  });
-  return { el, socket: socket! };
-}
-
-function mountWizardWithClear(device: EndpointListEntry): { el: HTMLDivElement; socket: FakeSocket } {
+function mountWizardWithClear(link: SnapshotLink): { el: HTMLDivElement; socket: FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <RotationCalibrationWizard device={device} />
-      <ClearLogButton endpointId={device.endpointId} />
+      <RotationCalibrationWizard link={link} />
+      <ClearLogButton linkId={link.id} />
     </WsProvider>,
   );
   act(() => {
@@ -162,27 +149,20 @@ function clickGo(el: HTMLDivElement): void {
 
 function emitLine(socket: FakeSocket, line: string): void {
   act(() => {
-    socket.emitMessage({ type: "line", endpointId: "usb-ROBOT-A", direction: "rx", line });
+    socket.emitMessage({ type: "line", linkId: LINK_ID, direction: "rx", line });
   });
 }
 
 describe("RotationCalibrationWizard availability", () => {
-  it("fires a one-shot FUNCS probe on mount when a session is already open", () => {
-    const { socket } = mountReady(baseDevice(undefined));
-    expect(socket.sent).toEqual([
-      JSON.stringify({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "FUNCS" }),
-    ]);
-  });
-
   it("shows an idle 'checking' message and disables Go before any FUNCS reply", () => {
-    const { el } = mountWizard(baseDevice(undefined));
+    const { el } = mountWizard(linkWithFunctions(undefined));
     expect(el.querySelector('[data-testid="rotation-calibration-idle"]')).not.toBeNull();
     expect(el.querySelector('[data-testid="rotation-calibration-unavailable"]')).toBeNull();
     expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(true);
   });
 
   it("shows the non-alarming unavailable message and keeps Go disabled when FUNCS answers without cala", () => {
-    const { el } = mountWizard(baseDevice([{ name: "calx" }, { name: "abort" }]));
+    const { el } = mountWizard(linkWithFunctions([{ name: "calx" }, { name: "abort" }]));
     const hint = el.querySelector('[data-testid="rotation-calibration-unavailable"]');
     expect(hint).not.toBeNull();
     expect(hint!.textContent).toContain("doesn't support calibration yet");
@@ -192,7 +172,7 @@ describe("RotationCalibrationWizard availability", () => {
   });
 
   it("shows the black-tape-cross setup instructions and enables Go once cala is present", () => {
-    const { el } = mountWizard(baseDevice([{ name: "calx" }, { name: "cala" }]));
+    const { el } = mountWizard(linkWithFunctions([{ name: "calx" }, { name: "cala" }]));
     const setup = el.querySelector('[data-testid="rotation-calibration-setup"]');
     expect(setup).not.toBeNull();
     expect(setup!.textContent).toContain("black tape");
@@ -201,23 +181,21 @@ describe("RotationCalibrationWizard availability", () => {
   });
 
   it("disables Go when there is no open session even with cala available", () => {
-    const { el } = mountWizard(baseDevice([{ name: "cala" }], { sessionOpen: false }));
+    const { el } = mountWizard(closedLink());
     expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(true);
   });
 });
 
 describe("RotationCalibrationWizard run dispatch", () => {
   it("sends RUN cala via sendCommand when Go is pressed", () => {
-    const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "cala" }]));
     socket.sent.length = 0;
     clickGo(el);
-    expect(socket.sent).toEqual([
-      JSON.stringify({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "RUN", fields: ["cala"] }),
-    ]);
+    expect(socket.sent).toEqual([JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "RUN", fields: ["cala"] })]);
   });
 
   it("hides the setup instructions and disables Go once a run is in flight", () => {
-    const { el } = mountWizard(baseDevice([{ name: "cala" }]));
+    const { el } = mountWizard(linkWithFunctions([{ name: "cala" }]));
     clickGo(el);
     expect(el.querySelector('[data-testid="rotation-calibration-setup"]')).toBeNull();
     expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(true);
@@ -226,7 +204,7 @@ describe("RotationCalibrationWizard run dispatch", () => {
 
 describe("RotationCalibrationWizard progress rendering", () => {
   it("renders the CW pass, CCW pass, and the firmware's own re-verification passes as distinct, visibly separate stages -- not collapsed into one spinner", () => {
-    const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "cala" }]));
     clickGo(el);
 
     emitLine(socket, "CALA:begin track=11.5cm slip=0.952 b=12.08cm");
@@ -267,7 +245,7 @@ describe("RotationCalibrationWizard progress rendering", () => {
   });
 
   it("tolerates interleaved noise (acks, unrelated debug lines) without disturbing progress", () => {
-    const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "cala" }]));
     clickGo(el);
     emitLine(socket, "ack 5 0 none");
     emitLine(socket, "CALA:pass clockwise");
@@ -290,7 +268,7 @@ describe("RotationCalibrationWizard terminal states", () => {
     // apply, not before it. The panel must still be "succeeded" as soon
     // as apply is seen, and must still populate/render the two
     // re-verification stages as they stream in afterward.
-    const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "cala" }]));
     clickGo(el);
     emitLine(socket, "CALA:begin track=11.5cm slip=0.952 b=12.08cm");
     emitLine(socket, "CALA:pass clockwise");
@@ -340,7 +318,7 @@ describe("RotationCalibrationWizard terminal states", () => {
   });
 
   it("flips a succeeded run to failed if a CALA:fail line arrives after CALA:apply -- a failed re-verification must not leave a green result standing", () => {
-    const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "cala" }]));
     clickGo(el);
     emitLine(socket, "CALA:pass clockwise");
     emitLine(socket, "CALA:edge 1 at 90deg");
@@ -363,7 +341,7 @@ describe("RotationCalibrationWizard terminal states", () => {
   });
 
   it("renders a distinct failure state on a CALA:fail line during the very first pass, never a snippet", () => {
-    const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "cala" }]));
     clickGo(el);
     emitLine(socket, "CALA:pass clockwise");
     emitLine(socket, "CALA:fail saw 3 transitions, need 5 -- STALLED, power-cycle the robot");
@@ -379,7 +357,7 @@ describe("RotationCalibrationWizard terminal states", () => {
     // A fail can arrive mid-re-verification, well after the first two
     // passes have already streamed their own progress lines -- exercise
     // that ordering directly, not just a fail on the very first pass.
-    const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "cala" }]));
     clickGo(el);
     emitLine(socket, "CALA:pass clockwise");
     emitLine(socket, "CALA:edge 1 at 90deg");
@@ -395,7 +373,7 @@ describe("RotationCalibrationWizard terminal states", () => {
   });
 
   it("renders a distinct 'run rejected' state on a RUN err 1 reply, never confused with CALA:fail or unavailable", () => {
-    const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "cala" }]));
     clickGo(el);
     emitLine(socket, "err 1 #1");
 
@@ -407,7 +385,7 @@ describe("RotationCalibrationWizard terminal states", () => {
   });
 
   it("starts a fresh run on a second Go press, with no stale stages or snippet from the first run", () => {
-    const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "cala" }]));
     clickGo(el);
     emitLine(socket, "CALA:pass clockwise");
     emitLine(socket, "CALA:apply diffDrive.setConfigValue(ConfigField.RotationalSlip, 0.9)");
@@ -418,9 +396,7 @@ describe("RotationCalibrationWizard terminal states", () => {
 
     socket.sent.length = 0;
     clickGo(el);
-    expect(socket.sent).toEqual([
-      JSON.stringify({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "RUN", fields: ["cala"] }),
-    ]);
+    expect(socket.sent).toEqual([JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "RUN", fields: ["cala"] })]);
     // The stale snippet from the first run is gone; the new run has no
     // events yet since nothing has streamed in for it.
     expect(el.querySelector('[data-testid="rotation-calibration-result"]')).toBeNull();
@@ -433,8 +409,8 @@ describe("RotationCalibrationWizard terminal states", () => {
     expect(cwStage.textContent).toContain("edge 1 at 89deg");
   });
 
-  it("tolerates the endpoint's log being cleared mid-run (e.g. DeviceConsole's Clear log button) without throwing or showing stale progress", () => {
-    const { el, socket } = mountWizardWithClear(baseDevice([{ name: "cala" }]));
+  it("tolerates the link's log being cleared mid-run (e.g. DeviceConsole's Clear log button) without throwing or showing stale progress", () => {
+    const { el, socket } = mountWizardWithClear(linkWithFunctions([{ name: "cala" }]));
     clickGo(el);
     emitLine(socket, "CALA:pass clockwise");
     emitLine(socket, "CALA:edge 1 at 90deg");
@@ -458,7 +434,7 @@ describe("RotationCalibrationWizard terminal states", () => {
 
 describe("RotationCalibrationWizard with the apply line dropped over WiFi (OOP 2026-09-10)", () => {
   it("reconstructs the snippet from CALA:derived when CALA:apply and the check marker never arrive (live gopiv capture)", () => {
-    const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "cala" }]));
     clickGo(el);
     for (const line of [
       "CALA:begin track=11.5cm slip=0.952 b=12.08cm",
@@ -496,11 +472,11 @@ describe("RotationCalibrationWizard with the apply line dropped over WiFi (OOP 2
 
 describe("RotationCalibrationWizard in a long-lived tab (OOP 2026-09-10 regression)", () => {
   it("still reaches the result when the log ring was already full at Go and keeps filling during the run", () => {
-    const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "cala" }]));
     // A tab open for hours: the ring is at capacity before Go.
     act(() => {
       for (let i = 0; i < 520; i += 1) {
-        socket.emitMessage({ type: "line", endpointId: "usb-ROBOT-A", direction: "rx", line: `status ready=1 cyc=${i}` });
+        socket.emitMessage({ type: "line", linkId: LINK_ID, direction: "rx", line: `status ready=1 cyc=${i}` });
       }
     });
     clickGo(el);
@@ -513,7 +489,7 @@ describe("RotationCalibrationWizard in a long-lived tab (OOP 2026-09-10 regressi
     // run line out of an index-based window.
     act(() => {
       for (let i = 0; i < 600; i += 1) {
-        socket.emitMessage({ type: "line", endpointId: "usb-ROBOT-A", direction: "rx", line: `status ready=1 cyc=${1000 + i}` });
+        socket.emitMessage({ type: "line", linkId: LINK_ID, direction: "rx", line: `status ready=1 cyc=${1000 + i}` });
       }
     });
     emitLine(socket, "CALA:check counter-clockwise");
@@ -527,7 +503,7 @@ describe("RotationCalibrationWizard in a long-lived tab (OOP 2026-09-10 regressi
 
 describe("RotationCalibrationWizard regression: no nudge/beam-pointer UI", () => {
   it("never renders a nudge control or beam-pointer affordance in any state", () => {
-    const { el, socket } = mountWizard(baseDevice([{ name: "cala" }]));
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "cala" }]));
     expect(el.textContent).not.toMatch(/nudge/i);
     expect(el.textContent).not.toMatch(/beam/i);
 
@@ -610,7 +586,7 @@ describe("RotationCalibrationWizard as CalibrationPage drives it (OOP 2026-09-10
     let socket: FakeSocket | null = null;
     const el = mount(
       <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-        <RotationCalibrationWizard device={baseDevice([{ name: "cala" }])} disabled disabledReason="Run the distance calibration first." />
+        <RotationCalibrationWizard link={linkWithFunctions([{ name: "cala" }])} disabled disabledReason="Run the distance calibration first." />
       </WsProvider>,
     );
     act(() => {
@@ -626,7 +602,7 @@ describe("RotationCalibrationWizard as CalibrationPage drives it (OOP 2026-09-10
     let socket: FakeSocket | null = null;
     const el = mount(
       <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-        <RotationCalibrationWizard device={baseDevice([{ name: "cala" }])} onRun={(run) => runs.push(run ? run.kind : "none")} />
+        <RotationCalibrationWizard link={linkWithFunctions([{ name: "cala" }])} onRun={(run) => runs.push(run ? run.kind : "none")} />
       </WsProvider>,
     );
     act(() => {

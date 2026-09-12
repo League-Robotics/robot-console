@@ -18,8 +18,8 @@
  * gamepad wins over the keyboard when both are active.
  */
 import { useEffect, useRef, useState } from "react";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
-import { useWsActions } from "../ws/WsProvider";
+import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import { useSendable, useWsActions } from "../ws/WsProvider";
 import { DriveControls } from "./DriveControls";
 import "./DriveTab.css";
 
@@ -88,16 +88,29 @@ function isTextTarget(target: EventTarget | null): boolean {
 /** The one place a held drive turns into wire traffic -- see this
  * module's doc comment. Two named sources (`keyboard`, `gamepad`); the
  * gamepad wins while it is off-centre. */
-function useDriveEngine(endpointId: string, linkOpen: boolean) {
+function useDriveEngine(linkId: string, linkOpen: boolean) {
   const { sendCommand } = useWsActions();
   const sources = useRef<{ keyboard: WheelTarget | null; gamepad: WheelTarget | null }>({ keyboard: null, gamepad: null });
   const active = useRef<WheelTarget | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const sendRef = useRef(sendCommand);
   sendRef.current = sendCommand;
+  // `DriveTab`'s own keyboard/gamepad effects (below) mount once
+  // (`[linkId]`/`[]` deps) and keep calling the exact `setSource`
+  // closure this hook returned on that first render -- `sources`/
+  // `active`/`timer` stay correct across renders because `useRef`
+  // itself is stable, but a plain captured `linkOpen` parameter would
+  // freeze at whatever it was on that first render forever (ticket 009
+  // surfaced this: `linkOpen` now depends on `useSendable()`, which is
+  // still `false` on the very first render, before the test/production
+  // socket has even reported "open"). A ref sidesteps that: every call
+  // to `apply()`, however stale the closure invoking it, reads the
+  // current value.
+  const linkOpenRef = useRef(linkOpen);
+  linkOpenRef.current = linkOpen;
 
   function apply(): void {
-    const next = linkOpen ? (sources.current.gamepad ?? sources.current.keyboard) : null;
+    const next = linkOpenRef.current ? (sources.current.gamepad ?? sources.current.keyboard) : null;
     const was = active.current;
     if (next === null) {
       if (timer.current !== undefined) {
@@ -105,7 +118,7 @@ function useDriveEngine(endpointId: string, linkOpen: boolean) {
         timer.current = undefined;
       }
       if (was !== null) {
-        sendRef.current(endpointId, "STOP");
+        sendRef.current(linkId, "STOP");
       }
       active.current = null;
       return;
@@ -122,7 +135,7 @@ function useDriveEngine(endpointId: string, linkOpen: boolean) {
     const resend = () => {
       const target = active.current;
       if (target !== null) {
-        sendRef.current(endpointId, "WHEELS_V", [target[0], target[1], DRIVE_LEASE_MS]);
+        sendRef.current(linkId, "WHEELS_V", [target[0], target[1], DRIVE_LEASE_MS]);
       }
     };
     resend();
@@ -156,14 +169,15 @@ function useDriveEngine(endpointId: string, linkOpen: boolean) {
 }
 
 export interface DriveTabProps {
-  device: EndpointListEntry;
+  link: SnapshotLink;
 }
 
-export function DriveTab({ device }: DriveTabProps) {
-  const endpointId = device.endpointId;
-  const linkOpen = device.sessionOpen;
+export function DriveTab({ link }: DriveTabProps) {
+  const linkId = link.id;
+  const sendable = useSendable();
+  const linkOpen = link.session !== undefined && sendable;
   const { sendCommand } = useWsActions();
-  const engine = useDriveEngine(endpointId, linkOpen);
+  const engine = useDriveEngine(linkId, linkOpen);
   const [heldKeys, setHeldKeys] = useState<string[]>([]);
   const [gamepadId, setGamepadId] = useState<string | null>(null);
   const [stick, setStick] = useState<WheelTarget | null>(null);
@@ -183,7 +197,7 @@ export function DriveTab({ device }: DriveTabProps) {
         event.preventDefault();
         held.clear();
         sync();
-        sendCommand(endpointId, "STOP", ["now"]);
+        sendCommand(linkId, "STOP", ["now"]);
         return;
       }
       if (!DRIVE_KEYS.has(event.code)) {
@@ -216,7 +230,7 @@ export function DriveTab({ device }: DriveTabProps) {
       window.removeEventListener("blur", onBlur);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [endpointId]);
+  }, [linkId]);
 
   // Gamepad.
   useEffect(() => {
@@ -256,14 +270,14 @@ export function DriveTab({ device }: DriveTabProps) {
     poll();
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [endpointId]);
+  }, [linkId]);
 
   const keyLabel = heldKeys.length > 0 ? heldKeys.map((code) => code.replace(/^Arrow|^Key/, "")).join(" + ") : null;
 
   return (
     <div className="drive-tab" data-testid="robot-tab-panel-drive">
       <div className="drive-tab-pad">
-        <DriveControls device={device} />
+        <DriveControls link={link} />
       </div>
       <div className="drive-tab-aids">
         <p className="drive-tab-aid" data-testid="drive-tab-keyboard">

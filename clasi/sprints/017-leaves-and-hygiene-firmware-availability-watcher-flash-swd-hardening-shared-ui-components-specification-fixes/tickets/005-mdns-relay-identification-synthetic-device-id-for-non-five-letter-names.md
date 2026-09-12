@@ -1,8 +1,9 @@
 ---
 id: '005'
 title: 'mDNS relay identification: synthetic device id for non-five-letter names'
-status: open
-use-cases: [SUC-005]
+status: in-progress
+use-cases:
+- SUC-005
 depends-on: []
 github-issue: ''
 issue: relay-names-outside-five-letter-grammar-get-no-device-row.md

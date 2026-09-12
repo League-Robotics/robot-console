@@ -1,8 +1,10 @@
+import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
 import { openStoreDb } from "../store/db.js";
 import { Store, type ProjectionDeviceRow, type RadioSightingRow } from "../store/index.js";
 import { FakeByteStream } from "../link/__fixtures__/FakeByteStream.js";
 import { realScheduler } from "../link/pacing.js";
+import { tcpStream, type TcpSocketLike } from "../link/adapters/tcpStream.js";
 import { createRelayLeaseRevocation } from "./relayLeaseRevocation.js";
 import { createRelaySweepPassRunner, radioChildLinkId } from "../watchers/relaySweeper.js";
 import type { LinkRow } from "./connector.js";
@@ -408,6 +410,140 @@ describe("createRelayBridger().bridge() -- reset method selection (integration)"
     expect(session.deviceId).toBe(ROBOT_SERIAL);
     expect(sendBreakCalls).toBe(1);
     expect(hidResetCalls).toBe(0);
+    store.close();
+  }, 10_000);
+});
+
+// ---------------------------------------------------------------------
+// TCP (mbrelay) reset via disconnect+reconnect -- sprint 016 ticket 005.
+// Reuses the real `tcpStream.ts` adapter (not a bare fake ByteStream)
+// so `TCP_NODELAY` is actually exercised, driving it against a fake
+// `TcpSocketLike` (mirrors `tcpStream.test.ts`'s own `FakeSocket`
+// fixture) rather than a real socket -- no real network anywhere in
+// this file. The pool's own "am I in the data plane" state is modeled
+// exactly like `RelayPlaneState` above, except reset happens
+// automatically on every fresh connection (this fixture's own
+// constructor) rather than via an explicit `sendBreak()`/HID call --
+// `performReset`'s own "reconnect" branch is a deliberate no-op because
+// a fresh per-candidate TCP connection already *is* the reset (module
+// doc comment's "Reset method selection" section; a break cannot be
+// sent over TCP, specification.md §6).
+// ---------------------------------------------------------------------
+
+/** A fake `TcpSocketLike` standing in for an mbrelay pool's own TCP
+ * port, carrying `RelayPlaneState` across fresh instances the same way
+ * `RelayPlaneByteStream` does for a usb relay's serial port -- except
+ * here every *new instance* (i.e. every fresh connect, one per
+ * candidate attempt) resets the shared state itself, modeling a real
+ * mbrelay pool's own firmware returning to the command plane on a new
+ * TCP connection (there is no explicit reset call for this transport at
+ * all -- see this block's own header comment). */
+class FakeMbrelayPoolSocket extends EventEmitter implements TcpSocketLike {
+  readonly noDelayCalls: boolean[] = [];
+  destroyCalls = 0;
+
+  constructor(
+    private readonly state: RelayPlaneState,
+    private readonly robotAnswers: boolean,
+  ) {
+    super();
+    this.state.reset();
+    // Fires after this constructor's caller has finished registering
+    // `once("connect", ...)` (tcpStream.ts's own `open()`), mirroring a
+    // real TCP handshake completing shortly after `net.connect()`.
+    queueMicrotask(() => this.emit("connect"));
+  }
+
+  write(data: string, callback?: (err?: Error | null) => void): boolean {
+    callback?.(null);
+    const line = data.trim();
+
+    if (this.state.inDataPlane) {
+      if (line.startsWith("HELLO") && this.robotAnswers) {
+        this.emit("data", Buffer.from(`${ROBOT_BANNER}\n`));
+      }
+      // Silence otherwise -- same stuck-data-plane simulation as
+      // RelayPlaneByteStream.
+      return true;
+    }
+
+    if (line === "?") {
+      this.emit("data", Buffer.from("# channel: 1 group: 1 mode: RAW250 power: 7\n"));
+    } else if (line === "!ECHO OFF") {
+      this.emit("data", Buffer.from("# echo: OFF\n"));
+    } else if (line === "!MODE RAW250") {
+      this.emit("data", Buffer.from("# mode: RAW250\n"));
+    } else if (/^!CG \d+ \d+$/.test(line)) {
+      const match = /^!CG (\d+) (\d+)$/.exec(line);
+      this.emit("data", Buffer.from(`# channel: ${match?.[1]} group: ${match?.[2]} mode: RAW250 power: 7\n`));
+    } else if (line === "!P 7") {
+      this.emit("data", Buffer.from("# channel: 47 group: 60 mode: RAW250 power: 7\n"));
+    } else if (line === "!GO") {
+      this.state.inDataPlane = true;
+      this.emit("data", Buffer.from("# entering data plane\n"));
+    }
+    return true;
+  }
+
+  setNoDelay(noDelay = true): void {
+    this.noDelayCalls.push(noDelay);
+  }
+
+  destroy(): void {
+    this.destroyCalls++;
+    this.emit("close");
+  }
+}
+
+describe("createRelayBridger().bridge() -- TCP (mbrelay) reset via disconnect+reconnect (ticket 016-005)", () => {
+  it("candidate 1's robot never replies; candidate 2 succeeds only because a fresh TCP connection reset the pool -- never a serial break", async () => {
+    const store = freshStore();
+    const relayLinkId = "mbrelay-torture";
+    store.upsertLink({ id: relayLinkId, transport: "mbrelay", address: { host: "torture.local", port: 8760 }, at: 1 });
+
+    const state = new RelayPlaneState();
+    const robotAnswersByAttempt = [false, true];
+    let attemptIndex = 0;
+    const sockets: FakeMbrelayPoolSocket[] = [];
+    const createTcpStream = (host: string, port: number) =>
+      tcpStream(host, port, {
+        createSocket: () => {
+          const socket = new FakeMbrelayPoolSocket(state, robotAnswersByAttempt[attemptIndex] ?? false);
+          sockets.push(socket);
+          attemptIndex++;
+          return socket;
+        },
+      });
+
+    const bridger = createRelayBridger(store, { createTcpStream, scheduler: realScheduler, now: () => NOW }, FAST_OPTIONS);
+
+    const request: BridgeRequest = {
+      relayLinkId,
+      candidates: [
+        { childLinkId: "mbrelay-cand1-via-relay", channel: 47, group: 60 },
+        { childLinkId: "mbrelay-cand2-via-relay", channel: 49, group: 61 },
+      ],
+    };
+
+    const session = await bridger.bridge(request, new AbortController().signal);
+
+    expect(session.linkId).toBe("mbrelay-cand2-via-relay");
+    expect(session.deviceId).toBe(ROBOT_SERIAL);
+    expect(session.transport).toBe("mbrelay");
+
+    // One fresh TCP connection per candidate -- disconnect+reconnect,
+    // not a break -- and TCP_NODELAY set immediately on each one
+    // (tcpStream.ts's own contract; there is no `sendBreak()` anywhere
+    // on a TcpSocketLike at all, so this is the only reset mechanism
+    // available for this transport).
+    expect(sockets).toHaveLength(2);
+    for (const socket of sockets) {
+      expect(socket.noDelayCalls).toEqual([true]);
+    }
+    expect(state.resetCount).toBe(2);
+
+    const leaseRows = store.reconcilerRows().relayLeases;
+    expect(leaseRows.find((l) => l.relayLinkId === relayLinkId)).toBeUndefined();
     store.close();
   }, 10_000);
 });

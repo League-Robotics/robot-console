@@ -46,6 +46,17 @@
  * (`device_id = NULL`) rather than guessing, same principle as
  * `usbWatcher.ts`'s own device-linking discipline.
  *
+ * Unlike `wifi`/`mbserial`, a `mbrelay` link with **zero** matching
+ * `kind='relay'` devices does not stay unassigned: ticket 016-005 mints
+ * one with a synthetic, name-derived id (`nameToValue(name)`, the same
+ * convention `store/importers/knownRobots.ts` already uses for a
+ * chip-id-less device — see `handleMbrelay`'s own doc comment). This
+ * gives a remote mbrelay pool this host has never identified over USB a
+ * device row of its own (SUC-005) rather than requiring it to already be
+ * a known local relay first. The ambiguous multiple-match case above is
+ * unaffected — it still leaves the link unassigned, never minting a
+ * third row to "resolve" it.
+ *
  * ## Address changes without `down`/`up`
  *
  * A re-announce with a new SRV host/port (or changed TXT) does not, on
@@ -88,6 +99,7 @@
  * multicast socket and no real wall-clock wait anywhere in this
  * module's own suite.
  */
+import { nameToValue } from "@robot-console/protocol";
 import { Store, type Transport } from "../store/index.js";
 import type { MdnsBackend, MdnsBrowser, MdnsFindOptions, MdnsService } from "../discovery/mdnsDiscovery.js";
 
@@ -296,13 +308,45 @@ export function startMdnsWatcher(
     );
   }
 
+  /** Ticket 016-005's device-creation fallback: when **zero** existing
+   * `kind='relay'` devices share `name` (never the ambiguous
+   * multiple-match case, which is `uniqueRelayDeviceIdByName`'s own
+   * `null` too and stays unassigned exactly as before — module doc
+   * comment), mint one with a synthetic, name-derived id --
+   * `nameToValue(name)`, the unique value in `[0, 3124]` whose
+   * `deviceIdToName` is exactly `name` (`store/importers/knownRobots.ts`'s
+   * own convention for a chip-id-less device, reused rather than
+   * duplicated). Per sprint.md's own Design Rationale ("an mbrelay
+   * pool's device row uses a synthetic, name-derived id, not a
+   * chip-id placeholder that never gets 'merged' later"), this device
+   * has no future merge path — there is no physical chip that could
+   * later plug into this host over USB and reconcile against it, unlike
+   * a USB placeholder. `upsertDevice` is itself idempotent, so a repeat
+   * observation of an already-created pool is a no-op past its first. */
+  function createRelayDeviceIfAbsent(name: string): number | null {
+    const matches = store.snapshotRows().devices.filter((row) => row.name === name && row.kind === "relay");
+    if (matches.length > 0) {
+      // Either already handled by the fast-path match above (never
+      // reaches here) or ambiguous (>1) -- leave unassigned rather than
+      // minting a third row that would not resolve the ambiguity.
+      return null;
+    }
+    const id = nameToValue(name);
+    store.upsertDevice({ id, name, kind: "relay", at: now() });
+    return id;
+  }
+
   function handleMbrelay(service: MdnsService): void {
     const name = service.name;
+    // The existing name-match fast path stays first, unchanged
+    // (regression guard); the fallback below is additive, not a
+    // replacement -- see the module doc comment.
+    const deviceId = uniqueRelayDeviceIdByName(name) ?? createRelayDeviceIfAbsent(name);
     upsertLinkAndDetectChange(
       `mbrelay-${name}`,
       "mbrelay",
       { host: service.host, port: service.port, registryPort: parseRegistryPort(service.txt?.registry) },
-      uniqueRelayDeviceIdByName(name),
+      deviceId,
     );
   }
 

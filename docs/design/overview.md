@@ -45,23 +45,15 @@ bars and time-series charts), **Trace** (path plot, clearable), and
 
 ## Roadmap
 
-Six sprints. Sprint 1 is the foundation and is detail-planned first.
-
-1. **Connect, identify, console** — monorepo skeleton; the protocol
-   package's naming/banner/codec/session logic; USB device enumeration and
-   SWD-based naming; a working serial console.
-2. **Flashing** — fetch and verify relay firmware from GitHub Releases,
-   flash it over SWD with progress, with an MSD-copy fallback. (Calibration
-   firmware is not yet available — see open questions.)
-3. **Radio + control** — radio and mbrelay links, mDNS discovery, and
-   robot drive/stop/estop/status control with sequence state visible in
-   the UI.
-4. **Telemetry** — decode telemetry headers/frames into wheel-speed bars,
-   time-series charts, and a clearable path trace.
-5. **Calibration wizards** — guided distance and rotation calibration
-   routines that end by emitting a MakeCode snippet.
-6. **WiFi** — discover and auto-switch an already-provisioned robot from
-   radio to WiFi.
+The original six-sprint roadmap (connect/identify/console, flashing,
+radio + control, telemetry, calibration wizards, WiFi) shipped and was
+then superseded: sprints 014–017 rearchitected the host around a SQLite
+store, a set of watchers, one connector/reconciler, and a single
+transport-agnostic link core, per `docs/design/architecture.md`. The
+current and future sprint arc — grouped `rearch-*` issues, dependency
+order, and exit criteria per sprint — lives in
+`docs/design/rearchitecture-plan.md`; that is the roadmap to read now,
+not this section.
 
 See `specification.md` for the full technical detail and `usecases.md` for
 the user-facing flows.

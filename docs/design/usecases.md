@@ -356,20 +356,23 @@ was dropped).
 
 **Main flow:**
 1. The decoder detects that it has `t` frames without a matching `thdr`
-   it can zip against.
-2. The host issues `TLM HDR` (not `TLM NOW`) to request the header
-   explicitly.
-3. The robot replies with the current header; frames are auto-refreshed
-   every 20 frames regardless, so recovery also happens passively within
-   at most one refresh interval.
-4. The decoder resumes zipping `thdr` against `t` correctly.
+   it can zip against, and holds them undecoded rather than guessing.
+2. There is no header-recovery request verb — the firmware does not
+   implement one (`parseTlmMode` accepts only `OFF`/`POSE`/`FULL`/`NOW`/
+   `AUTO`/`BUFFER`). Recovery is entirely passive: the robot auto-refreshes
+   the header every 20 frames regardless of whether anything was missed
+   (20 Hz telemetry, so at most roughly a one-second wait).
+3. The decoder resumes zipping `thdr` against `t` correctly once the next
+   auto-refreshed header arrives.
 
 **Postconditions:** Telemetry display resumes correct decoding without
-the student needing to manually resubscribe.
+the student needing to manually resubscribe, within at most one 20-frame
+refresh interval.
 
 **Error flows:**
-- If `TLM HDR` also goes unanswered, the Telemetry tab shows a stale/no-data
-  indicator rather than rendering frames against a guessed header.
+- If 20 frames pass with still no `thdr` (a stalled or dead telemetry
+  stream), the Telemetry tab shows a stale/no-data indicator rather than
+  rendering frames against a guessed header.
 
 ---
 

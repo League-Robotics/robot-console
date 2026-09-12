@@ -125,8 +125,11 @@ Mirrors the firmware's `expectedNext_`:
   get this specific arithmetic right, not just "roughly retry")
 - a retransmit **must reuse its original id**; a fresh id reads as a gap
   and stalls the stream
-- only 11 verbs take an id: `GET SET TLM STOP RUN WHEELS_X WHEELS_V
-  MOVE_X MOVE_V GO_TO_R GO_TO_W`
+- 13 verbs take an id (`v6/verbs.ts`'s `SEQUENCED_VERBS`): `GET SET TLM
+  STOP RUN WHEELS_X WHEELS_V MOVE_X MOVE_V GO_TO_R GO_TO_W FUNCS
+  WIFICRED` — `FUNCS` and `WIFICRED` were added out-of-process after the
+  original 11-verb count was written; both are sequenced in the firmware
+  today
 - `HELLO` resets the sequence to 1 — **never use it as a health check** on
   a live session; use `PING` or `STATUS` instead
 
@@ -136,33 +139,61 @@ Zip `thdr` against `t` positionally. Schemaless by design, so one decoder
 handles the robot's 12-column POSE and 20-column FULL variants *and*
 radio-robot-lib's 7/11 variants with no branching.
 
-`TLM HDR` is the recovery path for a missed header — **not** `TLM NOW`.
+There is no request verb to recover a missed header explicitly — the
+firmware's `parseTlmMode` accepts only `OFF`/`POSE`/`FULL`/`NOW`/`AUTO`/
+`BUFFER`, nothing that re-sends the header alone. The **only** recovery
+path is passive: telemetry streams at 20 Hz and the header auto-refreshes
+every 20 frames regardless of whether anything was missed, so a late or
+desynced listener recovers on its own within at most one refresh
+interval (roughly one second) with no request of any kind.
 
 Unit traps that must be preserved exactly:
 - `ox`/`oy` are already millimeters
 - `oh` is **centidegrees — do not divide**
 - `rotation`/`omega` are **milliradians** on the wire
 
-Telemetry streams at 20 Hz; the header auto-refreshes every 20 frames so
-a late listener recovers without an explicit request.
-
 ### 3.7 `relay/commands.ts` — relay command plane
 
-`!CG <ch> <grp>`, `!MODE RAW250`, `!P 7`, `!ECHO OFF`, `!GO`, `?`, `HELLO`.
-`#` lines are comments. A `< ` prefix on received lines is **stripped
-unconditionally** — nothing the robot itself says starts with `< `.
+`!CG <ch> <grp>`, `!MODE RAW250`, `!P 7`, `!ECHO OFF`, `!GO`, `?`. `#`
+lines are the relay's own comments/confirmations, never commands.
+`HELLO` is deliberately **not** part of this module's vocabulary — it is
+a v6 session reset (§3.5), sent exactly once by `Session.connect()`, and
+adding a relay-side `HELLO` builder here would hand a caller an easy way
+to reconstruct an ongoing liveness probe that resets the session out
+from under itself.
+
+The wire's own `"< "` **receive-prefix** strip (a leading marker some
+carriers put on an inbound v6 line — nothing the robot itself ever says
+starts with `< `) is owned by `v6/codec.ts`'s `stripReceivePrefix`/
+`decodeLine` (§3.4), consumed by `host/link/LineLink.ts`. It is **not**
+this module's concern, and it is not `host/link/lineStream.ts` either —
+that module explicitly reassembles raw lines without touching the
+prefix (its own doc comment: the strip moved into the protocol package
+so every transport gets it from one place instead of reimplementing it).
+
+This module owns a different, unrelated `<`: the relay's own
+command-plane pass-through grammar (rearch-10/rearch-12) — `> <text>`
+sends one line over the radio without entering the data plane (`!GO`),
+and `< <text>` delivers whatever the addressed robot sent back, e.g. a
+`> ID` probe reading a `< id ...` reply. See §6.
 
 ## 4. `packages/host` — the privileged half
 
-The host is where all six of the browser-unreachable capabilities from
-§2.1 live: USB serial, SWD, mDNS, raw TCP, UDP, and server-side HTTP
-fetch of release assets.
+The host's device and link model is specified in `architecture.md`
+(status: accepted direction, 2026-09-11 — supersedes this section's own
+description of the old single-class host coordinator and its device
+model); this section keeps only the transport traps (§6) and the leaf
+modules `swdName.ts`, `flash.ts`, and `releases.ts`. Two protocol-level
+wire facts that
+`architecture.md` does not restate — the WiFi/mbserial transport (§4.3)
+and the mDNS service types (§4.4) — stay here too, since they are
+grammar/transport detail rather than device-model detail.
 
-### 4.1 `devices.ts` — enumerate and join
+### 4.1 `devices.ts` — device enumeration
 
-`serialport` filtered to DAPLink `VID 0x0D28 / PID 0x0204`, keyed on
-`serial_number` — the same join key used across the rest of the fleet
-tooling. `node-hid` is used for the CMSIS-DAP interface.
+Superseded by `architecture.md` §6.1 (the USB watcher) — kept here only
+as a pointer; do not read this subsection for the current device/link
+state model.
 
 ### 4.2 `swdName.ts` — five-letter naming (see Cause, §2.2)
 
@@ -173,30 +204,40 @@ with `naming.ts`. This works on a blank, never-flashed micro:bit.
 ### 4.3 `link/` — transport implementations
 
 Every transport reduces to *a stream of newline-delimited v6 lines*, so
-the session layer (§3.5) sits on all of them unchanged. This mirrors
-mbrelay's own stated design target: "a drop-in replacement for opening
-the serial port directly."
+the session layer (§3.5) sits on all of them unchanged. `link/LineLink.ts`
+is the one transport-agnostic core that now does this — it replaced four
+near-identical per-transport link classes (`architecture.md` §3's
+`linelink` row) — composed with a real transport adapter:
 
-- **`UsbSerialLink`** — robot on local USB, 115200 baud
-- **`RelayRadioLink`** — local USB relay: send `!ECHO OFF`, `!MODE
-  RAW250`, `!CG <ch> <grp>`, `!P 7`, then `!GO`
-- **`MbrelayLink`** — TCP to `_mbrelay._tcp` on :8760, identical grammar
-  to the local relay. **Must set `TCP_NODELAY`.**
-- **`MbserialLink`** — TCP to `_mbserial._tcp` (mbdeploy `serve`)
-- **`WifiUdpLink`** — UDP to the robot on :7654, bound locally to :7655
+- **USB serial** (`link/adapters/serialStream.ts`) — the robot or a
+  local relay on local USB, 115200 baud.
+- **WiFi and mbserial are both plain TCP.** `connect/connector.ts`
+  composes `link/adapters/tcpStream.ts` for a `wifi` link (the robot's
+  own `_robotlink._tcp` service) or a `mbserial` link (mbdeploy `serve`,
+  `_mbserial._tcp`) exactly as it does for a remote relay's `mbrelay`
+  link (:8760). The `tcpStream` adapter calls `setNoDelay(true)`
+  unconditionally, immediately after connect and before any write, for
+  every one of those callers — there is no longer a per-transport
+  judgment call about `TCP_NODELAY`, and there is no UDP transport
+  adapter in the current code.
+- **A relay** (local USB, or remote `mbrelay` over the TCP adapter
+  above) additionally runs the `RelayCommandPlane` preamble — `!ECHO
+  OFF`, `!MODE RAW250`, `!CG <ch> <grp>`, `!P 7`, then `!GO` — before the
+  data plane opens (§6).
 
 ### 4.4 `mdns.ts` — discovery
 
-Browse `_mbrelay._tcp`, `_mbserial._tcp`, `_mbflash._tcp`, and the
-robot's own WiFi service, advertised under **both** `_robotlink._tcp`
-*and* `_robotlink._udp` — the robot serves the same v6 line grammar over
-TCP on the same port, so a TCP link is a legitimate alternative to
-`WifiUdpLink` (§4.3), not just UDP. **Verified against live mDNS
-advertisements** from robots `vevov` and `gopiv` while planning sprint 3:
-both service types resolve to host `<name>.local.`, port `7654`, TXT
-`name=<name> role=robot link=v6 port=7654` — earlier drafts of this
-section said `_robotlink._udp` only with `link=v6-udp`, which is wrong
-and matches nothing a robot actually advertises. See §7 Sprint 9.
+Browse all five service types (`architecture.md` §6.2): `_mbrelay._tcp`,
+`_mbserial._tcp`, `_mbflash._tcp`, and the robot's own WiFi service,
+advertised under **both** `_robotlink._tcp` *and* `_robotlink._udp` — the
+robot serves the same v6 line grammar over TCP on the same port, so a TCP
+link is a legitimate alternative to the UDP one (§4.3), not just UDP.
+**Verified against live mDNS advertisements** from robots `vevov` and
+`gopiv` while planning sprint 3: both service types resolve to host
+`<name>.local.`, port `7654`, TXT `name=<name> role=robot link=v6
+port=7654` — earlier drafts of this section said `_robotlink._udp` only
+with `link=v6-udp`, which is wrong and matches nothing a robot actually
+advertises. See §7 Sprint 9.
 
 ### 4.5 `flash.ts` — firmware flashing
 
@@ -215,8 +256,10 @@ manifest's sha256.
 
 ### 4.7 `server.ts` — transport to the UI
 
-Express + `ws`. One WebSocket carries device-list updates, line traffic,
-and telemetry frames.
+Superseded by `architecture.md` §3's `server` row and §9's wire contract
+(the `Snapshot`/`Notice` message shapes) — kept here only as a pointer.
+Express + `ws` remain the transport either way: one WebSocket carries
+state, line traffic, and telemetry frames.
 
 ## 5. `packages/ui`
 
@@ -241,7 +284,23 @@ discovered empirically per deployment:
   from the reply. Do not rely on catching an unsolicited boot banner.
 - **The relay data plane has no in-band escape.** After `!GO` the only way
   back to the command plane is a reset. Over TCP a break cannot be sent at
-  all — disconnect and reconnect instead.
+  all — disconnect and reconnect instead. The host itself now performs
+  this reset, per candidate, during relay failover
+  (`connect/relayBridger.ts`, ticket 016-002 — fixing a Linux-only bug:
+  opening a serial port happens to reset a DAPLink board on macOS but not
+  on Linux, so a relay left in the data plane by a prior failed attempt
+  never recovered there without an explicit reset): DAPLink-over-HID when
+  the relay's `usb` link carries a HID path, else a serial break
+  (`link/adapters/serialStream.ts`'s `sendBreak()`) over local USB, else
+  — since a break cannot be sent over TCP — opening a fresh per-candidate
+  TCP stream for a remote `mbrelay`, which performs the reconnect anyway.
+- **The relay's command-plane pass-through needs no `!GO`.** `> <text>`
+  sends one line over the radio and `< <text>` delivers the reply
+  (`relay/commands.ts`'s `buildRadioSendLine`/`parseRadioIdReply`, §3.7),
+  both from inside the command plane. A probe — e.g. a sweep's `> ID` —
+  therefore never enters the data plane and needs no `!GO`, no `HELLO`,
+  and no reset of its own; only a student's own bridge (§4.3) drives the
+  full preamble through `!GO`.
 - **The radio is fire-and-forget, with no retransmit.** Keep every message
   in one frame: ≤16 bytes for MAKECODE mode, ≤247 bytes for RAW250 mode.
 - **A derived `(channel, group)` is a default, not an address, and there
@@ -455,7 +514,10 @@ stakeholder input.
    `SEQUENCED_VERBS`, so this repo's model was already correct for the
    post-`d4d8e4e` wire shape. **Likely closable, but left open here** —
    closing needs explicit stakeholder confirmation that `d4d8e4e` is the
-   intended upstream direction, not a unilateral close by planning);
+   intended upstream direction, not a unilateral close by planning.
+   **Stakeholder: please confirm or close this question now, as part of
+   this same change (sprint 017 ticket 009) — see that ticket's
+   Implementation notes** — rather than leaving it to a future pass);
    (b) settable role in the banner — currently a hard-coded literal;
    (c) banner format convergence (space vs colon) — already filed
    upstream in `radio-robot-lib` as
@@ -466,7 +528,10 @@ stakeholder input.
    unresolved, and the calibration UI depends on the answer (**note:**
    the same `d4d8e4e`/`0056a64` evidence in (a) applies here — `RUN`
    appears to become sequenced and acked upstream — but this is left
-   open for the same reason: pending explicit stakeholder confirmation).
+   open for the same reason: pending explicit stakeholder confirmation.
+   **Stakeholder: please confirm or close this question now, as part of
+   this same change (sprint 017 ticket 009) — see that ticket's
+   Implementation notes** — rather than leaving it to a future pass).
    The console feature-detects all four and ships without them.
 4. **Whether a label maker / physical naming scheme is used** alongside
    the five-letter names.

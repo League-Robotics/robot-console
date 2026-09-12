@@ -255,6 +255,85 @@ describe("Store: recordSighting", () => {
   });
 });
 
+describe("Store: mergeDevice", () => {
+  it("re-points links/sightings from the placeholder to the real row, merges owned/first_seen/radio_*, and deletes the placeholder", () => {
+    const { store, db } = freshStore();
+    try {
+      // The bench scenario sprint 015 ticket 003's own Description cites
+      // verbatim: `known-robots.json` seeded a placeholder for "vevov"
+      // (nameToValue("vevov") === 1031, a synthetic id), radio-configured
+      // by an earlier session; the real device later identifies as chip
+      // id 536019796 (a *different* name, "vevav" -- the two disagree,
+      // which is exactly why the merge cannot key on `name`).
+      const PLACEHOLDER_ID = 1031;
+      const REAL_ID = 536019796;
+      store.upsertDevice({ id: PLACEHOLDER_ID, name: "vevov", kind: "robot", usbSerial: "0012345678", at: 100 });
+      store.setOwned(PLACEHOLDER_ID, true, 100);
+      db.prepare("UPDATE devices SET radio_channel = ?, radio_group = ?, radio_source = ? WHERE id = ?").run(
+        5,
+        2,
+        "registry",
+        PLACEHOLDER_ID,
+      );
+      store.upsertLink({ id: "radio-vevov", transport: "radio", address: { relayLinkId: "usb-relay", channel: 5, group: 2 }, deviceId: PLACEHOLDER_ID, at: 100 });
+      const sightingId = store.recordSighting({ deviceId: PLACEHOLDER_ID, transport: "radio", at: 100, ok: true });
+
+      store.upsertDevice({ id: REAL_ID, name: "vevav", kind: "robot", at: 500 });
+      store.mergeDevice(PLACEHOLDER_ID, REAL_ID, 500);
+
+      const rows = store.snapshotRows();
+      expect(rows.devices).toHaveLength(1);
+      expect(rows.devices[0]).toMatchObject({
+        id: REAL_ID,
+        name: "vevav",
+        owned: 1,
+        first_seen: 100,
+        radio_channel: 5,
+        radio_group: 2,
+        radio_source: "registry",
+      });
+
+      expect(rows.links).toHaveLength(1);
+      expect(rows.links[0]).toMatchObject({ id: "radio-vevov", device_id: REAL_ID });
+
+      const sightingRows = db.prepare("SELECT id, device_id FROM sightings").all() as Array<{
+        id: number;
+        device_id: number | null;
+      }>;
+      expect(sightingRows).toEqual([{ id: sightingId, device_id: REAL_ID }]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("never clobbers the real row's own already-set radio_* fields with the placeholder's", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1031, name: "vevov", kind: "robot", at: 100 });
+      store.upsertDevice({ id: 536019796, name: "vevav", kind: "robot", radioChannel: 9, radioGroup: 1, radioSource: "override", at: 200 });
+      store.mergeDevice(1031, 536019796, 200);
+      const row = store.snapshotRows().devices[0];
+      expect(row).toMatchObject({ radio_channel: 9, radio_group: 1, radio_source: "override" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("is a no-op (rolls back, changes nothing) when either id has no devices row, or the ids are equal", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 536019796, name: "vevav", kind: "robot", at: 100 });
+      store.mergeDevice(1031, 536019796, 200); // 1031 has no row
+      expect(store.snapshotRows().devices).toHaveLength(1);
+
+      store.mergeDevice(536019796, 536019796, 200); // same id
+      expect(store.snapshotRows().devices).toHaveLength(1);
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe("Store: sessions", () => {
   it("opens, updates, and closes a session", () => {
     const { store } = freshStore();

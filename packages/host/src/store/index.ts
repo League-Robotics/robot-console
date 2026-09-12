@@ -337,6 +337,95 @@ export class Store {
     );
   }
 
+  /**
+   * Merges the placeholder `devices` row `fromId` into the real row
+   * `intoId` and deletes `fromId` — sprint 015 ticket 003's known-robots
+   * placeholder-device merge (SUC-003/SUC-004): `importKnownRobots`
+   * (sprint 014) seeds a row keyed by a synthetic name-derived id, since
+   * `known-robots.json` never stored the true chip id; once the real
+   * device identifies (over USB, correlated by `usb_serial` — see
+   * `connect/connector.ts`'s own caller), its rows must collapse into
+   * one. `owned` is OR'd, `first_seen` takes the earlier of the two,
+   * and `radio_channel`/`radio_group`/`radio_source` are filled from
+   * `fromId` only where `intoId` does not already have them — the real
+   * row's own already-set values are never clobbered.
+   *
+   * `node:sqlite` enforces `links.device_id REFERENCES devices(id)`
+   * (this module's own doc comment, "Foreign keys are enforced"), so
+   * every `links`/`sightings` row pointing at `fromId` is re-pointed to
+   * `intoId` *before* `fromId` is deleted — never dropping either table's
+   * rows, only their `device_id` (SUC-003/SUC-004: "no orphaned
+   * links/sightings rows remain"). A no-op (rolls back, changes nothing)
+   * if either id has no `devices` row, or if they are the same id.
+   */
+  mergeDevice(fromId: number, intoId: number, at: number): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (fromId === intoId) {
+        this.db.exec("ROLLBACK");
+        return;
+      }
+      type MergeableDeviceRow = {
+        owned: number;
+        first_seen: number;
+        radio_channel: number | null;
+        radio_group: number | null;
+        radio_source: RadioSource;
+      };
+      const fromRow = this.db
+        .prepare("SELECT owned, first_seen, radio_channel, radio_group, radio_source FROM devices WHERE id = ?")
+        .get(fromId) as MergeableDeviceRow | undefined;
+      const intoRow = this.db
+        .prepare("SELECT owned, first_seen, radio_channel, radio_group, radio_source FROM devices WHERE id = ?")
+        .get(intoId) as MergeableDeviceRow | undefined;
+      if (!fromRow || !intoRow) {
+        this.db.exec("ROLLBACK");
+        return;
+      }
+
+      const owned = fromRow.owned !== 0 || intoRow.owned !== 0 ? 1 : 0;
+      const firstSeen = Math.min(fromRow.first_seen, intoRow.first_seen);
+      const radioChannel = intoRow.radio_channel ?? fromRow.radio_channel;
+      const radioGroup = intoRow.radio_group ?? fromRow.radio_group;
+      const radioSource = intoRow.radio_source ?? fromRow.radio_source;
+
+      this.db
+        .prepare(
+          `UPDATE devices SET owned = ?, first_seen = ?, radio_channel = ?, radio_group = ?, radio_source = ?, last_seen = ?
+           WHERE id = ?`,
+        )
+        .run(owned, firstSeen, radioChannel, radioGroup, radioSource, at, intoId);
+
+      const linkRows = this.db.prepare("SELECT id FROM links WHERE device_id = ?").all(fromId) as Array<{ id: string }>;
+      this.db.prepare("UPDATE links SET device_id = ? WHERE device_id = ?").run(intoId, fromId);
+
+      const sightingRows = this.db.prepare("SELECT id FROM sightings WHERE device_id = ?").all(fromId) as Array<{
+        id: number;
+      }>;
+      this.db.prepare("UPDATE sightings SET device_id = ? WHERE device_id = ?").run(intoId, fromId);
+
+      this.db.prepare("DELETE FROM devices WHERE id = ?").run(fromId);
+
+      const events: ChangeEvent[] = [
+        { seq: this.insertChangeRow("devices", String(intoId)), tbl: "devices", key: String(intoId) },
+        { seq: this.insertChangeRow("devices", String(fromId)), tbl: "devices", key: String(fromId) },
+      ];
+      for (const row of linkRows) {
+        events.push({ seq: this.insertChangeRow("links", row.id), tbl: "links", key: row.id });
+      }
+      for (const row of sightingRows) {
+        events.push({ seq: this.insertChangeRow("sightings", String(row.id)), tbl: "sightings", key: String(row.id) });
+      }
+
+      this.db.exec("COMMIT");
+      this.pendingChanges.push(...events);
+      this.scheduleFlush();
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   // ---- links -------------------------------------------------------
 
   /** Records a watcher's observation of a link. On first sight, creates

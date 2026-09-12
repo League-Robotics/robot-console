@@ -318,6 +318,86 @@ describe("connectAndIdentify -- success path, every transport", () => {
 });
 
 // ---------------------------------------------------------------------
+// Sprint 015 ticket 003: known-robots placeholder-device merge
+// (SUC-003/SUC-004). `importKnownRobots` (sprint 014) seeds a `devices`
+// row keyed by a synthetic name-derived id; once the same physical board
+// identifies for real over USB, its rows must collapse into one, keyed
+// by `usb_serial` -- not `name`, since a legacy naming disagreement can
+// (and, on the bench, did) leave the two rows under different names.
+// ---------------------------------------------------------------------
+
+describe("connectAndIdentify -- known-robots placeholder-device merge (SUC-003/SUC-004)", () => {
+  it("a placeholder seeded under a different name collapses into the real usb-identified row, keyed by usb_serial", async () => {
+    const store = freshStore();
+    // The bench scenario this ticket's own Description cites verbatim:
+    // known-robots.json seeded "vevov" (nameToValue("vevov") === 1031)
+    // against usb_serial "SERIAL1"; the real board on that same USB
+    // serial identifies over HELLO as chip id 536019796, whose name is
+    // the *different* "vevav" -- exactly why this merge keys on
+    // usb_serial, never name.
+    store.upsertDevice({ id: 1031, name: "vevov", kind: "robot", usbSerial: "SERIAL1", at: 100 });
+    store.setOwned(1031, true, 100);
+
+    const stream = new BannerByteStream("device NEZHA2 robot vevav 536019796");
+    const connector = createConnector(store, baseDeps(stream));
+    const link = usbLink(); // id "usb-SERIAL1" -- see usbLink()'s own default
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    const session = await promise;
+
+    expect(session.deviceId).toBe(536019796);
+    const rows = store.snapshotRows();
+    expect(rows.devices).toHaveLength(1);
+    expect(rows.devices[0]).toMatchObject({ id: 536019796, name: "vevav", owned: 1, usb_serial: "SERIAL1" });
+    expect(rows.links.find((l) => l.id === link.id)?.device_id).toBe(536019796);
+    store.close();
+  });
+
+  it("never merges across a different usb_serial, even when the name happens to match", async () => {
+    const store = freshStore();
+    store.upsertDevice({ id: 1031, name: "vevov", kind: "robot", usbSerial: "OTHER-SERIAL", at: 100 });
+
+    const stream = new BannerByteStream(ROBOT_BANNER); // decodes to "vevov"/1198504156
+    const connector = createConnector(store, baseDeps(stream));
+    const link = usbLink(); // id "usb-SERIAL1" -- a different usb_serial
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await promise;
+
+    // Both rows survive -- the placeholder's usb_serial never matched,
+    // even though its name coincides with the newly-identified device.
+    expect(store.snapshotRows().devices).toHaveLength(2);
+    store.close();
+  });
+
+  it("is a no-op for a non-usb identify, even if a placeholder shares that device's own usb_serial", async () => {
+    const store = freshStore();
+    store.upsertDevice({ id: 1031, name: "vevov", kind: "robot", usbSerial: "SERIAL1", at: 100 });
+
+    const stream = new BannerByteStream(ROBOT_BANNER);
+    const connector = createConnector(store, baseDeps(stream));
+    const link = wifiLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await promise;
+
+    // wifi never computes a usb_serial to correlate against -- the
+    // placeholder is untouched.
+    expect(store.snapshotRows().devices).toHaveLength(2);
+    store.close();
+  });
+});
+
+// ---------------------------------------------------------------------
 // AC: failure path writes failed with next_retry_at/fail_count and
 // releases the owner/lease.
 // ---------------------------------------------------------------------

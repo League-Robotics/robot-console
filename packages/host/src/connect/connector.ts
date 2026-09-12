@@ -9,17 +9,18 @@
  * modify or import any of those four; ticket 003 deletes them once this
  * module (and the reconciler, ticket 002) replace what they did.
  *
- * ## What this ticket does and does not do
+ * ## What ticket 001 built vs. what ticket 003 added
  *
- * This ticket builds the connector in isolation, verified only against
- * the shared fake `ByteStream` harness (`link/__fixtures__/FakeByteStream.js`)
- * — it is not wired into the reconciler (ticket 002) and does not
- * implement the known-robots placeholder-device merge (SUC-003; that
- * logic is added to this same file by ticket 003, alongside the real
- * harvester). The harvester-attach seam below ({@link HarvesterAttach})
- * is a narrow interface this ticket defines and stubs with a no-op
- * default so ticket 003 can supply the real implementation without
- * changing this module's own signature.
+ * Ticket 001 built the connector in isolation, verified only against the
+ * shared fake `ByteStream` harness (`link/__fixtures__/FakeByteStream.js`)
+ * — not yet wired into the reconciler (ticket 002 does that) and without
+ * the known-robots placeholder-device merge (SUC-003/SUC-004). Ticket 003
+ * adds two things to this same file: the real harvester behind the
+ * {@link HarvesterAttach} seam below (a narrow interface ticket 001
+ * defined and stubbed with a no-op default so this module's own
+ * signature never had to change), and `mergeUsbPlaceholderIfAny` (below,
+ * near the failure-recording helpers) — see that function's own doc
+ * comment for the merge itself.
  *
  * ## `LinkRow.address` shapes, by transport
  *
@@ -546,6 +547,46 @@ function toError(value: unknown): Error {
 }
 
 // ---------------------------------------------------------------------
+// Placeholder-device merge (sprint 015 ticket 003; SUC-003/SUC-004) --
+// see the module doc comment's own section below.
+// ---------------------------------------------------------------------
+
+/**
+ * `importKnownRobots` (sprint 014) seeds a `devices` row keyed by a
+ * synthetic name-derived id, since `known-robots.json` never recorded
+ * the true chip id -- but it *does* carry the USB interface chip's own
+ * serial (`usbSerial`, a stable hardware identifier independent of
+ * whatever name the firmware reports) as a display hint. That is the
+ * only reliable join key once the real device identifies over USB: two
+ * rows can disagree on `name`/`id` entirely (a known bench case --
+ * `known-robots.json` recorded a robot as `vevov`/1031, a synthetic id,
+ * while its real chip id 536019796 decodes to the *different* name
+ * `vevav` -- a legacy naming disagreement this importer's own doc
+ * comment already calls out as an accepted limitation) yet still be the
+ * same physical board, correlated by `usb_serial` alone. Matching on
+ * `name` instead would miss exactly this case, and matching on `id`
+ * would never fire at all (the whole reason a merge is needed).
+ *
+ * A no-op when `usbSerial` is `undefined` (a non-`usb` transport --
+ * SUC-003/SUC-004 only ever apply to a USB identify) or when no
+ * `devices` row carries that `usb_serial` under a different id (nothing
+ * to merge, or `known-robots.json` predates `lastUsbSerial` being
+ * recorded at all -- an accepted limitation, not this function's to
+ * fix).
+ */
+function mergeUsbPlaceholderIfAny(store: Store, usbSerial: string | undefined, deviceId: number, at: number): void {
+  if (usbSerial === undefined) {
+    return;
+  }
+  const placeholder = store
+    .snapshotRows()
+    .devices.find((row) => row.usb_serial === usbSerial && Number(row.id) !== deviceId);
+  if (placeholder) {
+    store.mergeDevice(Number(placeholder.id), deviceId, at);
+  }
+}
+
+// ---------------------------------------------------------------------
 // createConnector
 // ---------------------------------------------------------------------
 
@@ -655,8 +696,17 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
       const deviceId = banner.serial;
       const name = deviceIdToName(deviceId);
       const kind: DeviceKind = classification.type === "relay" ? "relay" : "robot";
+      const usbSerial = link.transport === "usb" ? usbSerialFromLinkId(link.id) : undefined;
 
-      store.upsertDevice({ id: deviceId, name, kind, role: banner.role, at: now() });
+      store.upsertDevice({
+        id: deviceId,
+        name,
+        kind,
+        role: banner.role,
+        ...(usbSerial !== undefined ? { usbSerial } : {}),
+        at: now(),
+      });
+      mergeUsbPlaceholderIfAny(store, usbSerial, deviceId, now());
       if (link.transport === "usb" && classification.type === "robot") {
         store.setOwned(deviceId, true, now());
       }

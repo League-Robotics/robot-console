@@ -2,7 +2,7 @@
 id: '003'
 title: Harvester, placeholder-device merge, and retirement of deviceRegistry and its
   satellites
-status: open
+status: in-progress
 use-cases:
 - SUC-003
 - SUC-004

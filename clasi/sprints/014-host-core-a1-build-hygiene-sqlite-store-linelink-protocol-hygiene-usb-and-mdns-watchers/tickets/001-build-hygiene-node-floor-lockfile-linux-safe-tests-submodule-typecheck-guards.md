@@ -1,7 +1,8 @@
 ---
 id: '001'
-title: 'Build hygiene: Node floor, lockfile, Linux-safe tests, submodule/typecheck guards'
-status: open
+title: 'Build hygiene: Node floor, lockfile, Linux-safe tests, submodule/typecheck
+  guards'
+status: in-progress
 use-cases: []
 depends-on: []
 github-issue: ''

@@ -58,6 +58,21 @@
  * trigger (dialog) on card when role === null") is back, on
  * `UnassignedCard` (the direct successor of "role === null" under the
  * new contract -- see that component's own doc comment).
+ *
+ * **Sweep takeover rendering (sprint 016 ticket 004)**: `RelayQuickConnect`
+ * now also renders "idle · sweeping `<name>`" (or plain "idle") while no
+ * child is bridged and no `bridging` is in flight, mirroring
+ * `RelayPage.tsx`'s own identical label -- both read
+ * `deviceDisplay.ts`'s shared `findRelayChild` (now guarded against a
+ * sweep-only sighting being mistaken for a live child) and
+ * `findSweepingCandidateName` (a client-side inference from
+ * `SnapshotDevice.lastChecked`, since no wire field names "which
+ * candidate is mid-probe right now" -- see that function's own doc
+ * comment). `DeviceCard`'s own per-link connection row also renders
+ * "Last checked `<time>`" (`deviceDisplay.ts`'s `lastCheckedText`)
+ * alongside a `via`-linked (radio/mbrelay) row's existing "(via relay
+ * `<name>`)" label (`connectionLabel`, unchanged) -- architecture.md
+ * §7.3's "Radio via `<relay>`" row.
  */
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
@@ -72,7 +87,7 @@ import {
   useUnassigned,
   useWsActions,
 } from "../ws/WsProvider";
-import { isCalibrationProgram } from "../deviceDisplay";
+import { findRelayChild, findSweepingCandidateName, isCalibrationProgram, lastCheckedText } from "../deviceDisplay";
 import { FlashDialog } from "../components/FlashDialog";
 import "./FrontPage.css";
 
@@ -360,6 +375,11 @@ function DeviceCard({
                 <span className={link.state === "connected" ? "device-connection-state device-connection-open" : "device-connection-state"}>
                   {linkStatusText(link)}
                 </span>
+                {lastCheckedText(device, link) && (
+                  <span className="device-connection-last-checked" data-testid={`device-link-lastchecked-${link.id}`}>
+                    {lastCheckedText(device, link)}
+                  </span>
+                )}
                 {link !== primary && (
                   <Link
                     to={`/d/${link.id}`}
@@ -449,23 +469,6 @@ function UnassignedCard({ link }: { link: SnapshotLink }) {
   );
 }
 
-/** The link (and its owning device) currently bridged through
- * `relayLinkId`, if any -- a `radio`/`mbrelay` link on some other
- * device whose `via.relayLinkId` matches. */
-function findRelayChild(
-  devices: SnapshotDevice[],
-  relayLinkId: string,
-): { device: SnapshotDevice; link: SnapshotLink } | undefined {
-  for (const device of devices) {
-    for (const link of device.links) {
-      if (link.via?.relayLinkId === relayLinkId) {
-        return { device, link };
-      }
-    }
-  }
-  return undefined;
-}
-
 /** A relay card's own robot picker + Connect/Switch/Disconnect. Sends
  * exactly `{ type: "session-open", relayLinkId, name }` -- no `radio`
  * override (host-resolved, ticket 006) and no no-pick `autoRobot`
@@ -494,8 +497,15 @@ function RelayQuickConnect({
   sendable: boolean;
 }) {
   const relayLinkId = relay.links[0]?.id;
-  const bridging = relayLinkId ? relays.find((r) => r.linkId === relayLinkId)?.bridging : undefined;
+  const relayInfo = relayLinkId ? relays.find((r) => r.linkId === relayLinkId) : undefined;
+  const bridging = relayInfo?.bridging;
+  const lease = relayInfo?.lease ?? null;
   const child = relayLinkId ? findRelayChild(devices, relayLinkId) : undefined;
+  // Sprint 016 ticket 004: "idle · sweeping <name>" while the sweep
+  // lease is held and no child is bridged -- see `deviceDisplay.ts`'s
+  // own `findSweepingCandidateName` doc comment for why this is
+  // inferred client-side rather than carried as a new wire field.
+  const sweepingName = relayLinkId && lease === "sweep" ? findSweepingCandidateName(devices, relayLinkId, Date.now()) : undefined;
 
   const [selectedName, setSelectedName] = useState<string>(child?.device.name ?? "");
   useEffect(() => {
@@ -525,6 +535,11 @@ function RelayQuickConnect({
       {!child && bridging?.state === "failed" && (
         <p className="device-relay-failed" data-testid={`relay-quick-failed-${relay.id}`}>
           {bridging.error ?? `Could not reach ${bridging.robotName ?? "the robot"}`}
+        </p>
+      )}
+      {!child && !bridging && (
+        <p className="device-relay-idle" role="status" data-testid={`relay-quick-idle-${relay.id}`}>
+          {lease === "sweep" ? `idle · sweeping${sweepingName ? ` ${sweepingName}` : ""}` : "idle"}
         </p>
       )}
       <div className="device-relay-connect-row">

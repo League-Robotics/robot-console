@@ -33,14 +33,21 @@
  * either (`wsMessages.ts`'s own `SessionOpenMessage` doc comment) -- a
  * name must be picked before Connect is enabled.
  *
- * ## `lease` rendering (this ticket's own scope item)
+ * ## `lease` rendering (sprint 015 ticket 008's own scope item, extended
+ * by sprint 016 ticket 004)
  *
  * While no child is bridged: `lease === "sweep"` renders "idle ·
- * sweeping" (the sprint 016 sweeper holds the port); `lease === null`
- * (or `"session"`, which in practice never coincides with "no child
- * found" -- a session lease implies an open session somewhere) renders
- * plain "idle". Both only when there is no in-flight `bridging` to show
- * instead.
+ * sweeping `<name>`" when a candidate the sweep is plausibly still
+ * probing can be inferred (`deviceDisplay.ts`'s own
+ * `findSweepingCandidateName`), else plain "idle · sweeping"; `lease
+ * === null` (or `"session"`, which in practice never coincides with "no
+ * child found" -- a session lease implies an open session somewhere)
+ * renders plain "idle". Both only when there is no in-flight `bridging`
+ * to show instead. `findRelayChild` itself now lives in
+ * `deviceDisplay.ts`, shared with `FrontPage.tsx`'s own relay card --
+ * ticket 004's own fix guards it against a sweep-only sighting (state
+ * `"connectable"`/`"discovered"`) being mistaken for a live child (see
+ * that function's own doc comment).
  *
  * ## `AddressSourceChip` reads `child.device.radio.source`
  *
@@ -79,11 +86,12 @@
  * the student can retry or clean up.
  */
 import { useEffect, useState } from "react";
-import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import type { SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
 import { AddressSourceChip } from "../components/AddressSourceChip";
 import { DeviceConsole } from "../components/DeviceConsole";
 import { RobotPage } from "./RobotPage";
 import { useDevices, useRelays, useSendable, useWsActions } from "../ws/WsProvider";
+import { findRelayChild, findSweepingCandidateName } from "../deviceDisplay";
 import "./RelayPage.css";
 
 export interface RelayPageProps {
@@ -99,23 +107,6 @@ export interface RadioAddress {
   group: number;
 }
 
-/** The device (and its own radio link) currently bridged through
- * `relayLinkId`, if any -- a `radio`/`mbrelay` link on some other device
- * whose `via.relayLinkId` matches this relay's own connectivity link. */
-function findRelayChild(
-  devices: readonly SnapshotDevice[],
-  relayLinkId: string,
-): { device: SnapshotDevice; link: SnapshotLink } | undefined {
-  for (const candidate of devices) {
-    for (const link of candidate.links) {
-      if (link.via?.relayLinkId === relayLinkId) {
-        return { device: candidate, link };
-      }
-    }
-  }
-  return undefined;
-}
-
 export function RelayPage({ device }: RelayPageProps) {
   const devices = useDevices();
   const relays = useRelays();
@@ -129,6 +120,11 @@ export function RelayPage({ device }: RelayPageProps) {
   const lease = relayInfo?.lease ?? null;
 
   const child = relayLinkId ? findRelayChild(devices, relayLinkId) : undefined;
+  // Sprint 016 ticket 004: "idle · sweeping <name>" while the sweep
+  // lease is held and no child is bridged -- see `deviceDisplay.ts`'s
+  // own `findSweepingCandidateName` doc comment for why this is
+  // inferred client-side rather than carried as a new wire field.
+  const sweepingName = relayLinkId && lease === "sweep" ? findSweepingCandidateName(devices, relayLinkId, Date.now()) : undefined;
 
   const [selectedName, setSelectedName] = useState<string>("");
 
@@ -235,7 +231,7 @@ export function RelayPage({ device }: RelayPageProps) {
           )}
           {!bridging && (
             <p className="relay-idle-status" role="status" data-testid="relay-idle">
-              {lease === "sweep" ? "idle · sweeping" : "idle"}
+              {lease === "sweep" ? `idle · sweeping${sweepingName ? ` ${sweepingName}` : ""}` : "idle"}
             </p>
           )}
 

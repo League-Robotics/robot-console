@@ -138,3 +138,106 @@ export const PHASE_LABEL: Record<FlashPhase, string> = {
   resetting: "resetting",
   reidentifying: "waiting for the board to come back",
 };
+
+// ---------------------------------------------------------------------
+// Sprint 016 ticket 004 (SUC-004): relay/robot rendering the sweeper's
+// takeover flow needs -- shared by `RelayPage.tsx` and `FrontPage.tsx`
+// (both previously kept their own, identical copy of `findRelayChild`).
+// ---------------------------------------------------------------------
+
+/**
+ * Find the device (and its own radio/mbrelay link) currently bridged
+ * through `relayLinkId`, if any.
+ *
+ * ## Why a state guard, not a plain `via.relayLinkId` match
+ *
+ * `watchers/relaySweeper.ts` (sprint 016 ticket 003) records a
+ * `links(radio)` row for EVERY remembered robot it ever probes over a
+ * relay -- success or failure alike -- using the exact same
+ * `via.relayLinkId` convention a real bridge uses
+ * (`connect/relayBridger.ts`'s own `defaultFailoverChildLinkId`/
+ * `radioChildLinkId`: one shared id space, so a sighting and a later
+ * bridge converge on one row rather than two). A sweep-only sighting
+ * leaves that link in `"connectable"` (answered) or `"discovered"`
+ * (never yet attempted/answered) -- never any state a real bridge
+ * attempt produces (`"connecting"`/`"connected"` while live,
+ * `"failed"`/`"unresponsive"`/`"closed_by_user"`/`"stale"` once it was
+ * and stopped being). Without this guard, the first remembered robot
+ * the sweep ever sights on a relay would be mistaken for its
+ * actively-bridged child, hiding the "idle · sweeping" label behind a
+ * bogus "Connection to `<name>` lost" the moment a single sweep pass
+ * completes.
+ */
+export function findRelayChild(
+  devices: readonly SnapshotDevice[],
+  relayLinkId: string,
+): { device: SnapshotDevice; link: SnapshotLink } | undefined {
+  for (const device of devices) {
+    for (const link of device.links) {
+      if (link.via?.relayLinkId === relayLinkId && link.state !== "connectable" && link.state !== "discovered") {
+        return { device, link };
+      }
+    }
+  }
+  return undefined;
+}
+
+/** How long a device's most recent sighting still counts as "the
+ * sweeper is probing this name right now" for the relay card's "idle ·
+ * sweeping `<name>`" label (sprint 016 ticket 004) -- comfortably above
+ * `watchers/relaySweeper.ts`'s own default per-candidate rate-limit
+ * window (`SWEEP_MIN_INTERVAL_MS`, 30s) so the label doesn't flicker
+ * off between one successful probe and the next, while still going
+ * stale once the sweeper has clearly moved off this relay (or stopped
+ * sweeping it altogether). No wire field carries "which candidate is
+ * mid-probe right now" -- the sprint ticket's own Description leaves
+ * this as a "ticket-level UI call" between a small wire addition and
+ * client-side inference; this file chooses inference, from
+ * `SnapshotDevice.lastChecked` (the newest `sightings` row for that
+ * device across any transport, already on the wire). */
+export const SWEEP_LABEL_FRESH_MS = 45_000;
+
+/**
+ * Which remembered robot the sweeper most recently (and still plausibly
+ * currently) probed over `relayLinkId`, for the relay card's "idle ·
+ * sweeping `<name>`" label -- the most-recently-`lastChecked` device
+ * among those carrying a `via.relayLinkId === relayLinkId` link, as long
+ * as that check is still within {@link SWEEP_LABEL_FRESH_MS} of `now`.
+ * Returns `undefined` when nothing qualifies (no via-linked device yet,
+ * or its last check has gone stale) -- callers render plain "idle ·
+ * sweeping" in that case, which still correctly indicates an active
+ * sweep via `relays[].lease === "sweep"` alone.
+ */
+export function findSweepingCandidateName(devices: readonly SnapshotDevice[], relayLinkId: string, now: number): string | undefined {
+  let best: { name: string; at: number } | undefined;
+  for (const device of devices) {
+    if (device.lastChecked === null || now - device.lastChecked > SWEEP_LABEL_FRESH_MS) {
+      continue;
+    }
+    if (!device.links.some((link) => link.via?.relayLinkId === relayLinkId)) {
+      continue;
+    }
+    if (!best || device.lastChecked > best.at) {
+      best = { name: device.name, at: device.lastChecked };
+    }
+  }
+  return best?.name;
+}
+
+/** "Last checked `<time>`" text for a `via`-linked (radio/mbrelay) link
+ * row on a device card (sprint 016 ticket 004; architecture.md §7.3) --
+ * `undefined` when there's nothing to show (not a `via` link, or the
+ * device has never been sighted at all). Reads `SnapshotDevice
+ * .lastChecked` -- the newest `sightings` row for this device across
+ * any transport; the field itself has been on the wire since sprint 015
+ * ticket 004's own `projection.ts`, but nothing populated `sightings`
+ * with real rows until sprint 016 ticket 003's sweeper started
+ * recording them -- this component is simply the first to render it --
+ * rather than the link's own `lastSeen`, a link-state timestamp with
+ * different semantics. */
+export function lastCheckedText(device: SnapshotDevice, link: SnapshotLink): string | undefined {
+  if (!link.via || device.lastChecked === null) {
+    return undefined;
+  }
+  return `Last checked ${new Date(device.lastChecked).toLocaleString()}`;
+}

@@ -168,6 +168,34 @@ describe("RelayPage: not connected", () => {
     expect(el.querySelector('[data-testid="relay-idle"]')?.textContent).toBe("idle · sweeping");
   });
 
+  it("sprint 016 ticket 004: renders 'idle · sweeping <name>' when a recently-sighted candidate can be inferred from lastChecked", () => {
+    // findSweepingCandidateName's own freshness window reads Date.now()
+    // at render time, so this must simulate "checked a few seconds ago",
+    // not a small fixed epoch value.
+    const recentlyChecked = Date.now() - 5000;
+    const swept = device(5, {
+      name: "vevav",
+      lastChecked: recentlyChecked,
+      links: [
+        link("radio-vevav-via-usb-relay-1", {
+          transport: "radio",
+          state: "connectable",
+          via: { relayLinkId: RELAY_LINK_ID, relayName: "rly01", channel: 41, group: 3, addressSource: "derived" },
+        }),
+      ],
+    });
+    const { el, socket } = mountRelayPage(relayDevice());
+    pushSnapshot(socket, {
+      devices: [relayDevice(), swept],
+      relays: [{ linkId: RELAY_LINK_ID, lease: "sweep" }],
+    });
+    expect(el.querySelector('[data-testid="relay-idle"]')?.textContent).toBe("idle · sweeping vevav");
+    // The sweep-only sighting is NOT mistaken for a live/bridged child --
+    // the connected layout (Disconnect, RobotPage) must not appear.
+    expect(el.querySelector('[data-testid="relay-lost"]')).toBeNull();
+    expect(el.querySelector('[data-testid="relay-disconnect"]')).toBeNull();
+  });
+
   it("renders 'idle' (not an error) when the snapshot has no relays[] entry for this relay at all", () => {
     const { el, socket } = mountRelayPage(relayDevice());
     pushSnapshot(socket, { devices: [relayDevice()] });

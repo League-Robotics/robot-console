@@ -8,24 +8,19 @@
  * supplies the write/subscribe pair (a local serial port for
  * `RelayRadioLink`, a TCP socket for `MbrelayLink`), so both transports
  * compose this one module instead of each re-deriving the preamble and
- * its failure handling independently (the same discipline
- * `LineRouter.ts` already applies to ack/nack arithmetic).
+ * its failure handling independently.
  *
  * ## Raw lines, not decoded v6 lines
  *
  * The write/subscribe pair this module is given operates on raw,
  * already-reassembled wire lines (post-`LineReassembler`), **not**
- * `link/Link.ts`'s `LineListener` (`DecodedLine`, produced by
- * `v6/codec.ts`'s `decodeLine`). The relay's own preamble replies (e.g.
- * the live-captured `# channel: 47 group: 60 mode: RAW250 power: 7`) are
- * `#`-prefixed comment text, not v6 protocol lines at all — decoding
- * them through `decodeLine`/`LineRouter` would be meaningless before the
- * data plane is even reached. This mirrors `UsbSerialLink`'s own
- * pre-data-plane idiom: while {@link Link.identify} is waiting for a
- * `HELLO` banner reply, `UsbSerialLink#handleLine` inspects raw lines
- * directly instead of routing them through `LineRouter` — the same
- * "raw lines before the data plane, decoded lines after" split applies
- * here, one phase earlier.
+ * `LineLink`'s `LineListener` (`DecodedLine`, produced by `v6/codec.ts`'s
+ * `decodeLine`). The relay's own preamble replies (e.g. the live-captured
+ * `# channel: 47 group: 60 mode: RAW250 power: 7`) are `#`-prefixed
+ * comment text, not v6 protocol lines at all — decoding them would be
+ * meaningless before the data plane is even reached. `LineLink` itself
+ * mirrors this split: its own `preamble` hook runs against the raw
+ * `ByteStream`/`onRawLine`, before `receive()` is ever invoked.
  *
  * ## What is, and is not, gated on a reply
  *
@@ -130,7 +125,7 @@ export class RelayHandshakeError extends Error {
 
 /** The raw-line write/subscribe pair every function in this module is
  * driven over -- see the module doc comment's "Raw lines, not decoded v6
- * lines" section for why these are plain strings, not `link/Link.ts`'s
+ * lines" section for why these are plain strings, not `LineLink`'s own
  * `LineListener`. */
 export interface RelayLinkIO {
   /** Send one already-formatted wire line (trailing `\n` included, as

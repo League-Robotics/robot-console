@@ -3,11 +3,10 @@
  * path for every transport (sprint 015 ticket 001; issue
  * `rearch-05-connector-reconciler-harvester-retire-deviceregistry.md`;
  * `docs/design/architecture.md` §8, "Connector and reconciler"). Replaces
- * the four bespoke paths `deviceRegistry.ts` dispatches through
- * `defaultLinkFactory` (`link/Link.ts:529`) for `UsbSerialLink`/
- * `RelayRadioLink`/`MbrelayLink`/`MbserialLink` — this module does not
- * modify or import any of those four; ticket 003 deletes them once this
- * module (and the reconciler, ticket 002) replace what they did.
+ * the four bespoke paths `deviceRegistry.ts` dispatched through its own
+ * `defaultLinkFactory` for `UsbSerialLink`/`RelayRadioLink`/`MbrelayLink`/
+ * `MbserialLink` — all deleted by ticket 003, along with the old
+ * `link/Link.ts` interface those paths built on (ticket 015-010).
  *
  * ## What ticket 001 built vs. what ticket 003 added
  *

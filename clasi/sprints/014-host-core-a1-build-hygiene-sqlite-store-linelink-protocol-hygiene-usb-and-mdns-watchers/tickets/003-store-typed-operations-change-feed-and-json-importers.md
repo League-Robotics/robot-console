@@ -1,9 +1,11 @@
 ---
 id: '003'
 title: Store typed operations, change feed, and JSON importers
-status: open
-use-cases: [SUC-005]
-depends-on: ['002']
+status: in-progress
+use-cases:
+- SUC-005
+depends-on:
+- '002'
 github-issue: ''
 issue: rearch-01-sqlite-store-schema-migrations-change-feed.md
 completes_issue: true

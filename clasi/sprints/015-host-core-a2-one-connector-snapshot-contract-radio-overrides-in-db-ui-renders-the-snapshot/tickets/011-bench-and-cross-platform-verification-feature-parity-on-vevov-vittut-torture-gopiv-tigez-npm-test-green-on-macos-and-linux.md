@@ -1,7 +1,8 @@
 ---
 id: '011'
-title: "Bench and cross-platform verification: feature parity on Vevov/Vittut/torture/gopiv/tigez, npm test green on macOS and Linux"
-status: open
+title: 'Bench and cross-platform verification: feature parity on Vevov/Vittut/torture/gopiv/tigez,
+  npm test green on macOS and Linux'
+status: in-progress
 use-cases:
 - SUC-001
 - SUC-002
@@ -14,7 +15,7 @@ use-cases:
 - SUC-009
 - SUC-010
 depends-on:
-- '009'
+- 009
 - '010'
 github-issue: ''
 issue: ''

@@ -92,6 +92,22 @@
  * `board_owner`/`relay_leases` resource key, so a second caller queues
  * behind the first's whole attempt instead of both racing the same
  * acquire and one failing loudly for no operational reason.
+ *
+ * ## Ticket 016-002: helpers exported for `connect/relayBridger.ts`
+ *
+ * This module itself is unchanged behaviorally by sprint 016 — its own
+ * single-candidate, no-reset radio/mbrelay `attempt()` path (and every
+ * test in `connector.test.ts`) still behaves exactly as it did before.
+ * What changed is that several previously-private helpers below
+ * (address parsing, relay-physical resolution, exclusivity
+ * acquire/release, the `RelayCommandPlane`-as-preamble composer,
+ * cancellable identify, and failure recording) are now `export`ed, so
+ * the new sibling module `connect/relayBridger.ts` — which adds a
+ * per-candidate reset step and a multi-candidate default-failover loop
+ * neither of which belongs in this module (sprint.md's own Design
+ * Rationale: "relayBridger.ts is a new sibling module to connector.ts,
+ * not a rewrite") — reuses this logic verbatim rather than duplicating
+ * it.
  */
 import {
   classifyBanner,
@@ -147,7 +163,9 @@ export interface HarvesterAttach {
   attach(session: ConnectedSession): void;
 }
 
-const NO_OP_HARVESTER: HarvesterAttach = {
+/** Exported (ticket 016-002) so `connect/relayBridger.ts` can reuse the
+ * same no-op default rather than redefining an identical stub. */
+export const NO_OP_HARVESTER: HarvesterAttach = {
   attach(): void {
     // Stubbed until ticket 003 — see the module doc comment.
   },
@@ -210,31 +228,36 @@ export interface Connector {
   connectAndIdentify(link: LinkRow, signal: AbortSignal): Promise<ConnectedSession>;
 }
 
-const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
-const DEFAULT_BACKOFF_CAP_MS = 60_000;
+export const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
+export const DEFAULT_BACKOFF_CAP_MS = 60_000;
 /** Write pacing for the relay preamble's own dedicated `WritePacer` —
  * matches every other transport's write cadence in this codebase
- * (`link/LineLink.ts`'s own default). */
-const RELAY_PREAMBLE_WRITE_PACE_MS = 10;
+ * (`link/LineLink.ts`'s own default). Exported (ticket 016-002) so
+ * `connect/relayBridger.ts` paces its own reset-then-preamble writes
+ * identically. */
+export const RELAY_PREAMBLE_WRITE_PACE_MS = 10;
 
 // ---------------------------------------------------------------------
-// Address shapes — see the module doc comment's own section
+// Address shapes — see the module doc comment's own section. Exported
+// (ticket 016-002) so `connect/relayBridger.ts` — a sibling module that
+// reuses this same address-parsing logic rather than duplicating it, per
+// sprint.md's own Design Rationale — can share these shapes verbatim.
 // ---------------------------------------------------------------------
 
-interface UsbAddress {
+export interface UsbAddress {
   readonly path: string;
   readonly hidPath?: string | null;
 }
-interface TcpAddress {
+export interface TcpAddress {
   readonly host: string;
   readonly port: number;
 }
-interface RelayAddress {
+export interface RelayAddress {
   readonly relayLinkId: string;
   readonly channel: number;
   readonly group: number;
 }
-type ParsedAddress = UsbAddress | TcpAddress | RelayAddress;
+export type ParsedAddress = UsbAddress | TcpAddress | RelayAddress;
 
 function asRecord(raw: unknown, context: string): Record<string, unknown> {
   const value = typeof raw === "string" ? (JSON.parse(raw) as unknown) : raw;
@@ -248,7 +271,7 @@ function asRecord(raw: unknown, context: string): Record<string, unknown> {
  * module doc comment's own section for what each transport expects.
  * Throws a descriptive `Error` (never returns a partially-valid shape)
  * if the address does not match. */
-function parseLinkAddress(transport: Transport, raw: unknown): ParsedAddress {
+export function parseLinkAddress(transport: Transport, raw: unknown): ParsedAddress {
   const rec = asRecord(raw, transport);
   switch (transport) {
     case "usb": {
@@ -285,7 +308,7 @@ function parseLinkAddress(transport: Transport, raw: unknown): ParsedAddress {
 // Exclusivity — board_owner (usb) or relay_leases (radio/mbrelay)
 // ---------------------------------------------------------------------
 
-interface Exclusivity {
+export interface Exclusivity {
   readonly kind: "board_owner" | "relay_leases" | "none";
   readonly resourceKey?: string;
 }
@@ -298,14 +321,14 @@ const USB_LINK_ID_PREFIX = "usb-";
  * link's serial is recoverable from: `links.address` for `usb` carries
  * only `{path, hidPath}` (no serial field), and `board_owner` is keyed
  * by the raw USB serial, not a link id. */
-function usbSerialFromLinkId(linkId: string): string {
+export function usbSerialFromLinkId(linkId: string): string {
   if (!linkId.startsWith(USB_LINK_ID_PREFIX)) {
     throw new Error(`connector: usb link id "${linkId}" does not follow the "usb-<serial>" convention`);
   }
   return linkId.slice(USB_LINK_ID_PREFIX.length);
 }
 
-function resolveExclusivity(link: LinkRow, address: ParsedAddress): Exclusivity {
+export function resolveExclusivity(link: LinkRow, address: ParsedAddress): Exclusivity {
   switch (link.transport) {
     case "usb":
       return { kind: "board_owner", resourceKey: usbSerialFromLinkId(link.id) };
@@ -322,7 +345,7 @@ function resolveExclusivity(link: LinkRow, address: ParsedAddress): Exclusivity 
   }
 }
 
-function acquireExclusivity(store: Store, exclusivity: Exclusivity, owner: string, at: number): boolean {
+export function acquireExclusivity(store: Store, exclusivity: Exclusivity, owner: string, at: number): boolean {
   if (exclusivity.kind === "none") {
     return true;
   }
@@ -332,7 +355,7 @@ function acquireExclusivity(store: Store, exclusivity: Exclusivity, owner: strin
     : store.acquireRelayLease(resourceKey, owner, at);
 }
 
-function releaseExclusivity(store: Store, exclusivity: Exclusivity, owner: string): void {
+export function releaseExclusivity(store: Store, exclusivity: Exclusivity, owner: string): void {
   if (exclusivity.kind === "none") {
     return;
   }
@@ -348,7 +371,7 @@ function releaseExclusivity(store: Store, exclusivity: Exclusivity, owner: strin
 // Physical resolution for a relay hop (radio/mbrelay)
 // ---------------------------------------------------------------------
 
-interface RelayPhysical {
+export interface RelayPhysical {
   readonly transport: "usb" | "mbrelay";
   readonly address: UsbAddress | TcpAddress;
 }
@@ -359,7 +382,7 @@ interface RelayPhysical {
  * own rule). `expectedTransport` is the relay-link transport this
  * `link.transport` requires (`usb` for `radio`, `mbrelay` for
  * `mbrelay`) — see the module doc comment's address-shapes section. */
-function resolveRelayPhysical(store: Store, relayLinkId: string, expectedTransport: "usb" | "mbrelay"): RelayPhysical {
+export function resolveRelayPhysical(store: Store, relayLinkId: string, expectedTransport: "usb" | "mbrelay"): RelayPhysical {
   const row = store.snapshotRows().links.find((candidate) => candidate.id === relayLinkId);
   if (!row) {
     throw new Error(`connector: relay link "${relayLinkId}" not found in the store`);
@@ -386,12 +409,22 @@ function resolveRelayPhysical(store: Store, relayLinkId: string, expectedTranspo
 // Relay command-plane preamble — see the module doc comment
 // ---------------------------------------------------------------------
 
-function buildRelayPreamble(
+export function buildRelayPreamble(
   channel: number,
   group: number,
   getLink: () => LineLink,
   scheduler: Scheduler,
   relayHandshakeTimeoutMs: number | undefined,
+  /** Ticket 016-002: forwarded verbatim to `runRelayCommandPlane`'s own
+   * `syncRetryMs`/`syncAttempts` — connector.ts's own call site never
+   * passes this (identical behavior to before this ticket); it exists so
+   * `connect/relayBridger.ts`'s tests can shrink the sync retry loop's
+   * real elapsed time (`RelayCommandPlane.ts`'s own default is 16
+   * attempts x 500ms = 8s) without needing a scheduler mismatch that
+   * would risk racing a synchronously-scripted reply against its own
+   * step's timeout (see `connector.test.ts`'s own note on why these
+   * relay-preamble tests use `realScheduler`, not an immediate one). */
+  syncOptions?: { syncRetryMs?: number; syncAttempts?: number },
 ): (stream: ByteStream, signal: AbortSignal) => Promise<void> {
   return async (stream, signal) => {
     const pacer = new WritePacer(RELAY_PREAMBLE_WRITE_PACE_MS, scheduler);
@@ -419,6 +452,8 @@ function buildRelayPreamble(
       group,
       scheduler,
       signal,
+      ...(syncOptions?.syncRetryMs !== undefined ? { syncRetryMs: syncOptions.syncRetryMs } : {}),
+      ...(syncOptions?.syncAttempts !== undefined ? { syncAttempts: syncOptions.syncAttempts } : {}),
       ...(relayHandshakeTimeoutMs !== undefined ? { timeoutMs: relayHandshakeTimeoutMs } : {}),
     });
   };
@@ -478,12 +513,12 @@ function buildStreamPlan(
 // moment an abort fires.
 // ---------------------------------------------------------------------
 
-function abortError(signal: AbortSignal): Error {
+export function abortError(signal: AbortSignal): Error {
   const reason = (signal as { reason?: unknown }).reason;
   return reason instanceof Error ? reason : new Error(String(reason ?? "aborted"));
 }
 
-function identifyWithAbort(
+export function identifyWithAbort(
   link: LineLink,
   signal: AbortSignal,
   schedule: readonly number[],
@@ -529,19 +564,19 @@ function identifyWithAbort(
 // Failure recording
 // ---------------------------------------------------------------------
 
-function currentFailCount(store: Store, linkId: string): number {
+export function currentFailCount(store: Store, linkId: string): number {
   const row = store.snapshotRows().links.find((candidate) => candidate.id === linkId);
   const raw = row?.fail_count;
   return typeof raw === "number" && Number.isFinite(raw) ? raw : 0;
 }
 
-function recordFailure(store: Store, linkId: string, reason: string, at: number, backoffCapMs: number): void {
+export function recordFailure(store: Store, linkId: string, reason: string, at: number, backoffCapMs: number): void {
   const failCount = currentFailCount(store, linkId) + 1;
   const nextRetryAt = at + Math.min(1000 * 2 ** (failCount - 1), backoffCapMs);
   store.setLinkState({ id: linkId, state: "failed", at, reason, failCount, nextRetryAt });
 }
 
-function toError(value: unknown): Error {
+export function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
 }
 

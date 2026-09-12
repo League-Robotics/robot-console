@@ -338,6 +338,18 @@ export interface ProjectionLastCheckedRow {
   readonly at: number;
 }
 
+/** The most recent successful *radio* sighting for one device —
+ * `Store.radioSightings()`'s own row shape (ticket 016-002). Narrower
+ * than {@link ProjectionLastCheckedRow} (which aggregates every
+ * transport): `connect/relayBridger.ts`'s default-failover candidate
+ * ordering ("robots with a recent radio sighting first" — sprint.md's
+ * SUC-002) needs specifically a *radio* sighting, not the most recent
+ * observation of any kind. */
+export interface RadioSightingRow {
+  readonly deviceId: number;
+  readonly at: number;
+}
+
 /** The read model `projection.ts`'s `buildSnapshot` (sprint 015 ticket
  * 004) needs — devices, links, sessions, relay leases, firmware, tasks,
  * each device's most recent sighting time, and the stored WiFi
@@ -749,6 +761,21 @@ export class Store {
         return Number(info.lastInsertRowid);
       },
     );
+  }
+
+  /** Most recent successful (`ok = 1`) radio sighting per device — see
+   * {@link RadioSightingRow}'s own doc comment for why this is narrower
+   * than {@link ProjectionLastCheckedRow}. A plain read, no transaction,
+   * same "always re-derive" reasoning as {@link reconcilerRows}. */
+  radioSightings(): readonly RadioSightingRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT device_id, MAX(at) AS at FROM sightings
+         WHERE transport = 'radio' AND ok = 1 AND device_id IS NOT NULL
+         GROUP BY device_id`,
+      )
+      .all() as Array<{ device_id: number; at: number }>;
+    return rows.map((r) => ({ deviceId: r.device_id, at: r.at }));
   }
 
   // ---- sessions ------------------------------------------------------

@@ -26,19 +26,40 @@
  * plain arrays owned by this module, independent of whether a port has
  * been created yet, and replayed onto the real port once `open()`
  * creates one.
+ *
+ * ## `sendBreak()` — ticket 016-002's reset primitive
+ *
+ * `connect/relayBridger.ts` needs a way to reset a relay that has no HID
+ * interface (`resolveRelayPhysical`'s own `hidPath` absent) without
+ * relying on DTR-at-open, which sprint 016's own Problem section names
+ * as the very thing that makes today's default failover unreliable on
+ * Linux (macOS resets a DAPLink board incidentally whenever a port
+ * opens; Linux does not). `serialport`'s own `SerialPort.set({brk:
+ * true})` asserts a UART break condition, which a DAPLink board's own
+ * firmware treats as a reset signal exactly like a momentary DTR/RTS
+ * toggle — {@link sendBreak} asserts it for `durationMs`, then clears it.
+ * Only meaningful once `open()` has resolved — rejects otherwise, same
+ * "called too early" contract as {@link SerialByteStream.write}.
  */
 import { SerialPort } from "serialport";
 import { toCalloutPath } from "../../devices.js";
 import type { ByteStream } from "../LineLink.js";
+import { realScheduler, type Scheduler } from "../pacing.js";
 
 /** DAPLink CDC serial ports always run at this fixed baud rate --
  * mirrors `UsbSerialLink.ts`'s own `BAUD_RATE`. */
 const BAUD_RATE = 115200;
 
+/** Default duration to hold the break condition asserted -- long enough
+ * for a DAPLink board's own firmware to recognize it as a reset pulse,
+ * short enough not to noticeably slow down a candidate loop. Overridable
+ * per {@link SerialByteStream.sendBreak} call. */
+export const DEFAULT_BREAK_MS = 250;
+
 /** The slice of `serialport`'s `SerialPort` this module actually uses --
- * identical seam to `UsbSerialLink.ts`'s own `SerialPortLike`, so a test
- * can drive this adapter against the same style of fully synthetic
- * fake. */
+ * identical seam to `UsbSerialLink.ts`'s own `SerialPortLike`, plus
+ * `set()` (ticket 016-002's break-reset capability) -- so a test can
+ * drive this adapter against the same style of fully synthetic fake. */
 export interface SerialPortLike {
   on(event: "data", listener: (chunk: Buffer) => void): void;
   on(event: "error", listener: (err: Error) => void): void;
@@ -46,7 +67,25 @@ export interface SerialPortLike {
   once(event: "open", listener: () => void): void;
   once(event: "error", listener: (err: Error) => void): void;
   write(data: string, callback?: (err?: Error | null) => void): boolean;
+  /** Toggles modem-control lines -- this module only ever sets `brk`
+   * (see the module doc comment's `sendBreak()` section). Mirrors
+   * `@serialport/bindings-interface`'s own `SetOptions`/`set()` shape. */
+  set(options: { brk?: boolean }, callback?: (err?: Error | null) => void): void;
   close(callback?: (err?: Error | null) => void): void;
+}
+
+/** A {@link ByteStream} with sprint 016's reset-primitive added --
+ * {@link serialStream}'s actual return type, structurally still a plain
+ * {@link ByteStream} for every existing caller (`connect/connector.ts`)
+ * that doesn't need it. */
+export interface SerialResettableStream extends ByteStream {
+  /** Assert a serial break condition for `durationMs` (default
+   * {@link DEFAULT_BREAK_MS}), then clear it -- see the module doc
+   * comment's `sendBreak()` section. `scheduler` governs the hold delay
+   * (defaults to {@link realScheduler}; tests substitute a fake so this
+   * is provable with no real wall-clock wait). Rejects if called before
+   * `open()` has resolved. */
+  sendBreak(durationMs?: number, scheduler?: Scheduler): Promise<void>;
 }
 
 function defaultCreatePort(path: string, options: { baudRate: number }): SerialPortLike {
@@ -69,7 +108,7 @@ function abortReason(signal: AbortSignal): Error {
   return reason instanceof Error ? reason : new Error(String(reason ?? "aborted"));
 }
 
-class SerialByteStream implements ByteStream {
+class SerialByteStream implements SerialResettableStream {
   private readonly createPort: (path: string, options: { baudRate: number }) => SerialPortLike;
   private readonly platform: NodeJS.Platform;
   private port: SerialPortLike | undefined;
@@ -176,10 +215,29 @@ class SerialByteStream implements ByteStream {
       port.close(() => resolve());
     });
   }
+
+  sendBreak(durationMs = DEFAULT_BREAK_MS, scheduler: Scheduler = realScheduler): Promise<void> {
+    const port = this.port;
+    if (!port) {
+      return Promise.reject(new Error("serialStream: sendBreak() called before open() resolved"));
+    }
+    return new Promise((resolve, reject) => {
+      port.set({ brk: true }, (err) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        scheduler.delay(durationMs).then(() => {
+          port.set({ brk: false }, (err2) => (err2 ? reject(err2) : resolve()));
+        }, reject);
+      });
+    });
+  }
 }
 
-/** Build a {@link ByteStream} over a USB serial port at `portPath` --
- * see the module doc comment. */
-export function serialStream(portPath: string, options: SerialStreamOptions = {}): ByteStream {
+/** Build a {@link ByteStream} (with sprint 016's `sendBreak()` reset
+ * primitive added) over a USB serial port at `portPath` -- see the
+ * module doc comment. */
+export function serialStream(portPath: string, options: SerialStreamOptions = {}): SerialResettableStream {
   return new SerialByteStream(portPath, options);
 }

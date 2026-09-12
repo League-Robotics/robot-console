@@ -46,6 +46,7 @@
  */
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useSendable, useWsActions } from "../ws/WsProvider";
+import { clearEstop } from "../lib/estop";
 import "./StatusPanel.css";
 
 /** OOP 2026-09-10: the firmware's `status k=v` keys, given real names
@@ -158,8 +159,7 @@ export function StatusPanel({ link }: StatusPanelProps) {
   const isEstopped = status?.estopped === true;
 
   function handleClearEstop(): void {
-    sendCommand(linkId, "SET", ["estop_clear", "1"]);
-    sendCommand(linkId, "STATUS");
+    clearEstop(sendCommand, linkId);
   }
 
   return (

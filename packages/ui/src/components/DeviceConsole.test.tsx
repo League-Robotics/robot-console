@@ -17,7 +17,7 @@ import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { DeviceConsole, classifyLine } from "./DeviceConsole";
+import { DeviceConsole } from "./DeviceConsole";
 import { MAX_LINES_PER_LINK, WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 
@@ -108,28 +108,9 @@ function mountConsole(link: SnapshotLink, name = "zeguz"): { el: HTMLDivElement;
   return { el, socket: socket! };
 }
 
-describe("classifyLine", () => {
-  it("classifies a relay comment/status line", () => {
-    expect(classifyLine("# link opened")).toBe("comment");
-  });
-
-  it("classifies a firmware debug line", () => {
-    expect(classifyLine("DBG: loop=12")).toBe("debug");
-  });
-
-  it("classifies err and nack lines as errors", () => {
-    expect(classifyLine("err 3 bad-arg")).toBe("error");
-    expect(classifyLine("nack unknown-command")).toBe("error");
-  });
-
-  it("classifies ack as routine, not error or data", () => {
-    expect(classifyLine("ack HELLO")).toBe("ack");
-  });
-
-  it("classifies everything else as ordinary data", () => {
-    expect(classifyLine("STATUS ok battery=98")).toBe("data");
-  });
-});
+// `classifyLine`'s own classification cases live in `lib/lineClass.test.ts`
+// (ticket 017-007 -- moved there along with the classifier itself, out of
+// `DeviceConsole.tsx`'s former local copy). Not re-tested here.
 
 describe("DeviceConsole", () => {
   it("shows this link's log, with no device picker", () => {

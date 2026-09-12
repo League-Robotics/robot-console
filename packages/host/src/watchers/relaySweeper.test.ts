@@ -539,6 +539,54 @@ describe("startRelaySweeper", () => {
     store.close();
   }, 10_000);
 
+  it("after a takeover ends (the relay returns to idle) and a quiet period elapses, the sweeper re-acquires the lease and resumes probing -- ticket 016-004's own AC, verified via further !CG/> ID traffic", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY";
+    seedRelay(store, 900001, relayLinkId, 1);
+    const name = seedOwnedRobot(store, 100001, 1);
+
+    const stream = new SweepRelayByteStream([name], new Set([name]), () => Date.now());
+    const handle = startRelaySweeper(
+      store,
+      { createSerialStream: () => stream, scheduler: realScheduler, now: () => Date.now(), revocation: createRelayLeaseRevocation() },
+      { ...FAST_OPTS, scanIntervalMs: 10, quietPeriodMs: 50 },
+    );
+
+    // Wait for the sweep's first !CG write -- proves it started sweeping
+    // at all.
+    const deadline1 = Date.now() + 5000;
+    while (Date.now() < deadline1 && stream.cgWriteTimes.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+    expect(stream.cgWriteTimes.length).toBeGreaterThanOrEqual(1);
+
+    // Simulate a takeover: the relay becomes actively bridged (no longer
+    // an idle usb link) -- scanOnce() must notice on its next tick and
+    // stop this relay's own sweep loop, exactly like a real
+    // session-open bridging through it (ticket 001's own idle-state
+    // rule: only a `connectable` usb relay link is ever swept).
+    store.setLinkState({ id: relayLinkId, state: "connected", at: Date.now() });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const writesWhileBridged = stream.cgWriteTimes.length;
+    // No further writes accrue while the relay is not idle.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(stream.cgWriteTimes.length).toBe(writesWhileBridged);
+
+    // Disconnect: the relay returns to idle.
+    store.setLinkState({ id: relayLinkId, state: "connectable", at: Date.now() });
+
+    // After a quiet period, the sweeper resumes -- further !CG/> ID
+    // traffic against the very same fake relay.
+    const deadline2 = Date.now() + 5000;
+    while (Date.now() < deadline2 && stream.cgWriteTimes.length <= writesWhileBridged) {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+    expect(stream.cgWriteTimes.length).toBeGreaterThan(writesWhileBridged);
+
+    handle.stop();
+    store.close();
+  }, 10_000);
+
   it("stop() is idempotent and stops the scan tick", () => {
     const store = freshStore();
     const handle = startRelaySweeper(

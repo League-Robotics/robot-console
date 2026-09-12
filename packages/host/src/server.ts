@@ -323,6 +323,22 @@ function usbSerialFromLinkId(linkId: string): string | undefined {
   return linkId.startsWith("usb-") ? linkId.slice("usb-".length) : undefined;
 }
 
+/** Parses just the `{channel, group}` fields off an already-JSON-parsed
+ * `ProjectionLinkRow.address` (sprint 016 ticket 004) -- used by the
+ * `session-open {relayLinkId, name}` handler to detect whether a
+ * `links(radio)` row for this exact (name, relay) pair already carries a
+ * resolved (sighted) address, rather than re-deriving a fresh one.
+ * Mirrors `projection.ts`'s own private `parseRelayAddress` (not
+ * imported directly -- that one also reads `relayLinkId`, which is
+ * irrelevant here); never throws on a malformed/missing shape. */
+function parseChannelGroupAddress(address: unknown): { channel: number; group: number } | undefined {
+  if (typeof address !== "object" || address === null) {
+    return undefined;
+  }
+  const rec = address as Record<string, unknown>;
+  return typeof rec.channel === "number" && typeof rec.group === "number" ? { channel: rec.channel, group: rec.group } : undefined;
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -728,12 +744,25 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     const override: DeviceRadioOverride = existingDevice
       ? { radioChannel: existingDevice.radioChannel, radioGroup: existingDevice.radioGroup, radioSource: existingDevice.radioSource }
       : { radioChannel: null, radioGroup: null, radioSource: null };
-    const resolved = await resolveDeviceRadio(message.name, override);
     const childLinkId = `radio-${message.name}-via-${message.relayLinkId}`;
+    // Sprint 016 ticket 004 (SUC-004, sweep takeover): if this exact
+    // (name, relay) pair's own `links` row already exists -- written by
+    // an earlier bridge, or by `watchers/relaySweeper.ts`'s own sweep
+    // pass recording a sighting for this candidate -- its own `address`
+    // is the channel/group already confirmed reachable. Reuse it rather
+    // than re-deriving a fresh one: a takeover must bridge to the same
+    // address the sweep just sighted the robot on, not a possibly-
+    // different freshly-resolved default (this ticket's own acceptance
+    // criterion). Only when no such row exists yet (the very first ever
+    // bridge to this pair) does this fall back to `resolveDeviceRadio`'s
+    // own override -> derived resolution.
+    const existingLink = store.projectionRows().links.find((candidate) => candidate.id === childLinkId);
+    const sightedAddress = existingLink ? parseChannelGroupAddress(existingLink.address) : undefined;
+    const { channel, group } = sightedAddress ?? (await resolveDeviceRadio(message.name, override));
     store.upsertLink({
       id: childLinkId,
       transport: "radio",
-      address: { relayLinkId: message.relayLinkId, channel: resolved.channel, group: resolved.group },
+      address: { relayLinkId: message.relayLinkId, channel, group },
       at: Date.now(),
     });
     await runtime.reconciler.requestOpen(childLinkId);

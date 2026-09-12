@@ -80,6 +80,31 @@
  * one `bridge()` call, exactly like `connector.ts`'s own
  * acquire-then-always-release contract applied to the whole attempt
  * rather than one candidate.
+ *
+ * ## Sweep takeover (sprint 016 ticket 004; SUC-004; UC-016's <= 1.5s
+ * handback target)
+ *
+ * A lease-acquisition failure is not always a hard stop: if the relay's
+ * lease is currently held by `watchers/relaySweeper.ts`'s own sweep pass
+ * (`owner === "sweep"` — duplicated here as a literal, see {@link
+ * SWEEP_LEASE_OWNER}'s own doc comment for why this module cannot import
+ * that one to name it), a running sweep is preemptable: {@link
+ * takeoverSweepLease} looks up that relay's registered `AbortController`
+ * in the shared `connect/relayLeaseRevocation.ts` seam ({@link
+ * RelayBridgerDeps.revocation}) and aborts it, then polls
+ * `store.acquireRelayLease` (bounded by {@link
+ * RelayBridgerOptions.takeoverMaxWaitMs}) until the sweeper's own
+ * `finally` block (`relaySweeper.ts`'s own doc comment: "finish the
+ * current wait ... release the lease") frees it. Any *other* owner
+ * (`session:<linkId>`, i.e. another bridge already occupying the relay)
+ * is not preemptable — this path only ever fires for a sweep-held lease,
+ * exactly SUC-004's own scenario ("a student connects through a relay
+ * while it is sweeping"), and falls straight through to the ordinary
+ * immediate-failure path otherwise. A caller that never supplies {@link
+ * RelayBridgerDeps.revocation} (every pre-016-004 test, and any future
+ * caller with no sweeper in its own composition) gets exactly the old
+ * behavior — a sweep-held lease fails immediately, as if it were any
+ * other owner.
  */
 import {
   classifyBanner,
@@ -103,6 +128,7 @@ import {
   type RadioSightingRow,
   type Transport,
 } from "../store/index.js";
+import type { RelayLeaseRevocation } from "./relayLeaseRevocation.js";
 import {
   DEFAULT_BACKOFF_CAP_MS,
   DEFAULT_CONNECT_TIMEOUT_MS,
@@ -181,6 +207,14 @@ export interface RelayBridgerDeps {
   /** Forwarded to {@link SerialResettableStream.sendBreak} as its
    * `durationMs`. Omitted, that method's own default applies. */
   breakMs?: number;
+  /** The shared revocation seam (`connect/relayLeaseRevocation.ts`) this
+   * bridger consults on a sweep-held lease-acquisition failure — see the
+   * module doc comment's "Sweep takeover" section. Optional: omitted
+   * (every pre-016-004 test, and any composition with no sweeper),
+   * {@link takeoverSweepLease} is never attempted and a sweep-held lease
+   * fails exactly as before this ticket. `runtime.ts` always wires the
+   * same instance handed to `watchers/relaySweeper.ts`. */
+  revocation?: RelayLeaseRevocation;
 }
 
 export interface RelayBridgerOptions {
@@ -214,7 +248,34 @@ export interface RelayBridgerOptions {
    * Production code never sets this — every real `bridge()` call resets
    * before every candidate. Default `true`. */
   resetBetweenCandidates?: boolean;
+  /** Bound on how long {@link takeoverSweepLease} waits for a revoked
+   * sweep pass to actually release the lease before giving up — see the
+   * module doc comment's "Sweep takeover" section. Comfortably above the
+   * sweeper's own worst-case handback (its current `!CG`/`ID` wait, <=
+   * `SWEEP_PROBE_TIMEOUT_MS` = 500ms, plus its own stream-close/
+   * deregister overhead) while staying small relative to UC-016's <=
+   * 1.5s end-to-end handback budget. Default {@link
+   * DEFAULT_TAKEOVER_MAX_WAIT_MS}. */
+  takeoverMaxWaitMs?: number;
+  /** Poll interval while waiting for the lease to free during a
+   * takeover. Default {@link DEFAULT_TAKEOVER_POLL_MS}. */
+  takeoverPollMs?: number;
 }
+
+/** Default for {@link RelayBridgerOptions.takeoverMaxWaitMs}. */
+export const DEFAULT_TAKEOVER_MAX_WAIT_MS = 1000;
+/** Default for {@link RelayBridgerOptions.takeoverPollMs}. */
+export const DEFAULT_TAKEOVER_POLL_MS = 25;
+
+/** The literal `relay_leases.owner` a running sweep pass holds —
+ * `watchers/relaySweeper.ts`'s own `SWEEP_OWNER` constant, duplicated
+ * here rather than imported: that module already imports several
+ * helpers *from* this one (`chooseResetMethod`, `performReset`,
+ * `defaultHidReset`, `resolveDefaultFailoverAddress`,
+ * `defaultFailoverChildLinkId`), so importing it back would create a
+ * cycle. Mirrors `connect/relayLeaseRevocation.ts`'s own doc comment,
+ * which names this exact convention the same way for the same reason. */
+const SWEEP_LEASE_OWNER = "sweep";
 
 export interface RelayBridger {
   /** Try every candidate in order, resetting the relay before each one's
@@ -492,6 +553,7 @@ export function createRelayBridger(store: Store, deps: RelayBridgerDeps = {}, op
   const harvester = deps.harvester ?? NO_OP_HARVESTER;
   const hidResetFn = deps.hidReset ?? ((hidPath: string, signal: AbortSignal) => defaultHidReset(hidPath, signal));
   const breakMs = deps.breakMs;
+  const revocation = deps.revocation;
 
   const connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
   const identifySchedule = opts.identifySchedule ?? DEFAULT_IDENTIFY_SCHEDULE_MS;
@@ -499,6 +561,8 @@ export function createRelayBridger(store: Store, deps: RelayBridgerDeps = {}, op
   const relayHandshakeTimeoutMs = opts.relayHandshakeTimeoutMs;
   const backoffCapMs = opts.backoffCapMs ?? DEFAULT_BACKOFF_CAP_MS;
   const resetBetweenCandidates = opts.resetBetweenCandidates ?? true;
+  const takeoverMaxWaitMs = opts.takeoverMaxWaitMs ?? DEFAULT_TAKEOVER_MAX_WAIT_MS;
+  const takeoverPollMs = opts.takeoverPollMs ?? DEFAULT_TAKEOVER_POLL_MS;
   const syncOptions =
     opts.syncRetryMs !== undefined || opts.syncAttempts !== undefined
       ? {
@@ -586,6 +650,34 @@ export function createRelayBridger(store: Store, deps: RelayBridgerDeps = {}, op
     return session;
   }
 
+  /** See the module doc comment's "Sweep takeover" section. Aborts
+   * `relayLinkId`'s currently-registered sweep pass (a no-op if none is
+   * registered — e.g. the sweep released it independently between the
+   * failed `acquireRelayLease` above and this call) and polls for the
+   * lease to free, bounded by `takeoverMaxWaitMs`. Resolves `true` once
+   * `owner` holds the lease, `false` on timeout — never throws except
+   * for `signal`'s own abort. */
+  async function takeoverSweepLease(relayLinkId: string, owner: string, signal: AbortSignal): Promise<boolean> {
+    if (!revocation) {
+      return false;
+    }
+    revocation.get(relayLinkId)?.abort(new Error(`relayBridger: takeover of relay "${relayLinkId}" requested by "${owner}"`));
+
+    const deadline = now() + takeoverMaxWaitMs;
+    for (;;) {
+      if (signal.aborted) {
+        throw abortError(signal);
+      }
+      if (store.acquireRelayLease(relayLinkId, owner, now())) {
+        return true;
+      }
+      if (now() >= deadline) {
+        return false;
+      }
+      await scheduler.delay(takeoverPollMs);
+    }
+  }
+
   return {
     async bridge(request: BridgeRequest, signal: AbortSignal): Promise<ConnectedSession> {
       if (request.candidates.length === 0) {
@@ -599,7 +691,18 @@ export function createRelayBridger(store: Store, deps: RelayBridgerDeps = {}, op
       const firstCandidate = request.candidates[0] as RelayBridgeCandidate;
       const owner = `session:${firstCandidate.childLinkId}`;
 
-      const acquired = store.acquireRelayLease(request.relayLinkId, owner, now());
+      let acquired = store.acquireRelayLease(request.relayLinkId, owner, now());
+      if (!acquired) {
+        // Sprint 016 ticket 004 (SUC-004): a sweep-held lease is
+        // preemptable -- see the module doc comment's "Sweep takeover"
+        // section and takeoverSweepLease's own doc comment. Any other
+        // owner (an existing bridge) is not; this falls straight through
+        // to the ordinary immediate-failure path below.
+        const currentOwner = store.reconcilerRows().relayLeases.find((lease) => lease.relayLinkId === request.relayLinkId)?.owner;
+        if (currentOwner === SWEEP_LEASE_OWNER) {
+          acquired = await takeoverSweepLease(request.relayLinkId, owner, signal);
+        }
+      }
       if (!acquired) {
         const err = new Error(
           `relayBridger: could not acquire relay_leases for "${request.relayLinkId}" -- held by another owner`,

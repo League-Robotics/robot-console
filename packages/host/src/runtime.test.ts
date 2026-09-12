@@ -10,6 +10,7 @@ import { startRuntime, type StartRuntimeOptions } from "./runtime.js";
 import type { HarvesterDeps, HarvesterTelemetryEvent } from "./connect/harvester.js";
 import type { ConnectorDeps } from "./connect/connector.js";
 import type { ReconcilerDeps } from "./connect/reconciler.js";
+import type { RelayBridgerDeps } from "./connect/relayBridger.js";
 import type { RelaySweeperDeps } from "./watchers/relaySweeper.js";
 
 function fakeDeps() {
@@ -51,6 +52,14 @@ function fakeDeps() {
     capturedConnectorDeps = deps;
     return fakeConnector;
   }) as unknown as StartRuntimeOptions["createConnector"];
+
+  let capturedRelayBridgerDeps: RelayBridgerDeps | undefined;
+  const fakeBridger = { bridge: vi.fn(), marker: "fake-bridger" };
+  const createRelayBridgerMock = vi.fn((_store: unknown, deps: RelayBridgerDeps) => {
+    calls.push("createRelayBridger");
+    capturedRelayBridgerDeps = deps;
+    return fakeBridger;
+  }) as unknown as StartRuntimeOptions["createRelayBridger"];
 
   let capturedReconcilerDeps: ReconcilerDeps | undefined;
   const reconcilerStopMock = vi.fn(() => calls.push("reconciler.stop"));
@@ -97,6 +106,7 @@ function fakeDeps() {
     createBonjourBackend: createBonjourBackendMock,
     createHarvester: createHarvesterMock,
     createConnector: createConnectorMock,
+    createRelayBridger: createRelayBridgerMock,
     startReconciler: startReconcilerMock,
     createRelayLeaseRevocation: createRelayLeaseRevocationMock,
     startRelaySweeper: startRelaySweeperMock,
@@ -110,6 +120,7 @@ function fakeDeps() {
     fakeBackend,
     fakeHarvester,
     fakeConnector,
+    fakeBridger,
     fakeReconciler,
     fakeRevocation,
     usbStopMock,
@@ -123,12 +134,14 @@ function fakeDeps() {
     createBonjourBackendMock,
     createHarvesterMock,
     createConnectorMock,
+    createRelayBridgerMock,
     startReconcilerMock,
     createRelayLeaseRevocationMock,
     startRelaySweeperMock,
     installUnhandledRejectionBackstopMock,
     getCapturedHarvesterDeps: () => capturedHarvesterDeps,
     getCapturedConnectorDeps: () => capturedConnectorDeps,
+    getCapturedRelayBridgerDeps: () => capturedRelayBridgerDeps,
     getCapturedReconcilerDeps: () => capturedReconcilerDeps,
     getCapturedRelaySweeperDeps: () => capturedRelaySweeperDeps,
   };
@@ -152,13 +165,20 @@ describe("startRuntime -- composition", () => {
     // Same for the reconciler and the connector.
     expect(f.getCapturedReconcilerDeps()?.connector).toBe(f.fakeConnector);
     expect(f.startReconcilerMock).toHaveBeenCalledWith(f.fakeStore, expect.objectContaining({ connector: f.fakeConnector }));
+    // Ticket 016-002/004: the reconciler is handed the SAME bridger this
+    // runtime itself built, and that bridger is handed the same harvester
+    // as the connector.
+    expect(f.getCapturedReconcilerDeps()?.bridger).toBe(f.fakeBridger);
+    expect(f.getCapturedRelayBridgerDeps()?.harvester).toBe(f.fakeHarvester);
     expect(f.installUnhandledRejectionBackstopMock).toHaveBeenCalledWith(f.fakeStore, undefined);
 
-    // Ticket 016-003: the sweeper is always constructed with the
-    // revocation seam this runtime itself built -- never a separately
-    // constructed one, mirroring the harvester -> connector wiring above.
+    // Ticket 016-003/004: the revocation seam this runtime itself built
+    // is handed to BOTH the sweeper and the bridger -- never two
+    // separately constructed instances -- so a student's connect (the
+    // bridger) can find and abort the sweeper's own registered pass.
     expect(f.createRelayLeaseRevocationMock).toHaveBeenCalledTimes(1);
     expect(f.getCapturedRelaySweeperDeps()?.revocation).toBe(f.fakeRevocation);
+    expect(f.getCapturedRelayBridgerDeps()?.revocation).toBe(f.fakeRevocation);
     expect(f.startRelaySweeperMock).toHaveBeenCalledWith(
       f.fakeStore,
       expect.objectContaining({ revocation: f.fakeRevocation }),

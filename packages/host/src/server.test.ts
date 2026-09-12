@@ -432,6 +432,40 @@ describe("server.ts: session-open/session-close dispatch", () => {
     expect(radioLinks).toHaveLength(1);
     expect(h.runtime.requestOpen).toHaveBeenCalledTimes(2);
   });
+
+  it("sprint 016 ticket 004 (SUC-004): reuses an already-sighted link's own channel/group, not a re-derived default -- a takeover must bridge to the address the sweep already confirmed reachable", async () => {
+    const h = await harness();
+    const childLinkId = "radio-vevov-via-usb-RELAY";
+    // Simulate `watchers/relaySweeper.ts` having already sighted "vevov"
+    // over this relay -- a `links(radio)` row with a resolved address
+    // that is deliberately NOT the name-derived default, so this test
+    // actually distinguishes "reused" from "coincidentally identical".
+    const derived = nameToRadioAddress("vevov");
+    const sightedChannel = derived.channel === 1 ? 2 : 1;
+    const sightedGroup = derived.group === 1 ? 2 : 1;
+    h.store.upsertLink({
+      id: childLinkId,
+      transport: "radio",
+      address: { relayLinkId: "usb-RELAY", channel: sightedChannel, group: sightedGroup },
+      at: 1,
+    });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", relayLinkId: "usb-RELAY", name: "vevov" })), false);
+    await flush();
+
+    expect(h.runtime.requestOpen).toHaveBeenCalledWith(childLinkId);
+    const link = h.store.snapshotRows().links.find((l) => l.id === childLinkId);
+    expect(JSON.parse(link!.address as string)).toEqual({
+      relayLinkId: "usb-RELAY",
+      channel: sightedChannel,
+      group: sightedGroup,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------

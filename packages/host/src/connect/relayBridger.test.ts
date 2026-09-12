@@ -3,6 +3,8 @@ import { openStoreDb } from "../store/db.js";
 import { Store, type ProjectionDeviceRow, type RadioSightingRow } from "../store/index.js";
 import { FakeByteStream } from "../link/__fixtures__/FakeByteStream.js";
 import { realScheduler } from "../link/pacing.js";
+import { createRelayLeaseRevocation } from "./relayLeaseRevocation.js";
+import { createRelaySweepPassRunner, radioChildLinkId } from "../watchers/relaySweeper.js";
 import type { LinkRow } from "./connector.js";
 import {
   buildDefaultFailoverCandidates,
@@ -13,7 +15,7 @@ import {
   toBridgeRequest,
   type BridgeRequest,
 } from "./relayBridger.js";
-import { nameToRadioAddress } from "@robot-console/protocol";
+import { deviceIdToName, nameToRadioAddress } from "@robot-console/protocol";
 
 // Sprint 016 ticket 002's own suite. The headline acceptance criterion
 // (a per-candidate reset fixing the Linux default-failover bug) is
@@ -433,7 +435,7 @@ describe("createRelayBridger().bridge() -- named bridge regression (AC: still wo
 });
 
 describe("createRelayBridger().bridge() -- relay_leases acquire/release", () => {
-  it("rejects immediately, recording a link failure, when a different owner already holds the relay's lease", async () => {
+  it("rejects immediately, recording a link failure, when a different owner already holds the relay's lease (also: ticket 016-004's own 'no revocation seam configured' regression guard -- this bridger is never given one, so a sweep-owned lease fails exactly as before that ticket)", async () => {
     const store = freshStore();
     const relayLinkId = "usb-RELAY-SERIAL";
     seedRelay(store, relayLinkId, null);
@@ -453,4 +455,222 @@ describe("createRelayBridger().bridge() -- relay_leases acquire/release", () => 
     expect(leaseRows.find((l) => l.relayLinkId === relayLinkId)?.owner).toBe("sweep");
     store.close();
   });
+});
+
+// ---------------------------------------------------------------------
+// Sweep takeover (ticket 016-004; SUC-004; UC-016's <= 1.5s handback
+// target). A single "physical relay" fixture -- shared, mutable state
+// across every fresh stream instance, whichever module opens it -- is
+// used by BOTH `watchers/relaySweeper.ts` (its own `!CG`/`> ID` probe)
+// and this module (the full preamble through `!GO`/`HELLO`), since this
+// is the one test in the suite where both genuinely contend over the
+// same relay, not two independently-scripted fakes.
+// ---------------------------------------------------------------------
+
+class SharedRelayState {
+  inDataPlane = false;
+  resetCount = 0;
+  lastTune: { channel: number; group: number } | undefined;
+  reset(): void {
+    this.resetCount++;
+    this.inDataPlane = false;
+  }
+}
+
+/** Answers the sweeper's command-plane-only probe and this module's own
+ * full preamble against one shared {@link SharedRelayState} -- `ids`
+ * names every device this fixture can answer `> ID`/`HELLO` for (by
+ * recomputing `nameToRadioAddress(deviceIdToName(id))` and matching it
+ * against whichever `(channel, group)` the most recent `!CG` tuned to,
+ * exactly `relaySweeper.test.ts`'s own `SweepRelayByteStream` convention,
+ * extended with the bridger's own `!P 7`/`!GO`/`HELLO` steps). */
+class SharedPhysicalRelayByteStream extends FakeByteStream {
+  constructor(
+    private readonly state: SharedRelayState,
+    private readonly ids: readonly number[],
+  ) {
+    super();
+  }
+
+  override open(signal: AbortSignal): Promise<void> {
+    return signal.aborted ? Promise.reject(new Error("aborted")) : Promise.resolve();
+  }
+
+  private idForTune(tune: { channel: number; group: number } | undefined): number | undefined {
+    if (!tune) {
+      return undefined;
+    }
+    return this.ids.find((id) => {
+      const addr = nameToRadioAddress(deviceIdToName(id));
+      return addr.channel === tune.channel && addr.group === tune.group;
+    });
+  }
+
+  override write(bytes: string, callback: (err?: Error | null) => void): void {
+    super.write(bytes, callback);
+    const line = bytes.trim();
+
+    if (this.state.inDataPlane) {
+      if (line.startsWith("HELLO")) {
+        const id = this.idForTune(this.state.lastTune);
+        if (id !== undefined) {
+          this.emitData(`device NEZHA2 robot ${deviceIdToName(id)} ${id}\n`);
+        }
+      }
+      return;
+    }
+
+    if (line === "?") {
+      this.emitData("# channel: 1 group: 1 mode: RAW250 power: 7\n");
+    } else if (line === "!ECHO OFF") {
+      this.emitData("# echo: OFF\n");
+    } else if (line === "!MODE RAW250") {
+      this.emitData("# mode: RAW250\n");
+    } else if (/^!CG \d+ \d+$/.test(line)) {
+      const match = /^!CG (\d+) (\d+)$/.exec(line);
+      const channel = Number(match?.[1]);
+      const group = Number(match?.[2]);
+      this.state.lastTune = { channel, group };
+      this.emitData(`# channel: ${channel} group: ${group} mode: RAW250 power: 7\n`);
+    } else if (line === "!P 7") {
+      this.emitData("# channel: 47 group: 60 mode: RAW250 power: 7\n");
+    } else if (line === "!GO") {
+      this.state.inDataPlane = true;
+      this.emitData("# entering data plane\n");
+    } else if (line === "> ID") {
+      const id = this.idForTune(this.state.lastTune);
+      if (id !== undefined) {
+        const name = deviceIdToName(id);
+        this.emitData(`< id diffdrive ${name} 1.0.10 ${name}\n`);
+      }
+    }
+  }
+
+  /** Ticket 016-002's break-reset capability. */
+  async sendBreak(): Promise<void> {
+    this.state.reset();
+  }
+}
+
+function seedOwnedRobot(store: Store, id: number, at: number): string {
+  const name = deviceIdToName(id);
+  store.upsertDevice({ id, name, kind: "robot", at });
+  store.setOwned(id, true, at);
+  return name;
+}
+
+/** Poll `predicate` until it's true, or throw after `timeoutMs`. Used
+ * instead of a fixed sleep so this suite never races a real-timer
+ * fake's own response speed. */
+async function waitFor(predicate: () => boolean, timeoutMs = 5000, pollMs = 15): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  if (!predicate()) {
+    throw new Error("waitFor: timed out");
+  }
+}
+
+describe("createRelayBridger().bridge() -- sweep takeover (ticket 016-004, SUC-004, UC-016)", () => {
+  it("a takeover request during an in-flight sweep pass releases the sweep lease within 600ms of the abort, makes no further sweep writes, and the bridge itself proceeds within 1.5s", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY";
+    seedRelay(store, relayLinkId);
+    const idA = 100001;
+    const idB = 100002;
+    seedOwnedRobot(store, idA, 1);
+    seedOwnedRobot(store, idB, 1);
+
+    const state = new SharedRelayState();
+    const ids = [idA, idB];
+
+    let sweepStream: SharedPhysicalRelayByteStream | undefined;
+    const sweepCreateSerialStream = (): SharedPhysicalRelayByteStream => {
+      sweepStream = new SharedPhysicalRelayByteStream(state, ids);
+      return sweepStream;
+    };
+
+    const revocation = createRelayLeaseRevocation();
+    // A long rate-limit interval -- comfortably longer than this test's
+    // own 1.5s/600ms budgets -- so once the first candidate is sighted,
+    // the sweep pass is reliably still sitting in its own (abortable)
+    // rate-limited wait for the second when the takeover below lands:
+    // exactly "during an in-flight probe" (this ticket's own AC wording),
+    // not racing a pass that might otherwise have already exhausted its
+    // short candidate queue on its own.
+    const passRunner = createRelaySweepPassRunner(
+      store,
+      { createSerialStream: sweepCreateSerialStream, scheduler: realScheduler, now: () => Date.now(), revocation },
+      { sweepMinIntervalMs: 4000, probeTimeoutMs: 200, readySyncAttempts: 5, readySyncRetryMs: 20 },
+    );
+
+    const passController = new AbortController();
+    let passReleasedAt: number | undefined;
+    const passPromise = passRunner.runOnePass(relayLinkId, passController).then(() => {
+      passReleasedAt = Date.now();
+    });
+
+    // Wait until the sweep has sighted (recorded a links(radio) row for)
+    // one of the two candidates, and is now waiting out its own long
+    // rate-limit gap before the other.
+    await waitFor(() => store.snapshotRows().links.some((l) => l.transport === "radio"));
+    const sightedLinkId = store.snapshotRows().links.find((l) => l.transport === "radio")!.id as string;
+    const targetId = radioChildLinkId(deviceIdToName(idA), relayLinkId) === sightedLinkId ? idA : idB;
+    const targetName = deviceIdToName(targetId);
+    expect(sightedLinkId).toBe(radioChildLinkId(targetName, relayLinkId));
+
+    const sightedRow = store.snapshotRows().links.find((l) => l.id === sightedLinkId)!;
+    const sightedAddress = JSON.parse(sightedRow.address as string) as { relayLinkId: string; channel: number; group: number };
+    const linkRow: LinkRow = { id: sightedLinkId, transport: "radio", address: sightedAddress };
+
+    const bridger = createRelayBridger(
+      store,
+      { createSerialStream: () => new SharedPhysicalRelayByteStream(state, ids), scheduler: realScheduler, now: () => Date.now(), revocation },
+      { ...FAST_OPTIONS, takeoverMaxWaitMs: 1000, takeoverPollMs: 10 },
+    );
+
+    const sweepWritesBeforeTakeover = sweepStream!.writes.length;
+    const takeoverRequestedAt = Date.now();
+
+    const session = await bridger.bridge(toBridgeRequest(linkRow), new AbortController().signal);
+    const bridgeDoneAt = Date.now();
+
+    await passPromise;
+
+    expect(session.linkId).toBe(sightedLinkId);
+    expect(session.deviceId).toBe(targetId);
+
+    // AC: end-to-end timing -- takeover request to the bridge proceeding
+    // (session lease acquired, candidate identified) is <= 1.5s.
+    expect(bridgeDoneAt - takeoverRequestedAt).toBeLessThanOrEqual(1500);
+    // AC: the sweep releases its lease within 600ms of the abort (the
+    // abort itself happens synchronously, inside bridge()'s own takeover
+    // step, essentially at takeoverRequestedAt).
+    expect(passReleasedAt).toBeDefined();
+    expect(passReleasedAt! - takeoverRequestedAt).toBeLessThanOrEqual(600);
+    // AC: no further sweep writes to the relay once the sweep's own pass
+    // released -- its own stream instance never wrote again afterward.
+    expect(sweepStream!.writes.length).toBeGreaterThanOrEqual(sweepWritesBeforeTakeover);
+    const finalSweepWriteCount = sweepStream!.writes.length;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(sweepStream!.writes.length).toBe(finalSweepWriteCount);
+
+    // AC: a robot the sweep had already sighted uses that sighted
+    // channel/group for the takeover bridge, not a re-derived default --
+    // toBridgeRequest carries the sighted link's own address verbatim,
+    // and the fixture only ever answers `> ID`/`HELLO` when the tuned
+    // (channel, group) matches -- a wrong (re-derived-but-different)
+    // address would have failed to identify at all.
+    expect({ channel: sightedAddress.channel, group: sightedAddress.group }).toEqual(nameToRadioAddress(targetName));
+
+    // No lease left behind either way.
+    const leaseRows = store.reconcilerRows().relayLeases;
+    expect(leaseRows.find((l) => l.relayLinkId === relayLinkId)).toBeUndefined();
+
+    store.close();
+  }, 10_000);
 });

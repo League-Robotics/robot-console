@@ -37,13 +37,16 @@
  *    the only component that decides what should be connected, and the
  *    target `server.ts` forwards an explicit user `session-open`/
  *    `session-close` command to.
- * 5a. `createRelayLeaseRevocation` + `startRelaySweeper` (ticket 016-003)
- *    — the shared in-process revocation seam, and the background sweep
- *    itself (probes idle usb relays over the radio command plane for
- *    remembered robots; never touches `sessions`, never calls the
- *    connector or the reconciler). The same revocation instance is meant
- *    to be handed to the bridger too, once a future ticket wires a
- *    student's connect into it.
+ * 5a. `createRelayLeaseRevocation` (ticket 016-003), constructed before
+ *    the bridger (step 4a moved below this point in the actual wiring —
+ *    see the code, not this list's own ordinal numbering, which is kept
+ *    stable across tickets rather than renumbered) and handed to BOTH
+ *    `createRelayBridger` and `startRelaySweeper` (ticket 016-004): the
+ *    shared in-process seam that lets a student's connect find and abort
+ *    a running sweep pass without either module importing the other.
+ *    `startRelaySweeper` itself probes idle usb relays over the radio
+ *    command plane for remembered robots; never touches `sessions`,
+ *    never calls the connector or the reconciler.
  * 6. `installUnhandledRejectionBackstop` (ticket 003) — the process-wide
  *    last-resort net; see that module's own doc comment for why this is
  *    not a substitute for each component's own error handling.
@@ -253,15 +256,21 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
   });
 
   const connector = createConnectorFn(store, { ...options.connectorDeps, harvester }, options.connectorOptions);
-  const bridger = createRelayBridgerFn(store, { ...options.relayBridgerDeps, harvester }, options.relayBridgerOptions);
+
+  // Ticket 016-003/004: the shared revocation seam, constructed once per
+  // runtime (exactly like the harvester's fan-out above) and handed to
+  // BOTH the bridger and the sweeper -- this is what lets a student's
+  // connect (the bridger, on a sweep-held lease-acquisition failure) find
+  // and abort a running sweep pass without either module importing the
+  // other (`connect/relayLeaseRevocation.ts`'s own doc comment).
+  const relayLeaseRevocation = createRelayLeaseRevocationFn();
+  const bridger = createRelayBridgerFn(
+    store,
+    { ...options.relayBridgerDeps, harvester, revocation: relayLeaseRevocation },
+    options.relayBridgerOptions,
+  );
   const reconciler = startReconcilerFn(store, { ...options.reconcilerDeps, connector, bridger });
 
-  // Ticket 016-003: the sweeper's own shared revocation seam. Constructed
-  // once per runtime, exactly like the harvester's fan-out above -- a
-  // future ticket (004) hands this same instance to the bridger too, so
-  // a student's connect can find and abort a running sweep pass without
-  // either module importing the other.
-  const relayLeaseRevocation = createRelayLeaseRevocationFn();
   const relaySweeperHandle: RelaySweeperHandle = startRelaySweeperFn(
     store,
     { ...options.relaySweeperDeps, revocation: relayLeaseRevocation },

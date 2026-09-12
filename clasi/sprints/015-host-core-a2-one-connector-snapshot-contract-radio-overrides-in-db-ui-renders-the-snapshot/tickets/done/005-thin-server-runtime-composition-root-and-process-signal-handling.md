@@ -1,7 +1,7 @@
 ---
 id: '005'
 title: Thin server, runtime composition root, and process signal handling
-status: in-progress
+status: done
 use-cases:
 - SUC-005
 - SUC-006
@@ -58,27 +58,37 @@ watchers for the first time (today only `--watch-store` does).
 
 ## Acceptance Criteria
 
-- [ ] Golden test: a burst of ten store writes in one tick produces one
+- [x] Golden test: a burst of ten store writes in one tick produces one
       `snapshot` broadcast, not ten.
-- [ ] A socket that emits `error` does not terminate the host process
+- [x] A socket that emits `error` does not terminate the host process
       (test with a fake socket that throws).
-- [ ] A client whose `bufferedAmount` exceeds the threshold stops
+- [x] A client whose `bufferedAmount` exceeds the threshold stops
       receiving `line`/`telemetry` but still receives the next
       `snapshot`.
-- [ ] `kill -INT`/`SIGTERM` during a fake flash lets the flash finish or
+- [x] `kill -INT`/`SIGTERM` during a fake flash lets the flash finish or
       abort cleanly and closes the serial port before exit.
-- [ ] Production startup (`main()`'s non-flag path) now calls
+- [x] Production startup (`main()`'s non-flag path) now calls
       `openStoreWithImports` and starts both watchers — verified by a
       `cli.test.ts` case asserting `startRuntime`'s dependencies are
       invoked, not by manually re-running `--watch-store`.
-- [ ] `--watch-store` is removed from `cli.ts`; `--dump-store` remains.
-- [ ] `grep -r "new DeviceRegistry" packages/host/src` returns nothing.
-- [ ] `packages/host` compiles and its scoped test run is green — this
+- [x] `--watch-store` is removed from `cli.ts`; `--dump-store` remains.
+- [x] `grep -r "new DeviceRegistry" packages/host/src` returns nothing.
+- [x] `packages/host` compiles and its scoped test run is green — this
       is the first point since ticket 003 where `server.ts`/`cli.ts`
       compile again. Per `.claude/rules/source-code.md`, the *full*
       monorepo suite is a `close_sprint`-time gate, not a per-ticket
       one; ticket 011's bench/verification ticket is where that full run
       happens.
+
+**Verification evidence (recorded at implementation)**:
+- `npx tsc --noEmit -p packages/host/tsconfig.json` — clean, 0 errors.
+- `npx vitest run packages/host/src` — 36 files, 533 tests, all green.
+- `npx tsc --noEmit -p packages/ui/tsconfig.json` — **95 errors**
+  (unchanged category from before this ticket: `packages/ui` still
+  references the retired `endpoints`/`EndpointListEntry` wire shape;
+  expected to fail until tickets 007–009 land, per this ticket's own
+  scope note — not touched here).
+- `grep -r "new DeviceRegistry" packages/host/src` — no matches.
 
 ## Implementation Plan
 

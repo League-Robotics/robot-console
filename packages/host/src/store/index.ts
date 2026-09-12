@@ -538,6 +538,31 @@ export class Store {
     }
   }
 
+  /**
+   * Deletes `id`'s `devices` row — sprint 015 ticket 005's `forget-device`
+   * wire message (`wsMessages.ts`'s {@link ForgetDeviceMessage}, replacing
+   * the retired `forget-known-robot`, which named its target by a
+   * non-unique `name`). `links.device_id REFERENCES devices(id)` with no
+   * `ON DELETE CASCADE` (this module's own doc comment, "Foreign keys are
+   * enforced"), so every `links`/`sightings` row pointing at `id` is
+   * re-pointed to `NULL` first — a link is a physical-port observation,
+   * not owned by any one device identity, so forgetting the device
+   * leaves the link row itself in place (an unnamed/un-owned link,
+   * exactly like one that has never identified) rather than deleting it
+   * too. A no-op if `id` has no row.
+   */
+  deleteDevice(id: number): void {
+    this.withChange(
+      "devices",
+      () => String(id),
+      () => {
+        this.db.prepare("UPDATE links SET device_id = NULL WHERE device_id = ?").run(id);
+        this.db.prepare("UPDATE sightings SET device_id = NULL WHERE device_id = ?").run(id);
+        this.db.prepare("DELETE FROM devices WHERE id = ?").run(id);
+      },
+    );
+  }
+
   // ---- links -------------------------------------------------------
 
   /** Records a watcher's observation of a link. On first sight, creates

@@ -334,6 +334,39 @@ describe("Store: mergeDevice", () => {
   });
 });
 
+describe("Store: deleteDevice", () => {
+  it("deletes the devices row and re-points its links/sightings to device_id NULL rather than deleting them", () => {
+    const { store, db } = freshStore();
+    try {
+      const ID = 536019796;
+      store.upsertDevice({ id: ID, name: "vevav", kind: "robot", at: 100 });
+      store.upsertLink({ id: "usb-vevav", transport: "usb", address: { path: "/dev/cu.vevav" }, deviceId: ID, at: 100 });
+      const sightingId = store.recordSighting({ deviceId: ID, transport: "usb", at: 100, ok: true });
+
+      store.deleteDevice(ID);
+
+      const rows = store.snapshotRows();
+      expect(rows.devices).toHaveLength(0);
+      expect(rows.links).toHaveLength(1);
+      expect(rows.links[0]).toMatchObject({ id: "usb-vevav", device_id: null });
+      const sightingRow = db.prepare("SELECT device_id FROM sightings WHERE id = ?").get(sightingId);
+      expect(sightingRow).toMatchObject({ device_id: null });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("is a no-op for an id with no devices row", () => {
+    const { store } = freshStore();
+    try {
+      store.deleteDevice(1234);
+      expect(store.snapshotRows().devices).toHaveLength(0);
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe("Store: sessions", () => {
   it("opens, updates, and closes a session", () => {
     const { store } = freshStore();

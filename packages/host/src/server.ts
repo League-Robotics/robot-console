@@ -1,57 +1,72 @@
 /**
- * server.ts — transport to the UI (`docs/design/specification.md` §4.7).
+ * server.ts — the thin broadcast-and-dispatch layer between the store/
+ * connect subsystem and the browser UI (sprint 015 ticket 005; issue
+ * `rearch-06-snapshot-wire-contract-and-thin-server.md`;
+ * `docs/design/architecture.md` §6/§9; `sprint.md`'s own module table:
+ * "Inside: WebSocket lifecycle, per-socket `error` handling,
+ * `bufferedAmount`/`maxPayload` guards, a `Map<type, handler>` command
+ * dispatch ... Outside: *constructing* watchers/reconciler/store (that
+ * is `runtime`'s job — server only holds references it's handed),
+ * deciding policy itself, building the JSON shape (projection).").
  *
- * Express + `ws`: one WebSocket carries endpoint-list updates, line
- * traffic, and (sprint 009 ticket 002) decoded telemetry to and from the
- * browser -- telemetry rides its own {@link TelemetryMessage} type on
- * this same socket, never folded into `line`/`endpoints` (see that
- * type's own doc comment). Express itself serves the built
- * `packages/ui` output as static files. This module merges the
- * `FirmwareAvailabilityCache`'s current status into every `endpoints`
- * broadcast, and wires flash-start/flash-progress/flash-result traffic,
- * all joining the same channel and the same "no logic of its own"
- * contract described below.
+ * This is a rewrite, not an incremental patch: the previous version
+ * (through sprint 014) composed the now-retired registry class directly
+ * and spoke the retired `EndpointsMessage`/`EndpointListEntry` wire
+ * shape. Every reference to that class is gone as of this ticket (its
+ * last call site was this file's own old inline construction) — see
+ * `docs/reviews/2026-09-11/03-host-server-flash-releases.md` §1 for the
+ * findings this rewrite fixes (missing `unsubscribeTelemetry`, no
+ * per-socket `error` handler, no `maxPayload`/backpressure guard).
  *
- * This module contains **no naming, framing, or sequencing logic of its
- * own** -- it only composes `deviceRegistry.ts` (itself a composition of
- * `devices.ts` + `swdName.ts` + `classifyBanner` + `UsbSerialLink`) into
- * {@link ServerMessage}-shaped WebSocket traffic, per `wsMessages.ts`'s
- * shared contract. If a bug here looks like it needs new protocol
- * logic, that logic belongs in `@robot-console/protocol` or one of
- * `host`'s other modules instead -- see the ticket.
+ * ## What this module still does *not* do
  *
- * Sprint 4 note: `flash-start`'s `source: FirmwareSourceRef` can name
- * either a configured release build (`kind: "release"`) or a
- * locally-uploaded hex (`kind: "local-hex"`) -- both are forwarded to
- * `registry.requestFlash(endpointId, source)` unchanged; `deviceRegistry
- * .ts#runFlash` is what branches on `source.kind` (see that module's own
- * doc comment), not this one, per this module's "no logic of its own"
- * contract. Ticket 005 also extends the `ws.on("message", ...)` handler
- * with an `isBinary` branch (`ws`'s message event carries `isBinary`
- * alongside the raw data): a binary frame is the local-hex upload's raw
- * bytes, routed straight to `localHexUpload.ts`'s `LocalHexUploadManager
- * #receiveFrame` with no further inspection; every other (text/JSON)
- * message continues through `JSON.parse`/`parseClientMessage` exactly as
- * before. Splitting the frame, verifying it, and holding the bytes is
- * `localHexUpload.ts`'s job -- this module only routes based on
- * `isBinary`, the same composition-only boundary as everything else
- * here. The one `LocalHexUploadManager` instance constructed per
- * {@link startServer} call is shared between that binary-frame handling
- * and the `DeviceRegistry`'s injected `consumeUpload` seam, so an
- * upload verified here is the very one `runFlash` consumes later.
+ * No naming, framing, sequencing, or connection-policy logic of its own.
+ * `buildSnapshot` (`projection.ts`) turns store rows into the wire
+ * shape; `connect/reconciler.ts` decides what should be connected and
+ * exposes the one seam (`requestOpen`/`requestClose`/`sessions`) this
+ * module forwards user commands and reaches an open session's link
+ * through; `runtime.ts` constructs all of it. This module only moves
+ * bytes between the store/connect subsystem and the socket, plus the
+ * two things that were always server-local, ephemeral state with no
+ * store table of their own (per `projection.ts`'s own doc comment):
+ * in-flight flash progress (`SnapshotLink.flash`) and the local-hex
+ * upload handshake.
  *
- * Sprint 6 ticket 003: `send-command` (a structured verb + optional
- * fields, alongside `line`'s raw text) forwards straight to
- * `registry.sendCommand` unchanged -- `deviceRegistry.ts` is what
- * decides sequenced-vs-unsequenced dispatch (`isSequencedVerb`) and
- * rejects `HELLO` outright, not this module, per its own "no logic of
- * its own" contract.
+ * ## One shared `seq` counter
  *
- * **Localhost only.** This process can open serial ports, attach over
- * SWD, and (in later sprints) flash firmware and drive a physical
- * robot -- it must never be reachable from anything but the machine
- * it's running on. {@link startServer} binds to `127.0.0.1` by default
- * and does not accept a `0.0.0.0`-shaped override.
+ * `wsMessages.ts`'s own doc comment: "every server -> client message
+ * gains `seq`, an incrementing counter `server.ts` stamps on every
+ * broadcast." This module keeps exactly one counter, incremented for
+ * every outgoing message regardless of type (`snapshot`, `notice`,
+ * `line`, `telemetry`, `flash-progress`, `flash-result`, ...), so a
+ * client can detect a gap in *any* message stream after a reconnect —
+ * not one counter per message type.
+ *
+ * ## Flash orchestration has no `DeviceRegistry` to live in any more
+ *
+ * Through sprint 014, `deviceRegistry.ts#runFlash` owned resolving a
+ * `DaplinkDevice` (via `devices.ts`'s enumerator), fetching/verifying a
+ * release hex (`releases.ts`) or consuming an already-uploaded one
+ * (`localHexUpload.ts`), and calling `flash.ts`'s `flash()`. That class
+ * is retired (ticket 003); this ticket is the first thing to need that
+ * orchestration again, so it lives here now, directly — this module is
+ * "thin" in the sense of holding no *policy* of its own, not in the
+ * sense of never doing anything beyond forwarding a call verbatim. A
+ * fresh `enumerateDaplinkDevices()` call resolves the link's current
+ * `DaplinkDevice` by USB serial (recovered from the `usb-<serial>` link
+ * id convention `watchers/usbWatcher.ts`/`connect/connector.ts` both
+ * already use) rather than caching one from either watcher, since
+ * neither retains a live handle past one poll cycle.
+ *
+ * Once a flash succeeds, this module does **not** manually orchestrate a
+ * post-flash reidentify (the old registry's own `reidentifyAfterFlash`)
+ * — the freshly-rebooted board re-enumerates over USB exactly like any
+ * other attach, so `watchers/usbWatcher.ts` and `connect/reconciler.ts`'s
+ * existing automatic-connect pass pick it back up on their own next
+ * poll/tick, with no special-casing here. `flash-result`'s optional
+ * `role`/`name`/`reidentify` fields (`wsMessages.ts`) are accordingly
+ * never populated by this implementation — the next `snapshot` broadcast
+ * carries the same information once the board reconnects.
  */
 
 import { createServer, type Server as HttpServer } from "node:http";
@@ -60,30 +75,61 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocket, WebSocketServer } from "ws";
+import { isSequencedVerb } from "@robot-console/protocol";
 import { WifiCredentialsStore } from "./store/wifiCredentials.js";
-import { DeviceRegistry } from "./deviceRegistry.js";
+import type { Store } from "./store/index.js";
+import type { Reconciler } from "./connect/reconciler.js";
+import type { ConnectedSession } from "./connect/connector.js";
+import type { HarvesterTelemetryEvent } from "./connect/harvester.js";
+import { buildSnapshotFromRows } from "./projection.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
-import { FirmwareAvailabilityCache } from "./releases.js";
+import { FirmwareAvailabilityCache, type FirmwareStatusMap } from "./releases.js";
+import { resolveRelease as defaultResolveRelease, fetchAndVerifyHex as defaultFetchAndVerifyHex } from "./releases.js";
 import { LocalHexUploadManager } from "./localHexUpload.js";
+import { flash as defaultFlash, type FlashOutcome } from "./flash.js";
+import { enumerateDaplinkDevices as defaultEnumerateDaplinkDevices, type DaplinkDeviceLister } from "./devices.js";
 import {
   parseClientMessage,
-  type EndpointListEntry,
-  type EndpointsMessage,
-  type FlashResultMessage,
+  type ClientMessage,
+  type FirmwareSourceRef,
+  type FlashPhase,
+  type Notice,
   type ServerMessage,
-  type TelemetryMessage,
+  type Snapshot,
+  type SnapshotLink,
 } from "./wsMessages.js";
 
 /** Default port `npx robot-console` listens on. Override via
  * {@link StartServerOptions.port} (the `cli.ts` entry point also
- * accepts `--port`/`ROBOT_CONSOLE_PORT`). Chosen to be memorable and
- * unlikely to collide with common dev-server defaults (3000, 5173,
- * 8080, ...). */
+ * accepts `--port`/`ROBOT_CONSOLE_PORT`). */
 export const DEFAULT_PORT = 4795;
 
-/** Bind address. Deliberately not overridable to `0.0.0.0` or similar
- * -- see the module doc comment's "Localhost only" note. */
+/** Bind address. Deliberately not overridable — see the module doc
+ * comment's predecessor's own "Localhost only" note, still true here:
+ * this process can open serial ports and drive a physical robot, so it
+ * must never be reachable from anything but the machine it runs on. */
 const DEFAULT_HOST = "127.0.0.1";
+
+/** Bound on one incoming WebSocket frame (ticket 005 AC / review finding
+ * `03-host-server-flash-releases.md` §1). Comfortably above the
+ * local-hex upload's own {@link MAX_UPLOAD_BYTE_LENGTH} (4 MiB) plus its
+ * `uploadId` prefix, well below anything that would let one client stall
+ * the process parsing an oversized frame. */
+export const DEFAULT_MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
+
+/** `bufferedAmount` (bytes still queued in `ws`'s own send buffer, not
+ * yet flushed to the OS socket) above which a stalled client stops
+ * receiving `line`/`telemetry` broadcasts — never `snapshot` (ticket 005
+ * AC / review finding `03-host-server-flash-releases.md` §1: nothing
+ * bounded a slow client's queue before this ticket). 1 MiB is generous
+ * for either message's normal size while still catching a genuinely
+ * wedged socket well before Node's own send buffer grows unbounded. */
+export const DEFAULT_BUFFERED_AMOUNT_THRESHOLD_BYTES = 1024 * 1024;
+
+/** How long {@link handleProvisionWifi} waits for the robot's own
+ * `wificred`/`err` reply before giving up — matches the retired
+ * `deviceRegistry.ts`'s own `WIFICRED_REPLY_TIMEOUT_MS`. */
+export const DEFAULT_WIFI_PROVISION_TIMEOUT_MS = 4000;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -96,55 +142,113 @@ function defaultStaticDir(): string {
   return path.resolve(__dirname, "../../ui/dist");
 }
 
+/** The narrow slice of {@link Runtime} (`runtime.ts`) this module
+ * actually needs — declared locally rather than imported, so `server.ts`
+ * never imports `runtime.ts` (which itself imports `server.ts` to
+ * construct it — see `sprint.md`'s own dependency graph, "no cycle").
+ * Structurally identical to `runtime.ts`'s own `Runtime`/`RuntimeTelemetry`,
+ * so a real {@link Runtime} satisfies this with no adapter needed. */
+export interface ServerTelemetry {
+  onTelemetry(listener: (linkId: string, event: HarvesterTelemetryEvent) => void): () => void;
+  onNotice(listener: (linkId: string, message: string) => void): () => void;
+}
+
+export interface ServerRuntime {
+  readonly reconciler: Reconciler;
+  readonly telemetry: ServerTelemetry;
+}
+
 export interface StartServerOptions {
-  /** OOP 2026-09-10: injectable WiFi credential store (tests). */
-  wifiCredentials?: WifiCredentialsStore;
+  /** The store to read/broadcast a snapshot from on every change. */
+  store: Store;
+  /** The reconciler/telemetry seam — see {@link ServerRuntime}. */
+  runtime: ServerRuntime;
   /** Port to listen on. Defaults to {@link DEFAULT_PORT}. */
   port?: number;
   /** Directory of the built UI to serve as static files. Defaults to
-   * `packages/ui/dist`. If it does not exist (e.g. `packages/ui` has
-   * not been built yet), the server still starts -- it serves a plain
-   * status page instead of failing, since the WebSocket contract this
-   * module provides does not itself depend on the UI being built. */
+   * `packages/ui/dist`. If it does not exist, the server still starts —
+   * it serves a plain status page instead of failing. */
   staticDir?: string;
-  /** Injectable {@link DeviceRegistry}; defaults to a real one (real
-   * USB/HID/serial I/O). Tests substitute one built from fakes. */
-  registry?: DeviceRegistry;
-  /** Injectable firmware-source configuration (ticket 002); defaults to
-   * a real call to {@link getFirmwareConfig} (real environment/dotconfig
-   * `.env` parsing). Used to construct the default
-   * {@link FirmwareAvailabilityCache} below -- ignored if
-   * {@link StartServerOptions.availabilityCache} is passed directly. */
+  /** Injectable firmware-source configuration; defaults to a real call
+   * to {@link getFirmwareConfig}. */
   firmwareConfig?: FirmwareConfigMap;
   /** Injectable {@link FirmwareAvailabilityCache}; defaults to one
-   * constructed from {@link StartServerOptions.firmwareConfig}. Tests
-   * substitute one built with a fake `checkAvailability` (mirroring how
-   * {@link StartServerOptions.registry} substitutes fakes for
-   * `DeviceRegistry`), so `pollOnce()`/`onChange` can be driven
-   * deterministically with no real GitHub call. */
+   * constructed from {@link StartServerOptions.firmwareConfig}. */
   availabilityCache?: FirmwareAvailabilityCache;
-  /** Injectable {@link LocalHexUploadManager} (ticket 005); defaults to a
-   * fresh instance per {@link startServer} call. Handles the
-   * `flash-local-begin`/binary-frame half of the local-hex upload
-   * handshake here, and -- when {@link StartServerOptions.registry} is
-   * *not* also supplied -- is wired into the default {@link DeviceRegistry}'s
-   * `consumeUpload` seam so the same verified upload a client sent over
-   * this socket is what `runFlash` later consumes. A caller that
-   * supplies its own `registry` is responsible for wiring that
-   * registry's own `consumeUpload` to this same manager instance itself
-   * (see `server.test.ts`'s local-hex tests) -- mirroring how
-   * {@link StartServerOptions.firmwareConfig} is only consulted for the
-   * *default* {@link FirmwareAvailabilityCache}. */
+  /** OOP 2026-09-10: injectable WiFi credential store (tests). */
+  wifiCredentials?: WifiCredentialsStore;
+  /** Injectable {@link LocalHexUploadManager}; defaults to a fresh
+   * instance per {@link startServer} call. */
   localHexUpload?: LocalHexUploadManager;
+  /** `WebSocketServer`'s own `maxPayload`. Defaults to
+   * {@link DEFAULT_MAX_PAYLOAD_BYTES}. */
+  maxPayloadBytes?: number;
+  /** See {@link DEFAULT_BUFFERED_AMOUNT_THRESHOLD_BYTES}. */
+  bufferedAmountThresholdBytes?: number;
+  /** See {@link DEFAULT_WIFI_PROVISION_TIMEOUT_MS}. */
+  wifiProvisionTimeoutMs?: number;
+  /** Injectable USB enumerator for flash-start's device resolution
+   * (module doc comment's "Flash orchestration" section). Defaults to
+   * the real {@link enumerateDaplinkDevices}. */
+  enumerateDaplinkDevices?: DaplinkDeviceLister;
+  /** Injectable release resolver for a `flash-start` whose source is
+   * `kind: "release"`. Defaults to the real {@link resolveRelease}. */
+  resolveRelease?: typeof defaultResolveRelease;
+  /** Injectable hex fetch+verify for the same path. Defaults to the real
+   * {@link fetchAndVerifyHex}. */
+  fetchAndVerifyHex?: typeof defaultFetchAndVerifyHex;
+  /** Injectable flash orchestration. Defaults to the real {@link flash}
+   * (`flash.ts`) — tests substitute a fake that resolves/rejects on
+   * demand, e.g. to exercise ticket 005's signal-handling acceptance
+   * criterion without ever touching real SWD/HID hardware. */
+  flash?: typeof defaultFlash;
+  /** Injectable `WebSocketServer` construction — defaults to a real
+   * `new WebSocketServer({server: httpServer, maxPayload})`. See
+   * {@link WebSocketServerLike}. */
+  createWebSocketServer?: (httpServer: HttpServer, maxPayloadBytes: number) => WebSocketServerLike;
+}
+
+/** `readyState`'s `OPEN` value (the standard WebSocket constants:
+ * `CONNECTING=0, OPEN=1, CLOSING=2, CLOSED=3`) — used instead of
+ * `WebSocket.OPEN` so this module's own connection-handling logic works
+ * unchanged against either a real `ws.WebSocket` or a test fake (see
+ * {@link WebSocketLike}). */
+const WS_OPEN = 1;
+
+/** The narrow slice of `ws`'s own `WebSocket` this module actually uses
+ * — a real instance always satisfies this; `server.test.ts` substitutes
+ * a fake implementing just this shape so per-socket `error`/
+ * `bufferedAmount` behavior (ticket 005's own acceptance criteria) can
+ * be driven deterministically with no real network connection. */
+export interface WebSocketLike {
+  readonly readyState: number;
+  readonly bufferedAmount: number;
+  send(data: string): void;
+  terminate(): void;
+  on(event: "message", listener: (data: WebSocket.RawData, isBinary: boolean) => void): void;
+  on(event: "error", listener: (err: Error) => void): void;
+  on(event: "close", listener: () => void): void;
+}
+
+/** The narrow slice of `ws`'s own `WebSocketServer` this module actually
+ * uses. See {@link WebSocketLike}. */
+export interface WebSocketServerLike {
+  on(event: "connection", listener: (ws: WebSocketLike) => void): void;
+  on(event: "error", listener: (err: Error) => void): void;
+  close(callback: (err?: Error) => void): void;
 }
 
 export interface RunningServer {
   readonly port: number;
   readonly host: string;
   readonly url: string;
-  /** Stop accepting connections, close every open WebSocket, and tear
-   * down the underlying {@link DeviceRegistry} (closing any open device
-   * links). */
+  /** Stop accepting connections, close every open WebSocket, and
+   * unsubscribe from the store/telemetry/notice feeds and the
+   * availability cache. Waits for any in-flight `flash-start` task to
+   * finish (or fail) naturally before returning — see this module's own
+   * `runFlashTask` doc comment for why a flash is never interrupted
+   * mid-write. Does **not** stop the `runtime` it was given; `cli.ts`
+   * calls `runtime.stop()` itself, after this resolves. */
   close(): Promise<void>;
 }
 
@@ -170,11 +274,8 @@ function buildApp(staticDir: string): express.Express {
   return app;
 }
 
-/** Normalize `ws`'s `RawData` (a `Buffer`, an `ArrayBuffer`, or a
- * `Buffer[]` -- the last only when the client sent a fragmented message
- * and `ws` was configured not to reassemble it, which this server never
- * does) into one contiguous `Buffer`, for {@link LocalHexUploadManager
- * #receiveFrame} to split. */
+/** Normalize `ws`'s `RawData` into one contiguous `Buffer`, for
+ * {@link LocalHexUploadManager#receiveFrame} to split. */
 function toBuffer(data: WebSocket.RawData): Buffer {
   if (Buffer.isBuffer(data)) {
     return data;
@@ -212,37 +313,40 @@ function listen(server: HttpServer, port: number, host: string): Promise<void> {
   });
 }
 
+/** `usbWatcher.ts`/`connect/connector.ts`'s own `usb-<serialNumber>` link
+ * id convention, independently re-derived here (this module never
+ * imports either — both are one-directional-dependency leaves; see the
+ * dependency graph's "no cycle" note) so `flash-start` can resolve a
+ * link back to the USB serial its `DaplinkDevice` enumerates under. */
+function usbSerialFromLinkId(linkId: string): string | undefined {
+  return linkId.startsWith("usb-") ? linkId.slice("usb-".length) : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /**
- * Start the Express/`ws` server: bind to localhost, serve the built UI
- * (if present), and bridge a {@link DeviceRegistry} to every connected
- * WebSocket client per `wsMessages.ts`'s contract.
- *
- * Rejects with a clear error (see {@link listen}) if the port is
- * already in use, rather than silently retrying on another port.
+ * Start the thin server: bind to localhost, serve the built UI (if
+ * present), broadcast one coalesced `snapshot` per store change-feed
+ * flush, and dispatch every client command through a `Map<type,
+ * handler>` — session-affecting commands forward to `runtime.reconciler`;
+ * everything else reaches the target link's open session directly via
+ * `runtime.reconciler.sessions`. See the module doc comment.
  */
-export async function startServer(options: StartServerOptions = {}): Promise<RunningServer> {
+export async function startServer(options: StartServerOptions): Promise<RunningServer> {
   const host = DEFAULT_HOST;
   const port = options.port ?? DEFAULT_PORT;
   const staticDir = options.staticDir ?? defaultStaticDir();
+  const store = options.store;
+  const runtime = options.runtime;
+  const maxPayloadBytes = options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES;
+  const bufferedAmountThresholdBytes = options.bufferedAmountThresholdBytes ?? DEFAULT_BUFFERED_AMOUNT_THRESHOLD_BYTES;
+  const wifiProvisionTimeoutMs = options.wifiProvisionTimeoutMs ?? DEFAULT_WIFI_PROVISION_TIMEOUT_MS;
+
   const localHexUpload = options.localHexUpload ?? new LocalHexUploadManager();
-  // consumeUpload is wired only for the *default* registry, mirroring
-  // firmwareConfig's own "only consulted for the default cache" pattern
-  // just below -- a caller supplying its own `registry` must wire that
-  // registry's `consumeUpload` to this same `localHexUpload` instance
-  // itself (see StartServerOptions.localHexUpload's own doc comment).
-  const registry =
-    options.registry ??
-    new DeviceRegistry({ consumeUpload: (uploadId) => localHexUpload.consumeUpload(uploadId) });
-  const firmwareConfig = options.firmwareConfig ?? getFirmwareConfig();
-  // OOP 2026-09-10: the one network robots get provisioned onto -- see
-  // store/wifiCredentials.ts.
   const wifiCredentials = options.wifiCredentials ?? new WifiCredentialsStore();
-  // `loadConfig` is passed only for the default (real) cache, and only
-  // when the caller did not pin `firmwareConfig` itself: a host started
-  // before `dotconfig load` wrote `.env` must still pick the file up,
-  // within one poll interval, rather than reporting "not configured"
-  // for the life of the process. A caller who supplied an explicit
-  // config map meant that map, so it is left alone.
+  const firmwareConfig = options.firmwareConfig ?? getFirmwareConfig();
   const availabilityCache =
     options.availabilityCache ??
     new FirmwareAvailabilityCache(
@@ -250,140 +354,528 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       options.firmwareConfig === undefined ? { loadConfig: () => getFirmwareConfig() } : {},
     );
 
+  const enumerateDaplinkDevicesFn = options.enumerateDaplinkDevices ?? defaultEnumerateDaplinkDevices;
+  const resolveReleaseFn = options.resolveRelease ?? defaultResolveRelease;
+  const fetchAndVerifyHexFn = options.fetchAndVerifyHex ?? defaultFetchAndVerifyHex;
+  const flashFn = options.flash ?? defaultFlash;
+
   const app = buildApp(staticDir);
   const httpServer = createServer(app);
-  const wss = new WebSocketServer({ server: httpServer });
-  // `ws`'s WebSocketServer re-emits the underlying http.Server's
-  // "error" event (e.g. EADDRINUSE from the listen() call below) as
-  // its own "error" event. Node's EventEmitter throws for an "error"
-  // event with no listeners, so this must be handled even though the
-  // actual rejection this function surfaces to its caller comes from
-  // `listen()`'s own httpServer-level "error" listener, not from here.
+  const createWebSocketServer =
+    options.createWebSocketServer ?? ((server, maxPayload) => new WebSocketServer({ server, maxPayload }));
+  const wss = createWebSocketServer(httpServer, maxPayloadBytes);
+  // `ws`'s WebSocketServer re-emits the underlying http.Server's "error"
+  // event (e.g. EADDRINUSE) as its own -- Node's EventEmitter throws for
+  // an "error" event with no listener, so this must be handled even
+  // though the rejection this function surfaces comes from `listen()`'s
+  // own httpServer-level listener, not from here.
   wss.on("error", () => {
     // Swallowed deliberately -- see comment above.
   });
-  const clients = new Set<WebSocket>();
 
-  function broadcast(message: ServerMessage): void {
+  const clients = new Set<WebSocketLike>();
+  let seq = 0;
+  function nextSeq(): number {
+    seq += 1;
+    return seq;
+  }
+
+  function broadcast(message: ServerMessage, sendOptions?: { throttle?: boolean }): void {
     const payload = JSON.stringify(message);
+    const throttle = sendOptions?.throttle ?? false;
     for (const client of clients) {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(payload);
+      if (client.readyState !== WS_OPEN) {
+        continue;
       }
+      if (throttle && client.bufferedAmount > bufferedAmountThresholdBytes) {
+        // Ticket 005 AC: a stalled client stops receiving line/telemetry
+        // (throttled) but still receives the next snapshot (never
+        // throttled) -- see this call's own call sites.
+        continue;
+      }
+      client.send(payload);
     }
   }
 
-  /** Merge an already-computed endpoint snapshot with the availability
-   * cache's current status and the current remembered-robot roster into
-   * one full-snapshot {@link EndpointsMessage} -- no new logic, per this
-   * module's own "composition only" contract. `registry.rememberedRobots()`
-   * (ticket 003) already excludes anything currently attached, so this
-   * is a straight pass-through, same as `firmwareStatus` just above it.
-   * Every call site below re-runs this function on every broadcast, so a
-   * roster change from `requestForgetKnownRobot` (ticket 003's own
-   * `emitDevices()` call) reaches every connected client on the very
-   * next `onDevicesChanged` firing -- no separate event type needed. */
-  function buildEndpointsMessage(endpoints: EndpointListEntry[]): EndpointsMessage {
+  function sendNotice(linkId: string | undefined, level: Notice["level"], text: string): void {
+    const notice: Notice = {
+      type: "notice",
+      level,
+      text,
+      at: Date.now(),
+      seq: nextSeq(),
+      ...(linkId !== undefined ? { linkId } : {}),
+    };
+    broadcast(notice);
+  }
+
+  // -----------------------------------------------------------------
+  // Snapshot broadcast -- one per coalesced change-feed flush, plus a
+  // server-side overlay of the two ephemeral fields buildSnapshot never
+  // populates (projection.ts's own doc comment): SnapshotLink.flash.
+  // -----------------------------------------------------------------
+
+  const flashStateByLink = new Map<string, { source: FirmwareSourceRef; phase: FlashPhase }>();
+
+  function overlayLink(link: SnapshotLink): SnapshotLink {
+    const flash = flashStateByLink.get(link.id);
+    return flash ? { ...link, flash } : link;
+  }
+
+  function overlaySnapshot(snapshot: Snapshot): Snapshot {
+    if (flashStateByLink.size === 0) {
+      return snapshot;
+    }
     return {
-      type: "endpoints",
-      endpoints,
-      firmwareStatus: availabilityCache.current(),
-      rememberedRobots: registry.rememberedRobots(),
-      // Sprint 8 ticket 004: registry.discoveredServices() is a straight
-      // pass-through of MdnsDiscovery's own current() snapshot -- see
-      // that method's own doc comment. registry.onDevicesChanged (which
-      // every call site below is already subscribed to) re-fires on a
-      // discovery change too (DeviceRegistry.start wires that), so this
-      // reaches every connected client with no separate event type
-      // needed, same as firmwareStatus/rememberedRobots just above.
-      discoveredServices: registry.discoveredServices(),
+      ...snapshot,
+      devices: snapshot.devices.map((device) => ({ ...device, links: device.links.map(overlayLink) })),
+      unassigned: snapshot.unassigned.map(overlayLink),
     };
   }
 
-  const unsubscribeDevices = registry.onDevicesChanged((endpoints) => {
-    broadcast(buildEndpointsMessage(endpoints));
+  function buildCurrentSnapshot(): Snapshot {
+    return overlaySnapshot(buildSnapshotFromRows(store.projectionRows(), nextSeq(), Date.now()));
+  }
+
+  function broadcastSnapshot(): void {
+    broadcast(buildCurrentSnapshot());
+  }
+
+  // Every currently-open session gets a raw-line subscription exactly
+  // once, so the console log echoes inbound ("rx") device chatter --
+  // connect/harvester.ts's own onLine/onClose/onAckNack subscriptions on
+  // the same LineLink are independent of this one (LineLink's `onLine`/
+  // `onRawLine` support any number of listeners; see that module's own
+  // doc comment). A WeakSet, not a Set, so a session this module has
+  // subscribed to can still be garbage-collected once the reconciler
+  // itself drops it (a close, or a fresh session replacing it).
+  const subscribedSessions = new WeakSet<ConnectedSession>();
+  function ensureLineSubscriptions(): void {
+    for (const session of runtime.reconciler.sessions.values()) {
+      if (subscribedSessions.has(session)) {
+        continue;
+      }
+      subscribedSessions.add(session);
+      session.link.onRawLine((line: string) => {
+        broadcast({ type: "line", linkId: session.linkId, direction: "rx", line, seq: nextSeq() }, { throttle: true });
+      });
+    }
+  }
+
+  const unsubscribeStoreChange = store.onChange(() => {
+    ensureLineSubscriptions();
+    broadcastSnapshot();
   });
-  const unsubscribeLine = registry.onLine((endpointId, direction, line, origin) => {
+
+  const unsubscribeTelemetry = runtime.telemetry.onTelemetry((linkId, event) => {
     broadcast(
-      origin
-        ? { type: "line", endpointId, direction, line, origin }
-        : { type: "line", endpointId, direction, line },
+      {
+        type: "telemetry",
+        linkId,
+        seq: nextSeq(),
+        ...(event.header !== undefined ? { header: event.header } : {}),
+        ...(event.frame !== undefined ? { frame: event.frame } : {}),
+      },
+      { throttle: true },
     );
   });
-  const unsubscribeError = registry.onError((endpointId, message) => {
-    broadcast(endpointId !== undefined ? { type: "error", endpointId, message } : { type: "error", message });
+  const unsubscribeNotice = runtime.telemetry.onNotice((linkId, message) => {
+    sendNotice(linkId, "info", message);
   });
-  // Sprint 009 ticket 002: decoded telemetry rides its own message type,
-  // never `buildEndpointsMessage`'s full snapshot or the `line` channel
-  // above -- see `deviceRegistry.ts`'s own `TelemetryEvent` doc comment
-  // and `wsMessages.ts`'s `TelemetryMessage` doc comment for why. This
-  // module still does no decoding/classification of its own: `event` is
-  // already either a header or a frame, straight from `deviceRegistry.ts`.
-  const unsubscribeTelemetry = registry.onTelemetry((endpointId, event) => {
-    const message: TelemetryMessage =
-      "header" in event
-        ? { type: "telemetry", endpointId, header: event.header }
-        : { type: "telemetry", endpointId, frame: event.frame };
-    broadcast(message);
+  // `FirmwareAvailabilityCache` is a self-contained in-memory poller
+  // with no `Store` of its own -- `projection.ts`'s `buildSnapshot`
+  // reads `store.projectionRows().firmware` (the `firmware` table), not
+  // this cache directly, so every poll result is written through
+  // `store.setFirmware` here. That write's own change-feed event is what
+  // triggers the next `snapshot` broadcast (`unsubscribeStoreChange`
+  // below) -- no separate broadcast call needed from this subscription.
+  function writeFirmwareStatusToStore(status: FirmwareStatusMap): void {
+    const checkedAt = Date.now();
+    for (const kind of ["relay", "robot"] as const) {
+      const availability = status[kind];
+      store.setFirmware(
+        availability.configured
+          ? {
+              kind,
+              repo: availability.repoUrl,
+              tag: availability.tag,
+              available: availability.available,
+              reason: availability.reason ?? null,
+              message: availability.message ?? null,
+              checkedAt,
+            }
+          : { kind, repo: null, tag: null, available: null, reason: null, message: null, checkedAt },
+      );
+    }
+  }
+  const unsubscribeAvailability = availabilityCache.onChange((status) => {
+    writeFirmwareStatusToStore(status);
   });
-  // deviceRegistry.ts (ticket 005) now carries the full FirmwareSourceRef
-  // through requestFlash/runFlash itself -- every progress/result event
-  // it emits already carries the exact `source` the client requested, so
-  // this module just relays it straight through (no wrapping here
-  // anymore, per this module's own "no logic of its own" contract).
-  const unsubscribeFlashProgress = registry.onFlashProgress((endpointId, source, phase) => {
-    broadcast({ type: "flash-progress", endpointId, source, phase });
+
+  // -----------------------------------------------------------------
+  // Flash orchestration (module doc comment's own section)
+  // -----------------------------------------------------------------
+
+  const inFlightFlashes = new Set<Promise<void>>();
+
+  function setFlashPhase(linkId: string, source: FirmwareSourceRef, phase: FlashPhase): void {
+    flashStateByLink.set(linkId, { source, phase });
+    broadcast({ type: "flash-progress", linkId, source, phase, seq: nextSeq() });
+  }
+
+  function finishFlash(linkId: string, source: FirmwareSourceRef, outcome: FlashOutcome): void {
+    flashStateByLink.delete(linkId);
+    broadcast(
+      outcome.status === "ok"
+        ? { type: "flash-result", linkId, source, status: "ok", seq: nextSeq() }
+        : { type: "flash-result", linkId, source, status: "error", message: outcome.error, seq: nextSeq() },
+    );
+  }
+
+  function failFlash(linkId: string, source: FirmwareSourceRef, message: string): void {
+    flashStateByLink.delete(linkId);
+    broadcast({ type: "flash-result", linkId, source, status: "error", message, seq: nextSeq() });
+  }
+
+  /** The body of one `flash-start` task -- see the module doc comment's
+   * "Flash orchestration" section. Never throws/rejects: every failure
+   * is reported as a `flash-result` `status: "error"`, matching the
+   * retired `deviceRegistry.ts#runFlash`'s own "failure is a value"
+   * contract. `startServer.close()` awaits every such task (via
+   * {@link inFlightFlashes}) before returning, so a flash in progress at
+   * shutdown finishes (and closes its DAPLink/HID handle via
+   * `flash.ts`'s own `finally`) before the process exits. */
+  async function runFlashTask(linkId: string, source: FirmwareSourceRef): Promise<void> {
+    setFlashPhase(linkId, source, source.kind === "release" ? "fetching" : "verifying");
+    try {
+      const linkRow = store.projectionRows().links.find((candidate) => candidate.id === linkId);
+      if (!linkRow || linkRow.transport !== "usb") {
+        failFlash(linkId, source, `flashing requires a directly attached USB link (link "${linkId}" is ${linkRow ? linkRow.transport : "unknown"})`);
+        return;
+      }
+      const usbSerial = usbSerialFromLinkId(linkId);
+      if (usbSerial === undefined) {
+        failFlash(linkId, source, `link "${linkId}" does not follow the "usb-<serial>" id convention`);
+        return;
+      }
+      const devices = await enumerateDaplinkDevicesFn();
+      const device = devices.find((candidate) => candidate.serialNumber === usbSerial);
+      if (!device) {
+        failFlash(linkId, source, `no USB device is currently enumerated for link "${linkId}" -- is it still plugged in?`);
+        return;
+      }
+
+      let hexText: string;
+      if (source.kind === "release") {
+        const firmwareSource = firmwareConfig[source.firmware];
+        if (!firmwareSource) {
+          failFlash(linkId, source, `no firmware source configured for "${source.firmware}"`);
+          return;
+        }
+        const resolved = await resolveReleaseFn(firmwareSource);
+        if ("reason" in resolved) {
+          failFlash(linkId, source, resolved.message);
+          return;
+        }
+        setFlashPhase(linkId, source, "verifying");
+        const fetched = await fetchAndVerifyHexFn(resolved);
+        if ("error" in fetched) {
+          failFlash(linkId, source, fetched.error);
+          return;
+        }
+        hexText = fetched.hex.toString("utf-8");
+      } else {
+        const uploaded = localHexUpload.consumeUpload(source.uploadId);
+        if (uploaded === undefined) {
+          failFlash(
+            linkId,
+            source,
+            `no pending local-hex upload found for id ${source.uploadId} -- it may have expired, ` +
+              `already been used, or never completed the upload handshake`,
+          );
+          return;
+        }
+        hexText = uploaded.toString("utf-8");
+      }
+
+      const outcome = await flashFn(device, hexText, (phase) => setFlashPhase(linkId, source, phase));
+      finishFlash(linkId, source, outcome);
+    } catch (error) {
+      failFlash(linkId, source, errorMessage(error));
+    }
+  }
+
+  function handleFlashStart(linkId: string, source: FirmwareSourceRef): void {
+    const task = runFlashTask(linkId, source);
+    inFlightFlashes.add(task);
+    void task.finally(() => inFlightFlashes.delete(task));
+  }
+
+  // -----------------------------------------------------------------
+  // WiFi provisioning -- WIFICRED SET <slot> <ssid> <password>, then a
+  // query, waiting for the robot's own reply. Salvaged from the retired
+  // deviceRegistry.ts#provisionWifi (same wire choreography), now
+  // reached via runtime.reconciler.sessions instead of a registry.
+  // -----------------------------------------------------------------
+
+  function requireSession(linkId: string): ConnectedSession {
+    const session = runtime.reconciler.sessions.get(linkId);
+    if (!session) {
+      throw new Error(`link "${linkId}" has no open session`);
+    }
+    return session;
+  }
+
+  async function provisionWifiOverLink(
+    session: ConnectedSession,
+    slot: number,
+    ssid: string,
+    password: string,
+  ): Promise<{ ok: boolean; message: string }> {
+    const link = session.link;
+    const replyPromise = new Promise<{ verb: string; fields: readonly string[] } | undefined>((resolve) => {
+      const timer = setTimeout(() => {
+        unsubscribe();
+        resolve(undefined);
+      }, wifiProvisionTimeoutMs);
+      timer.unref?.();
+      const unsubscribe = link.onLine((decoded) => {
+        if (decoded.verb === "wificred" || decoded.verb === "err") {
+          clearTimeout(timer);
+          unsubscribe();
+          resolve({ verb: decoded.verb, fields: decoded.fields });
+        }
+      });
+    });
+
+    try {
+      const setLine = link.sendCommand("WIFICRED", ["SET", slot, ssid, password]);
+      const redacted = setLine.replace(/\n$/, "").replace(password, "•".repeat(Math.min(8, password.length)));
+      broadcast({ type: "line", linkId: session.linkId, direction: "tx", line: redacted, seq: nextSeq() }, { throttle: true });
+      const queryLine = link.sendCommand("WIFICRED", []);
+      broadcast({ type: "line", linkId: session.linkId, direction: "tx", line: queryLine.replace(/\n$/, ""), seq: nextSeq() }, { throttle: true });
+    } catch (error) {
+      return { ok: false, message: errorMessage(error) };
+    }
+
+    const answer = await replyPromise;
+    if (!answer) {
+      return { ok: false, message: "the robot did not confirm within a few seconds -- is it running a build with WiFi support?" };
+    }
+    if (answer.verb === "err") {
+      return { ok: false, message: `the robot rejected the request (err ${answer.fields.join(" ")})` };
+    }
+    // Field order differs between extension builds -- accept either.
+    const [replySlot, second, third] = answer.fields;
+    const replySsid = second === ssid ? second : third;
+    const hasPassword = second === ssid ? third : second;
+    if (replySlot !== String(slot) || replySsid !== ssid) {
+      return { ok: false, message: `the robot answered for a different slot or network (${answer.fields.join(" ")})` };
+    }
+    if (password.length > 0 && hasPassword !== "1") {
+      return { ok: false, message: "the robot stored the network name but not the password" };
+    }
+    return { ok: true, message: `wrote ${ssid} to slot ${slot} -- power-cycle the robot and it will join` };
+  }
+
+  // -----------------------------------------------------------------
+  // Client command dispatch -- a Map<type, handler>, each awaited with
+  // its own try/catch (ticket 005's own Description).
+  // -----------------------------------------------------------------
+
+  type Handler = (ws: WebSocketLike, message: ClientMessage) => Promise<void>;
+
+  const handlers = new Map<ClientMessage["type"], Handler>();
+
+  handlers.set("session-open", async (_ws, message) => {
+    if (message.type !== "session-open") {
+      return;
+    }
+    if ("linkId" in message) {
+      await runtime.reconciler.requestOpen(message.linkId);
+      return;
+    }
+    // {relayLinkId, name}: routing one of a relay's several robots via
+    // an on-demand radio link needs the radio-address resolution
+    // ticket 006 adds and the on-demand link creation ticket 008 adds --
+    // neither exists yet as of this ticket. Report clearly rather than
+    // silently no-op.
+    sendNotice(
+      undefined,
+      "warn",
+      `bridging to "${message.name}" via relay ${message.relayLinkId} is not supported yet`,
+    );
   });
-  const unsubscribeFlashResult = registry.onFlashResult(
-    (endpointId, source, status, message, classification, name, reidentify) => {
-      // classification/name/reidentify are only ever present on
-      // registry.ts's own `status: "ok"` (ticket 004's reidentify
-      // sequencing) -- omit each field rather than sending it
-      // `undefined`, matching this module's existing `message` handling
-      // just above.
-      const result: FlashResultMessage = { type: "flash-result", endpointId, source, status };
-      if (message !== undefined) {
-        result.message = message;
-      }
-      if (classification !== undefined) {
-        result.classification = classification;
-      }
-      if (name !== undefined) {
-        result.name = name;
-      }
-      if (reidentify !== undefined) {
-        result.reidentify = reidentify;
-      }
-      broadcast(result);
-    },
-  );
-  // The availability cache's own poll can change `firmwareStatus`
-  // independently of any device attach/detach -- re-broadcast the
-  // current endpoint snapshot so the robot-firmware button can flip to
-  // enabled with no user action, per the ticket's self-healing
-  // requirement.
-  const unsubscribeAvailability = availabilityCache.onChange(() => {
-    broadcast(buildEndpointsMessage(registry.snapshot()));
+
+  handlers.set("session-close", async (_ws, message) => {
+    if (message.type !== "session-close") {
+      return;
+    }
+    await runtime.reconciler.requestClose(message.linkId);
   });
+
+  handlers.set("line", async (_ws, message) => {
+    if (message.type !== "line") {
+      return;
+    }
+    const session = requireSession(message.linkId);
+    const verb = message.line.trim().split(/\s+/)[0];
+    if (verb !== undefined && verb.toUpperCase() === "HELLO") {
+      // HELLO's disciplined resync path (the retired registry's own
+      // resyncSession) has no equivalent yet on connect/harvester.ts's
+      // seam -- reject clearly rather than desyncing the session by
+      // sending it as a raw line.
+      throw new Error('"HELLO" cannot be sent as a raw line -- close and reopen the link instead');
+    }
+    session.link.sendLine(message.line);
+    broadcast({ type: "line", linkId: message.linkId, direction: "tx", line: message.line, seq: nextSeq() }, { throttle: true });
+  });
+
+  handlers.set("send-command", async (_ws, message) => {
+    if (message.type !== "send-command") {
+      return;
+    }
+    const session = requireSession(message.linkId);
+    if (message.verb.toUpperCase() === "HELLO") {
+      throw new Error('"HELLO" cannot be sent via send-command -- close and reopen the link instead');
+    }
+    const fields = message.fields ?? [];
+    const sent = isSequencedVerb(message.verb) ? session.link.sendCommand(message.verb, fields) : session.link.sendUnsequenced(message.verb, fields);
+    broadcast({ type: "line", linkId: message.linkId, direction: "tx", line: sent.replace(/\n$/, ""), seq: nextSeq() }, { throttle: true });
+  });
+
+  handlers.set("flash-start", async (_ws, message) => {
+    if (message.type !== "flash-start") {
+      return;
+    }
+    handleFlashStart(message.linkId, message.source);
+  });
+
+  handlers.set("flash-local-begin", async (ws, message) => {
+    if (message.type !== "flash-local-begin") {
+      return;
+    }
+    const result = localHexUpload.beginUpload({
+      fileName: message.fileName,
+      byteLength: message.byteLength,
+      sha256: message.sha256,
+    });
+    if (ws.readyState !== WS_OPEN) {
+      return;
+    }
+    // Unicast to the requester alone -- an upload handshake is
+    // inherently per-client, unlike a state-change notice everyone
+    // should see.
+    ws.send(
+      JSON.stringify(
+        "error" in result
+          ? ({ type: "notice", level: "error", text: result.error, at: Date.now(), seq: nextSeq() } satisfies ServerMessage)
+          : ({ type: "flash-local-ready", uploadId: result.uploadId, seq: nextSeq() } satisfies ServerMessage),
+      ),
+    );
+  });
+
+  handlers.set("forget-device", async (_ws, message) => {
+    if (message.type !== "forget-device") {
+      return;
+    }
+    store.deleteDevice(message.deviceId);
+  });
+
+  handlers.set("get-wifi-credentials", async (ws, message) => {
+    if (message.type !== "get-wifi-credentials") {
+      return;
+    }
+    const described = wifiCredentials.describe();
+    const revealed = message.reveal ? wifiCredentials.read()?.password : undefined;
+    if (ws.readyState === WS_OPEN) {
+      ws.send(
+        JSON.stringify({
+          type: "wifi-credentials",
+          ...described,
+          ...(revealed !== undefined ? { password: revealed } : {}),
+          seq: nextSeq(),
+        } satisfies ServerMessage),
+      );
+    }
+  });
+
+  handlers.set("set-wifi-credentials", async (ws, message) => {
+    if (message.type !== "set-wifi-credentials") {
+      return;
+    }
+    wifiCredentials.write(message.ssid, message.password);
+    if (ws.readyState === WS_OPEN) {
+      ws.send(JSON.stringify({ type: "wifi-credentials", ...wifiCredentials.describe(), seq: nextSeq() } satisfies ServerMessage));
+    }
+  });
+
+  handlers.set("provision-wifi", async (ws, message) => {
+    if (message.type !== "provision-wifi") {
+      return;
+    }
+    const linkId = message.linkId;
+    const reply = (result: { ok: boolean; message: string }): void => {
+      // Unicast to the requester -- mirrors the retired
+      // deviceRegistry.ts-backed server.ts, which answered
+      // provision-wifi to the one socket that asked, not every
+      // connected console.
+      if (ws.readyState === WS_OPEN) {
+        ws.send(JSON.stringify({ type: "wifi-provision-result", linkId, ...result, seq: nextSeq() } satisfies ServerMessage));
+      }
+    };
+    const credentials = wifiCredentials.read();
+    if (!credentials) {
+      reply({ ok: false, message: "no WiFi network is stored yet -- enter one first" });
+      return;
+    }
+    if (/\s/.test(credentials.ssid) || /\s/.test(credentials.password)) {
+      reply({ ok: false, message: "the network name and password cannot contain spaces (the wire splits on them)" });
+      return;
+    }
+    const session = requireSession(linkId);
+    const result = await provisionWifiOverLink(session, message.slot ?? 0, credentials.ssid, credentials.password);
+    reply(result);
+  });
+
+  async function dispatch(ws: WebSocketLike, message: ClientMessage): Promise<void> {
+    const handler = handlers.get(message.type);
+    if (!handler) {
+      return;
+    }
+    try {
+      await handler(ws, message);
+    } catch (error) {
+      const linkId = "linkId" in message ? message.linkId : undefined;
+      sendNotice(linkId, "error", errorMessage(error));
+    }
+  }
+
+  // -----------------------------------------------------------------
+  // WebSocket lifecycle
+  // -----------------------------------------------------------------
 
   wss.on("connection", (ws) => {
     clients.add(ws);
-    ws.send(JSON.stringify(buildEndpointsMessage(registry.snapshot()) satisfies ServerMessage));
+
+    // Ticket 005 AC: a socket that emits "error" is dropped, not the
+    // process -- registering a listener at all is what stops Node's
+    // EventEmitter from throwing an unhandled "error" event.
+    ws.on("error", () => {
+      clients.delete(ws);
+    });
+    ws.on("close", () => {
+      clients.delete(ws);
+    });
+
+    ws.send(JSON.stringify(buildCurrentSnapshot() satisfies ServerMessage));
 
     ws.on("message", (data, isBinary) => {
       if (isBinary) {
-        // The local-hex upload handshake's binary half (see this
-        // module's own doc comment and wsMessages.ts's convention):
-        // uploadId (ASCII) || payload, with no JSON envelope at all --
-        // splitting and verifying it is localHexUpload.ts's job, not
-        // this module's.
         const result = localHexUpload.receiveFrame(toBuffer(data));
-        if ("error" in result) {
-          ws.send(JSON.stringify({ type: "error", message: result.error } satisfies ServerMessage));
+        if ("error" in result && ws.readyState === WS_OPEN) {
+          ws.send(JSON.stringify({ type: "notice", level: "error", text: result.error, at: Date.now(), seq: nextSeq() } satisfies ServerMessage));
         }
-        // On success there is nothing to send back yet -- the client
-        // already has the uploadId from flash-local-ready, and proceeds
-        // straight to flash-start referencing it.
         return;
       }
 
@@ -391,187 +883,44 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       try {
         parsed = JSON.parse(data.toString());
       } catch {
-        ws.send(
-          JSON.stringify({ type: "error", message: "malformed JSON message" } satisfies ServerMessage),
-        );
+        // Unicast, not broadcast -- a malformed message is this one
+        // client's own encoding mistake, not something every connected
+        // console needs to see (mirrors the retired server.ts's own
+        // direct `ws.send` for this same case).
+        if (ws.readyState === WS_OPEN) {
+          ws.send(JSON.stringify({ type: "notice", level: "error", text: "malformed JSON message", at: Date.now(), seq: nextSeq() } satisfies ServerMessage));
+        }
         return;
       }
       const message = parseClientMessage(parsed);
       if (!message) {
-        ws.send(
-          JSON.stringify({
-            type: "error",
-            message: "unrecognized message shape",
-          } satisfies ServerMessage),
-        );
+        if (ws.readyState === WS_OPEN) {
+          ws.send(
+            JSON.stringify({ type: "notice", level: "error", text: "unrecognized message shape", at: Date.now(), seq: nextSeq() } satisfies ServerMessage),
+          );
+        }
         return;
       }
-      switch (message.type) {
-        case "session-open":
-          // OOP 2026-09-09: `robotName` (reserved since sprint 4) is now
-          // live -- forwarded to requestOpen as its `target` argument,
-          // which routes through a relay endpoint's radio instead of a
-          // plain USB open. `radio` only makes sense alongside
-          // `robotName` (see wsMessages.ts's SessionOpenMessage doc
-          // comment), so it rides along inside the same conditional
-          // rather than being forwarded independently.
-          //
-          // Sprint 8 ticket 005: `autoRobot: true` (only ever sent
-          // alongside no `robotName` -- RelayPage's Connect action with
-          // the dropdown's placeholder selected) requests
-          // `requestOpen`'s default-failover candidate list, reached by
-          // passing an empty `target` object (`{}`) rather than a single
-          // named one -- see `deviceRegistry.ts#requestOpen`'s own doc
-          // comment for why `target` present-but-empty means "use the
-          // default-failover list" instead of "open the endpoint's own
-          // plain USB session" (the `else` branch below, taken only when
-          // neither `robotName` nor `autoRobot` is set).
-          if (message.robotName !== undefined) {
-            void registry.requestOpen(message.endpointId, {
-              robotName: message.robotName,
-              ...(message.radio !== undefined ? { radio: message.radio } : {}),
-            });
-          } else if (message.autoRobot) {
-            void registry.requestOpen(message.endpointId, {});
-          } else {
-            void registry.requestOpen(message.endpointId);
-          }
-          break;
-        case "session-close":
-          void registry.requestClose(message.endpointId);
-          break;
-        case "get-wifi-credentials": {
-          const described = wifiCredentials.describe();
-          const revealed = message.reveal ? wifiCredentials.read()?.password : undefined;
-          ws.send(
-            JSON.stringify({
-              type: "wifi-credentials",
-              ...described,
-              ...(revealed !== undefined ? { password: revealed } : {}),
-            } satisfies ServerMessage),
-          );
-          break;
-        }
-        case "set-wifi-credentials":
-          try {
-            wifiCredentials.write(message.ssid, message.password);
-          } catch (error) {
-            ws.send(
-              JSON.stringify({
-                type: "error",
-                message: `could not save the WiFi credentials: ${error instanceof Error ? error.message : String(error)}`,
-              } satisfies ServerMessage),
-            );
-            break;
-          }
-          ws.send(JSON.stringify({ type: "wifi-credentials", ...wifiCredentials.describe() } satisfies ServerMessage));
-          break;
-        case "provision-wifi": {
-          const credentials = wifiCredentials.read();
-          const endpointId = message.endpointId;
-          if (!credentials) {
-            ws.send(
-              JSON.stringify({
-                type: "wifi-provision-result",
-                endpointId,
-                ok: false,
-                message: "no WiFi network is stored yet -- enter one first",
-              } satisfies ServerMessage),
-            );
-            break;
-          }
-          void registry.provisionWifi(endpointId, message.slot ?? 0, credentials.ssid, credentials.password).then((result) => {
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: "wifi-provision-result", endpointId, ...result } satisfies ServerMessage));
-            }
-          });
-          break;
-        }
-        case "line":
-          void registry.sendLine(message.endpointId, message.line);
-          break;
-        case "send-command":
-          // Ticket 003: deviceRegistry.ts#sendCommand is what decides
-          // sequenced-vs-unsequenced dispatch (via isSequencedVerb) and
-          // rejects HELLO -- this module only routes, per its own "no
-          // logic of its own" contract.
-          void registry.sendCommand(message.endpointId, message.verb, message.fields ?? []);
-          break;
-        case "flash-start":
-          // Both source kinds forward straight to requestFlash unchanged
-          // -- deviceRegistry.ts#runFlash is what branches on
-          // source.kind (see this module's own doc comment).
-          void registry.requestFlash(message.endpointId, message.source);
-          break;
-        case "forget-known-robot":
-          // Synchronous, and itself calls emitDevices() (ticket 003) --
-          // the resulting broadcast picks up the updated
-          // rememberedRobots roster via buildEndpointsMessage above, no
-          // separate event type needed.
-          registry.requestForgetKnownRobot(message.name);
-          break;
-        case "flash-local-begin": {
-          const result = localHexUpload.beginUpload({
-            fileName: message.fileName,
-            byteLength: message.byteLength,
-            sha256: message.sha256,
-          });
-          ws.send(
-            JSON.stringify(
-              "error" in result
-                ? ({ type: "error", message: result.error } satisfies ServerMessage)
-                : ({ type: "flash-local-ready", uploadId: result.uploadId } satisfies ServerMessage),
-            ),
-          );
-          break;
-        }
-      }
-    });
-
-    ws.on("close", () => {
-      clients.delete(ws);
+      void dispatch(ws, message);
     });
   });
 
-  registry.start();
   availabilityCache.start();
-  // `start()` only arms the `DEFAULT_AVAILABILITY_POLL_INTERVAL_MS`
-  // interval timer -- without this, a freshly started host reports
-  // every firmware kind as "not-yet-checked" (flash buttons disabled,
-  // UI stuck on "Checking whether this firmware is available...") for
-  // up to 5 minutes even when the firmware is actually available.
-  // Mirrors `deviceRegistry.ts#start`'s `watcher.start(); void
-  // watcher.pollOnce();` composition exactly: the interval owner starts
-  // the timer, the caller composing it also fires one poll immediately.
-  // The `onChange` subscription above (`unsubscribeAvailability`) is
-  // already wired before this line, so this poll's result -- whether it
-  // resolves before or after `listen()` below -- reaches every already
-  // connected client via the normal broadcast path, not just future
-  // connections. `void` is deliberate and matches the existing idiom
-  // (this class's own interval callback, and `deviceRegistry.ts`'s
-  // `pollOnce()` call, both fire-and-forget the same way): `pollOnce()`
-  // never rejects in practice because `checkAvailability` (real or
-  // test fake) reports network/API failures through its own `reason`
-  // field rather than throwing, so there is no unhandled rejection to
-  // guard against here.
-  void availabilityCache.pollOnce();
+  // `onChange` above only fires when a poll's result differs from the
+  // cache's own prior status -- write the very first poll's result
+  // through unconditionally so a freshly-started host doesn't wait for
+  // a *second* differing poll to ever populate `store.firmware` at all.
+  void availabilityCache.pollOnce().then(writeFirmwareStatusToStore);
+
   try {
     await listen(httpServer, port, host);
   } catch (error) {
-    // Don't leak a running DeviceRegistry (device polling, and any link
-    // it may have opened) or a live FirmwareAvailabilityCache poll timer
-    // behind a server that failed to bind -- see the module doc
-    // comment's port-busy requirement.
-    unsubscribeDevices();
-    unsubscribeLine();
-    unsubscribeError();
+    unsubscribeStoreChange();
     unsubscribeTelemetry();
-    unsubscribeFlashProgress();
-    unsubscribeFlashResult();
+    unsubscribeNotice();
     unsubscribeAvailability();
-    await registry.stop().catch(() => {});
     availabilityCache.stop();
-    wss.close();
+    wss.close(() => {});
     throw error;
   }
 
@@ -583,24 +932,32 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     host,
     url: `http://${host}:${actualPort}`,
     close: async () => {
-      unsubscribeDevices();
-      unsubscribeLine();
-      unsubscribeError();
-      unsubscribeFlashProgress();
-      unsubscribeFlashResult();
+      unsubscribeStoreChange();
+      unsubscribeTelemetry();
+      unsubscribeNotice();
       unsubscribeAvailability();
       availabilityCache.stop();
+      // Stop accepting new connections/commands immediately (bounding
+      // how long the drain below can run for), but do not yet sever
+      // already-open clients -- they can still observe a final
+      // flash-progress/flash-result broadcast while any in-flight flash
+      // finishes (or fails) naturally, closing its DAPLink/HID handle
+      // via flash.ts's own `finally` -- ticket 005's own signal-handling
+      // acceptance criterion: SIGINT/SIGTERM mid-flash must not
+      // interrupt the write. `wss.close()` only stops new upgrade
+      // requests when (as here) it wraps an externally-owned
+      // `httpServer` -- that server is closed separately, below.
+      await new Promise<void>((resolve, reject) => {
+        wss.close((err) => (err ? reject(err) : resolve()));
+      });
+      await Promise.allSettled([...inFlightFlashes]);
       for (const client of clients) {
         client.terminate();
       }
       clients.clear();
       await new Promise<void>((resolve, reject) => {
-        wss.close((err) => (err ? reject(err) : resolve()));
-      });
-      await new Promise<void>((resolve, reject) => {
         httpServer.close((err) => (err ? reject(err) : resolve()));
       });
-      await registry.stop();
     },
   };
 }

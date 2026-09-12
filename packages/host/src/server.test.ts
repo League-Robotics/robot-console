@@ -1,1246 +1,625 @@
-import { createHash } from "node:crypto";
+/**
+ * server.test.ts — sprint 015 ticket 005's own suite for the rewritten
+ * thin server. Every test drives a real, temp-file-backed `Store`
+ * (so `buildSnapshotFromRows`/the change feed behave exactly as
+ * production does) against a fake `runtime` (reconciler + telemetry) and
+ * a fake `WebSocketServer`/`WebSocket` pair (`WebSocketServerLike`/
+ * `WebSocketLike`, this module's own injectable seam) so per-socket
+ * `error`/`bufferedAmount` behavior — this ticket's own acceptance
+ * criteria — can be driven deterministically with no real network
+ * connection. The HTTP layer underneath is real (bound to loopback,
+ * closed in `afterEach`), which is what the port-busy test needs.
+ */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import WebSocket from "ws";
-import { Session, type AckNackEvent, type DecodedLine, type ParsedBanner, type WireField } from "@robot-console/protocol";
-import { DeviceWatcher, type DaplinkDevice } from "./devices.js";
-import { DeviceRegistry, type DeviceRegistryOptions } from "./deviceRegistry.js";
-import type { Link } from "./link/Link.js";
-import type { FirmwareConfigMap, FirmwareSource } from "./config.js";
-import { LocalHexUploadManager } from "./localHexUpload.js";
-import { FirmwareAvailabilityCache, type ResolvedRelease } from "./releases.js";
-import { startServer, type RunningServer } from "./server.js";
-import { KnownRobotsStore, type KnownRobotRecord } from "./store/knownRobots.js";
-import { UPLOAD_ID_BYTE_LENGTH, type FlashPhase, type ServerMessage } from "./wsMessages.js";
-import type { MdnsDiscovery } from "./discovery/mdnsDiscovery.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { createServer } from "node:http";
+import { createHash } from "node:crypto";
+import {
+  startServer,
+  DEFAULT_BUFFERED_AMOUNT_THRESHOLD_BYTES,
+  type RunningServer,
+  type ServerRuntime,
+  type StartServerOptions,
+  type WebSocketLike,
+  type WebSocketServerLike,
+} from "./server.js";
+import { openStoreDb } from "./store/db.js";
+import { Store } from "./store/index.js";
+import type { ConnectedSession } from "./connect/connector.js";
+import type { HarvesterTelemetryEvent } from "./connect/harvester.js";
+import type { Snapshot, ServerMessage, FirmwareSourceRef } from "./wsMessages.js";
+import type { FlashOutcome } from "./flash.js";
+import type { DaplinkDevice } from "./devices.js";
 
-// Per the ticket's Testing section: a full end-to-end WebSocket round
-// trip -- a real Express/`ws` server, a real WebSocket client, and fake
-// underlying device/link modules (no real hardware) -- since that does
-// not require hardware, only devices.ts/UsbSerialLink's own seams.
+// ---------------------------------------------------------------------
+// Fakes
+// ---------------------------------------------------------------------
 
-function device(overrides: Partial<DaplinkDevice> = {}): DaplinkDevice {
-  return {
-    serialNumber: "SERIAL-A",
-    displaySerial: "SHORT-A",
-    availability: "full",
-    serialPort: { path: "/dev/cu.usbmodemA" },
-    hid: { path: "/hid/A" },
-    ...overrides,
-  };
-}
+type Listener = (...args: unknown[]) => void;
 
-function banner(overrides: Partial<ParsedBanner> = {}): ParsedBanner {
-  return {
-    role: "NEZHA2",
-    commonName: "robot",
-    name: "zeguz",
-    serial: 123,
-    dialect: "space",
-    ...overrides,
-  };
-}
-
-/** See `deviceRegistry.test.ts`'s own `FakeLink` for the full doc
- * comment on the `connect()`/`identify()` split this implements --
- * `connectImpl` defaults to an immediately-succeeding transport since
- * every test here except the "no open link" one below cares only about
- * `identify()`'s outcome. */
-class FakeLink implements Link {
-  readonly session = new Session();
-  sentLines: string[] = [];
-  private lineListeners = new Set<(line: DecodedLine) => void>();
-  private ackNackListeners = new Set<(event: AckNackEvent) => void>();
-  private errorListeners = new Set<(err: Error) => void>();
-
-  constructor(
-    private readonly identifyImpl: () => Promise<ParsedBanner | null>,
-    private readonly connectImpl: () => Promise<void> = () => Promise.resolve(),
-  ) {}
-
-  connect(): Promise<void> {
-    return this.connectImpl();
-  }
-
-  identify(): Promise<ParsedBanner | null> {
-    return this.identifyImpl();
-  }
-
-  close(): Promise<void> {
-    return Promise.resolve();
-  }
-
-  sendLine(line: string): void {
-    this.sentLines.push(line);
-  }
-
-  sendCommand(verb: string, fields: readonly WireField[] = []): string {
-    const line = this.session.send(verb, fields);
-    this.sentLines.push(line);
-    return line;
-  }
-
-  sendUnsequenced(verb: string, fields: readonly WireField[] = []): string {
-    const line = this.session.sendUnsequenced(verb, fields);
-    this.sentLines.push(line);
-    return line;
-  }
-
-  checkLiveness(): void {
-    // Not exercised here -- no-op.
-  }
-
-  onLine(listener: (line: DecodedLine) => void): () => void {
-    this.lineListeners.add(listener);
-    return () => {
-      this.lineListeners.delete(listener);
-    };
-  }
-
-  private rawLineListeners = new Set<(raw: string) => void>();
-  onRawLine(listener: (raw: string) => void): () => void {
-    this.rawLineListeners.add(listener);
-    return () => {
-      this.rawLineListeners.delete(listener);
-    };
-  }
-
-  emitRawLine(raw: string): void {
-    for (const listener of this.rawLineListeners) {
-      listener(raw);
-    }
-  }
-
-  onAckNack(listener: (event: AckNackEvent) => void): () => void {
-    this.ackNackListeners.add(listener);
-    return () => {
-      this.ackNackListeners.delete(listener);
-    };
-  }
-
-  onError(listener: (err: Error) => void): () => void {
-    this.errorListeners.add(listener);
-    return () => {
-      this.errorListeners.delete(listener);
-    };
-  }
-
-  emitLine(line: DecodedLine): void {
-    for (const listener of this.lineListeners) {
-      listener(line);
-    }
-  }
-}
-
-/** A fixture {@link KnownRobotRecord}, following this file's own
- * `device()`/`banner()` "sensible defaults, override what a test cares
- * about" pattern. `name` deliberately differs from `banner()`'s
- * "zeguz" -- a remembered-robot fixture and the live-attached device in
- * these tests must never collide, since `DeviceRegistry.rememberedRobots()`
- * (ticket 003) excludes whatever is currently attached. */
-function knownRobotRecord(overrides: Partial<KnownRobotRecord> = {}): KnownRobotRecord {
-  return {
-    name: "kwazi",
-    firstSeenAt: "2024-01-01T00:00:00.000Z",
-    lastSeenAt: "2024-01-01T00:00:00.000Z",
-    lastSeenVia: "usb",
-    lastUsbSerial: "SERIAL-REMEMBERED",
-    lastRole: "NEZHA2",
-    lastType: "robot",
-    ...overrides,
-  };
-}
-
-/** An in-memory fake {@link KnownRobotsStore}, mirroring
- * `deviceRegistry.test.ts`'s own "records the exact recordSighting call
- * shape (fake store)" fixture (`as unknown as KnownRobotsStore`) rather
- * than a real, temp-directory-backed one -- `knownRobots.test.ts`
- * already covers the real store's own persistence/atomic-write
- * behavior in isolation, so nothing here needs real filesystem I/O.
- * `forget` is a real, mutating no-op-on-unknown-name implementation
- * (matching {@link KnownRobotsStore.forget}'s own contract) since these
- * tests care about the observable effect of a forget round-tripping
- * through `server.ts`. */
-function fakeKnownRobotsStore(initial: KnownRobotRecord[] = []): KnownRobotsStore {
-  const records = new Map(initial.map((record) => [record.name, record]));
-  return {
-    list: () => [...records.values()],
-    get: (name: string) => records.get(name),
-    recordSighting: () => {},
-    forget: (name: string) => records.delete(name),
-    flush: async () => {},
-    isReadOnly: false,
-  } as unknown as KnownRobotsStore;
-}
-
-/** Sprint 8 ticket 004: a fully synthetic {@link MdnsDiscovery}, never
- * the real `bonjour-service`-backed default (which would depend on --
- * and reach out onto -- whatever LAN the suite happens to run on,
- * exactly the "environment leak" {@link fakeKnownRobotsStore}'s own doc
- * comment already guards against for the remembered-robot roster).
- * Static: `onChange` never fires, matching every test here that only
- * ever reads `EndpointsMessage.discoveredServices` from an already-built
- * snapshot rather than a live update. */
-function fakeMdnsDiscovery(
-  snapshot: { relays?: unknown[]; robots?: unknown[]; wifiRobots?: unknown[] } = {},
-): MdnsDiscovery {
-  return {
-    current: () => ({
-      relays: snapshot.relays ?? [],
-      robots: snapshot.robots ?? [],
-      // Sprint 10 ticket 003: deviceRegistry.ts's syncWifiEndpoints
-      // reads this on every start()/onChange -- gateWifiRobots iterates
-      // it directly, so it must never be undefined even when a test
-      // never mentions WiFi robots at all.
-      wifiRobots: snapshot.wifiRobots ?? [],
+function fakeWebSocket(): WebSocketLike & { listeners: Map<string, Listener[]>; emit: (event: string, ...args: unknown[]) => void; sent: ServerMessage[] } {
+  const listeners = new Map<string, Listener[]>();
+  const sent: ServerMessage[] = [];
+  const ws = {
+    readyState: 1, // OPEN
+    bufferedAmount: 0,
+    listeners,
+    send: vi.fn((data: string) => {
+      sent.push(JSON.parse(data) as ServerMessage);
     }),
-    onChange: () => () => {},
-    start: () => {},
-    stop: () => {},
-  } as unknown as MdnsDiscovery;
+    terminate: vi.fn(() => {
+      ws.readyState = 3; // CLOSED
+    }),
+    on: vi.fn((event: string, listener: Listener) => {
+      const existing = listeners.get(event) ?? [];
+      existing.push(listener);
+      listeners.set(event, existing);
+    }),
+    emit(event: string, ...args: unknown[]): void {
+      for (const listener of listeners.get(event) ?? []) {
+        listener(...args);
+      }
+    },
+    sent,
+  };
+  return ws;
 }
 
-function buildRegistry(link: FakeLink, overrides: DeviceRegistryOptions = {}): DeviceRegistry {
-  const watcher = new DeviceWatcher({
-    listDevices: () => Promise.resolve([device()]),
-    pollIntervalMs: 3_600_000,
-  });
-  return new DeviceRegistry({
-    watcher,
-    resolveName: async () => ({ status: "named", name: "zeguz", deviceId: 1 }),
-    createLink: () => link,
-    // The host's own robot probes (OOP 2026-09-09: automatic FUNCS +
-    // periodic STATUS) stay off here so every test below sees exactly
-    // the lines it sent -- they have their own coverage in
-    // deviceRegistry.test.ts.
-    statusPollIntervalMs: 0,
-    autoRequestFunctions: false,
-    // Sprint 5: default to an empty, in-memory fake store rather than
-    // DeviceRegistry's own default (a real KnownRobotsStore reading
-    // this machine's actual ~/.local/state roster) -- without this
-    // override, every test's `rememberedRobots` assertion would depend
-    // on whatever roster happens to exist on the machine running the
-    // suite, exactly the kind of environment leak `NO_FIRMWARE` (below)
-    // already guards against for firmwareConfig. A test that cares
-    // about a non-empty roster overrides `knownRobotsStore` itself.
-    knownRobotsStore: fakeKnownRobotsStore(),
-    // Sprint 8 ticket 004: same "never the real, environment-dependent
-    // default" rationale as knownRobotsStore just above -- see
-    // fakeMdnsDiscovery's own doc comment.
-    mdnsDiscovery: fakeMdnsDiscovery(),
-    ...overrides,
-  });
-}
-
-// ---------------------------------------------------------------------
-// Flash/firmware-status fixtures (sprint 2, ticket 006) -- fully
-// synthetic fakes for config.ts/releases.ts/flash.ts, following this
-// file's own "no real hardware/network" precedent (see the module doc
-// comment above).
-// ---------------------------------------------------------------------
-
-function firmwareSource(overrides: Partial<FirmwareSource> = {}): FirmwareSource {
-  return { repoUrl: "https://github.com/org/relay-firmware", tag: "latest", ...overrides };
-}
-
-function resolvedRelease(overrides: Partial<ResolvedRelease> = {}): ResolvedRelease {
+function fakeWebSocketServer(): WebSocketServerLike & { triggerConnection: (ws: WebSocketLike) => void } {
+  const connectionListeners: Array<(ws: WebSocketLike) => void> = [];
   return {
-    tag: "v1.0.0",
-    hexUrl: "https://example.com/MICROBIT.hex",
-    manifestUrl: "https://example.com/MICROBIT.hex.txt",
+    on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+      if (event === "connection") {
+        connectionListeners.push(listener as (ws: WebSocketLike) => void);
+      }
+    }) as WebSocketServerLike["on"],
+    close: vi.fn((callback: (err?: Error) => void) => callback()),
+    triggerConnection(ws: WebSocketLike): void {
+      for (const listener of connectionListeners) {
+        listener(ws);
+      }
+    },
+  };
+}
+
+function fakeLink(overrides: Partial<Record<string, unknown>> = {}) {
+  const lineListeners: Array<(decoded: { verb: string; fields: readonly string[] }) => void> = [];
+  const rawLineListeners: Array<(line: string) => void> = [];
+  return {
+    sendLine: vi.fn(),
+    sendCommand: vi.fn((verb: string, fields: readonly unknown[] = []) => `${verb} ${fields.join(" ")}\n`),
+    sendUnsequenced: vi.fn((verb: string, fields: readonly unknown[] = []) => `${verb} ${fields.join(" ")}\n`),
+    onLine: vi.fn((listener: (decoded: { verb: string; fields: readonly string[] }) => void) => {
+      lineListeners.push(listener);
+      return () => {
+        const i = lineListeners.indexOf(listener);
+        if (i >= 0) lineListeners.splice(i, 1);
+      };
+    }),
+    onRawLine: vi.fn((listener: (line: string) => void) => {
+      rawLineListeners.push(listener);
+      return () => {
+        const i = rawLineListeners.indexOf(listener);
+        if (i >= 0) rawLineListeners.splice(i, 1);
+      };
+    }),
+    close: vi.fn().mockResolvedValue(undefined),
+    _emitLine: (decoded: { verb: string; fields: readonly string[] }) => {
+      for (const l of lineListeners) l(decoded);
+    },
+    _emitRawLine: (line: string) => {
+      for (const l of rawLineListeners) l(line);
+    },
     ...overrides,
   };
 }
 
-/** A fixture `getFirmwareConfig`-shaped accessor -- the same injection
- * seam `deviceRegistry.test.ts` uses in place of `config.ts`'s real
- * environment/dotconfig read. */
-function configWith(relay?: FirmwareSource, robot?: FirmwareSource): () => FirmwareConfigMap {
-  return () => ({ relay, robot });
+function fakeSession(linkId: string, overrides: Partial<Record<string, unknown>> = {}): ConnectedSession {
+  return {
+    linkId,
+    deviceId: 1,
+    transport: "usb",
+    link: fakeLink() as unknown as ConnectedSession["link"],
+    classification: { type: "robot" } as unknown as ConnectedSession["classification"],
+    ...overrides,
+  } as ConnectedSession;
 }
 
-/** Collect parsed messages from a WebSocket client until `predicate`
- * matches one, or a timeout elapses. Buffers every message from the
- * moment it is constructed (not from whenever `waitFor` happens to be
- * called), and checks already-received messages before waiting for a
- * new one -- otherwise a message that arrives between the socket's
- * `"open"` event and a caller getting around to attaching a listener
- * (server.ts sends the initial devices snapshot synchronously in its
- * own `"connection"` handler, so this is a real race, not a
- * theoretical one) would be missed entirely and the wait would hang
- * until timeout. */
-class MessageCollector {
-  private readonly received: ServerMessage[] = [];
-  private readonly waiters: Array<{
-    predicate: (message: ServerMessage) => boolean;
-    resolve: (message: ServerMessage) => void;
-  }> = [];
+function fakeRuntime() {
+  const sessionsByLink = new Map<string, ConnectedSession>();
+  const telemetryListeners = new Set<(linkId: string, event: HarvesterTelemetryEvent) => void>();
+  const noticeListeners = new Set<(linkId: string, message: string) => void>();
+  const requestOpen = vi.fn().mockResolvedValue(undefined);
+  const requestClose = vi.fn().mockResolvedValue(undefined);
 
-  constructor(ws: WebSocket) {
-    ws.on("message", (data: WebSocket.RawData) => {
-      const message = JSON.parse(data.toString()) as ServerMessage;
-      this.received.push(message);
-      const index = this.waiters.findIndex((w) => w.predicate(message));
-      if (index >= 0) {
-        const [waiter] = this.waiters.splice(index, 1);
-        waiter?.resolve(message);
-      }
-    });
-  }
+  const runtime: ServerRuntime & {
+    sessionsByLink: Map<string, ConnectedSession>;
+    emitTelemetry: (linkId: string, event: HarvesterTelemetryEvent) => void;
+    emitNotice: (linkId: string, message: string) => void;
+    requestOpen: typeof requestOpen;
+    requestClose: typeof requestClose;
+  } = {
+    reconciler: {
+      requestOpen,
+      requestClose,
+      sessions: {
+        get: (linkId: string) => sessionsByLink.get(linkId),
+        values: () => sessionsByLink.values(),
+      },
+      stop: vi.fn(),
+    },
+    telemetry: {
+      onTelemetry: (listener) => {
+        telemetryListeners.add(listener);
+        return () => telemetryListeners.delete(listener);
+      },
+      onNotice: (listener) => {
+        noticeListeners.add(listener);
+        return () => noticeListeners.delete(listener);
+      },
+    },
+    sessionsByLink,
+    emitTelemetry: (linkId, event) => {
+      for (const l of telemetryListeners) l(linkId, event);
+    },
+    emitNotice: (linkId, message) => {
+      for (const l of noticeListeners) l(linkId, message);
+    },
+    requestOpen,
+    requestClose,
+  };
+  return runtime;
+}
 
-  /** Every message received so far, for a test that needs to assert an
-   * absence (e.g. "no error was ever sent") rather than wait for a
-   * presence -- {@link waitFor} alone cannot express that. */
-  get all(): readonly ServerMessage[] {
-    return this.received;
-  }
+function freshStore(): { store: Store; dir: string } {
+  const dir = mkdtempSync(path.join(tmpdir(), "robot-console-server-test-"));
+  const store = new Store(openStoreDb({ filePath: path.join(dir, "console.sqlite") }));
+  return { store, dir };
+}
 
-  waitFor(predicate: (message: ServerMessage) => boolean, timeoutMs = 5000): Promise<ServerMessage> {
-    const existing = this.received.find(predicate);
-    if (existing) {
-      return Promise.resolve(existing);
+/** Waits for the change feed's coalesced flush (`setImmediate`) to run,
+ * and for any microtask chain the resulting broadcast schedules. */
+function flush(): Promise<void> {
+  return new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+}
+
+interface Harness {
+  server: RunningServer;
+  store: Store;
+  runtime: ReturnType<typeof fakeRuntime>;
+  wss: ReturnType<typeof fakeWebSocketServer>;
+  dir: string;
+}
+
+async function startTestServer(overrides: Partial<StartServerOptions> = {}): Promise<Harness> {
+  const { store, dir } = freshStore();
+  const runtime = fakeRuntime();
+  const wss = fakeWebSocketServer();
+  const server = await startServer({
+    store,
+    runtime,
+    port: 0,
+    createWebSocketServer: () => wss,
+    firmwareConfig: { relay: undefined, robot: undefined },
+    availabilityCache: {
+      current: () => ({ relay: { configured: false }, robot: { configured: false } }),
+      onChange: () => () => {},
+      start: () => {},
+      stop: () => {},
+      pollOnce: async () => ({ relay: { configured: false }, robot: { configured: false } }),
+    } as unknown as StartServerOptions["availabilityCache"],
+    ...overrides,
+  });
+  return { server, store, runtime, wss, dir };
+}
+
+async function cleanup(h: Harness): Promise<void> {
+  await h.server.close();
+  h.store.close();
+  rmSync(h.dir, { recursive: true, force: true });
+}
+
+const harnesses: Harness[] = [];
+afterEach(async () => {
+  while (harnesses.length > 0) {
+    const h = harnesses.pop();
+    if (h) {
+      await cleanup(h);
     }
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        const index = this.waiters.findIndex((w) => w.resolve === resolveAndClear);
-        if (index >= 0) {
-          this.waiters.splice(index, 1);
-        }
-        reject(
-          new Error(
-            `MessageCollector.waitFor: timed out; received so far: ${JSON.stringify(this.received)}`,
-          ),
-        );
-      }, timeoutMs);
-      const resolveAndClear = (message: ServerMessage): void => {
-        clearTimeout(timer);
-        resolve(message);
-      };
-      this.waiters.push({ predicate, resolve: resolveAndClear });
-    });
   }
+});
+
+async function harness(overrides: Partial<StartServerOptions> = {}): Promise<Harness> {
+  const h = await startTestServer(overrides);
+  harnesses.push(h);
+  return h;
 }
 
-/** Connect and start collecting messages in the same synchronous step
- * the socket is constructed in -- see {@link MessageCollector}'s doc
- * comment for why that matters. */
-function connect(url: string): Promise<{ ws: WebSocket; messages: MessageCollector }> {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url);
-    const messages = new MessageCollector(ws);
-    ws.once("open", () => resolve({ ws, messages }));
-    ws.once("error", reject);
-  });
-}
+// ---------------------------------------------------------------------
+// Binding
+// ---------------------------------------------------------------------
 
-/** No firmware configured, injected explicitly so these tests never
- * read the developer's own repo-root `.env`. Without this they pass or
- * fail depending on whether `dotconfig load` has been run on the
- * machine -- which is exactly how this file started failing once a real
- * `.env` appeared. */
-const NO_FIRMWARE: FirmwareConfigMap = { relay: undefined, robot: undefined };
-
-describe("server.ts end-to-end (fake device/link modules, real Express/ws)", () => {
-  let server: RunningServer | undefined;
-  let ws: WebSocket | undefined;
-
-  afterEach(async () => {
-    ws?.close();
-    ws = undefined;
-    await server?.close();
-    server = undefined;
-  });
-
+describe("server.ts: binding", () => {
   it("binds to localhost only", async () => {
-    const link = new FakeLink(async () => banner());
-    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
-    expect(server.host).toBe("127.0.0.1");
-    expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
-  });
-
-  it("sends an endpoints snapshot on connect, then a live-updated one with name/role resolved", async () => {
-    const link = new FakeLink(async () => banner());
-    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
-
-    const resolved = await connected.messages.waitFor(
-      (m) => m.type === "endpoints" && m.endpoints[0]?.role === "NEZHA2",
-    );
-    expect(resolved).toEqual({
-      type: "endpoints",
-      endpoints: [
-        expect.objectContaining({
-          endpointId: "usb-SERIAL-A",
-          transport: "usb",
-          resourceKey: "usb-SERIAL-A",
-          classification: expect.objectContaining({ type: "robot" }),
-          name: "zeguz",
-          role: "NEZHA2",
-          sessionOpen: true,
-          usb: {
-            serialNumber: "SERIAL-A",
-            displaySerial: "SHORT-A",
-            port: "/dev/cu.usbmodemA",
-          },
-        }),
-      ],
-      // Every `endpoints` broadcast carries `firmwareStatus`, built from
-      // the availability cache -- no `firmwareConfig`/
-      // `availabilityCache` override was passed to `startServer` here,
-      // so this exercises the real default (`getFirmwareConfig()` off
-      // this test process's real, firmware-var-free environment) rather
-      // than a fixture, and confirms it degrades to "not configured"
-      // rather than throwing or omitting the field.
-      firmwareStatus: {
-        relay: { configured: false },
-        robot: { configured: false },
-      },
-      rememberedRobots: [],
-      // Sprint 8 ticket 004: always present, mirroring rememberedRobots'
-      // own "empty array, never an omitted field" discipline -- no
-      // mdnsDiscovery override was passed to buildRegistry here, so this
-      // exercises fakeMdnsDiscovery()'s own empty default.
-      discoveredServices: { relays: [], robots: [] },
-    });
-  });
-
-  it("includes registry.discoveredServices() (relays + robots) in every endpoints snapshot (sprint 8 ticket 004)", async () => {
-    const link = new FakeLink(async () => banner());
-    const mdnsDiscovery = fakeMdnsDiscovery({
-      relays: [{ instanceName: "torture", host: "torture.local", port: 8760, registryPort: 8761 }],
-      robots: [{ instanceName: "gopiv", host: "gopiv.local", port: 9000 }],
-    });
-    server = await startServer({
-      port: 0,
-      registry: buildRegistry(link, { mdnsDiscovery }),
-      firmwareConfig: NO_FIRMWARE,
-    });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
-
-    const initial = await connected.messages.waitFor((m) => m.type === "endpoints");
-    expect(initial).toMatchObject({
-      discoveredServices: {
-        relays: [{ instanceName: "torture", host: "torture.local", port: 8760, registryPort: 8761 }],
-        robots: [{ instanceName: "gopiv", host: "gopiv.local", port: 9000 }],
-      },
-    });
-  });
-
-  it("includes a wifi-transport endpoint in the endpoints snapshot when the fake discovery advertises a roster-matched name (sprint 10 ticket 003), already connected and identified at discovery (OOP 2026-09-10)", async () => {
-    const link = new FakeLink(async () => banner());
-    const knownRobotsStore = fakeKnownRobotsStore([
-      {
-        name: "gopiv",
-        firstSeenAt: "2026-01-01T00:00:00.000Z",
-        lastSeenAt: "2026-01-01T00:00:00.000Z",
-        lastSeenVia: "usb",
-        lastUsbSerial: "SERIAL-GOPIV",
-        lastRole: "NEZHA2",
-        lastType: "robot",
-      },
-    ]);
-    const mdnsDiscovery = fakeMdnsDiscovery({
-      wifiRobots: [{ name: "gopiv", host: "gopiv.local.", port: 7654, role: "robot", link: "v6" }],
-    });
-    server = await startServer({
-      port: 0,
-      registry: buildRegistry(link, { mdnsDiscovery, knownRobotsStore }),
-      firmwareConfig: NO_FIRMWARE,
-    });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
-
-    const initial = await connected.messages.waitFor(
-      (m) => m.type === "endpoints" && m.endpoints.some((e) => e.endpointId === "wifi-gopiv"),
-    );
-    expect(initial).toMatchObject({
-      endpoints: expect.arrayContaining([
-        expect.objectContaining({
-          endpointId: "wifi-gopiv",
-          transport: "wifi",
-          resourceKey: "wifi-gopiv",
-          name: "gopiv",
-          // OOP 2026-09-10: the host connects and identifies a gated
-          // WiFi robot as soon as it is discovered (see
-          // DeviceRegistry.autoConnectWifiRobot), so by the time a
-          // client connects the entry is already linked.
-          sessionOpen: true,
-          wifi: { host: "gopiv.local.", port: 7654 },
-        }),
-      ]),
-    });
-  });
-
-  it("round-trips a line: client sends a line for a device and receives its reply", async () => {
-    const link = new FakeLink(async () => banner());
-    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
-
-    await connected.messages.waitFor((m) => m.type === "endpoints" && m.endpoints[0]?.sessionOpen === true);
-    // Sprint 011 ticket 001: deviceRegistry.ts's startRobotProbes also
-    // sends a one-shot, unsequenced ID right after this robot identifies
-    // -- strip it here so it doesn't leak into this test's own sentLines
-    // assertion below (see deviceRegistry.test.ts's own coverage of that
-    // probe).
-    link.sentLines = link.sentLines.filter((sent) => !sent.startsWith("ID"));
-
-    // Any raw line other than HELLO -- see the dedicated raw-HELLO
-    // resync test below for why HELLO itself is intercepted rather than
-    // written verbatim (deviceRegistry.ts's own `sendLine` doc comment).
-    ws.send(JSON.stringify({ type: "line", endpointId: "usb-SERIAL-A", direction: "tx", line: "STATUS" }));
-
-    // Server echoes the sent line back to every client...
-    const echoed = await connected.messages.waitFor((m) => m.type === "line" && m.direction === "tx");
-    expect(echoed).toEqual({ type: "line", endpointId: "usb-SERIAL-A", direction: "tx", line: "STATUS" });
-    expect(link.sentLines).toEqual(["STATUS"]);
-
-    // ...and once the fake device "replies", the client sees that too.
-    link.emitLine({ kind: "line", verb: "status", fields: ["mode=idle"] });
-    const reply = await connected.messages.waitFor((m) => m.type === "line" && m.direction === "rx");
-    expect(reply).toEqual({ type: "line", endpointId: "usb-SERIAL-A", direction: "rx", line: "status mode=idle" });
-  });
-
-  it("broadcasts thdr/t telemetry as its own message type, never as a line or an endpoints snapshot (sprint 009 ticket 002)", async () => {
-    const link = new FakeLink(async () => banner());
-    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
-
-    await connected.messages.waitFor((m) => m.type === "endpoints" && m.endpoints[0]?.sessionOpen === true);
-    const snapshotsBeforeTelemetry = connected.messages.all.filter((m) => m.type === "endpoints").length;
-
-    link.emitLine({ kind: "line", verb: "thdr", fields: ["seq", "now", "flags", "posl", "posr", "vell", "velr"] });
-    const header = await connected.messages.waitFor((m) => m.type === "telemetry");
-    expect(header).toEqual({
-      type: "telemetry",
-      endpointId: "usb-SERIAL-A",
-      header: ["seq", "now", "flags", "posl", "posr", "vell", "velr"],
-    });
-
-    link.emitLine({ kind: "line", verb: "t", fields: ["1", "2", "3", "4", "5", "6", "7"] });
-    const frame = await connected.messages.waitFor(
-      (m) => m.type === "telemetry" && "frame" in m,
-    );
-    expect(frame).toEqual({
-      type: "telemetry",
-      endpointId: "usb-SERIAL-A",
-      frame: { seq: "1", now: "2", flags: "3", posl: "4", posr: "5", vell: "6", velr: "7" },
-    });
-
-    // Neither telemetry event grew the per-device rx log (no "line"
-    // message was ever broadcast for them) nor triggered an extra
-    // "endpoints" snapshot -- see wsMessages.ts's own TelemetryMessage
-    // doc comment and this ticket's own acceptance criteria.
-    expect(connected.messages.all.filter((m) => m.type === "line")).toEqual([]);
-    expect(connected.messages.all.filter((m) => m.type === "endpoints").length).toBe(
-      snapshotsBeforeTelemetry,
-    );
-  });
-
-  it("forwards robotName and radio from a session-open message to registry.requestOpen as its target argument (OOP 2026-09-09)", async () => {
-    // deviceRegistry.ts's own relay-routing behavior for `target` is
-    // covered in deviceRegistry.test.ts's "robot-via-relay endpoints"
-    // describe block -- this test only proves server.ts's wiring: the
-    // client-sent robotName/radio fields reach registry.requestOpen
-    // unchanged, as its second argument.
-    const link = new FakeLink(async () => banner());
-    const registry = buildRegistry(link);
-    const requestOpenSpy = vi.spyOn(registry, "requestOpen");
-    server = await startServer({ port: 0, registry, firmwareConfig: NO_FIRMWARE });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
-
-    await connected.messages.waitFor((m) => m.type === "endpoints");
-
-    ws.send(
-      JSON.stringify({
-        type: "session-open",
-        endpointId: "usb-SERIAL-A",
-        robotName: "gopiv",
-        radio: { channel: 55, group: 114 },
-      }),
-    );
-
-    await vi.waitFor(() => {
-      expect(requestOpenSpy).toHaveBeenCalledWith("usb-SERIAL-A", {
-        robotName: "gopiv",
-        radio: { channel: 55, group: 114 },
-      });
-    });
-  });
-
-  it("session-open with robotName but no radio still forwards a target (radio omitted)", async () => {
-    const link = new FakeLink(async () => banner());
-    const registry = buildRegistry(link);
-    const requestOpenSpy = vi.spyOn(registry, "requestOpen");
-    server = await startServer({ port: 0, registry, firmwareConfig: NO_FIRMWARE });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
-
-    await connected.messages.waitFor((m) => m.type === "endpoints");
-
-    ws.send(JSON.stringify({ type: "session-open", endpointId: "usb-SERIAL-A", robotName: "gopiv" }));
-
-    await vi.waitFor(() => {
-      expect(requestOpenSpy).toHaveBeenCalledWith("usb-SERIAL-A", { robotName: "gopiv" });
-    });
-  });
-
-  it("session-open with autoRobot: true forwards an empty target to registry.requestOpen, requesting default failover (sprint 8 ticket 005)", async () => {
-    // deviceRegistry.ts's own default-failover candidate building
-    // (buildDefaultFailoverCandidates) is covered in deviceRegistry.test.ts
-    // -- this test only proves server.ts's wiring: `autoRobot: true` with
-    // no `robotName` reaches registry.requestOpen as an empty target
-    // object (`{}`), the signal that means "use the default-failover
-    // list" rather than "open the endpoint's own plain USB session".
-    const link = new FakeLink(async () => banner());
-    const registry = buildRegistry(link);
-    const requestOpenSpy = vi.spyOn(registry, "requestOpen");
-    server = await startServer({ port: 0, registry, firmwareConfig: NO_FIRMWARE });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
-
-    await connected.messages.waitFor((m) => m.type === "endpoints");
-
-    ws.send(JSON.stringify({ type: "session-open", endpointId: "usb-SERIAL-A", autoRobot: true }));
-
-    await vi.waitFor(() => {
-      expect(requestOpenSpy).toHaveBeenCalledWith("usb-SERIAL-A", {});
-    });
-  });
-
-  it("session-open with no robotName still forwards to registry.requestOpen with no target argument", async () => {
-    const link = new FakeLink(async () => banner());
-    const registry = buildRegistry(link);
-    const requestOpenSpy = vi.spyOn(registry, "requestOpen");
-    server = await startServer({ port: 0, registry, firmwareConfig: NO_FIRMWARE });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
-
-    await connected.messages.waitFor((m) => m.type === "endpoints");
-
-    ws.send(JSON.stringify({ type: "session-open", endpointId: "usb-SERIAL-A" }));
-
-    await vi.waitFor(() => {
-      expect(requestOpenSpy).toHaveBeenCalledWith("usb-SERIAL-A");
-    });
-  });
-
-  it("routes a send-command message to registry.sendCommand: dispatches sequenced/unsequenced verbs and resyncs HELLO (OOP fix, defect 2)", async () => {
-    // HELLO used to be flatly rejected here (sprint 6). It is now routed
-    // through Link.identify() -- the disciplined resync path -- instead;
-    // configuring identify() to fail on this second call (the resync)
-    // gives this test a deterministic `error` message to wait on, same
-    // as the old rejection did, while proving the new dispatch target.
-    let identifyCalls = 0;
-    const link = new FakeLink(async () => {
-      identifyCalls++;
-      return identifyCalls === 1 ? banner() : null;
-    });
-    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
-
-    await connected.messages.waitFor((m) => m.type === "endpoints" && m.endpoints[0]?.sessionOpen === true);
-    // Sprint 011 ticket 001: strip the one-shot ID probe sent on this
-    // robot's initial identify -- see the previous test's own comment.
-    link.sentLines = link.sentLines.filter((sent) => !sent.startsWith("ID"));
-
-    ws.send(JSON.stringify({ type: "send-command", endpointId: "usb-SERIAL-A", verb: "GET", fields: [] }));
-    ws.send(JSON.stringify({ type: "send-command", endpointId: "usb-SERIAL-A", verb: "STATUS" }));
-    // Sent last, per this same client's own message order -- the
-    // per-endpoint mutex `deviceRegistry.ts` already serializes every
-    // operation through guarantees GET/STATUS above are fully applied to
-    // the fake link before this one's resync is even attempted, exactly
-    // as `sendLine`'s own ordering already relies on.
-    ws.send(JSON.stringify({ type: "send-command", endpointId: "usb-SERIAL-A", verb: "HELLO" }));
-
-    const error = await connected.messages.waitFor((m) => m.type === "error");
-    expect(error).toEqual({
-      type: "error",
-      endpointId: "usb-SERIAL-A",
-      message: expect.stringMatching(/didn't answer|no reply|check the connection/i),
-    });
-
-    // GET is sequenced (id-assigned via Session.send); STATUS is
-    // unsequenced (protocol.md's verb table, not sprint.md's looser
-    // phrasing) -- both already reached the link, and HELLO reached
-    // neither `sendCommand` nor `sendUnsequenced` on it at all (it went
-    // through identify() instead, called twice: the initial connect and
-    // this resync).
-    expect(link.sentLines).toEqual(["GET #1\n", "STATUS\n"]);
-    expect(identifyCalls).toBe(2);
-  });
-
-  it("reports a graceful error, not a crash, for a line sent to a device with no open link", async () => {
-    // Mirrors the real UsbSerialLink against a genuine transport
-    // failure: connect() eventually rejects (a bounded timeout in
-    // production; a short delay here) rather than ever resolving. Under
-    // sprint 4 ticket 002's connect()/identify() split, only a
-    // connect() failure leaves the endpoint with no open link
-    // (sessionOpen: false) -- an identify() timeout (a silent board) no
-    // longer does, since that link stays open (see
-    // deviceRegistry.test.ts's "connected-but-unresponsive" test).
-    // DeviceRegistry serializes connect/send per device, so sendLine()
-    // sent while this is still in flight is queued behind it and
-    // observes the settled (failed) state -- see deviceRegistry.ts's
-    // "serializes name-read and link-open" test for the same guarantee
-    // in isolation.
-    const link = new FakeLink(
-      async () => banner(), // never reached -- connect() fails first
-      () =>
-        new Promise<void>((_resolve, reject) => {
-          setTimeout(() => reject(new Error("permission denied opening port")), 20);
-        }),
-    );
-    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
-
-    await connected.messages.waitFor((m) => m.type === "endpoints" && m.endpoints.length === 1);
-    ws.send(JSON.stringify({ type: "line", endpointId: "usb-SERIAL-A", direction: "tx", line: "HELLO" }));
-
-    const error = await connected.messages.waitFor((m) => m.type === "error");
-    expect(error).toEqual({
-      type: "error",
-      endpointId: "usb-SERIAL-A",
-      message: "device usb-SERIAL-A has no open link",
-    });
-  });
-
-  it("reports a graceful error for a malformed client message instead of closing the connection", async () => {
-    const link = new FakeLink(async () => banner());
-    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
-
-    await connected.messages.waitFor((m) => m.type === "endpoints");
-    ws.send("not json");
-
-    const error = await connected.messages.waitFor((m) => m.type === "error");
-    expect(error).toEqual({ type: "error", message: "malformed JSON message" });
-    expect(ws.readyState).toBe(WebSocket.OPEN);
+    const h = await harness();
+    expect(h.server.host).toBe("127.0.0.1");
+    expect(h.server.url).toBe(`http://127.0.0.1:${h.server.port}`);
   });
 
   it("fails clearly, rather than silently picking another port, when the port is already in use", async () => {
-    const link = new FakeLink(async () => banner());
-    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
+    const blocker = createServer();
+    await new Promise<void>((resolve) => blocker.listen(0, "127.0.0.1", resolve));
+    const address = blocker.address();
+    const busyPort = address && typeof address === "object" ? address.port : 0;
 
-    await expect(
-      startServer({
-        port: server.port,
-        registry: buildRegistry(new FakeLink(async () => banner())),
-        firmwareConfig: NO_FIRMWARE,
-      }),
-    ).rejects.toThrow(/already in use/);
-  });
-});
-
-describe("server.ts rememberedRobots and forget-known-robot (sprint 5, ticket 004)", () => {
-  let server: RunningServer | undefined;
-  let ws: WebSocket | undefined;
-
-  afterEach(async () => {
-    ws?.close();
-    ws = undefined;
-    await server?.close();
-    server = undefined;
-  });
-
-  it("includes a pre-seeded remembered robot on the initial connect snapshot", async () => {
-    const link = new FakeLink(async () => banner());
-    const knownRobotsStore = fakeKnownRobotsStore([knownRobotRecord()]);
-    server = await startServer({
-      port: 0,
-      registry: buildRegistry(link, { knownRobotsStore }),
-      firmwareConfig: NO_FIRMWARE,
-    });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
-
-    const initial = await connected.messages.waitFor((m) => m.type === "endpoints");
-    expect(initial).toMatchObject({
-      type: "endpoints",
-      rememberedRobots: [
-        {
-          name: "kwazi",
-          lastSeenAt: "2024-01-01T00:00:00.000Z",
-          lastSeenVia: "usb",
-          lastRole: "NEZHA2",
-          lastUsbSerial: "SERIAL-REMEMBERED",
-        },
-      ],
-    });
-  });
-
-  it("drops a forgotten robot from the next broadcast endpoints message", async () => {
-    const link = new FakeLink(async () => banner());
-    const knownRobotsStore = fakeKnownRobotsStore([knownRobotRecord()]);
-    server = await startServer({
-      port: 0,
-      registry: buildRegistry(link, { knownRobotsStore }),
-      firmwareConfig: NO_FIRMWARE,
-    });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
-
-    await connected.messages.waitFor(
-      (m) => m.type === "endpoints" && m.rememberedRobots.some((r) => r.name === "kwazi"),
-    );
-
-    ws.send(JSON.stringify({ type: "forget-known-robot", name: "kwazi" }));
-
-    // requestForgetKnownRobot (ticket 003) removes it from the store and
-    // calls its own emitDevices() -- picked up here by the existing
-    // onDevicesChanged -> broadcast(buildEndpointsMessage(...)) path,
-    // with no new event type.
-    const updated = await connected.messages.waitFor(
-      (m) => m.type === "endpoints" && !m.rememberedRobots.some((r) => r.name === "kwazi"),
-    );
-    expect(updated).toMatchObject({ rememberedRobots: [] });
-  });
-
-  it("silently no-ops forgetting a name that isn't on the roster, without crashing or erroring", async () => {
-    const link = new FakeLink(async () => banner());
-    const knownRobotsStore = fakeKnownRobotsStore([knownRobotRecord()]);
-    server = await startServer({
-      port: 0,
-      registry: buildRegistry(link, { knownRobotsStore }),
-      firmwareConfig: NO_FIRMWARE,
-    });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
-
-    await connected.messages.waitFor(
-      (m) => m.type === "endpoints" && m.rememberedRobots.some((r) => r.name === "kwazi"),
-    );
-
-    // An unknown name is a silent no-op per KnownRobotsStore.forget's own
-    // contract -- send it, then send a real forget for "kwazi" and
-    // confirm *that* still succeeds, proving the server kept processing
-    // messages on this connection rather than crashing on the first one.
-    ws.send(JSON.stringify({ type: "forget-known-robot", name: "not-a-known-robot" }));
-    ws.send(JSON.stringify({ type: "forget-known-robot", name: "kwazi" }));
-
-    const updated = await connected.messages.waitFor(
-      (m) => m.type === "endpoints" && !m.rememberedRobots.some((r) => r.name === "kwazi"),
-    );
-    expect(updated).toMatchObject({ rememberedRobots: [] });
-    expect(ws.readyState).toBe(WebSocket.OPEN);
-    expect(connected.messages.all.some((m) => m.type === "error")).toBe(false);
-  });
-
-  it("rejects a malformed forget-known-robot (missing name) with the existing generic parse error", async () => {
-    const link = new FakeLink(async () => banner());
-    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
-
-    await connected.messages.waitFor((m) => m.type === "endpoints");
-    ws.send(JSON.stringify({ type: "forget-known-robot" }));
-
-    const error = await connected.messages.waitFor((m) => m.type === "error");
-    expect(error).toEqual({ type: "error", message: "unrecognized message shape" });
-    expect(ws.readyState).toBe(WebSocket.OPEN);
-  });
-});
-
-describe("server.ts flash wiring (sprint 2, ticket 006)", () => {
-  let server: RunningServer | undefined;
-  let sockets: WebSocket[] = [];
-
-  afterEach(async () => {
-    for (const socket of sockets) {
-      socket.close();
+    try {
+      await expect(startTestServer({ port: busyPort })).rejects.toThrow(/already in use/);
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
     }
-    sockets = [];
-    await server?.close();
-    server = undefined;
-  });
-
-  async function connectTracked(url: string): Promise<{ ws: WebSocket; messages: MessageCollector }> {
-    const connected = await connect(url);
-    sockets.push(connected.ws);
-    return connected;
-  }
-
-  it("routes a flash-start message to registry.requestFlash and broadcasts flash-progress/flash-result to every connected client", async () => {
-    const link = new FakeLink(async () => banner());
-    const resolveReleaseFn = vi.fn(async (): Promise<ResolvedRelease> => resolvedRelease());
-    const fetchAndVerifyHexFn = vi.fn(async () => ({ hex: Buffer.from(":00000001FF\n", "utf-8") }));
-    const flashFn = vi.fn(
-      async (
-        _device: DaplinkDevice,
-        _hexText: string,
-        onProgress: (phase: FlashPhase) => void,
-      ) => {
-        onProgress("erasing");
-        onProgress("writing");
-        onProgress("resetting");
-        return { status: "ok" as const, method: "swd" as const };
-      },
-    );
-    const registry = buildRegistry(link, {
-      getFirmwareConfig: configWith(firmwareSource()),
-      resolveRelease: resolveReleaseFn,
-      fetchAndVerifyHex: fetchAndVerifyHexFn,
-      flash: flashFn,
-    });
-
-    server = await startServer({ port: 0, registry, firmwareConfig: NO_FIRMWARE });
-    const first = await connectTracked(server.url.replace("http://", "ws://"));
-    // A second, independently-connected client -- proves the broadcast
-    // reaches every connected socket, not just the one that sent
-    // flash-start (per the ticket's own "visible to a second connected
-    // tab too" requirement).
-    const second = await connectTracked(server.url.replace("http://", "ws://"));
-
-    await first.messages.waitFor((m) => m.type === "endpoints" && m.endpoints[0]?.sessionOpen === true);
-
-    first.ws.send(
-      JSON.stringify({
-        type: "flash-start",
-        endpointId: "usb-SERIAL-A",
-        source: { kind: "release", firmware: "relay" },
-      }),
-    );
-
-    const progressOnFirst = await first.messages.waitFor((m) => m.type === "flash-progress");
-    expect(progressOnFirst).toEqual({
-      type: "flash-progress",
-      endpointId: "usb-SERIAL-A",
-      source: { kind: "release", firmware: "relay" },
-      phase: "fetching",
-    });
-
-    // ticket 004: the terminal flash-result waits for the post-flash
-    // reidentify to settle and carries its classification/name --
-    // FakeLink's identify() resolves the same banner() both times here
-    // (createLink returns the one shared `link` fake), so the endpoint's
-    // classification survives the round trip unchanged, but the field is
-    // now populated end to end over the wire.
-    const expectedResult = {
-      type: "flash-result",
-      endpointId: "usb-SERIAL-A",
-      source: { kind: "release", firmware: "relay" },
-      status: "ok",
-      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "common-name", program: null, version: null },
-      name: "zeguz",
-    };
-    const resultOnFirst = await first.messages.waitFor((m) => m.type === "flash-result");
-    expect(resultOnFirst).toEqual(expectedResult);
-
-    // The requester's own client saw it; confirm the *other* connected
-    // client did too.
-    const resultOnSecond = await second.messages.waitFor((m) => m.type === "flash-result");
-    expect(resultOnSecond).toEqual(expectedResult);
-
-    expect(resolveReleaseFn).toHaveBeenCalledTimes(1);
-    expect(fetchAndVerifyHexFn).toHaveBeenCalledTimes(1);
-    expect(flashFn).toHaveBeenCalledTimes(1);
   });
 });
 
-function sha256Hex(payload: Buffer): string {
-  return createHash("sha256").update(payload).digest("hex");
-}
+// ---------------------------------------------------------------------
+// Snapshot broadcast -- AC1 (golden coalescing test) plus connect
+// ---------------------------------------------------------------------
 
-describe("server.ts local-hex upload handshake (sprint 4 ticket 005)", () => {
-  let server: RunningServer | undefined;
-  let sockets: WebSocket[] = [];
+describe("server.ts: snapshot broadcast", () => {
+  it("sends a snapshot built from the store on connect", async () => {
+    const h = await harness();
+    h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+    h.store.setOwned(1198504156, true, 1);
+    await flush();
 
-  afterEach(async () => {
-    for (const socket of sockets) {
-      socket.close();
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+
+    expect(ws.sent).toHaveLength(1);
+    const snapshot = ws.sent[0] as Snapshot;
+    expect(snapshot.type).toBe("snapshot");
+    expect(snapshot.devices.map((d) => d.name)).toEqual(["vevov"]);
+  });
+
+  it("golden test: a burst of ten store writes in one tick produces one snapshot broadcast, not ten", async () => {
+    const h = await harness();
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush(); // let the startup firmware-availability poll's own broadcast (if any) land first
+    ws.sent.length = 0; // clear the initial on-connect snapshot
+
+    for (let i = 0; i < 10; i++) {
+      h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", role: `r${i}`, at: i + 1 });
     }
-    sockets = [];
-    await server?.close();
-    server = undefined;
-  });
+    await flush();
 
-  async function connectTracked(url: string): Promise<{ ws: WebSocket; messages: MessageCollector }> {
-    const connected = await connect(url);
-    sockets.push(connected.ws);
-    return connected;
-  }
-
-  it("routes a binary frame to localHexUpload (isBinary branch), distinct from the JSON text path", async () => {
-    const link = new FakeLink(async () => banner());
-    server = await startServer({ port: 0, registry: buildRegistry(link), firmwareConfig: NO_FIRMWARE });
-    const connected = await connectTracked(server.url.replace("http://", "ws://"));
-    await connected.messages.waitFor((m) => m.type === "endpoints");
-
-    // A text message that isn't valid JSON goes through the JSON/
-    // parseClientMessage path and reports the "malformed JSON message"
-    // error -- confirms the baseline (non-binary) behavior first.
-    connected.ws.send("not json");
-    const textError = await connected.messages.waitFor((m) => m.type === "error");
-    expect(textError).toEqual({ type: "error", message: "malformed JSON message" });
-
-    // A binary frame carrying a well-formed-length but unknown uploadId
-    // prefix goes through localHexUpload.receiveFrame instead -- a
-    // distinctly different error message proves the isBinary branch
-    // actually dispatched to it rather than falling through to
-    // JSON.parse (which would report "malformed JSON message" again for
-    // this same garbage bytes).
-    const unknownUploadId = "00000000-0000-0000-0000-000000000000";
-    expect(unknownUploadId).toHaveLength(UPLOAD_ID_BYTE_LENGTH);
-    const frame = Buffer.concat([Buffer.from(unknownUploadId, "ascii"), Buffer.from("payload", "utf-8")]);
-    connected.ws.send(frame);
-
-    const binaryError = await connected.messages.waitFor(
-      (m) => m.type === "error" && m.message !== "malformed JSON message",
-    );
-    expect(binaryError).toEqual({
-      type: "error",
-      message: expect.stringContaining(unknownUploadId),
-    });
-
-    // The connection survives both -- a bad message is never a reason to
-    // close the socket.
-    expect(connected.ws.readyState).toBe(WebSocket.OPEN);
-  });
-
-  it("round-trips the full handshake: flash-local-begin -> flash-local-ready -> binary frame -> flash-start -> successful flash", async () => {
-    const link = new FakeLink(async () => banner());
-    const localHexUpload = new LocalHexUploadManager();
-
-    let observedHexText: string | undefined;
-    const flashFn = vi.fn(
-      async (
-        _device: DaplinkDevice,
-        hexText: string,
-        onProgress: (phase: FlashPhase) => void,
-      ) => {
-        observedHexText = hexText;
-        onProgress("erasing");
-        onProgress("writing");
-        onProgress("resetting");
-        return { status: "ok" as const, method: "swd" as const };
-      },
-    );
-    const registry = buildRegistry(link, {
-      // The same LocalHexUploadManager instance server.ts uses for the
-      // JSON/binary handling below -- see StartServerOptions
-      // .localHexUpload's own doc comment for why a caller-supplied
-      // registry must wire this itself.
-      consumeUpload: (uploadId) => localHexUpload.consumeUpload(uploadId),
-      flash: flashFn,
-    });
-
-    server = await startServer({
-      port: 0,
-      registry,
-      firmwareConfig: NO_FIRMWARE,
-      localHexUpload,
-    });
-    const connected = await connectTracked(server.url.replace("http://", "ws://"));
-    await connected.messages.waitFor((m) => m.type === "endpoints" && m.endpoints[0]?.sessionOpen === true);
-
-    const payload = Buffer.from(":10000000AABBCCDD00000000000000000000005A\n:00000001FF\n", "utf-8");
-    const fileName = "my-firmware.hex";
-    const sha256 = sha256Hex(payload);
-
-    connected.ws.send(
-      JSON.stringify({ type: "flash-local-begin", fileName, byteLength: payload.length, sha256 }),
-    );
-    const ready = await connected.messages.waitFor((m) => m.type === "flash-local-ready");
-    expect(ready).toEqual({ type: "flash-local-ready", uploadId: expect.any(String) });
-    const uploadId = (ready as { uploadId: string }).uploadId;
-    expect(uploadId).toHaveLength(UPLOAD_ID_BYTE_LENGTH);
-
-    connected.ws.send(Buffer.concat([Buffer.from(uploadId, "ascii"), payload]));
-
-    const source = { kind: "local-hex" as const, uploadId, fileName, sha256 };
-    connected.ws.send(
-      JSON.stringify({ type: "flash-start", endpointId: "usb-SERIAL-A", source }),
-    );
-
-    const progress = await connected.messages.waitFor((m) => m.type === "flash-progress");
-    expect(progress).toEqual({ type: "flash-progress", endpointId: "usb-SERIAL-A", source, phase: "verifying" });
-
-    const result = await connected.messages.waitFor((m) => m.type === "flash-result");
-    expect(result).toEqual({
-      type: "flash-result",
-      endpointId: "usb-SERIAL-A",
-      source,
-      status: "ok",
-      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "common-name", program: null, version: null },
-      name: "zeguz",
-    });
-
-    expect(observedHexText).toBe(payload.toString("utf-8"));
-    expect(flashFn).toHaveBeenCalledTimes(1);
+    const snapshots = ws.sent.filter((m) => m.type === "snapshot");
+    expect(snapshots).toHaveLength(1);
   });
 });
 
-describe("server.ts firmwareStatus (sprint 2, ticket 006)", () => {
-  let server: RunningServer | undefined;
-  let ws: WebSocket | undefined;
+// ---------------------------------------------------------------------
+// AC2: a socket that errors does not crash the process
+// ---------------------------------------------------------------------
 
-  afterEach(async () => {
-    ws?.close();
-    ws = undefined;
-    await server?.close();
-    server = undefined;
+describe("server.ts: per-socket error handling", () => {
+  it("a socket that emits error is dropped from broadcast, not the process", async () => {
+    const h = await harness();
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+
+    expect(() => ws.emit("error", new Error("boom"))).not.toThrow();
+
+    // Dropped: a later broadcast (a store change) never reaches it, even
+    // though nothing in this process crashed.
+    ws.sent.length = 0;
+    h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+    await flush();
+    expect(ws.sent).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+// AC3: bufferedAmount backpressure
+// ---------------------------------------------------------------------
+
+describe("server.ts: bufferedAmount backpressure", () => {
+  it("a stalled client (bufferedAmount over threshold) stops receiving line/telemetry but still receives the next snapshot", async () => {
+    const h = await harness();
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush(); // let the startup firmware-availability poll's own broadcast (if any) land first
+    ws.sent.length = 0;
+    ws.bufferedAmount = DEFAULT_BUFFERED_AMOUNT_THRESHOLD_BYTES + 1;
+
+    h.runtime.emitTelemetry("usb-1", { frame: { x: "1" } });
+    h.runtime.emitNotice("usb-1", "some notice"); // notices are never throttled either, but not under test here
+
+    h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+    await flush();
+
+    const types = ws.sent.map((m) => m.type);
+    expect(types).not.toContain("telemetry");
+    expect(types).toContain("snapshot");
+  });
+});
+
+// ---------------------------------------------------------------------
+// session-open / session-close forward to the reconciler
+// ---------------------------------------------------------------------
+
+describe("server.ts: session-open/session-close dispatch", () => {
+  it("forwards a {linkId} session-open to reconciler.requestOpen", async () => {
+    const h = await harness();
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", linkId: "usb-1" })), false);
+    await flush();
+
+    expect(h.runtime.requestOpen).toHaveBeenCalledWith("usb-1");
   });
 
-  it("includes firmwareStatus, built from the availability cache, on the initial connect snapshot", async () => {
-    const link = new FakeLink(async () => banner());
-    const checkAvailabilityFn = vi.fn(async () => ({ available: true }));
-    const availabilityCache = new FirmwareAvailabilityCache(
-      { relay: firmwareSource(), robot: undefined },
-      { checkAvailability: checkAvailabilityFn },
-    );
-    // Deterministic: drive the poll directly rather than waiting on the
-    // cache's real interval timer.
-    await availabilityCache.pollOnce();
+  it("forwards session-close to reconciler.requestClose", async () => {
+    const h = await harness();
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
 
-    server = await startServer({ port: 0, registry: buildRegistry(link), availabilityCache });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "session-close", linkId: "usb-1" })), false);
+    await flush();
 
-    const initial = await connected.messages.waitFor((m) => m.type === "endpoints");
-    expect(initial).toMatchObject({
-      type: "endpoints",
-      firmwareStatus: {
-        relay: { configured: true, repoUrl: firmwareSource().repoUrl, tag: "latest", available: true },
-        robot: { configured: false },
-      },
+    expect(h.runtime.requestClose).toHaveBeenCalledWith("usb-1");
+  });
+
+  it("reports a notice, rather than crashing, for a {relayLinkId, name} session-open (not yet supported)", async () => {
+    const h = await harness();
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush(); // let the startup firmware-availability poll's own broadcast (if any) land first
+    ws.sent.length = 0;
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", relayLinkId: "usb-RELAY", name: "vevov" })), false);
+    await flush();
+
+    const notice = ws.sent.find((m) => m.type === "notice");
+    expect(notice).toMatchObject({ type: "notice", level: "warn" });
+  });
+});
+
+// ---------------------------------------------------------------------
+// line / send-command reach the open session directly
+// ---------------------------------------------------------------------
+
+describe("server.ts: line/send-command via runtime.reconciler.sessions", () => {
+  it("sends a raw line to the session's link and echoes it as a tx line", async () => {
+    const h = await harness();
+    const session = fakeSession("usb-1");
+    h.runtime.sessionsByLink.set("usb-1", session);
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush(); // let the startup firmware-availability poll's own broadcast (if any) land first
+    ws.sent.length = 0;
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "line", linkId: "usb-1", direction: "tx", line: "GET x" })), false);
+    await flush();
+
+    expect(session.link.sendLine).toHaveBeenCalledWith("GET x");
+    const echoed = ws.sent.find((m) => m.type === "line");
+    expect(echoed).toMatchObject({ type: "line", linkId: "usb-1", direction: "tx", line: "GET x" });
+  });
+
+  it("reports a notice for a line sent to a link with no open session, without crashing", async () => {
+    const h = await harness();
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush(); // let the startup firmware-availability poll's own broadcast (if any) land first
+    ws.sent.length = 0;
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "line", linkId: "no-such-link", direction: "tx", line: "GET x" })), false);
+    await flush();
+
+    const notice = ws.sent.find((m) => m.type === "notice");
+    expect(notice).toMatchObject({ type: "notice", level: "error" });
+  });
+
+  it("routes send-command through sendCommand for a sequenced verb and sendUnsequenced otherwise", async () => {
+    const h = await harness();
+    const session = fakeSession("usb-1");
+    h.runtime.sessionsByLink.set("usb-1", session);
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "send-command", linkId: "usb-1", verb: "STOP" })), false);
+    await flush();
+    expect(session.link.sendCommand).toHaveBeenCalledWith("STOP", []);
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "send-command", linkId: "usb-1", verb: "STATUS" })), false);
+    await flush();
+    expect(session.link.sendUnsequenced).toHaveBeenCalledWith("STATUS", []);
+  });
+
+  it("rejects HELLO via send-command rather than forwarding it raw", async () => {
+    const h = await harness();
+    const session = fakeSession("usb-1");
+    h.runtime.sessionsByLink.set("usb-1", session);
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "send-command", linkId: "usb-1", verb: "HELLO" })), false);
+    await flush();
+
+    expect(session.link.sendCommand).not.toHaveBeenCalled();
+    expect(session.link.sendUnsequenced).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------
+// flash-start
+// ---------------------------------------------------------------------
+
+describe("server.ts: flash-start", () => {
+  const FAKE_DEVICE: DaplinkDevice = { serialNumber: "SERIAL123", displaySerial: "IAL1" } as unknown as DaplinkDevice;
+
+  it("resolves the device by usb-<serial>, broadcasts flash-progress, then a successful flash-result", async () => {
+    const flashMock = vi.fn(async (_device, _hex, onProgress: (phase: string) => void) => {
+      onProgress("erasing");
+      onProgress("writing");
+      return { status: "ok", method: "swd" } satisfies FlashOutcome;
     });
-    // The explicit pollOnce() call above drove this snapshot's content,
-    // but `startServer()` itself now *also* fires an immediate poll on
-    // startup (see the "checks firmware availability immediately at
-    // startup" test below) -- so `checkAvailabilityFn` is called at
-    // least once more in the background here. Both calls resolve to the
-    // same fixed `{ available: true }` result, so the assertions above
-    // are unaffected; this test only pins the message shape, not the
-    // call count.
-    expect(checkAvailabilityFn.mock.calls.length).toBeGreaterThanOrEqual(1);
+    const h = await harness({
+      enumerateDaplinkDevices: async () => [FAKE_DEVICE],
+      flash: flashMock as unknown as StartServerOptions["flash"],
+    });
+    h.store.upsertLink({ id: "usb-SERIAL123", transport: "usb", address: { path: "/dev/x" }, at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush(); // let the startup firmware-availability poll's own broadcast (if any) land first
+    ws.sent.length = 0;
+
+    const source: FirmwareSourceRef = { kind: "local-hex", uploadId: "11111111-1111-1111-1111-111111111111", fileName: "a.hex", sha256: "x" };
+    // Stub localHexUpload.consumeUpload by going through the real
+    // handshake: begin -> binary frame -> flash-start.
+    const sha256 = createHash("sha256").update("hello").digest("hex");
+    ws.emit(
+      "message",
+      Buffer.from(JSON.stringify({ type: "flash-local-begin", fileName: "a.hex", byteLength: 5, sha256 })),
+      false,
+    );
+    await flush();
+    const ready = ws.sent.find((m) => m.type === "flash-local-ready") as { uploadId: string } | undefined;
+    expect(ready).toBeDefined();
+    const uploadId = ready!.uploadId;
+    const frame = Buffer.concat([Buffer.from(uploadId, "ascii"), Buffer.from("hello")]);
+    ws.emit("message", frame, true);
+    await flush();
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId: "usb-SERIAL123", source: { ...source, uploadId } })), false);
+    await flush();
+    await flush();
+
+    expect(flashMock).toHaveBeenCalled();
+    const progressMessages = ws.sent.filter((m) => m.type === "flash-progress");
+    expect(progressMessages.length).toBeGreaterThan(0);
+    const result = ws.sent.find((m) => m.type === "flash-result");
+    expect(result).toMatchObject({ type: "flash-result", linkId: "usb-SERIAL123", status: "ok" });
   });
 
-  it("checks firmware availability immediately at startup, without waiting for the poll interval, and delivers the result to a client that connected before the check resolved (regression, OOP fix)", async () => {
-    const link = new FakeLink(async () => banner());
-    // Controlled by hand rather than a real timer/network call: the
-    // check stays pending until `resolveCheck()` is invoked below, so
-    // the test can deterministically connect a client *while the very
-    // first poll is still in flight* and then observe the update land
-    // on that already-open connection -- no fixed-tick `flushAsync`,
-    // just condition-based waits (`MessageCollector.waitFor`).
-    let resolveCheck!: (result: { available: boolean; reason?: string }) => void;
-    const checkAvailabilityFn = vi.fn(
+  it("reports a flash-result error, without throwing, when no USB device is currently enumerated", async () => {
+    const h = await harness({ enumerateDaplinkDevices: async () => [] });
+    h.store.upsertLink({ id: "usb-MISSING", transport: "usb", address: { path: "/dev/x" }, at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush(); // let the startup firmware-availability poll's own broadcast (if any) land first
+    ws.sent.length = 0;
+
+    const source: FirmwareSourceRef = { kind: "release", firmware: "robot" };
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId: "usb-MISSING", source })), false);
+    await flush();
+
+    const result = ws.sent.find((m) => m.type === "flash-result");
+    expect(result).toMatchObject({ type: "flash-result", status: "error" });
+  });
+});
+
+// ---------------------------------------------------------------------
+// AC4: signal-triggered shutdown mid-flash
+// ---------------------------------------------------------------------
+
+describe("server.ts: close() waits for an in-flight flash", () => {
+  it("does not resolve close() until the in-flight flash-start task has finished, and it does finish (never aborted mid-write)", async () => {
+    let resolveFlash!: (outcome: FlashOutcome) => void;
+    const flashMock = vi.fn(
       () =>
-        new Promise<{ available: boolean; reason?: string }>((resolve) => {
-          resolveCheck = resolve;
+        new Promise<FlashOutcome>((resolve) => {
+          resolveFlash = resolve;
         }),
     );
-    const availabilityCache = new FirmwareAvailabilityCache(
-      { relay: firmwareSource(), robot: undefined },
-      // A poll interval far longer than this test could ever run: if
-      // the fix regresses to "only the interval polls", the assertions
-      // below time out waiting for a poll that never comes, rather than
-      // passing by accident on a lucky interval tick.
-      { checkAvailability: checkAvailabilityFn, pollIntervalMs: 3_600_000 },
-    );
+    const h = await startTestServer({
+      enumerateDaplinkDevices: async () => [{ serialNumber: "SERIAL123" } as unknown as DaplinkDevice],
+      flash: flashMock as unknown as StartServerOptions["flash"],
+    });
+    h.store.upsertLink({ id: "usb-SERIAL123", transport: "usb", address: { path: "/dev/x" }, at: 1 });
+    await flush();
 
-    server = await startServer({ port: 0, registry: buildRegistry(link), availabilityCache });
-    // `startServer()` returning (i.e. `listen()` resolving) does not
-    // wait on the availability poll -- confirm the immediate poll was
-    // nonetheless *started* by the time startup completes.
-    expect(checkAvailabilityFn).toHaveBeenCalledTimes(1);
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
 
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
+    const sha256 = createHash("sha256").update("hello").digest("hex");
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-local-begin", fileName: "a.hex", byteLength: 5, sha256 })), false);
+    await flush();
+    const ready = ws.sent.find((m) => m.type === "flash-local-ready") as { uploadId: string } | undefined;
+    expect(ready).toBeDefined();
+    const uploadId = ready!.uploadId;
+    ws.emit("message", Buffer.concat([Buffer.from(uploadId, "ascii"), Buffer.from("hello")]), true);
+    await flush();
 
-    // This client connected after startup but *before* the in-flight
-    // poll resolved -- its very first snapshot must still show the
-    // "not yet checked" placeholder, not the eventual result, proving
-    // the check really was still pending at connect time.
-    const initial = await connected.messages.waitFor((m) => m.type === "endpoints");
-    expect(initial).toMatchObject({
-      type: "endpoints",
-      firmwareStatus: { relay: { configured: true, available: false, reason: "not-yet-checked" } },
+    const source: FirmwareSourceRef = { kind: "local-hex", uploadId, fileName: "a.hex", sha256 };
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId: "usb-SERIAL123", source })), false);
+    await flush();
+    expect(flashMock).toHaveBeenCalled();
+
+    let closed = false;
+    const closePromise = h.server.close().then(() => {
+      closed = true;
     });
 
-    // Now let the startup poll resolve.
-    resolveCheck({ available: true });
+    // Give close() every chance to resolve early if it (wrongly) does
+    // not wait for the in-flight flash.
+    await flush();
+    await flush();
+    expect(closed).toBe(false);
 
-    // The already-connected client -- no reconnect, no client-sent
-    // message -- must receive the updated status via the normal
-    // onChange -> broadcast path.
-    const updated = await connected.messages.waitFor(
-      (m) => m.type === "endpoints" && m.firmwareStatus.relay.configured === true && m.firmwareStatus.relay.available === true,
-    );
-    expect(updated).toMatchObject({
-      type: "endpoints",
-      firmwareStatus: {
-        relay: { configured: true, repoUrl: firmwareSource().repoUrl, tag: "latest", available: true },
-      },
-    });
+    // The flash finishes cleanly (never force-aborted) -- only then does
+    // close() resolve.
+    resolveFlash({ status: "ok", method: "swd" });
+    await closePromise;
+    expect(closed).toBe(true);
 
-    // The interval timer (5-min default, here set to an hour) must not
-    // have been touched by any of this -- exactly one check so far.
-    expect(checkAvailabilityFn).toHaveBeenCalledTimes(1);
+    h.store.close();
+    rmSync(h.dir, { recursive: true, force: true });
   });
+});
 
-  it("re-broadcasts the device snapshot with updated firmwareStatus when the availability cache changes, with no client action", async () => {
-    const link = new FakeLink(async () => banner());
-    let available = false;
-    const checkAvailabilityFn = vi.fn(async () =>
-      available ? { available: true } : { available: false, reason: "no-releases" },
-    );
-    const availabilityCache = new FirmwareAvailabilityCache(
-      { relay: undefined, robot: firmwareSource({ repoUrl: "https://github.com/org/robot-firmware" }) },
-      { checkAvailability: checkAvailabilityFn },
-    );
-    await availabilityCache.pollOnce();
+// ---------------------------------------------------------------------
+// forget-device / wifi credentials -- sanity coverage
+// ---------------------------------------------------------------------
 
-    server = await startServer({ port: 0, registry: buildRegistry(link), availabilityCache });
-    const connected = await connect(server.url.replace("http://", "ws://"));
-    ws = connected.ws;
+describe("server.ts: forget-device", () => {
+  it("deletes the device via store.deleteDevice", async () => {
+    const h = await harness();
+    h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+    await flush();
 
-    const initial = await connected.messages.waitFor((m) => m.type === "endpoints");
-    expect(initial).toMatchObject({ firmwareStatus: { robot: { configured: true, available: false } } });
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "forget-device", deviceId: 1198504156 })), false);
+    await flush();
 
-    // The poll (not any client message) is what flips this -- simulating
-    // pxt-nezha-diffdrive cutting its first release.
-    available = true;
-    await availabilityCache.pollOnce();
-
-    const updated = await connected.messages.waitFor(
-      (m) =>
-        m.type === "endpoints" &&
-        m.firmwareStatus.robot.configured === true &&
-        m.firmwareStatus.robot.available === true,
-    );
-    expect(updated).toMatchObject({
-      type: "endpoints",
-      firmwareStatus: {
-        relay: { configured: false },
-        robot: {
-          configured: true,
-          repoUrl: "https://github.com/org/robot-firmware",
-          tag: "latest",
-          available: true,
-        },
-      },
-    });
+    expect(h.store.snapshotRows().devices).toHaveLength(0);
   });
+});
 
-  it("stops the availability cache's poll timer when the server closes, leaving no live handle", async () => {
-    const link = new FakeLink(async () => banner());
-    const availabilityCache = new FirmwareAvailabilityCache(
-      { relay: firmwareSource(), robot: undefined },
-      { checkAvailability: async () => ({ available: false, reason: "no-releases" }), pollIntervalMs: 5 },
-    );
-    const stopSpy = vi.spyOn(availabilityCache, "stop");
+describe("server.ts: malformed/unrecognized messages", () => {
+  it("replies directly to the sender (not a broadcast) for malformed JSON", async () => {
+    const h = await harness();
+    const sender = fakeWebSocket();
+    const other = fakeWebSocket();
+    h.wss.triggerConnection(sender);
+    h.wss.triggerConnection(other);
+    await flush(); // let the startup firmware-availability poll's own broadcast (if any) land first
+    sender.sent.length = 0;
+    other.sent.length = 0;
 
-    server = await startServer({ port: 0, registry: buildRegistry(link), availabilityCache });
-    await server.close();
-    server = undefined;
+    sender.emit("message", Buffer.from("{not json"), false);
+    await flush();
 
-    expect(stopSpy).toHaveBeenCalledTimes(1);
+    expect(sender.sent.some((m) => m.type === "notice")).toBe(true);
+    expect(other.sent).toHaveLength(0);
   });
 });

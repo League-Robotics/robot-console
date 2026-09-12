@@ -114,14 +114,13 @@ describe("ConfigurationPage", () => {
     expect(code).toContain('diffDrive.setupWifi("Busboom_Garage", "hunter2")');
   });
 
-  it("Save writes the console's per-name radio address and updates the code; a bad channel is refused", () => {
+  it("Save updates the draft radio address and the code (ticket 006: no longer persisted to localStorage); a bad channel is refused", () => {
     const { el } = mountPage();
     type(el, '[data-testid="configuration-radio-channel"]', "55");
     type(el, '[data-testid="configuration-radio-group"]', "114");
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="configuration-save"]')!.click();
     });
-    expect(JSON.parse(window.localStorage.getItem("robot-console:relay-address:tigez") ?? "{}")).toEqual({ channel: 55, group: 114 });
     expect(el.querySelector('[data-testid="configuration-code"]')?.textContent).toContain("diffDrive.setupRadio(55, 114)");
     type(el, '[data-testid="configuration-radio-channel"]', "200");
     act(() => {

@@ -12,15 +12,34 @@
  *    code line (`diffDrive.setupWifi(ssid, password)`) -- stakeholder
  *    direction: everybody in the room knows it. (The header's Set Wi-Fi
  *    dialog is the only other place it appears.)
- *  - **Radio**: the console's per-name relay address (the same stored
- *    channel/group `RelayPage` reads), emitted as
+ *  - **Radio**: the device's radio address, emitted as
  *    `diffDrive.setupRadio(channel, group)`.
+ *
+ * ## Sprint 015 ticket 006: no more `localStorage`
+ *
+ * The radio panel used to read/write a per-name `localStorage` cache
+ * (`RelayPage`'s former `readStoredAddress`/`writeStoredAddress`, now
+ * removed entirely -- ticket 006's acceptance criterion that `grep -rn
+ * "localStorage" packages/ui/src` shows no key holding a channel or
+ * group value). This panel now only ever shows the name-derived default
+ * (`nameToRadioAddress`) as its starting point -- it does **not** yet
+ * read `device.radio` from the snapshot or send `set-radio-override` on
+ * save, both **deferred to ticket 007/008**: `device` here is still the
+ * retired `EndpointListEntry` (no `radio` field, no numeric `devices.id`
+ * to address a `set-radio-override` at) until those tickets migrate
+ * this page's data source to the `Snapshot` contract. Saving here only
+ * updates this component's own in-memory draft (feeding the code panel
+ * on the right); it persists nothing anywhere, unlike before this
+ * ticket, when it persisted to `localStorage`. Use the device page's
+ * "Set Radio" dialog (`RadioAddressDialog`, already migrated to
+ * `set-radio-override`) for a durable, host-side override in the
+ * meantime.
  */
 import { useEffect, useMemo, useState } from "react";
 import { nameToRadioAddress } from "@robot-console/protocol";
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
 import { useConnectionStatus, useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
-import { readStoredAddress, writeStoredAddress, type RadioAddress } from "../pages/RelayPage";
+import type { RadioAddress } from "../pages/RelayPage";
 import {
   calibrationCode,
   deriveCalibration,
@@ -95,10 +114,13 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
     });
   }
 
-  // Radio address -- the console's per-name relay address.
-  const [radio, setRadio] = useState<RadioAddress>(
-    () => (device.name ? readStoredAddress(device.name) : null) ?? nameToRadioAddress(robotName),
-  );
+  // Radio address. Ticket 006: no `localStorage` read/write any more --
+  // see this module's own doc comment ("no more localStorage") for why
+  // this still only ever starts from the name-derived default rather
+  // than `device.radio` (deferred to ticket 007/008), and why `saveRadio`
+  // below only updates this component's own draft rather than sending
+  // `set-radio-override`.
+  const [radio, setRadio] = useState<RadioAddress>(() => nameToRadioAddress(robotName));
   const [radioDraft, setRadioDraft] = useState({ channel: String(radio.channel), group: String(radio.group) });
   const [radioError, setRadioError] = useState<string | null>(null);
   function saveRadio(): boolean {
@@ -113,11 +135,7 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
       return false;
     }
     setRadioError(null);
-    const next = { channel, group };
-    setRadio(next);
-    if (device.name) {
-      writeStoredAddress(device.name, next);
-    }
+    setRadio({ channel, group });
     return true;
   }
 

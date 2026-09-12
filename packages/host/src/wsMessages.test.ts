@@ -165,6 +165,63 @@ describe("parseClientMessage", () => {
     });
   });
 
+  describe("set-radio-override", () => {
+    it("accepts a well-formed {channel, group} message", () => {
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: 1198504156, channel: 41, group: 3 })).toEqual({
+        type: "set-radio-override",
+        deviceId: 1198504156,
+        channel: 41,
+        group: 3,
+      });
+    });
+
+    it("accepts a well-formed {clear: true} message", () => {
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: 1198504156, clear: true })).toEqual({
+        type: "set-radio-override",
+        deviceId: 1198504156,
+        clear: true,
+      });
+    });
+
+    it("rejects a message with neither channel/group nor clear", () => {
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: 1198504156 })).toBeUndefined();
+    });
+
+    it("rejects a message carrying both clear and channel/group", () => {
+      expect(
+        parseClientMessage({ type: "set-radio-override", deviceId: 1198504156, clear: true, channel: 41, group: 3 }),
+      ).toBeUndefined();
+    });
+
+    it("rejects clear: false (not a legal value for this field)", () => {
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: 1198504156, clear: false })).toBeUndefined();
+    });
+
+    it("rejects a non-integer deviceId", () => {
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: "1198504156", channel: 41, group: 3 })).toBeUndefined();
+    });
+
+    it("rejects a non-numeric channel or group (range/integer validation is server.ts's job, not this module's -- see the type's own doc comment)", () => {
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: 1198504156, channel: "41", group: 3 })).toBeUndefined();
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: 1198504156, channel: 41, group: "3" })).toBeUndefined();
+    });
+
+    it("passes a numeric but out-of-range/non-integer channel or group through -- shape is still well-formed (server.ts rejects it, not this parser)", () => {
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: 1198504156, channel: 999, group: 3 })).toEqual({
+        type: "set-radio-override",
+        deviceId: 1198504156,
+        channel: 999,
+        group: 3,
+      });
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: 1198504156, channel: 41.5, group: 3 })).toEqual({
+        type: "set-radio-override",
+        deviceId: 1198504156,
+        channel: 41.5,
+        group: 3,
+      });
+    });
+  });
+
   it("accepts a well-formed flash-local-begin message", () => {
     expect(
       parseClientMessage({

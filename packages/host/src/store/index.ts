@@ -449,6 +449,40 @@ export class Store {
     );
   }
 
+  /** Sets a device's radio address override — `radio_channel`,
+   * `radio_group`, and `radio_source = 'override'` (sprint 015 ticket
+   * 006). The one writer of an `"override"`-sourced radio address;
+   * `projection.ts`'s `resolveRadio` reads these three columns back
+   * verbatim once set. A no-op if `id` has no row yet — callers upsert
+   * the device first (mirrors {@link setOwned}'s own contract). */
+  setRadioOverride(id: number, channel: number, group: number): void {
+    this.withChange(
+      "devices",
+      () => String(id),
+      () => {
+        this.db
+          .prepare("UPDATE devices SET radio_channel = ?, radio_group = ?, radio_source = 'override' WHERE id = ?")
+          .run(channel, group, id);
+      },
+    );
+  }
+
+  /** Clears a device's radio address override — `radio_channel`/
+   * `radio_group`/`radio_source` all return to `NULL`, so the next read
+   * falls back to the name-derived default (`projection.ts`'s
+   * `resolveRadio`, `source: "derived"`). A no-op if `id` has no row. */
+  clearRadioOverride(id: number): void {
+    this.withChange(
+      "devices",
+      () => String(id),
+      () => {
+        this.db
+          .prepare("UPDATE devices SET radio_channel = NULL, radio_group = NULL, radio_source = NULL WHERE id = ?")
+          .run(id);
+      },
+    );
+  }
+
   /**
    * Merges the placeholder `devices` row `fromId` into the real row
    * `intoId` and deletes `fromId` — sprint 015 ticket 003's known-robots

@@ -143,7 +143,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import type { EndpointListEntry, RememberedRobotEntry } from "@robot-console/host/src/wsMessages.js";
-import { nameToRadioAddress } from "@robot-console/protocol";
 import type { ConnectionStatus } from "../ws/WsProvider";
 import {
   useConnectionStatus,
@@ -154,7 +153,7 @@ import {
 } from "../ws/WsProvider";
 import { canBeFlashed, nameDisplay, roleDisplay } from "../deviceDisplay";
 import { FlashDialog } from "../components/FlashDialog";
-import { buildRobotOptions, readStoredAddress, RobotSelect, writeStoredAddress, type RobotOption } from "./RelayPage";
+import { buildRobotOptions, RobotSelect, type RobotOption } from "./RelayPage";
 import "./FrontPage.css";
 
 export function FrontPage() {
@@ -180,9 +179,13 @@ export function FrontPage() {
           send({ type: "session-open", endpointId: relay.endpointId, autoRobot: true });
           return;
         }
-        const radio = readStoredAddress(robotName) ?? nameToRadioAddress(robotName);
-        writeStoredAddress(robotName, radio);
-        send({ type: "session-open", endpointId: relay.endpointId, robotName, radio });
+        // Ticket 006: no `radio` override sent here any more -- the
+        // robot's radio address is resolved host-side from a
+        // device-level override, the mbrelay registry, or the
+        // name-derived default, in that order (`radioOverride.ts`'s
+        // `override -> registry -> derived`). See `RelayPage.tsx`'s own
+        // doc comment ("per-connect channel/group inputs removed").
+        send({ type: "session-open", endpointId: relay.endpointId, robotName });
       }}
       onRelayDisconnect={(child) => send({ type: "session-close", endpointId: child.endpointId })}
     />

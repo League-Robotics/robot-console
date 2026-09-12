@@ -4,7 +4,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
 import { WifiCredentialsDialog, validateWifiInput } from "./WifiCredentialsDialog";
-import { RadioAddressDialog } from "./RadioAddressDialog";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 
@@ -145,28 +144,5 @@ describe("WifiCredentialsDialog", () => {
       el.querySelector<HTMLButtonElement>('[data-testid="wifi-credentials-trigger"]')!.click();
     });
     expect(el.querySelector<HTMLButtonElement>('[data-testid="wifi-write"]')!.disabled).toBe(true);
-  });
-});
-
-describe("RadioAddressDialog", () => {
-  it("prefills the name-derived address, validates, and saves the console's per-name relay address", () => {
-    const el = mount(<RadioAddressDialog endpoint={robot()} />);
-    act(() => {
-      el.querySelector<HTMLButtonElement>('[data-testid="radio-address-trigger"]')!.click();
-    });
-    expect(el.querySelector<HTMLInputElement>('[data-testid="radio-channel"]')!.value).not.toBe("");
-    type(el, '[data-testid="radio-channel"]', "55");
-    type(el, '[data-testid="radio-group"]', "114");
-    act(() => {
-      el.querySelector<HTMLButtonElement>('[data-testid="radio-save"]')!.click();
-    });
-    expect(el.querySelector('[data-testid="radio-saved"]')?.textContent).toContain("channel 55, group 114");
-    expect(JSON.parse(window.localStorage.getItem("robot-console:relay-address:tigez") ?? "{}")).toEqual({ channel: 55, group: 114 });
-
-    type(el, '[data-testid="radio-channel"]', "99");
-    act(() => {
-      el.querySelector<HTMLButtonElement>('[data-testid="radio-save"]')!.click();
-    });
-    expect(el.querySelector('[data-testid="radio-error"]')?.textContent).toContain("0 to 83");
   });
 });

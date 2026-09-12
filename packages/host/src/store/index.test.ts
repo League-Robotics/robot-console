@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { openStoreDb } from "./db.js";
 import { DeviceNameMismatchError, Store, type ChangeEvent } from "./index.js";
@@ -102,6 +105,69 @@ describe("Store: setOwned", () => {
       expect(row?.owned).toBe(0);
     } finally {
       store.close();
+    }
+  });
+});
+
+describe("Store: setRadioOverride / clearRadioOverride", () => {
+  it("sets radio_channel/radio_group and radio_source = 'override'; is a no-op if the device does not exist", () => {
+    const { store } = freshStore();
+    try {
+      store.setRadioOverride(999, 41, 3); // no device row yet
+      expect(store.snapshotRows().devices).toHaveLength(0);
+
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 100 });
+      store.setRadioOverride(1198504156, 41, 3);
+      const row = store.snapshotRows().devices[0];
+      expect(row).toMatchObject({ radio_channel: 41, radio_group: 3, radio_source: "override" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("clearRadioOverride returns radio_channel/radio_group/radio_source to NULL", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 100 });
+      store.setRadioOverride(1198504156, 41, 3);
+      store.clearRadioOverride(1198504156);
+      const row = store.snapshotRows().devices[0];
+      expect(row).toMatchObject({ radio_channel: null, radio_group: null, radio_source: null });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("clearRadioOverride is a no-op if the device does not exist", () => {
+    const { store } = freshStore();
+    try {
+      expect(() => store.clearRadioOverride(999)).not.toThrow();
+      expect(store.snapshotRows().devices).toHaveLength(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("persists a radio override across a store close/reopen against the same file (ticket 006 AC1)", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "robot-console-radio-override-test-"));
+    const filePath = path.join(dir, "console.sqlite");
+    try {
+      const store1 = new Store(openStoreDb({ filePath }));
+      store1.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 100 });
+      store1.setRadioOverride(1198504156, 41, 3);
+      store1.close();
+
+      const store2 = new Store(openStoreDb({ filePath }));
+      try {
+        const row = store2.snapshotRows().devices[0];
+        expect(row).toMatchObject({ radio_channel: 41, radio_group: 3, radio_source: "override" });
+        const projected = store2.projectionRows().devices[0];
+        expect(projected).toMatchObject({ radioChannel: 41, radioGroup: 3, radioSource: "override" });
+      } finally {
+        store2.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

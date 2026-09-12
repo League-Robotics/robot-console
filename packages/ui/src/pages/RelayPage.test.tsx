@@ -4,8 +4,12 @@
  * connected behavior (rewritten out-of-process, 2026-09-09, replacing
  * the earlier "empty shell" placeholder-era assertions -- see
  * `RelayPage.tsx`'s own doc comment for the host contract this now
- * exercises: `session-open { endpointId, robotName, radio }` and the
- * `viaRelay`-carrying child endpoint the host publishes once tuned).
+ * exercises: `session-open { endpointId, robotName }` and the
+ * `viaRelay`-carrying child endpoint the host publishes once tuned.
+ * Sprint 015 ticket 006 removed this page's own per-connect channel/
+ * group fields and the `radio` field from `session-open` -- see
+ * `RelayPage.tsx`'s own doc comment, "per-connect channel/group inputs
+ * removed").
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -15,7 +19,6 @@ import type {
   EndpointListEntry,
   RememberedRobotEntry,
 } from "@robot-console/host/src/wsMessages.js";
-import { nameToRadioAddress } from "@robot-console/protocol";
 import { RelayPage } from "./RelayPage";
 import { AppHeader } from "../components/AppHeader";
 import { WsProvider } from "../ws/WsProvider";
@@ -153,14 +156,6 @@ function select(el: HTMLDivElement): HTMLSelectElement {
   return el.querySelector<HTMLSelectElement>('[data-testid="relay-robot-select"]')!;
 }
 
-function channelInput(el: HTMLDivElement): HTMLInputElement {
-  return el.querySelector<HTMLInputElement>('[data-testid="relay-channel"]')!;
-}
-
-function groupInput(el: HTMLDivElement): HTMLInputElement {
-  return el.querySelector<HTMLInputElement>('[data-testid="relay-group"]')!;
-}
-
 function connectButton(el: HTMLDivElement): HTMLButtonElement {
   return el.querySelector<HTMLButtonElement>('[data-testid="relay-connect"]')!;
 }
@@ -170,14 +165,6 @@ function setSelectValue(el: HTMLSelectElement, value: string): void {
     const nativeSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
     nativeSetter.call(el, value);
     el.dispatchEvent(new Event("change", { bubbles: true }));
-  });
-}
-
-function setInputValue(el: HTMLInputElement, value: string): void {
-  act(() => {
-    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-    nativeSetter.call(el, value);
-    el.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
 
@@ -204,12 +191,11 @@ describe("RelayPage -- not connected", () => {
     expect(sel.textContent).toContain("No robots remembered yet — connect one over USB once");
   });
 
-  it("prefills channel/group from the name-derived address on selection", () => {
+  it("ticket 006: has no per-connect channel/group input fields any more", () => {
     const { el } = mountRelayPage(relayFixture(), { rememberedRobots: [rememberedRobotFixture("vevav")] });
     setSelectValue(select(el), "vevav");
-    const derived = nameToRadioAddress("vevav");
-    expect(channelInput(el).valueAsNumber).toBe(derived.channel);
-    expect(groupInput(el).valueAsNumber).toBe(derived.group);
+    expect(el.querySelector('[data-testid="relay-channel"]')).toBeNull();
+    expect(el.querySelector('[data-testid="relay-group"]')).toBeNull();
   });
 
   it("enables Connect with no selection -- ticket 005: no pick is the default-failover trigger, not a disabled state", () => {
@@ -329,11 +315,9 @@ describe("RelayPage -- not connected", () => {
     expect(JSON.parse(socket.sent[0]!).type).toBe("session-open");
   });
 
-  it("editing the address to 55/114 and clicking Connect sends exactly one session-open with those values", () => {
+  it("picking a robot and clicking Connect sends exactly one session-open with just endpointId/robotName -- no radio field (ticket 006)", () => {
     const { el, socket } = mountRelayPage(relayFixture(), { rememberedRobots: [rememberedRobotFixture("vevav")] });
     setSelectValue(select(el), "vevav");
-    setInputValue(channelInput(el), "55");
-    setInputValue(groupInput(el), "114");
     act(() => {
       connectButton(el).click();
     });
@@ -343,30 +327,8 @@ describe("RelayPage -- not connected", () => {
         type: "session-open",
         endpointId: "usb-RELAY-A",
         robotName: "vevav",
-        radio: { channel: 55, group: 114 },
       }),
     ]);
-  });
-
-  it("remembers an edited address for a name in localStorage once connected, and reapplies it on reselect", () => {
-    const { el } = mountRelayPage(relayFixture(), { rememberedRobots: [rememberedRobotFixture("vevav")] });
-    setSelectValue(select(el), "vevav");
-    setInputValue(channelInput(el), "55");
-    setInputValue(groupInput(el), "114");
-    act(() => {
-      connectButton(el).click();
-    });
-
-    expect(window.localStorage.getItem("robot-console:relay-address:vevav")).toBe(
-      JSON.stringify({ channel: 55, group: 114 }),
-    );
-
-    // A fresh mount, then re-selecting the same name should read the
-    // stored override rather than the plain name-derived default.
-    const { el: el2 } = mountRelayPage(relayFixture(), { rememberedRobots: [rememberedRobotFixture("vevav")] });
-    setSelectValue(select(el2), "vevav");
-    expect(channelInput(el2).valueAsNumber).toBe(55);
-    expect(groupInput(el2).valueAsNumber).toBe(114);
   });
 
   it("renders the relay's own device console", () => {
@@ -431,8 +393,6 @@ describe("RelayPage -- connected", () => {
     socket.sent.length = 0;
 
     setSelectValue(select(el), "zeguz");
-    setInputValue(channelInput(el), "27");
-    setInputValue(groupInput(el), "3");
     act(() => {
       connectButton(el).click();
     });
@@ -443,7 +403,6 @@ describe("RelayPage -- connected", () => {
         type: "session-open",
         endpointId: "usb-RELAY-A",
         robotName: "zeguz",
-        radio: { channel: 27, group: 3 },
       }),
     ]);
   });

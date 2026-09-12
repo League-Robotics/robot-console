@@ -82,6 +82,7 @@ import type { Reconciler } from "./connect/reconciler.js";
 import type { ConnectedSession } from "./connect/connector.js";
 import type { HarvesterTelemetryEvent } from "./connect/harvester.js";
 import { buildSnapshotFromRows } from "./projection.js";
+import { isValidRadioOverride } from "./radioOverride.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
 import { FirmwareAvailabilityCache, type FirmwareStatusMap } from "./releases.js";
 import { resolveRelease as defaultResolveRelease, fetchAndVerifyHex as defaultFetchAndVerifyHex } from "./releases.js";
@@ -780,6 +781,29 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       return;
     }
     store.deleteDevice(message.deviceId);
+  });
+
+  handlers.set("set-radio-override", async (_ws, message) => {
+    if (message.type !== "set-radio-override") {
+      return;
+    }
+    if ("clear" in message) {
+      store.clearRadioOverride(message.deviceId);
+      return;
+    }
+    // Range/integer validation lives once, host-side, in radioOverride.ts
+    // (ticket 006's own acceptance criterion: invalid input is rejected
+    // with a notice, never written) -- wsMessages.ts's parseClientMessage
+    // only narrows the wire shape, per that type's own doc comment.
+    if (!isValidRadioOverride(message.channel, message.group)) {
+      sendNotice(
+        undefined,
+        "warn",
+        `invalid radio override for device ${message.deviceId}: channel must be an integer 0-83 and group an integer 0-255 (got channel=${message.channel}, group=${message.group})`,
+      );
+      return;
+    }
+    store.setRadioOverride(message.deviceId, message.channel, message.group);
   });
 
   handlers.set("get-wifi-credentials", async (ws, message) => {

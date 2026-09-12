@@ -79,8 +79,9 @@
  *     SessionCloseMessage}, {@link LineMessage} (always `direction: "tx"`
  *     in this direction), {@link SendCommandMessage}, {@link
  *     FlashStartMessage}, {@link FlashLocalBeginMessage}, {@link
- *     ForgetDeviceMessage}, {@link GetWifiCredentialsMessage}, {@link
- *     SetWifiCredentialsMessage}, {@link ProvisionWifiMessage}.
+ *     ForgetDeviceMessage}, {@link SetRadioOverrideMessage}, {@link
+ *     GetWifiCredentialsMessage}, {@link SetWifiCredentialsMessage},
+ *     {@link ProvisionWifiMessage}.
  *   - server -> client: {@link Snapshot}, {@link Notice}, {@link
  *     LineMessage} (always `direction: "rx"` in this direction -- an
  *     inbound line from the device), {@link FlashProgressMessage},
@@ -546,6 +547,22 @@ export interface ForgetDeviceMessage {
   deviceId: number;
 }
 
+/** Client -> server: set (`{channel, group}`) or clear (`{clear: true}`)
+ * one device's radio address override -- architecture.md §2's decision
+ * to move radio overrides out of browser `localStorage` and into the
+ * host DB (ticket 006). Exactly one of the two shapes, never both --
+ * same discipline as {@link SessionOpenMessage}. Range/integer
+ * validation (`radioOverride.ts`'s own `isValidRadioOverride`, "0-83
+ * channel / 0-255 group, both integers") is deliberately *not* this
+ * module's job -- it happens once, host-side, in `server.ts`'s handler,
+ * the same split {@link ProvisionWifiMessage}'s own whitespace check
+ * uses (shape here, domain rules in the handler); an invalid
+ * `channel`/`group` that still matches this shape is rejected there with
+ * a `notice`, never written. */
+export type SetRadioOverrideMessage =
+  | { type: "set-radio-override"; deviceId: number; channel: number; group: number }
+  | { type: "set-radio-override"; deviceId: number; clear: true };
+
 /** Every message shape a client may send. */
 export type ClientMessage =
   | SessionOpenMessage
@@ -555,6 +572,7 @@ export type ClientMessage =
   | FlashStartMessage
   | FlashLocalBeginMessage
   | ForgetDeviceMessage
+  | SetRadioOverrideMessage
   | GetWifiCredentialsMessage
   | SetWifiCredentialsMessage
   | ProvisionWifiMessage;
@@ -751,6 +769,26 @@ export function parseClientMessage(value: unknown): ClientMessage | undefined {
       return Number.isInteger(value.deviceId)
         ? { type: "forget-device", deviceId: value.deviceId as number }
         : undefined;
+    case "set-radio-override": {
+      if (!Number.isInteger(value.deviceId)) {
+        return undefined;
+      }
+      const deviceId = value.deviceId as number;
+      const hasClear = value.clear !== undefined;
+      const hasChannelOrGroup = value.channel !== undefined || value.group !== undefined;
+      if (hasClear === hasChannelOrGroup) {
+        // Neither shape present, or both at once -- exactly one is
+        // legal (mirrors session-open's own "hasLinkId === hasRelayShape"
+        // guard above).
+        return undefined;
+      }
+      if (hasClear) {
+        return value.clear === true ? { type: "set-radio-override", deviceId, clear: true } : undefined;
+      }
+      return typeof value.channel === "number" && typeof value.group === "number"
+        ? { type: "set-radio-override", deviceId, channel: value.channel, group: value.group }
+        : undefined;
+    }
     default:
       return undefined;
   }

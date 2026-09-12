@@ -605,6 +605,120 @@ describe("server.ts: forget-device", () => {
   });
 });
 
+// ---------------------------------------------------------------------
+// set-radio-override -- ticket 006's own acceptance criteria
+// ---------------------------------------------------------------------
+
+describe("server.ts: set-radio-override", () => {
+  it("persists a valid override, and the next snapshot's devices[].radio shows it (AC1)", async () => {
+    const h = await harness();
+    h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+    h.store.setOwned(1198504156, true, 1);
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    ws.emit(
+      "message",
+      Buffer.from(JSON.stringify({ type: "set-radio-override", deviceId: 1198504156, channel: 41, group: 3 })),
+      false,
+    );
+    await flush();
+
+    expect(h.store.snapshotRows().devices[0]).toMatchObject({ radio_channel: 41, radio_group: 3, radio_source: "override" });
+    const snapshot = ws.sent.find((m) => m.type === "snapshot") as Snapshot | undefined;
+    const device = snapshot?.devices.find((d) => d.id === 1198504156);
+    expect(device?.radio).toEqual({ channel: 41, group: 3, source: "override" });
+  });
+
+  it("clearing returns source to derived and the snapshot shows the derived pair (AC2)", async () => {
+    const h = await harness();
+    h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+    h.store.setOwned(1198504156, true, 1);
+    h.store.setRadioOverride(1198504156, 41, 3);
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "set-radio-override", deviceId: 1198504156, clear: true })), false);
+    await flush();
+
+    expect(h.store.snapshotRows().devices[0]).toMatchObject({ radio_channel: null, radio_group: null, radio_source: null });
+    const snapshot = ws.sent.find((m) => m.type === "snapshot") as Snapshot | undefined;
+    const device = snapshot?.devices.find((d) => d.id === 1198504156);
+    expect(device?.radio.source).toBe("derived");
+  });
+
+  it("rejects an out-of-range channel with a notice, and writes nothing (AC4)", async () => {
+    const h = await harness();
+    h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    ws.emit(
+      "message",
+      Buffer.from(JSON.stringify({ type: "set-radio-override", deviceId: 1198504156, channel: 999, group: 3 })),
+      false,
+    );
+    await flush();
+
+    expect(h.store.snapshotRows().devices[0]).toMatchObject({ radio_channel: null, radio_group: null, radio_source: null });
+    expect(ws.sent.some((m) => m.type === "notice" && m.level === "warn")).toBe(true);
+  });
+
+  it("rejects an out-of-range group with a notice, and writes nothing (AC4)", async () => {
+    const h = await harness();
+    h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    ws.emit(
+      "message",
+      Buffer.from(JSON.stringify({ type: "set-radio-override", deviceId: 1198504156, channel: 41, group: 999 })),
+      false,
+    );
+    await flush();
+
+    expect(h.store.snapshotRows().devices[0]).toMatchObject({ radio_channel: null, radio_group: null, radio_source: null });
+    expect(ws.sent.some((m) => m.type === "notice" && m.level === "warn")).toBe(true);
+  });
+
+  it("rejects a non-integer channel with a notice, and writes nothing (AC4)", async () => {
+    const h = await harness();
+    h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    ws.emit(
+      "message",
+      Buffer.from(JSON.stringify({ type: "set-radio-override", deviceId: 1198504156, channel: 41.5, group: 3 })),
+      false,
+    );
+    await flush();
+
+    expect(h.store.snapshotRows().devices[0]).toMatchObject({ radio_channel: null, radio_group: null, radio_source: null });
+    expect(ws.sent.some((m) => m.type === "notice" && m.level === "warn")).toBe(true);
+  });
+});
+
 describe("server.ts: malformed/unrecognized messages", () => {
   it("replies directly to the sender (not a broadcast) for malformed JSON", async () => {
     const h = await harness();

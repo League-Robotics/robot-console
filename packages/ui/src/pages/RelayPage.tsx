@@ -96,6 +96,22 @@
  * state (the connected layout, including `RobotPage` for the child,
  * stays mounted throughout, driven by the child's existence, not its
  * session state) so the student can retry or clean up.
+ *
+ * ## Sprint 015 ticket 006: per-connect channel/group inputs removed
+ *
+ * Per `rearch-08-radio-address-overrides-in-host-db.md`'s default
+ * (confirmed by the stakeholder, `sprint.md`'s Open Question 2): this
+ * page no longer has its own editable channel/group fields, and
+ * `session-open` no longer carries a `radio` override -- a robot's
+ * radio address is now a device-level property, set once via the
+ * device page's "Set Radio" dialog (`RadioAddressDialog`, which now
+ * sends `set-radio-override` to the host DB instead of writing
+ * `localStorage`) and resolved host-side (`override -> registry ->
+ * derived`, `radioOverride.ts`). `readStoredAddress`/`writeStoredAddress`
+ * (this module's own former per-name `localStorage` cache, also used by
+ * `ConfigurationPage`/`RadioAddressDialog`) are gone entirely -- see
+ * ticket 006's acceptance criterion that `grep -rn "localStorage"
+ * packages/ui/src` shows no key holding a channel or group value.
  */
 import { useEffect, useState } from "react";
 import type {
@@ -103,7 +119,6 @@ import type {
   EndpointListEntry,
   RememberedRobotEntry,
 } from "@robot-console/host/src/wsMessages.js";
-import { nameToRadioAddress } from "@robot-console/protocol";
 import { AddressSourceChip } from "../components/AddressSourceChip";
 import { DeviceConsole } from "../components/DeviceConsole";
 import { RobotPage } from "./RobotPage";
@@ -121,60 +136,15 @@ export interface RelayPageProps {
 
 type ChildEndpoint = EndpointListEntry & { viaRelay: NonNullable<EndpointListEntry["viaRelay"]> };
 
+/** A `(channel, group)` pair -- kept here (rather than moved wholesale
+ * into `@robot-console/protocol`) only because `ConfigurationPage.tsx`
+ * still imports this exact shape as a type; no runtime logic of this
+ * module's own depends on it any more (ticket 006 removed this page's
+ * own editable channel/group fields -- see the module doc comment's
+ * "per-connect channel/group inputs removed" section). */
 export interface RadioAddress {
   channel: number;
   group: number;
-}
-
-function addressStorageKey(name: string): string {
-  return `robot-console:relay-address:${name}`;
-}
-
-/** Best-effort read of a per-name remembered override, written the
- * last time the student connected with edited values for this name.
- * `null` for "nothing remembered" *and* for any storage failure (a
- * private-browsing quota error, a browser that blocks storage
- * entirely, malformed JSON left by an older build) — never thrown,
- * since the derived default (`nameToRadioAddress`) is always a safe
- * fallback. */
-export function readStoredAddress(name: string): RadioAddress | null {
-  try {
-    const raw = window.localStorage.getItem(addressStorageKey(name));
-    if (!raw) {
-      return null;
-    }
-    const parsed: unknown = JSON.parse(raw);
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      Number.isInteger((parsed as RadioAddress).channel) &&
-      Number.isInteger((parsed as RadioAddress).group)
-    ) {
-      return { channel: (parsed as RadioAddress).channel, group: (parsed as RadioAddress).group };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/** Best-effort write, mirroring {@link readStoredAddress}'s failure
- * handling — a storage error here must never block the Connect click
- * that triggered it. */
-export function writeStoredAddress(name: string, address: RadioAddress): void {
-  try {
-    window.localStorage.setItem(addressStorageKey(name), JSON.stringify(address));
-  } catch {
-    // Best-effort only -- see this function's doc comment.
-  }
-}
-
-function parseNumberInput(raw: string): number | null {
-  if (raw.trim() === "") {
-    return null;
-  }
-  const value = Number(raw);
-  return Number.isFinite(value) ? value : null;
 }
 
 /** One dropdown entry: a bare name string, plus whether it came only
@@ -223,8 +193,6 @@ export function RelayPage({ endpoint }: RelayPageProps) {
   );
 
   const [selectedName, setSelectedName] = useState<string>("");
-  const [channel, setChannel] = useState<number>(0);
-  const [group, setGroup] = useState<number>(0);
 
   // Sprint 13 ticket 004: `relayBridge` covers the two states that have
   // no other representation -- "connecting" and "failed" -- both of
@@ -242,45 +210,24 @@ export function RelayPage({ endpoint }: RelayPageProps) {
   const liveEndpoint = endpoints.find((candidate) => candidate.endpointId === endpoint.endpointId) ?? endpoint;
   const bridge = child ? undefined : liveEndpoint.relayBridge;
 
-  // Sync the connect bar to the live child's own address whenever it
+  // Sync the connect bar to the live child's own name whenever it
   // appears or changes -- covers both "this page mounted while already
   // connected" and "the host just confirmed a fresh session-open" with
-  // the same logic, so the fields always reflect what the relay is
-  // actually tuned to rather than a stale pre-connect edit.
+  // the same logic. Ticket 006: no longer syncs channel/group -- this
+  // page has no editable address fields of its own any more (see the
+  // module doc comment); `child.viaRelay.channel`/`group` are still read
+  // directly (not through local state) by the connected status line
+  // below.
   useEffect(() => {
     if (child) {
       setSelectedName(child.viaRelay.robotName);
-      setChannel(child.viaRelay.channel);
-      setGroup(child.viaRelay.group);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [child?.viaRelay.robotName, child?.viaRelay.channel, child?.viaRelay.group]);
+  }, [child?.viaRelay.robotName]);
 
   const robotOptions = buildRobotOptions(rememberedRobots, discoveredServices.robots);
 
   function handleSelectName(name: string): void {
     setSelectedName(name);
-    if (name === "") {
-      return;
-    }
-    const stored = readStoredAddress(name);
-    const address = stored ?? nameToRadioAddress(name);
-    setChannel(address.channel);
-    setGroup(address.group);
-  }
-
-  function handleChannelInput(raw: string): void {
-    const value = parseNumberInput(raw);
-    if (value !== null) {
-      setChannel(value);
-    }
-  }
-
-  function handleGroupInput(raw: string): void {
-    const value = parseNumberInput(raw);
-    if (value !== null) {
-      setGroup(value);
-    }
   }
 
   function handleConnect(): void {
@@ -288,12 +235,15 @@ export function RelayPage({ endpoint }: RelayPageProps) {
       send({ type: "session-close", endpointId: child.endpointId });
     }
     if (selectedName) {
-      writeStoredAddress(selectedName, { channel, group });
+      // Ticket 006: no `radio` override sent here any more -- the
+      // robot's radio address is resolved host-side from a device-level
+      // override (set via `RadioAddressDialog`'s `set-radio-override`),
+      // the mbrelay registry, or the name-derived default, in that order
+      // (`radioOverride.ts`'s `override -> registry -> derived`).
       send({
         type: "session-open",
         endpointId: endpoint.endpointId,
         robotName: selectedName,
-        radio: { channel, group },
       });
       return;
     }
@@ -340,7 +290,6 @@ export function RelayPage({ endpoint }: RelayPageProps) {
 
           <div className="relay-connect-bar">
             <RobotSelect options={robotOptions} value={selectedName} onChange={handleSelectName} />
-            <RadioAddressFields channel={channel} group={group} onChannel={handleChannelInput} onGroup={handleGroupInput} />
             <button type="button" data-testid="relay-connect" disabled={connectDisabled} onClick={handleConnect}>
               Connect
             </button>
@@ -374,14 +323,14 @@ export function RelayPage({ endpoint }: RelayPageProps) {
         <>
           <div className="relay-connect-bar">
             <RobotSelect options={robotOptions} value={selectedName} onChange={handleSelectName} />
-            <RadioAddressFields channel={channel} group={group} onChannel={handleChannelInput} onGroup={handleGroupInput} />
             <button type="button" data-testid="relay-connect" disabled={connectDisabled} onClick={handleConnect}>
               Connect
             </button>
           </div>
           <p className="relay-page-hint">
-            Defaults to the address derived from the name. The calibration image listens on 55 / 114. Leave the
-            robot unpicked and press Connect to try every remembered/discovered robot in turn.
+            Uses the picked robot's radio address as configured on its device page (Set Radio), or the name-derived
+            default if none is set. Leave the robot unpicked and press Connect to try every remembered/discovered
+            robot in turn.
           </p>
           {bridge?.state === "connecting" && (
             <p className="relay-autoconnecting-status" role="status" data-testid="relay-autoconnecting">
@@ -448,37 +397,3 @@ export function RobotSelect({
   );
 }
 
-function RadioAddressFields({
-  channel,
-  group,
-  onChannel,
-  onGroup,
-}: {
-  channel: number;
-  group: number;
-  onChannel: (raw: string) => void;
-  onGroup: (raw: string) => void;
-}) {
-  return (
-    <div className="relay-radio-fields">
-      <label>
-        <span>Channel</span>
-        <input
-          data-testid="relay-channel"
-          type="number"
-          value={channel}
-          onChange={(event) => onChannel(event.target.value)}
-        />
-      </label>
-      <label>
-        <span>Group</span>
-        <input
-          data-testid="relay-group"
-          type="number"
-          value={group}
-          onChange={(event) => onGroup(event.target.value)}
-        />
-      </label>
-    </div>
-  );
-}

@@ -1,7 +1,7 @@
 ---
 id: '003'
 title: Store typed operations, change feed, and JSON importers
-status: in-progress
+status: done
 use-cases:
 - SUC-005
 depends-on:
@@ -37,21 +37,21 @@ this sprint needs before it can write or read a row.
 
 ## Acceptance Criteria
 
-- [ ] Every typed operation listed above exists, is the only way any
+- [x] Every typed operation listed above exists, is the only way any
       other module writes to the store, and has a test.
-- [ ] The change feed emits exactly one coalesced event per transaction
+- [x] The change feed emits exactly one coalesced event per transaction
       burst (a test that performs several writes in one macrotask and
       asserts one event).
-- [ ] Both importers run against fixture JSON files, are idempotent
+- [x] Both importers run against fixture JSON files, are idempotent
       (running twice produces no duplicate rows), and leave the source
       files in place.
-- [ ] A fresh host start with an existing `known-robots.json` yields
+- [x] A fresh host start with an existing `known-robots.json` yields
       `SELECT count(*) FROM devices WHERE owned = 1` equal to the file's
       entry count (SUC-005 acceptance).
-- [ ] `upsertDevice` refuses a `deviceIdToName(id) !== name` mismatch
+- [x] `upsertDevice` refuses a `deviceIdToName(id) !== name` mismatch
       with a typed error, tested against the fixture disagreement noted
       in the protocol review.
-- [ ] `grep -rn "prepare(\|exec(" packages/host/src --include=*.ts` outside
+- [x] `grep -rn "prepare(\|exec(" packages/host/src --include=*.ts` outside
       `packages/host/src/store/` returns nothing.
 
 ## Testing

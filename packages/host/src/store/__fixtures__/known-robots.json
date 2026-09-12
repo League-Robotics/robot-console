@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "robots": [
+    {
+      "name": "vevov",
+      "firstSeenAt": "2026-08-01T10:00:00.000Z",
+      "lastSeenAt": "2026-08-15T12:30:00.000Z",
+      "lastSeenVia": "usb",
+      "lastUsbSerial": "0012345678",
+      "lastRole": "NEZHA2",
+      "lastType": "robot"
+    },
+    {
+      "name": "tovez",
+      "firstSeenAt": "2026-08-02T09:00:00.000Z",
+      "lastSeenAt": "2026-08-16T08:15:00.000Z",
+      "lastSeenVia": "usb",
+      "lastUsbSerial": "0087654321",
+      "lastRole": "NEZHA2",
+      "lastType": "robot"
+    },
+    {
+      "name": "gatav",
+      "firstSeenAt": "2026-08-03T11:00:00.000Z",
+      "lastSeenAt": "2026-08-17T14:45:00.000Z",
+      "lastSeenVia": "usb",
+      "lastUsbSerial": "0099999999",
+      "lastRole": null,
+      "lastType": "robot"
+    }
+  ]
+}

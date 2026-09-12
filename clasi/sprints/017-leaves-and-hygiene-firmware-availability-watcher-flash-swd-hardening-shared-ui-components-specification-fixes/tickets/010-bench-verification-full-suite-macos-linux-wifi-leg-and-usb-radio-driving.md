@@ -277,16 +277,203 @@ start. The unrelated `--watch-store` process from sprint 014 (pid
   **No firmware was flashed and no motion/drive verb was sent** —
   only `STATUS`/`FUNCS` queries, per this ticket's restriction.
 
+## Bench defects found by the stakeholder (2026-09-12)
+
+Stakeholder report (verbatim gist): "Nothing's working. I can't connect
+to gopiv from torture. I can't drive gopiv on Wi-Fi. I click the
+buttons and nothing happens." Four items investigated; root causes,
+fixes, and post-fix live evidence below. Commits: `76d5f77` (mDNS
+presence refresh), `d7404f5` (placeholder merge), `5a1c56e` (refusal
+notice). No firmware flashed; no motion/drive verbs sent.
+
+### 1. mDNS links aged to `stale` while still advertised
+
+**Root cause**: `watchers/mdnsWatcher.ts` only refreshed a
+link's/service's `last_seen` on a fresh `up` or `onServiceChange`
+event. `bonjour-service` never re-fires `up` for an instance it already
+knows, so a continuously-present, unchanging service (the common case
+— an idle robot, or `torture`'s always-on relay pool) never got touched
+again after its first sighting, and aged to `stale` after one TTL
+(180s) regardless of whether it was still actually there.
+
+**Fix**: subscribe to `MdnsBackend.onAnnounce` (a seam that already
+existed — `discovery/mdnsDiscovery.ts` already used it for its own,
+now-superseded WiFi-only liveness bookkeeping) for all five browsed
+types, and replay the last-known `services`/`links` touch whenever a
+raw PTR answer names an already-known fqdn. This reflects real presence
+(an answer heard on the wire) rather than "still in the local list",
+per this ticket's own guidance — no new seam needed.
+
+**Tests**: two new fake-backend tests in `mdnsWatcher.test.ts` — a
+continuously-answering service survives past its TTL; the same service
+still goes stale once announces stop (proving this is a presence
+refresh, not a permanent exemption).
+
+**Live confirmation**: on the fresh post-fix host (see below), at host
+uptime ~365s (host was watched from a ~30s settle straight through
+past 200s), `wifi-gopiv`/`wifi-tovez` (no open session, the case that
+was broken) were still `connectable`, and `mbrelay-torture` (also no
+session) was still `discovered` — none had gone `stale`.
+`mbrelay-torture`'s own `last_seen` was directly observed advancing
+across that window (from its first-seen timestamp to one taken ~300s
+later), confirming the presence-refresh is actually firing on live
+mDNS traffic, not just in the fake-backend tests.
+
+### 2. Placeholder merge (017-006) did not fire on real data
+
+**Root cause**: `connect/connector.ts`'s `mergeNamePlaceholderIfAny`
+required a placeholder candidate to have `usb_serial IS NULL`,
+reasoning that a row already carrying one must already be correlated.
+That reasoning was wrong: `store/importers/knownRobots.ts` writes the
+JSON's own `lastUsbSerial` into every imported placeholder
+unconditionally (`KnownRobotRecord.lastUsbSerial` is a required field,
+not optional), so a real placeholder from `known-robots.json` almost
+always carries a `usb_serial` and never matched the filter meant to
+find it. Live: `gopiv` (1461/2175407711), `tovez` (2665/2314287040),
+`vevov` (1031/1198504156) each stayed two rows.
+
+**Fix**: define a placeholder by how it was constructed —
+`kind === 'robot' && id === nameToValue(name)`, the exact id
+`store/importers/knownRobots.ts` always mints. `usb_serial` plays no
+part in the decision either way (it is "last seen via USB" telemetry,
+not an identity claim). Since `nameToValue` has one output per name and
+`devices.id` is the table's primary key, the old "two placeholders
+share this name" ambiguity case cannot arise any more; the real
+remaining ambiguity — two ROBOT rows sharing a name where *neither* is
+at the placeholder id — is still left untouched. `Store.mergeDevice`
+now also carries `usb_serial` across a merge (keeping the real row's
+own value if it has one, else the placeholder's) — it previously
+dropped the column silently.
+
+**Tests**: `connector.test.ts` — a placeholder-with-`usb_serial` fixture
+mirroring the real JSON now merges; the ambiguity test was replaced
+with the new "neither row is at the placeholder id" case;
+`store/index.test.ts` covers `usb_serial` carry-through both ways;
+`reconciler.test.ts` adds a test confirming the merge fires through the
+automatic auto-connect path too (not only a user-initiated
+`session-open`), since both dispatch through the same
+`connector.ts` `attempt()`.
+
+**Live confirmation**: on the fresh post-fix host, the very first
+settled snapshot showed **one row per name** for `gopiv`, `tovez`, and
+`vevov`, each `owned: 1` with its real `mdns`/`mbserial`-derived links
+attached — no duplicate placeholder rows. `tigez`'s own
+`known-robots.json` placeholder (id 2815) was also observed merging
+into its real USB-identified row within the first ~15s (via the
+original, unaffected `mergeUsbPlaceholderIfAny` usb-serial match) —
+confirming the merge pipeline as a whole is healthy on live data, not
+only in tests. (Separately, and not a regression: a second,
+unmerged `tigez`-decoding device row, id `3527777815`, `owned: 0`, no
+links, appeared once early in the run and was never touched again —
+consistent with this ticket's own already-documented flaky USB
+cable/connector producing a corrupted banner read on one identify
+attempt; it is not a placeholder by the new definition, has no links,
+and — being `owned: 0` with no links — is invisible in the UI
+projection, so it was left alone rather than guessed at.)
+
+### 3. Bridge via `torture` to `gopiv` still fails — confirmed environment, not code
+
+Live, read-only `GET http://torture.local:8761/names/gopiv` returned
+`{"channel":47,"group":60,"source":"derived"}` — the registry has
+**never learned** `gopiv`'s real location; its own answer agrees with
+the locally-derived address. Per this ticket's own branching
+instruction, this is recorded as **environment** ("gopiv not in radio
+range of torture or not on radio"), not a code defect.
+
+The `session-open {relayLinkId, name}` registry tier (sprint 016
+ticket 006) is confirmed **wired correctly**: `server.ts`'s
+`resolveRegistryLocationForRelay` reads a relay link's own stored
+address regardless of its `state` (so a `stale`/`discovered` relay
+link would not have silently blocked the lookup), and a live
+`session-open {relayLinkId: "mbrelay-torture", name: "gopiv"}` attempt
+against the fresh post-fix host produced a `radio-gopiv-via-mbrelay-torture`
+link whose stored address was `{"channel":47,"group":60}` — **exactly**
+the registry's own live answer above, proving the registry tier
+actually ran (not a coincidental match with the derived fallback,
+since both happen to agree here). The attempt still failed
+(`state: "failed"`, `state_reason: "relayBridger: candidate
+\"radio-gopiv-via-mbrelay-torture\" produced no banner within the
+identify budget"`) — the same failure this ticket's own Part 3 evidence
+already recorded, now confirmed to be a radio-range/hardware condition,
+not a silently-skipped registry lookup. No fix needed; no code change
+made for this item.
+
+### 4. UI "buttons do nothing" — refused opens were silent
+
+**Root cause**: `connect/reconciler.ts`'s `planUserOpen` already
+correctly refuses a `session-open` in three cases (unknown link,
+already open/connecting, or a `wifi`/`mbserial` device not yet owned)
+by returning no job at all — but nothing ever told the student *why*.
+`server.ts`'s handler just awaited `requestOpen` and returned,
+regardless of outcome.
+
+**Fix**: `describeUserOpenRefusal(rows, linkId)`, a new pure function
+narrating exactly the branches `planUserOpen` refuses on (without
+touching that function's own contract — the two can never disagree
+about *whether* a job was produced, only, when none was, about *why
+not*). `Reconciler.requestOpen` now resolves to
+`{ refusedReason?: string }`; `server.ts`'s `session-open` handler
+(both the `{linkId}` and `{relayLinkId, name}` shapes) broadcasts a
+link-scoped `notice` (`level: "warn"`) when set.
+`packages/ui/src/ws/WsProvider.tsx`'s `appendNotice` already renders a
+link-scoped notice on that link's own console log — no UI change was
+needed.
+
+**Tests**: `reconciler.test.ts` — a table of `describeUserOpenRefusal`
+cases mirroring `planUserOpen`'s own table tests, plus an executor-level
+test confirming `requestOpen` surfaces `refusedReason`;
+`server.test.ts` — two new tests confirming the `notice` broadcast (and
+its absence when the open actually succeeds) for both `session-open`
+shapes.
+
+### Test totals
+
+`npx vitest run packages/host/src packages/ui`: **84 files, 1248
+tests, all passing** (includes every test above). `npm run typecheck`
+and `npm run build` both clean; `npm run vite:build -w
+@robot-console/ui` produced a fresh static bundle.
+
 ## What the stakeholder must do next
 
-The host is left **running** (per Part 4 — not stopped by this
-ticket) at:
+The host from Part 4 (PID `94480`) was **stopped** by this follow-up
+pass (`kill -TERM`) and replaced with a fresh host on a newly-seeded
+state dir, left **running**:
 
 - **URL**: `http://127.0.0.1:4797/`
-- **PID**: `94480`
-- **State dir**: `/private/tmp/claude-501/-Volumes-Proj-proj-league-projects-microbit-robot-console/2adee9e5-9c06-4d70-bfc8-e8df62ded3f1/scratchpad/017-010-bench-state`
-  (`host.log`, `console.sqlite`, and the read-only seed copies of
-  `known-robots.json`/`wifi-credentials.json` are there)
+- **PID**: `48329`
+- **State dir**: `/private/tmp/claude-501/-Volumes-Proj-proj-league-projects-microbit-robot-console/2adee9e5-9c06-4d70-bfc8-e8df62ded3f1/scratchpad/017-010-bench-state2`
+  (`host.log`, `console.sqlite`, and fresh read-only seed copies of the
+  real `known-robots.json`/`wifi-credentials.json` are there)
+
+**What to expect now, honestly**:
+
+- `gopiv`/`tovez`/`vevov` each show as **one** card, owned, not two —
+  bench defect 2 is fixed. Their WiFi/relay links stay `connectable`
+  instead of aging to `stale` after a few minutes — bench defect 1 is
+  fixed.
+- Clicking Connect on a link the reconciler actually refuses (not owned
+  yet, already open/connecting) now writes a notice to that card's
+  console explaining why, instead of doing nothing visible — bench
+  defect 4 is fixed. This does **not** fix the WiFi leg or the
+  `torture`→`gopiv` radio bridge themselves (see below) — it only makes
+  a *refusal* visible; a real connect attempt that fails still fails,
+  with the failure reason in the link's own state as before.
+- **`torture` → `gopiv` over radio will still fail** ("no banner within
+  the identify budget") until `gopiv` is actually powered on and in RF
+  range of `torture` — confirmed via the registry itself, not a code
+  path this ticket can fix further. Try `vitut`/`vevov`/`tovez` instead
+  (same candidate order as Part 4's own note) — any of the four is
+  worth a try since range is a physical, not logical, condition.
+- **WiFi leg is still blocked** for the same reason as Part 4 recorded:
+  no robot's onboard WiFi has actually joined an access point right
+  now. Unchanged by this pass.
+- **Note on `tigez`'s USB cable**: on this fresh host, `tigez`'s
+  `usb-...` link is currently showing `connected` (not `unresponsive`
+  as it was during Part 1's own pass) — but this bench pass also
+  observed one corrupted/orphaned identify for the same board during
+  this run (see item 2's write-up above), consistent with the cable
+  still being intermittently unreliable rather than fixed. Item 1
+  below (replace the cable before driving) still stands.
 
 Two cards to drive, plus one prerequisite fix:
 

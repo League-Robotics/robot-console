@@ -2,8 +2,9 @@
 id: '007'
 title: 'UI shared components I: relay connect controls, robot select, held-drive,
   modal shell, display/line/clipboard helpers'
-status: open
-use-cases: [SUC-007]
+status: in-progress
+use-cases:
+- SUC-007
 depends-on: []
 github-issue: ''
 issue: rearch-16-ui-shared-components-dedupe.md

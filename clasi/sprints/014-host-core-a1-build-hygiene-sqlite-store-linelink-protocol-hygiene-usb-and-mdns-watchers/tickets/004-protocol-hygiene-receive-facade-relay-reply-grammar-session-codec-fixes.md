@@ -1,9 +1,11 @@
 ---
 id: '004'
 title: 'Protocol hygiene: receive() facade, relay reply grammar, session/codec fixes'
-status: open
-use-cases: [SUC-001]
-depends-on: ['001']
+status: in-progress
+use-cases:
+- SUC-001
+depends-on:
+- '001'
 github-issue: ''
 issue: rearch-15-protocol-hygiene-receive-facade-relay-reply-grammar.md
 completes_issue: true

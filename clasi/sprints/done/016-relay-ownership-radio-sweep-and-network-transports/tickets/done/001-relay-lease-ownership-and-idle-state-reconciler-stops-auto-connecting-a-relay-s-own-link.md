@@ -2,7 +2,7 @@
 id: '001'
 title: 'Relay lease ownership and idle state: reconciler stops auto-connecting a relay''s
   own link'
-status: open
+status: done
 use-cases:
 - SUC-001
 depends-on: []
@@ -49,21 +49,74 @@ single-candidate radio/mbrelay handling, unchanged by this ticket).
 
 ## Acceptance Criteria
 
-- [ ] `plan()`'s automatic per-device pass never produces a `connect` job
+- [x] `plan()`'s automatic per-device pass never produces a `connect` job
       for a `usb` link whose device is `kind === 'relay'` once that
       device's kind is known.
-- [ ] A relay identified once (no lease, no further action) ends with no
+- [x] A relay identified once (no lease, no further action) ends with no
       open `sessions` row and no `relay_leases` row — it is idle.
-- [ ] The relay is never re-identified over a data-plane port after going
+- [x] The relay is never re-identified over a data-plane port after going
       idle (no `HELLO` sent to it again outside its one initial identify).
-- [ ] A freshly-enumerated, not-yet-identified `usb` board (kind unknown)
+- [x] A freshly-enumerated, not-yet-identified `usb` board (kind unknown)
       is still auto-connected exactly once to identify it, whether it
       turns out to be a robot or a relay — this ticket does not change
       first-identify behavior, only what happens after a relay is known.
-- [ ] Existing `plan()`/`reconciler.test.ts` table-driven tests for
+- [x] Existing `plan()`/`reconciler.test.ts` table-driven tests for
       non-relay devices (robots) are unaffected — add new cases rather
       than changing existing ones.
-- [ ] `npx vitest run packages/host/src/connect` passes.
+- [x] `npx vitest run packages/host/src/connect` passes.
+
+## Implementation notes
+
+**Seam that owns return-to-idle: `connect/reconciler.ts`'s executor
+(`runConnect`), not `connect/connector.ts`.** This matches sprint.md's
+own Step 3 module table ("the executor returning a freshly-identified
+relay's link to idle... rather than leaving it `connected`"), so it
+was not really an open call so much as a confirmation against the real
+code: `connector.ts`'s `connectAndIdentify` contract stays "identify,
+open a session, mark connected" unchanged for every transport alike
+(`connector.test.ts`'s existing "a device identified as a relay over
+usb is never marked owned" case is untouched and still green — it
+still observes a `connected` state with an open session immediately
+after `connectAndIdentify` resolves, because that assertion runs
+before the reconciler's own executor ever gets a turn). `runConnect`'s
+`.then` handler now checks the resolved `ConnectedSession`'s own
+`classification.type`: if `"relay"`, it awaits a new helper,
+`returnRelayToIdle`, instead of storing the session in the executor's
+`sessions` map — that helper closes the `LineLink`, calls
+`store.closeSession`, and calls `store.setLinkState` back to idle.
+`relay_leases` was never involved for this path in the first place: a
+relay's own `usb` link uses `board_owner` exclusivity (already
+released by `connector.ts`'s own `finally` before the executor's
+`.then` ever runs), so the "no `relay_leases` row" criterion holds
+trivially for this ticket's scope — a `radio`/`mbrelay` *child* link is
+the only thing that ever touches `relay_leases`, untouched here.
+
+**Idle link `state`: `connectable` (with `reason:
+"relay-identified-idle"`), not a new state name.** Per sprint.md Step 7
+open question 2, this was this ticket's own call. Chose `connectable`
+over adding a new `LinkState` value because architecture.md §5's
+machine already treats `connectable` as "idle, eligible" and no schema/
+type-union change was needed: this ticket's own `plan()` guard
+(`device.kind === "relay"` skips the whole per-device pass) is what
+actually keeps a `connectable` relay link from ever being picked up as
+an automatic-connect candidate again, regardless of what its link
+`state` literal is named. Recognizability as "a relay, not unknown"
+comes from `devices.kind === 'relay'` (set once, by the one real
+identify), never from the link `state` string — so `connectable` never
+needs to be distinguished from an ordinary not-yet-connected robot link
+to satisfy "never re-identified over a data-plane port."
+
+**`plan()`'s guard never blocks the true first identify.**
+`watchers/usbWatcher.ts`'s own SWD-naming step already seeds a fresh
+board's `devices` row `kind: 'robot'` as a provisional guess before its
+first real (v6 banner) identify ever runs; only `connector.ts`'s own
+identify corrects `kind` to `'relay'` if that is what the banner says.
+So the new `device.kind === "relay"` guard added to `plan()`'s
+per-device loop can only ever fire on a device that has already been
+through its one real identify — the acceptance criterion "still
+auto-connected exactly once... whether robot or relay" holds without
+any extra logic, and is covered by a new table-driven `plan()` test
+using the same `kind: 'robot'` shape a true "not yet known" board has.
 
 ## Implementation Plan
 

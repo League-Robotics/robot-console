@@ -44,7 +44,24 @@
  * row exists. Either way, more than one match (a real possibility — see
  * architecture.md §4's collision math) leaves the link unassigned
  * (`device_id = NULL`) rather than guessing, same principle as
- * `usbWatcher.ts`'s own device-linking discipline.
+ * `usbWatcher.ts`'s own device-linking discipline. Ticket 016-008:
+ * a `wifi`/`mbserial` link that attaches to an owned device this way is
+ * also promoted `discovered` → `connectable` (`promoteOwnedLinkIfDiscovered`,
+ * below), mirroring `usbWatcher.ts`'s own naming->connectable promotion,
+ * so the reconciler's auto-connect (which only ever considers
+ * `connectable` links) actually fires for an owned WiFi/mbserial robot;
+ * an unassigned link is left `discovered`.
+ *
+ * Unlike `wifi`/`mbserial`, a `mbrelay` link with **zero** matching
+ * `kind='relay'` devices does not stay unassigned: ticket 016-005 mints
+ * one with a synthetic, name-derived id (`nameToValue(name)`, the same
+ * convention `store/importers/knownRobots.ts` already uses for a
+ * chip-id-less device — see `handleMbrelay`'s own doc comment). This
+ * gives a remote mbrelay pool this host has never identified over USB a
+ * device row of its own (SUC-005) rather than requiring it to already be
+ * a known local relay first. The ambiguous multiple-match case above is
+ * unaffected — it still leaves the link unassigned, never minting a
+ * third row to "resolve" it.
  *
  * ## Address changes without `down`/`up`
  *
@@ -88,6 +105,7 @@
  * multicast socket and no real wall-clock wait anywhere in this
  * module's own suite.
  */
+import { nameToValue } from "@robot-console/protocol";
 import { Store, type Transport } from "../store/index.js";
 import type { MdnsBackend, MdnsBrowser, MdnsFindOptions, MdnsService } from "../discovery/mdnsDiscovery.js";
 
@@ -276,33 +294,110 @@ export function startMdnsWatcher(
     return matches.length === 1 ? Number(matches[0]?.id) : null;
   }
 
+  /** Ticket 016-008's own carried fixup: promotes `linkId` from
+   * `discovered` to `connectable` the instant it attaches to an owned
+   * device, mirroring `usbWatcher.ts`'s own naming->connectable
+   * promotion (`attach()`'s final `setLinkState` call) — without this,
+   * a freshly mDNS-discovered `wifi`/`mbserial` link for an owned robot
+   * sat in `discovered` forever, since nothing else in this module (or
+   * the reconciler, whose auto-connect only ever considers
+   * `connectable` links) ever promotes it. Reads the link's *current*
+   * stored state — set by {@link upsertLinkAndDetectChange}'s own
+   * `upsertLink` call just above, which only ever assigns `discovered`
+   * to a brand-new row and never touches `state` on an existing one
+   * (`Store.upsertLink`'s own doc comment) — so this only ever promotes
+   * a link still sitting at that initial state. A link already further
+   * along (`connectable`/`connecting`/`connected`/`closed_by_user`/...,
+   * from a prior promotion or a live session) is left exactly as it is;
+   * an unassigned link (`deviceId === null` — unowned, or still
+   * ambiguous) is never touched either way. */
+  function promoteOwnedLinkIfDiscovered(linkId: string, deviceId: number | null): void {
+    if (deviceId === null) {
+      return;
+    }
+    const row = store.snapshotRows().links.find((link) => link.id === linkId);
+    if (row?.state === "discovered") {
+      store.setLinkState({ id: linkId, state: "connectable", at: now(), reason: "mdns-owned-link" });
+    }
+  }
+
   function handleWifi(service: MdnsService): void {
     const name = service.txt?.name ?? service.name;
-    upsertLinkAndDetectChange(
-      `wifi-${name}`,
-      "wifi",
-      { host: service.host, port: service.port },
-      uniqueOwnedDeviceIdByName(name),
-    );
+    const linkId = `wifi-${name}`;
+    const deviceId = uniqueOwnedDeviceIdByName(name);
+    upsertLinkAndDetectChange(linkId, "wifi", { host: service.host, port: service.port }, deviceId);
+    promoteOwnedLinkIfDiscovered(linkId, deviceId);
   }
 
   function handleMbserial(service: MdnsService): void {
     const name = service.name;
-    upsertLinkAndDetectChange(
-      `mbserial-${name}`,
-      "mbserial",
-      { host: service.host, port: service.port },
-      uniqueOwnedDeviceIdByName(name),
-    );
+    const linkId = `mbserial-${name}`;
+    const deviceId = uniqueOwnedDeviceIdByName(name);
+    upsertLinkAndDetectChange(linkId, "mbserial", { host: service.host, port: service.port }, deviceId);
+    promoteOwnedLinkIfDiscovered(linkId, deviceId);
+  }
+
+  /** Ticket 016-005's device-creation fallback: when **zero** existing
+   * `kind='relay'` devices share `name` (never the ambiguous
+   * multiple-match case, which is `uniqueRelayDeviceIdByName`'s own
+   * `null` too and stays unassigned exactly as before — module doc
+   * comment), mint one with a synthetic, name-derived id --
+   * `nameToValue(name)`, the unique value in `[0, 3124]` whose
+   * `deviceIdToName` is exactly `name` (`store/importers/knownRobots.ts`'s
+   * own convention for a chip-id-less device, reused rather than
+   * duplicated). Per sprint.md's own Design Rationale ("an mbrelay
+   * pool's device row uses a synthetic, name-derived id, not a
+   * chip-id placeholder that never gets 'merged' later"), this device
+   * has no future merge path — there is no physical chip that could
+   * later plug into this host over USB and reconcile against it, unlike
+   * a USB placeholder. `upsertDevice` is itself idempotent, so a repeat
+   * observation of an already-created pool is a no-op past its first.
+   *
+   * ## A name that isn't a well-formed micro:bit name (ticket 016-008
+   * bench finding)
+   *
+   * `nameToValue` only accepts the standard 5-letter
+   * `[zvgpt][uoiea][zvgpt][uoiea][zvgpt]` micro:bit name shape and
+   * throws for anything else — but an mbrelay pool's own mDNS instance
+   * name is whatever hostname its operator gave it, with no such
+   * constraint (a real bench relay was observed advertising as
+   * `torture`, seven letters, not that shape at all). Before this fix,
+   * that throw propagated straight out of this synchronous mDNS `up`
+   * handler and crashed the whole host process — found live on the
+   * bench starting this exact ticket's own host against real hardware.
+   * A name `nameToValue` rejects is treated exactly like the ambiguous
+   * multiple-match case above: left unassigned (`null`) rather than
+   * crashing or guessing at an id, since there is no other id scheme
+   * this fallback can safely mint one from. */
+  function createRelayDeviceIfAbsent(name: string): number | null {
+    const matches = store.snapshotRows().devices.filter((row) => row.name === name && row.kind === "relay");
+    if (matches.length > 0) {
+      // Either already handled by the fast-path match above (never
+      // reaches here) or ambiguous (>1) -- leave unassigned rather than
+      // minting a third row that would not resolve the ambiguity.
+      return null;
+    }
+    let id: number;
+    try {
+      id = nameToValue(name);
+    } catch {
+      return null;
+    }
+    store.upsertDevice({ id, name, kind: "relay", at: now() });
+    return id;
   }
 
   function handleMbrelay(service: MdnsService): void {
     const name = service.name;
+    // The existing name-match fast path stays first, unchanged
+    // (regression guard); the fallback below is additive, not a
+    // replacement -- see the module doc comment.
+    const deviceId = uniqueRelayDeviceIdByName(name) ?? createRelayDeviceIfAbsent(name);
     upsertLinkAndDetectChange(
       `mbrelay-${name}`,
       "mbrelay",
       { host: service.host, port: service.port, registryPort: parseRegistryPort(service.txt?.registry) },
-      uniqueRelayDeviceIdByName(name),
+      deviceId,
     );
   }
 

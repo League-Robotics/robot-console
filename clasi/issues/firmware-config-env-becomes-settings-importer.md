@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '017'
 ---
 
 # Firmware config: import `.env` firmware sources into `settings` instead of resolving `.env` relative to the module

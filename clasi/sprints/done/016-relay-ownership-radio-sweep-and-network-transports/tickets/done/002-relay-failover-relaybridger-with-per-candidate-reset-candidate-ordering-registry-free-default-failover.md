@@ -2,7 +2,7 @@
 id: '002'
 title: 'Relay failover: relayBridger with per-candidate reset, candidate ordering,
   registry-free default failover'
-status: open
+status: done
 use-cases:
 - SUC-002
 depends-on:
@@ -63,23 +63,23 @@ candidate list only applies when no name is given.
 
 ## Acceptance Criteria
 
-- [ ] Fake relay with plane state: candidate 1 answers `!GO` but never
+- [x] Fake relay with plane state: candidate 1 answers `!GO` but never
       replies afterward (simulating a stuck data plane); candidate 2
       still succeeds, and the fake observed a reset between them.
-- [ ] The identical fixture *without* the reset step between candidates
+- [x] The identical fixture *without* the reset step between candidates
       fails — this is the specific regression test guarding the Linux
       bug; it must fail against the pre-fix code path and pass against
       this ticket's fix.
-- [ ] No registry GET is issued during default failover; address
+- [x] No registry GET is issued during default failover; address
       resolution uses override → last radio sighting → derived only.
-- [ ] A serial-only relay (`hidPath` absent) uses the break path in
+- [x] A serial-only relay (`hidPath` absent) uses the break path in
       tests; one with a `hidPath` uses HID reset.
-- [ ] A named `session-open {relayLinkId, name}` bridge (no candidate
+- [x] A named `session-open {relayLinkId, name}` bridge (no candidate
       list) still works exactly as before this ticket — regression
       guard against `connector.test.ts`'s existing radio/mbrelay cases.
-- [ ] `relay_leases.owner` transitions `session:<childLinkId>` → released
+- [x] `relay_leases.owner` transitions `session:<childLinkId>` → released
       on both success and failure paths (lease never leaked).
-- [ ] `npx vitest run packages/host/src/connect packages/host/src/link`
+- [x] `npx vitest run packages/host/src/connect packages/host/src/link`
       passes.
 
 ## Implementation Plan
@@ -119,3 +119,90 @@ shared fake `ByteStream` harness).
 
 **Documentation updates**: none beyond this ticket's own completion notes
 on which reset method was verified against which fixture.
+
+## Implementation notes
+
+**New module**: `packages/host/src/connect/relayBridger.ts`
+(`createRelayBridger(store, deps, opts)` → `RelayBridger.bridge(request,
+signal)`). A `BridgeRequest` is always `{relayLinkId, candidates[]}` —
+one shared reset→preamble→identify loop serves both shapes:
+- **Named** (today's only real production call site):
+  `toBridgeRequest(link)` wraps one already-resolved radio/mbrelay child
+  `LinkRow` into a single-candidate request. `connect/reconciler.ts`'s
+  executor now calls `bridger.bridge()` instead of
+  `connector.connectAndIdentify()` for a `radio`/`mbrelay`-transport
+  `connect`/`switchRelayChild` job, via a new optional
+  `ReconcilerDeps.bridger` (falls back to `connector` when omitted, so
+  every pre-existing reconciler/connector test that never supplies a
+  bridger is unmodified regression coverage of the untouched
+  `connector.ts` path). `runtime.ts` always constructs and wires a real
+  one in production.
+- **Default failover** (no name picked): `buildDefaultFailoverCandidates`
+  (sighted-first via the new `Store.radioSightings()` typed read, then
+  `last_seen`) + `resolveDefaultFailoverAddress` (override → derived,
+  never the registry — this function's own signature has no `registry`
+  parameter at all, so it is structurally incapable of a registry GET,
+  not merely configured not to make one). Not yet wired to a live
+  wire-protocol entry point — `wsMessages.ts`'s `SessionOpenMessage` has
+  no "relayLinkId with no name" shape yet — exported and fully tested for
+  whichever future ticket adds that UI/wire path.
+
+**Reset method verified per fixture** (`relayBridger.test.ts`):
+`chooseResetMethod(hidPath, relayTransport)` is pure (`hid` when a `usb`
+relay's own link carries a `hidPath`; `break` for a `usb` relay with
+none; `reconnect` for an `mbrelay` relay, verified for both `hidPath`
+states — reconnect never depends on it). Verified against the shared
+`RelayPlaneByteStream`/`RelayPlaneState` fixture (a fake relay carrying
+"am I in the data plane" state across the fresh per-candidate stream
+instances this module opens, mirroring a real relay board's own firmware
+state persisting across an open/close cycle):
+- **HID**: relay seeded with a `hidPath` → the injected `hidReset(hidPath,
+  signal)` fires and the fake's `sendBreak()` is never called.
+- **Break**: relay with no `hidPath` → `SerialResettableStream.sendBreak()`
+  (new capability on `link/adapters/serialStream.ts`, real implementation
+  asserts `serialport`'s `set({brk:true})` then clears it after
+  `durationMs` — `serialStream.test.ts` covers assert/clear order,
+  default duration, and both failure paths against a fake
+  `SerialPortLike`) fires and `hidReset` is never called.
+- **Reconnect** (`mbrelay`): a no-op by design — a fresh TCP stream opened
+  per candidate attempt already is the reconnect; `chooseResetMethod`'s
+  own unit test covers the selection, full TCP bridging is ticket 005's
+  own scope.
+
+**Headline regression test**: two candidates against
+`RelayPlaneByteStream`; candidate 1 confirms `!GO` (relay enters the fake's
+shared data-plane state) but its own robot never answers `HELLO`
+(identify times out); candidate 2 succeeds only because the reset
+(`RelayPlaneState.reset()`) ran first and cleared the data-plane flag,
+letting `sync()`'s `?` probe get answered again. The *identical* fixture
+with `resetBetweenCandidates: false` (a real, documented option — not a
+private test hook) fails with "no candidate identified", proving the
+reset is what the Linux bug's fix actually depends on, not some other
+difference between the two runs.
+
+**`connector.ts`**: behavior-unchanged; several previously-private
+helpers (`parseLinkAddress`, `resolveRelayPhysical`, `resolveExclusivity`/
+`acquireExclusivity`/`releaseExclusivity`, `buildRelayPreamble` — now
+also accepting an optional `syncOptions` pass-through, unused by
+`connector.ts`'s own call site — `identifyWithAbort`, `recordFailure`,
+`toError`, `abortError`, `usbSerialFromLinkId`, plus `NO_OP_HARVESTER` and
+a few constants) are now `export`ed for `relayBridger.ts` to reuse
+verbatim, per sprint.md's own Design Rationale ("a new sibling module to
+connector.ts, not a rewrite"). `connector.test.ts` passes unmodified —
+its own single-candidate, no-reset radio/mbrelay path is untouched and
+still the thing that path is regression-tested against.
+
+**Lease lifecycle**: one `relay_leases` acquisition
+(`session:<candidates[0].childLinkId>`) covers the whole candidate loop,
+released in `finally` on both success and total exhaustion — verified by
+inspecting `store.reconcilerRows().relayLeases` after both outcomes, plus
+a conflict case (a `sweep`-held lease) that rejects immediately without
+ever attempting a candidate or disturbing the other owner's lease.
+
+**Not done in this ticket** (explicitly out of scope per the plan): no
+wire-protocol/UI entry point for default failover (`session-open` with no
+name); no mbrelay TCP bridging integration test beyond
+`chooseResetMethod`'s own selection (ticket 005); no sightings *write*
+path (the sweeper, ticket 003, is what will populate
+`Store.radioSightings()` with real data — this ticket only adds the typed
+read and consumes it).

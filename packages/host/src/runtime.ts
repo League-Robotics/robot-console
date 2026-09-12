@@ -29,10 +29,24 @@
  *    module fans out to every subscriber of {@link Runtime.telemetry}
  *    (`server.ts`, ticket 005, is the only production subscriber).
  * 4. `createConnector` (ticket 001), given that harvester.
- * 5. `startReconciler` (ticket 002), given that connector — the only
- *    component that decides what should be connected, and the target
- *    `server.ts` forwards an explicit user `session-open`/`session-close`
- *    command to.
+ * 4a. `createRelayBridger` (ticket 016-002), given the same harvester —
+ *    the reset-before-every-candidate fix for default failover's Linux
+ *    bug; a sibling to the connector, not a replacement for it (see that
+ *    module's own doc comment).
+ * 5. `startReconciler` (ticket 002), given that connector and bridger —
+ *    the only component that decides what should be connected, and the
+ *    target `server.ts` forwards an explicit user `session-open`/
+ *    `session-close` command to.
+ * 5a. `createRelayLeaseRevocation` (ticket 016-003), constructed before
+ *    the bridger (step 4a moved below this point in the actual wiring —
+ *    see the code, not this list's own ordinal numbering, which is kept
+ *    stable across tickets rather than renumbered) and handed to BOTH
+ *    `createRelayBridger` and `startRelaySweeper` (ticket 016-004): the
+ *    shared in-process seam that lets a student's connect find and abort
+ *    a running sweep pass without either module importing the other.
+ *    `startRelaySweeper` itself probes idle usb relays over the radio
+ *    command plane for remembered robots; never touches `sessions`,
+ *    never calls the connector or the reconciler.
  * 6. `installUnhandledRejectionBackstop` (ticket 003) — the process-wide
  *    last-resort net; see that module's own doc comment for why this is
  *    not a substitute for each component's own error handling.
@@ -41,7 +55,8 @@
  * backstop first (nothing should still be marking links failed once
  * everything else is stopping), the reconciler (stops scheduling new
  * jobs — does not close any already-open session, mirroring every
- * watcher's own `stop()` contract), both watchers, then the store.
+ * watcher's own `stop()` contract), the relay sweeper, both watchers,
+ * then the store.
  *
  * Every collaborator is injectable via {@link StartRuntimeOptions},
  * mirroring `cli.ts`'s own `CliDeps` seam ("real defaults, fakes in
@@ -70,6 +85,18 @@ import {
 } from "./connect/harvester.js";
 import { startReconciler as defaultStartReconciler, type Reconciler, type ReconcilerDeps } from "./connect/reconciler.js";
 import {
+  createRelayBridger as defaultCreateRelayBridger,
+  type RelayBridgerDeps,
+  type RelayBridgerOptions,
+} from "./connect/relayBridger.js";
+import { createRelayLeaseRevocation as defaultCreateRelayLeaseRevocation } from "./connect/relayLeaseRevocation.js";
+import {
+  startRelaySweeper as defaultStartRelaySweeper,
+  type RelaySweeperDeps,
+  type RelaySweeperHandle,
+  type RelaySweeperOptions,
+} from "./watchers/relaySweeper.js";
+import {
   installUnhandledRejectionBackstop as defaultInstallUnhandledRejectionBackstop,
   type UnhandledRejectionBackstopDeps,
 } from "./connect/unhandled.js";
@@ -95,11 +122,15 @@ export interface Runtime {
   readonly store: Store;
   readonly reconciler: Reconciler;
   readonly telemetry: RuntimeTelemetry;
-  /** Stops the reconciler (change-feed subscription + slow tick), both
+  /** Stops the reconciler (change-feed subscription + slow tick), the
+   * relay sweeper (awaited — ticket 016-008: its own `stop()` now waits
+   * for every in-flight per-relay pass's cleanup before resolving, so
+   * this method must await it too, or the store below could still close
+   * out from under a pass's still-running `finally` block), both
    * watchers, uninstalls the unhandled-rejection backstop, and closes
    * the store. Does not close any already-open session — mirrors the
    * reconciler's own `stop()` contract (this module's doc comment). */
-  stop(): void;
+  stop(): Promise<void>;
 }
 
 /** Injectable seams for {@link startRuntime} — every field defaults to
@@ -141,10 +172,30 @@ export interface StartRuntimeOptions {
    * instead of overriding these sinks directly. */
   harvesterDeps?: Omit<HarvesterDeps, "onTelemetry" | "onNotice">;
 
+  createRelayBridger?: typeof defaultCreateRelayBridger;
+  /** Every {@link RelayBridgerDeps} field. Ticket 016-002's relay bridger
+   * — always constructed and handed to the reconciler as {@link
+   * ReconcilerDeps.bridger} (see the module doc comment's composition
+   * order), fixing the Linux default-failover bug at its root (a reset
+   * before every candidate). */
+  relayBridgerDeps?: RelayBridgerDeps;
+  relayBridgerOptions?: RelayBridgerOptions;
+
   startReconciler?: typeof defaultStartReconciler;
-  /** Every {@link ReconcilerDeps} field except `connector`, which this
-   * module always wires to its own {@link createConnector} call. */
-  reconcilerDeps?: Omit<ReconcilerDeps, "connector">;
+  /** Every {@link ReconcilerDeps} field except `connector`/`bridger`,
+   * which this module always wires to its own {@link createConnector}/
+   * {@link createRelayBridger} calls. */
+  reconcilerDeps?: Omit<ReconcilerDeps, "connector" | "bridger">;
+
+  createRelayLeaseRevocation?: typeof defaultCreateRelayLeaseRevocation;
+
+  startRelaySweeper?: typeof defaultStartRelaySweeper;
+  /** Every {@link RelaySweeperDeps} field except `revocation`, which this
+   * module always wires to its own {@link createRelayLeaseRevocation}
+   * call (ticket 016-003) — the same shared seam a future ticket wires
+   * into the bridger too. */
+  relaySweeperDeps?: Omit<RelaySweeperDeps, "revocation">;
+  relaySweeperOptions?: RelaySweeperOptions;
 
   installUnhandledRejectionBackstop?: typeof defaultInstallUnhandledRejectionBackstop;
   unhandledRejectionDeps?: UnhandledRejectionBackstopDeps;
@@ -168,7 +219,10 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
   const createBonjourBackendFn = options.createBonjourBackend ?? defaultCreateBonjourBackend;
   const createConnectorFn = options.createConnector ?? defaultCreateConnector;
   const createHarvesterFn = options.createHarvester ?? defaultCreateHarvester;
+  const createRelayBridgerFn = options.createRelayBridger ?? defaultCreateRelayBridger;
   const startReconcilerFn = options.startReconciler ?? defaultStartReconciler;
+  const createRelayLeaseRevocationFn = options.createRelayLeaseRevocation ?? defaultCreateRelayLeaseRevocation;
+  const startRelaySweeperFn = options.startRelaySweeper ?? defaultStartRelaySweeper;
   const installUnhandledRejectionBackstopFn =
     options.installUnhandledRejectionBackstop ?? defaultInstallUnhandledRejectionBackstop;
 
@@ -206,7 +260,27 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
   });
 
   const connector = createConnectorFn(store, { ...options.connectorDeps, harvester }, options.connectorOptions);
-  const reconciler = startReconcilerFn(store, { ...options.reconcilerDeps, connector });
+
+  // Ticket 016-003/004: the shared revocation seam, constructed once per
+  // runtime (exactly like the harvester's fan-out above) and handed to
+  // BOTH the bridger and the sweeper -- this is what lets a student's
+  // connect (the bridger, on a sweep-held lease-acquisition failure) find
+  // and abort a running sweep pass without either module importing the
+  // other (`connect/relayLeaseRevocation.ts`'s own doc comment).
+  const relayLeaseRevocation = createRelayLeaseRevocationFn();
+  const bridger = createRelayBridgerFn(
+    store,
+    { ...options.relayBridgerDeps, harvester, revocation: relayLeaseRevocation },
+    options.relayBridgerOptions,
+  );
+  const reconciler = startReconcilerFn(store, { ...options.reconcilerDeps, connector, bridger });
+
+  const relaySweeperHandle: RelaySweeperHandle = startRelaySweeperFn(
+    store,
+    { ...options.relaySweeperDeps, revocation: relayLeaseRevocation },
+    options.relaySweeperOptions,
+  );
+
   const uninstallUnhandledRejectionBackstop = installUnhandledRejectionBackstopFn(store, options.unhandledRejectionDeps);
 
   let stopped = false;
@@ -215,13 +289,19 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
     store,
     reconciler,
     telemetry,
-    stop(): void {
+    async stop(): Promise<void> {
       if (stopped) {
         return;
       }
       stopped = true;
       uninstallUnhandledRejectionBackstop();
       reconciler.stop();
+      // Awaited: ticket 016-008 fixed relaySweeperHandle.stop() to wait
+      // for every in-flight per-relay pass's own cleanup, precisely so
+      // this store.close() below can never again race a pass still
+      // mid-`finally` (the same "database is not open" unhandled
+      // rejection relaySweeper.test.ts's own flake surfaced).
+      await relaySweeperHandle.stop();
       usbHandle.stop();
       mdnsHandle.stop();
       store.close();

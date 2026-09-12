@@ -72,6 +72,7 @@
  */
 
 import { validateRadioAddress } from "../radioAddress.js";
+import { parseIdReply, type IdReply } from "../deviceType.js";
 
 // ---------------------------------------------------------------------
 // Command-plane preamble line-builders
@@ -216,6 +217,51 @@ export function buildRadioSendLine(text: string): string {
 }
 
 // ---------------------------------------------------------------------
+// Radio pass-through reply grammar (rearch-10/rearch-12): the relay's
+// `< <text>` delivery of one already-tuned robot's reply to a `>`-sent
+// probe, carrying the robot's own `ID` reply.
+// ---------------------------------------------------------------------
+
+/** A relay command-plane pass-through delivery line: `< <text>`
+ * (rearch-12's own grammar — `> <text>` sends one line over the radio
+ * without `!GO`, `< <text>` delivers whatever came back). Requires the
+ * `<` prefix (unlike a direct v6 session's own `ID` reply, which carries
+ * no such framing) — a bare `id ...` line with no `<` never arrives over
+ * a relay's command plane, so this deliberately does not also accept
+ * that shape (see {@link parseRadioIdReply}'s own doc comment). */
+const RADIO_RECEIVE_PATTERN = /^<\s?(.*)$/;
+
+/**
+ * Parse a relay-delivered `< id <product> <program> <version> <name>`
+ * line into an {@link IdReply} — the shape `watchers/relaySweeper.ts`'s
+ * `> ID` probe actually receives over a relay's command-plane pass-
+ * through. Strips the `< ` receive prefix, tokenizes the remaining text,
+ * and hands the fields (minus the leading `id` verb token itself) to
+ * `deviceType.ts`'s existing {@link parseIdReply} — the one place the
+ * `id <product> <program> <version> <name>` grammar is parsed, reused
+ * here rather than duplicated (that function's own doc comment: "The
+ * `ID`-verb calibration signal"; `docs/design/protocol.md` §6.4: "`name`
+ * is board identity, `profile` is not" — `name` is the field a sweep
+ * probe matches a candidate's own name against).
+ *
+ * `null` for anything not shaped like a `<`-prefixed delivery of a
+ * well-formed `id ...` reply (no `<` prefix at all, a verb other than
+ * `id`, or too few fields) — this never guesses at a partial parse, same
+ * discipline as {@link parseRelayStatusLine}.
+ */
+export function parseRadioIdReply(line: string): IdReply | null {
+  const match = RADIO_RECEIVE_PATTERN.exec(line.trim());
+  if (!match) {
+    return null;
+  }
+  const tokens = match[1]!.trim().split(/\s+/).filter((token) => token.length > 0);
+  if (tokens[0]?.toLowerCase() !== "id") {
+    return null;
+  }
+  return parseIdReply(tokens.slice(1));
+}
+
+// ---------------------------------------------------------------------
 // Reply-side grammar: parse and classify the relay's own `#` lines
 // ---------------------------------------------------------------------
 
@@ -254,6 +300,71 @@ export function parseRelayStatusLine(line: string): RelayStatusLine | null {
     mode,
     power: Number(powerText),
   };
+}
+
+/**
+ * One relay's advertised capability tokens, parsed from the trailing
+ * `caps: <TOKEN...>` field a `?`/status reply line may carry (rearch-12,
+ * `League-Robotics/microbit-radio-relay#1` — merged 2026-09-12: the
+ * firmware advertises `!CGT`'s non-persisting tune as `caps: CGT`,
+ * appended to the existing four-field status line rather than a
+ * separate reply, e.g. `# channel: 47 group: 60 mode: RAW250 power: 7
+ * caps: CGT`). `tokens` is always upper-cased and never empty (a `caps:`
+ * field with no tokens after it does not parse — see
+ * {@link parseRelayCapabilities}).
+ */
+export interface RelayCapabilities {
+  readonly tokens: readonly string[];
+}
+
+/** Matches a trailing `caps: <TOKEN> [<TOKEN> ...]` field anywhere on the
+ * line (the merged firmware's own words: "an extensible feature list on
+ * the `?` response") — tokens separated by whitespace and/or commas, so
+ * both a space-separated list and a comma-separated one parse the same
+ * way if firmware ever advertises more than one. */
+const CAPS_PATTERN = /\bcaps:\s*([A-Za-z0-9]+(?:[\s,]+[A-Za-z0-9]+)*)/i;
+
+/**
+ * Parse the trailing `caps: <TOKEN...>` field off one relay `?`/status
+ * reply line (older firmware, or any line with no `caps:` field at all,
+ * parses as `null` — this is not a rejection of a malformed line, just
+ * "this firmware never advertised anything"). Deliberately independent
+ * of {@link parseRelayStatusLine}: firmware that has not yet been
+ * feature-detected still confirms `!CG`/`!P`/`?` with the same four-field
+ * line, just without the trailing `caps:` — a caller checks for the
+ * capability token on the very same status line it already inspects for
+ * `channel`/`group`, not a second reply.
+ *
+ * `null` (never an empty `tokens` array) for a `caps:` field with nothing
+ * useful after it — this never guesses at a partial parse, same
+ * discipline as {@link parseRelayStatusLine}.
+ */
+export function parseRelayCapabilities(line: string): RelayCapabilities | null {
+  const match = CAPS_PATTERN.exec(line);
+  if (!match) {
+    return null;
+  }
+  const tokens = match[1]!
+    .split(/[\s,]+/)
+    .map((token) => token.toUpperCase())
+    .filter((token) => token.length > 0);
+  if (tokens.length === 0) {
+    return null;
+  }
+  return { tokens };
+}
+
+/**
+ * Has this relay's `?`/status reply advertised rearch-12's non-persisting
+ * `!CGT` tune (the merged upstream resolution's own token, `caps: CGT` —
+ * see {@link parseRelayCapabilities}'s doc comment)? A thin, named
+ * convenience over that parser for the one capability
+ * `watchers/relaySweeper.ts` (ticket 016-007) actually acts on -- callers
+ * that need the raw token list still have {@link parseRelayCapabilities}
+ * itself.
+ */
+export function hasTransientTuneCapability(line: string): boolean {
+  return parseRelayCapabilities(line)?.tokens.includes("CGT") ?? false;
 }
 
 /** Which shape a relay's `#`-prefixed reply line takes. `"status"` is

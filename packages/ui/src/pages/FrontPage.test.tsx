@@ -537,6 +537,76 @@ describe("relay quick-connect", () => {
     expect(el.querySelector('[data-testid="relay-quick-failed-3"]')?.textContent).toBe("GoPiv did not respond");
   });
 
+  // Sprint 016 ticket 004 (SUC-004): idle/sweeping rendering, mirroring
+  // RelayPage.tsx's own identical label.
+  it("renders 'idle' when relays[] reports lease: null and no bridging", () => {
+    const relays: SnapshotRelay[] = [{ linkId: "usb-relay-1", lease: null }];
+    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice()]} unassigned={[]} relays={relays} />));
+    expect(el.querySelector('[data-testid="relay-quick-idle-3"]')?.textContent).toBe("idle");
+  });
+
+  it("renders 'idle' when the snapshot has no relays[] entry for this relay at all", () => {
+    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice()]} unassigned={[]} />));
+    expect(el.querySelector('[data-testid="relay-quick-idle-3"]')?.textContent).toBe("idle");
+  });
+
+  it("renders 'idle · sweeping' (no name known) when relays[] reports lease: 'sweep' and no candidate can be inferred", () => {
+    const relays: SnapshotRelay[] = [{ linkId: "usb-relay-1", lease: "sweep" }];
+    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice()]} unassigned={[]} relays={relays} />));
+    expect(el.querySelector('[data-testid="relay-quick-idle-3"]')?.textContent).toBe("idle · sweeping");
+  });
+
+  it("renders 'idle · sweeping <name>' when a recently-sighted candidate can be inferred from lastChecked, and does NOT mistake that sighting for a live child", () => {
+    const recentlyChecked = Date.now() - 5000;
+    const swept = device(5, {
+      name: "vevav",
+      lastChecked: recentlyChecked,
+      links: [
+        link("radio-vevav-via-usb-relay-1", {
+          transport: "radio",
+          state: "connectable",
+          via: { relayLinkId: "usb-relay-1", relayName: "rly01", channel: 41, group: 3, addressSource: "derived" },
+        }),
+      ],
+    });
+    const relays: SnapshotRelay[] = [{ linkId: "usb-relay-1", lease: "sweep" }];
+    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice(), swept]} unassigned={[]} relays={relays} />));
+    expect(el.querySelector('[data-testid="relay-quick-idle-3"]')?.textContent).toBe("idle · sweeping vevav");
+    expect(el.querySelector('[data-testid="relay-quick-lost-3"]')).toBeNull();
+  });
+
+  it("ticket 016-007: renders 'idle · sweeping (fast)' once the sweeper has detected the relay's non-persisting-tune capability", () => {
+    const relays: SnapshotRelay[] = [{ linkId: "usb-relay-1", lease: "sweep", sweep: { rate: "fast" } }];
+    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice()]} unassigned={[]} relays={relays} />));
+    expect(el.querySelector('[data-testid="relay-quick-idle-3"]')?.textContent).toBe("idle · sweeping (fast)");
+  });
+
+  it("ticket 016-007: renders 'idle · sweeping (slow)' once a sync has completed and found no capability advertised", () => {
+    const relays: SnapshotRelay[] = [{ linkId: "usb-relay-1", lease: "sweep", sweep: { rate: "slow" } }];
+    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice()]} unassigned={[]} relays={relays} />));
+    expect(el.querySelector('[data-testid="relay-quick-idle-3"]')?.textContent).toBe("idle · sweeping (slow)");
+  });
+
+  it("a device carrying a 'last checked' timestamp on its via-linked radio row renders it in the device card's own connection list", () => {
+    const at = Date.now() - 60_000;
+    const swept = device(5, {
+      name: "vevav",
+      lastChecked: at,
+      links: [
+        link("radio-vevav-via-usb-relay-1", {
+          transport: "radio",
+          state: "connectable",
+          via: { relayLinkId: "usb-relay-1", relayName: "rly01", channel: 41, group: 3, addressSource: "derived" },
+        }),
+      ],
+    });
+    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice(), swept]} unassigned={[]} />));
+    const row = el.querySelector('[data-testid="device-link-lastchecked-radio-vevav-via-usb-relay-1"]');
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toContain("Last checked");
+    expect(row?.textContent).toContain(new Date(at).toLocaleString());
+  });
+
   it("FrontPage wires Connect to send exactly {type: 'session-open', relayLinkId, name}", () => {
     let socket: FakeSocket | null = null;
     const el = mount(

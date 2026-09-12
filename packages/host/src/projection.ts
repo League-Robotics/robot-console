@@ -353,7 +353,12 @@ function buildRelays(rows: ProjectionRows, deviceById: ReadonlyMap<number, Proje
     }
     const owner = leaseByLink.get(link.id);
     const lease: "sweep" | "session" | null = owner === undefined ? null : owner === "sweep" ? "sweep" : "session";
-    relays.push({ linkId: link.id, lease });
+    // Ticket 016-007: `null` when no lease-acquisition sync has completed
+    // against this link yet (see `SnapshotRelay.sweep`'s own doc comment
+    // for why that is a distinct, honest answer from either rate).
+    const fastDetected = rows.fastSweepByRelayLinkId.get(link.id);
+    const sweep: SnapshotRelay["sweep"] = fastDetected === undefined ? null : { rate: fastDetected ? "fast" : "slow" };
+    relays.push({ linkId: link.id, lease, sweep });
   }
   return relays;
 }

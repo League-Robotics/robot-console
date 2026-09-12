@@ -1,7 +1,7 @@
 ---
 id: '016'
 title: Relay ownership, radio sweep, and network transports
-status: ticketing
+status: done
 branch: sprint/016-relay-ownership-radio-sweep-and-network-transports
 use-cases: []
 issues:
@@ -265,10 +265,19 @@ picture is more specific than "a relay can never be idle":
    linking rule has something to attach to, and so the existing,
    already-transport-symmetric bridging machinery in `connector.ts`/
    `relayBridger.ts` picks it up with no further transport-specific code.
-7. Thread the mbrelay pool's own advertised `registryPort` into every
-   radio-address resolution that can now reach one — `session-open`,
-   the sweeper, and the bridger — closing the "resolver never wired to a
-   registry location" gap found in Step 1.
+7. Thread the mbrelay pool's own advertised `registryPort` into
+   `session-open`'s own radio-address resolution, closing the "resolver
+   never wired to a registry location" gap found in Step 1. Ticket
+   016-006's own read of the sweeper and the bridger's default-failover
+   path found both already resolve through `connect/relayBridger.ts`'s
+   `resolveDefaultFailoverAddress`, which is registry-free *by
+   construction* (it substitutes a hardcoded no-registry stub for
+   `radioOverride.ts`'s injectable `resolveRegistry` seam, per rearch-09's
+   own explicit "no registry GET" acceptance criterion for default
+   failover, and rearch-10's identical constraint for the sweeper) — so
+   neither of those two has a registry argument to receive at all;
+   `session-open` is the only one of the three call sites this
+   responsibility actually reaches a live registry through.
 8. Detect the relay firmware's advertised non-persisting-tune capability
    (once rearch-12 ships it, upstream) from the `?`/status reply, and
    switch the sweeper's own rate limit accordingly. The robot-console
@@ -303,7 +312,7 @@ actually built to verify against.
 | **relay lease revocation** (small seam inside `connect/relayBridger.ts`'s and `watchers/relaySweeper.ts`'s shared dependency, e.g. `connect/relayLeaseRevocation.ts`) | Let a bridge signal a running sweep to stop, without either module importing the other. | Inside: an in-process `Map<relayLinkId, AbortController>` the sweeper registers into for the duration of each probe pass and the bridger reads to trigger and await a handback. Outside: the lease row itself (`store`), the sweep's probe logic, the bridge's candidate logic. | SUC-004 |
 | **relaySweeper** (`packages/host/src/watchers/relaySweeper.ts`, new) | Probe remembered robots over radio from each idle USB relay and record what answers. | Inside: candidate ordering (oldest `sightings.at` first, backoff on repeated failure), acquiring the sweep lease and registering its `AbortController` with the revocation seam, opening the relay's raw transport the same direct way `relayBridger` does (no `connector.connectAndIdentify` call, no `sessions` row), the `!CG`/`> ID` probe loop (`sync`/`setChannelGroup` from `RelayCommandPlane.ts`, never `go`/`HELLO`), `sightings` and `links(radio)` writes, the rate-limit interval (gated on the firmware capability flag), a `tasks` heartbeat. Outside: bridging a student's chosen robot (`relayBridger`), the wire grammar (protocol), UI rendering. | SUC-003, SUC-007 |
 | **mbrelay pool device modeling** (`packages/host/src/watchers/mdnsWatcher.ts`, extended) | Give a remote mbrelay pool a device row of its own instead of only linking to an already-known local relay. | Inside: `handleMbrelay`'s device-creation rule for an `_mbrelay._tcp` instance with no existing `kind='relay'` name match (a synthetic, name-derived id, the same convention `store/importers/knownRobots.ts` already uses for a chip-id-less device); aging the synthetic device out with its link, same as any other. Outside: bridging through the resulting device (already-generic `connector.ts`/`relayBridger.ts`), registry resolution (`mbrelayRegistry.ts`). | SUC-005 |
-| **radio-address registry wiring** (cross-cutting: `server.ts`'s `session-open` handler, `relayBridger.ts`, `relaySweeper.ts`, all calling the existing `radioOverride.ts` resolver) | Give every radio-address resolution the actual registry location once an mbrelay pool has advertised one, instead of always degrading past it. | Inside: reading the resolved mbrelay pool's own `registryPort` (from its `links.address`) and passing it as `resolveDeviceRadio`'s `registry` option at each of these three call sites. Outside: the resolver's own order and caching (`radioOverride.ts`/`mbrelayRegistry.ts`, unchanged — this sprint only supplies the argument that was always accepted but never passed). | SUC-006 |
+| **radio-address registry wiring** (`server.ts`'s `session-open` handler, calling the existing `radioOverride.ts` resolver) | Give `session-open`'s radio-address resolution the actual registry location once an mbrelay pool has advertised one, instead of always degrading past it. | Inside: reading the resolved mbrelay pool's own `registryPort` (from its `links.address`) and passing it as `resolveDeviceRadio`'s `registry` option. Outside: the resolver's own order and caching (`radioOverride.ts`/`mbrelayRegistry.ts`, unchanged — this sprint only supplies the argument that was always accepted but never passed); `relayBridger.ts`'s and `relaySweeper.ts`'s own resolution (both via `resolveDefaultFailoverAddress`) — ticket 016-006 found both already registry-free *by construction* (see Step 2 responsibility 7's own corrected text), so this row's scope narrowed from three call sites to one during that ticket's implementation; the other two keep only a regression test proving it. | SUC-006 |
 | **relay firmware capability detection** (`packages/protocol/src/relay/commands.ts` + `link/RelayCommandPlane.ts`, extended) | Recognize the relay firmware's advertised non-persisting-tune capability and let the sweeper use it once present. | Inside: parsing a `caps: CGT`/`caps: TX` token from the relay's `?`/status reply; `buildTransientChannelGroupLine` (already present) becoming the sweeper's `!CG` call when the capability is seen. Outside: the firmware itself (cross-repo, rearch-12), the sweeper's own rate-limit bookkeeping (just reads the detected flag). | SUC-007 |
 
 **Not a module change this sprint** (confirmed by reading the code, not

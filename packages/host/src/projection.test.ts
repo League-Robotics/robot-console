@@ -146,7 +146,31 @@ describe("buildSnapshot: golden fixture", () => {
     try {
       seedGoldenScenario(store);
       const snapshot = buildSnapshot(store, 1, 1);
-      expect(snapshot.relays).toEqual([{ linkId: "usb-relay-1", lease: "sweep" }]);
+      expect(snapshot.relays).toEqual([{ linkId: "usb-relay-1", lease: "sweep", sweep: null }]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("surfaces the fast-sweep rate once ticket 016-007's capability detection has recorded it (fast)", () => {
+    const store = openStore({ filePath: ":memory:" });
+    try {
+      seedGoldenScenario(store);
+      store.setSetting("relaySweepFast:usb-relay-1", "1");
+      const snapshot = buildSnapshot(store, 1, 1);
+      expect(snapshot.relays).toEqual([{ linkId: "usb-relay-1", lease: "sweep", sweep: { rate: "fast" } }]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("surfaces the fast-sweep rate as slow when detection recorded no capability (not merely unset)", () => {
+    const store = openStore({ filePath: ":memory:" });
+    try {
+      seedGoldenScenario(store);
+      store.setSetting("relaySweepFast:usb-relay-1", "0");
+      const snapshot = buildSnapshot(store, 1, 1);
+      expect(snapshot.relays).toEqual([{ linkId: "usb-relay-1", lease: "sweep", sweep: { rate: "slow" } }]);
     } finally {
       store.close();
     }
@@ -165,6 +189,44 @@ describe("buildSnapshot: golden fixture", () => {
 });
 
 // ---------------------------------------------------------------------
+// relays[] -- a synthetic mbrelay pool device (ticket 016-005) shows up
+// exactly like a local usb relay does (the golden fixture above only
+// ever covers a usb-transport relay -- `buildRelays` itself keys purely
+// off `device.kind === "relay"`, independent of the link's own
+// transport, but this ticket adds a dedicated case rather than relying
+// on that inference alone).
+// ---------------------------------------------------------------------
+
+describe("buildSnapshotFromRows: relays[] for a network (mbrelay) relay", () => {
+  it("lists a synthetic mbrelay-transport relay device under relays[] the same as a usb one", () => {
+    const rows = emptyRows();
+    const relayName = deviceIdToName(20);
+    rows.devices = [
+      { id: 20, name: relayName, kind: "relay", role: "RADIOBRIDGE", program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
+    ];
+    rows.links = [
+      {
+        id: `mbrelay-${relayName}`,
+        deviceId: 20,
+        transport: "mbrelay",
+        address: { host: `${relayName}.local`, port: 8760, registryPort: 8761 },
+        state: "connectable",
+        stateReason: null,
+        stateSince: 1,
+        lastSeen: 1,
+        nextRetryAt: null,
+        failCount: 0,
+        userClosed: false,
+      },
+    ];
+    rows.relayLeases = [{ relayLinkId: `mbrelay-${relayName}`, owner: "session:mbrelay-cand-via-relay" }];
+
+    const snapshot = buildSnapshotFromRows(rows, 1, 1);
+    expect(snapshot.relays).toEqual([{ linkId: `mbrelay-${relayName}`, lease: "session", sweep: null }]);
+  });
+});
+
+// ---------------------------------------------------------------------
 // capabilities -- table-driven edge cases against buildSnapshotFromRows
 // ---------------------------------------------------------------------
 
@@ -178,6 +240,7 @@ function emptyRows(): ProjectionRows {
     tasks: [],
     lastChecked: [],
     wifiCredentials: null,
+    fastSweepByRelayLinkId: new Map(),
   };
 }
 

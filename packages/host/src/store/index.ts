@@ -338,6 +338,18 @@ export interface ProjectionLastCheckedRow {
   readonly at: number;
 }
 
+/** The most recent successful *radio* sighting for one device —
+ * `Store.radioSightings()`'s own row shape (ticket 016-002). Narrower
+ * than {@link ProjectionLastCheckedRow} (which aggregates every
+ * transport): `connect/relayBridger.ts`'s default-failover candidate
+ * ordering ("robots with a recent radio sighting first" — sprint.md's
+ * SUC-002) needs specifically a *radio* sighting, not the most recent
+ * observation of any kind. */
+export interface RadioSightingRow {
+  readonly deviceId: number;
+  readonly at: number;
+}
+
 /** The read model `projection.ts`'s `buildSnapshot` (sprint 015 ticket
  * 004) needs — devices, links, sessions, relay leases, firmware, tasks,
  * each device's most recent sighting time, and the stored WiFi
@@ -364,6 +376,22 @@ export interface ProjectionRows {
    * `wsMessages.ts`'s own `AddressSource` doc comment, which duplicates
    * a value across a module boundary for the same reason. */
   readonly wifiCredentials: { ssid: string; password: string } | null;
+  /** `true`/`false` per relay link id that has ever completed a
+   * lease-acquisition capability check (`watchers/relaySweeper.ts`'s own
+   * `runOnePass`, ticket 016-007) -- `true` when that relay's most
+   * recent `?`/status reply advertised rearch-12's non-persisting `!CGT`
+   * tune (`caps: CGT`), `false` when it was checked and did not, and no
+   * entry at all when no pass has completed against that link yet
+   * (`projection.ts`'s `buildSnapshot` reports that third case as
+   * `SnapshotRelay.sweep: null` -- "never yet detected" is a distinct,
+   * honest answer from "detected off"). Read from `settings` rows keyed
+   * `` `relaySweepFast:<relayLinkId>` `` -- that prefix is duplicated
+   * here as a literal rather than imported from
+   * `watchers/relaySweeper.ts`'s own `fastSweepSettingKey`, for the same
+   * reason {@link wifiCredentials}'s own doc comment gives: importing it
+   * would point a dependency from `store/index.ts` at a `watchers/*`
+   * module, which itself depends on `store/index.ts` (a cycle). */
+  readonly fastSweepByRelayLinkId: ReadonlyMap<string, boolean>;
 }
 
 function toJson(value: unknown): string | null {
@@ -658,13 +686,35 @@ export class Store {
   /** Marks every link of `transport` whose `last_seen` is older than
    * `now - ttlMs` (and is not already `stale`) as `stale`. Returns the
    * number of links aged. One `changes` row (and one queued
-   * {@link ChangeEvent}) per link aged, all in the same transaction. */
+   * {@link ChangeEvent}) per link aged, all in the same transaction.
+   *
+   * Never ages a link with an open `sessions` row, regardless of how
+   * long ago its own mDNS `last_seen` last refreshed (ticket 016-008
+   * bench finding, live on real hardware: `mdnsWatcher.ts`'s aging pass
+   * runs off `links.last_seen` alone, which only advances on a fresh
+   * mDNS `up`/`onServiceChange` observation of the *advertisement* —
+   * not on session/telemetry activity over an already-open connection.
+   * A real `gopiv` mbserial session sat open and actively receiving
+   * telemetry (`sessions.robot_status` updating every poll) while its
+   * `links` row aged past `DEFAULT_MBSERIAL_TTL_MS` purely because the
+   * advertiser did not re-announce within that window — surfacing a
+   * connected link as `stale` to the UI, which would read as "gone"
+   * for a link that is very much alive. This gap was unreachable before
+   * ticket 016-008's own carried fixup (promoting an owned wifi/mbserial
+   * link to `connectable` so the reconciler's auto-connect actually
+   * opens a session on it) gave any wifi/mbserial link a live session to
+   * race against in the first place — usb links never call `ageLinks`
+   * at all (`usbWatcher.ts` has its own poll-driven lifecycle instead),
+   * so this is the first time an aged transport could ever have a
+   * concurrently open session. */
   ageLinks(transport: Transport, ttlMs: number, now: number): number {
     const cutoff = now - ttlMs;
     return this.withChangeBatch("links", () => {
       const stale = this.db
         .prepare(
-          `SELECT id FROM links WHERE transport = ? AND state != 'stale' AND (last_seen IS NULL OR last_seen < ?)`,
+          `SELECT id FROM links
+           WHERE transport = ? AND state != 'stale' AND (last_seen IS NULL OR last_seen < ?)
+             AND id NOT IN (SELECT link_id FROM sessions)`,
         )
         .all(transport, cutoff) as Array<{ id: string }>;
       const stmt = this.db.prepare("UPDATE links SET state = 'stale', state_reason = 'ttl-expired', state_since = ? WHERE id = ?");
@@ -749,6 +799,21 @@ export class Store {
         return Number(info.lastInsertRowid);
       },
     );
+  }
+
+  /** Most recent successful (`ok = 1`) radio sighting per device — see
+   * {@link RadioSightingRow}'s own doc comment for why this is narrower
+   * than {@link ProjectionLastCheckedRow}. A plain read, no transaction,
+   * same "always re-derive" reasoning as {@link reconcilerRows}. */
+  radioSightings(): readonly RadioSightingRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT device_id, MAX(at) AS at FROM sightings
+         WHERE transport = 'radio' AND ok = 1 AND device_id IS NOT NULL
+         GROUP BY device_id`,
+      )
+      .all() as Array<{ device_id: number; at: number }>;
+    return rows.map((r) => ({ deviceId: r.device_id, at: r.at }));
   }
 
   // ---- sessions ------------------------------------------------------
@@ -1010,6 +1075,12 @@ export class Store {
    * this is a duplicated literal, not an import. */
   private static readonly WIFI_CREDENTIALS_SETTING_KEY = "wifiCredentials";
 
+  /** The `settings.key` prefix `watchers/relaySweeper.ts`'s own
+   * `fastSweepSettingKey(relayLinkId)` stores each relay's fast-sweep
+   * capability flag under — see {@link ProjectionRows.fastSweepByRelayLinkId}'s
+   * own doc comment for why this is a duplicated literal, not an import. */
+  private static readonly FAST_SWEEP_SETTING_PREFIX = "relaySweepFast:";
+
   /** The typed, camelCased read model `projection.ts`'s `buildSnapshot`
    * needs — see {@link ProjectionRows}. */
   projectionRows(): ProjectionRows {
@@ -1101,6 +1172,13 @@ export class Store {
       }
     }
 
+    const fastSweepSettingRows = this.db
+      .prepare("SELECT key, value FROM settings WHERE key LIKE ?")
+      .all(`${Store.FAST_SWEEP_SETTING_PREFIX}%`) as Array<{ key: string; value: string }>;
+    const fastSweepByRelayLinkId = new Map<string, boolean>(
+      fastSweepSettingRows.map((row) => [row.key.slice(Store.FAST_SWEEP_SETTING_PREFIX.length), row.value === "1"] as const),
+    );
+
     return {
       devices: deviceRows.map((d) => ({
         id: d.id,
@@ -1149,6 +1227,7 @@ export class Store {
       tasks: taskRows.map((t) => ({ name: t.name, state: t.state, heartbeatAt: t.heartbeat_at })),
       lastChecked: lastCheckedRows.map((r) => ({ deviceId: r.device_id, at: r.at })),
       wifiCredentials,
+      fastSweepByRelayLinkId,
     };
   }
 

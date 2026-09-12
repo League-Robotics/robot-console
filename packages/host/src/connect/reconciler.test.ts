@@ -4,7 +4,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { deviceIdToName } from "@robot-console/protocol";
 import { openStoreDb } from "../store/db.js";
-import { Store, type ReconcilerDeviceRow, type ReconcilerLinkRow, type ReconcilerRows, type Transport } from "../store/index.js";
+import {
+  Store,
+  type DeviceKind,
+  type ReconcilerDeviceRow,
+  type ReconcilerLinkRow,
+  type ReconcilerRows,
+  type Transport,
+} from "../store/index.js";
 import { FakeByteStream } from "../link/__fixtures__/FakeByteStream.js";
 import { realScheduler, type Scheduler } from "../link/pacing.js";
 import { createConnector, type Connector, type ConnectedSession } from "./connector.js";
@@ -17,8 +24,8 @@ import { plan, planUserClose, planUserOpen, startReconciler } from "./reconciler
 
 const NOW = 1_000_000;
 
-function deviceRow(id: number, owned: boolean): ReconcilerDeviceRow {
-  return { id, kind: "robot", owned };
+function deviceRow(id: number, owned: boolean, kind: DeviceKind = "robot"): ReconcilerDeviceRow {
+  return { id, kind, owned };
 }
 
 function linkRow(
@@ -155,6 +162,42 @@ describe("plan() -- pure per-device connect decisions", () => {
       { kind: "connect", linkId: "wifi-2" },
     ]);
   });
+
+  // Ticket 016-001: a relay's own usb link is never an automatic-connect
+  // candidate again once `kind === 'relay'` is known -- architecture.md
+  // §7.2 ("no auto-opened console session on a relay any more").
+  it("a kind='relay' device's connectable usb link never produces an automatic connect job", () => {
+    const input = rows({
+      devices: [deviceRow(1, true, "relay")],
+      links: [linkRow({ id: "usb-1", transport: "usb", deviceId: 1 })],
+    });
+    expect(plan(input, NOW)).toEqual([]);
+  });
+
+  it("a kind='robot' device with the same connectable-usb-link shape still produces a connect job (regression guard)", () => {
+    const input = rows({
+      devices: [deviceRow(1, true, "robot")],
+      links: [linkRow({ id: "usb-1", transport: "usb", deviceId: 1 })],
+    });
+    expect(plan(input, NOW)).toEqual([{ kind: "connect", linkId: "usb-1" }]);
+  });
+
+  it("a freshly-enumerated board not yet known to be a relay still gets one connect job to identify it", () => {
+    // `plan()`'s `ReconcilerDeviceRow.kind` has no third "unknown" value --
+    // `watchers/usbWatcher.ts`'s own SWD-naming step already seeds a
+    // fresh board's device row `kind: 'robot'` as a provisional guess
+    // before its first real (v6 banner) identify ever runs, and only
+    // `connect/connector.ts`'s own identify corrects it to `'relay'` if
+    // that is what the banner says. So "kind not yet known" is exactly
+    // the `kind: 'robot'` case above -- this device's very first
+    // automatic pass is indistinguishable, by design, from an
+    // already-confirmed robot's, and must still get its one job.
+    const input = rows({
+      devices: [deviceRow(2, true, "robot")],
+      links: [linkRow({ id: "usb-2", transport: "usb", deviceId: 2 })],
+    });
+    expect(plan(input, NOW)).toEqual([{ kind: "connect", linkId: "usb-2" }]);
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -277,6 +320,12 @@ const immediateScheduler: Scheduler = { delay: () => Promise.resolve() };
  * space-form robot fixture; `deviceIdToName(1198504156) === "vevov"`. */
 const ROBOT_SERIAL = 1198504156;
 const ROBOT_BANNER = `device NEZHA2 robot ${deviceIdToName(ROBOT_SERIAL)} ${ROBOT_SERIAL}`;
+
+/** `DEVICE:RADIOBRIDGE:relay:getez:1779042365` -- `connector.test.ts`'s
+ * own colon-form relay fixture, duplicated here for the idle-return
+ * executor test below (ticket 016-001). */
+const RELAY_SERIAL = 1779042365;
+const RELAY_BANNER = `DEVICE:RADIOBRIDGE:relay:${deviceIdToName(RELAY_SERIAL)}:${RELAY_SERIAL}`;
 
 /** A `FakeByteStream` that answers `HELLO` with `bannerLine` -- mirrors
  * `connector.test.ts`'s own `BannerByteStream`, duplicated here (not
@@ -528,4 +577,65 @@ describe("startReconciler -- executor integration (real connector, fake ByteStre
       reconciler.stop();
     }
   }, 10_000);
+
+  // Ticket 016-001: a relay's one-time usb identify must return to idle
+  // -- no open session, no relay_leases row, and never re-identified by
+  // a later automatic pass. `connect/connector.ts` itself is unchanged
+  // (it still opens a session on any successful identify, relay or
+  // robot alike -- see `connector.test.ts`'s own "never marked owned"
+  // case); this executor is the seam that immediately closes what
+  // `connector.ts` just opened once it sees `classification.type ===
+  // 'relay'`.
+  it("a relay's one-time usb identify returns to idle: no open session, no relay_leases row, never re-identified", async () => {
+    // Mirrors `watchers/usbWatcher.ts`'s own `attach()`: a device row
+    // already exists (kind: 'robot', SWD naming's own provisional guess)
+    // before this board's first real (v6 banner) identify ever runs.
+    store.upsertDevice({ id: RELAY_SERIAL, name: deviceIdToName(RELAY_SERIAL), kind: "robot", at: 1 });
+    store.upsertLink({ id: "usb-RELAY", transport: "usb", address: { path: "/dev/cu.relay" }, deviceId: RELAY_SERIAL, at: 1 });
+    store.setLinkState({ id: "usb-RELAY", state: "connectable", at: 1 });
+
+    let createSerialStreamCalls = 0;
+    let stream: BannerByteStream | undefined;
+    const connector = createConnector(store, {
+      createSerialStream: () => {
+        createSerialStreamCalls++;
+        stream = new BannerByteStream(RELAY_BANNER);
+        return stream;
+      },
+      scheduler: immediateScheduler,
+      now: () => NOW,
+    });
+
+    const reconciler = startReconciler(store, { connector, now: () => NOW, tickIntervalMs: 1_000_000 });
+    try {
+      await flush(); // the constructor's own initial tick() dispatched the one-time identify
+      stream?.resolveOpen();
+      await flush();
+      await flush();
+      await flush(); // let the idle-return's own store writes (and the tick() they retrigger) settle
+
+      expect(createSerialStreamCalls).toBe(1);
+      expect(stream?.writes[0]?.bytes.startsWith("HELLO")).toBe(true);
+
+      const deviceRowAfter = store.snapshotRows().devices.find((d) => Number(d.id) === RELAY_SERIAL);
+      expect(deviceRowAfter?.kind).toBe("relay");
+
+      const linkRowAfter = store.snapshotRows().links.find((l) => l.id === "usb-RELAY");
+      expect(linkRowAfter?.state).toBe("connectable");
+      expect(linkRowAfter?.state_reason).toBe("relay-identified-idle");
+
+      expect(store.snapshotRows().sessions.find((s) => s.link_id === "usb-RELAY")).toBeUndefined();
+      expect(store.reconcilerRows().relayLeases).toEqual([]);
+      expect(reconciler.sessions.get("usb-RELAY")).toBeUndefined();
+
+      // Never re-identified: further store churn (itself retriggering
+      // tick() via the change feed, same as the idle-return's own writes
+      // just did above) must not open the relay's port a second time.
+      store.setLinkState({ id: "usb-RELAY", state: "connectable", at: NOW + 1 });
+      await flush();
+      expect(createSerialStreamCalls).toBe(1);
+    } finally {
+      reconciler.stop();
+    }
+  });
 });

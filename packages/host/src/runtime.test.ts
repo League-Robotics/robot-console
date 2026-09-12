@@ -10,6 +10,8 @@ import { startRuntime, type StartRuntimeOptions } from "./runtime.js";
 import type { HarvesterDeps, HarvesterTelemetryEvent } from "./connect/harvester.js";
 import type { ConnectorDeps } from "./connect/connector.js";
 import type { ReconcilerDeps } from "./connect/reconciler.js";
+import type { RelayBridgerDeps } from "./connect/relayBridger.js";
+import type { RelaySweeperDeps } from "./watchers/relaySweeper.js";
 
 function fakeDeps() {
   const calls: string[] = [];
@@ -51,6 +53,14 @@ function fakeDeps() {
     return fakeConnector;
   }) as unknown as StartRuntimeOptions["createConnector"];
 
+  let capturedRelayBridgerDeps: RelayBridgerDeps | undefined;
+  const fakeBridger = { bridge: vi.fn(), marker: "fake-bridger" };
+  const createRelayBridgerMock = vi.fn((_store: unknown, deps: RelayBridgerDeps) => {
+    calls.push("createRelayBridger");
+    capturedRelayBridgerDeps = deps;
+    return fakeBridger;
+  }) as unknown as StartRuntimeOptions["createRelayBridger"];
+
   let capturedReconcilerDeps: ReconcilerDeps | undefined;
   const reconcilerStopMock = vi.fn(() => calls.push("reconciler.stop"));
   const fakeReconciler = {
@@ -71,6 +81,24 @@ function fakeDeps() {
     return uninstallMock;
   }) as unknown as StartRuntimeOptions["installUnhandledRejectionBackstop"];
 
+  // Ticket 016-003: the shared revocation seam and the relay sweeper
+  // itself -- both mocked here (never the real `startRelaySweeper`), so
+  // this suite never risks a real timer touching this file's own
+  // minimal fake store past the test's own synchronous assertions.
+  const fakeRevocation = { marker: "fake-revocation" };
+  const createRelayLeaseRevocationMock = vi.fn(() => {
+    calls.push("createRelayLeaseRevocation");
+    return fakeRevocation;
+  }) as unknown as StartRuntimeOptions["createRelayLeaseRevocation"];
+
+  let capturedRelaySweeperDeps: RelaySweeperDeps | undefined;
+  const relaySweeperStopMock = vi.fn(() => calls.push("relaySweeper.stop"));
+  const startRelaySweeperMock = vi.fn((_store: unknown, deps: RelaySweeperDeps) => {
+    calls.push("startRelaySweeper");
+    capturedRelaySweeperDeps = deps;
+    return { stop: relaySweeperStopMock };
+  }) as unknown as StartRuntimeOptions["startRelaySweeper"];
+
   const options: StartRuntimeOptions = {
     openStoreWithImports: openStoreWithImportsMock,
     startUsbWatcher: startUsbWatcherMock,
@@ -78,7 +106,10 @@ function fakeDeps() {
     createBonjourBackend: createBonjourBackendMock,
     createHarvester: createHarvesterMock,
     createConnector: createConnectorMock,
+    createRelayBridger: createRelayBridgerMock,
     startReconciler: startReconcilerMock,
+    createRelayLeaseRevocation: createRelayLeaseRevocationMock,
+    startRelaySweeper: startRelaySweeperMock,
     installUnhandledRejectionBackstop: installUnhandledRejectionBackstopMock,
   };
 
@@ -89,10 +120,13 @@ function fakeDeps() {
     fakeBackend,
     fakeHarvester,
     fakeConnector,
+    fakeBridger,
     fakeReconciler,
+    fakeRevocation,
     usbStopMock,
     mdnsStopMock,
     reconcilerStopMock,
+    relaySweeperStopMock,
     uninstallMock,
     openStoreWithImportsMock,
     startUsbWatcherMock,
@@ -100,11 +134,16 @@ function fakeDeps() {
     createBonjourBackendMock,
     createHarvesterMock,
     createConnectorMock,
+    createRelayBridgerMock,
     startReconcilerMock,
+    createRelayLeaseRevocationMock,
+    startRelaySweeperMock,
     installUnhandledRejectionBackstopMock,
     getCapturedHarvesterDeps: () => capturedHarvesterDeps,
     getCapturedConnectorDeps: () => capturedConnectorDeps,
+    getCapturedRelayBridgerDeps: () => capturedRelayBridgerDeps,
     getCapturedReconcilerDeps: () => capturedReconcilerDeps,
+    getCapturedRelaySweeperDeps: () => capturedRelaySweeperDeps,
   };
 }
 
@@ -126,7 +165,25 @@ describe("startRuntime -- composition", () => {
     // Same for the reconciler and the connector.
     expect(f.getCapturedReconcilerDeps()?.connector).toBe(f.fakeConnector);
     expect(f.startReconcilerMock).toHaveBeenCalledWith(f.fakeStore, expect.objectContaining({ connector: f.fakeConnector }));
+    // Ticket 016-002/004: the reconciler is handed the SAME bridger this
+    // runtime itself built, and that bridger is handed the same harvester
+    // as the connector.
+    expect(f.getCapturedReconcilerDeps()?.bridger).toBe(f.fakeBridger);
+    expect(f.getCapturedRelayBridgerDeps()?.harvester).toBe(f.fakeHarvester);
     expect(f.installUnhandledRejectionBackstopMock).toHaveBeenCalledWith(f.fakeStore, undefined);
+
+    // Ticket 016-003/004: the revocation seam this runtime itself built
+    // is handed to BOTH the sweeper and the bridger -- never two
+    // separately constructed instances -- so a student's connect (the
+    // bridger) can find and abort the sweeper's own registered pass.
+    expect(f.createRelayLeaseRevocationMock).toHaveBeenCalledTimes(1);
+    expect(f.getCapturedRelaySweeperDeps()?.revocation).toBe(f.fakeRevocation);
+    expect(f.getCapturedRelayBridgerDeps()?.revocation).toBe(f.fakeRevocation);
+    expect(f.startRelaySweeperMock).toHaveBeenCalledWith(
+      f.fakeStore,
+      expect.objectContaining({ revocation: f.fakeRevocation }),
+      undefined,
+    );
 
     expect(runtime.store).toBe(f.fakeStore);
     expect(runtime.reconciler).toBe(f.fakeReconciler);
@@ -220,31 +277,37 @@ describe("startRuntime -- telemetry fan-out", () => {
 });
 
 describe("startRuntime -- stop()", () => {
-  it("stops the backstop, the reconciler, both watchers, then closes the store, in that order", () => {
+  it("stops the backstop, the reconciler, the relay sweeper, both watchers, then closes the store, in that order", async () => {
     const f = fakeDeps();
     const runtime = startRuntime(f.options);
     f.calls.length = 0; // only care about stop()'s own ordering from here
 
-    runtime.stop();
+    // Ticket 016-008: stop() now awaits the relay sweeper's own stop()
+    // (which itself awaits every in-flight pass's cleanup) before
+    // continuing on to the watchers and the store -- see runtime.ts's
+    // own Runtime.stop doc comment.
+    await runtime.stop();
 
     expect(f.calls).toEqual([
       "uninstallUnhandledRejectionBackstop",
       "reconciler.stop",
+      "relaySweeper.stop",
       "usbWatcher.stop",
       "mdnsWatcher.stop",
       "store.close",
     ]);
   });
 
-  it("is idempotent -- a second stop() call touches nothing again", () => {
+  it("is idempotent -- a second stop() call touches nothing again", async () => {
     const f = fakeDeps();
     const runtime = startRuntime(f.options);
 
-    runtime.stop();
-    runtime.stop();
+    await runtime.stop();
+    await runtime.stop();
 
     expect(f.uninstallMock).toHaveBeenCalledTimes(1);
     expect(f.reconcilerStopMock).toHaveBeenCalledTimes(1);
+    expect(f.relaySweeperStopMock).toHaveBeenCalledTimes(1);
     expect(f.usbStopMock).toHaveBeenCalledTimes(1);
     expect(f.mdnsStopMock).toHaveBeenCalledTimes(1);
     expect(f.fakeStore.close).toHaveBeenCalledTimes(1);

@@ -269,6 +269,21 @@ describe("Store: upsertLink / setLinkState / ageLinks", () => {
       store.close();
     }
   });
+
+  it("never ages a link with an open session, however stale its own last_seen (ticket 016-008 bench finding: a live mbserial session must never read as stale)", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertLink({ id: "mbserial-gopiv", transport: "mbserial", address: {}, at: 0 });
+      store.openSession("mbserial-gopiv", 0);
+
+      // Past the ttl by a wide margin -- would ordinarily age.
+      const aged = store.ageLinks("mbserial", 500, 1000);
+      expect(aged).toBe(0);
+      expect(store.snapshotRows().links.find((l) => l.id === "mbserial-gopiv")?.state).toBe("discovered");
+    } finally {
+      store.close();
+    }
+  });
 });
 
 describe("Store: upsertService", () => {
@@ -745,6 +760,25 @@ describe("Store: projectionRows", () => {
       expect(rows.tasks).toEqual([{ name: "usbWatcher", state: "running", heartbeatAt: 8 }]);
       expect(rows.lastChecked).toEqual([{ deviceId: 1198504156, at: 11 }]);
       expect(rows.wifiCredentials).toBeNull();
+      expect(rows.fastSweepByRelayLinkId).toEqual(new Map());
+    } finally {
+      store.close();
+    }
+  });
+
+  it("reports each relay's fast-sweep capability flag, keyed by relayLinkId (ticket 016-007)", () => {
+    const { store } = freshStore();
+    try {
+      store.setSetting("relaySweepFast:relay-1", "1");
+      store.setSetting("relaySweepFast:relay-2", "0");
+
+      const rows = store.projectionRows();
+      expect(rows.fastSweepByRelayLinkId).toEqual(
+        new Map([
+          ["relay-1", true],
+          ["relay-2", false],
+        ]),
+      );
     } finally {
       store.close();
     }

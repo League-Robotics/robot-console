@@ -10,6 +10,9 @@ issues:
 - rearch-14-flash-swd-timeouts-platform-msd-fallback.md
 - rearch-16-ui-shared-components-dedupe.md
 - rearch-18-specification-stale-statements.md
+- firmware-config-env-becomes-settings-importer.md
+- relay-names-outside-five-letter-grammar-get-no-device-row.md
+- placeholder-merge-for-non-usb-transports.md
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
@@ -96,6 +99,14 @@ could genuinely land any time:
   calibration/WiFi-form/modal duplication (rearch-16).
 - Specification corrections and the `overview.md` roadmap pointer
   update (rearch-18).
+
+- Carried from sprint 016 ticket 008: (1) WiFi leg — a robot advertising
+  `_robotlink` connects and answers a command; (2) stakeholder physically
+  drives a robot over USB and over radio via a relay. Bench needs a
+  `_robotlink` robot and a healthy USB cable for the robot board.
+- Follow-up issues linked to this sprint: firmware-config settings
+  importer; relay names outside the five-letter grammar get no device
+  row (torture); placeholder merge for non-USB transports (gopiv).
 
 ### Out of Scope
 

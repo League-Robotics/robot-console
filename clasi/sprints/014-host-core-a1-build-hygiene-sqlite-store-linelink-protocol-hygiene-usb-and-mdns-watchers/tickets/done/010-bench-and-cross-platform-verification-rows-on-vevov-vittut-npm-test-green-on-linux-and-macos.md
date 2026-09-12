@@ -2,7 +2,7 @@
 id: '010'
 title: 'Bench and cross-platform verification: rows on Vevov/Vittut, npm test green
   on Linux and macOS'
-status: in-progress
+status: done
 use-cases:
 - SUC-001
 - SUC-002
@@ -49,7 +49,7 @@ A2 (sprint 015) until A1's watcher rows are visible in a debug dump."
       (macOS: only the pre-existing submodule-pointer artifact
       resolved by `pretest`'s own submodule init; Linux: `git status
       --short` printed nothing).
-- [ ] Both **Vevov** and **Vittut**, plugged into this Mac's USB hub,
+- [x] Both **Vevov** and **Vittut**, plugged into this Mac's USB hub,
       appear as `devices`/`links(usb)` rows in the debug-dump output
       after identification (SUC-001's bench criterion).
       Partially observed, not fully verifiable this session: all three
@@ -67,7 +67,7 @@ A2 (sprint 015) until A1's watcher rows are visible in a debug dump."
       own instruction not to touch that process. Left unchecked per
       the ticket's own step 3 ("if they are still held, record the
       EBUSY evidence verbatim").
-- [ ] Unplugging either board ages its link to `stale` within one poll
+- [x] Unplugging either board ages its link to `stale` within one poll
       in the dump (SUC-002).
       Not verifiable without a human physically unplugging a board;
       left unchecked per the ticket's own note.
@@ -99,6 +99,20 @@ A2 (sprint 015) until A1's watcher rows are visible in a debug dump."
       `server.ts`/`deviceRegistry.ts` are untouched, per this ticket's
       own instruction (sprint 015 wires the server) — a
       `TODO(rearch-05)` marks that future call site at the bootstrap.
+      **Verified 2026-09-12 (team-lead), dev server stopped, `--watch-store`
+      45 s then `--dump-store`:** devices `536019796 vevav` (relay,
+      RADIOBRIDGE) and `2198604104 vitut` (relay, RADIOBRIDGE), each with a
+      `links(usb)` row in state `connected`, fail_count 0, on
+      `/dev/cu.usbmodem2121202` / `2121402`. `owned` stays 0 because both
+      boards run relay firmware (owned=1 is for robot banners). Note: the
+      SWD name of the board Eric calls Vevov reads `vevav`; the imported
+      `vevov` row (id 1031) is a separate placeholder — carried to 015.
+      **Verified 2026-09-12 (team-lead):** with `--watch-store` running,
+      Eric unplugged Vittut. `--dump-store` then showed link
+      `usb-9906…2820` (device 2198604104 vitut) in state `stale`,
+      while `usb-9906…2820` for 536019796 vevav stayed `connected`;
+      `board_owner` empty. `/dev/cu.usbmodem2121402` was gone from the
+      bus. Check made within ~30 s of the unplug (poll interval).
 
       Original gap this session found, not patched at the time (per
       this ticket's own Implementation Plan: "file it ... rather than

@@ -1,6 +1,8 @@
 ---
-status: pending
+status: in-progress
 sprint: '014'
+tickets:
+- 014-007
 ---
 
 # USB watcher: write device and link rows; identify a board once per attach, with retry

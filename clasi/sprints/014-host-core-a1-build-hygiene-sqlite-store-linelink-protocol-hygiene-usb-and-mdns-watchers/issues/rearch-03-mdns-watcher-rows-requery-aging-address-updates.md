@@ -1,6 +1,8 @@
 ---
-status: pending
+status: in-progress
 sprint: '014'
+tickets:
+- 014-008
 ---
 
 # mDNS watcher: write service and link rows, re-query periodically, age every type, follow address changes

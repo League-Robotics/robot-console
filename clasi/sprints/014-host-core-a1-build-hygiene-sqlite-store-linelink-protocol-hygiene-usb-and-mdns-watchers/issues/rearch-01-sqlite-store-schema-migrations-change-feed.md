@@ -1,6 +1,9 @@
 ---
-status: pending
+status: in-progress
 sprint: '014'
+tickets:
+- 014-002
+- 014-003
 ---
 
 # Host store: SQLite schema, typed operations, JSON importers, and the in-process change feed

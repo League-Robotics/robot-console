@@ -1,6 +1,8 @@
 ---
-status: pending
+status: in-progress
 sprint: '014'
+tickets:
+- 014-001
 ---
 
 # Build hygiene: Node floor, lockfile drift, Linux-safe tests, dependency risks

@@ -1,7 +1,7 @@
 ---
 id: '002'
 title: 'SQLite store: schema, migrations, and db.ts'
-status: in-progress
+status: done
 use-cases: []
 depends-on:
 - '001'
@@ -32,17 +32,17 @@ Depends on ticket 001 for the `engines.node >= 22.13` floor that
 
 ## Acceptance Criteria
 
-- [ ] `db.ts` opens/creates `console.sqlite` in the existing state
+- [x] `db.ts` opens/creates `console.sqlite` in the existing state
       directory, in WAL mode, with `busy_timeout` set.
-- [ ] Schema matches `architecture.md` §4 exactly: all 11 tables, their
+- [x] Schema matches `architecture.md` §4 exactly: all 11 tables, their
       columns, primary keys, and the two indexes (`devices_name`,
       `links_device`, `sightings_device_at`).
-- [ ] Migrations are driven by `PRAGMA user_version`; a test creates a
+- [x] Migrations are driven by `PRAGMA user_version`; a test creates a
       fresh DB (`user_version 0`) and asserts every table exists after
       migration.
-- [ ] A second migration run against an already-migrated DB is a no-op
+- [x] A second migration run against an already-migrated DB is a no-op
       (idempotent).
-- [ ] `@types/node` coverage for `node:sqlite` is present (root already
+- [x] `@types/node` coverage for `node:sqlite` is present (root already
       pins `^26`).
 
 ## Testing

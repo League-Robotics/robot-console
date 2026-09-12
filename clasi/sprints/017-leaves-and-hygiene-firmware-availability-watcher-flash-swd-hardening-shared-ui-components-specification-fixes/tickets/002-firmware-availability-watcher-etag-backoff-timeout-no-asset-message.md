@@ -1,9 +1,11 @@
 ---
 id: '002'
 title: 'Firmware availability watcher: ETag, backoff, timeout, no-asset message'
-status: open
-use-cases: [SUC-002]
-depends-on: ['001']
+status: in-progress
+use-cases:
+- SUC-002
+depends-on:
+- '001'
 github-issue: ''
 issue: rearch-13-firmware-availability-watcher-etag-backoff.md
 completes_issue: true

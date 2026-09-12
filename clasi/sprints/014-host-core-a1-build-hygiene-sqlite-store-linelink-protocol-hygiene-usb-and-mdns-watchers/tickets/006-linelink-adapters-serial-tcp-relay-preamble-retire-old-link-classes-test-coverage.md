@@ -1,9 +1,12 @@
 ---
 id: '006'
-title: 'LineLink adapters: serial, TCP, relay preamble; retire old link classes'' test coverage'
-status: open
-use-cases: [SUC-001]
-depends-on: ['005']
+title: 'LineLink adapters: serial, TCP, relay preamble; retire old link classes''
+  test coverage'
+status: in-progress
+use-cases:
+- SUC-001
+depends-on:
+- '005'
 github-issue: ''
 issue: rearch-04-linelink-core-replaces-four-link-classes.md
 completes_issue: true

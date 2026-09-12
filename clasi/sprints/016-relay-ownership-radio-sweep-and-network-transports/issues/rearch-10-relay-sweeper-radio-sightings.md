@@ -1,6 +1,9 @@
 ---
-status: pending
+status: in-progress
 sprint: '016'
+tickets:
+- 016-003
+- 016-004
 ---
 
 # Relay sweeper: probe remembered robots over radio from an idle relay and record sightings

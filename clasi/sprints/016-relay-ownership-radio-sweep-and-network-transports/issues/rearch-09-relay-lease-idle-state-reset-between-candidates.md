@@ -1,6 +1,9 @@
 ---
-status: pending
+status: in-progress
 sprint: '016'
+tickets:
+- 016-001
+- 016-002
 ---
 
 # Relay ownership: leases and an idle state, no console auto-open, reset between failover candidates, no registry write-on-read

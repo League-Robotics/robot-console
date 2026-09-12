@@ -1,6 +1,8 @@
 ---
-status: pending
+status: in-progress
 sprint: '016'
+tickets:
+- 016-007
 ---
 
 # Relay firmware: a non-persisting tune (or one-shot probe) so a sweep does not wear the flash

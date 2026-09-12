@@ -1,9 +1,11 @@
 ---
 id: '004'
 title: 'Flash/SWD: platform-aware MSD fallback with settle/poll timing'
-status: open
-use-cases: [SUC-004]
-depends-on: ['003']
+status: in-progress
+use-cases:
+- SUC-004
+depends-on:
+- '003'
 github-issue: ''
 issue: rearch-14-flash-swd-timeouts-platform-msd-fallback.md
 completes_issue: true

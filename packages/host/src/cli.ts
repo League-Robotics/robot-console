@@ -41,7 +41,8 @@ import open from "open";
 import { startServer, type RunningServer, type StartServerOptions } from "./server.js";
 import { getFirmwareConfig } from "./config.js";
 import { dumpStore, formatStoreDump } from "./debug/dumpStore.js";
-import { openStore, type Store } from "./store/index.js";
+import type { Store } from "./store/index.js";
+import { openStoreWithImports } from "./store/bootstrap.js";
 import { startUsbWatcher, type UsbWatcherHandle } from "./watchers/usbWatcher.js";
 import { startMdnsWatcher, type MdnsWatcherHandle } from "./watchers/mdnsWatcher.js";
 import { createBonjourBackend } from "./discovery/mdnsDiscovery.js";
@@ -55,7 +56,12 @@ import type { MdnsBackend } from "./discovery/mdnsDiscovery.js";
 export interface CliDeps {
   dumpStore?: typeof dumpStore;
   formatStoreDump?: typeof formatStoreDump;
-  openStore?: typeof openStore;
+  /** Opens the store and runs the one-time `known-robots.json`/
+   * `wifi-credentials.json` importers against it (ticket 014-010,
+   * SUC-005 fix) — used only by `--watch-store`. `--dump-store` never
+   * touches this: it uses its own read-only `dumpStore` above and must
+   * never write. */
+  openStoreWithImports?: typeof openStoreWithImports;
   startUsbWatcher?: typeof startUsbWatcher;
   startMdnsWatcher?: typeof startMdnsWatcher;
   createBonjourBackend?: () => MdnsBackend;
@@ -126,8 +132,11 @@ function runDumpStore(env: NodeJS.ProcessEnv, deps: Required<Pick<CliDeps, "dump
 /**
  * `--watch-store`: the headless runner ticket 010's bench pass uses to
  * confirm "watcher rows visible in a debug dump" on real hardware
- * without the UI. Opens the store (real state dir, by default) and
- * starts both watchers against real dependencies -- `startUsbWatcher`'s
+ * without the UI. Opens the store via {@link openStoreWithImports} (real
+ * state dir, by default) -- so `known-robots.json`/`wifi-credentials.json`
+ * are imported before either watcher starts writing rows, per ticket
+ * 014-010's SUC-005 fix -- and starts both watchers against real
+ * dependencies -- `startUsbWatcher`'s
  * own seams already default to the real enumerator/serial adapter/SWD
  * namer (`watchers/usbWatcher.ts`), and `startMdnsWatcher` is handed the
  * real `bonjour-service` backend `discovery/mdnsDiscovery.ts` exports
@@ -149,9 +158,9 @@ function runDumpStore(env: NodeJS.ProcessEnv, deps: Required<Pick<CliDeps, "dump
  */
 async function runWatchStore(
   env: NodeJS.ProcessEnv,
-  deps: Required<Pick<CliDeps, "openStore" | "startUsbWatcher" | "startMdnsWatcher" | "createBonjourBackend">>,
+  deps: Required<Pick<CliDeps, "openStoreWithImports" | "startUsbWatcher" | "startMdnsWatcher" | "createBonjourBackend">>,
 ): Promise<void> {
-  const store: Store = deps.openStore({ env });
+  const store: Store = deps.openStoreWithImports({ env });
   const unsubscribe = store.onChange((changes) => {
     console.log(JSON.stringify({ type: "change", changes }));
   });
@@ -221,7 +230,7 @@ export async function main(
   }
   if (hasWatchStoreFlag(argv)) {
     await runWatchStore(env, {
-      openStore: deps.openStore ?? openStore,
+      openStoreWithImports: deps.openStoreWithImports ?? openStoreWithImports,
       startUsbWatcher: deps.startUsbWatcher ?? startUsbWatcher,
       startMdnsWatcher: deps.startMdnsWatcher ?? startMdnsWatcher,
       createBonjourBackend: deps.createBonjourBackend ?? createBonjourBackend,

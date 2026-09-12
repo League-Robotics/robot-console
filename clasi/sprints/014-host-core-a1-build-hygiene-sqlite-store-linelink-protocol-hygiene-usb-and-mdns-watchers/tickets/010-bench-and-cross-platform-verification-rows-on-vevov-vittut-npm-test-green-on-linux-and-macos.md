@@ -82,30 +82,62 @@ A2 (sprint 015) until A1's watcher rows are visible in a debug dump."
       device-name match, and `tigez`'s device row has `owned: 0` (see
       the SUC-005 finding below) — the row itself is present and
       correctly populated, which is what this criterion asks for.
-- [ ] `known-robots.json`'s existing entries appear as `owned = 1`
+- [x] `known-robots.json`'s existing entries appear as `owned = 1`
       device rows before any watcher runs (SUC-005).
-      **Not met — real gap found, not patched (out of this ticket's
-      scope per its own Implementation Plan: "file it ... rather than
-      patching silently here").** `store/importers/knownRobots.ts`'s
-      `importKnownRobots()` (ticket 003) has zero call sites anywhere
+      **Fixed this session** (fixup commit, this ticket, after the gap
+      below was found and flagged): a single store bootstrap entry
+      point, `openStoreWithImports()`
+      (`packages/host/src/store/bootstrap.ts`), opens the store and
+      runs both `store/importers/knownRobots.ts`'s `importKnownRobots`
+      and `store/importers/wifiCredentials.ts`'s `importWifiCredentials`
+      against the JSON files in the same state dir (paths via
+      `resolveKnownRobotsFilePath`/`resolveWifiCredentialsFilePath`,
+      honoring `ROBOT_CONSOLE_STATE_DIR`). `packages/host/src/cli.ts`'s
+      `--watch-store` path now calls `openStoreWithImports` instead of
+      `openStore`; `--dump-store` is untouched and stays read-only
+      (`debug/dumpStore.ts`'s own `openReadOnlyStoreDb`, never a writer).
+      `server.ts`/`deviceRegistry.ts` are untouched, per this ticket's
+      own instruction (sprint 015 wires the server) — a
+      `TODO(rearch-05)` marks that future call site at the bootstrap.
+
+      Original gap this session found, not patched at the time (per
+      this ticket's own Implementation Plan: "file it ... rather than
+      patching silently here"): `store/importers/knownRobots.ts`'s
+      `importKnownRobots()` (ticket 003) had zero call sites anywhere
       in production code — `grep -rn "importKnownRobots" packages/host/src
-      --include='*.ts'` matches only its own module and its own test
-      file. Neither `--dump-store` nor `--watch-store`
-      (`packages/host/src/cli.ts`) ever calls it, and neither does
-      `openStore`/`openStoreDb`. Empirically confirmed: a read-only
-      copy of the real `known-robots.json` (5 entries: gopiv, tigez,
-      tovez, vevov, vitut) placed in a fresh `ROBOT_CONSOLE_STATE_DIR`,
-      followed by a full 40s `--watch-store` run (which does create and
-      write to `console.sqlite`) and then `--dump-store`, shows all
-      three real device rows with `owned: 0` — `owned` only ever gets
-      set by `usbWatcher.ts`'s own `store.setOwned(banner.serial, ...)`
-      after a successful `HELLO` (blocked here by the held serial
-      ports, see above), never by import. Recommend filing a follow-up
-      ticket (against ticket 003's own scope, or as a sprint 015
-      prerequisite) to wire `importKnownRobots` into `cli.ts` (both
-      debug flows, and/or the real startup path) — flagged here per
-      this ticket's own Implementation Plan rather than patched
-      silently.
+      --include='*.ts'` matched only its own module and its own test
+      file. Neither `--dump-store` nor `--watch-store` ever called it,
+      and neither did `openStore`/`openStoreDb`. Empirically confirmed
+      at the time: a read-only copy of the real `known-robots.json` (5
+      entries: gopiv, tigez, tovez, vevov, vitut) placed in a fresh
+      `ROBOT_CONSOLE_STATE_DIR`, followed by a full 40s `--watch-store`
+      run and then `--dump-store`, showed all three real device rows
+      with `owned: 0`.
+
+      **Live re-check after the fix** (this session, fresh
+      `mktemp -d` state dir, a read-only copy of the real
+      `~/.local/state/robot-console/known-robots.json` — 5 entries:
+      gopiv, tigez, tovez, vevov, vitut): `--dump-store` on the empty
+      dir returned the all-empty snapshot (no `console.sqlite` yet, as
+      expected). `timeout 15 node bin/robot-console.js --watch-store`
+      logged the bootstrap's own import as its first change batch —
+      `{"type":"change","changes":[...ten devices/board_owner
+      entries...,{"seq":11,"tbl":"settings","key":"import:known-robots"}]}`
+      — five upserted devices (ids `979`/`1031`/`1461`/`2665`/`2815`)
+      each followed by its `setOwned`, then the `import:known-robots`
+      settings-guard write, all before either watcher's own first
+      enumeration. `--dump-store` afterward showed exactly 5 device
+      rows with `owned: 1` (`vitut`, `vevov`, `gopiv`, `tovez`,
+      `tigez` — the 5 real ids above), matching the file's 5 entries
+      exactly, plus 3 additional `owned: 0` rows from the physically
+      attached bench boards' own real USB enumeration under their
+      *SWD*-read names (`vevav`/`vitut`/`tigez` — ids `536019796`/
+      `2198604104`/`3527777815`), unaffected by the fix (their
+      `links(usb)` rows are still `state: "failed"`/EBUSY, same
+      held-ports condition as this ticket's earlier bench pass — no
+      board was flashed or otherwise touched). Ports were left exactly
+      as found; no processes other than this session's own
+      `--dump-store`/`--watch-store` runs were started or signaled.
 - [x] The UI, run against the unchanged `deviceRegistry.ts` path, shows
       no regression — same devices, same behavior as before this
       sprint's changes.

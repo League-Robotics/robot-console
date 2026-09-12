@@ -17,7 +17,7 @@ describe("cli: main -- --dump-store", () => {
   it("prints the formatted snapshot and touches no other collaborator", async () => {
     const dumpStoreMock = vi.fn().mockReturnValue(EMPTY_SNAPSHOT);
     const formatStoreDumpMock = vi.fn().mockReturnValue("FORMATTED-DUMP");
-    const openStoreMock = vi.fn();
+    const openStoreWithImportsMock = vi.fn();
     const startServerMock = vi.fn();
     const openBrowserMock = vi.fn().mockResolvedValue(undefined);
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -25,7 +25,7 @@ describe("cli: main -- --dump-store", () => {
     const deps: CliDeps = {
       dumpStore: dumpStoreMock,
       formatStoreDump: formatStoreDumpMock,
-      openStore: openStoreMock,
+      openStoreWithImports: openStoreWithImportsMock,
       startServer: startServerMock,
       openBrowser: openBrowserMock,
     };
@@ -36,7 +36,11 @@ describe("cli: main -- --dump-store", () => {
     expect(dumpStoreMock).toHaveBeenCalledWith({ env });
     expect(formatStoreDumpMock).toHaveBeenCalledWith(EMPTY_SNAPSHOT);
     expect(logSpy).toHaveBeenCalledWith("FORMATTED-DUMP");
-    expect(openStoreMock).not.toHaveBeenCalled();
+    // --dump-store must stay read-only: it never opens the store, let
+    // alone runs the known-robots/wifi-credentials importers against it
+    // (ticket 014-010, SUC-005 fix -- `openStoreWithImports` is a write
+    // path and is `--watch-store`-only, see the describe block below).
+    expect(openStoreWithImportsMock).not.toHaveBeenCalled();
     expect(startServerMock).not.toHaveBeenCalled();
     expect(openBrowserMock).not.toHaveBeenCalled();
 
@@ -64,7 +68,7 @@ describe("cli: main -- --watch-store", () => {
       }),
       close: closeMock,
     };
-    const openStoreMock = vi.fn().mockReturnValue(fakeStore);
+    const openStoreWithImportsMock = vi.fn().mockReturnValue(fakeStore);
 
     const usbStopMock = vi.fn();
     const startUsbWatcherMock = vi.fn().mockReturnValue({ stop: usbStopMock });
@@ -82,7 +86,7 @@ describe("cli: main -- --watch-store", () => {
       // Fakes only implement the members `runWatchStore` actually calls
       // (onChange/close, stop()) -- narrower than the real `Store`/
       // `UsbWatcherHandle`/`MdnsWatcherHandle` shapes, hence the cast.
-      openStore: openStoreMock as unknown as CliDeps["openStore"],
+      openStoreWithImports: openStoreWithImportsMock as unknown as CliDeps["openStoreWithImports"],
       startUsbWatcher: startUsbWatcherMock as unknown as CliDeps["startUsbWatcher"],
       startMdnsWatcher: startMdnsWatcherMock as unknown as CliDeps["startMdnsWatcher"],
       createBonjourBackend: createBonjourBackendMock,
@@ -97,7 +101,7 @@ describe("cli: main -- --watch-store", () => {
       closeMock,
       usbStopMock,
       mdnsStopMock,
-      openStoreMock,
+      openStoreWithImportsMock,
       startUsbWatcherMock,
       startMdnsWatcherMock,
       createBonjourBackendMock,
@@ -120,7 +124,11 @@ describe("cli: main -- --watch-store", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(f.openStoreMock).toHaveBeenCalledWith({ env });
+    // `--watch-store` opens the store via `openStoreWithImports`, so the
+    // known-robots/wifi-credentials importers run before either watcher
+    // starts (ticket 014-010, SUC-005 fix) -- see the `--dump-store`
+    // describe block above for the read-only counterpart assertion.
+    expect(f.openStoreWithImportsMock).toHaveBeenCalledWith({ env });
     expect(f.startUsbWatcherMock).toHaveBeenCalledWith(f.fakeStore);
     expect(f.startMdnsWatcherMock).toHaveBeenCalledWith(f.fakeStore, { backend: f.fakeBackend });
     expect(f.startServerMock).not.toHaveBeenCalled();
@@ -185,14 +193,14 @@ describe("cli: main -- no debug flags", () => {
     const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795" });
     const openBrowserMock = vi.fn().mockResolvedValue(undefined);
     const dumpStoreMock = vi.fn();
-    const openStoreMock = vi.fn();
+    const openStoreWithImportsMock = vi.fn();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const deps: CliDeps = {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       dumpStore: dumpStoreMock,
-      openStore: openStoreMock,
+      openStoreWithImports: openStoreWithImportsMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
     };
 
@@ -201,7 +209,7 @@ describe("cli: main -- no debug flags", () => {
     expect(startServerMock).toHaveBeenCalledTimes(1);
     expect(openBrowserMock).toHaveBeenCalledWith("http://127.0.0.1:4795");
     expect(dumpStoreMock).not.toHaveBeenCalled();
-    expect(openStoreMock).not.toHaveBeenCalled();
+    expect(openStoreWithImportsMock).not.toHaveBeenCalled();
 
     logSpy.mockRestore();
   });

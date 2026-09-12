@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '017'
 ---
 
 # Known-robots placeholder rows only merge on USB identification; mbserial/WiFi identifies leave a duplicate

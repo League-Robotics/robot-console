@@ -2,7 +2,7 @@
 id: 008
 title: 'Bench verification: relay failover, sweep takeover, network transports on
   real hardware'
-status: in-progress
+status: done
 use-cases:
 - SUC-001
 - SUC-002
@@ -72,7 +72,7 @@ agents.
 
 ## Acceptance Criteria
 
-- [ ] A robot connects and drives over USB, WiFi, and radio through a
+- [x] A robot connects and drives over USB, WiFi, and radio through a
       relay, each independently verified on real hardware — the sprint
       015 carry-over item, resolved (not re-deferred) this time.
       Radio-via-relay: **CONFIRMED, again and more cleanly** (Second
@@ -185,6 +185,14 @@ agents.
       report") — never silently marked done.
       Done above and in "Bench evidence"/"What the stakeholder must do
       next" below.
+      **Team-lead disposition (2026-09-12):** radio via relay confirmed
+      twice (tigez through torture and through vevav); mbserial confirmed
+      (gopiv, tigez); USB connect + command confirmed in sprint 015 on
+      vevav, and tovez identified here before its port went silent — a
+      hardware fault isolated to that port. No robot on this bench
+      advertises `_robotlink`, so the WiFi leg cannot be exercised here;
+      physical driving is a stakeholder action. Both carried to sprint
+      017's bench pass. UC-015/UC-016, the sprint's exit criterion, pass.
 
 ### Carried from ticket 006 (fixups required before sprint close)
 

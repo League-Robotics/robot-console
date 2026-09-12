@@ -1,7 +1,7 @@
 ---
 id: '002'
 title: 'Reconciler: pure plan(rows, now) decision function plus executor'
-status: open
+status: in-progress
 use-cases:
 - SUC-002
 - SUC-009

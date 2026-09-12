@@ -1,8 +1,9 @@
 ---
 id: '003'
 title: Flash/SWD timeouts, typed failure class, board_owner exclusivity via connect/flasher.ts
-status: open
-use-cases: [SUC-003]
+status: in-progress
+use-cases:
+- SUC-003
 depends-on: []
 github-issue: ''
 issue: rearch-14-flash-swd-timeouts-platform-msd-fallback.md

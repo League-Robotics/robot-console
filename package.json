@@ -12,7 +12,7 @@
   ],
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "pretest": "git submodule update --init 2>/dev/null || true",
+    "pretest": "git submodule update --init 2>/dev/null || true && npm run build -w @robot-console/protocol",
     "test": "vitest run",
     "build": "npm run build -w @robot-console/protocol && npm run build -w @robot-console/host && npm run build -w @robot-console/ui",
     "typecheck": "npm run build -w @robot-console/protocol && npm run build -w @robot-console/host && tsc --noEmit -p packages/protocol/tsconfig.json && tsc --noEmit -p packages/host/tsconfig.json && tsc --noEmit -p packages/ui/tsconfig.json",

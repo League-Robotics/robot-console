@@ -539,6 +539,155 @@ describe("Store: reconcilerRows", () => {
   });
 });
 
+describe("Store: projectionRows", () => {
+  it("returns typed, camelCased devices/links/sessions/relayLeases/firmware/tasks", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({
+        id: 1198504156,
+        name: "vevov",
+        kind: "robot",
+        role: "NEZHA2",
+        radioChannel: 41,
+        radioGroup: 3,
+        radioSource: "override",
+        at: 1,
+      });
+      store.setOwned(1198504156, true, 2);
+      store.upsertLink({
+        id: "link-1",
+        transport: "wifi",
+        address: { host: "10.0.0.5", port: 4000 },
+        deviceId: 1198504156,
+        at: 3,
+      });
+      store.setLinkState({ id: "link-1", state: "connected", at: 4 });
+      store.openSession("link-1", 5);
+      store.updateSession("link-1", {
+        seq: 3,
+        pending: 1,
+        lastDone: 2,
+        lastDoneReason: "ok",
+        robotStatus: JSON.stringify({
+          receivedAt: 5,
+          fields: { flags: "1" },
+          ready: true,
+          active: true,
+          estopped: false,
+          stallHalted: false,
+          leaseExpired: false,
+        }),
+        functions: [{ name: "drive" }],
+      });
+      store.upsertLink({ id: "relay-1", transport: "usb", address: { path: "/dev/relay" }, at: 5 });
+      store.acquireRelayLease("relay-1", "sweep", 6);
+      store.setFirmware({ kind: "robot", repo: "org/repo", tag: "v1", available: true, checkedAt: 7 });
+      store.heartbeat("usbWatcher", 8, "polling");
+      store.recordSighting({ deviceId: 1198504156, transport: "wifi", at: 9, ok: true });
+      store.recordSighting({ deviceId: 1198504156, transport: "wifi", at: 11, ok: true });
+
+      const rows = store.projectionRows();
+
+      expect(rows.devices).toEqual([
+        {
+          id: 1198504156,
+          name: "vevov",
+          kind: "robot",
+          role: "NEZHA2",
+          program: null,
+          version: null,
+          radioChannel: 41,
+          radioGroup: 3,
+          radioSource: "override",
+          owned: true,
+          lastSeen: 2,
+        },
+      ]);
+
+      const link1 = rows.links.find((l) => l.id === "link-1");
+      expect(link1).toEqual({
+        id: "link-1",
+        deviceId: 1198504156,
+        transport: "wifi",
+        address: { host: "10.0.0.5", port: 4000 },
+        state: "connected",
+        stateReason: null,
+        stateSince: 4,
+        lastSeen: 3,
+        nextRetryAt: null,
+        failCount: 0,
+        userClosed: false,
+      });
+
+      expect(rows.sessions).toEqual([
+        {
+          linkId: "link-1",
+          seq: 3,
+          pending: 1,
+          lastDone: 2,
+          lastDoneReason: "ok",
+          robotStatus: {
+            receivedAt: 5,
+            fields: { flags: "1" },
+            ready: true,
+            active: true,
+            estopped: false,
+            stallHalted: false,
+            leaseExpired: false,
+          },
+          functions: [{ name: "drive" }],
+        },
+      ]);
+
+      expect(rows.relayLeases).toEqual([{ relayLinkId: "relay-1", owner: "sweep" }]);
+      expect(rows.firmware).toEqual([
+        { kind: "robot", repo: "org/repo", tag: "v1", available: true, reason: null, message: null },
+      ]);
+      expect(rows.tasks).toEqual([{ name: "usbWatcher", state: "running", heartbeatAt: 8 }]);
+      expect(rows.lastChecked).toEqual([{ deviceId: 1198504156, at: 11 }]);
+      expect(rows.wifiCredentials).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("reports an absent session's robotStatus/functions as null, not undefined or a string", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertLink({ id: "link-1", transport: "usb", address: { path: "/dev/x" }, at: 1 });
+      store.openSession("link-1", 2);
+
+      const rows = store.projectionRows();
+      expect(rows.sessions).toEqual([
+        { linkId: "link-1", seq: null, pending: null, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("parses a stored wifiCredentials setting into ssid/password", () => {
+    const { store } = freshStore();
+    try {
+      store.setSetting("wifiCredentials", JSON.stringify({ ssid: "classroom", password: "secret" }));
+      const rows = store.projectionRows();
+      expect(rows.wifiCredentials).toEqual({ ssid: "classroom", password: "secret" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("reports no wifiCredentials as null rather than throwing", () => {
+    const { store } = freshStore();
+    try {
+      const rows = store.projectionRows();
+      expect(rows.wifiCredentials).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe("Store: change feed", () => {
   it("emits exactly one coalesced event per transaction burst", async () => {
     const { store } = freshStore();

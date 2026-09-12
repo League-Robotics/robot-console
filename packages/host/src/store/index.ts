@@ -254,6 +254,118 @@ export interface ReconcilerRows {
   readonly relayLeases: readonly ReconcilerRelayLeaseRow[];
 }
 
+/** One `devices` row, as {@link Store.projectionRows} needs it —
+ * `packages/host/src/projection.ts`'s `buildSnapshot` (sprint 015
+ * ticket 004) reasons over every field a device carries, unlike
+ * {@link ReconcilerDeviceRow}'s narrow `id`/`kind`/`owned` slice. */
+export interface ProjectionDeviceRow {
+  readonly id: number;
+  readonly name: string;
+  readonly kind: DeviceKind;
+  readonly role: string | null;
+  readonly program: string | null;
+  readonly version: string | null;
+  readonly radioChannel: number | null;
+  readonly radioGroup: number | null;
+  readonly radioSource: RadioSource;
+  readonly owned: boolean;
+  readonly lastSeen: number;
+}
+
+/** One `links` row, as {@link Store.projectionRows} needs it — every
+ * column the projection reads, camelCased and (for `address`) parsed,
+ * unlike {@link ReconcilerLinkRow}'s narrower policy-only slice. */
+export interface ProjectionLinkRow {
+  readonly id: string;
+  readonly deviceId: number | null;
+  readonly transport: Transport;
+  readonly address: unknown;
+  readonly state: LinkState;
+  readonly stateReason: string | null;
+  readonly stateSince: number;
+  readonly lastSeen: number | null;
+  readonly nextRetryAt: number | null;
+  readonly failCount: number;
+  readonly userClosed: boolean;
+}
+
+/** One `sessions` row, as {@link Store.projectionRows} needs it —
+ * `robot_status`/`functions` are parsed from their stored JSON text (or
+ * `null` if never set) rather than left as raw strings, since the
+ * projection reads them structurally. */
+export interface ProjectionSessionRow {
+  readonly linkId: string;
+  readonly seq: number | null;
+  readonly pending: number | null;
+  readonly lastDone: number | null;
+  readonly lastDoneReason: string | null;
+  readonly robotStatus: unknown;
+  readonly functions: unknown;
+}
+
+/** One `relay_leases` row, as {@link Store.projectionRows} needs it —
+ * same shape as {@link ReconcilerRelayLeaseRow}, declared separately so
+ * a caller of one read model never accidentally depends on the other's
+ * continued existence. */
+export interface ProjectionRelayLeaseRow {
+  readonly relayLinkId: string;
+  readonly owner: string;
+}
+
+/** One `firmware` row, as {@link Store.projectionRows} needs it. */
+export interface ProjectionFirmwareRow {
+  readonly kind: "relay" | "robot";
+  readonly repo: string | null;
+  readonly tag: string | null;
+  readonly available: boolean | null;
+  readonly reason: string | null;
+  readonly message: string | null;
+}
+
+/** One `tasks` row, as {@link Store.projectionRows} needs it. */
+export interface ProjectionTaskRow {
+  readonly name: string;
+  readonly state: string;
+  readonly heartbeatAt: number;
+}
+
+/** The `at` of the newest `sightings` row for one device — pre-aggregated
+ * in SQL (`MAX(at) ... GROUP BY device_id`) rather than handing the
+ * projection every raw `sightings` row to reduce itself, since only the
+ * maximum is ever needed (`SnapshotDevice.lastChecked`). */
+export interface ProjectionLastCheckedRow {
+  readonly deviceId: number;
+  readonly at: number;
+}
+
+/** The read model `projection.ts`'s `buildSnapshot` (sprint 015 ticket
+ * 004) needs — devices, links, sessions, relay leases, firmware, tasks,
+ * each device's most recent sighting time, and the stored WiFi
+ * credentials, camelCased and typed (unlike {@link StoreSnapshot}, which
+ * exists for the debug dump, and deliberately does not expose
+ * `relay_leases`/`firmware`/`sightings` at all — see that interface's
+ * own doc comment). A plain read, no transaction, mirroring {@link
+ * Store.reconcilerRows}'s own "always re-derive, never cache" reasoning. */
+export interface ProjectionRows {
+  readonly devices: readonly ProjectionDeviceRow[];
+  readonly links: readonly ProjectionLinkRow[];
+  readonly sessions: readonly ProjectionSessionRow[];
+  readonly relayLeases: readonly ProjectionRelayLeaseRow[];
+  readonly firmware: readonly ProjectionFirmwareRow[];
+  readonly tasks: readonly ProjectionTaskRow[];
+  readonly lastChecked: readonly ProjectionLastCheckedRow[];
+  /** Parsed `settings` row for the imported/stored WiFi network, or
+   * `null` if none is stored. The `settings.key` this is stored under
+   * (`"wifiCredentials"`) is duplicated here as a literal rather than
+   * imported from `store/importers/wifiCredentials.ts`'s own
+   * `WIFI_CREDENTIALS_SETTING_KEY` — importing it would point a
+   * dependency from `store/index.ts` back at `store/importers/*`, which
+   * itself depends on `store/index.ts` (a cycle). Mirrors
+   * `wsMessages.ts`'s own `AddressSource` doc comment, which duplicates
+   * a value across a module boundary for the same reason. */
+  readonly wifiCredentials: { ssid: string; password: string } | null;
+}
+
 function toJson(value: unknown): string | null {
   return value === undefined || value === null ? null : JSON.stringify(value);
 }
@@ -831,6 +943,153 @@ export class Store {
       })),
       sessions: sessions.map((s) => ({ linkId: s.link_id })),
       relayLeases: relayLeases.map((r) => ({ relayLinkId: r.relay_link_id, owner: r.owner })),
+    };
+  }
+
+  /** The `settings.key` a stored WiFi network is imported/saved under —
+   * see {@link ProjectionRows.wifiCredentials}'s own doc comment for why
+   * this is a duplicated literal, not an import. */
+  private static readonly WIFI_CREDENTIALS_SETTING_KEY = "wifiCredentials";
+
+  /** The typed, camelCased read model `projection.ts`'s `buildSnapshot`
+   * needs — see {@link ProjectionRows}. */
+  projectionRows(): ProjectionRows {
+    const deviceRows = this.db
+      .prepare(
+        "SELECT id, name, kind, role, program, version, radio_channel, radio_group, radio_source, owned, last_seen FROM devices",
+      )
+      .all() as Array<{
+      id: number;
+      name: string;
+      kind: DeviceKind;
+      role: string | null;
+      program: string | null;
+      version: string | null;
+      radio_channel: number | null;
+      radio_group: number | null;
+      radio_source: RadioSource;
+      owned: number;
+      last_seen: number;
+    }>;
+
+    const linkRows = this.db
+      .prepare(
+        `SELECT id, device_id, transport, address, state, state_reason, state_since, last_seen, next_retry_at, fail_count, user_closed
+         FROM links`,
+      )
+      .all() as Array<{
+      id: string;
+      device_id: number | null;
+      transport: Transport;
+      address: string;
+      state: LinkState;
+      state_reason: string | null;
+      state_since: number;
+      last_seen: number | null;
+      next_retry_at: number | null;
+      fail_count: number;
+      user_closed: number;
+    }>;
+
+    const sessionRows = this.db
+      .prepare("SELECT link_id, seq, pending, last_done, last_done_reason, robot_status, functions FROM sessions")
+      .all() as Array<{
+      link_id: string;
+      seq: number | null;
+      pending: number | null;
+      last_done: number | null;
+      last_done_reason: string | null;
+      robot_status: string | null;
+      functions: string | null;
+    }>;
+
+    const relayLeaseRows = this.db.prepare("SELECT relay_link_id, owner FROM relay_leases").all() as Array<{
+      relay_link_id: string;
+      owner: string;
+    }>;
+
+    const firmwareRows = this.db
+      .prepare("SELECT kind, repo, tag, available, reason, message FROM firmware")
+      .all() as Array<{
+      kind: "relay" | "robot";
+      repo: string | null;
+      tag: string | null;
+      available: number | null;
+      reason: string | null;
+      message: string | null;
+    }>;
+
+    const taskRows = this.db.prepare("SELECT name, state, heartbeat_at FROM tasks").all() as Array<{
+      name: string;
+      state: string;
+      heartbeat_at: number;
+    }>;
+
+    const lastCheckedRows = this.db
+      .prepare("SELECT device_id, MAX(at) AS at FROM sightings WHERE device_id IS NOT NULL GROUP BY device_id")
+      .all() as Array<{ device_id: number; at: number }>;
+
+    const wifiSetting = this.getSetting(Store.WIFI_CREDENTIALS_SETTING_KEY);
+    let wifiCredentials: { ssid: string; password: string } | null = null;
+    if (wifiSetting !== undefined) {
+      try {
+        const parsed = JSON.parse(wifiSetting) as { ssid?: unknown; password?: unknown };
+        if (typeof parsed.ssid === "string" && typeof parsed.password === "string") {
+          wifiCredentials = { ssid: parsed.ssid, password: parsed.password };
+        }
+      } catch {
+        wifiCredentials = null;
+      }
+    }
+
+    return {
+      devices: deviceRows.map((d) => ({
+        id: d.id,
+        name: d.name,
+        kind: d.kind,
+        role: d.role,
+        program: d.program,
+        version: d.version,
+        radioChannel: d.radio_channel,
+        radioGroup: d.radio_group,
+        radioSource: d.radio_source,
+        owned: d.owned !== 0,
+        lastSeen: d.last_seen,
+      })),
+      links: linkRows.map((l) => ({
+        id: l.id,
+        deviceId: l.device_id,
+        transport: l.transport,
+        address: JSON.parse(l.address) as unknown,
+        state: l.state,
+        stateReason: l.state_reason,
+        stateSince: l.state_since,
+        lastSeen: l.last_seen,
+        nextRetryAt: l.next_retry_at,
+        failCount: l.fail_count,
+        userClosed: l.user_closed !== 0,
+      })),
+      sessions: sessionRows.map((s) => ({
+        linkId: s.link_id,
+        seq: s.seq,
+        pending: s.pending,
+        lastDone: s.last_done,
+        lastDoneReason: s.last_done_reason,
+        robotStatus: s.robot_status !== null ? (JSON.parse(s.robot_status) as unknown) : null,
+        functions: s.functions !== null ? (JSON.parse(s.functions) as unknown) : null,
+      })),
+      relayLeases: relayLeaseRows.map((r) => ({ relayLinkId: r.relay_link_id, owner: r.owner })),
+      firmware: firmwareRows.map((f) => ({
+        kind: f.kind,
+        repo: f.repo,
+        tag: f.tag,
+        available: f.available === null ? null : f.available !== 0,
+        reason: f.reason,
+        message: f.message,
+      })),
+      tasks: taskRows.map((t) => ({ name: t.name, state: t.state, heartbeatAt: t.heartbeat_at })),
+      lastChecked: lastCheckedRows.map((r) => ({ deviceId: r.device_id, at: r.at })),
+      wifiCredentials,
     };
   }
 

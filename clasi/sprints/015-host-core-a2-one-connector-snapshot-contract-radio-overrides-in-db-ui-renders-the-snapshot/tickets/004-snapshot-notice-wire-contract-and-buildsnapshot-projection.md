@@ -1,7 +1,7 @@
 ---
 id: '004'
 title: Snapshot/Notice wire contract and buildSnapshot projection
-status: in-progress
+status: done
 use-cases:
 - SUC-005
 depends-on:
@@ -43,16 +43,16 @@ rows with no server/socket involved.
 
 ## Acceptance Criteria
 
-- [ ] Golden test: seeded rows → `buildSnapshot()` equals a checked-in
+- [x] Golden test: seeded rows → `buildSnapshot()` equals a checked-in
       JSON fixture covering an owned robot with USB+WiFi+radio links, an
       un-owned WiFi robot (absent from the output), an unnamed USB board
       (`unassigned`), and a relay under a sweep lease.
-- [ ] `capabilities` on each link row correctly reflects
+- [x] `capabilities` on each link row correctly reflects
       open/close/flash/provisionWifi eligibility for that link's state
       and transport.
-- [ ] `grep -rn "EndpointListEntry\|rememberedRobots\|discoveredServices" packages/host/src` returns nothing (server.ts/cli.ts are expected to still fail to compile until ticket 005 — see that ticket's note).
-- [ ] `session-open`'s wire type accepts `{linkId}` or `{relayLinkId, name}` and no longer accepts a `radio` field.
-- [ ] `forget-known-robot` no longer exists in `wsMessages.ts`; `forget-device {deviceId}` does.
+- [x] `grep -rn "EndpointListEntry\|rememberedRobots\|discoveredServices" packages/host/src` returns nothing (server.ts/cli.ts are expected to still fail to compile until ticket 005 — see that ticket's note).
+- [x] `session-open`'s wire type accepts `{linkId}` or `{relayLinkId, name}` and no longer accepts a `radio` field.
+- [x] `forget-known-robot` no longer exists in `wsMessages.ts`; `forget-device {deviceId}` does.
 
 ## Implementation Plan
 
@@ -77,3 +77,51 @@ function against those types. No I/O beyond reading the store.
 
 **Documentation updates**: none — `architecture.md` §9 already documents
 this shape; no drift to reconcile.
+
+## Implementation Notes
+
+- `wsMessages.ts` fully replaced `EndpointsMessage`/`EndpointListEntry`
+  and the flash/WiFi side channels with `Snapshot`/`Notice`, per
+  architecture.md §9. Every `endpointId` field was renamed `linkId`
+  throughout (matching ticket 008's own UI-side rename), since the
+  "endpoint" vocabulary has no referent left once links are the only
+  addressable identity. Kept unchanged (existing callers depend on
+  these verbatim): `FirmwareKind`, `FirmwareSourceRef`, `FlashPhase`,
+  `FirmwareAvailability`, `RobotStatus`/`RobotFunction` (imported
+  directly by `connect/harvester.ts`), `UPLOAD_ID_BYTE_LENGTH`.
+- `projection.ts`'s `buildSnapshot(store, seq, at)` takes `seq`/`at` as
+  parameters rather than deriving them internally, so the function stays
+  a pure `(rows) -> Snapshot` map with no wall-clock read and no
+  broadcast-counter bookkeeping of its own — `server.ts` (ticket 005) is
+  expected to own both. `SnapshotLink.flash`/`SnapshotRelay.bridging` are
+  typed but never populated by this function (no backing store table);
+  ticket 005's server overlays them.
+- Added `Store.projectionRows()` (with its own test coverage in
+  `store/index.test.ts`) as the typed read `buildSnapshot` needs —
+  deliberately not an extension of `snapshotRows()`, since
+  `store/index.test.ts`'s own doc comment states that method
+  intentionally excludes `sightings`/`board_owner`/`relay_leases`/
+  `firmware`. Mirrors the existing `reconcilerRows()` precedent (a
+  second, purpose-built typed read model alongside `snapshotRows()`).
+- An un-owned WiFi/mbserial robot is dropped from `devices[]` entirely
+  (not shown as an empty-links card) — `device.owned || links.length > 0`
+  is the filter; see `projection.ts`'s own doc comment for why (matches
+  the acceptance criterion's "absent from the output", not just
+  "empty links").
+- `SnapshotLink.label`'s exact text format is this ticket's own design
+  call (architecture.md §9 gives one illustrative example, not a pinned
+  format) — documented as such in `projection.ts`.
+- Typecheck residue (informational, per the programmer-agent workflow):
+  `npx tsc --noEmit -p packages/host/tsconfig.json` reports errors only
+  in `packages/host/src/server.ts` (54 errors, all `EndpointListEntry`/
+  `endpointId`/`radio`/`autoRobot`/missing-`seq` fallout from this
+  ticket's clean-break rewrite) — expected and out of scope per this
+  ticket's own note; ticket 005 fixes it. No other file in
+  `packages/host/src` regressed. `packages/ui` was not typechecked here
+  (out of this ticket's scope — tickets 007-009 migrate it) but is
+  expected to have similar breakage against the removed types, per this
+  ticket's own "leave it" instruction.
+- Test commands run in the foreground:
+  `npx vitest run packages/host/src/projection.test.ts
+  packages/host/src/wsMessages.test.ts packages/host/src/store` — 9
+  files, 138 tests, all passing.

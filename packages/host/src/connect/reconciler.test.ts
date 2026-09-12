@@ -439,6 +439,20 @@ describe("startReconciler -- executor integration (real connector, fake ByteStre
       expect(linkRowAfter?.state).toBe("connected");
       expect(store.snapshotRows().sessions.find((s) => s.link_id === "wifi-1")).toBeDefined();
       expect(stream.writes[0]?.bytes.startsWith("HELLO")).toBe(true);
+
+      // sprint 015 ticket 005's own seam: `reconciler.sessions` is the
+      // narrow read-only view the server uses to reach "the open
+      // session's link" for send-command/line/provision-wifi/flash --
+      // see that interface's own doc comment.
+      const session = reconciler.sessions.get("wifi-1");
+      expect(session?.linkId).toBe("wifi-1");
+      expect(session?.link).toBeDefined();
+      expect(reconciler.sessions.get("no-such-link")).toBeUndefined();
+      expect(Array.from(reconciler.sessions.values()).map((s) => s.linkId)).toEqual(["wifi-1"]);
+
+      await reconciler.requestClose("wifi-1");
+      expect(reconciler.sessions.get("wifi-1")).toBeUndefined();
+      expect(Array.from(reconciler.sessions.values())).toEqual([]);
     } finally {
       reconciler.stop();
     }

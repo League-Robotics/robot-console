@@ -1,0 +1,230 @@
+/**
+ * runtime.ts — the one composition root for the whole host (sprint 015
+ * ticket 005; issue `rearch-06-snapshot-wire-contract-and-thin-server.md`;
+ * `docs/design/architecture.md` §6/§8; `sprint.md`'s own module table:
+ * "Inside: `openStoreWithImports`, `startUsbWatcher`/`startMdnsWatcher`,
+ * constructing the reconciler, `startServer({store, runtime})`, orderly
+ * `stop()`. Outside: any component's own logic — this module only
+ * wires.").
+ *
+ * `startRuntime` is the seam `cli.ts`'s `main()` now calls instead of
+ * going straight to `startServer` — the first point since sprint 014
+ * that production startup actually opens the store and starts both
+ * watchers (until this ticket, only the now-retired `--watch-store` flag
+ * did). This removes `server.ts`'s old inline construction of the
+ * retired registry class (ticket 003 already deleted the class itself;
+ * this was the last call site) by giving `server.ts` something real to
+ * depend on instead.
+ *
+ * ## Composition order
+ *
+ * 1. {@link openStoreWithImports} — opens (creating/migrating as needed)
+ *    `console.sqlite` and runs the one-time `known-robots.json`/
+ *    `wifi-credentials.json` importers against it.
+ * 2. `startUsbWatcher`/`startMdnsWatcher` (sprint 014) — write
+ *    `devices`/`links`/`services` rows; neither opens a session itself
+ *    any more (sprint 015 ticket 003's "watchers write rows only").
+ * 3. `createHarvester` (ticket 003) — the real {@link HarvesterAttach}
+ *    implementation, wired with `onTelemetry`/`onNotice` sinks this
+ *    module fans out to every subscriber of {@link Runtime.telemetry}
+ *    (`server.ts`, ticket 005, is the only production subscriber).
+ * 4. `createConnector` (ticket 001), given that harvester.
+ * 5. `startReconciler` (ticket 002), given that connector — the only
+ *    component that decides what should be connected, and the target
+ *    `server.ts` forwards an explicit user `session-open`/`session-close`
+ *    command to.
+ * 6. `installUnhandledRejectionBackstop` (ticket 003) — the process-wide
+ *    last-resort net; see that module's own doc comment for why this is
+ *    not a substitute for each component's own error handling.
+ *
+ * `stop()` tears all of it down in roughly the reverse order: the
+ * backstop first (nothing should still be marking links failed once
+ * everything else is stopping), the reconciler (stops scheduling new
+ * jobs — does not close any already-open session, mirroring every
+ * watcher's own `stop()` contract), both watchers, then the store.
+ *
+ * Every collaborator is injectable via {@link StartRuntimeOptions},
+ * mirroring `cli.ts`'s own `CliDeps` seam ("real defaults, fakes in
+ * tests") — no real store/serial/HID/mDNS I/O is ever touched by
+ * `runtime.test.ts`.
+ */
+import { openStoreWithImports as defaultOpenStoreWithImports } from "./store/bootstrap.js";
+import type { StoreDbOptions } from "./store/db.js";
+import type { Store } from "./store/index.js";
+import {
+  startUsbWatcher as defaultStartUsbWatcher,
+  type UsbWatcherDeps,
+  type UsbWatcherHandle,
+  type UsbWatcherOptions,
+} from "./watchers/usbWatcher.js";
+import {
+  startMdnsWatcher as defaultStartMdnsWatcher,
+  type MdnsWatcherOptions,
+} from "./watchers/mdnsWatcher.js";
+import { createBonjourBackend as defaultCreateBonjourBackend, type MdnsBackend } from "./discovery/mdnsDiscovery.js";
+import { createConnector as defaultCreateConnector, type ConnectorDeps, type ConnectorOptions } from "./connect/connector.js";
+import {
+  createHarvester as defaultCreateHarvester,
+  type HarvesterDeps,
+  type HarvesterTelemetryEvent,
+} from "./connect/harvester.js";
+import { startReconciler as defaultStartReconciler, type Reconciler, type ReconcilerDeps } from "./connect/reconciler.js";
+import {
+  installUnhandledRejectionBackstop as defaultInstallUnhandledRejectionBackstop,
+  type UnhandledRejectionBackstopDeps,
+} from "./connect/unhandled.js";
+
+/** Subscribable telemetry/notice fan-out — the harvester (ticket 003)
+ * produces both per open session, with no broadcast of its own (see that
+ * module's own doc comment); this is where they become subscribable for
+ * whatever composes a runtime ({@link startServer} in production). Both
+ * default to a no-op if nothing ever subscribes, so a runtime started
+ * with no server attached (e.g. a future headless tool) never pays for
+ * an unused fan-out. */
+export interface RuntimeTelemetry {
+  /** Subscribe to every `thdr`/`t` telemetry event, across every open
+   * session. Returns an unsubscribe function. */
+  onTelemetry(listener: (linkId: string, event: HarvesterTelemetryEvent) => void): () => void;
+  /** Subscribe to every harvester-originated notice (a resync, a
+   * dropped-malformed-line notice, ...). Returns an unsubscribe
+   * function. */
+  onNotice(listener: (linkId: string, message: string) => void): () => void;
+}
+
+export interface Runtime {
+  readonly store: Store;
+  readonly reconciler: Reconciler;
+  readonly telemetry: RuntimeTelemetry;
+  /** Stops the reconciler (change-feed subscription + slow tick), both
+   * watchers, uninstalls the unhandled-rejection backstop, and closes
+   * the store. Does not close any already-open session — mirrors the
+   * reconciler's own `stop()` contract (this module's doc comment). */
+  stop(): void;
+}
+
+/** Injectable seams for {@link startRuntime} — every field defaults to
+ * the real implementation; `runtime.test.ts` substitutes fakes for
+ * whichever fields the case under test touches, mirroring `cli.ts`'s own
+ * `CliDeps` convention. */
+export interface StartRuntimeOptions {
+  /** Forwarded to {@link openStoreWithImports} verbatim (state dir/env/
+   * file-path resolution). Ignored if {@link openStoreWithImports} below
+   * is itself overridden. */
+  storeOptions?: StoreDbOptions;
+  openStoreWithImports?: typeof defaultOpenStoreWithImports;
+
+  startUsbWatcher?: typeof defaultStartUsbWatcher;
+  usbWatcherDeps?: UsbWatcherDeps;
+  usbWatcherOptions?: UsbWatcherOptions;
+
+  startMdnsWatcher?: typeof defaultStartMdnsWatcher;
+  /** The mDNS backend `startMdnsWatcher` requires (no default of its
+   * own — see that module's own doc comment). Defaults to a real
+   * `bonjour-service`-backed one via {@link createBonjourBackend}. */
+  mdnsBackend?: MdnsBackend;
+  createBonjourBackend?: typeof defaultCreateBonjourBackend;
+  mdnsWatcherOptions?: MdnsWatcherOptions;
+
+  createConnector?: typeof defaultCreateConnector;
+  /** Every {@link ConnectorDeps} field except `harvester`, which this
+   * module always wires to its own {@link createHarvester} call (see
+   * the module doc comment's composition order) — a caller that wants a
+   * fake harvester overrides {@link createHarvester} instead. */
+  connectorDeps?: Omit<ConnectorDeps, "harvester">;
+  connectorOptions?: ConnectorOptions;
+
+  createHarvester?: typeof defaultCreateHarvester;
+  /** Every {@link HarvesterDeps} field except `onTelemetry`/`onNotice`,
+   * which this module always wires to its own fan-out (see
+   * {@link Runtime.telemetry}) — a caller that wants to observe every
+   * event a test harvester itself produces subscribes to `telemetry`
+   * instead of overriding these sinks directly. */
+  harvesterDeps?: Omit<HarvesterDeps, "onTelemetry" | "onNotice">;
+
+  startReconciler?: typeof defaultStartReconciler;
+  /** Every {@link ReconcilerDeps} field except `connector`, which this
+   * module always wires to its own {@link createConnector} call. */
+  reconcilerDeps?: Omit<ReconcilerDeps, "connector">;
+
+  installUnhandledRejectionBackstop?: typeof defaultInstallUnhandledRejectionBackstop;
+  unhandledRejectionDeps?: UnhandledRejectionBackstopDeps;
+}
+
+/**
+ * Compose the store, both watchers, the harvester/connector/reconciler,
+ * and the unhandled-rejection backstop into one running host. See the
+ * module doc comment for composition order and every collaborator's own
+ * module for what it does. Synchronous: every collaborator constructed
+ * here starts (or opens) synchronously — the reconciler's own initial
+ * `tick()` (and, on top of it, each watcher's own poll) dispatches
+ * whatever real I/O they need fire-and-forget from there, exactly as
+ * running `startReconciler`/`startUsbWatcher`/`startMdnsWatcher`
+ * directly already does.
+ */
+export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
+  const openStoreWithImportsFn = options.openStoreWithImports ?? defaultOpenStoreWithImports;
+  const startUsbWatcherFn = options.startUsbWatcher ?? defaultStartUsbWatcher;
+  const startMdnsWatcherFn = options.startMdnsWatcher ?? defaultStartMdnsWatcher;
+  const createBonjourBackendFn = options.createBonjourBackend ?? defaultCreateBonjourBackend;
+  const createConnectorFn = options.createConnector ?? defaultCreateConnector;
+  const createHarvesterFn = options.createHarvester ?? defaultCreateHarvester;
+  const startReconcilerFn = options.startReconciler ?? defaultStartReconciler;
+  const installUnhandledRejectionBackstopFn =
+    options.installUnhandledRejectionBackstop ?? defaultInstallUnhandledRejectionBackstop;
+
+  const store = openStoreWithImportsFn(options.storeOptions ?? {});
+
+  const telemetryListeners = new Set<(linkId: string, event: HarvesterTelemetryEvent) => void>();
+  const noticeListeners = new Set<(linkId: string, message: string) => void>();
+  const telemetry: RuntimeTelemetry = {
+    onTelemetry(listener) {
+      telemetryListeners.add(listener);
+      return () => telemetryListeners.delete(listener);
+    },
+    onNotice(listener) {
+      noticeListeners.add(listener);
+      return () => noticeListeners.delete(listener);
+    },
+  };
+
+  const usbHandle: UsbWatcherHandle = startUsbWatcherFn(store, options.usbWatcherDeps, options.usbWatcherOptions);
+  const mdnsBackend = options.mdnsBackend ?? createBonjourBackendFn();
+  const mdnsHandle = startMdnsWatcherFn(store, { backend: mdnsBackend }, options.mdnsWatcherOptions);
+
+  const harvester = createHarvesterFn(store, {
+    ...options.harvesterDeps,
+    onTelemetry: (linkId, event) => {
+      for (const listener of telemetryListeners) {
+        listener(linkId, event);
+      }
+    },
+    onNotice: (linkId, message) => {
+      for (const listener of noticeListeners) {
+        listener(linkId, message);
+      }
+    },
+  });
+
+  const connector = createConnectorFn(store, { ...options.connectorDeps, harvester }, options.connectorOptions);
+  const reconciler = startReconcilerFn(store, { ...options.reconcilerDeps, connector });
+  const uninstallUnhandledRejectionBackstop = installUnhandledRejectionBackstopFn(store, options.unhandledRejectionDeps);
+
+  let stopped = false;
+
+  return {
+    store,
+    reconciler,
+    telemetry,
+    stop(): void {
+      if (stopped) {
+        return;
+      }
+      stopped = true;
+      uninstallUnhandledRejectionBackstop();
+      reconciler.stop();
+      usbHandle.stop();
+      mdnsHandle.stop();
+      store.close();
+    },
+  };
+}

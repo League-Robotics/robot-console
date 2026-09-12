@@ -345,6 +345,22 @@ export interface ReconcilerDeps {
   tickIntervalMs?: number;
 }
 
+/** Read-only view of the executor's own currently-open sessions — the
+ * narrow seam ticket 005's server uses to reach "the open session's
+ * link" for a given `linkId` (`send-command`, raw `line`, `provision-
+ * wifi`, and flash's own teardown-before-write step), rather than
+ * reaching into the executor's private `sessions` map directly. Only
+ * ever reflects sessions *this* executor instance itself opened (see
+ * {@link startReconciler}'s own `sessions` doc comment) — a session
+ * opened by another process/instance is not reachable through this. */
+export interface ReconcilerSessions {
+  get(linkId: string): ConnectedSession | undefined;
+  /** Every currently-open session this executor holds, for a caller
+   * (`server.ts`) that needs to notice a session it has not seen before
+   * -- e.g. to wire a fresh per-session subscription exactly once. */
+  values(): IterableIterator<ConnectedSession>;
+}
+
 export interface Reconciler {
   /** The narrow entry point the server (ticket 005) forwards an
    * explicit user `session-open` command to (or ticket 001's own
@@ -354,6 +370,8 @@ export interface Reconciler {
   requestOpen(linkId: string): Promise<void>;
   /** The `session-close` counterpart — see {@link planUserClose}. */
   requestClose(linkId: string): Promise<void>;
+  /** See {@link ReconcilerSessions}. */
+  readonly sessions: ReconcilerSessions;
   /** Stops the change-feed subscription and the slow tick. Does not
    * close any already-open session -- mirrors every watcher's own
    * `stop()` contract (`watchers/usbWatcher.ts`), which likewise leaves
@@ -492,6 +510,14 @@ export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler 
       for (const job of planUserClose(rows, linkId)) {
         await dispatch(job);
       }
+    },
+    sessions: {
+      get(linkId: string): ConnectedSession | undefined {
+        return sessions.get(linkId);
+      },
+      values(): IterableIterator<ConnectedSession> {
+        return sessions.values();
+      },
     },
     stop(): void {
       if (stopped) {

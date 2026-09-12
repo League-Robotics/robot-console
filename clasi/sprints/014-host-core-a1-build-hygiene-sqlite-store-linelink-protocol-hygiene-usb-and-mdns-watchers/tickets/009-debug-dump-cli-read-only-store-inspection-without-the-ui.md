@@ -1,11 +1,14 @@
 ---
-id: "009"
-title: "Debug-dump CLI: read-only store inspection without the UI"
-status: open
-use-cases: [SUC-006]
-depends-on: ["007", "008"]
-github-issue: ""
-issue: ""
+id: 009
+title: 'Debug-dump CLI: read-only store inspection without the UI'
+status: in-progress
+use-cases:
+- SUC-006
+depends-on:
+- '007'
+- 008
+github-issue: ''
+issue: ''
 completes_issue: true
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->

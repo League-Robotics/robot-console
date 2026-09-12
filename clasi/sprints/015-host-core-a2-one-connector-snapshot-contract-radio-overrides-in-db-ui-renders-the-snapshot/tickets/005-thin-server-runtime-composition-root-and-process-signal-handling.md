@@ -1,7 +1,7 @@
 ---
 id: '005'
 title: Thin server, runtime composition root, and process signal handling
-status: open
+status: in-progress
 use-cases:
 - SUC-005
 - SUC-006

@@ -72,13 +72,46 @@
  * (`RadioAddressDialog`'s own gate, ticket 006/007) --
  * `FlashDialog`/`WifiCredentialsDialog` were temporarily dropped here by
  * ticket 007 pending this migration; both are back.
+ *
+ * ## Sprint 015 ticket 009: the disconnected-from-host banner (UC-020)
+ *
+ * `no-disconnected-from-host-banner-in-the-ui.md` reported that a
+ * dropped host connection was invisible: the last-known device list
+ * stays on screen (by design, `WsProvider`'s own doc comment -- a drop
+ * must not blank it out), so nothing told a student the page was no
+ * longer live. This component -- already mounted once, above every
+ * route -- is the single place that renders the fix: `useHostConnection()`
+ * (ticket 007's `status`/`stale` pair) drives one banner, shown whenever
+ * the socket is not `"open"` or the held snapshot is `stale` (a
+ * reconnect landed but a fresh snapshot has not yet arrived to confirm
+ * what's still true). The wording names which of the two applies
+ * (`"connecting"` before the first-ever connect, `"closed"` while
+ * reconnecting, open-but-stale immediately after a reconnect) rather
+ * than one generic word, so a student mid-reconnect sees that progress
+ * is happening, not just that something is wrong.
  */
 import { Link, useMatch } from "react-router";
-import { useDeviceForLink, useLink } from "../ws/WsProvider";
+import { useDeviceForLink, useHostConnection, useLink } from "../ws/WsProvider";
 import { FlashDialog } from "./FlashDialog";
 import { RadioAddressDialog } from "./RadioAddressDialog";
 import { WifiCredentialsDialog } from "./WifiCredentialsDialog";
 import "./AppHeader.css";
+
+/** The banner's text for each disconnected/stale combination -- `null`
+ * when nothing needs saying (`status === "open" && !stale`). Exported
+ * for `AppHeader.test.tsx`. */
+export function disconnectedBannerText(status: "connecting" | "open" | "closed", stale: boolean): string | null {
+  if (status === "connecting") {
+    return "Connecting to the host…";
+  }
+  if (status === "closed") {
+    return "Disconnected from the host — reconnecting…";
+  }
+  if (stale) {
+    return "Reconnected — waiting for the latest state…";
+  }
+  return null;
+}
 
 export function AppHeader() {
   const homeMatch = useMatch("/");
@@ -87,9 +120,16 @@ export function AppHeader() {
   const link = useLink(linkId ?? "");
   const device = useDeviceForLink(linkId);
   const name = device?.name ?? link?.label ?? "";
+  const { status, stale } = useHostConnection();
+  const bannerText = disconnectedBannerText(status, stale);
 
   return (
     <header className="app-header">
+      {bannerText && (
+        <p className="app-header-banner" role="status" data-testid="disconnected-banner">
+          {bannerText}
+        </p>
+      )}
       <div className="app-header-bar">
         <h1>robot-console</h1>
         {!homeMatch && (

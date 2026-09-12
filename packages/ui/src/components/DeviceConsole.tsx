@@ -61,10 +61,19 @@
  * shown poll line gets the `console-line-origin-poll` class
  * (`DeviceConsole.css`) so it reads as muted/secondary next to ordinary
  * traffic once revealed.
+ *
+ * ## Sprint 015 ticket 009: gates on the host connection too
+ *
+ * The send box and the "open a link" hint's own button now also gate on
+ * `useSendable()` (socket open, snapshot not stale), not just this
+ * link's own `session` field -- a link's `session` survives a reconnect
+ * in the last-known snapshot, so it alone cannot distinguish "still
+ * connected" from "what we had before we lost the host" (UC-020,
+ * `no-disconnected-from-host-banner-in-the-ui.md`).
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { MAX_LINES_PER_LINK, useLinkLog, useWsActions } from "../ws/WsProvider";
+import { MAX_LINES_PER_LINK, useLinkLog, useSendable, useWsActions } from "../ws/WsProvider";
 import { SequencingIndicator } from "./SequencingIndicator";
 import "./DeviceConsole.css";
 
@@ -140,7 +149,13 @@ export function DeviceConsole({ link, name }: DeviceConsoleProps) {
     }
   }, [visibleLog, autoScroll]);
 
-  const linkOpen = link.session !== undefined;
+  // Ticket 009 / UC-020: a link's own `session` field survives a
+  // reconnect in the last-known snapshot, so this component's send box
+  // and "open a link" hint also gate on the host connection itself
+  // being sendable, not just this link's own session state -- see
+  // `useSendable`'s own doc comment.
+  const sendable = useSendable();
+  const linkOpen = link.session !== undefined && sendable;
   const sendDisabled = !linkOpen || pending;
 
   const submitLine = useCallback(() => {
@@ -193,7 +208,7 @@ export function DeviceConsole({ link, name }: DeviceConsoleProps) {
       {!linkOpen && (
         <p className="console-hint" role="status">
           No link open to {name} —{" "}
-          <button type="button" className="console-link-button" onClick={openLink}>
+          <button type="button" className="console-link-button" disabled={!sendable} onClick={openLink}>
             open a link
           </button>{" "}
           before sending.

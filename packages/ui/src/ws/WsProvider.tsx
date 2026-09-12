@@ -451,6 +451,24 @@ function notify(store: Store): void {
   }
 }
 
+/** The `linkId` a `ClientMessage` is scoped to, if any -- either its own
+ * `linkId` field, or (for `SessionOpenMessage`'s `{relayLinkId, name}`
+ * shape) the relay's own connectivity link, which does have a console
+ * log even though no session is open on it yet. Everything else
+ * (`SetRadioOverrideMessage`, `ForgetDeviceMessage`,
+ * `GetWifiCredentialsMessage`, `SetWifiCredentialsMessage`,
+ * `FlashLocalBeginMessage`) has no link-scoped console to write a
+ * dropped-send notice into. */
+function messageLogLinkId(message: ClientMessage): string | undefined {
+  if ("linkId" in message && typeof message.linkId === "string") {
+    return message.linkId;
+  }
+  if ("relayLinkId" in message && typeof message.relayLinkId === "string") {
+    return message.relayLinkId;
+  }
+  return undefined;
+}
+
 function touchLog(store: Store, linkId: string): void {
   const idx = store.logOrder.indexOf(linkId);
   if (idx !== -1) {
@@ -797,6 +815,18 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
         const socket = socketRef.current;
         if (socket && socket.readyState === WEBSOCKET_OPEN) {
           socket.send(JSON.stringify(message));
+          return;
+        }
+        // Ticket 009 / UC-020 ("no-disconnected-from-host-banner-in-the-
+        // ui.md"): no silent drop -- if the message is scoped to a link,
+        // say so in that link's own console log, styled exactly like a
+        // host notice, so a send attempted while disconnected (e.g. a
+        // control that raced the banner) is visibly explained rather
+        // than silently swallowed.
+        const linkId = messageLogLinkId(message);
+        if (linkId !== undefined) {
+          pushLogEntry(store, linkId, { direction: "tx", line: "Not sent -- no connection to the host.", origin: "host" });
+          notify(store);
         }
       },
       sendBinary: (data: Uint8Array) => {
@@ -965,6 +995,18 @@ export function useHostConnection(): HostConnectionState {
     cacheRef.current = next;
     return next;
   });
+}
+
+/** Whether a send is currently meaningful: the socket is open and the
+ * held snapshot is not stale (see {@link HostConnectionState.stale}'s
+ * own doc comment). Ticket 009 / UC-020: a link's own `session` field
+ * survives a reconnect in the last-known snapshot, so a component that
+ * gates a send-capable control on `link.session !== undefined` alone
+ * cannot tell "still connected" from "what we had before we lost the
+ * host" -- every such control multiplies that by this hook too. */
+export function useSendable(): boolean {
+  const { status, stale } = useHostConnection();
+  return status === "open" && !stale;
 }
 
 /** The full device list, host order, for the front page. */

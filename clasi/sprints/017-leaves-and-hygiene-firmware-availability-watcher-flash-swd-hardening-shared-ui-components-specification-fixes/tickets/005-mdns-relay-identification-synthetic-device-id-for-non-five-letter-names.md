@@ -1,7 +1,7 @@
 ---
 id: '005'
 title: 'mDNS relay identification: synthetic device id for non-five-letter names'
-status: open
+status: done
 use-cases:
 - SUC-005
 depends-on: []
@@ -81,28 +81,28 @@ rows, and grammar-named `kind='relay'` rows via the existing
 
 ## Acceptance Criteria
 
-- [ ] A relay whose mDNS instance name matches an already-identified
+- [x] A relay whose mDNS instance name matches an already-identified
       USB relay's name still takes the existing fast path.
-- [ ] A relay whose mDNS instance name does not parse as a five-letter
+- [x] A relay whose mDNS instance name does not parse as a five-letter
       name gets a synthetic id via a stable hash of
       `mbrelay:<instance>` into the negative id range, instead of
       throwing.
-- [ ] `Store.upsertDevice`'s `deviceIdToName(id) === name` check is
+- [x] `Store.upsertDevice`'s `deviceIdToName(id) === name` check is
       skipped when, and only when, `id < 0 && kind === 'relay'`; every
       `kind='robot'` row and every grammar-named `kind='relay'` row
       (positive/`nameToValue`-range id) still enforces the check exactly
       as before (a regression test: a `kind='robot'` row with a
       mismatched name still throws `DeviceNameMismatchError`).
-- [ ] The projection lists such relays under `relays[]` with
+- [x] The projection lists such relays under `relays[]` with
       `transport: mbrelay`; the UI shows them as relay cards.
-- [ ] A fake `_mbrelay._tcp` advertisement named `torture` produces a
+- [x] A fake `_mbrelay._tcp` advertisement named `torture` produces a
       relay device + card.
-- [ ] A bridge through the `torture` relay still works.
-- [ ] Aging removes the `torture` relay's link like any other relay
+- [x] A bridge through the `torture` relay still works.
+- [x] Aging removes the `torture` relay's link like any other relay
       once `last_seen` ages out.
-- [ ] A table test covers the mdnsWatcher fast path (five-letter name)
+- [x] A table test covers the mdnsWatcher fast path (five-letter name)
       and the fallback path (non-grammar name) in one test file.
-- [ ] A separate table test in `store/index.test.ts` covers
+- [x] A separate table test in `store/index.test.ts` covers
       `upsertDevice`'s narrowed check: negative id + non-grammar name +
       `kind='relay'` → accepted; negative id + non-grammar name +
       `kind='robot'` → still throws; positive/chip id + mismatched name
@@ -161,3 +161,83 @@ Architecture section (Design Rationale, Step 3 Modules table, and the
 decision; no consolidated `architecture.md` update is in this ticket's
 scope (that happens at consolidation, not per-ticket). Add the one code
 comment on the narrowed check itself (see Approach).
+
+## Implementation notes
+
+**`store/index.ts`** — `Store.upsertDevice` now computes
+`skipNameCheck = input.id < 0 && input.kind === "relay"` and only runs
+`deviceIdToName(input.id) === input.name` (throwing
+`DeviceNameMismatchError` on mismatch) when that's `false`. A code
+comment at the check and an addition to the module's own "Name/serial
+consistency" doc comment both document the id-range convention
+(negative ⇒ synthetic, never a real chip id) so a future reader doesn't
+mistake the narrowing for a loosened invariant across the board.
+
+**`watchers/mdnsWatcher.ts`** — `createRelayDeviceIfAbsent` now
+pre-validates the name's shape with a local `FRIENDLY_NAME_PATTERN`
+regex (mirroring `naming.ts`'s own private `NAME_PATTERN`, duplicated
+rather than imported — same convention this file's `parseRegistryPort`
+already uses for `mdnsDiscovery.ts`'s parser) *before* deciding which id
+scheme to use, never via try/catch: a grammar-matching name still gets
+`nameToValue(name)` (unchanged fast path), any other shape gets a new
+`hashRelayNameToNegativeId(name)` — FNV-1a (32-bit) over
+`mbrelay:<instance>`, mapped to `-unsigned-1` so it's always negative,
+stable per name, and disjoint from both the chip-id space and
+`nameToValue`'s `[0, 3124]` range.
+
+**Audit for id→name derivation / accidental relay-merge risk**
+(requested alongside the ticket's own scope) turned up one real bug
+beyond the two files above: `projection.ts`'s `resolveRadio` called
+`nameToRadioAddress(device.name)` unconditionally whenever a device had
+no persisted radio fields — for a synthetic negative-id relay with a
+non-grammar name (e.g. `torture`) this would throw immediately
+(`nameToRadioAddress` calls `nameToValue` internally), crashing
+`buildSnapshot` for the entire host, since `SnapshotDevice.radio` is a
+required, always-concrete field on every device row. Fixed by guarding
+on `device.id < 0` (the same synthetic-id convention `store/index.ts`
+uses) and returning a fixed `{ channel: 0, group: 0, source: "derived"
+}` placeholder instead of calling `nameToRadioAddress` — safe because
+a relay's own device row is never radio-addressed in the UI
+(`AppHeader.tsx` gates `RadioAddressDialog`/`WifiCredentialsDialog` on
+`kind !== "relay"`). Added a projection-fixture regression test
+(`projection.test.ts`) that would have caught this by asserting
+`buildSnapshotFromRows` does not throw for a `torture`-named
+negative-id relay row. Everything else audited (`deviceDisplay.ts`'s
+`nameDisplay`, `connect/connector.ts` and `connect/relayBridger.ts`'s
+own `deviceIdToName(deviceId)` calls, `swdName.ts`,
+`mergeUsbPlaceholderIfAny`/`Store.mergeDevice`) either already reads
+`devices.name` directly rather than deriving it from `id`, or only ever
+operates on real (non-negative) chip ids from a banner/SWD read, so no
+further changes were needed there; `deviceDisplay.ts` got a doc-comment
+correction (no logic change) since it previously implied `devices.name`
+and `deviceIdToName(id)` are always interchangeable, which is no longer
+true for this new row shape.
+
+**Tests**: `store/index.test.ts` — a new `it.each` table (negative id +
+non-grammar name + `kind='relay'` → accepted; same with `kind='robot'`
+→ throws; the existing 014-003 positive-id mismatch fixture, both
+kinds, → throws) plus a standalone idempotency test. `mdnsWatcher.test.ts`
+— the existing "tovez" (fast path) and "torture" (previously
+"unassigned, without crashing") tests were merged into one `it.each`
+table per the acceptance criterion; a new idempotency test (re-announce
+via `onServiceChange` reattaches to the same negative id via the fast
+path); the aging test now includes a `torture`-named relay alongside
+the existing grammar-named one. `connect/relayBridger.test.ts` — a new
+test bridges through an `mbrelay` link whose relay device row carries a
+negative id (seeded the way `mdnsWatcher.ts` would write it), confirming
+`createRelayBridger.bridge()` doesn't care about the relay's own id sign
+(it never reads that row at all). `projection.test.ts` — a new fixture
+alongside the existing grammar-named synthetic-relay one, for the
+negative-id/non-grammar case, asserting no throw and the `radio`
+placeholder value.
+
+**Test commands run** (foreground, scoped per the ticket's repo rules):
+`npx vitest run packages/host/src/store packages/host/src/watchers
+packages/host/src/connect packages/host/src/projection.test.ts` — 21
+test files, 297 tests, all passing. `npm run typecheck` — clean, no
+errors. `npx vitest run packages/ui` (run because `deviceDisplay.ts` was
+touched) — 29 test files, 465 tests, all passing.
+
+No exception thrown this pass — the earlier exception (preserved above)
+was resolved by the sprint's 2026-09-12 architecture revision, which
+this ticket implements.

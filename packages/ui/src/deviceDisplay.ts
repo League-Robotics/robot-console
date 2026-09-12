@@ -11,8 +11,14 @@
  * could be `null` (naming not yet resolved or failed), and
  * `sessionError` doubled as an "unresponsive" signal. Under the new
  * `Snapshot` contract, `devices[]` only ever lists an *identified*
- * device (`SnapshotDevice.name` is always a resolved string --
- * `devices.name`, `deviceIdToName(id)`, never absent); a board that
+ * device (`SnapshotDevice.name` is always a resolved string -- read
+ * directly from `devices.name`, never absent, and never derived from
+ * `id` here: for a `kind='robot'` row or a grammar-named `kind='relay'`
+ * row, `devices.name` and `deviceIdToName(id)` agree by construction
+ * [`store/index.ts`'s consistency check], but a non-grammar-named mDNS
+ * relay (ticket 017-005, synthetic negative id) has no such relationship
+ * -- `nameDisplay` below must keep reading `device.name`, never
+ * `deviceIdToName(device.id)`, for exactly that reason); a board that
  * hasn't identified yet has no device row at all, and shows up in
  * `Snapshot.unassigned` as a bare `SnapshotLink` with no name to
  * display -- so `nameDisplay`'s old "flagged"/"Naming…" states have no

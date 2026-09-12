@@ -44,7 +44,12 @@
  * self-contradictory row — see `docs/reviews/2026-09-11/05-protocol.md`
  * §2 item 6, which found exactly this disagreement in the RADIOBRIDGE
  * banner fixture (`getez` / `1779042496`, which actually decodes to
- * `gatav`).
+ * `gatav`). Narrowed 2026-09-12 (ticket 017-005): the check is skipped
+ * only when `id < 0 && kind === 'relay'` — a negative id is never a real
+ * chip id, so it is unambiguously a synthetic id (e.g. `mdnsWatcher.ts`'s
+ * hash-derived fallback for a non-grammar mDNS relay name) rather than a
+ * mis-radixed serial. Every other row shape still enforces the check
+ * exactly as before.
  */
 import type { DatabaseSync } from "node:sqlite";
 import { EventEmitter } from "node:events";
@@ -422,9 +427,27 @@ export class Store {
   // ---- devices ----------------------------------------------------
 
   upsertDevice(input: UpsertDeviceInput): void {
-    const expectedName = deviceIdToName(input.id);
-    if (expectedName !== input.name) {
-      throw new DeviceNameMismatchError(input.id, input.name);
+    // Narrowed 2026-09-12 (ticket 017-005, thrown-and-resolved exception;
+    // see sprint.md's Revision note and Design Rationale): this check is
+    // skipped only when `input.id < 0 && input.kind === 'relay'`. A
+    // negative id is never a real chip id (`FICR.DEVICEID[1]` is an
+    // unsigned 32-bit value, so every genuine chip id is non-negative) --
+    // it is unambiguously synthetic, minted by `mdnsWatcher.ts`'s
+    // `createRelayDeviceIfAbsent` as a stable hash of `mbrelay:<instance>`
+    // for a relay whose mDNS instance name doesn't parse as a five-letter
+    // micro:bit name (e.g. `torture`), for which no id choice could ever
+    // satisfy `deviceIdToName(id) === name` (that function always produces
+    // a well-formed five-letter name for any integer). Every other row
+    // shape -- every `kind='robot'` row, and every grammar-named
+    // `kind='relay'` row (positive/`nameToValue`-range id) -- still
+    // enforces the check exactly as before; this narrows, not removes,
+    // the protection the 014-003 invariant put in place.
+    const skipNameCheck = input.id < 0 && input.kind === "relay";
+    if (!skipNameCheck) {
+      const expectedName = deviceIdToName(input.id);
+      if (expectedName !== input.name) {
+        throw new DeviceNameMismatchError(input.id, input.name);
+      }
     }
     this.withChange(
       "devices",

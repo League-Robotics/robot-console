@@ -548,6 +548,56 @@ describe("createRelayBridger().bridge() -- TCP (mbrelay) reset via disconnect+re
   }, 10_000);
 });
 
+describe("createRelayBridger().bridge() -- relay identified via ticket 017-005's synthetic negative id", () => {
+  it("bridges through an mbrelay pool whose own devices row has a negative id (non-grammar mDNS name, e.g. 'torture') exactly like any other relay", async () => {
+    const store = freshStore();
+    const relayLinkId = "mbrelay-torture";
+    // Mirrors what `mdnsWatcher.ts`'s `createRelayDeviceIfAbsent` writes
+    // for a relay whose mDNS instance name isn't a well-formed
+    // five-letter name (ticket 017-005): a `kind='relay'` devices row
+    // with a negative id, and the `mbrelay` link pointed at it via
+    // `deviceId` -- unlike the sibling "TCP (mbrelay) reset" test above
+    // (ticket 016-005), which never seeds a devices row for the relay at
+    // all. `createRelayBridger.bridge()` never reads the relay's own
+    // devices row (only its `links` row, via `relayLinkTransport` --
+    // see `relayBridger.ts`), so this only proves the negative id causes
+    // no foreign-key or lookup failure anywhere in the bridge path, not
+    // that the bridger newly depends on it.
+    const relayDeviceId = -123456789;
+    store.upsertDevice({ id: relayDeviceId, name: "torture", kind: "relay", at: 1 });
+    store.upsertLink({ id: relayLinkId, transport: "mbrelay", address: { host: "torture.local", port: 8760 }, deviceId: relayDeviceId, at: 1 });
+
+    const state = new RelayPlaneState();
+    const createTcpStream = (host: string, port: number) =>
+      tcpStream(host, port, {
+        createSocket: () => new FakeMbrelayPoolSocket(state, true),
+      });
+
+    const bridger = createRelayBridger(store, { createTcpStream, scheduler: realScheduler, now: () => NOW }, FAST_OPTIONS);
+
+    const request: BridgeRequest = {
+      relayLinkId,
+      candidates: [{ childLinkId: "mbrelay-vevov-via-relay", channel: 47, group: 60 }],
+    };
+
+    const session = await bridger.bridge(request, new AbortController().signal);
+
+    expect(session.linkId).toBe("mbrelay-vevov-via-relay");
+    expect(session.deviceId).toBe(ROBOT_SERIAL);
+    expect(session.transport).toBe("mbrelay");
+
+    // The relay's own (negative-id) devices row is untouched by the
+    // bridge -- only the child robot's row was written.
+    const devices = store.snapshotRows().devices;
+    expect(devices.find((d) => d.id === relayDeviceId)).toMatchObject({ name: "torture", kind: "relay" });
+    expect(devices.find((d) => d.id === ROBOT_SERIAL)).toBeDefined();
+
+    const leaseRows = store.reconcilerRows().relayLeases;
+    expect(leaseRows.find((l) => l.relayLinkId === relayLinkId)).toBeUndefined();
+    store.close();
+  }, 10_000);
+});
+
 describe("createRelayBridger().bridge() -- named bridge regression (AC: still works exactly as before this ticket)", () => {
   it("bridges a single named radio child through the full RelayCommandPlane preamble, exactly like connector.ts's own radio case", async () => {
     const store = freshStore();

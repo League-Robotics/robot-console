@@ -56,12 +56,17 @@
  * `kind='relay'` devices does not stay unassigned: ticket 016-005 mints
  * one with a synthetic, name-derived id (`nameToValue(name)`, the same
  * convention `store/importers/knownRobots.ts` already uses for a
- * chip-id-less device — see `handleMbrelay`'s own doc comment). This
- * gives a remote mbrelay pool this host has never identified over USB a
- * device row of its own (SUC-005) rather than requiring it to already be
- * a known local relay first. The ambiguous multiple-match case above is
- * unaffected — it still leaves the link unassigned, never minting a
- * third row to "resolve" it.
+ * chip-id-less device), or, when the mDNS instance name isn't a
+ * well-formed five-letter micro:bit name (e.g. `torture` — ticket
+ * 016-008's bench finding), a stable hash of `mbrelay:<instance>` into
+ * the negative id range instead (ticket 017-005; see `handleMbrelay`'s
+ * own doc comment and `store/index.ts`'s narrowed
+ * `deviceIdToName(id) === name` check). This gives a remote mbrelay pool
+ * this host has never identified over USB a device row of its own
+ * (SUC-005), whatever its advertised name looks like, rather than
+ * requiring it to already be a known local relay first. The ambiguous
+ * multiple-match case above is unaffected — it still leaves the link
+ * unassigned, never minting a third row to "resolve" it.
  *
  * ## Address changes without `down`/`up`
  *
@@ -337,38 +342,66 @@ export function startMdnsWatcher(
     promoteOwnedLinkIfDiscovered(linkId, deviceId);
   }
 
+  /** `^[zvgpt][uoiea][zvgpt][uoiea][zvgpt]$` -- mirrors
+   * `@robot-console/protocol`'s own (private) `NAME_PATTERN` in
+   * `naming.ts` exactly, duplicated here rather than imported for the
+   * same reason `parseRegistryPort` above duplicates
+   * `mdnsDiscovery.ts`'s parser: a small, self-contained shape check
+   * rather than a shared dependency. Used to pre-validate a name's shape
+   * *before* calling `nameToValue` (never as try/catch control flow --
+   * ticket 016-008's bench finding, below). */
+  const FRIENDLY_NAME_PATTERN = /^[zvgpt][uoiea][zvgpt][uoiea][zvgpt]$/;
+
+  /** FNV-1a (32-bit) hash of `mbrelay:<instance>`, mapped into the
+   * negative id range. `devices.id` stays the same `INTEGER PRIMARY KEY`
+   * shape (no schema change; SQLite integers are 64-bit, so no overflow
+   * risk) -- only the id-generation formula differs from the fast path's
+   * `nameToValue`. Negative ids are never real chip ids
+   * (`FICR.DEVICEID[1]` is unsigned 32-bit) and never collide with the
+   * `nameToValue` fast path's `[0, 3124]` range either, so this is a
+   * disjoint, stable, per-name id: the same `name` always hashes to the
+   * same negative id, and `Store.upsertDevice` is idempotent for repeat
+   * observations. See `store/index.ts`'s narrowed
+   * `deviceIdToName(id) === name` check (ticket 017-005) for the other
+   * half of why this only works for `kind: 'relay'` rows. */
+  function hashRelayNameToNegativeId(name: string): number {
+    const key = `mbrelay:${name}`;
+    let hash = 0x811c9dc5; // FNV-1a 32-bit offset basis
+    for (let i = 0; i < key.length; i++) {
+      hash ^= key.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193); // FNV-1a 32-bit prime
+    }
+    const unsigned = hash >>> 0; // [0, 2^32 - 1]
+    return -unsigned - 1; // [-2^32, -1] -- always negative, never zero
+  }
+
   /** Ticket 016-005's device-creation fallback: when **zero** existing
    * `kind='relay'` devices share `name` (never the ambiguous
    * multiple-match case, which is `uniqueRelayDeviceIdByName`'s own
    * `null` too and stays unassigned exactly as before — module doc
-   * comment), mint one with a synthetic, name-derived id --
-   * `nameToValue(name)`, the unique value in `[0, 3124]` whose
-   * `deviceIdToName` is exactly `name` (`store/importers/knownRobots.ts`'s
-   * own convention for a chip-id-less device, reused rather than
-   * duplicated). Per sprint.md's own Design Rationale ("an mbrelay
-   * pool's device row uses a synthetic, name-derived id, not a
-   * chip-id placeholder that never gets 'merged' later"), this device
-   * has no future merge path — there is no physical chip that could
-   * later plug into this host over USB and reconcile against it, unlike
-   * a USB placeholder. `upsertDevice` is itself idempotent, so a repeat
-   * observation of an already-created pool is a no-op past its first.
+   * comment), mint one. Two id schemes, chosen by the name's own shape:
    *
-   * ## A name that isn't a well-formed micro:bit name (ticket 016-008
-   * bench finding)
+   * - A well-formed five-letter micro:bit name (`FRIENDLY_NAME_PATTERN`)
+   *   gets `nameToValue(name)`, the unique value in `[0, 3124]` whose
+   *   `deviceIdToName` is exactly `name`
+   *   (`store/importers/knownRobots.ts`'s own convention for a
+   *   chip-id-less device, reused rather than duplicated).
+   * - Any other shape (ticket 016-008's bench finding: a real bench
+   *   relay was observed advertising as `torture`, seven letters, not
+   *   that shape at all) gets {@link hashRelayNameToNegativeId}'s stable
+   *   hash instead (ticket 017-005; sprint.md's 2026-09-12 Revision and
+   *   Design Rationale) -- `nameToValue` cannot accept it (no id choice
+   *   can ever make `deviceIdToName(id) === name` true for a non-grammar
+   *   name), so the shape is checked *before* calling it, never via
+   *   try/catch as control flow.
    *
-   * `nameToValue` only accepts the standard 5-letter
-   * `[zvgpt][uoiea][zvgpt][uoiea][zvgpt]` micro:bit name shape and
-   * throws for anything else — but an mbrelay pool's own mDNS instance
-   * name is whatever hostname its operator gave it, with no such
-   * constraint (a real bench relay was observed advertising as
-   * `torture`, seven letters, not that shape at all). Before this fix,
-   * that throw propagated straight out of this synchronous mDNS `up`
-   * handler and crashed the whole host process — found live on the
-   * bench starting this exact ticket's own host against real hardware.
-   * A name `nameToValue` rejects is treated exactly like the ambiguous
-   * multiple-match case above: left unassigned (`null`) rather than
-   * crashing or guessing at an id, since there is no other id scheme
-   * this fallback can safely mint one from. */
+   * Per sprint.md's own Design Rationale ("an mbrelay pool's device row
+   * uses a synthetic id, not a chip-id placeholder that never gets
+   * 'merged' later"), this device has no future merge path — there is no
+   * physical chip that could later plug into this host over USB and
+   * reconcile against it, unlike a USB placeholder. `upsertDevice` is
+   * itself idempotent, so a repeat observation of an already-created
+   * pool is a no-op past its first. */
   function createRelayDeviceIfAbsent(name: string): number | null {
     const matches = store.snapshotRows().devices.filter((row) => row.name === name && row.kind === "relay");
     if (matches.length > 0) {
@@ -377,12 +410,7 @@ export function startMdnsWatcher(
       // minting a third row that would not resolve the ambiguity.
       return null;
     }
-    let id: number;
-    try {
-      id = nameToValue(name);
-    } catch {
-      return null;
-    }
+    const id = FRIENDLY_NAME_PATTERN.test(name) ? nameToValue(name) : hashRelayNameToNegativeId(name);
     store.upsertDevice({ id, name, kind: "relay", at: now() });
     return id;
   }

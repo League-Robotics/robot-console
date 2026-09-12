@@ -224,6 +224,54 @@ describe("buildSnapshotFromRows: relays[] for a network (mbrelay) relay", () => 
     const snapshot = buildSnapshotFromRows(rows, 1, 1);
     expect(snapshot.relays).toEqual([{ linkId: `mbrelay-${relayName}`, lease: "session", sweep: null }]);
   });
+
+  // -------------------------------------------------------------------
+  // Ticket 017-005 (2026-09-12 architecture revision): a relay whose
+  // mDNS instance name isn't a well-formed five-letter name (e.g. the
+  // real bench pool "torture") gets a synthetic *negative* id instead
+  // of `nameToValue`'s [0, 3124] range. `buildRelays` itself is
+  // unaffected (keys purely off `kind === "relay"`, per this block's own
+  // header comment) -- the real risk this fixture guards is
+  // `resolveRadio`, which would otherwise call `nameToRadioAddress`
+  // ("torture") and throw, taking the whole snapshot build down with
+  // it, since `radio` is a required field on every device row.
+  // -------------------------------------------------------------------
+  it("lists a synthetic negative-id relay (non-grammar mDNS name 'torture') under relays[], without buildSnapshotFromRows throwing", () => {
+    const rows = emptyRows();
+    const TORTURE_ID = -123456789;
+    rows.devices = [
+      { id: TORTURE_ID, name: "torture", kind: "relay", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
+    ];
+    rows.links = [
+      {
+        id: "mbrelay-torture",
+        deviceId: TORTURE_ID,
+        transport: "mbrelay",
+        address: { host: "torture.local", port: 8760, registryPort: 8761 },
+        state: "connectable",
+        stateReason: null,
+        stateSince: 1,
+        lastSeen: 1,
+        nextRetryAt: null,
+        failCount: 0,
+        userClosed: false,
+      },
+    ];
+    rows.relayLeases = [{ relayLinkId: "mbrelay-torture", owner: "sweep" }];
+
+    let snapshot: ReturnType<typeof buildSnapshotFromRows> | undefined;
+    expect(() => {
+      snapshot = buildSnapshotFromRows(rows, 1, 1);
+    }).not.toThrow();
+
+    expect(snapshot?.relays).toEqual([{ linkId: "mbrelay-torture", lease: "sweep", sweep: null }]);
+    const device = snapshot?.devices.find((d) => d.id === TORTURE_ID);
+    expect(device).toMatchObject({ id: TORTURE_ID, name: "torture", kind: "relay" });
+    // No meaningful radio identity for this row -- see resolveRadio's
+    // own doc comment -- but the field must still be present and
+    // concrete (never absent, never a thrown error).
+    expect(device?.radio).toEqual({ channel: 0, group: 0, source: "derived" });
+  });
 });
 
 // ---------------------------------------------------------------------

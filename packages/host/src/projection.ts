@@ -52,6 +52,19 @@
  * already holds (a registry hit, once ticket 006 lands, is expected to
  * be persisted there, same as an override), plus the name-derived
  * fallback for a device with no persisted value at all.
+ *
+ * The name-derived fallback assumes a well-formed five-letter name --
+ * true for every `kind='robot'` row and every grammar-named
+ * `kind='relay'` row (`store/index.ts`'s consistency check guarantees
+ * it), but not for a `kind='relay'` row with a synthetic negative id
+ * (ticket 017-005: an mDNS relay whose instance name doesn't parse as
+ * one, e.g. `torture`) -- `nameToRadioAddress` would throw for that
+ * name. {@link resolveRadio} checks `device.id < 0` (the same
+ * synthetic-id convention `store/index.ts` uses) before calling it, and
+ * returns a fixed placeholder instead: this device has no radio
+ * identity to derive one for regardless (a relay's own row is never
+ * radio-addressed in the UI -- `AppHeader.tsx` gates
+ * `RadioAddressDialog`/`WifiCredentialsDialog` on `kind !== "relay"`).
  */
 import { nameToRadioAddress } from "@robot-console/protocol";
 import type {
@@ -185,9 +198,24 @@ function buildDevice(
   };
 }
 
+/** A placeholder `(channel, group)` for a device with no persisted radio
+ * fields and no name `nameToRadioAddress` can parse -- see this
+ * module's "Radio address resolution" doc comment. Not a valid derived
+ * address (`radioAddressToName` would reject `group: 0`, which is
+ * outside `[1, 126]`), deliberately: this device has no radio identity
+ * at all, so the value must never be mistaken for one. */
+const NO_RADIO_IDENTITY = { channel: 0, group: 0 } as const;
+
 function resolveRadio(device: ProjectionDeviceRow): { channel: number; group: number; source: RadioSourceWire } {
   if (device.radioSource !== null && device.radioChannel !== null && device.radioGroup !== null) {
     return { channel: device.radioChannel, group: device.radioGroup, source: device.radioSource };
+  }
+  if (device.id < 0) {
+    // Synthetic-negative-id relay (ticket 017-005) -- its name is not
+    // guaranteed to be a well-formed five-letter name, so
+    // `nameToRadioAddress` cannot be called at all (see module doc
+    // comment).
+    return { ...NO_RADIO_IDENTITY, source: "derived" };
   }
   const derived = nameToRadioAddress(device.name);
   return { channel: derived.channel, group: derived.group, source: "derived" };

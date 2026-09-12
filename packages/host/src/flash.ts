@@ -111,9 +111,38 @@
  * `sprint.md`'s Success Criteria); this module's own tests still inject
  * their own `resolveVolumePath` rather than exercising the real
  * filesystem.
+ *
+ * ## Platform-aware MSD enumeration, and settle/remount timing (sprint 017 ticket 004)
+ *
+ * The volume-listing step above used to be a single hard-coded
+ * `readdir("/Volumes")` — darwin-only, so Linux and Windows silently
+ * never found a fallback volume at all. {@link listVolumeNames} replaces
+ * that with a `platform`-branching enumeration (darwin `/Volumes`, linux
+ * `/media/<user>`/`/run/media/<user>`/`/mnt`, win32 drive letters
+ * `A:`-`Z:`), still plain `fs`/`readdir` per `sprint.md`'s Design
+ * Rationale ("no external process"), and still gated by the same
+ * `DETAILS.TXT` join described above — this function only narrows the
+ * candidate list (by name, where a name is meaningful to check at all;
+ * win32 drive letters carry none, so every present drive is a candidate
+ * there). A directory that fails to list is logged via `console.warn`
+ * and skipped, never swallowed silently.
+ *
+ * Separately, {@link flash}'s MSD path now waits
+ * {@link DEFAULT_MSD_SETTLE_MS} before starting the copy (a volume that
+ * has just been (re)mounted benefits from a short settle window), and —
+ * after {@link flashViaMsd}'s write returns — polls (best-effort, up to
+ * {@link DEFAULT_MSD_REMOUNT_TIMEOUT_MS}) for the volume to disappear and
+ * reappear, the observable side effect of DAPLink's own bootloader
+ * erasing/flashing/resetting the target from the file it was just handed.
+ * Only once that poll settles (whether or not a remount was actually
+ * observed — see {@link waitForVolumeRemount}'s own doc comment for why
+ * failing to observe one is not itself a flash failure) is `"resetting"`
+ * reported and the outcome resolved — `writeFile` returning is no longer
+ * treated as "the flash is done."
  */
 
-import { readdir, readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
+import { access as fsAccess, readdir, readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { HID as NodeHidDevice } from "node-hid";
 // Ticket 014-001: `dapjs` is vendored under `./vendor/dapjs/` (this
@@ -619,6 +648,103 @@ export async function flashViaMsd(
   await writeFile(path.join(volumePath, MSD_HEX_FILENAME), hex);
 }
 
+/** Injectable delay, mirroring `connect/flasher.ts`'s own `DelayFn` seam
+ * exactly (same shape, same "real, `unref()`'d timer by default"
+ * default) -- both modules need the same "never keep the process alive
+ * on a pending delay" property, and tests need the same "swap in an
+ * instant/deterministic delay" seam, so the shape is duplicated here
+ * rather than importing it from `connect/flasher.ts` (this module has no
+ * dependency on that one -- see this module's own doc comment on
+ * dependency direction, and `connect/flasher.ts`'s own "depends only on
+ * `store` and `flash.ts`" note; the edge does not run the other way). */
+export type DelayFn = (ms: number) => Promise<void>;
+
+function defaultDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    (timer as unknown as { unref?: () => void }).unref?.();
+  });
+}
+
+/** Settle delay {@link flash} waits before starting the MSD write itself
+ * -- this ticket's own acceptance criterion. A volume that has just been
+ * (re)mounted (for instance, immediately after the SWD attempt that
+ * itself failed) benefits from a short window before it is written to. */
+export const DEFAULT_MSD_SETTLE_MS = 500;
+
+/** Default total budget {@link waitForVolumeRemount} polls for the MSD
+ * volume to disappear and reappear after {@link flashViaMsd}'s write
+ * returns -- DAPLink's own bootloader typically completes its
+ * erase/flash/remount cycle well under this on real hardware; 10s leaves
+ * headroom for a slow USB mass-storage re-enumeration without leaving a
+ * `flash-progress` client waiting indefinitely. */
+export const DEFAULT_MSD_REMOUNT_TIMEOUT_MS = 10_000;
+
+/** Poll interval within {@link DEFAULT_MSD_REMOUNT_TIMEOUT_MS}'s budget. */
+export const DEFAULT_MSD_REMOUNT_POLL_MS = 200;
+
+/** Function shape used to check whether `volumePath` is currently
+ * present/mounted. Defaults to a real filesystem check (`fs.access`);
+ * overridable so tests simulate the volume disappearing and reappearing
+ * on a schedule without a real board. */
+export type VolumeExistsFn = (volumePath: string) => Promise<boolean>;
+
+async function defaultVolumeExists(volumePath: string): Promise<boolean> {
+  try {
+    await fsAccess(volumePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Wait (bounded by `timeoutMs`) for `volumePath` to disappear and then
+ * reappear -- DAPLink's own remount cycle once it has finished processing
+ * the `.hex` file {@link flashViaMsd} just wrote onto it. This is what
+ * lets {@link flash} avoid reporting success the instant `writeFile`
+ * returns, per this ticket's own acceptance criterion.
+ *
+ * Best-effort: if the volume is never observed to disappear at all (for
+ * instance because the polling interval is too coarse to catch a very
+ * fast unmount/remount cycle), or `timeoutMs` elapses before it
+ * reappears, this resolves anyway rather than rejecting. The write itself
+ * already succeeded -- {@link flashViaMsd} returned without throwing --
+ * so a remount this function fails to *observe* is a lost confirmation,
+ * not evidence the flash itself failed; a real board that this function's
+ * polling simply never catches mid-cycle should not be reported as a
+ * flash failure on that basis alone.
+ */
+async function waitForVolumeRemount(
+  volumePath: string,
+  options: {
+    volumeExists: VolumeExistsFn;
+    delay: DelayFn;
+    now: () => number;
+    timeoutMs: number;
+    pollMs: number;
+  },
+): Promise<void> {
+  const { volumeExists, delay, now, timeoutMs, pollMs } = options;
+  const deadline = now() + timeoutMs;
+
+  let sawGone = false;
+  while (now() < deadline) {
+    const present = await volumeExists(volumePath);
+    if (!present) {
+      sawGone = true;
+    } else if (sawGone) {
+      // Disappeared, then reappeared -- the remount DAPLink's own
+      // bootloader performs once it's done processing the write.
+      return;
+    }
+    await delay(pollMs);
+  }
+  // Timed out without observing a disappear-then-reappear cycle -- see
+  // this function's own doc comment for why that is not itself treated
+  // as a failure.
+}
+
 /** Function shape used to read a text file's contents whole. Defaults to
  * `node:fs/promises`'s `readFile` (utf-8); overridable so tests supply
  * fixture `DETAILS.TXT` content without touching a real mounted volume,
@@ -700,21 +826,133 @@ export function findMatchingVolume(
     ?.volumePath;
 }
 
+/** Injectable seams for {@link listVolumeNames}. Defaults to the real
+ * filesystem (`node:fs/promises`'s `readdir`) and `os.userInfo().username`
+ * so this function is unit-testable against a fake filesystem, per this
+ * module's other injection seams ({@link WriteFileFn},
+ * {@link ReadTextFileFn}). */
+export interface ListVolumeNamesDeps {
+  /** Reads one directory's entries. Defaults to `node:fs/promises`'s
+   * `readdir`. Reused for win32's drive-letter probing too -- a
+   * successful `readdir` on a drive root is treated as "this letter is
+   * in use", a thrown error as "not in use" (see {@link listVolumeNames}'s
+   * own doc comment for why that particular throw is not itself logged
+   * as an enumeration failure). */
+  readdir?: (dirPath: string) => Promise<string[]>;
+  /** Resolves the logged-in username substituted into linux's
+   * `/media/<user>` and `/run/media/<user>` candidate directories.
+   * Defaults to `os.userInfo().username`. */
+  username?: () => string;
+}
+
+/** Every drive letter Windows can assign -- `win32`'s own candidate
+ * enumeration probes each one via {@link ListVolumeNamesDeps.readdir},
+ * since (unlike darwin's `/Volumes` or linux's `/media/<user>`) there is
+ * no single parent directory to list; a mounted volume simply *is* one
+ * of these 26 possible roots. Forward slashes (`"D:/"`, not `"D:\\"`) so
+ * every path this module builds stays deterministic under test
+ * regardless of the host OS actually running the test suite -- Node's
+ * `fs` accepts `/` as a path separator on Windows too, so this is not a
+ * compromise at real runtime either. */
+const WIN32_DRIVE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
 /**
- * Default MSD volume resolver: list `/Volumes/MICROBIT*` entries
- * (unchanged from the old placeholder's discovery step), read each
- * one's `DETAILS.TXT`, and hand the parsed candidates to
- * {@link findMatchingVolume} to pick the one actually belonging to
- * `device` -- see the module doc's "MSD volume-to-device matching"
- * section. A volume whose `DETAILS.TXT` is missing or unreadable is
- * skipped (not a match, and not a failure of the whole resolution); an
- * empty `/Volumes` listing or a failure listing it at all still returns
- * `undefined`, exactly mirroring the old placeholder's `readdir`
- * try/catch. `listVolumeNames`/`readTextFile` are injectable (defaulting
- * to the real filesystem) purely so this function itself is
- * unit-testable with no real mounted volume -- {@link flash}'s own tests
- * always inject their own `resolveVolumePath` instead of exercising this
- * default (see the module doc).
+ * Enumerate every mounted-volume candidate path for `platform`, matched
+ * on name (`MICROBIT*`) where a name is meaningful to check at all -- see
+ * the module doc's "MSD volume-to-device matching" section for why the
+ * *actual* device match always happens later, via `DETAILS.TXT`'s
+ * `Unique ID` ({@link findMatchingVolume}); this function is only the
+ * cheap first-pass narrowing step, generalized (sprint 017 ticket 004)
+ * from the old darwin-only `readdir("/Volumes")` call to also cover linux
+ * and win32:
+ *
+ *   - **darwin**: `/Volumes/MICROBIT*`.
+ *   - **linux**: `/media/<user>/MICROBIT*`, `/run/media/<user>/MICROBIT*`,
+ *     and `/mnt/MICROBIT*` -- three conventional per-distro mount roots,
+ *     all checked (a distro that doesn't use one of them simply fails to
+ *     list it, logged and skipped, not fatal to checking the others --
+ *     see below). `<user>` is `os.userInfo().username` unless
+ *     {@link ListVolumeNamesDeps.username} overrides it.
+ *   - **win32**: every drive letter `A:` through `Z:`, probed for
+ *     existence via {@link ListVolumeNamesDeps.readdir} rather than
+ *     name-matched -- a drive letter carries no name to check at all; the
+ *     real match still happens via `DETAILS.TXT` downstream, same as
+ *     every other platform.
+ *
+ * A candidate directory that fails to list (darwin's `/Volumes`, or one
+ * of linux's three candidate roots) is logged via `console.warn` and
+ * skipped -- never swallowed silently, and never fatal to checking the
+ * platform's other candidate directories. An absent win32 drive letter is
+ * *not* logged as a failure: unlike a missing `/Volumes` or
+ * `/media/<user>` (both expected to exist on their respective platforms),
+ * an unused drive letter is the overwhelmingly common case -- most of the
+ * 26 are never assigned -- so treating every one as a loggable failure
+ * would be noise, not signal.
+ */
+export async function listVolumeNames(
+  platform: NodeJS.Platform,
+  deps: ListVolumeNamesDeps = {},
+): Promise<string[]> {
+  const readdirFn = deps.readdir ?? ((dirPath: string) => readdir(dirPath));
+
+  if (platform === "win32") {
+    const volumePaths: string[] = [];
+    for (const letter of WIN32_DRIVE_LETTERS) {
+      const drivePath = `${letter}:/`;
+      try {
+        await readdirFn(drivePath);
+        volumePaths.push(drivePath);
+      } catch {
+        // Not a failure -- see this function's own doc comment.
+        continue;
+      }
+    }
+    return volumePaths;
+  }
+
+  let baseDirs: string[];
+  if (platform === "darwin") {
+    baseDirs = ["/Volumes"];
+  } else if (platform === "linux") {
+    const username = (deps.username ?? (() => os.userInfo().username))();
+    baseDirs = [`/media/${username}`, `/run/media/${username}`, "/mnt"];
+  } else {
+    console.warn(`listVolumeNames: unsupported platform "${platform}" -- no MSD volumes will be found`);
+    return [];
+  }
+
+  const volumePaths: string[] = [];
+  for (const baseDir of baseDirs) {
+    let entries: string[];
+    try {
+      entries = await readdirFn(baseDir);
+    } catch (error) {
+      console.warn(
+        `listVolumeNames: could not list "${baseDir}" (${errorMessage(error)}) -- skipping this directory`,
+      );
+      continue;
+    }
+    for (const name of entries.filter((entry) => entry.startsWith("MICROBIT"))) {
+      volumePaths.push(path.join(baseDir, name));
+    }
+  }
+  return volumePaths;
+}
+
+/**
+ * Default MSD volume resolver: enumerate every candidate volume path via
+ * {@link listVolumeNames} (platform-aware since sprint 017 ticket 004 --
+ * see that function's own doc comment), read each one's `DETAILS.TXT`,
+ * and hand the parsed candidates to {@link findMatchingVolume} to pick
+ * the one actually belonging to `device` -- see the module doc's "MSD
+ * volume-to-device matching" section. A volume whose `DETAILS.TXT` is
+ * missing or unreadable is skipped (not a match, and not a failure of the
+ * whole resolution); an empty candidate list or a failure enumerating at
+ * all still returns `undefined`. `listVolumeNames`/`readTextFile` are
+ * injectable (defaulting to the real filesystem) purely so this function
+ * itself is unit-testable with no real mounted volume -- {@link flash}'s
+ * own tests always inject their own `resolveVolumePath` instead of
+ * exercising this default (see the module doc).
  */
 export async function defaultResolveVolumePath(
   device: DaplinkDevice,
@@ -723,23 +961,22 @@ export async function defaultResolveVolumePath(
     readTextFile?: ReadTextFileFn;
   },
 ): Promise<string | undefined> {
-  const listVolumeNames = options?.listVolumeNames ?? (() => readdir("/Volumes"));
+  const listNames = options?.listVolumeNames ?? (() => listVolumeNames(os.platform()));
   const readTextFile = options?.readTextFile ?? defaultReadTextFile;
 
-  let entries: string[];
+  let volumePaths: string[];
   try {
-    entries = await listVolumeNames();
+    volumePaths = await listNames();
   } catch (error) {
     console.warn(
-      `defaultResolveVolumePath: could not list "/Volumes" (${errorMessage(error)}) -- ` +
+      `defaultResolveVolumePath: could not enumerate mounted volumes (${errorMessage(error)}) -- ` +
         "treating this as no mounted MSD volume found",
     );
     return undefined;
   }
 
   const candidates: VolumeCandidate[] = [];
-  for (const name of entries.filter((entry) => entry.startsWith("MICROBIT"))) {
-    const volumePath = path.join("/Volumes", name);
+  for (const volumePath of volumePaths) {
     try {
       const text = await readTextFile(path.join(volumePath, DETAILS_TXT_FILENAME));
       candidates.push({ volumePath, details: parseDetailsTxt(text) });
@@ -773,6 +1010,29 @@ export interface FlashOptions {
    * {@link FlashViaDapLinkOptions.flashTimeoutMs}. Defaults to
    * {@link DEFAULT_DAPLINK_FLASH_TIMEOUT_MS}. */
   flashTimeoutMs?: number;
+  /** Settle delay before the MSD write starts (sprint 017 ticket 004).
+   * Defaults to {@link DEFAULT_MSD_SETTLE_MS}. */
+  msdSettleMs?: number;
+  /** Total budget to observe the MSD volume disappear/reappear after the
+   * write completes. Defaults to {@link DEFAULT_MSD_REMOUNT_TIMEOUT_MS}. */
+  msdRemountTimeoutMs?: number;
+  /** Poll interval within that budget. Defaults to
+   * {@link DEFAULT_MSD_REMOUNT_POLL_MS}. */
+  msdRemountPollMs?: number;
+  /** Injectable delay, used for both the MSD settle wait and the remount
+   * poll loop. Defaults to a real, `unref()`'d `setTimeout`-based delay.
+   * Tests substitute an instant/deterministic delay so the settle/poll
+   * timing this ticket adds does not make the suite slow. */
+  delay?: DelayFn;
+  /** Wall-clock reader for the remount poll's own deadline. Defaults to
+   * `Date.now`. Tests substitute a fake, manually-advanced clock paired
+   * with a fake `delay` so a 10s poll budget resolves instantly. */
+  now?: () => number;
+  /** Injectable check for whether the MSD volume is currently present.
+   * Defaults to a real filesystem check (`fs.access`). Tests substitute
+   * a fake that reports the volume disappearing and reappearing on a
+   * schedule, without a real board. */
+  volumeExists?: VolumeExistsFn;
 }
 
 /**
@@ -828,10 +1088,36 @@ export async function flash(
     return swdOutcome;
   }
 
+  const delay = options?.delay ?? defaultDelay;
+  const now = options?.now ?? (() => Date.now());
+  const volumeExists = options?.volumeExists ?? defaultVolumeExists;
+  const settleMs = options?.msdSettleMs ?? DEFAULT_MSD_SETTLE_MS;
+  const remountTimeoutMs = options?.msdRemountTimeoutMs ?? DEFAULT_MSD_REMOUNT_TIMEOUT_MS;
+  const remountPollMs = options?.msdRemountPollMs ?? DEFAULT_MSD_REMOUNT_POLL_MS;
+
   try {
+    // Sprint 017 ticket 004: settle before writing at all -- a volume
+    // that has just been (re)mounted (e.g. right after the SWD attempt
+    // that itself just failed) benefits from a short window first.
+    await delay(settleMs);
     onProgress("writing");
     await flashViaMsd(volumePath, Buffer.from(extracted, "utf-8"), {
       ...(options?.writeFile !== undefined ? { writeFile: options.writeFile } : {}),
+    });
+    // `writeFile` returning is not "done" -- DAPLink's bootloader still
+    // has to erase/flash/reset the target from the file it was just
+    // handed, observable only as the volume disappearing and
+    // reappearing. Report "resetting" now (the write that triggers that
+    // process has just been handed off) and wait for it (best-effort)
+    // before resolving success -- see `waitForVolumeRemount`'s own doc
+    // comment.
+    onProgress("resetting");
+    await waitForVolumeRemount(volumePath, {
+      volumeExists,
+      delay,
+      now,
+      timeoutMs: remountTimeoutMs,
+      pollMs: remountPollMs,
     });
     return { status: "ok", method: "msd" };
   } catch (error) {

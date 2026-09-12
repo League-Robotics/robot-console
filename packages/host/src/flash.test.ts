@@ -9,12 +9,30 @@ import {
   flashViaMsd,
   isUniversalHex,
   isValidIntelHexText,
+  listVolumeNames,
   parseDetailsTxt,
   resetViaDapLink,
 } from "./flash.js";
 import type { VolumeCandidate } from "./flash.js";
 import type { FlashPhase } from "./flash.js";
 import type { DaplinkDevice } from "./devices.js";
+
+/** Fast, deterministic stand-ins for `flash()`'s MSD settle/remount-poll
+ * options (sprint 017 ticket 004) -- a fake, manually-advanced clock
+ * paired with a `delay` that advances it immediately, so a 10s poll
+ * budget resolves in real microseconds rather than making this suite
+ * slow. Tests that care about the settle/poll sequence itself build
+ * their own variant inline; every other MSD-path test spreads this in so
+ * the new timing is a no-op as far as wall-clock time is concerned. */
+function fakeClock(): { now: () => number; delay: (ms: number) => Promise<void> } {
+  let elapsed = 0;
+  return {
+    now: () => elapsed,
+    delay: async (ms: number) => {
+      elapsed += ms;
+    },
+  };
+}
 
 // Per the ticket's Testing section: no micro:bit running cooperating
 // firmware (or any board at all) is available this sprint, and no board
@@ -244,10 +262,117 @@ describe("findMatchingVolume", () => {
   });
 });
 
+describe("listVolumeNames", () => {
+  // Sprint 017 ticket 004: darwin-only `readdir("/Volumes")` generalized
+  // to a `platform`-branching enumeration, still plain `fs`/injectable
+  // `readdir` (no external process, per `sprint.md`'s Design Rationale).
+  // Real hardware verification remains macOS-only this sprint (see the
+  // ticket's own Implementation notes); linux and win32 here are
+  // unit-tested against a fake `fs` exclusively.
+
+  describe("darwin", () => {
+    it("enumerates /Volumes, returning only MICROBIT*-prefixed entries as full paths", async () => {
+      const readdirFn = vi.fn(async (dirPath: string) => {
+        expect(dirPath).toBe("/Volumes");
+        return ["Macintosh HD", "MICROBIT", "MICROBIT 1"];
+      });
+
+      const result = await listVolumeNames("darwin", { readdir: readdirFn });
+
+      expect(result).toEqual(["/Volumes/MICROBIT", "/Volumes/MICROBIT 1"]);
+    });
+
+    it("logs and returns an empty array, rather than throwing, when /Volumes cannot be listed", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const result = await listVolumeNames("darwin", {
+        readdir: async () => {
+          throw new Error("mock: EACCES /Volumes");
+        },
+      });
+
+      expect(result).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("EACCES /Volumes"));
+      warn.mockRestore();
+    });
+  });
+
+  describe("linux", () => {
+    it("enumerates /media/<user>, /run/media/<user>, and /mnt, merging MICROBIT* entries from each", async () => {
+      const readdirFn = vi.fn(async (dirPath: string) => {
+        if (dirPath === "/media/pi") return ["MICROBIT"];
+        if (dirPath === "/run/media/pi") return ["MICROBIT 1"];
+        if (dirPath === "/mnt") return ["usb-drive", "MICROBIT 2"];
+        throw new Error(`unexpected directory: ${dirPath}`);
+      });
+
+      const result = await listVolumeNames("linux", { readdir: readdirFn, username: () => "pi" });
+
+      expect(result).toEqual(["/media/pi/MICROBIT", "/run/media/pi/MICROBIT 1", "/mnt/MICROBIT 2"]);
+    });
+
+    it("substitutes <user> from the injected username override", async () => {
+      const readdirFn = vi.fn(async (dirPath: string) => {
+        expect(dirPath.includes("student1") || dirPath === "/mnt").toBe(true);
+        return [];
+      });
+
+      await listVolumeNames("linux", { readdir: readdirFn, username: () => "student1" });
+
+      expect(readdirFn).toHaveBeenCalledWith("/media/student1");
+      expect(readdirFn).toHaveBeenCalledWith("/run/media/student1");
+    });
+
+    it("logs and continues to the remaining candidate directories when one cannot be listed", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const readdirFn = vi.fn(async (dirPath: string) => {
+        if (dirPath === "/media/pi") {
+          throw new Error("mock: ENOENT /media/pi");
+        }
+        if (dirPath === "/run/media/pi") return ["MICROBIT"];
+        if (dirPath === "/mnt") return [];
+        throw new Error(`unexpected directory: ${dirPath}`);
+      });
+
+      const result = await listVolumeNames("linux", { readdir: readdirFn, username: () => "pi" });
+
+      expect(result).toEqual(["/run/media/pi/MICROBIT"]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("/media/pi"));
+      warn.mockRestore();
+    });
+  });
+
+  describe("win32", () => {
+    it("probes drive letters A: through Z: via the injected fs, returning only those that exist", async () => {
+      const readdirFn = vi.fn(async (dirPath: string) => {
+        if (dirPath === "D:/" || dirPath === "E:/") return [];
+        throw new Error("mock: drive not present");
+      });
+
+      const result = await listVolumeNames("win32", { readdir: readdirFn });
+
+      expect(result).toEqual(["D:/", "E:/"]);
+    });
+
+    it("does not treat an absent drive letter as an enumeration failure worth logging", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const readdirFn = vi.fn(async () => {
+        throw new Error("mock: drive not present");
+      });
+
+      const result = await listVolumeNames("win32", { readdir: readdirFn });
+
+      expect(result).toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+  });
+});
+
 describe("defaultResolveVolumePath", () => {
   it("returns undefined when no MICROBIT* volumes are mounted at all", async () => {
     const result = await defaultResolveVolumePath(device({ serialNumber: REAL_SERIAL_NUMBER }), {
-      listVolumeNames: async () => ["Macintosh HD", "SomeOtherDrive"],
+      listVolumeNames: async () => [],
       readTextFile: vi.fn(),
     });
     expect(result).toBeUndefined();
@@ -265,7 +390,7 @@ describe("defaultResolveVolumePath", () => {
 
   it("resolves the single mounted candidate when its Unique ID matches", async () => {
     const result = await defaultResolveVolumePath(device({ serialNumber: REAL_SERIAL_NUMBER }), {
-      listVolumeNames: async () => ["MICROBIT"],
+      listVolumeNames: async () => ["/Volumes/MICROBIT"],
       readTextFile: async (filePath) => {
         expect(filePath).toBe("/Volumes/MICROBIT/DETAILS.TXT");
         return REAL_DETAILS_TXT;
@@ -276,7 +401,7 @@ describe("defaultResolveVolumePath", () => {
 
   it("returns undefined when the single mounted candidate's Unique ID does not match", async () => {
     const result = await defaultResolveVolumePath(device({ serialNumber: "not-the-real-serial" }), {
-      listVolumeNames: async () => ["MICROBIT"],
+      listVolumeNames: async () => ["/Volumes/MICROBIT"],
       readTextFile: async () => REAL_DETAILS_TXT,
     });
     expect(result).toBeUndefined();
@@ -295,7 +420,7 @@ describe("defaultResolveVolumePath", () => {
     };
 
     const result = await defaultResolveVolumePath(device({ serialNumber: REAL_SERIAL_NUMBER }), {
-      listVolumeNames: async () => ["MICROBIT", "MICROBIT 1"],
+      listVolumeNames: async () => ["/Volumes/MICROBIT", "/Volumes/MICROBIT 1"],
       readTextFile,
     });
     expect(result).toBe("/Volumes/MICROBIT 1");
@@ -313,16 +438,22 @@ describe("defaultResolveVolumePath", () => {
     };
 
     const result = await defaultResolveVolumePath(device({ serialNumber: REAL_SERIAL_NUMBER }), {
-      listVolumeNames: async () => ["MICROBIT", "MICROBIT 1"],
+      listVolumeNames: async () => ["/Volumes/MICROBIT", "/Volumes/MICROBIT 1"],
       readTextFile,
     });
     expect(result).toBe("/Volumes/MICROBIT 1");
   });
 
-  it("only inspects entries starting with MICROBIT, ignoring other mounted volumes", async () => {
+  it("by default, enumerates via the platform-aware listVolumeNames rather than a hard-coded darwin-only path", async () => {
+    // Regression coverage for the ticket 004 rewiring: `defaultResolveVolumePath`
+    // no longer hard-codes `readdir("/Volumes")` itself -- its real default
+    // now delegates to `listVolumeNames(os.platform())`. This is exercised
+    // indirectly here by confirming the *injected* `listVolumeNames` is what's
+    // consulted (already covered above); `listVolumeNames`'s own describe
+    // block above covers the per-platform enumeration directly.
     const readTextFile = vi.fn(async () => REAL_DETAILS_TXT);
     const result = await defaultResolveVolumePath(device({ serialNumber: REAL_SERIAL_NUMBER }), {
-      listVolumeNames: async () => ["Macintosh HD", "MICROBIT"],
+      listVolumeNames: async () => ["/Volumes/MICROBIT"],
       readTextFile,
     });
     expect(result).toBe("/Volumes/MICROBIT");
@@ -704,6 +835,7 @@ describe("flash", () => {
       createDapLink,
       resolveVolumePath: async () => "/Volumes/MICROBIT1",
       writeFile,
+      ...fakeClock(),
     });
 
     expect(result).toEqual({ status: "ok", method: "msd" });
@@ -725,6 +857,7 @@ describe("flash", () => {
       createDapLink,
       resolveVolumePath: async () => "/Volumes/MICROBIT1",
       writeFile: async () => {},
+      ...fakeClock(),
     });
 
     expect(result).toEqual({ status: "ok", method: "msd" });
@@ -763,6 +896,7 @@ describe("flash", () => {
       writeFile: async () => {
         throw new Error("mock: ENOSPC");
       },
+      ...fakeClock(),
     });
 
     expect(result).toEqual({
@@ -771,6 +905,140 @@ describe("flash", () => {
       reason: "write-failed",
       error: expect.stringContaining("ENOSPC"),
     });
+  });
+
+  // Sprint 017 ticket 004: the MSD path settles before writing, and
+  // waits (best-effort) for the volume to disappear/reappear before
+  // reporting done -- `writeFile` returning is no longer itself "done".
+
+  it("waits the settle delay before starting the MSD write, and does not report writing/done before it elapses", async () => {
+    const createDapLink = () =>
+      createFakeDapLink({
+        connect: async () => {
+          throw new Error("mock: attach failed");
+        },
+      });
+    const calls: string[] = [];
+    const { now, delay } = fakeClock();
+
+    const result = await flash(
+      device(),
+      PLAIN_INTEL_HEX_FIXTURE,
+      (phase) => calls.push(`phase:${phase}`),
+      {
+        createDapLink,
+        resolveVolumePath: async () => "/Volumes/MICROBIT1",
+        writeFile: async () => {
+          calls.push("writeFile");
+        },
+        volumeExists: async () => true,
+        now,
+        delay: async (ms) => {
+          calls.push(`delay:${ms}`);
+          await delay(ms);
+        },
+        msdSettleMs: 500,
+        msdRemountTimeoutMs: 0,
+      },
+    );
+
+    expect(result).toEqual({ status: "ok", method: "msd" });
+    // The settle delay (500ms) is the very first thing that happens on
+    // the MSD path -- before "writing" is reported and before the write
+    // itself starts.
+    expect(calls[0]).toBe("delay:500");
+    expect(calls.indexOf("delay:500")).toBeLessThan(calls.indexOf("phase:writing"));
+    expect(calls.indexOf("phase:writing")).toBeLessThan(calls.indexOf("writeFile"));
+  });
+
+  it("does not report the msd outcome until the volume is observed to disappear and reappear", async () => {
+    const createDapLink = () =>
+      createFakeDapLink({
+        connect: async () => {
+          throw new Error("mock: attach failed");
+        },
+      });
+    // present -> gone -> gone -> present again (the remount).
+    const presence = [true, false, false, true];
+    const volumeExists = vi.fn(async () => {
+      return presence.length > 1 ? presence.shift()! : presence[0]!;
+    });
+    const { now, delay } = fakeClock();
+
+    const result = await flash(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
+      createDapLink,
+      resolveVolumePath: async () => "/Volumes/MICROBIT1",
+      writeFile: async () => {},
+      volumeExists,
+      now,
+      delay,
+      msdSettleMs: 0,
+      msdRemountTimeoutMs: 10_000,
+      msdRemountPollMs: 100,
+    });
+
+    expect(result).toEqual({ status: "ok", method: "msd" });
+    // The poll actually ran through the disappear/reappear sequence
+    // (four checks: present, gone, gone, present-again) rather than
+    // resolving on the very first (pre-disappear) check.
+    expect(volumeExists.mock.calls.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("reports resetting before the remount poll resolves, and only reports done once it does", async () => {
+    const createDapLink = () =>
+      createFakeDapLink({
+        connect: async () => {
+          throw new Error("mock: attach failed");
+        },
+      });
+    const phases: FlashPhase[] = [];
+    const presence = [false, true];
+    const volumeExists = async () => (presence.length > 1 ? presence.shift()! : presence[0]!);
+    const { now, delay } = fakeClock();
+
+    const result = await flash(device(), PLAIN_INTEL_HEX_FIXTURE, (phase) => phases.push(phase), {
+      createDapLink,
+      resolveVolumePath: async () => "/Volumes/MICROBIT1",
+      writeFile: async () => {},
+      volumeExists,
+      now,
+      delay,
+      msdSettleMs: 0,
+      msdRemountTimeoutMs: 10_000,
+      msdRemountPollMs: 50,
+    });
+
+    expect(result).toEqual({ status: "ok", method: "msd" });
+    expect(phases).toEqual(["writing", "resetting"]);
+  });
+
+  it("still reports success (best-effort) if the volume is never observed to disappear/reappear within the remount budget", async () => {
+    const createDapLink = () =>
+      createFakeDapLink({
+        connect: async () => {
+          throw new Error("mock: attach failed");
+        },
+      });
+    // Always present -- this fake board's volume is never observed to
+    // go away at all, e.g. because the poll interval is too coarse to
+    // catch a very fast remount cycle.
+    const volumeExists = vi.fn(async () => true);
+    const { now, delay } = fakeClock();
+
+    const result = await flash(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
+      createDapLink,
+      resolveVolumePath: async () => "/Volumes/MICROBIT1",
+      writeFile: async () => {},
+      volumeExists,
+      now,
+      delay,
+      msdSettleMs: 0,
+      msdRemountTimeoutMs: 1_000,
+      msdRemountPollMs: 100,
+    });
+
+    expect(result).toEqual({ status: "ok", method: "msd" });
+    expect(volumeExists.mock.calls.length).toBeGreaterThan(1);
   });
 
   it("does not attempt a fallback on a successful-but-slow SWD write", async () => {

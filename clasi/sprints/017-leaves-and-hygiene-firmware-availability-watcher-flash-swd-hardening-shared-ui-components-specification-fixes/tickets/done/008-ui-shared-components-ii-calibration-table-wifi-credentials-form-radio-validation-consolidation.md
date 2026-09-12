@@ -2,7 +2,7 @@
 id: 008
 title: 'UI shared components II: calibration table, WiFi credentials form, radio validation
   consolidation'
-status: in-progress
+status: done
 use-cases:
 - SUC-007
 depends-on:

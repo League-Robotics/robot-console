@@ -1,11 +1,19 @@
 ---
-id: "010"
-title: "Bench and cross-platform verification: rows on Vevov/Vittut, npm test green on Linux and macOS"
-status: open
-use-cases: [SUC-001, SUC-002, SUC-003, SUC-004, SUC-005, SUC-006]
-depends-on: ["009"]
-github-issue: ""
-issue: ""
+id: '010'
+title: 'Bench and cross-platform verification: rows on Vevov/Vittut, npm test green
+  on Linux and macOS'
+status: in-progress
+use-cases:
+- SUC-001
+- SUC-002
+- SUC-003
+- SUC-004
+- SUC-005
+- SUC-006
+depends-on:
+- 009
+github-issue: ''
+issue: ''
 completes_issue: true
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->

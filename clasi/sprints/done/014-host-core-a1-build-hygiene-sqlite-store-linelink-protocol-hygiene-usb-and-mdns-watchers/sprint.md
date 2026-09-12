@@ -2,7 +2,7 @@
 id: '014'
 title: 'Host core A1: build hygiene, SQLite store, LineLink, protocol hygiene, USB
   and mDNS watchers'
-status: executing
+status: done
 branch: sprint/014-host-core-a1-build-hygiene-sqlite-store-linelink-protocol-hygiene-usb-and-mdns-watchers
 use-cases: []
 issues:

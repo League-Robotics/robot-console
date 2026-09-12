@@ -96,8 +96,10 @@
 import {
   buildGoLine,
   buildQueryLine,
+  buildRadioSendLine,
   buildSetChannelGroupLine,
   classifyRelayReply,
+  parseRadioIdReply,
   parseRelayStatusLine,
   relayPreambleSteps,
   type RelayPreambleStep,
@@ -342,6 +344,57 @@ export async function go(options: RelayStepOptions): Promise<void> {
     confirms: (reply) => classifyRelayReply(reply) === "enteringDataPlane",
   };
   await step(options.write, options.subscribe, scheduler, timeoutMs, goStep, options.signal);
+}
+
+/** Default time to wait for a `> ID` probe's `< id ...` reply — sprint
+ * 016 ticket 003's own bound (sprint.md's SUC-003: "wait <= 500 ms for a
+ * `< id …` reply"), deliberately shorter than {@link
+ * DEFAULT_HANDSHAKE_TIMEOUT_MS}: a sweep probes many candidates inside
+ * one rate-limited relay, so each candidate's own wait must stay small. */
+const DEFAULT_PROBE_TIMEOUT_MS = 500;
+
+/** Options for {@link probeRadioId} — {@link RelayLinkIO} plus the same
+ * `timeoutMs`/`scheduler`/`signal` shape every other step in this module
+ * shares. */
+export interface RelayProbeOptions extends RelayLinkIO {
+  /** ms to wait for the `< id ...` reply before treating the probe as
+   * "no answer". Default {@link DEFAULT_PROBE_TIMEOUT_MS}. */
+  timeoutMs?: number;
+  scheduler?: Scheduler;
+  signal?: AbortSignal;
+}
+
+/**
+ * Probe one remembered robot over the relay's already-tuned command-plane
+ * pass-through: `> ID` (via `@robot-console/protocol`'s
+ * `buildRadioSendLine`), then wait up to `timeoutMs` (default {@link
+ * DEFAULT_PROBE_TIMEOUT_MS}) for a `< id ...` reply whose `name` field
+ * (parsed via `@robot-console/protocol`'s `parseRadioIdReply`) matches
+ * `name` exactly. Never sends `!GO` and never sends `HELLO` — the relay stays in
+ * the command plane throughout (sprint.md's own SUC-003: "the sweep never
+ * sends `!GO` or `HELLO`").
+ *
+ * Resolves `true` if a matching reply arrived in time, `false` on a
+ * timeout — deliberately not an exception: a candidate that does not
+ * answer is an ordinary, expected sweep outcome (`watchers/relaySweeper.ts`
+ * records it as a failed `sightings` row and bumps the link's
+ * `fail_count`), not a handshake failure the way a `!CG`/`!GO` rejection
+ * is. Still rejects with `options.signal`'s own abort reason if it fires
+ * before the wait settles, exactly like every other step in this module —
+ * a caller that wants "let the current wait finish" semantics (`relaySweeper.ts`'s
+ * own between-probes abort check) simply does not pass a `signal` into
+ * this call.
+ */
+export async function probeRadioId(name: string, options: RelayProbeOptions): Promise<boolean> {
+  const { write, subscribe, signal } = options;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+  const scheduler = options.scheduler ?? realScheduler;
+  if (signal?.aborted) {
+    throw abortReason(signal);
+  }
+  write(buildRadioSendLine("ID"));
+  const reply = await waitForMatch(subscribe, scheduler, timeoutMs, (candidate) => parseRadioIdReply(candidate)?.name === name, signal);
+  return reply !== undefined;
 }
 
 /** Write one preamble step's line and wait for the reply that confirms

@@ -1,0 +1,555 @@
+import { describe, expect, it } from "vitest";
+import { deviceIdToName, nameToRadioAddress } from "@robot-console/protocol";
+import { openStoreDb } from "../store/db.js";
+import { Store } from "../store/index.js";
+import { FakeByteStream } from "../link/__fixtures__/FakeByteStream.js";
+import { realScheduler } from "../link/pacing.js";
+import { createRelayLeaseRevocation } from "../connect/relayLeaseRevocation.js";
+import {
+  buildSweepPassCandidates,
+  createRelaySweepPassRunner,
+  eligibleSweepDevices,
+  fastSweepSettingKey,
+  isFastSweepEnabled,
+  isSweepCandidateBackedOff,
+  orderSweepCandidates,
+  radioChildLinkId,
+  startRelaySweeper,
+  sweepBackoffMs,
+  SWEEP_BACKOFF_BASE_MS,
+  SWEEP_BACKOFF_CAP_MS,
+  type RelaySweepPassRunner,
+} from "./relaySweeper.js";
+import type { ProjectionDeviceRow, ProjectionLinkRow, RadioSightingRow } from "../store/index.js";
+
+// Sprint 016 ticket 003's own suite: a fake relay answering !CG/> ID over
+// a directly-opened fake ByteStream (mirrors relayBridger.test.ts's own
+// "opens the relay's raw transport directly" harness), plus the pure
+// candidate-ordering/backoff functions table-tested with no I/O at all.
+// Every timing value below is small and injected via opts -- real
+// timers, per relayBridger.test.ts's own established convention (a
+// synchronously-answering fake always wins its race against a real,
+// much-larger timeout).
+
+function freshStore(): Store {
+  return new Store(openStoreDb({ filePath: ":memory:" }));
+}
+
+function deviceIdFor(seed: number): number {
+  // Any id decodes to *some* well-formed five-letter name via
+  // deviceIdToName -- self-consistency is all upsertDevice requires
+  // (DeviceNameMismatchError guards exactly this), so tests mint ids
+  // from small, distinct seeds rather than hunting for "known" names.
+  return seed;
+}
+
+function seedOwnedRobot(store: Store, id: number, at: number): string {
+  const name = deviceIdToName(id);
+  store.upsertDevice({ id, name, kind: "robot", at });
+  store.setOwned(id, true, at);
+  return name;
+}
+
+function seedRelay(store: Store, relayId: number, relayLinkId: string, at: number, hidPath: string | null = null): void {
+  const relayName = deviceIdToName(relayId);
+  store.upsertDevice({ id: relayId, name: relayName, kind: "relay", role: "RADIOBRIDGE", at });
+  store.upsertLink({ id: relayLinkId, transport: "usb", address: { path: "/dev/cu.relay", hidPath }, deviceId: relayId, at });
+  store.setLinkState({ id: relayLinkId, state: "connectable", at, reason: "relay-identified-idle" });
+}
+
+/** A fake relay's own physical port: answers `?`/`!CG` like a real one,
+ * and answers `> ID` with a matching `< id ...` reply only for names in
+ * `answeringNames` -- looked up by the (channel, group) the most recent
+ * `!CG` tuned to (every candidate name resolves to a distinct address via
+ * `nameToRadioAddress`, so this recovers "which robot is currently being
+ * probed" without the fake needing to parse `> ID` itself). `open()`
+ * resolves immediately, like `relayBridger.test.ts`'s own
+ * `RelayPlaneByteStream`. Can additionally simulate a relay "parked in
+ * the data plane" (silent to `?` until reset) via `startParked`. */
+class SweepRelayByteStream extends FakeByteStream {
+  cgWriteTimes: number[] = [];
+  resetCount = 0;
+  private parked: boolean;
+
+  constructor(
+    private readonly allNames: readonly string[],
+    private readonly answeringNames: ReadonlySet<string>,
+    private readonly nowFn: () => number,
+    startParked = false,
+  ) {
+    super();
+    this.parked = startParked;
+  }
+
+  override open(signal: AbortSignal): Promise<void> {
+    return signal.aborted ? Promise.reject(new Error("aborted")) : Promise.resolve();
+  }
+
+  override write(bytes: string, callback: (err?: Error | null) => void): void {
+    super.write(bytes, callback);
+    const line = bytes.trim();
+
+    if (this.parked) {
+      // Silent to everything except nothing -- a relay stuck in the data
+      // plane never answers the command plane at all until reset.
+      return;
+    }
+
+    if (line === "?") {
+      this.emitData("# channel: 1 group: 1 mode: RAW250 power: 7\n");
+      return;
+    }
+    const cgMatch = /^!CG (\d+) (\d+)$/.exec(line);
+    if (cgMatch) {
+      this.cgWriteTimes.push(this.nowFn());
+      const channel = Number(cgMatch[1]);
+      const group = Number(cgMatch[2]);
+      this.lastTune = { channel, group };
+      this.emitData(`# channel: ${channel} group: ${group} mode: RAW250 power: 7\n`);
+      return;
+    }
+    if (line === "> ID") {
+      const tune = this.lastTune;
+      const name = tune && this.allNames.find((n) => {
+        const addr = nameToRadioAddress(n);
+        return addr.channel === tune.channel && addr.group === tune.group;
+      });
+      if (name && this.answeringNames.has(name)) {
+        this.emitData(`< id diffdrive ${name} 1.0.10 ${name}\n`);
+      }
+      // else: silence -- no reply, simulating a non-answering robot.
+    }
+  }
+
+  private lastTune: { channel: number; group: number } | undefined;
+
+  /** Ticket 016-002's break-reset capability -- see
+   * `link/adapters/serialStream.ts`'s own `sendBreak()`. Clears `parked`,
+   * mirroring a real relay's DAP reset recovering it back into the
+   * command plane. */
+  async sendBreak(): Promise<void> {
+    this.resetCount++;
+    this.parked = false;
+  }
+}
+
+/** Small, real-time-safe options every integration test below uses: a
+ * tiny probe timeout and rate-limit interval, and a short ready-check
+ * retry loop -- mirrors `relayBridger.test.ts`'s own `FAST_OPTIONS`. */
+const FAST_OPTS = {
+  probeTimeoutMs: 30,
+  sweepMinIntervalMs: 40,
+  readySyncAttempts: 3,
+  readySyncRetryMs: 20,
+} as const;
+
+function makeRunner(
+  store: Store,
+  createSerialStream: () => SweepRelayByteStream,
+  revocation = createRelayLeaseRevocation(),
+  now: () => number = () => Date.now(),
+): RelaySweepPassRunner {
+  return createRelaySweepPassRunner(
+    store,
+    { createSerialStream, scheduler: realScheduler, now, revocation },
+    FAST_OPTS,
+  );
+}
+
+// ---------------------------------------------------------------------
+// sweepBackoffMs / isSweepCandidateBackedOff -- pure, table-tested
+// (ticket's own acceptance criterion: "a concrete backoff, table-tested")
+// ---------------------------------------------------------------------
+
+describe("sweepBackoffMs", () => {
+  it.each([
+    [0, 0],
+    [-1, 0],
+    [1, SWEEP_BACKOFF_BASE_MS],
+    [2, SWEEP_BACKOFF_BASE_MS * 2],
+    [3, SWEEP_BACKOFF_BASE_MS * 4],
+    [4, SWEEP_BACKOFF_BASE_MS * 8],
+  ])("consecutiveFailures=%i -> %ims", (failures, expected) => {
+    expect(sweepBackoffMs(failures)).toBe(expected);
+  });
+
+  it("caps at SWEEP_BACKOFF_CAP_MS for a long failure streak", () => {
+    expect(sweepBackoffMs(10)).toBe(SWEEP_BACKOFF_CAP_MS);
+    expect(sweepBackoffMs(100)).toBe(SWEEP_BACKOFF_CAP_MS);
+  });
+});
+
+describe("isSweepCandidateBackedOff", () => {
+  it("never backed off with a zero fail count, regardless of timing", () => {
+    expect(isSweepCandidateBackedOff(0, 0, 1_000_000)).toBe(false);
+  });
+
+  it("never backed off when it has never been attempted (lastAttemptAt undefined)", () => {
+    expect(isSweepCandidateBackedOff(5, undefined, 1_000_000)).toBe(false);
+  });
+
+  it("is backed off immediately after a failure, before its own backoff window elapses", () => {
+    const lastAttemptAt = 1000;
+    expect(isSweepCandidateBackedOff(1, lastAttemptAt, lastAttemptAt + 1)).toBe(true);
+  });
+
+  it("is no longer backed off once its own window has fully elapsed", () => {
+    const lastAttemptAt = 1000;
+    expect(isSweepCandidateBackedOff(1, lastAttemptAt, lastAttemptAt + SWEEP_BACKOFF_BASE_MS + 1)).toBe(false);
+  });
+
+  it("a name that fails repeatedly is backed off for longer than one that failed once -- 'probed less often'", () => {
+    const lastAttemptAt = 1000;
+    const oneFailureWindow = sweepBackoffMs(1);
+    const fourFailuresWindow = sweepBackoffMs(4);
+    expect(fourFailuresWindow).toBeGreaterThan(oneFailureWindow);
+    // Just past the one-failure name's own window: it is eligible again,
+    // but the four-failure name is not.
+    const at = lastAttemptAt + oneFailureWindow + 1;
+    expect(isSweepCandidateBackedOff(1, lastAttemptAt, at)).toBe(false);
+    expect(isSweepCandidateBackedOff(4, lastAttemptAt, at)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------
+// eligibleSweepDevices / orderSweepCandidates / buildSweepPassCandidates
+// -- pure, store-shape-in/store-shape-out
+// ---------------------------------------------------------------------
+
+function deviceRow(partial: Partial<ProjectionDeviceRow> & { id: number; name: string }): ProjectionDeviceRow {
+  return {
+    kind: "robot",
+    role: null,
+    program: null,
+    version: null,
+    radioChannel: null,
+    radioGroup: null,
+    radioSource: null,
+    owned: true,
+    lastSeen: 0,
+    ...partial,
+  };
+}
+
+function linkRow(partial: Partial<ProjectionLinkRow> & { id: string }): ProjectionLinkRow {
+  return {
+    deviceId: null,
+    transport: "radio",
+    address: null,
+    state: "discovered",
+    stateReason: null,
+    stateSince: 0,
+    lastSeen: null,
+    nextRetryAt: null,
+    failCount: 0,
+    userClosed: false,
+    ...partial,
+  };
+}
+
+describe("eligibleSweepDevices", () => {
+  it("excludes a device with a connected usb/wifi/mbserial link", () => {
+    const devices = [deviceRow({ id: 1, name: "aaaaa" }), deviceRow({ id: 2, name: "bbbbb" })];
+    const links = [linkRow({ id: "usb-x", transport: "usb", deviceId: 1, state: "connected" })];
+    expect(eligibleSweepDevices(devices, links).map((d) => d.id)).toEqual([2]);
+  });
+
+  it("does not exclude a device whose only connected link is itself a radio link", () => {
+    const devices = [deviceRow({ id: 1, name: "aaaaa" })];
+    const links = [linkRow({ id: "radio-x", transport: "radio", deviceId: 1, state: "connected" })];
+    expect(eligibleSweepDevices(devices, links).map((d) => d.id)).toEqual([1]);
+  });
+
+  it("excludes unowned robots and relay-kind devices", () => {
+    const devices = [
+      deviceRow({ id: 1, name: "aaaaa", owned: false }),
+      deviceRow({ id: 2, name: "bbbbb", kind: "relay" }),
+      deviceRow({ id: 3, name: "ccccc" }),
+    ];
+    expect(eligibleSweepDevices(devices, []).map((d) => d.id)).toEqual([3]);
+  });
+});
+
+describe("orderSweepCandidates", () => {
+  it("orders oldest radio sighting first", () => {
+    const devices = [
+      deviceRow({ id: 1, name: "aaaaa" }),
+      deviceRow({ id: 2, name: "bbbbb" }),
+      deviceRow({ id: 3, name: "ccccc" }),
+    ];
+    const sightings: RadioSightingRow[] = [
+      { deviceId: 1, at: 500 },
+      { deviceId: 2, at: 100 },
+    ];
+    // 2 has the oldest sighting; 3 has never been sighted at all, so it
+    // sorts first (longest overdue); 1's sighting is the most recent.
+    expect(orderSweepCandidates(devices, sightings).map((d) => d.id)).toEqual([3, 2, 1]);
+  });
+});
+
+describe("buildSweepPassCandidates", () => {
+  it("filters out a name still inside its own backoff window", () => {
+    const devices = [deviceRow({ id: 1, name: "aaaaa" }), deviceRow({ id: 2, name: "bbbbb" })];
+    const linkId = radioChildLinkId("aaaaa", "usb-RELAY");
+    const links = [linkRow({ id: linkId, deviceId: 1, failCount: 3, lastSeen: 1000 })];
+    const at = 1000 + sweepBackoffMs(3) - 1; // still inside the window
+    const result = buildSweepPassCandidates(devices, links, [], "usb-RELAY", at);
+    expect(result.map((d) => d.id)).toEqual([2]);
+  });
+
+  it("includes a name once its backoff window has elapsed", () => {
+    const devices = [deviceRow({ id: 1, name: "aaaaa" })];
+    const linkId = radioChildLinkId("aaaaa", "usb-RELAY");
+    const links = [linkRow({ id: linkId, deviceId: 1, failCount: 1, lastSeen: 1000 })];
+    const at = 1000 + sweepBackoffMs(1) + 1;
+    expect(buildSweepPassCandidates(devices, links, [], "usb-RELAY", at).map((d) => d.id)).toEqual([1]);
+  });
+});
+
+// ---------------------------------------------------------------------
+// fastSweepSettingKey / isFastSweepEnabled -- the off-by-default seam
+// ---------------------------------------------------------------------
+
+describe("isFastSweepEnabled", () => {
+  it("defaults off when ticket 007 has never written the setting", () => {
+    const store = freshStore();
+    expect(isFastSweepEnabled(store, "usb-RELAY")).toBe(false);
+    store.close();
+  });
+
+  it("reads true only once set to the literal '1' under fastSweepSettingKey", () => {
+    const store = freshStore();
+    store.setSetting(fastSweepSettingKey("usb-RELAY"), "1");
+    expect(isFastSweepEnabled(store, "usb-RELAY")).toBe(true);
+    expect(isFastSweepEnabled(store, "usb-OTHER")).toBe(false);
+    store.close();
+  });
+});
+
+// ---------------------------------------------------------------------
+// createRelaySweepPassRunner().runOnePass -- integration against a fake
+// relay's own directly-opened ByteStream
+// ---------------------------------------------------------------------
+
+describe("createRelaySweepPassRunner().runOnePass", () => {
+  it("after one pass: sightings has one row per candidate; answering names get a connectable radio link; non-answering names show fail_count = 1; never sends !GO or HELLO", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY";
+    seedRelay(store, 900001, relayLinkId, 1);
+    const answeringId = 100001;
+    const silentId = 100002;
+    const answeringName = seedOwnedRobot(store, answeringId, 1);
+    const silentName = seedOwnedRobot(store, silentId, 1);
+
+    const stream = new SweepRelayByteStream([answeringName, silentName], new Set([answeringName]), () => Date.now());
+    const runner = makeRunner(store, () => stream);
+
+    await runner.runOnePass(relayLinkId, new AbortController());
+
+    const sightings = store.snapshotRows().sessions; // sanity: no session ever opened by a sweep
+    expect(sightings).toEqual([]);
+
+    const linksById = new Map(store.snapshotRows().links.map((l) => [l.id, l] as const));
+    const answeringLink = linksById.get(radioChildLinkId(answeringName, relayLinkId));
+    const silentLink = linksById.get(radioChildLinkId(silentName, relayLinkId));
+    expect(answeringLink?.state).toBe("connectable");
+    expect(Number(answeringLink?.fail_count)).toBe(0);
+    expect(Number(silentLink?.fail_count)).toBe(1);
+    expect(silentLink?.state).not.toBe("connectable");
+
+    expect(stream.writes.map((w) => w.bytes.trim())).not.toContain("!GO");
+    expect(stream.writes.some((w) => w.bytes.trim().startsWith("HELLO"))).toBe(false);
+
+    store.close();
+  });
+
+  it("records a successful radio sighting for the answering candidate, readable via Store.radioSightings()", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY";
+    seedRelay(store, 900001, relayLinkId, 1);
+    const answeringId = 100001;
+    const silentId = 100002;
+    const answeringName = seedOwnedRobot(store, answeringId, 1);
+    const silentName = seedOwnedRobot(store, silentId, 1);
+
+    const stream = new SweepRelayByteStream([answeringName, silentName], new Set([answeringName]), () => Date.now());
+    const runner = makeRunner(store, () => stream);
+
+    await runner.runOnePass(relayLinkId, new AbortController());
+
+    // Store.radioSightings() only ever surfaces successful (ok=1) radio
+    // sightings (its own doc comment) -- exactly one entry, for the
+    // candidate that actually answered `> ID`.
+    const radioSightings = store.radioSightings();
+    expect(radioSightings.map((s) => s.deviceId)).toEqual([answeringId]);
+
+    store.close();
+  });
+
+  it("never leases nor opens the transport when the relay is not idle/connectable (acquireRelayLease refuses)", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY";
+    seedRelay(store, 900001, relayLinkId, 1);
+    store.acquireRelayLease(relayLinkId, "session:someone-else", 1);
+
+    let opened = false;
+    const stream = new SweepRelayByteStream([], new Set(), () => Date.now());
+    const originalOpen = stream.open.bind(stream);
+    stream.open = (signal: AbortSignal) => {
+      opened = true;
+      return originalOpen(signal);
+    };
+    const runner = makeRunner(store, () => stream);
+
+    await runner.runOnePass(relayLinkId, new AbortController());
+
+    expect(opened).toBe(false);
+    // The other owner's lease is untouched.
+    expect(store.reconcilerRows().relayLeases.find((l) => l.relayLinkId === relayLinkId)?.owner).toBe("session:someone-else");
+    store.close();
+  });
+
+  it("with the default rate limit, no two !CG writes to the relay land closer together than sweepMinIntervalMs", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY";
+    seedRelay(store, 900001, relayLinkId, 1);
+    const names = [seedOwnedRobot(store, 100001, 1), seedOwnedRobot(store, 100002, 1), seedOwnedRobot(store, 100003, 1)];
+
+    const stream = new SweepRelayByteStream(names, new Set(names), () => Date.now());
+    const runner = makeRunner(store, () => stream);
+
+    await runner.runOnePass(relayLinkId, new AbortController());
+
+    expect(stream.cgWriteTimes.length).toBe(3);
+    for (let i = 1; i < stream.cgWriteTimes.length; i++) {
+      const gap = stream.cgWriteTimes[i]! - stream.cgWriteTimes[i - 1]!;
+      expect(gap).toBeGreaterThanOrEqual(FAST_OPTS.sweepMinIntervalMs - 5);
+    }
+  }, 10_000);
+
+  it("a relay parked in the data plane on lease acquisition gets exactly one reset before sweeping resumes", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY";
+    seedRelay(store, 900001, relayLinkId, 1);
+    const name = seedOwnedRobot(store, 100001, 1);
+
+    const stream = new SweepRelayByteStream([name], new Set([name]), () => Date.now(), true);
+    const runner = makeRunner(store, () => stream);
+
+    await runner.runOnePass(relayLinkId, new AbortController());
+
+    expect(stream.resetCount).toBe(1);
+    const link = store.snapshotRows().links.find((l) => l.id === radioChildLinkId(name, relayLinkId));
+    expect(link?.state).toBe("connectable");
+    store.close();
+  });
+
+  it("registers its AbortController with the revocation seam for the duration of the pass and deregisters it on release", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY";
+    seedRelay(store, 900001, relayLinkId, 1);
+    const name = seedOwnedRobot(store, 100001, 1);
+
+    const revocation = createRelayLeaseRevocation();
+    let registeredDuringPass: AbortController | undefined;
+    const stream = new SweepRelayByteStream([name], new Set([name]), () => Date.now());
+    const originalWrite = stream.write.bind(stream);
+    stream.write = (bytes, callback) => {
+      if (registeredDuringPass === undefined) {
+        registeredDuringPass = revocation.get(relayLinkId);
+      }
+      originalWrite(bytes, callback);
+    };
+    const runner = createRelaySweepPassRunner(
+      store,
+      { createSerialStream: () => stream, scheduler: realScheduler, now: () => Date.now(), revocation },
+      FAST_OPTS,
+    );
+
+    const passController = new AbortController();
+    await runner.runOnePass(relayLinkId, passController);
+
+    expect(registeredDuringPass).toBe(passController);
+    expect(revocation.get(relayLinkId)).toBeUndefined();
+    store.close();
+  });
+
+  it("stops probing further candidates once the pass's AbortController fires, and deregisters/releases the lease", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY";
+    seedRelay(store, 900001, relayLinkId, 1);
+    const names = [seedOwnedRobot(store, 100001, 1), seedOwnedRobot(store, 100002, 1), seedOwnedRobot(store, 100003, 1)];
+
+    const revocation = createRelayLeaseRevocation();
+    const stream = new SweepRelayByteStream(names, new Set(names), () => Date.now());
+    const runner = createRelaySweepPassRunner(
+      store,
+      { createSerialStream: () => stream, scheduler: realScheduler, now: () => Date.now(), revocation },
+      { ...FAST_OPTS, sweepMinIntervalMs: 5000 }, // long enough that the abort below reliably lands mid rate-limit wait, regardless of how long the first candidate's own CG/ID exchange took
+    );
+
+    const passController = new AbortController();
+    const passPromise = runner.runOnePass(relayLinkId, passController);
+    // Abort well after the first candidate's own CG/ID probe should have
+    // finished (a handful of paced writes, each ~10ms), but far short of
+    // the second candidate's own 5s-away rate-limited turn.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    passController.abort(new Error("takeover"));
+    await passPromise;
+
+    expect(stream.cgWriteTimes.length).toBe(1);
+    expect(revocation.get(relayLinkId)).toBeUndefined();
+    expect(store.reconcilerRows().relayLeases.find((l) => l.relayLinkId === relayLinkId)).toBeUndefined();
+    store.close();
+  }, 10_000);
+});
+
+// ---------------------------------------------------------------------
+// startRelaySweeper -- the scan/loop wiring itself
+// ---------------------------------------------------------------------
+
+describe("startRelaySweeper", () => {
+  it("finds an idle usb relay and sweeps it, without needing a manual runOnePass call", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY";
+    seedRelay(store, 900001, relayLinkId, 1);
+    const name = seedOwnedRobot(store, 100001, 1);
+
+    const stream = new SweepRelayByteStream([name], new Set([name]), () => Date.now());
+    const handle = startRelaySweeper(
+      store,
+      { createSerialStream: () => stream, scheduler: realScheduler, now: () => Date.now(), revocation: createRelayLeaseRevocation() },
+      { ...FAST_OPTS, scanIntervalMs: 10, quietPeriodMs: 50 },
+    );
+
+    // Poll the store until the sweep has recorded the candidate, rather
+    // than a fixed sleep -- bounded by a generous ceiling.
+    const deadline = Date.now() + 5000;
+    let link: { state?: unknown } | undefined;
+    while (Date.now() < deadline) {
+      link = store.snapshotRows().links.find((l) => l.id === radioChildLinkId(name, relayLinkId));
+      if (link?.state === "connectable") {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    expect(link?.state).toBe("connectable");
+    handle.stop();
+    store.close();
+  }, 10_000);
+
+  it("stop() is idempotent and stops the scan tick", () => {
+    const store = freshStore();
+    const handle = startRelaySweeper(
+      store,
+      { revocation: createRelayLeaseRevocation() },
+      { scanIntervalMs: 50_000 },
+    );
+    expect(() => {
+      handle.stop();
+      handle.stop();
+    }).not.toThrow();
+    store.close();
+  });
+});

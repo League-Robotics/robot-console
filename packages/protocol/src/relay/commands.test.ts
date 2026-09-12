@@ -9,6 +9,7 @@ import {
   buildSetPowerLine,
   buildTransientChannelGroupLine,
   classifyRelayReply,
+  parseRadioIdReply,
   parseRelayStatusLine,
   relayPreambleSteps,
   RelayCommandError,
@@ -244,5 +245,51 @@ describe("relayPreambleSteps", () => {
 
   it("range-checks the !CG step's channel/group, same as buildSetChannelGroupLine", () => {
     expect(() => relayPreambleSteps(48, 3)).toThrow(RelayCommandError);
+  });
+});
+
+// ---------------------------------------------------------------------
+// parseRadioIdReply -- sprint 016 ticket 003's own probe-reply parser,
+// reusing deviceType.ts's existing parseIdReply for the payload grammar
+// itself (see this function's own doc comment for why).
+// ---------------------------------------------------------------------
+
+describe("parseRadioIdReply", () => {
+  it("parses a relay-delivered '< id ...' line into its four fields", () => {
+    expect(parseRadioIdReply("< id diffdrive vevov 1.0.10 vevov")).toEqual({
+      product: "diffdrive",
+      program: "vevov",
+      version: "1.0.10",
+      name: "vevov",
+    });
+  });
+
+  it("tolerates no space after the '<' receive prefix", () => {
+    expect(parseRadioIdReply("<id diffdrive vevov 1.0.10 vevov")).toEqual({
+      product: "diffdrive",
+      program: "vevov",
+      version: "1.0.10",
+      name: "vevov",
+    });
+  });
+
+  it("matches the ID verb case-insensitively", () => {
+    expect(parseRadioIdReply("< ID diffdrive vevov 1.0.10 vevov")?.name).toBe("vevov");
+  });
+
+  it("returns null for a line with no '<' receive prefix at all -- a bare v6 ID reply is not something a relay's command plane ever delivers this way", () => {
+    expect(parseRadioIdReply("id diffdrive vevov 1.0.10 vevov")).toBeNull();
+  });
+
+  it("returns null for a delivered line whose verb is not 'id'", () => {
+    expect(parseRadioIdReply("< status pending 0 none")).toBeNull();
+  });
+
+  it("returns null for a delivered 'id' line with too few fields", () => {
+    expect(parseRadioIdReply("< id diffdrive vevov")).toBeNull();
+  });
+
+  it("returns null for an unrelated relay comment line", () => {
+    expect(parseRadioIdReply("# channel: 47 group: 60 mode: RAW250 power: 7")).toBeNull();
   });
 });

@@ -10,6 +10,7 @@ import { startRuntime, type StartRuntimeOptions } from "./runtime.js";
 import type { HarvesterDeps, HarvesterTelemetryEvent } from "./connect/harvester.js";
 import type { ConnectorDeps } from "./connect/connector.js";
 import type { ReconcilerDeps } from "./connect/reconciler.js";
+import type { RelaySweeperDeps } from "./watchers/relaySweeper.js";
 
 function fakeDeps() {
   const calls: string[] = [];
@@ -71,6 +72,24 @@ function fakeDeps() {
     return uninstallMock;
   }) as unknown as StartRuntimeOptions["installUnhandledRejectionBackstop"];
 
+  // Ticket 016-003: the shared revocation seam and the relay sweeper
+  // itself -- both mocked here (never the real `startRelaySweeper`), so
+  // this suite never risks a real timer touching this file's own
+  // minimal fake store past the test's own synchronous assertions.
+  const fakeRevocation = { marker: "fake-revocation" };
+  const createRelayLeaseRevocationMock = vi.fn(() => {
+    calls.push("createRelayLeaseRevocation");
+    return fakeRevocation;
+  }) as unknown as StartRuntimeOptions["createRelayLeaseRevocation"];
+
+  let capturedRelaySweeperDeps: RelaySweeperDeps | undefined;
+  const relaySweeperStopMock = vi.fn(() => calls.push("relaySweeper.stop"));
+  const startRelaySweeperMock = vi.fn((_store: unknown, deps: RelaySweeperDeps) => {
+    calls.push("startRelaySweeper");
+    capturedRelaySweeperDeps = deps;
+    return { stop: relaySweeperStopMock };
+  }) as unknown as StartRuntimeOptions["startRelaySweeper"];
+
   const options: StartRuntimeOptions = {
     openStoreWithImports: openStoreWithImportsMock,
     startUsbWatcher: startUsbWatcherMock,
@@ -79,6 +98,8 @@ function fakeDeps() {
     createHarvester: createHarvesterMock,
     createConnector: createConnectorMock,
     startReconciler: startReconcilerMock,
+    createRelayLeaseRevocation: createRelayLeaseRevocationMock,
+    startRelaySweeper: startRelaySweeperMock,
     installUnhandledRejectionBackstop: installUnhandledRejectionBackstopMock,
   };
 
@@ -90,9 +111,11 @@ function fakeDeps() {
     fakeHarvester,
     fakeConnector,
     fakeReconciler,
+    fakeRevocation,
     usbStopMock,
     mdnsStopMock,
     reconcilerStopMock,
+    relaySweeperStopMock,
     uninstallMock,
     openStoreWithImportsMock,
     startUsbWatcherMock,
@@ -101,10 +124,13 @@ function fakeDeps() {
     createHarvesterMock,
     createConnectorMock,
     startReconcilerMock,
+    createRelayLeaseRevocationMock,
+    startRelaySweeperMock,
     installUnhandledRejectionBackstopMock,
     getCapturedHarvesterDeps: () => capturedHarvesterDeps,
     getCapturedConnectorDeps: () => capturedConnectorDeps,
     getCapturedReconcilerDeps: () => capturedReconcilerDeps,
+    getCapturedRelaySweeperDeps: () => capturedRelaySweeperDeps,
   };
 }
 
@@ -127,6 +153,17 @@ describe("startRuntime -- composition", () => {
     expect(f.getCapturedReconcilerDeps()?.connector).toBe(f.fakeConnector);
     expect(f.startReconcilerMock).toHaveBeenCalledWith(f.fakeStore, expect.objectContaining({ connector: f.fakeConnector }));
     expect(f.installUnhandledRejectionBackstopMock).toHaveBeenCalledWith(f.fakeStore, undefined);
+
+    // Ticket 016-003: the sweeper is always constructed with the
+    // revocation seam this runtime itself built -- never a separately
+    // constructed one, mirroring the harvester -> connector wiring above.
+    expect(f.createRelayLeaseRevocationMock).toHaveBeenCalledTimes(1);
+    expect(f.getCapturedRelaySweeperDeps()?.revocation).toBe(f.fakeRevocation);
+    expect(f.startRelaySweeperMock).toHaveBeenCalledWith(
+      f.fakeStore,
+      expect.objectContaining({ revocation: f.fakeRevocation }),
+      undefined,
+    );
 
     expect(runtime.store).toBe(f.fakeStore);
     expect(runtime.reconciler).toBe(f.fakeReconciler);
@@ -220,7 +257,7 @@ describe("startRuntime -- telemetry fan-out", () => {
 });
 
 describe("startRuntime -- stop()", () => {
-  it("stops the backstop, the reconciler, both watchers, then closes the store, in that order", () => {
+  it("stops the backstop, the reconciler, the relay sweeper, both watchers, then closes the store, in that order", () => {
     const f = fakeDeps();
     const runtime = startRuntime(f.options);
     f.calls.length = 0; // only care about stop()'s own ordering from here
@@ -230,6 +267,7 @@ describe("startRuntime -- stop()", () => {
     expect(f.calls).toEqual([
       "uninstallUnhandledRejectionBackstop",
       "reconciler.stop",
+      "relaySweeper.stop",
       "usbWatcher.stop",
       "mdnsWatcher.stop",
       "store.close",
@@ -245,6 +283,7 @@ describe("startRuntime -- stop()", () => {
 
     expect(f.uninstallMock).toHaveBeenCalledTimes(1);
     expect(f.reconcilerStopMock).toHaveBeenCalledTimes(1);
+    expect(f.relaySweeperStopMock).toHaveBeenCalledTimes(1);
     expect(f.usbStopMock).toHaveBeenCalledTimes(1);
     expect(f.mdnsStopMock).toHaveBeenCalledTimes(1);
     expect(f.fakeStore.close).toHaveBeenCalledTimes(1);

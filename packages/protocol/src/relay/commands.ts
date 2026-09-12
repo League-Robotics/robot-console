@@ -72,6 +72,7 @@
  */
 
 import { validateRadioAddress } from "../radioAddress.js";
+import { parseIdReply, type IdReply } from "../deviceType.js";
 
 // ---------------------------------------------------------------------
 // Command-plane preamble line-builders
@@ -213,6 +214,51 @@ export function buildRadioSendLine(text: string): string {
     throw new RelayCommandError(`text must not contain a newline: ${JSON.stringify(text)}`);
   }
   return `> ${text}\n`;
+}
+
+// ---------------------------------------------------------------------
+// Radio pass-through reply grammar (rearch-10/rearch-12): the relay's
+// `< <text>` delivery of one already-tuned robot's reply to a `>`-sent
+// probe, carrying the robot's own `ID` reply.
+// ---------------------------------------------------------------------
+
+/** A relay command-plane pass-through delivery line: `< <text>`
+ * (rearch-12's own grammar — `> <text>` sends one line over the radio
+ * without `!GO`, `< <text>` delivers whatever came back). Requires the
+ * `<` prefix (unlike a direct v6 session's own `ID` reply, which carries
+ * no such framing) — a bare `id ...` line with no `<` never arrives over
+ * a relay's command plane, so this deliberately does not also accept
+ * that shape (see {@link parseRadioIdReply}'s own doc comment). */
+const RADIO_RECEIVE_PATTERN = /^<\s?(.*)$/;
+
+/**
+ * Parse a relay-delivered `< id <product> <program> <version> <name>`
+ * line into an {@link IdReply} — the shape `watchers/relaySweeper.ts`'s
+ * `> ID` probe actually receives over a relay's command-plane pass-
+ * through. Strips the `< ` receive prefix, tokenizes the remaining text,
+ * and hands the fields (minus the leading `id` verb token itself) to
+ * `deviceType.ts`'s existing {@link parseIdReply} — the one place the
+ * `id <product> <program> <version> <name>` grammar is parsed, reused
+ * here rather than duplicated (that function's own doc comment: "The
+ * `ID`-verb calibration signal"; `docs/design/protocol.md` §6.4: "`name`
+ * is board identity, `profile` is not" — `name` is the field a sweep
+ * probe matches a candidate's own name against).
+ *
+ * `null` for anything not shaped like a `<`-prefixed delivery of a
+ * well-formed `id ...` reply (no `<` prefix at all, a verb other than
+ * `id`, or too few fields) — this never guesses at a partial parse, same
+ * discipline as {@link parseRelayStatusLine}.
+ */
+export function parseRadioIdReply(line: string): IdReply | null {
+  const match = RADIO_RECEIVE_PATTERN.exec(line.trim());
+  if (!match) {
+    return null;
+  }
+  const tokens = match[1]!.trim().split(/\s+/).filter((token) => token.length > 0);
+  if (tokens[0]?.toLowerCase() !== "id") {
+    return null;
+  }
+  return parseIdReply(tokens.slice(1));
 }
 
 // ---------------------------------------------------------------------

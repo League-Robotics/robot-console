@@ -253,7 +253,7 @@ export function chooseResetMethod(hidPath: string | null, relayTransport: "usb" 
  * doc comment warns "attach, never reset" (reading a name must never
  * reboot a robot mid-session); this module's entire purpose for the HID
  * path is the opposite — reset the relay on purpose. */
-type ResetCortexMFactory = (hidPath: string) => CortexM;
+export type ResetCortexMFactory = (hidPath: string) => CortexM;
 
 function defaultCortexMFactory(hidPath: string): CortexM {
   const hidDevice = new NodeHidDevice(hidPath);
@@ -268,8 +268,11 @@ function defaultCortexMFactory(hidPath: string): CortexM {
  * reset, mirroring `swdName.ts`'s own cleanup discipline). Never called
  * by any test in this repository (no test ever opens a real HID device)
  * — {@link RelayBridgerDeps.hidReset} is always substituted with a fake.
+ * Exported (ticket 016-003) so `watchers/relaySweeper.ts` can default its
+ * own `hidReset` dep to the identical real implementation rather than
+ * redefining it.
  */
-async function defaultHidReset(
+export async function defaultHidReset(
   hidPath: string,
   signal: AbortSignal,
   createCortexM: ResetCortexMFactory = defaultCortexMFactory,
@@ -293,8 +296,12 @@ async function defaultHidReset(
 
 /** Perform the chosen reset against this candidate attempt's own
  * already-open `stream` (for `"break"`) or independently (for `"hid"`),
- * or do nothing (for `"reconnect"` — see the module doc comment). */
-async function performReset(
+ * or do nothing (for `"reconnect"` — see the module doc comment).
+ * Exported (ticket 016-003) so `watchers/relaySweeper.ts` can reuse the
+ * identical reset primitive for its own "relay parked in the data plane
+ * on lease acquisition" recovery step, rather than duplicating the
+ * per-method dispatch. */
+export async function performReset(
   method: RelayResetMethod,
   stream: ByteStream,
   hidPath: string | null,
@@ -391,7 +398,15 @@ export async function resolveDefaultFailoverAddress(
   return { channel: resolved.channel, group: resolved.group };
 }
 
-function defaultFailoverChildLinkId(childTransport: "radio" | "mbrelay", name: string, relayLinkId: string): string {
+/** The deterministic `<transport>-<name>-via-<relayLinkId>` child-link-id
+ * convention (see {@link RelayBridgeCandidate.childLinkId}'s own doc
+ * comment). Exported (ticket 016-003) so `watchers/relaySweeper.ts`
+ * mints the *same* id for a radio sighting's `links(radio)` row that a
+ * later default-failover bridge to the same name would use — the
+ * sighting and a subsequent bridge converge on one row rather than two,
+ * which is what lets ticket 004's projection show a sighted robot's
+ * "Radio via <relay>" card carry through into an actual bridge. */
+export function defaultFailoverChildLinkId(childTransport: "radio" | "mbrelay", name: string, relayLinkId: string): string {
   return `${childTransport}-${name}-via-${relayLinkId}`;
 }
 

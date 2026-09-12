@@ -1,7 +1,7 @@
 ---
 id: '003'
 title: 'Relay sweeper: probe remembered robots over radio, sightings, rate limiting'
-status: in-progress
+status: done
 use-cases:
 - SUC-003
 depends-on:
@@ -67,24 +67,24 @@ no UI involved.
 
 ## Acceptance Criteria
 
-- [ ] Fake relay answering `!CG` with the echo line and `> ID` for a
+- [x] Fake relay answering `!CG` with the echo line and `> ID` for a
       subset of names: after one pass, `sightings` has one row per
       candidate; answering names get a `links(radio, connectable)` row;
       non-answering names show `fail_count = 1`.
-- [ ] The sweep never sends `!GO` or `HELLO` to the fake relay — assert
+- [x] The sweep never sends `!GO` or `HELLO` to the fake relay — assert
       this directly against the fake's received-lines log, not just the
       absence of a failure.
-- [ ] With the default rate limit, the fake relay sees no two `!CG`
+- [x] With the default rate limit, the fake relay sees no two `!CG`
       writes closer together than `SWEEP_MIN_INTERVAL_MS`.
-- [ ] A relay found parked in the data plane on lease acquisition gets
+- [x] A relay found parked in the data plane on lease acquisition gets
       one reset (ticket 002's reset step) before sweeping resumes.
-- [ ] The sweeper registers its `AbortController` with
+- [x] The sweeper registers its `AbortController` with
       `relayLeaseRevocation` for the duration of each pass and
       deregisters it on release (verifiable directly against the seam's
       own map, independent of ticket 004's end-to-end takeover test).
-- [ ] Names that fail several consecutive sweeps are probed less often
+- [x] Names that fail several consecutive sweeps are probed less often
       than ones that answer (a concrete backoff, table-tested).
-- [ ] `npx vitest run packages/host/src/watchers packages/host/src/connect`
+- [x] `npx vitest run packages/host/src/watchers packages/host/src/connect`
       passes.
 
 ## Implementation Plan
@@ -119,3 +119,112 @@ loop (start/stop/heartbeat, mirroring `watchers/usbWatcher.ts`'s/
   packages/host/src/connect`.
 
 **Documentation updates**: none beyond this ticket's own completion notes.
+
+## Implementation notes
+
+**New files**: `packages/host/src/watchers/relaySweeper.ts`,
+`packages/host/src/watchers/relaySweeper.test.ts`,
+`packages/host/src/connect/relayLeaseRevocation.ts`,
+`packages/host/src/connect/relayLeaseRevocation.test.ts`.
+
+**Where the probe-and-wait-for-`< id` step lives**: `link/RelayCommandPlane.ts`,
+next to `sync`/`setChannelGroup`/`go`, per the Implementation Plan's own
+"consistent home" call — a new exported `probeRadioId(name, options):
+Promise<boolean>`. It sends `> ID` (`buildRadioSendLine`) and waits up to
+`options.timeoutMs` (default 500ms, `DEFAULT_PROBE_TIMEOUT_MS`) for a
+reply whose parsed name matches. Deliberately resolves `false` on
+timeout rather than throwing — a non-answering candidate is an ordinary
+sweep outcome the caller records as a failed sighting, not a handshake
+failure the way a `!CG` rejection is. Parsing the reply required a new
+protocol-level function, `parseRadioIdReply` (`packages/protocol/src/relay/commands.ts`):
+`deviceType.ts` already had a `parseIdReply(fields: string[])` — the
+ticket's brief assumed this was already wired for a relay's `< <text>`
+framing, but it only ever parsed already-tokenized fields with no `<`
+prefix handling (a direct v6 session's own `ID` reply shape). Rather than
+duplicate the `id <product> <program> <version> <name>` grammar,
+`parseRadioIdReply` strips the `< ` receive prefix, tokenizes, drops the
+leading `id` verb token, and hands the rest to `deviceType.ts`'s existing
+`parseIdReply` — one grammar, parsed in one place, reused from the relay
+pass-through framing.
+
+**Rate limiting, precisely**: one `!CG`+probe per remembered candidate,
+per pass, with the wait between successive candidates computed as
+`lastCgAt + intervalMs - now()` — `lastCgAt` is captured **after** the
+`!CG` write's own confirmation wait (and the `> ID` probe) complete, not
+before. Measuring before systematically understates the actual on-wire
+gap by however long the paced write takes to reach the transport (caught
+by this ticket's own rate-limit test going flaky at ~30ms tolerance on
+authoring); measuring after only ever adds margin, never subtracts, so
+"no two `!CG` writes closer than `SWEEP_MIN_INTERVAL_MS`" holds
+unconditionally. `SWEEP_MIN_INTERVAL_MS` defaults to 30s; `SWEEP_FAST_INTERVAL_MS`
+(2s) is defined now for ticket 007 to switch to once it writes the
+capability flag.
+
+**The capability-flag read ticket 007 must populate**: `isFastSweepEnabled(store,
+relayLinkId)` reads `store.getSetting(fastSweepSettingKey(relayLinkId))`
+(key shape `` `relaySweepFast:${relayLinkId}` ``), `true` only for the
+literal string `"1"` — anything else (unset, malformed) defaults off.
+Per-relay, not global, since a classroom can have mixed relay firmware at
+once. Ticket 007's own job: after detecting the `?`/status reply's
+capability token (e.g. `caps: CGT`), call `store.setSetting(fastSweepSettingKey(relayLinkId),
+"1")`. This is a deliberate departure from sprint.md's Step 4 "No ERD"
+sketch (in-memory, re-detected per lease acquisition) — the task
+description for this ticket asked for a `settings`/device field read
+specifically, so the read contract is a `settings` row; ticket 007 is
+free to re-derive the value fresh on every lease acquisition and simply
+write it here rather than caching it itself.
+
+**Chosen backoff table** (`sweepBackoffMs`, pure, table-tested in
+`relaySweeper.test.ts`): `0` for a name with no consecutive failures;
+otherwise `60s * 2^(consecutiveFailures - 1)`, capped at 30 minutes (1
+min, 2 min, 4 min, 8 min, 16 min, capped). `isSweepCandidateBackedOff`
+reads a candidate's own `links(radio)` row (`failCount`, `lastSeen`) for
+this relay to decide whether its window has elapsed; `failCount` resets
+to `0` on a success (a fresh success clears any prior consecutive-failure
+streak) and increments by 1 on a failure — the existing link `state` is
+left untouched on failure ("leave any existing radio link"), only
+`fail_count` moves.
+
+**Testability seam**: the per-relay probe pass itself is factored into an
+exported `createRelaySweepPassRunner(store, deps, opts) ->
+{ runOnePass(relayLinkId, passController) }`, separate from
+`startRelaySweeper`'s own scan-tick/loop-lifecycle layer — this is what
+lets `relaySweeper.test.ts` drive one pass directly (real timers, small
+injected ms values, exactly `relayBridger.test.ts`'s own established
+convention) without waiting on a real scan interval. `startRelaySweeper`
+constructs one pass runner and calls it from its own per-relay
+forever-loop (pass → quiet period → re-acquire), scanning `links` every
+`scanIntervalMs` for newly-idle `usb`/`kind='relay'` links to start a
+loop for, and stopping a loop if the relay stops being idle (taken over,
+removed) — a small addition beyond the ticket's own letter, but a
+natural consequence of the watcher-shaped task convention and harmless
+(ticket 004 layers the actual takeover handshake on top).
+
+**Reset-once verified**: `ensureCommandPlaneReady` calls `sync()`
+(`RelayCommandPlane.ts`) on lease acquisition; on failure it reuses
+ticket 002's own `chooseResetMethod`/`performReset`/`defaultHidReset`
+(all now exported from `connect/relayBridger.ts` for this reuse,
+mirroring that module's own reuse of `connector.ts`'s helpers), then
+confirms `sync()` once more before proceeding. A relay still unresponsive
+after that single reset abandons the pass for this cycle (lease
+released, retried after the quiet period) rather than looping
+indefinitely.
+
+**`runtime.ts` wiring**: `createRelayLeaseRevocation()` is constructed
+once per runtime and handed to `startRelaySweeper` as its `revocation`
+dep — the same instance ticket 004 will also hand to the bridger.
+`runtime.test.ts` mocks both `createRelayLeaseRevocation` and
+`startRelaySweeper` (never the real defaults), so the composition-root
+suite never risks a live sweep timer touching its own minimal fake
+store; the real `scanOnce()` tick is additionally wrapped in its own
+`try`/`catch` as defense in depth for any other caller that supplies an
+incomplete store for a collaborator it doesn't otherwise exercise.
+`stop()` now stops the sweeper between the reconciler and the watchers.
+
+**Not done in this ticket** (explicitly deferred, per its own
+Description): the sweep-takeover handshake itself (waiting on the
+revocation seam's `AbortController` and racing the ≤1.5s handback) and
+the relay/robot projection/UI rendering — both ticket 004. The firmware
+capability *detection* itself (parsing `caps: CGT` from a `?` reply) —
+ticket 007; this ticket only defines the `settings`-backed read/off
+default described above.

@@ -37,6 +37,13 @@
  *    the only component that decides what should be connected, and the
  *    target `server.ts` forwards an explicit user `session-open`/
  *    `session-close` command to.
+ * 5a. `createRelayLeaseRevocation` + `startRelaySweeper` (ticket 016-003)
+ *    — the shared in-process revocation seam, and the background sweep
+ *    itself (probes idle usb relays over the radio command plane for
+ *    remembered robots; never touches `sessions`, never calls the
+ *    connector or the reconciler). The same revocation instance is meant
+ *    to be handed to the bridger too, once a future ticket wires a
+ *    student's connect into it.
  * 6. `installUnhandledRejectionBackstop` (ticket 003) — the process-wide
  *    last-resort net; see that module's own doc comment for why this is
  *    not a substitute for each component's own error handling.
@@ -45,7 +52,8 @@
  * backstop first (nothing should still be marking links failed once
  * everything else is stopping), the reconciler (stops scheduling new
  * jobs — does not close any already-open session, mirroring every
- * watcher's own `stop()` contract), both watchers, then the store.
+ * watcher's own `stop()` contract), the relay sweeper, both watchers,
+ * then the store.
  *
  * Every collaborator is injectable via {@link StartRuntimeOptions},
  * mirroring `cli.ts`'s own `CliDeps` seam ("real defaults, fakes in
@@ -78,6 +86,13 @@ import {
   type RelayBridgerDeps,
   type RelayBridgerOptions,
 } from "./connect/relayBridger.js";
+import { createRelayLeaseRevocation as defaultCreateRelayLeaseRevocation } from "./connect/relayLeaseRevocation.js";
+import {
+  startRelaySweeper as defaultStartRelaySweeper,
+  type RelaySweeperDeps,
+  type RelaySweeperHandle,
+  type RelaySweeperOptions,
+} from "./watchers/relaySweeper.js";
 import {
   installUnhandledRejectionBackstop as defaultInstallUnhandledRejectionBackstop,
   type UnhandledRejectionBackstopDeps,
@@ -165,6 +180,16 @@ export interface StartRuntimeOptions {
    * {@link createRelayBridger} calls. */
   reconcilerDeps?: Omit<ReconcilerDeps, "connector" | "bridger">;
 
+  createRelayLeaseRevocation?: typeof defaultCreateRelayLeaseRevocation;
+
+  startRelaySweeper?: typeof defaultStartRelaySweeper;
+  /** Every {@link RelaySweeperDeps} field except `revocation`, which this
+   * module always wires to its own {@link createRelayLeaseRevocation}
+   * call (ticket 016-003) — the same shared seam a future ticket wires
+   * into the bridger too. */
+  relaySweeperDeps?: Omit<RelaySweeperDeps, "revocation">;
+  relaySweeperOptions?: RelaySweeperOptions;
+
   installUnhandledRejectionBackstop?: typeof defaultInstallUnhandledRejectionBackstop;
   unhandledRejectionDeps?: UnhandledRejectionBackstopDeps;
 }
@@ -189,6 +214,8 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
   const createHarvesterFn = options.createHarvester ?? defaultCreateHarvester;
   const createRelayBridgerFn = options.createRelayBridger ?? defaultCreateRelayBridger;
   const startReconcilerFn = options.startReconciler ?? defaultStartReconciler;
+  const createRelayLeaseRevocationFn = options.createRelayLeaseRevocation ?? defaultCreateRelayLeaseRevocation;
+  const startRelaySweeperFn = options.startRelaySweeper ?? defaultStartRelaySweeper;
   const installUnhandledRejectionBackstopFn =
     options.installUnhandledRejectionBackstop ?? defaultInstallUnhandledRejectionBackstop;
 
@@ -228,6 +255,19 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
   const connector = createConnectorFn(store, { ...options.connectorDeps, harvester }, options.connectorOptions);
   const bridger = createRelayBridgerFn(store, { ...options.relayBridgerDeps, harvester }, options.relayBridgerOptions);
   const reconciler = startReconcilerFn(store, { ...options.reconcilerDeps, connector, bridger });
+
+  // Ticket 016-003: the sweeper's own shared revocation seam. Constructed
+  // once per runtime, exactly like the harvester's fan-out above -- a
+  // future ticket (004) hands this same instance to the bridger too, so
+  // a student's connect can find and abort a running sweep pass without
+  // either module importing the other.
+  const relayLeaseRevocation = createRelayLeaseRevocationFn();
+  const relaySweeperHandle: RelaySweeperHandle = startRelaySweeperFn(
+    store,
+    { ...options.relaySweeperDeps, revocation: relayLeaseRevocation },
+    options.relaySweeperOptions,
+  );
+
   const uninstallUnhandledRejectionBackstop = installUnhandledRejectionBackstopFn(store, options.unhandledRejectionDeps);
 
   let stopped = false;
@@ -243,6 +283,7 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
       stopped = true;
       uninstallUnhandledRejectionBackstop();
       reconciler.stop();
+      relaySweeperHandle.stop();
       usbHandle.stop();
       mdnsHandle.stop();
       store.close();

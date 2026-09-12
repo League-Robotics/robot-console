@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runRelayCommandPlane, RelayHandshakeError, sync, setChannelGroup, go } from "./RelayCommandPlane.js";
+import { runRelayCommandPlane, RelayHandshakeError, sync, setChannelGroup, go, probeRadioId } from "./RelayCommandPlane.js";
 import type { Scheduler } from "./pacing.js";
 
 // This suite exercises `runRelayCommandPlane` entirely against a fake
@@ -311,5 +311,59 @@ describe("sync/setChannelGroup/go -- individually callable steps (ticket 014-006
     expect(link.writes).toEqual(["!GO\n"]);
     link.emit("# entering data plane");
     await expect(promise).resolves.toBeUndefined();
+  });
+});
+
+describe("probeRadioId -- sprint 016 ticket 003's own sweep probe step", () => {
+  it("sends '> ID' and resolves true once a matching '< id ...' reply arrives, never sending !GO or HELLO", async () => {
+    const link = fakeRelayLink();
+    const scheduler = controllableScheduler();
+    const promise = probeRadioId("vevov", { write: link.write, subscribe: link.subscribe, scheduler });
+    await flush();
+    expect(link.writes).toEqual(["> ID\n"]);
+    link.emit("< id diffdrive vevov 1.0.10 vevov");
+    await expect(promise).resolves.toBe(true);
+    expect(link.writes).not.toContain("!GO\n");
+    expect(link.writes.some((w) => w.startsWith("HELLO"))).toBe(false);
+  });
+
+  it("ignores a reply for a different name, then resolves true once the matching one arrives", async () => {
+    const link = fakeRelayLink();
+    const scheduler = controllableScheduler();
+    const promise = probeRadioId("vevov", { write: link.write, subscribe: link.subscribe, scheduler });
+    await flush();
+    link.emit("< id diffdrive tovez 1.0.10 tovez"); // a different robot answering on the same channel
+    link.emit("< id diffdrive vevov 1.0.10 vevov");
+    await expect(promise).resolves.toBe(true);
+  });
+
+  it("resolves false on timeout when no reply arrives within timeoutMs -- a candidate that does not answer, not a handshake failure", async () => {
+    const link = fakeRelayLink();
+    const scheduler = controllableScheduler();
+    const promise = probeRadioId("vevov", { write: link.write, subscribe: link.subscribe, scheduler, timeoutMs: 500 });
+    await flush();
+    expect(link.writes).toEqual(["> ID\n"]);
+    scheduler.resolveAll();
+    await expect(promise).resolves.toBe(false);
+  });
+
+  it("defaults to a 500ms timeout when none is given", async () => {
+    const link = fakeRelayLink();
+    const scheduler = controllableScheduler();
+    const promise = probeRadioId("vevov", { write: link.write, subscribe: link.subscribe, scheduler });
+    await flush();
+    scheduler.resolveAll();
+    await expect(promise).resolves.toBe(false);
+  });
+
+  it("rejects immediately with the signal's own abort reason when already aborted before the probe starts, never sending '> ID'", async () => {
+    const link = fakeRelayLink();
+    const scheduler = controllableScheduler();
+    const controller = new AbortController();
+    controller.abort(new Error("probe aborted before it started"));
+    await expect(
+      probeRadioId("vevov", { write: link.write, subscribe: link.subscribe, scheduler, signal: controller.signal }),
+    ).rejects.toThrow(/probe aborted before it started/);
+    expect(link.writes).toEqual([]);
   });
 });

@@ -376,6 +376,22 @@ export interface ProjectionRows {
    * `wsMessages.ts`'s own `AddressSource` doc comment, which duplicates
    * a value across a module boundary for the same reason. */
   readonly wifiCredentials: { ssid: string; password: string } | null;
+  /** `true`/`false` per relay link id that has ever completed a
+   * lease-acquisition capability check (`watchers/relaySweeper.ts`'s own
+   * `runOnePass`, ticket 016-007) -- `true` when that relay's most
+   * recent `?`/status reply advertised rearch-12's non-persisting `!CGT`
+   * tune (`caps: CGT`), `false` when it was checked and did not, and no
+   * entry at all when no pass has completed against that link yet
+   * (`projection.ts`'s `buildSnapshot` reports that third case as
+   * `SnapshotRelay.sweep: null` -- "never yet detected" is a distinct,
+   * honest answer from "detected off"). Read from `settings` rows keyed
+   * `` `relaySweepFast:<relayLinkId>` `` -- that prefix is duplicated
+   * here as a literal rather than imported from
+   * `watchers/relaySweeper.ts`'s own `fastSweepSettingKey`, for the same
+   * reason {@link wifiCredentials}'s own doc comment gives: importing it
+   * would point a dependency from `store/index.ts` at a `watchers/*`
+   * module, which itself depends on `store/index.ts` (a cycle). */
+  readonly fastSweepByRelayLinkId: ReadonlyMap<string, boolean>;
 }
 
 function toJson(value: unknown): string | null {
@@ -1037,6 +1053,12 @@ export class Store {
    * this is a duplicated literal, not an import. */
   private static readonly WIFI_CREDENTIALS_SETTING_KEY = "wifiCredentials";
 
+  /** The `settings.key` prefix `watchers/relaySweeper.ts`'s own
+   * `fastSweepSettingKey(relayLinkId)` stores each relay's fast-sweep
+   * capability flag under — see {@link ProjectionRows.fastSweepByRelayLinkId}'s
+   * own doc comment for why this is a duplicated literal, not an import. */
+  private static readonly FAST_SWEEP_SETTING_PREFIX = "relaySweepFast:";
+
   /** The typed, camelCased read model `projection.ts`'s `buildSnapshot`
    * needs — see {@link ProjectionRows}. */
   projectionRows(): ProjectionRows {
@@ -1128,6 +1150,13 @@ export class Store {
       }
     }
 
+    const fastSweepSettingRows = this.db
+      .prepare("SELECT key, value FROM settings WHERE key LIKE ?")
+      .all(`${Store.FAST_SWEEP_SETTING_PREFIX}%`) as Array<{ key: string; value: string }>;
+    const fastSweepByRelayLinkId = new Map<string, boolean>(
+      fastSweepSettingRows.map((row) => [row.key.slice(Store.FAST_SWEEP_SETTING_PREFIX.length), row.value === "1"] as const),
+    );
+
     return {
       devices: deviceRows.map((d) => ({
         id: d.id,
@@ -1176,6 +1205,7 @@ export class Store {
       tasks: taskRows.map((t) => ({ name: t.name, state: t.state, heartbeatAt: t.heartbeat_at })),
       lastChecked: lastCheckedRows.map((r) => ({ deviceId: r.device_id, at: r.at })),
       wifiCredentials,
+      fastSweepByRelayLinkId,
     };
   }
 

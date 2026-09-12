@@ -9,7 +9,9 @@ import {
   buildSetPowerLine,
   buildTransientChannelGroupLine,
   classifyRelayReply,
+  hasTransientTuneCapability,
   parseRadioIdReply,
+  parseRelayCapabilities,
   parseRelayStatusLine,
   relayPreambleSteps,
   RelayCommandError,
@@ -177,6 +179,54 @@ describe("parseRelayStatusLine", () => {
 
   it("returns null for a status-shaped line missing a field", () => {
     expect(parseRelayStatusLine("# channel: 47 group: 60")).toBeNull();
+  });
+});
+
+describe("parseRelayCapabilities (rearch-12, League-Robotics/microbit-radio-relay#1 -- merged: `caps: CGT`)", () => {
+  it("parses the trailing caps: field off a full status line", () => {
+    expect(parseRelayCapabilities("# channel: 47 group: 60 mode: RAW250 power: 7 caps: CGT")).toEqual({
+      tokens: ["CGT"],
+    });
+  });
+
+  it("is case-insensitive on both the 'caps:' label and the token itself", () => {
+    expect(parseRelayCapabilities("# channel: 47 group: 60 mode: RAW250 power: 7 CAPS: cgt")).toEqual({
+      tokens: ["CGT"],
+    });
+  });
+
+  it("returns null when the line has no caps: field at all (older firmware)", () => {
+    expect(parseRelayCapabilities("# channel: 47 group: 60 mode: RAW250 power: 7")).toBeNull();
+    expect(parseRelayCapabilities("# echo: OFF")).toBeNull();
+    expect(parseRelayCapabilities("not a relay reply at all")).toBeNull();
+  });
+
+  it("returns null for a caps: field with nothing after it -- never guesses at a partial parse", () => {
+    expect(parseRelayCapabilities("# channel: 47 group: 60 mode: RAW250 power: 7 caps:")).toBeNull();
+    expect(parseRelayCapabilities("# channel: 47 group: 60 mode: RAW250 power: 7 caps: ")).toBeNull();
+  });
+
+  it("parses multiple tokens, whitespace- or comma-separated, in case a future firmware advertises more than one", () => {
+    expect(parseRelayCapabilities("# channel: 47 group: 60 mode: RAW250 power: 7 caps: CGT TX")).toEqual({
+      tokens: ["CGT", "TX"],
+    });
+    expect(parseRelayCapabilities("# channel: 47 group: 60 mode: RAW250 power: 7 caps: CGT,TX")).toEqual({
+      tokens: ["CGT", "TX"],
+    });
+  });
+});
+
+describe("hasTransientTuneCapability", () => {
+  it("is true when the caps: field includes CGT", () => {
+    expect(hasTransientTuneCapability("# channel: 47 group: 60 mode: RAW250 power: 7 caps: CGT")).toBe(true);
+  });
+
+  it("is false when caps: is present but does not include CGT", () => {
+    expect(hasTransientTuneCapability("# channel: 47 group: 60 mode: RAW250 power: 7 caps: TX")).toBe(false);
+  });
+
+  it("is false when the line has no caps: field at all (older firmware defaults off)", () => {
+    expect(hasTransientTuneCapability("# channel: 47 group: 60 mode: RAW250 power: 7")).toBe(false);
   });
 });
 

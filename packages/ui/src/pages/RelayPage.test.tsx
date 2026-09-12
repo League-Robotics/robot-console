@@ -202,6 +202,33 @@ describe("RelayPage: not connected", () => {
     expect(el.querySelector('[data-testid="relay-idle"]')?.textContent).toBe("idle");
   });
 
+  it("ticket 016-007: renders 'idle · sweeping (fast)' once the sweeper has detected the relay's non-persisting-tune capability", () => {
+    const { el, socket } = mountRelayPage(relayDevice());
+    pushSnapshot(socket, {
+      devices: [relayDevice()],
+      relays: [{ linkId: RELAY_LINK_ID, lease: "sweep", sweep: { rate: "fast" } }],
+    });
+    expect(el.querySelector('[data-testid="relay-idle"]')?.textContent).toBe("idle · sweeping (fast)");
+  });
+
+  it("ticket 016-007: renders 'idle · sweeping (slow)' once a sync has completed and found no capability advertised", () => {
+    const { el, socket } = mountRelayPage(relayDevice());
+    pushSnapshot(socket, {
+      devices: [relayDevice()],
+      relays: [{ linkId: RELAY_LINK_ID, lease: "sweep", sweep: { rate: "slow" } }],
+    });
+    expect(el.querySelector('[data-testid="relay-idle"]')?.textContent).toBe("idle · sweeping (slow)");
+  });
+
+  it("ticket 016-007: omits the rate suffix (unchanged label) when sweep is null -- no sync has completed against this relay yet", () => {
+    const { el, socket } = mountRelayPage(relayDevice());
+    pushSnapshot(socket, {
+      devices: [relayDevice()],
+      relays: [{ linkId: RELAY_LINK_ID, lease: "sweep", sweep: null }],
+    });
+    expect(el.querySelector('[data-testid="relay-idle"]')?.textContent).toBe("idle · sweeping");
+  });
+
   it("renders the in-flight bridging state from relays[].bridging, not the idle line", () => {
     const relays: SnapshotRelay[] = [{ linkId: RELAY_LINK_ID, lease: "session", bridging: { state: "connecting", robotName: "GoPiv" } }];
     const { el, socket } = mountRelayPage(relayDevice());

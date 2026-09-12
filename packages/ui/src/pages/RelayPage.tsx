@@ -49,6 +49,14 @@
  * `"connectable"`/`"discovered"`) being mistaken for a live child (see
  * that function's own doc comment).
  *
+ * Ticket 016-007 appends a "(fast)"/"(slow)" suffix to the "sweeping"
+ * label (`deviceDisplay.ts`'s own `sweepRateSuffix`, driven by
+ * `SnapshotRelay.sweep`) once the sweeper has feature-detected whether
+ * this relay advertises rearch-12's non-persisting `!CGT` tune -- absent
+ * until a lease-acquisition sync has completed against this relay at
+ * least once, so a fresh relay still renders the pre-ticket-007 label
+ * unchanged.
+ *
  * ## `AddressSourceChip` reads `child.device.radio.source`
  *
  * The retired `addressSource`/`failoverTrail` fields (reconstructed
@@ -91,7 +99,7 @@ import { AddressSourceChip } from "../components/AddressSourceChip";
 import { DeviceConsole } from "../components/DeviceConsole";
 import { RobotPage } from "./RobotPage";
 import { useDevices, useRelays, useSendable, useWsActions } from "../ws/WsProvider";
-import { findRelayChild, findSweepingCandidateName } from "../deviceDisplay";
+import { findRelayChild, findSweepingCandidateName, sweepRateSuffix } from "../deviceDisplay";
 import "./RelayPage.css";
 
 export interface RelayPageProps {
@@ -231,7 +239,7 @@ export function RelayPage({ device }: RelayPageProps) {
           )}
           {!bridging && (
             <p className="relay-idle-status" role="status" data-testid="relay-idle">
-              {lease === "sweep" ? `idle · sweeping${sweepingName ? ` ${sweepingName}` : ""}` : "idle"}
+              {lease === "sweep" ? `idle · sweeping${sweepingName ? ` ${sweepingName}` : ""}${sweepRateSuffix(relayInfo)}` : "idle"}
             </p>
           )}
 

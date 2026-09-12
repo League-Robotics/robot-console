@@ -155,7 +155,8 @@
   "relays": [
     {
       "linkId": "usb-relay-1",
-      "lease": "sweep"
+      "lease": "sweep",
+      "sweep": null
     }
   ],
   "firmware": {

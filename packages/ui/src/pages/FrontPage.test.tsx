@@ -575,6 +575,18 @@ describe("relay quick-connect", () => {
     expect(el.querySelector('[data-testid="relay-quick-lost-3"]')).toBeNull();
   });
 
+  it("ticket 016-007: renders 'idle · sweeping (fast)' once the sweeper has detected the relay's non-persisting-tune capability", () => {
+    const relays: SnapshotRelay[] = [{ linkId: "usb-relay-1", lease: "sweep", sweep: { rate: "fast" } }];
+    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice()]} unassigned={[]} relays={relays} />));
+    expect(el.querySelector('[data-testid="relay-quick-idle-3"]')?.textContent).toBe("idle · sweeping (fast)");
+  });
+
+  it("ticket 016-007: renders 'idle · sweeping (slow)' once a sync has completed and found no capability advertised", () => {
+    const relays: SnapshotRelay[] = [{ linkId: "usb-relay-1", lease: "sweep", sweep: { rate: "slow" } }];
+    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice()]} unassigned={[]} relays={relays} />));
+    expect(el.querySelector('[data-testid="relay-quick-idle-3"]')?.textContent).toBe("idle · sweeping (slow)");
+  });
+
   it("a device carrying a 'last checked' timestamp on its via-linked radio row renders it in the device card's own connection list", () => {
     const at = Date.now() - 60_000;
     const swept = device(5, {

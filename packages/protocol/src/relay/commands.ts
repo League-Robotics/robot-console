@@ -302,6 +302,71 @@ export function parseRelayStatusLine(line: string): RelayStatusLine | null {
   };
 }
 
+/**
+ * One relay's advertised capability tokens, parsed from the trailing
+ * `caps: <TOKEN...>` field a `?`/status reply line may carry (rearch-12,
+ * `League-Robotics/microbit-radio-relay#1` — merged 2026-09-12: the
+ * firmware advertises `!CGT`'s non-persisting tune as `caps: CGT`,
+ * appended to the existing four-field status line rather than a
+ * separate reply, e.g. `# channel: 47 group: 60 mode: RAW250 power: 7
+ * caps: CGT`). `tokens` is always upper-cased and never empty (a `caps:`
+ * field with no tokens after it does not parse — see
+ * {@link parseRelayCapabilities}).
+ */
+export interface RelayCapabilities {
+  readonly tokens: readonly string[];
+}
+
+/** Matches a trailing `caps: <TOKEN> [<TOKEN> ...]` field anywhere on the
+ * line (the merged firmware's own words: "an extensible feature list on
+ * the `?` response") — tokens separated by whitespace and/or commas, so
+ * both a space-separated list and a comma-separated one parse the same
+ * way if firmware ever advertises more than one. */
+const CAPS_PATTERN = /\bcaps:\s*([A-Za-z0-9]+(?:[\s,]+[A-Za-z0-9]+)*)/i;
+
+/**
+ * Parse the trailing `caps: <TOKEN...>` field off one relay `?`/status
+ * reply line (older firmware, or any line with no `caps:` field at all,
+ * parses as `null` — this is not a rejection of a malformed line, just
+ * "this firmware never advertised anything"). Deliberately independent
+ * of {@link parseRelayStatusLine}: firmware that has not yet been
+ * feature-detected still confirms `!CG`/`!P`/`?` with the same four-field
+ * line, just without the trailing `caps:` — a caller checks for the
+ * capability token on the very same status line it already inspects for
+ * `channel`/`group`, not a second reply.
+ *
+ * `null` (never an empty `tokens` array) for a `caps:` field with nothing
+ * useful after it — this never guesses at a partial parse, same
+ * discipline as {@link parseRelayStatusLine}.
+ */
+export function parseRelayCapabilities(line: string): RelayCapabilities | null {
+  const match = CAPS_PATTERN.exec(line);
+  if (!match) {
+    return null;
+  }
+  const tokens = match[1]!
+    .split(/[\s,]+/)
+    .map((token) => token.toUpperCase())
+    .filter((token) => token.length > 0);
+  if (tokens.length === 0) {
+    return null;
+  }
+  return { tokens };
+}
+
+/**
+ * Has this relay's `?`/status reply advertised rearch-12's non-persisting
+ * `!CGT` tune (the merged upstream resolution's own token, `caps: CGT` —
+ * see {@link parseRelayCapabilities}'s doc comment)? A thin, named
+ * convenience over that parser for the one capability
+ * `watchers/relaySweeper.ts` (ticket 016-007) actually acts on -- callers
+ * that need the raw token list still have {@link parseRelayCapabilities}
+ * itself.
+ */
+export function hasTransientTuneCapability(line: string): boolean {
+  return parseRelayCapabilities(line)?.tokens.includes("CGT") ?? false;
+}
+
 /** Which shape a relay's `#`-prefixed reply line takes. `"status"` is
  * the full `# channel: ... power: ...` line ({@link parseRelayStatusLine}
  * parses it); `"echo"`/`"mode"` are the single-field acknowledgements

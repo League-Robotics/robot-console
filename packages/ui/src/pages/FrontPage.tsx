@@ -68,7 +68,9 @@
  * `findSweepingCandidateName` (a client-side inference from
  * `SnapshotDevice.lastChecked`, since no wire field names "which
  * candidate is mid-probe right now" -- see that function's own doc
- * comment). `DeviceCard`'s own per-link connection row also renders
+ * comment), and (ticket 016-007) `sweepRateSuffix`, appending "(fast)"/
+ * "(slow)" once the sweeper has feature-detected rearch-12's
+ * non-persisting `!CGT` tune for this relay. `DeviceCard`'s own per-link connection row also renders
  * "Last checked `<time>`" (`deviceDisplay.ts`'s `lastCheckedText`)
  * alongside a `via`-linked (radio/mbrelay) row's existing "(via relay
  * `<name>`)" label (`connectionLabel`, unchanged) -- architecture.md
@@ -87,7 +89,7 @@ import {
   useUnassigned,
   useWsActions,
 } from "../ws/WsProvider";
-import { findRelayChild, findSweepingCandidateName, isCalibrationProgram, lastCheckedText } from "../deviceDisplay";
+import { findRelayChild, findSweepingCandidateName, isCalibrationProgram, lastCheckedText, sweepRateSuffix } from "../deviceDisplay";
 import { FlashDialog } from "../components/FlashDialog";
 import "./FrontPage.css";
 
@@ -539,7 +541,7 @@ function RelayQuickConnect({
       )}
       {!child && !bridging && (
         <p className="device-relay-idle" role="status" data-testid={`relay-quick-idle-${relay.id}`}>
-          {lease === "sweep" ? `idle · sweeping${sweepingName ? ` ${sweepingName}` : ""}` : "idle"}
+          {lease === "sweep" ? `idle · sweeping${sweepingName ? ` ${sweepingName}` : ""}${sweepRateSuffix(relayInfo)}` : "idle"}
         </p>
       )}
       <div className="device-relay-connect-row">

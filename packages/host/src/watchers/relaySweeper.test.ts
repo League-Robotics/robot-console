@@ -76,6 +76,12 @@ class SweepRelayByteStream extends FakeByteStream {
     private readonly answeringNames: ReadonlySet<string>,
     private readonly nowFn: () => number,
     startParked = false,
+    /** Ticket 016-007: when set, every `?`/`!CG`/`!CGT` reply advertises
+     * this token in a trailing `caps:` field (e.g. `"CGT"`), exactly like
+     * the merged upstream firmware (`League-Robotics/microbit-radio-relay#1`)
+     * does -- lets a test simulate a relay that has (or has not)
+     * feature-detected the non-persisting tune. */
+    private readonly capsToken?: string,
   ) {
     super();
     this.parked = startParked;
@@ -95,17 +101,22 @@ class SweepRelayByteStream extends FakeByteStream {
       return;
     }
 
+    const capsSuffix = this.capsToken ? ` caps: ${this.capsToken}` : "";
+
     if (line === "?") {
-      this.emitData("# channel: 1 group: 1 mode: RAW250 power: 7\n");
+      this.emitData(`# channel: 1 group: 1 mode: RAW250 power: 7${capsSuffix}\n`);
       return;
     }
-    const cgMatch = /^!CG (\d+) (\d+)$/.exec(line);
+    // Matches both the persisting `!CG <ch> <grp>` and the non-persisting
+    // `!CGT <ch> <grp>` (ticket 016-007) -- the merged firmware confirms
+    // both with the identical status-line shape.
+    const cgMatch = /^!CGT? (\d+) (\d+)$/.exec(line);
     if (cgMatch) {
       this.cgWriteTimes.push(this.nowFn());
       const channel = Number(cgMatch[1]);
       const group = Number(cgMatch[2]);
       this.lastTune = { channel, group };
-      this.emitData(`# channel: ${channel} group: ${group} mode: RAW250 power: 7\n`);
+      this.emitData(`# channel: ${channel} group: ${group} mode: RAW250 power: 7${capsSuffix}\n`);
       return;
     }
     if (line === "> ID") {
@@ -568,6 +579,101 @@ describe("createRelaySweepPassRunner().runOnePass", () => {
     expect(revocation.get(relayLinkId)).toBeUndefined();
     expect(store.reconcilerRows().relayLeases.find((l) => l.relayLinkId === relayLinkId)).toBeUndefined();
     store.close();
+  }, 10_000);
+});
+
+// ---------------------------------------------------------------------
+// Ticket 016-007: capability detection (non-persisting `!CGT` tune),
+// fast sweep interval -- against a fake relay whose `?`/status reply
+// does (or does not) advertise `caps: CGT`
+// (`League-Robotics/microbit-radio-relay#1`, merged upstream).
+// ---------------------------------------------------------------------
+
+describe("createRelaySweepPassRunner().runOnePass -- capability detection (ticket 016-007)", () => {
+  it("against a relay advertising caps: CGT: records the fast-sweep setting and tunes with !CGT, never the persisting !CG", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY";
+    seedRelay(store, 900001, relayLinkId, 1);
+    const name = seedOwnedRobot(store, 100001, 1);
+
+    const stream = new SweepRelayByteStream([name], new Set([name]), () => Date.now(), false, "CGT");
+    const runner = makeRunner(store, () => stream);
+
+    await runner.runOnePass(relayLinkId, new AbortController());
+
+    expect(isFastSweepEnabled(store, relayLinkId)).toBe(true);
+    const writes = stream.writes.map((w) => w.bytes.trim());
+    expect(writes.some((w) => w.startsWith("!CGT "))).toBe(true);
+    expect(writes.some((w) => /^!CG \d/.test(w))).toBe(false);
+    store.close();
+  });
+
+  it("against a relay with no capability token: stays on the persisting !CG, and explicitly records the flag off", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY";
+    seedRelay(store, 900001, relayLinkId, 1);
+    const name = seedOwnedRobot(store, 100001, 1);
+
+    const stream = new SweepRelayByteStream([name], new Set([name]), () => Date.now());
+    const runner = makeRunner(store, () => stream);
+
+    await runner.runOnePass(relayLinkId, new AbortController());
+
+    expect(isFastSweepEnabled(store, relayLinkId)).toBe(false);
+    expect(store.getSetting(fastSweepSettingKey(relayLinkId))).toBe("0");
+    const writes = stream.writes.map((w) => w.bytes.trim());
+    expect(writes.some((w) => /^!CG \d/.test(w))).toBe(true);
+    expect(writes.some((w) => w.startsWith("!CGT "))).toBe(false);
+    store.close();
+  });
+
+  it("re-detects fresh on every lease acquisition -- a relay that stops advertising the capability falls back to !CG on the very next pass", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY";
+    seedRelay(store, 900001, relayLinkId, 1);
+    const name = seedOwnedRobot(store, 100001, 1);
+
+    // First pass: capability advertised.
+    const fastStream = new SweepRelayByteStream([name], new Set([name]), () => Date.now(), false, "CGT");
+    await makeRunner(store, () => fastStream).runOnePass(relayLinkId, new AbortController());
+    expect(isFastSweepEnabled(store, relayLinkId)).toBe(true);
+
+    // Second (later) lease acquisition against the same relayLinkId, now
+    // answering with no capability token at all (e.g. swapped for older
+    // firmware) -- the flag must flip back off, not remain stale "on".
+    const slowStream = new SweepRelayByteStream([name], new Set([name]), () => Date.now());
+    await makeRunner(store, () => slowStream).runOnePass(relayLinkId, new AbortController());
+
+    expect(isFastSweepEnabled(store, relayLinkId)).toBe(false);
+    const writes = slowStream.writes.map((w) => w.bytes.trim());
+    expect(writes.some((w) => /^!CG \d/.test(w))).toBe(true);
+    expect(writes.some((w) => w.startsWith("!CGT "))).toBe(false);
+    store.close();
+  });
+
+  it("with the capability detected, successive tune writes are spaced by the fast interval, not the (much larger) default", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY";
+    seedRelay(store, 900001, relayLinkId, 1);
+    const names = [seedOwnedRobot(store, 100001, 1), seedOwnedRobot(store, 100002, 1), seedOwnedRobot(store, 100003, 1)];
+
+    const stream = new SweepRelayByteStream(names, new Set(names), () => Date.now(), false, "CGT");
+    const runner = createRelaySweepPassRunner(
+      store,
+      { createSerialStream: () => stream, scheduler: realScheduler, now: () => Date.now(), revocation: createRelayLeaseRevocation() },
+      { ...FAST_OPTS, sweepMinIntervalMs: 5000, fastSweepIntervalMs: 20 },
+    );
+
+    await runner.runOnePass(relayLinkId, new AbortController());
+
+    expect(stream.cgWriteTimes.length).toBe(3);
+    for (let i = 1; i < stream.cgWriteTimes.length; i++) {
+      const gap = stream.cgWriteTimes[i]! - stream.cgWriteTimes[i - 1]!;
+      // Comfortably bounded by the fast interval, nowhere near the 5s
+      // slow default -- proves the fast path (not the persisting one) is
+      // what actually governs pacing once the capability is detected.
+      expect(gap).toBeLessThan(1000);
+    }
   }, 10_000);
 });
 

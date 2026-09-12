@@ -98,6 +98,7 @@ import {
   buildQueryLine,
   buildRadioSendLine,
   buildSetChannelGroupLine,
+  buildTransientChannelGroupLine,
   classifyRelayReply,
   parseRadioIdReply,
   parseRelayStatusLine,
@@ -177,6 +178,17 @@ export interface RelaySyncOptions extends RelayLinkIO {
   syncAttempts?: number;
   scheduler?: Scheduler;
   signal?: AbortSignal;
+  /** Invoked with the raw status-line reply each time {@link sync}
+   * observes one (ticket 016-007) -- lets a caller (`watchers/
+   * relaySweeper.ts`'s own lease-acquisition ready-check) read the
+   * relay's `?` reply, including any trailing `caps:` capability field
+   * (`@robot-console/protocol`'s `parseRelayCapabilities`/
+   * `hasTransientTuneCapability`), directly off the sync exchange this
+   * module already performs every lease acquisition -- rather than
+   * issuing a second `?` round trip purely for capability detection.
+   * Optional; omitted entirely, this module behaves exactly as it did
+   * before ticket 016-007. */
+  onStatusLine?: (line: string) => void;
 }
 
 /** Options for {@link runRelayCommandPlane} -- {@link RelaySyncOptions}
@@ -276,7 +288,7 @@ const DEFAULT_SYNC_ATTEMPTS = 16;
  * or with `options.signal`'s abort reason if it fires first.
  */
 export async function sync(options: RelaySyncOptions): Promise<void> {
-  const { write, subscribe, signal } = options;
+  const { write, subscribe, signal, onStatusLine } = options;
   const scheduler = options.scheduler ?? realScheduler;
   const syncRetryMs = options.syncRetryMs ?? DEFAULT_SYNC_RETRY_MS;
   const syncAttempts = options.syncAttempts ?? DEFAULT_SYNC_ATTEMPTS;
@@ -294,6 +306,9 @@ export async function sync(options: RelaySyncOptions): Promise<void> {
       (candidate) => classifyRelayReply(candidate) === "status",
       signal,
     );
+    if (reply !== undefined) {
+      onStatusLine?.(reply);
+    }
     synced = reply !== undefined;
   }
   if (!synced) {
@@ -324,6 +339,35 @@ export async function setChannelGroup(channel: number, group: number, options: R
     },
   };
   await step(options.write, options.subscribe, scheduler, timeoutMs, cgStep, options.signal);
+}
+
+/**
+ * Send `!CGT <channel> <group>` alone and wait for its confirmation --
+ * {@link setChannelGroup}'s non-persisting sibling (rearch-12,
+ * `League-Robotics/microbit-radio-relay#1`, merged), for a caller that
+ * has already feature-detected the relay's `caps: CGT` advertisement
+ * (`@robot-console/protocol`'s `hasTransientTuneCapability`) and wants to
+ * retune without wearing the relay's flash (`watchers/relaySweeper.ts`'s
+ * own fast-sweep path, ticket 016-007). Confirmed exactly like `!CG` --
+ * the merged firmware's own example echoes the identical `# channel: ...
+ * group: ... mode: ... power: ...` line for `!CGT` too, only the command
+ * sent differs, so this step's `confirms` predicate is unchanged from
+ * {@link setChannelGroup}'s. Rejects with a {@link RelayHandshakeError}
+ * on rejection/timeout, or with `options.signal`'s abort reason if it
+ * fires first.
+ */
+export async function setChannelGroupTransient(channel: number, group: number, options: RelayStepOptions): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
+  const scheduler = options.scheduler ?? realScheduler;
+  const cgtStep: RelayPreambleStep = {
+    line: buildTransientChannelGroupLine(channel, group),
+    label: `!CGT ${channel} ${group}`,
+    confirms: (reply) => {
+      const status = parseRelayStatusLine(reply);
+      return status !== null && status.channel === channel && status.group === group;
+    },
+  };
+  await step(options.write, options.subscribe, scheduler, timeoutMs, cgtStep, options.signal);
 }
 
 /**

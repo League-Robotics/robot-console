@@ -22,7 +22,7 @@
  * rendered by `FrontPage.tsx`'s own `linkStatusText`, not folded into a
  * device's role text.
  */
-import type { FirmwareAvailability, FirmwareKind, FlashPhase, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import type { FirmwareAvailability, FirmwareKind, FlashPhase, SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
 
 /** A device's display name. `SnapshotDevice.name` is always a resolved
  * string (see this module's doc comment), so this is never anything
@@ -222,6 +222,26 @@ export function findSweepingCandidateName(devices: readonly SnapshotDevice[], re
     }
   }
   return best?.name;
+}
+
+/**
+ * The "(fast)"/"(slow)" suffix appended to the relay card's "idle ·
+ * sweeping" label (ticket 016-007; rearch-12,
+ * `League-Robotics/microbit-radio-relay#1`, merged) -- a diagnosable
+ * reason for a slow classroom-wide sweep pass ("this relay hasn't
+ * advertised the fast tune") rather than the sweeper simply looking slow
+ * for no visible reason. Empty string when `relay.sweep` is absent or
+ * `null` -- either an older snapshot with no `sweep` field at all, or a
+ * relay for which no lease-acquisition sync has completed yet -- so the
+ * existing plain "idle · sweeping `<name>`" label is unchanged in either
+ * case (both `RelayPage.tsx` and `FrontPage.tsx`'s own pre-016-007 tests
+ * still pass unmodified).
+ */
+export function sweepRateSuffix(relay: SnapshotRelay | undefined): string {
+  if (!relay?.sweep) {
+    return "";
+  }
+  return ` (${relay.sweep.rate})`;
 }
 
 /** "Last checked `<time>`" text for a `via`-linked (radio/mbrelay) link

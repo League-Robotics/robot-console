@@ -9,7 +9,7 @@
  * comment for why flashability moved from device to link.
  */
 import { describe, expect, it } from "vitest";
-import type { FirmwareAvailability, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import type { FirmwareAvailability, SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
 import {
   canBeFlashed,
   findRelayChild,
@@ -20,6 +20,7 @@ import {
   lastCheckedText,
   nameDisplay,
   roleDisplay,
+  sweepRateSuffix,
   SWEEP_LABEL_FRESH_MS,
 } from "./deviceDisplay";
 
@@ -249,5 +250,29 @@ describe("lastCheckedText", () => {
 
   it("is undefined when the device has never been checked", () => {
     expect(lastCheckedText(device({ lastChecked: null }), viaLink())).toBeUndefined();
+  });
+});
+
+describe("sweepRateSuffix (ticket 016-007)", () => {
+  const base: SnapshotRelay = { linkId: RELAY_LINK_ID, lease: "sweep" };
+
+  it("renders ' (fast)' when sweep.rate is fast", () => {
+    expect(sweepRateSuffix({ ...base, sweep: { rate: "fast" } })).toBe(" (fast)");
+  });
+
+  it("renders ' (slow)' when sweep.rate is slow", () => {
+    expect(sweepRateSuffix({ ...base, sweep: { rate: "slow" } })).toBe(" (slow)");
+  });
+
+  it("is empty when sweep is null (no lease-acquisition sync has completed yet)", () => {
+    expect(sweepRateSuffix({ ...base, sweep: null })).toBe("");
+  });
+
+  it("is empty when sweep is absent entirely (a pre-016-007 snapshot)", () => {
+    expect(sweepRateSuffix(base)).toBe("");
+  });
+
+  it("is empty when relay itself is undefined (no relays[] entry at all)", () => {
+    expect(sweepRateSuffix(undefined)).toBe("");
   });
 });

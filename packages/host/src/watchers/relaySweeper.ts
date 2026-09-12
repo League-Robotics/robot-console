@@ -20,17 +20,20 @@
  *
  * ## Rate limiting: at most one `!CG` per relay per interval
  *
- * Every `!CG` persists to the relay's flash until rearch-12's firmware
- * change ships (`saveConfig()` skips only *unchanged* values) — a sweep
- * retuning every couple of seconds would wear it out. This module holds
- * one relay's own physical port open for a whole pass (one `!CG`+probe
- * per remembered candidate), waiting at least {@link SWEEP_MIN_INTERVAL_MS}
- * between successive `!CG` writes to *this* relay — not skipping
- * candidates, just spacing them out — until {@link isFastSweepEnabled}
- * reports the relay has advertised rearch-12's non-persisting tune
- * (ticket 007's own capability-detection ticket; this ticket only defines
- * the read and its off-by-default seam — see that function's own doc
- * comment).
+ * Every persisted `!CG` wears the relay's flash (`saveConfig()` skips
+ * only *unchanged* values) — a sweep retuning every couple of seconds
+ * would wear it out. This module holds one relay's own physical port open
+ * for a whole pass (one retune+probe per remembered candidate), waiting
+ * at least {@link SWEEP_MIN_INTERVAL_MS} between successive retunes of
+ * *this* relay — not skipping candidates, just spacing them out — until
+ * {@link isFastSweepEnabled} reports the relay has advertised rearch-12's
+ * non-persisting tune (`League-Robotics/microbit-radio-relay#1`, merged:
+ * `caps: CGT`). Ticket 016-007 re-detects this flag fresh on every lease
+ * acquisition (`ensureCommandPlaneReady`'s own `onStatusLine` capture,
+ * below) and switches both the interval ({@link SWEEP_FAST_INTERVAL_MS})
+ * and the retune command itself (`!CGT` via
+ * `RelayCommandPlane.ts`'s `setChannelGroupTransient`, instead of the
+ * persisting `!CG` via `setChannelGroup`) once detected.
  *
  * ## Opens the relay's raw transport directly — never through the connector
  *
@@ -70,10 +73,12 @@
  * reset is abandoned for this cycle (lease released, tried again after
  * the quiet period) rather than retried indefinitely.
  */
+import { hasTransientTuneCapability } from "@robot-console/protocol";
 import {
   RelayHandshakeError,
   probeRadioId,
   setChannelGroup,
+  setChannelGroupTransient,
   sync,
   type RelayLinkIO,
 } from "../link/RelayCommandPlane.js";
@@ -115,11 +120,9 @@ import {
  * non-persisting tune (sprint.md's own default: "a full pass over 20
  * robots takes ~10 minutes"). */
 export const SWEEP_MIN_INTERVAL_MS = 30_000;
-/** The interval {@link isFastSweepEnabled} switches to once ticket 007
- * detects the relay's advertised capability. Not reachable by this
- * ticket alone (nothing yet ever sets the setting {@link
- * isFastSweepEnabled} reads) — defined now so ticket 007 has a name to
- * import rather than inventing its own. */
+/** The interval {@link isFastSweepEnabled} switches to once ticket 007's
+ * own capability detection (below) records that the relay advertised
+ * `caps: CGT`. */
 export const SWEEP_FAST_INTERVAL_MS = 2_000;
 /** Bound on each candidate's `!CG` confirmation wait and its `> ID`
  * reply wait — sprint.md's own SUC-003: "wait <= 500 ms". */
@@ -266,11 +269,14 @@ export function buildSweepPassCandidates(
 }
 
 // ---------------------------------------------------------------------
-// Fast-sweep capability flag — a `settings` read, off by default. Ticket
-// 007's own job is to *write* this once it detects the relay's advertised
-// capability token (rearch-12); this ticket only defines the read and its
-// default so the rate-limit mechanism has a real gate to switch on later
-// without another sweeper change.
+// Fast-sweep capability flag — a `settings`-backed read/write, off by
+// default. Ticket 016-007: `runOnePass` (below) writes this fresh on
+// every lease acquisition once it has parsed the relay's `?`/status
+// reply (`@robot-console/protocol`'s `hasTransientTuneCapability`) --
+// per-relay, re-detected every pass, never trusted as a cached value
+// across passes (sprint.md's own "No ERD" position: this is the read/
+// write *contract* ticket 003 chose a `settings` row for, not a claim
+// that the flag is persisted truth independent of the next detection).
 // ---------------------------------------------------------------------
 
 /** `settings.key` for one relay's fast-sweep capability flag. Per-relay
@@ -282,15 +288,18 @@ export function fastSweepSettingKey(relayLinkId: string): string {
 }
 
 /**
- * Has ticket 007 recorded that `relayLinkId` advertised rearch-12's
- * capability? Reads `store.getSetting(fastSweepSettingKey(relayLinkId))`,
- * `true` only for the literal value `"1"` — anything else (unset,
- * malformed) is treated as "not yet advertised", so this defaults off
- * until ticket 007 actually writes it. See this module's own doc comment
- * for why a `settings` row, not the in-memory-only shape sprint.md's own
- * "No ERD" section sketches for the *detection* step itself: ticket 007
- * owns how it re-derives the flag on each lease acquisition; this
- * function is only the read contract this ticket promises to honor.
+ * Has `relayLinkId`'s most recent lease-acquisition sync recorded that it
+ * advertised rearch-12's capability? Reads
+ * `store.getSetting(fastSweepSettingKey(relayLinkId))`, `true` only for
+ * the literal value `"1"` — anything else (unset, or the explicit `"0"`
+ * {@link RelaySweepPassRunner.runOnePass} writes when a pass's own
+ * detection comes back negative) is treated as "not currently
+ * advertised". See this module's own doc comment for why a `settings`
+ * row, not the in-memory-only shape sprint.md's own "No ERD" section
+ * sketches for the *detection* step itself: `runOnePass` re-derives and
+ * overwrites this value fresh on every lease acquisition, so a relay
+ * swapped for different firmware (or a firmware downgrade) is reflected
+ * within one pass, never a stale cached "yes" from an earlier session.
  */
 export function isFastSweepEnabled(store: Store, relayLinkId: string): boolean {
   return store.getSetting(fastSweepSettingKey(relayLinkId)) === "1";
@@ -490,19 +499,27 @@ export function createRelaySweepPassRunner(
    * `false` if the relay still does not answer after that one reset —
    * the pass is abandoned for this cycle rather than retried
    * indefinitely (sprint.md's own SUC-003 wording: "perform the reset
-   * step once, then continue"). */
+   * step once, then continue"). `onStatusLine` (ticket 016-007) is
+   * forwarded to every `sync()` call this makes, so a caller can capture
+   * the relay's `?` reply -- including any trailing `caps:` field -- from
+   * this same ready-check exchange, rather than a second round trip. */
   async function ensureCommandPlaneReady(
     io: RelayLinkIO,
     stream: ByteStream,
     hidPath: string | null,
     resetMethod: RelayResetMethod,
     signal: AbortSignal,
+    onStatusLine?: (line: string) => void,
   ): Promise<boolean> {
     if (signal.aborted) {
       return false;
     }
+    // exactOptionalPropertyTypes: only include `onStatusLine` when
+    // actually given -- mirrors `RelayCommandPlane.ts`'s own `signal`
+    // spread convention (`runRelayCommandPlane`'s doc comment).
+    const onStatusLineOpt = onStatusLine !== undefined ? { onStatusLine } : {};
     try {
-      await sync({ ...io, scheduler, syncAttempts: readySyncAttempts, syncRetryMs: readySyncRetryMs, signal });
+      await sync({ ...io, scheduler, syncAttempts: readySyncAttempts, syncRetryMs: readySyncRetryMs, signal, ...onStatusLineOpt });
       return true;
     } catch {
       // Not answering `?` -- parked in the data plane by a prior crash.
@@ -514,7 +531,7 @@ export function createRelaySweepPassRunner(
       return false;
     }
     try {
-      await sync({ ...io, scheduler, syncAttempts: readySyncAttempts, syncRetryMs: readySyncRetryMs, signal });
+      await sync({ ...io, scheduler, syncAttempts: readySyncAttempts, syncRetryMs: readySyncRetryMs, signal, ...onStatusLineOpt });
       return true;
     } catch {
       return false;
@@ -588,13 +605,28 @@ export function createRelaySweepPassRunner(
       await stream.open(passController.signal);
       const io = buildRawLineIO(stream, scheduler);
 
-      const ready = await ensureCommandPlaneReady(io, stream, hidPath, resetMethod, passController.signal);
+      // Ticket 016-007: capture the status-line reply this same
+      // ready-check already waits for, and re-detect the relay's
+      // advertised capability (`caps: CGT`) fresh on every lease
+      // acquisition -- never trusted as a cached value across passes
+      // (see this module's own doc comment / `isFastSweepEnabled`'s).
+      let lastStatusLine: string | undefined;
+      const ready = await ensureCommandPlaneReady(io, stream, hidPath, resetMethod, passController.signal, (line) => {
+        lastStatusLine = line;
+      });
       if (!ready) {
         return;
       }
 
+      const capabilityDetected = lastStatusLine !== undefined && hasTransientTuneCapability(lastStatusLine);
+      store.setSetting(fastSweepSettingKey(relayLinkId), capabilityDetected ? "1" : "0");
       const fastEnabled = isFastSweepEnabled(store, relayLinkId);
       const intervalMs = fastEnabled ? fastSweepIntervalMs : sweepMinIntervalMs;
+      // `!CGT` (non-persisting) once the relay has advertised it, else
+      // the original persisting `!CG` -- see `RelayCommandPlane.ts`'s
+      // `setChannelGroupTransient` doc comment for why its confirmation
+      // predicate is identical to `setChannelGroup`'s.
+      const tuneChannelGroup = fastEnabled ? setChannelGroupTransient : setChannelGroup;
 
       const projection = store.projectionRows();
       const queue = buildSweepPassCandidates(projection.devices, projection.links, store.radioSightings(), relayLinkId, now());
@@ -635,7 +667,7 @@ export function createRelaySweepPassRunner(
           // anyway) rather than force-cancelling it -- the module doc
           // comment's own "Revocation seam registration" section, and
           // ticket's own wording ("on abort, finish the current wait").
-          await setChannelGroup(channel, group, { ...io, scheduler, timeoutMs: probeTimeoutMs });
+          await tuneChannelGroup(channel, group, { ...io, scheduler, timeoutMs: probeTimeoutMs });
           ok = await probeRadioId(candidate.name, { ...io, scheduler, timeoutMs: probeTimeoutMs });
         } catch (error) {
           if (!(error instanceof RelayHandshakeError)) {

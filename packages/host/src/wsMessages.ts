@@ -380,6 +380,21 @@ export interface SnapshotRelay {
    * the store (same reasoning as {@link SnapshotLink.flash}) --
    * `buildSnapshot` never populates this; `server.ts` overlays it. */
   bridging?: { state: "connecting" | "failed"; robotName?: string; error?: string };
+  /** Which rate `watchers/relaySweeper.ts`'s sweep is currently running
+   * this relay at (ticket 016-007; rearch-12,
+   * `League-Robotics/microbit-radio-relay#1`, merged) -- `"fast"` once a
+   * lease-acquisition sync has found the relay advertising `caps: CGT`
+   * (the non-persisting `!CGT` tune), `"slow"` once a sync has completed
+   * and found no such advertisement (the original 30s-spaced, persisting
+   * `!CG` rate limit), `null`/omitted when no sync has completed against
+   * this relay link yet at all -- a distinct, honest "not known yet"
+   * rather than defaulting to either rate. Populated by `buildSnapshot`
+   * itself (unlike {@link bridging}), from a `settings` row `runOnePass`
+   * writes fresh on every lease acquisition -- see `store/index.ts`'s
+   * `ProjectionRows.fastSweepByRelayLinkId` doc comment. Optional (like
+   * {@link bridging}) so a pre-016-007 snapshot literal — most existing
+   * test fixtures — need not be updated to keep type-checking. */
+  sweep?: { rate: "fast" | "slow" } | null;
 }
 
 /** Server -> client: the full current state of every device, link, and

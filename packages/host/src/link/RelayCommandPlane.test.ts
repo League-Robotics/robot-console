@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runRelayCommandPlane, RelayHandshakeError, sync, setChannelGroup, go, probeRadioId } from "./RelayCommandPlane.js";
+import { runRelayCommandPlane, RelayHandshakeError, sync, setChannelGroup, setChannelGroupTransient, go, probeRadioId } from "./RelayCommandPlane.js";
 import type { Scheduler } from "./pacing.js";
 
 // This suite exercises `runRelayCommandPlane` entirely against a fake
@@ -301,6 +301,62 @@ describe("sync/setChannelGroup/go -- individually callable steps (ticket 014-006
     link.emit(STATUS_37_3);
     await expect(promise).resolves.toBeUndefined();
     expect(link.writes).not.toContain("!GO\n");
+  });
+
+  it("sync() invokes onStatusLine with the raw status reply (ticket 016-007's own capability-detection seam)", async () => {
+    const link = fakeRelayLink();
+    const scheduler = controllableScheduler();
+    const seen: string[] = [];
+    const promise = sync({
+      write: link.write,
+      subscribe: link.subscribe,
+      scheduler,
+      onStatusLine: (line) => seen.push(line),
+    });
+    await flush();
+    link.emit("# channel: 47 group: 60 mode: RAW250 power: 7 caps: CGT");
+    await expect(promise).resolves.toBeUndefined();
+    expect(seen).toEqual(["# channel: 47 group: 60 mode: RAW250 power: 7 caps: CGT"]);
+  });
+
+  it("sync() never calls onStatusLine when it never syncs (gives up after configured attempts)", async () => {
+    const link = fakeRelayLink();
+    const scheduler = controllableScheduler();
+    const seen: string[] = [];
+    const promise = sync({
+      write: link.write,
+      subscribe: link.subscribe,
+      scheduler,
+      syncAttempts: 2,
+      onStatusLine: (line) => seen.push(line),
+    });
+    for (let i = 0; i < 2; i++) {
+      await flush();
+      scheduler.resolveAll();
+    }
+    await expect(promise).rejects.toThrow(/never answered/);
+    expect(seen).toEqual([]);
+  });
+
+  it("setChannelGroupTransient() sends !CGT alone and resolves on its own confirmation, never sending !GO", async () => {
+    const link = fakeRelayLink();
+    const scheduler = controllableScheduler();
+    const promise = setChannelGroupTransient(37, 3, { write: link.write, subscribe: link.subscribe, scheduler });
+    await flush();
+    expect(link.writes).toEqual(["!CGT 37 3\n"]);
+    link.emit(STATUS_37_3);
+    await expect(promise).resolves.toBeUndefined();
+    expect(link.writes).not.toContain("!GO\n");
+  });
+
+  it("setChannelGroupTransient() rejects on a # error reply, mirroring setChannelGroup()'s own rejection handling", async () => {
+    const link = fakeRelayLink();
+    const scheduler = controllableScheduler();
+    const promise = setChannelGroupTransient(37, 3, { write: link.write, subscribe: link.subscribe, scheduler });
+    await flush();
+    link.emit("# error: usage !CGT <ch 25-73> <group 1-126>");
+    await expect(promise).rejects.toThrow(RelayHandshakeError);
+    await expect(promise).rejects.toThrow(/rejected !CGT 37 3/);
   });
 
   it("go() sends !GO alone and resolves once the relay confirms entering the data plane", async () => {

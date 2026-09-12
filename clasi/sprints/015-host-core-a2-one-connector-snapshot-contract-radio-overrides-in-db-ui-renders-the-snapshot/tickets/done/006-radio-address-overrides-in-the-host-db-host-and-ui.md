@@ -1,7 +1,7 @@
 ---
 id: '006'
 title: Radio address overrides in the host DB, host and UI
-status: in-progress
+status: done
 use-cases:
 - SUC-007
 depends-on:
@@ -73,7 +73,7 @@ writer/reader of them.
       reader/writer (`RelayPage.readStoredAddress`/`writeStoredAddress`,
       and their call sites in `RadioAddressDialog`, `ConfigurationPage`,
       `RelayPage`, and `FrontPage`) is removed.
-- [ ] The migration-nicety prompt appears only when a `localStorage`
+- [x] The migration-nicety prompt appears only when a `localStorage`
       override exists for a device also present in the snapshot, and
       clears the key after a successful push.
       **Deferred to ticket 007/008**: `WsProvider.tsx` still speaks the
@@ -84,6 +84,12 @@ writer/reader of them.
       against the old contract would mean either faking a snapshot shape
       that doesn't exist yet or guessing at a name→id mapping with no real
       source, so it is left undone rather than faked.
+      **Team-lead re-scope (2026-09-12):** the host side of this ticket is
+      complete; this criterion and the two snapshot-fed UI reads
+      (`ConfigurationPage` showing `device.radio`, `RadioAddressDialog`
+      getting a real `radio`/`deviceId` caller from `AppHeader`) need the
+      `WsProvider` snapshot slice that ticket 007 builds. Moved to ticket
+      007's acceptance criteria under "Carried from ticket 006".
 
 ## Implementation Plan
 

@@ -1,7 +1,7 @@
 ---
 id: '007'
 title: 'UI: WsProvider snapshot slice and FrontPage rewrite'
-status: open
+status: in-progress
 use-cases:
 - SUC-005
 - SUC-008
@@ -64,6 +64,18 @@ every other UI ticket (008, 009) builds on.
       `FrontPage` tests pass against them.
 - [ ] Every `04-ui.md` §1.2 (Front page) row not explicitly called out
       as dropped still has a passing test.
+
+### Carried from ticket 006 (rearch-08 UI remainder)
+
+- [ ] `ConfigurationPage`'s Radio panel reads `device.radio`
+      (`channel`/`group`/`source`) from the snapshot and shows the source
+      via `AddressSourceChip`.
+- [ ] `AppHeader` (or whichever caller opens `RadioAddressDialog`) passes
+      the new `{deviceId, name, radio}` props from the snapshot; no caller
+      passes the old `endpoint` shape.
+- [ ] Migration nicety: on first load, if `localStorage` holds a radio
+      override for a device present in the snapshot, offer to push it via
+      `set-radio-override`, then clear the key; no prompt otherwise.
 
 ## Implementation Plan
 

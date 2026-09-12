@@ -77,8 +77,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir as fsMkdir, rename as fsRename, writeFile as fsWriteFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
-import { homedir } from "node:os";
 import path from "node:path";
+import { resolveStateDir } from "./stateDir.js";
 
 /** Schema version of the on-disk `known-robots.json` file. Bump this
  * (and extend {@link migrateKnownRobotsFile}) the next time the record
@@ -192,15 +192,11 @@ function errorMessage(error: unknown): string {
 
 /**
  * Resolve the on-disk path for `known-robots.json`, following (in
- * priority order): an explicit `filePath`, an explicit `stateDir`, the
- * `ROBOT_CONSOLE_STATE_DIR` environment variable (mirroring `config.ts`'s
- * own `ROBOT_CONSOLE_*` convention), then
- * `${XDG_STATE_HOME:-~/.local/state}/robot-console`. Note the asymmetry:
- * `stateDir`/`ROBOT_CONSOLE_STATE_DIR` are used as-is (the caller is
- * assumed to already be pointing at this app's own state directory),
- * while the `XDG_STATE_HOME`/home-directory fallback appends a
- * `robot-console` subdirectory of its own, since that base directory is
- * shared across unrelated applications.
+ * priority order): an explicit `filePath`, else {@link resolveStateDir}'s
+ * directory (an explicit `stateDir`, the `ROBOT_CONSOLE_STATE_DIR`
+ * environment variable — mirroring `config.ts`'s own `ROBOT_CONSOLE_*`
+ * convention — or the `XDG_STATE_HOME`/home-directory fallback) joined
+ * with this file's name.
  *
  * Exported for direct unit testing of the resolution logic itself,
  * independent of the store's other behavior.
@@ -212,19 +208,7 @@ export function resolveKnownRobotsFilePath(
   if (options.filePath !== undefined) {
     return options.filePath;
   }
-  if (options.stateDir !== undefined) {
-    return path.join(options.stateDir, KNOWN_ROBOTS_FILENAME);
-  }
-  const override = env.ROBOT_CONSOLE_STATE_DIR;
-  if (override !== undefined && override.length > 0) {
-    return path.join(override, KNOWN_ROBOTS_FILENAME);
-  }
-  const xdgStateHome = env.XDG_STATE_HOME;
-  const base =
-    xdgStateHome !== undefined && xdgStateHome.length > 0
-      ? xdgStateHome
-      : path.join(homedir(), ".local", "state");
-  return path.join(base, "robot-console", KNOWN_ROBOTS_FILENAME);
+  return path.join(resolveStateDir(options, env), KNOWN_ROBOTS_FILENAME);
 }
 
 interface ParsedKnownRobotsFile {

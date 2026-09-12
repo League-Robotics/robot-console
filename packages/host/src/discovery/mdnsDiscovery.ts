@@ -118,6 +118,24 @@ export interface MdnsBrowser {
    * invisible forever. Optional: a backend without it is simply never
    * asked. */
   forget?(fqdn: string): void;
+  /** Ticket 014-008 (`mdnsWatcher.ts`): force a fresh PTR query right
+   * now, so a boot announcement this browse session missed is recovered
+   * without waiting for the advertiser's next periodic announcement.
+   * `bonjour-service`'s own `Browser.update()` is exactly this — see
+   * `browser.d.ts`. Optional, same convention as {@link forget}: a
+   * backend without it is simply never asked. */
+  update?(): void;
+  /** Ticket 014-008 (`mdnsWatcher.ts`): a SRV or TXT change on an
+   * already-known instance (same fqdn) — the case this module's own
+   * doc comment flags as invisible today ("a re-announce with a new IP
+   * emits no up/down event"). `bonjour-service`'s Browser reports this
+   * as two separate events, `srv-update`/`txt-update` (`browser.d.ts`);
+   * this seam coalesces both into the one case a caller actually cares
+   * about ("this instance's advertised address or TXT payload changed
+   * under the same fqdn"), reusing {@link MdnsServiceListener}'s shape
+   * rather than a third payload type. Optional: a backend without it is
+   * simply never asked, same convention as {@link forget}/{@link update}. */
+  onServiceChange?(listener: MdnsServiceListener): void;
 }
 
 /** Options passed to {@link MdnsBackend.find}, mirroring
@@ -165,8 +183,15 @@ const ROBOTLINK_SERVICE_TYPE = "robotlink";
  * socket as a side effect, so this is only ever called from
  * {@link MdnsDiscovery.start} when no backend was injected -- never at
  * module load time, never from a test that supplies its own fake.
+ *
+ * Exported (ticket 014-009) so `cli.ts`'s `--watch-store` runner can
+ * hand `mdnsWatcher.ts`'s `startMdnsWatcher` a real backend the same
+ * way -- `startMdnsWatcher` takes `backend` as a required dependency
+ * with no default of its own (unlike `usbWatcher.ts`'s seams, which
+ * already default to real implementations), so this is the one real
+ * constructor to reuse rather than duplicate.
  */
-function createBonjourBackend(): MdnsBackend {
+export function createBonjourBackend(): MdnsBackend {
   const bonjour = new Bonjour();
   return {
     find(options: MdnsFindOptions): MdnsBrowser {
@@ -192,6 +217,36 @@ function createBonjourBackend(): MdnsBackend {
           // instance from its list) that its `.d.ts` simply does not
           // declare.
           (browser as unknown as { removeService(fqdn: string): void }).removeService(fqdn);
+        },
+        update(): void {
+          // Ticket 014-008: `Browser.update()` is public and typed
+          // (`browser.d.ts`) -- re-issues the PTR query for this
+          // session's own type/protocol.
+          browser.update();
+        },
+        onServiceChange(listener: MdnsServiceListener): void {
+          // Ticket 014-008: bonjour-service's Browser emits SRV/TXT
+          // changes on an already-known fqdn as `srv-update`/`txt-update`
+          // (each `(newService, existingService)`; only `newService` is
+          // this seam's concern -- see `MdnsBrowser.onServiceChange`'s
+          // own doc comment). Both are public/typed on `Browser`.
+          const translate = (service: {
+            name: string;
+            host: string;
+            port: number;
+            txt?: Record<string, string>;
+            fqdn: string;
+          }): void => {
+            listener({
+              name: service.name,
+              host: service.host,
+              port: service.port,
+              ...(service.txt !== undefined ? { txt: service.txt } : {}),
+              fqdn: service.fqdn,
+            });
+          };
+          browser.on("srv-update", (newService) => translate(newService));
+          browser.on("txt-update", (newService) => translate(newService));
         },
       };
     },
@@ -354,6 +409,19 @@ function parseWifiRobotService(service: MdnsService): WifiRobotService {
   };
 }
 
+// TODO(rearch-05): `MdnsDiscovery`'s `wifiLiveness` private-field
+// liveness bookkeeping (below) is superseded by `mdnsWatcher.ts`'s own
+// DB-backed `last_seen`/TTL aging (ticket 014-008) and was a candidate
+// for retirement in that same ticket's pass. Deferred: `deviceRegistry.ts`
+// and its coordinator construct and drive this class directly and must
+// keep working unchanged this sprint (ticket 014-008's own scope note),
+// and this class's `stop()` intentionally leaves `relays`/`robots`/
+// `wifiRobots` populated across a restart (only `wifiLiveness` is
+// cleared) -- removing the hack without also fixing that would make
+// `deviceRegistry.ts`'s WiFi aging silently worse, not better. Retire
+// this whole class (and the old `deviceRegistry.ts` path that depends on
+// it) once sprint 015's reconciler replaces it, per the issue's own
+// "Depends on" note.
 /**
  * Live browse session over `_mbrelay._tcp`, `_mbserial._tcp`, and
  * `_robotlink._tcp`/`_robotlink._udp`: subscribes to an injected

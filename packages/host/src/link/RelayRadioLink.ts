@@ -66,6 +66,7 @@
 import { SerialPort } from "serialport";
 import {
   parseBanner,
+  stripReceivePrefix,
   Session,
   type ParsedBanner,
   type DecodedLine,
@@ -135,6 +136,11 @@ export interface RelayRadioLinkOptions {
    * controlling every paced-write delay (see `RelayCommandPlane.test.ts`
    * for the pattern this exists for). */
   handshakeScheduler?: Scheduler;
+  /** Injectable platform, passed straight through to {@link toCalloutPath}
+   * during {@link connect}. Defaults to `process.platform`; tests
+   * substitute `"darwin"`/`"linux"` explicitly -- same rationale as
+   * `UsbSerialLinkOptions.platform` (ticket 014-001). */
+  platform?: NodeJS.Platform;
 }
 
 type LinkState = "idle" | "connecting" | "connected" | "closed";
@@ -159,6 +165,7 @@ export class RelayRadioLink implements Link {
   private readonly openTimeoutMs: number;
   private readonly handshakeTimeoutMs: number;
   private readonly handshakeScheduler: Scheduler;
+  private readonly platform: NodeJS.Platform;
   private readonly lineReassembler = new LineReassembler();
   private readonly protocolSession = new Session();
   private readonly lineRouter: LineRouter;
@@ -189,6 +196,7 @@ export class RelayRadioLink implements Link {
     this.openTimeoutMs = options.openTimeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS;
     this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     this.handshakeScheduler = options.handshakeScheduler ?? options.scheduler ?? realScheduler;
+    this.platform = options.platform ?? process.platform;
     this.pacer = new WritePacer(
       options.writePaceMs ?? DEFAULT_WRITE_PACE_MS,
       options.scheduler ?? realScheduler,
@@ -258,7 +266,7 @@ export class RelayRadioLink implements Link {
     }
     this.state = "connecting";
 
-    const calloutPath = toCalloutPath(this.portPath);
+    const calloutPath = toCalloutPath(this.portPath, this.platform);
     const port = this.createPort(calloutPath, { baudRate: BAUD_RATE });
     this.port = port;
     this.attachPortListeners(port);
@@ -473,7 +481,7 @@ export class RelayRadioLink implements Link {
    * already succeeded. */
   private handleLine(raw: string): void {
     if (this.resolveBannerWait) {
-      const banner = parseBanner(raw);
+      const banner = parseBanner(stripReceivePrefix(raw));
       if (banner) {
         this.resolveBannerWait(banner);
       }

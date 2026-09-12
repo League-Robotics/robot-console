@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runRelayCommandPlane, RelayHandshakeError } from "./RelayCommandPlane.js";
+import { runRelayCommandPlane, RelayHandshakeError, sync, setChannelGroup, go } from "./RelayCommandPlane.js";
 import type { Scheduler } from "./pacing.js";
 
 // This suite exercises `runRelayCommandPlane` entirely against a fake
@@ -230,5 +230,86 @@ describe("runRelayCommandPlane -- !GO timeout (SUC-003)", () => {
     promise.then(() => { settled = true; }, () => { settled = true; });
     for (let i = 0; i < 20; i++) { scheduler.resolveAll(); await flush(); }
     expect(settled).toBe(true);
+  });
+});
+
+describe("runRelayCommandPlane -- AbortSignal (ticket 014-006, LineLink's preamble hook)", () => {
+  it("rejects immediately with the signal's own abort reason if it is already aborted before the handshake starts", async () => {
+    const link = fakeRelayLink();
+    const scheduler = controllableScheduler();
+    const controller = new AbortController();
+    controller.abort(new Error("connect aborted before preamble started"));
+    const promise = runRelayCommandPlane({
+      write: link.write,
+      subscribe: link.subscribe,
+      channel: 37,
+      group: 3,
+      scheduler,
+      signal: controller.signal,
+    });
+    await expect(promise).rejects.toThrow(/connect aborted before preamble started/);
+    expect(link.writes).toEqual([]);
+  });
+
+  it("aborts within the current step -- never waiting out the rest of its timeoutMs -- when the signal fires mid-handshake", async () => {
+    const link = fakeRelayLink();
+    const scheduler = controllableScheduler();
+    const controller = new AbortController();
+    const promise = runRelayCommandPlane({
+      write: link.write,
+      subscribe: link.subscribe,
+      channel: 37,
+      group: 3,
+      scheduler,
+      signal: controller.signal,
+    });
+    await flush();
+    link.emit(STATUS_37_3); // answers `?`
+    await flush();
+    link.emit("# echo: OFF"); // answers !ECHO OFF
+    await flush();
+    expect(link.writes.at(-1)).toBe("!MODE RAW250\n");
+
+    // The signal fires while waiting for !MODE RAW250's own reply --
+    // note `scheduler.resolveAll()` is never called here, so a rejection
+    // can only be this abort, not the step's timeout firing.
+    controller.abort(new Error("link closing mid-preamble"));
+    await expect(promise).rejects.toThrow(/link closing mid-preamble/);
+    expect(link.writes).not.toContain("!CG 37 3\n");
+    expect(link.writes).not.toContain("!GO\n");
+  });
+});
+
+describe("sync/setChannelGroup/go -- individually callable steps (ticket 014-006, rearch-10's future sweeper)", () => {
+  it("sync() resolves once the relay answers `?`, without running any other preamble step", async () => {
+    const link = fakeRelayLink();
+    const scheduler = controllableScheduler();
+    const promise = sync({ write: link.write, subscribe: link.subscribe, scheduler });
+    await flush();
+    expect(link.writes).toEqual(["?\n"]);
+    link.emit(STATUS_37_3);
+    await expect(promise).resolves.toBeUndefined();
+    expect(link.writes).toEqual(["?\n"]);
+  });
+
+  it("setChannelGroup() sends !CG alone and resolves on its own confirmation, never sending !GO -- the sweeper's 'drive !CG without !GO' shape", async () => {
+    const link = fakeRelayLink();
+    const scheduler = controllableScheduler();
+    const promise = setChannelGroup(37, 3, { write: link.write, subscribe: link.subscribe, scheduler });
+    await flush();
+    expect(link.writes).toEqual(["!CG 37 3\n"]);
+    link.emit(STATUS_37_3);
+    await expect(promise).resolves.toBeUndefined();
+    expect(link.writes).not.toContain("!GO\n");
+  });
+
+  it("go() sends !GO alone and resolves once the relay confirms entering the data plane", async () => {
+    const link = fakeRelayLink();
+    const scheduler = controllableScheduler();
+    const promise = go({ write: link.write, subscribe: link.subscribe, scheduler });
+    await flush();
+    expect(link.writes).toEqual(["!GO\n"]);
+    link.emit("# entering data plane");
+    await expect(promise).resolves.toBeUndefined();
   });
 });

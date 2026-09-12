@@ -95,6 +95,14 @@
 import { nameToRadioAddress, type RadioAddress } from "@robot-console/protocol";
 import { realScheduler, type Scheduler } from "./link/pacing.js";
 
+/** Ticket 014-001: used only to format a caught error for the
+ * `console.warn` calls below -- this module's own "never throws"
+ * contract already means every caller-visible failure collapses to
+ * `"local-derived"`, so these warnings are diagnostics only. */
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** Registry location, as advertised in a discovered relay's `_mbrelay._tcp`
  * TXT record (`registryPort`, per `discovery/mdnsDiscovery.ts`'s
  * `RelayService`) plus the relay's own resolved host. This module takes
@@ -247,7 +255,10 @@ async function fetchResolution(
       fetchFn(url, { method: "GET" }),
       scheduler.delay(timeoutMs).then(() => REGISTRY_TIMEOUT),
     ]);
-  } catch {
+  } catch (error) {
+    console.warn(
+      `fetchResolution: request to "${url}" failed (${errorMessage(error)}) -- falling back to local-derived`,
+    );
     return undefined;
   }
 
@@ -258,7 +269,10 @@ async function fetchResolution(
   let body: unknown;
   try {
     body = await response.json();
-  } catch {
+  } catch (error) {
+    console.warn(
+      `fetchResolution: response body from "${url}" was not valid JSON (${errorMessage(error)}) -- falling back to local-derived`,
+    );
     return undefined;
   }
 

@@ -22,5 +22,8 @@
     "@vitejs/plugin-react": "^6.1.1",
     "jsdom": "^30.0.1",
     "vite": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=22.13"
   }
 }

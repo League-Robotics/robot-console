@@ -38,18 +38,14 @@
  */
 
 import { HID as NodeHidDevice } from "node-hid";
-// `dapjs` ships only a UMD bundle (no ESM build, no `__esModule` marker),
-// so its named exports are not statically discoverable by Node's real
-// CJS/ESM interop the way Vite's (test-only) commonjs plugin discovers
-// them — a plain `import { CortexM, HID } from "dapjs"` type-checks and
-// passes under `vitest`, but throws `SyntaxError: ... does not provide an
-// export named 'CortexM'` under real Node at runtime. The default import
-// is the one binding Node's interop always sets correctly (it is just
-// `module.exports` itself), so runtime values are pulled off that; the
-// named types are imported `type`-only, which is erased at compile time
-// and never touches the runtime interop path at all.
-import DapJs from "dapjs";
-import type { CortexM } from "dapjs";
+// Ticket 014-001: `dapjs` is vendored under `./vendor/dapjs/` (this
+// repo's own TypeScript source, not the npm package) -- see that
+// directory's README.md. Being our own ESM source (not a UMD bundle),
+// both the runtime value and the type come from one ordinary named
+// import; the old default-import-plus-type-only-named-import split this
+// module used to need (to work around `dapjs`'s package having no ESM
+// entry point) no longer applies.
+import { HID as HidTransport, CortexM } from "./vendor/dapjs/index.js";
 import { deviceIdToName } from "@robot-console/protocol";
 import type { DaplinkDevice } from "./devices.js";
 
@@ -116,8 +112,8 @@ export type CortexMFactory = (hidPath: string) => CortexM;
 
 function defaultCortexMFactory(hidPath: string): CortexM {
   const hidDevice = new NodeHidDevice(hidPath);
-  const transport = new DapJs.HID(hidDevice);
-  return new DapJs.CortexM(transport);
+  const transport = new HidTransport(hidDevice);
+  return new CortexM(transport);
 }
 
 /**

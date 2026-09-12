@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyBanner, normalizeDeviceType, parseIdReply, refineForCalibration } from "./deviceType.js";
+import { classifyBanner, parseIdReply, refineForCalibration } from "./deviceType.js";
 import type { DeviceClassification } from "./deviceType.js";
 import type { ParsedBanner } from "./banner.js";
 
@@ -104,32 +104,6 @@ describe("classifyBanner", () => {
       program: null,
       version: null,
     });
-  });
-});
-
-describe("normalizeDeviceType", () => {
-  it("passes through 'relay'", () => {
-    expect(normalizeDeviceType("relay")).toBe("relay");
-  });
-
-  it("passes through 'robot'", () => {
-    expect(normalizeDeviceType("robot")).toBe("robot");
-  });
-
-  it("passes through 'calibration' (sprint 011 ticket 001 -- no longer a fabricated future value)", () => {
-    expect(normalizeDeviceType("calibration")).toBe("calibration");
-  });
-
-  it("coerces 'unknown' to 'unknown'", () => {
-    expect(normalizeDeviceType("unknown")).toBe("unknown");
-  });
-
-  it("coerces a fabricated future value to 'unknown'", () => {
-    expect(normalizeDeviceType("some-fifth-type")).toBe("unknown");
-  });
-
-  it("coerces an empty string to 'unknown'", () => {
-    expect(normalizeDeviceType("")).toBe("unknown");
   });
 });
 

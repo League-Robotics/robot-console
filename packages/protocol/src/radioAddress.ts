@@ -78,3 +78,24 @@ export function radioAddressToName(channel: number, group: number): string {
   const n = CHANNEL_COUNT * (g - 1) + (channel - CHANNEL_MIN) / CHANNEL_STEP;
   return deviceIdToName(n);
 }
+
+/**
+ * Non-throwing counterpart to {@link radioAddressToName}'s own range
+ * check: is `(channel, group)` a well-formed *derived* radio address
+ * (odd channel in `[25, 73]`, group in `[1, 126]` excluding the
+ * reserved `10`)? Exported so a caller that just wants to validate an
+ * address before building a `!CG` line, or before persisting a DB row,
+ * does not need to wrap a throwing call in try/catch just to get a
+ * boolean (`radioAddressToName`/`nameToRadioAddress` stay throwing --
+ * they also have real work to do beyond validation, and their callers
+ * already expect an exception for a caller-error case).
+ */
+export function validateRadioAddress(channel: number, group: number): boolean {
+  if (!Number.isInteger(channel) || channel % 2 === 0 || channel < CHANNEL_MIN || channel > CHANNEL_MAX) {
+    return false;
+  }
+  if (!Number.isInteger(group) || group === RESERVED_GROUP || group < GROUP_MIN || group > GROUP_MAX) {
+    return false;
+  }
+  return true;
+}

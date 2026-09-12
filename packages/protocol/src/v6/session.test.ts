@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -10,6 +10,7 @@ import {
   SEQUENCED_VERBS,
   MAX_RESENDS,
   type AckNackEvent,
+  type MalformedReplyEvent,
 } from "./session.js";
 
 // ---------------------------------------------------------------------
@@ -31,6 +32,15 @@ const VECTORS_PATH = path.join(
   REPO_ROOT,
   "vendor/radio-robot-lib/tests/protocol/golden_vectors.txt",
 );
+
+/**
+ * Whether the `vendor/radio-robot-lib` submodule is initialized in this
+ * checkout. Every test below that needs the golden-vectors fixture is
+ * gated on this so the synthetic, fixture-free tests in this file
+ * always run without `git submodule update --init` (ticket 014-004's
+ * fixture-independence acceptance criterion).
+ */
+const VENDOR_PRESENT = existsSync(VECTORS_PATH);
 
 function readVectorsFile(): string {
   try {
@@ -96,10 +106,10 @@ function parseAckNackVectors(raw: string): AckNackVector[] {
   return vectors;
 }
 
-const ACK_NACK_VECTORS = parseAckNackVectors(readVectorsFile());
+const ACK_NACK_VECTORS = VENDOR_PRESENT ? parseAckNackVectors(readVectorsFile()) : [];
 
 describe("golden_vectors.txt fixture", () => {
-  it("finds at least one ack vector and one nack vector", () => {
+  it.skipIf(!VENDOR_PRESENT)("finds at least one ack vector and one nack vector", () => {
     expect(ACK_NACK_VECTORS.some((v) => v.kind === "ack")).toBe(true);
     expect(ACK_NACK_VECTORS.some((v) => v.kind === "nack")).toBe(true);
   });
@@ -277,6 +287,28 @@ describe("HELLO resets the session -- connect() vs. checkLiveness()", () => {
     session.connect();
     expect(session.lastDone).toBe(7);
     expect(session.lastDoneReason).toBe("stop");
+  });
+
+  it("connect() resets lastResendN/resendStreak, matching resyncTo() -- a reconnect must not inherit a pre-reset give-up streak", () => {
+    // Regression coverage for the bug this ticket fixes: connect() used
+    // to reset nextId/pending/seq but not lastResendN/resendStreak. A
+    // session that had already resent #1 MAX_RESENDS times against a
+    // stuck nack, then reconnected and sent a brand new #1, would trip
+    // resendStreak > MAX_RESENDS on the very first ordinary resend after
+    // reconnecting and give up prematurely.
+    const session = new Session();
+    session.send("STOP"); // #1
+    for (let i = 0; i < MAX_RESENDS; i++) {
+      const event = session.handleReply(decodeLine("nack 1 0 none") as DecodedLine) as AckNackEvent;
+      expect(event.gaveUp).toBeUndefined();
+    }
+    // One more identical nack would give up here, pre-reconnect -- do
+    // NOT send it; reconnect instead.
+    session.connect(); // fresh HELLO -- id counter, pending table, AND the streak all reset
+    session.send("STOP"); // brand new #1 under the fresh session
+    const afterReconnect = session.handleReply(decodeLine("nack 1 0 none") as DecodedLine) as AckNackEvent;
+    expect(afterReconnect.gaveUp).toBeUndefined();
+    expect(afterReconnect.resend).toHaveLength(1);
   });
 
   it("checkLiveness() formats PING with no id and touches no session state", () => {
@@ -625,20 +657,54 @@ describe("verb comparisons fold case -- lowercase input never silently switches 
   });
 });
 
-describe("malformed ack/nack replies raise SessionError rather than silently mis-tracking", () => {
-  it("too few fields", () => {
+describe("malformed ack/nack replies return a {kind: 'malformed'} event rather than throwing (ticket 014-004)", () => {
+  it("too few fields -- returns {kind: 'malformed'}, does not throw", () => {
     const session = new Session();
     const decoded: DecodedLine = { kind: "line", verb: "ack", fields: ["1"] };
-    expect(() => session.handleReply(decoded)).toThrow(SessionError);
+    let event: AckNackEvent | MalformedReplyEvent | null = null;
+    expect(() => {
+      event = session.handleReply(decoded);
+    }).not.toThrow();
+    expect(event).toEqual({
+      kind: "malformed",
+      verb: "ack",
+      fields: ["1"],
+      reason: expect.stringContaining("expected 3 fields"),
+    });
   });
 
-  it("non-integer n", () => {
+  it("non-integer n -- returns {kind: 'malformed'}, does not throw", () => {
     const session = new Session();
     const decoded: DecodedLine = {
       kind: "line",
       verb: "ack",
       fields: ["notanumber", "0", "none"],
     };
-    expect(() => session.handleReply(decoded)).toThrow(SessionError);
+    const event = session.handleReply(decoded);
+    expect(event).toEqual({
+      kind: "malformed",
+      verb: "ack",
+      fields: ["notanumber", "0", "none"],
+      reason: expect.stringContaining("non-integer"),
+    });
+  });
+
+  it("a malformed nack is reported the same way, tagged verb: 'nack'", () => {
+    const session = new Session();
+    const decoded: DecodedLine = { kind: "line", verb: "nack", fields: ["not-a-number", "0", "none"] };
+    const event = session.handleReply(decoded);
+    expect(event).toEqual(
+      expect.objectContaining({ kind: "malformed", verb: "nack" }),
+    );
+  });
+
+  it("a malformed reply leaves session state completely untouched", () => {
+    const session = new Session();
+    session.send("STOP"); // #1, outstanding
+    const before = { seq: session.seq, pendingCount: session.pendingCount, lastDone: session.lastDone };
+    session.handleReply({ kind: "line", verb: "ack", fields: ["oops"] });
+    expect(session.seq).toBe(before.seq);
+    expect(session.pendingCount).toBe(before.pendingCount);
+    expect(session.lastDone).toBe(before.lastDone);
   });
 });

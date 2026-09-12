@@ -1,7 +1,7 @@
 {
   "name": "robot-console",
   "private": true,
-  "version": "0.20260911.2",
+  "version": "0.20260911.3",
   "type": "module",
   "description": "GUI for managing micro:bit robots built on the Elecfreaks Nezha differential-drive board.",
   "bin": {
@@ -12,8 +12,11 @@
   ],
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "pretest": "git submodule update --init 2>/dev/null || true && npm run build -w @robot-console/protocol",
     "test": "vitest run",
-    "build": "npm run build -w @robot-console/protocol && npm run build -w @robot-console/host && npm run build -w @robot-console/ui"
+    "build": "npm run build -w @robot-console/protocol && npm run build -w @robot-console/host && npm run build -w @robot-console/ui",
+    "typecheck": "npm run build -w @robot-console/protocol && npm run build -w @robot-console/host && tsc --noEmit -p packages/protocol/tsconfig.json && tsc --noEmit -p packages/host/tsconfig.json && tsc --noEmit -p packages/ui/tsconfig.json",
+    "version": "npm install --package-lock-only"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
@@ -23,6 +26,6 @@
     "vitest": "^5.0.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13"
   }
 }

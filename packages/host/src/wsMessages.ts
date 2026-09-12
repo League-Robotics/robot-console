@@ -128,7 +128,24 @@
  *   discriminated further by its own `direction` field.
  */
 
-import type { DeviceClassification, WireField } from "@robot-console/protocol";
+import type { DeviceClassification, DeviceType, WireField } from "@robot-console/protocol";
+
+/**
+ * Coerce an arbitrary string (e.g. a `classification.type` value read
+ * off the wire) to a {@link DeviceType}, treating anything this client
+ * doesn't recognize as `"unknown"`. This is the mechanism that makes a
+ * future fourth wire-level type purely additive: an older client
+ * talking to a newer host degrades a value it has never heard of to
+ * `"unknown"` instead of crashing or mis-rendering. Lives here (WS-
+ * message compatibility), not in `@robot-console/protocol`'s
+ * `deviceType.ts` -- `DeviceType` itself is a robot-wire-protocol
+ * concept, but coercing an untrusted string read off *this* socket's
+ * JSON is a host/UI wire-compatibility concern, not a protocol one
+ * (ticket 014-004).
+ */
+export function normalizeDeviceType(value: string): DeviceType {
+  return value === "relay" || value === "robot" || value === "calibration" ? value : "unknown";
+}
 
 /** Which firmware a flash operation targets, when the source is a
  * configured release build. `"relay"` is the radio-relay board's

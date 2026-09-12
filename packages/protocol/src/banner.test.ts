@@ -1,33 +1,38 @@
 import { describe, expect, it } from "vitest";
-import { parseBanner } from "./banner.js";
+import { bannerNameMatchesSerial, parseBanner } from "./banner.js";
+import { deviceIdToName } from "./naming.js";
 
 describe("parseBanner", () => {
   it("parses the colon-form RADIOBRIDGE example with a decimal serial", () => {
-    const result = parseBanner("DEVICE:RADIOBRIDGE:relay:getez:1779042496");
+    // Serial chosen so deviceIdToName(1779042365) === "getez" -- the
+    // fixture is internally consistent (see bannerNameMatchesSerial's
+    // own tests below), unlike the previous 1779042496 value, which
+    // named a different device ("gatav").
+    const result = parseBanner("DEVICE:RADIOBRIDGE:relay:getez:1779042365");
     expect(result).toEqual({
       role: "RADIOBRIDGE",
       commonName: "relay",
       name: "getez",
-      serial: 1779042496,
+      serial: 1779042365,
       dialect: "colon",
-      raw: "DEVICE:RADIOBRIDGE:relay:getez:1779042496",
+      raw: "DEVICE:RADIOBRIDGE:relay:getez:1779042365",
     });
   });
 
   it("parses a legacy colon-form RADIORELAY example with a hexadecimal serial", () => {
     // Same physical FICR.DEVICEID[1] value as the RADIOBRIDGE example
-    // above (1779042496 decimal), but legacy MakeCode relay firmware
+    // above (1779042365 decimal), but legacy MakeCode relay firmware
     // prints it in hex instead.
-    const result = parseBanner("DEVICE:RADIORELAY:relay:getez:6a0a08c0");
+    const result = parseBanner("DEVICE:RADIORELAY:relay:getez:6a0a083d");
     expect(result).toEqual({
       role: "RADIORELAY",
       commonName: "relay",
       name: "getez",
-      serial: 0x6a0a08c0,
+      serial: 0x6a0a083d,
       dialect: "colon",
-      raw: "DEVICE:RADIORELAY:relay:getez:6a0a08c0",
+      raw: "DEVICE:RADIORELAY:relay:getez:6a0a083d",
     });
-    expect(result?.serial).toBe(1779042496);
+    expect(result?.serial).toBe(1779042365);
   });
 
   it("parses the space-form NEZHA2 example with a decimal serial", () => {
@@ -84,5 +89,34 @@ describe("parseBanner", () => {
 
   it("returns null for a space-form line missing fields", () => {
     expect(parseBanner("device NEZHA2 robot vevov")).toBeNull();
+  });
+});
+
+describe("bannerNameMatchesSerial", () => {
+  it("is true for the (fixed) RADIOBRIDGE fixture -- name and serial now agree", () => {
+    const banner = parseBanner("DEVICE:RADIOBRIDGE:relay:getez:1779042365");
+    expect(banner).not.toBeNull();
+    expect(bannerNameMatchesSerial(banner!)).toBe(true);
+  });
+
+  it("is true for the RADIORELAY (hex-serial) fixture", () => {
+    const banner = parseBanner("DEVICE:RADIORELAY:relay:getez:6a0a083d");
+    expect(banner).not.toBeNull();
+    expect(bannerNameMatchesSerial(banner!)).toBe(true);
+  });
+
+  it("is true for the NEZHA2 (space-form) fixture", () => {
+    const banner = parseBanner("device NEZHA2 robot vevov 1198504156");
+    expect(banner).not.toBeNull();
+    expect(bannerNameMatchesSerial(banner!)).toBe(true);
+  });
+
+  it("is false when name and serial disagree (a mis-radixed serial, the bug this catches)", () => {
+    // 1779042496 -> deviceIdToName gives a different name than "getez"
+    // (this was the previous, inconsistent RADIOBRIDGE fixture value).
+    const banner = parseBanner("DEVICE:RADIOBRIDGE:relay:getez:1779042496");
+    expect(banner).not.toBeNull();
+    expect(bannerNameMatchesSerial(banner!)).toBe(false);
+    expect(deviceIdToName(1779042496)).not.toBe("getez");
   });
 });

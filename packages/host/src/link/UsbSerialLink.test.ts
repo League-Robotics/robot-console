@@ -123,6 +123,10 @@ describe("UsbSerialLink.connect", () => {
   });
 
   it("translates the tty. path to cu. on darwin when connecting", () => {
+    // `platform` is passed explicitly (ticket 014-001) rather than relying
+    // on the real `process.platform` -- otherwise this assertion only
+    // passed when the test happened to run on a darwin machine, and
+    // failed identically (but silently, for the wrong reason) on Linux CI.
     let requestedPath: string | undefined;
     const port = new FakeSerialPort();
     const link = new UsbSerialLink("/dev/tty.usbmodem2121102", {
@@ -130,10 +134,25 @@ describe("UsbSerialLink.connect", () => {
         requestedPath = path;
         return port;
       },
+      platform: "darwin",
     });
     // Not awaited -- only the synchronous createPort() call matters here.
     void link.connect();
     expect(requestedPath).toBe(toCalloutPath("/dev/tty.usbmodem2121102", "darwin"));
+  });
+
+  it("leaves the path unchanged on Linux when connecting (no tty./cu. translation)", () => {
+    let requestedPath: string | undefined;
+    const port = new FakeSerialPort();
+    const link = new UsbSerialLink("/dev/ttyACM0", {
+      createPort: (path) => {
+        requestedPath = path;
+        return port;
+      },
+      platform: "linux",
+    });
+    void link.connect();
+    expect(requestedPath).toBe("/dev/ttyACM0");
   });
 
   it("rejects if the port errors before opening", async () => {

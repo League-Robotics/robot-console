@@ -6,6 +6,13 @@ and talks to it from a browser UI.
 
 ## Getting started
 
+**Node.js `>=22.13` is required** (`engines.node` in every `package.json`,
+enforced via `.npmrc`'s `engine-strict=true` — `npm install` fails loudly
+on an older Node instead of installing something that later breaks).
+`22.13` is the floor because `node:sqlite`, which the host package's
+storage layer depends on, first shipped there. `.nvmrc`/`.node-version`
+pin `22` for `nvm`/`fnm`/similar version managers.
+
 This repository uses **git submodules** under `vendor/` for reference
 fixtures (`pxt-nezha-diffdrive`, `radio-robot-lib`) that the protocol
 test suite checks itself against. Clone with submodules included:
@@ -20,6 +27,13 @@ If you already cloned without that flag, initialize them afterwards:
 git submodule update --init
 ```
 
+`npm test`'s `pretest` script also runs `git submodule update --init`
+automatically (tolerating failure when not in a git checkout at all, e.g.
+an installed package), so an out-of-date checkout self-heals on the next
+test run; a dedicated guard test
+(`packages/protocol/src/vendorSubmodules.test.ts`) still fails loudly
+and early if the submodules are missing outright.
+
 `vendor/` is reference data only — nothing under `packages/` imports
 source from it, and it is excluded from the TypeScript build.
 
@@ -30,6 +44,36 @@ npm install
 npm test
 npm run build
 ```
+
+### Type checking
+
+```sh
+npm run typecheck
+```
+
+Builds `packages/protocol/dist` and `packages/host/dist` first (`ui`
+depends on both packages' emitted `.d.ts` files, not their source), then
+runs `tsc --noEmit` against each package's own `tsconfig.json` in turn.
+This is a separate step from `npm test` (which vitest/esbuild transpiles
+without a full type-check) and from `npm run build` (which emits dist
+output for `protocol`/`host`) — run it in CI, or locally before pushing,
+to catch type errors none of the others do.
+
+### Lockfile drift after a version bump
+
+`package.json`'s root `version` field is bumped by tooling outside `npm`
+(CLASI's `close_sprint`, via `dotconfig version bump`, which writes
+`package.json` directly rather than invoking `npm version`) as well as,
+occasionally, `npm version` itself. Either path leaves `package-lock.json`
+out of sync with the new root version, which dirties the very next
+`npm install` a contributor runs. Two things guard against that now:
+
+- A root `"version"` script (`npm install --package-lock-only`) runs
+  automatically for any `npm version <bump>` invocation.
+- Because `dotconfig version bump` does **not** go through `npm version`
+  (so the script above never fires for it), run
+  `npm install --package-lock-only` by hand once after any bump made
+  that way, before committing.
 
 ## Development
 
@@ -50,6 +94,31 @@ To run the app the way students will, against the built UI instead:
 npm run --workspace @robot-console/ui vite:build
 npx robot-console
 ```
+
+## Debugging the store (sprint 014, throwaway)
+
+Two `robot-console` flags let an engineer inspect the host's SQLite
+store (`console.sqlite`) without the browser UI:
+
+```sh
+# Print devices/links/services/sessions/tasks as JSON and exit.
+# Safe to run alongside an already-running host -- opens a short-lived,
+# read-only connection (WAL mode allows a concurrent reader).
+npx robot-console --dump-store
+
+# Run the USB and mDNS watchers headless against the real store, real
+# enumerator, and real mDNS backend, logging every store change as one
+# JSON line to stdout. Does not start the Express/ws server. Ctrl-C
+# (SIGINT) or SIGTERM stops both watchers and closes the store cleanly.
+npx robot-console --watch-store
+```
+
+Both flags are **sprint-014-only debugging affordances** — the exit
+criterion "watcher rows visible in a debug dump" without any UI change.
+Sprint 015's `rearch-06` replaces `--dump-store` with a real `snapshot`
+projection and server endpoint; neither flag is meant to survive past
+that sprint. See `clasi/sprints/014-.../sprint.md`'s Design Rationale
+and `packages/host/src/debug/dumpStore.ts`.
 
 ## Layout
 

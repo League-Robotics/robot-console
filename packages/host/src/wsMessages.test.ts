@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseClientMessage } from "./wsMessages.js";
+import { normalizeDeviceType, parseClientMessage } from "./wsMessages.js";
 import type { EndpointListEntry, ServerMessage, TelemetryMessage } from "./wsMessages.js";
 
 describe("parseClientMessage", () => {
@@ -321,5 +321,31 @@ describe("TelemetryMessage (sprint 009 ticket 002)", () => {
     expect(asServerMessages.every((m) => m.type === "telemetry")).toBe(true);
     expect(header.frame).toBeUndefined();
     expect(frame.header).toBeUndefined();
+  });
+});
+
+describe("normalizeDeviceType (moved from @robot-console/protocol, ticket 014-004)", () => {
+  it("passes through 'relay'", () => {
+    expect(normalizeDeviceType("relay")).toBe("relay");
+  });
+
+  it("passes through 'robot'", () => {
+    expect(normalizeDeviceType("robot")).toBe("robot");
+  });
+
+  it("passes through 'calibration'", () => {
+    expect(normalizeDeviceType("calibration")).toBe("calibration");
+  });
+
+  it("coerces 'unknown' to 'unknown'", () => {
+    expect(normalizeDeviceType("unknown")).toBe("unknown");
+  });
+
+  it("coerces a fabricated future value to 'unknown'", () => {
+    expect(normalizeDeviceType("some-fifth-type")).toBe("unknown");
+  });
+
+  it("coerces an empty string to 'unknown'", () => {
+    expect(normalizeDeviceType("")).toBe("unknown");
   });
 });

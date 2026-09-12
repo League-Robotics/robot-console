@@ -85,6 +85,24 @@ function trimLineSpaces(s: string): string {
   return s.replace(/^ +/, "").replace(/ +$/, "");
 }
 
+/**
+ * Strip a leading `"< "` receive-prefix, unconditionally, if present.
+ *
+ * Some carriers mark an inbound line with a leading `"< "` (mirroring a
+ * `"> "` they use for outbound); nothing this protocol's own devices
+ * legitimately say ever begins with `"< "`, so this is applied
+ * unconditionally rather than gated behind a per-carrier flag (a flag
+ * every carrier would have to agree on). Exported as its own pure
+ * function — used by {@link decodeLine} next to the `\r` strip below,
+ * and available directly to a caller that needs to normalize a raw line
+ * before doing anything else with it (e.g. before `banner.ts`'s
+ * `parseBanner`, whose grammar is anchored and does not tolerate the
+ * prefix itself).
+ */
+export function stripReceivePrefix(raw: string): string {
+  return raw.startsWith("< ") ? raw.slice(2) : raw;
+}
+
 // ---------------------------------------------------------------------
 // Encoding
 // ---------------------------------------------------------------------
@@ -291,8 +309,12 @@ export type DecodeResult = DecodedLine | BlankLine | LineTooLong;
  * it, "a terminal artifact" that is stripped and never appears anywhere
  * else) — this layer owns line framing, so it tolerates both a
  * transport that has already split lines on `'\n'` and one that hasn't.
- * The {@link MAX_LINE_BYTES} check always counts the terminator, whether
- * or not `raw` still carries it literally.
+ * A leading `"< "` receive-prefix ({@link stripReceivePrefix}) is
+ * likewise stripped unconditionally, right after the `\r` strip, so a
+ * caller never has to remember to normalize that itself before handing
+ * a line to this function. The {@link MAX_LINE_BYTES} check always
+ * counts the terminator, whether or not `raw` still carries it
+ * literally.
  *
  * Never throws. A blank/all-whitespace line and an over-length line are
  * both ordinary, non-exceptional outcomes on the wire (see
@@ -307,6 +329,7 @@ export function decodeLine(raw: string): DecodeResult {
   if (content.endsWith("\r")) {
     content = content.slice(0, -1);
   }
+  content = stripReceivePrefix(content);
 
   // +1 for the '\n' terminator, whether or not `content` still literally
   // carries it (see the doc comment above) -- the 240-byte cap is
@@ -360,8 +383,8 @@ export function decodeLine(raw: string): DecodeResult {
  *     ordinary lowercase reply-direction line under this rule, not
  *     foreign traffic to drop)
  * Includes `thdr`/`t` (telemetry, v6/telemetry.ts's own schemaless
- * verbs -- added sprint 009 ticket 002, the same way `funcs` was added
- * below: without them these lines classified as "foreign" and never
+ * verbs, the same way `funcs` was added below: without them these lines
+ * classified as "foreign" and never
  * reached a listener, even though the robot emits them continuously at
  * 20 Hz (protocol.md S10.2). `v6/telemetry.ts` is what actually zips a
  * `thdr` against each `t` line; this module owns only the classification
@@ -389,11 +412,10 @@ export const REPLY_VERBS: ReadonlySet<string> = new Set([
   "wificred",
   // `thdr <col> <col> ...` -- the telemetry column-name header
   // (protocol.md S10.2), emitted whenever the column set changes or the
-  // wire's own 20-frame auto-refresh fires (sprint 009 ticket 002).
+  // wire's own 20-frame auto-refresh fires.
   "thdr",
   // `t <val> <val> ...` -- one telemetry frame, zipped positionally
-  // against the most recently held `thdr` by v6/telemetry.ts (sprint 009
-  // ticket 002).
+  // against the most recently held `thdr` by v6/telemetry.ts.
   "t",
 ]);
 

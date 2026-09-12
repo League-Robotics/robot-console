@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import DapJs from "dapjs";
-import type { DAPLink } from "dapjs";
+import { DAPLink } from "./vendor/dapjs/index.js";
 import {
   defaultResolveVolumePath,
   extractV2Hex,
@@ -385,88 +384,75 @@ describe("flashOverSwd", () => {
     ).resolves.toMatchObject({ status: "error" });
   });
 
-  it("resolves ok on a successful flash against a DAPLink object with no .off method (real dapjs runtime shape, bench-verified)", async () => {
-    // Regression test for a real bug sprint 003 ticket 005's bench
-    // session exposed: `dapjs`'s actual runtime `DAPLink` (as opposed
-    // to its `.d.ts`, which claims a Node `events.EventEmitter`) has no
-    // `.off` alias, only `on`/`removeListener`/`emit`. Calling `.off`
-    // in this function's cleanup `finally` block threw, and a throw
-    // from `finally` replaces whatever the `try` block already
-    // returned -- so a flash that had genuinely succeeded on the board
-    // came back as an uncaught rejection instead of `{ status: "ok" }`,
-    // which in turn meant `deviceRegistry.ts#runFlash` never reached
-    // its post-flash `openLink()` re-announce step. `createFakeDapLink`
-    // (see its own doc comment) deliberately has no `.off` either, so
-    // this test fails the same way the real hardware did if the
-    // cleanup code ever calls `.off` again.
-    const result = await flashOverSwd(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
-      createDapLink: () => createFakeDapLink(),
-    });
-    expect(result).toEqual({ status: "ok", method: "swd" });
-  });
-
-  it("still resolves the determined result even if removeListener itself throws during cleanup", async () => {
-    // Defense-in-depth companion to the test above: cleanup-step
-    // failures (removeListener, disconnect) must never mask or replace
-    // an already-determined outcome, matching the precedent already in
-    // place for `disconnect()`'s own try/catch in the same `finally`
-    // block.
+  it("resolves ok on a successful flash, and detaches its progress listener via .off during cleanup", async () => {
+    // Ticket 014-001: this used to be a regression test for a real bug
+    // (sprint 003 ticket 005's bench session) -- the npm `dapjs`
+    // package's actual runtime `DAPLink` (as opposed to its `.d.ts`,
+    // which claims a Node `events.EventEmitter`) had no `.off` alias,
+    // only `on`/`removeListener`/`emit`. Calling `.off` in this
+    // function's cleanup `finally` block threw, and a throw from
+    // `finally` replaces whatever the `try` block already returned --
+    // so a flash that had genuinely succeeded on the board came back as
+    // an uncaught rejection instead of `{ status: "ok" }`.
+    //
+    // `dapjs` is now vendored (`./vendor/dapjs/`) and compiled against
+    // Node's real `events.EventEmitter`, which does implement `.off` --
+    // see that directory's README.md. `createFakeDapLink`'s `off` now
+    // mirrors that real, fixed shape, so this asserts the happy path
+    // stays `{ status: "ok" }` and that `.off` was actually called
+    // (proving `flashOverSwd` no longer avoids it).
     const dapLink = createFakeDapLink();
-    (dapLink as unknown as { removeListener: () => void }).removeListener = () => {
-      throw new Error("mock: removeListener boom");
-    };
     const result = await flashOverSwd(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
       createDapLink: () => dapLink,
     });
     expect(result).toEqual({ status: "ok", method: "swd" });
+    expect(dapLink.offCalls).toEqual([DAPLink.EVENT_PROGRESS]);
   });
 });
 
 /** A fake satisfying only the `DAPLink` surface `flashOverSwd` actually
- * calls (`connect`, `on`, `removeListener`, `flash`, `disconnect`) --
- * not a simulation of real `dapjs`/hardware behavior. The default
- * `flash` implementation fires one registered `EVENT_PROGRESS` listener
- * before resolving, so tests can observe the `"writing"` phase callback
- * the same way a real `DAPLink#flash()` call would trigger it.
+ * calls (`connect`, `on`, `off`, `flash`, `disconnect`) -- not a
+ * simulation of real `dapjs`/hardware behavior. The default `flash`
+ * implementation fires one registered `EVENT_PROGRESS` listener before
+ * resolving, so tests can observe the `"writing"` phase callback the
+ * same way a real `DAPLink#flash()` call would trigger it.
  *
- * Deliberately has **no `.off` method** -- verified against real
- * hardware (sprint 003 ticket 005's bench session), `dapjs`'s actual
- * runtime `DAPLink` object (its bundled UMD event emitter, not the
- * Node `events.EventEmitter` its own `.d.ts` types claim it extends)
- * implements `on`/`removeListener`/`emit` but has no `.off` alias at
- * all. An earlier version of this fake *did* implement a working `.off`
- * (mirroring the type declaration, not the runtime), which is exactly
- * why unit tests never caught `flashOverSwd` calling `daplink.off(...)`
- * in its cleanup -- a real board is what exposed it: the SWD write
- * completed successfully, but that `finally`-block throw replaced the
- * already-determined `{ status: "ok" }` result with an uncaught
- * rejection. This fake now matches the real object's shape instead of
- * its type declaration, so a regression back to calling `.off` fails
- * here, not only on a bench. */
+ * Ticket 014-001: now includes a working `.off` (delegating to the same
+ * listener-removal logic as `removeListener` would), matching the real
+ * vendored `DAPLink`'s shape -- see this file's own "resolves ok on a
+ * successful flash" test above for the history of why this fake used to
+ * deliberately omit it. `offCalls` records every `.off` invocation so
+ * tests can assert cleanup actually ran. */
 function createFakeDapLink(overrides?: {
   connect?: () => Promise<void>;
   disconnect?: () => Promise<void>;
   flash?: (buffer: Buffer) => Promise<void>;
   reset?: () => Promise<boolean>;
-}): DAPLink {
+}): DAPLink & { offCalls: string[] } {
   const progressListeners: Array<() => void> = [];
+  const offCalls: string[] = [];
+  const removeProgressListener = (event: string, listener: () => void) => {
+    if (event === DAPLink.EVENT_PROGRESS) {
+      const index = progressListeners.indexOf(listener);
+      if (index >= 0) {
+        progressListeners.splice(index, 1);
+      }
+    }
+  };
   const fake = {
+    offCalls,
     connect: overrides?.connect ?? (async () => {}),
     disconnect: overrides?.disconnect ?? (async () => {}),
     reset: overrides?.reset ?? (async () => true),
     on(event: string, listener: () => void) {
-      if (event === DapJs.DAPLink.EVENT_PROGRESS) {
+      if (event === DAPLink.EVENT_PROGRESS) {
         progressListeners.push(listener);
       }
       return fake;
     },
-    removeListener(event: string, listener: () => void) {
-      if (event === DapJs.DAPLink.EVENT_PROGRESS) {
-        const index = progressListeners.indexOf(listener);
-        if (index >= 0) {
-          progressListeners.splice(index, 1);
-        }
-      }
+    off(event: string, listener: () => void) {
+      offCalls.push(event);
+      removeProgressListener(event, listener);
       return fake;
     },
     flash:
@@ -477,7 +463,7 @@ function createFakeDapLink(overrides?: {
         }
       }),
   };
-  return fake as unknown as DAPLink;
+  return fake as unknown as DAPLink & { offCalls: string[] };
 }
 
 describe("resetOverSwd", () => {

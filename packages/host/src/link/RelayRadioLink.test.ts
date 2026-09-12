@@ -218,6 +218,9 @@ describe("RelayRadioLink.connect", () => {
   });
 
   it("translates the tty. path to cu. on darwin when connecting", () => {
+    // `platform` is passed explicitly (ticket 014-001) -- see
+    // `UsbSerialLink.test.ts`'s identical test for why relying on the
+    // real `process.platform` here was non-deterministic across OSes.
     let requestedPath: string | undefined;
     const port = new FakeSerialPort();
     const link = new RelayRadioLink("/dev/tty.usbmodem2121102", CHANNEL, GROUP, {
@@ -225,9 +228,24 @@ describe("RelayRadioLink.connect", () => {
         requestedPath = path;
         return port;
       },
+      platform: "darwin",
     });
     void link.connect().catch(() => {});
     expect(requestedPath).toBe(toCalloutPath("/dev/tty.usbmodem2121102", "darwin"));
+  });
+
+  it("leaves the path unchanged on Linux when connecting (no tty./cu. translation)", () => {
+    let requestedPath: string | undefined;
+    const port = new FakeSerialPort();
+    const link = new RelayRadioLink("/dev/ttyACM0", CHANNEL, GROUP, {
+      createPort: (path) => {
+        requestedPath = path;
+        return port;
+      },
+      platform: "linux",
+    });
+    void link.connect().catch(() => {});
+    expect(requestedPath).toBe("/dev/ttyACM0");
   });
 
   it("rejects if the port errors before opening, without attempting a handshake", async () => {

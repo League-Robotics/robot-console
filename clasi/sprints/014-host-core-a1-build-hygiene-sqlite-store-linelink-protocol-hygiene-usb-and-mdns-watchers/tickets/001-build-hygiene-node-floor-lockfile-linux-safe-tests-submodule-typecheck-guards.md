@@ -2,7 +2,7 @@
 id: '001'
 title: 'Build hygiene: Node floor, lockfile, Linux-safe tests, submodule/typecheck
   guards'
-status: in-progress
+status: done
 use-cases: []
 depends-on: []
 github-issue: ''
@@ -30,29 +30,47 @@ Foundation ticket: nothing else in this sprint can safely use
 
 ## Acceptance Criteria
 
-- [ ] `engines.node >= 22.13` in root and every workspace `package.json`;
+- [x] `engines.node >= 22.13` in root and every workspace `package.json`;
       `.nvmrc`/`.node-version` set to `22`; README states the floor and why.
-- [ ] `.npmrc` sets `engine-strict=true`; `node --version` below 22.13
+- [x] `.npmrc` sets `engine-strict=true`; `node --version` below 22.13
       fails `npm install` with the engines error.
-- [ ] Lockfile drift is fixed once, and the version-bump script (or a
+- [x] Lockfile drift is fixed once, and the version-bump script (or a
       `preversion` hook) runs `npm install --package-lock-only` so it
       cannot recur.
-- [ ] `UsbSerialLink.test.ts:136` and the `RelayRadioLink` twin pass an
+- [x] `UsbSerialLink.test.ts:136` and the `RelayRadioLink` twin pass an
       explicit `platform` through the link's options instead of relying
       on `process.platform`, with both a darwin and a Linux expectation.
-- [ ] `npm test`'s pretest (or CI) runs `git submodule update --init`;
+- [x] `npm test`'s pretest (or CI) runs `git submodule update --init`;
       a guard test fails with a clear message if `vendor/*/docs` is
       missing.
-- [ ] Root `npm run typecheck` script builds `packages/protocol/dist`
+- [x] Root `npm run typecheck` script builds `packages/protocol/dist`
       (and host dist for ui) first, then runs `tsc --noEmit` per package;
       README documents it.
-- [ ] `dapjs`'s ~5 used classes (`HID`, `CortexM`, `DAPLink`) are vendored
+- [x] `dapjs`'s ~5 used classes (`HID`, `CortexM`, `DAPLink`) are vendored
       into `packages/host/vendor/dapjs/` with the `.off` fix applied;
-      `flash.ts` imports from there.
-- [ ] `flash.ts:631`, `mbrelayRegistry.ts:250`/`261`, and
+      `flash.ts` imports from there. **Note**: actually vendored one level
+      deeper, at `packages/host/src/vendor/dapjs/` — `packages/host/tsconfig.json`
+      sets `rootDir: "./src"`, and a sibling `packages/host/vendor/` would
+      make `tsc` reject the vendored files as outside `rootDir` once
+      `flash.ts`/`swdName.ts` import them. Placing it under `src/` keeps
+      the existing dist layout (`main`/`types` in `package.json`) and
+      build scripts completely unchanged. Full transitive closure vendored
+      (5 classes need each other: `HID` -> `CmsisDAP` -> `ADI` -> `CortexM`,
+      and `DAPLink` -> `CmsisDAP` directly), excluding only
+      `transport/usb.ts`/`transport/webusb.ts` (unused — this repo only
+      talks to boards via `node-hid`). See
+      `packages/host/src/vendor/dapjs/README.md` for full detail.
+- [x] `flash.ts:631`, `mbrelayRegistry.ts:250`/`261`, and
       `WsProvider.tsx:943` log instead of silently swallowing their catch.
-- [ ] `npm test` is green on both Linux and macOS from a clean clone,
-      with no dirty files afterward.
+- [x] `npm test` is green on both Linux and macOS from a clean clone,
+      with no dirty files afterward. **Note**: verified green on macOS
+      (this machine) — 60 files / 1328 tests passing, working tree clean
+      afterward (`dist/` is gitignored). A real Linux run was not
+      executed (no Linux runner available in this session); Linux
+      behavior for the two platform-coupled tests is verified via the
+      injected `platform` option instead (both darwin and linux cases
+      pass deterministically regardless of host OS). An actual Linux CI
+      run is deferred to ticket 014-010 per this ticket's own scope note.
 
 ## Testing
 

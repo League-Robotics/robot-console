@@ -91,12 +91,14 @@
 import { readdir, readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
 import path from "node:path";
 import { HID as NodeHidDevice } from "node-hid";
-// `dapjs` ships only a UMD bundle (no ESM build, no `__esModule` marker) --
-// see `swdName.ts`'s own doc comment for the full explanation of why the
-// runtime value must come from the default import while the named types
-// are imported `type`-only. Same import shape is followed here.
-import DapJs from "dapjs";
-import type { DAPLink } from "dapjs";
+// Ticket 014-001: `dapjs` is vendored under `./vendor/dapjs/` (this
+// repo's own TypeScript source, not the npm package) rather than
+// installed from npm -- see that directory's README.md for why (the
+// published package's UMD bundle lacks a working `.off` on its
+// `DAPLink`/`CmsisDAP` classes; the vendored source, compiled by this
+// package's own `tsc`, resolves `events` to Node's real `EventEmitter`,
+// which has it).
+import { HID as HidTransport, DAPLink } from "./vendor/dapjs/index.js";
 import type { DaplinkDevice } from "./devices.js";
 import type { FlashPhase } from "./wsMessages.js";
 
@@ -307,8 +309,8 @@ export type DapLinkFactory = (hidPath: string) => DAPLink;
 
 function defaultDapLinkFactory(hidPath: string): DAPLink {
   const hidDevice = new NodeHidDevice(hidPath);
-  const transport = new DapJs.HID(hidDevice);
-  return new DapJs.DAPLink(transport);
+  const transport = new HidTransport(hidDevice);
+  return new DAPLink(transport);
 }
 
 /**
@@ -363,7 +365,7 @@ export async function flashOverSwd(
   const reportWriting = () => onProgress("writing");
   try {
     onProgress("erasing");
-    daplink.on(DapJs.DAPLink.EVENT_PROGRESS, reportWriting);
+    daplink.on(DAPLink.EVENT_PROGRESS, reportWriting);
     await daplink.flash(Buffer.from(hex, "utf-8"));
     onProgress("resetting");
     return { status: "ok", method: "swd" };
@@ -375,30 +377,14 @@ export async function flashOverSwd(
       error: errorMessage(error),
     };
   } finally {
-    // `dapjs`'s `DAPLink` extends `CmsisDAP`, whose TypeScript typings
-    // declare it as a Node `events.EventEmitter` (which has both `.off`
-    // and `.removeListener`) -- but the actual runtime object, verified
-    // against real hardware, is backed by dapjs's own bundled UMD event
-    // emitter, which implements `on`/`emit`/`removeListener` but has no
-    // `.off` alias at all. Calling `.off` here threw `"daplink.off is
-    // not a function"` from inside this `finally` block, which replaced
-    // -- silently, since a `finally`-block throw always wins over a
-    // `try`-block `return` -- an already-successful `{ status: "ok" }`
-    // result with an uncaught rejection. That broke this function's own
-    // "always resolves, never throws" contract and, one level up,
-    // `deviceRegistry.ts#runFlash` never reached its post-flash
-    // `openLink` call, so a board that *had* been flashed correctly
-    // never re-announced. `removeListener` is the one method this
-    // listener-detach step can rely on existing on both the real
-    // runtime object and the Node-shaped type declaration; wrapped in
-    // its own try/catch (same as `disconnect()` just below) so that
-    // even a `removeListener` failure can never mask or replace
-    // whatever result was already determined above.
-    try {
-      daplink.removeListener(DapJs.DAPLink.EVENT_PROGRESS, reportWriting);
-    } catch {
-      // Best-effort cleanup only -- see comment above.
-    }
+    // Ticket 014-001: this used to be wrapped in its own try/catch,
+    // working around the npm `dapjs` package's bundled `DAPLink` having
+    // no `.off` alias at runtime (only `on`/`removeListener`/`emit`) --
+    // see `./vendor/dapjs/README.md`. Now that `DAPLink` is vendored
+    // source compiled against Node's real `events.EventEmitter`, `.off`
+    // genuinely exists and never throws for a listener registered with
+    // `.on` moments earlier, so no defensive wrapping is needed here.
+    daplink.off(DAPLink.EVENT_PROGRESS, reportWriting);
     try {
       await daplink.disconnect();
     } catch {
@@ -628,7 +614,11 @@ export async function defaultResolveVolumePath(
   let entries: string[];
   try {
     entries = await listVolumeNames();
-  } catch {
+  } catch (error) {
+    console.warn(
+      `defaultResolveVolumePath: could not list "/Volumes" (${errorMessage(error)}) -- ` +
+        "treating this as no mounted MSD volume found",
+    );
     return undefined;
   }
 

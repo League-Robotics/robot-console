@@ -940,7 +940,12 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
         let parsed: unknown;
         try {
           parsed = JSON.parse(String(raw));
-        } catch {
+        } catch (error) {
+          console.warn(
+            `WsProvider: received a non-JSON WebSocket message -- dropping it (${
+              error instanceof Error ? error.message : String(error)
+            })`,
+          );
           return;
         }
         if (!isServerMessage(parsed)) {

@@ -142,6 +142,13 @@ export interface UsbSerialLinkOptions {
    * realScheduler}); tests substitute a fake to assert pacing without
    * real wall-clock delays. */
   scheduler?: Scheduler;
+  /** Injectable platform, passed straight through to {@link toCalloutPath}
+   * during {@link connect}. Defaults to `process.platform`; tests
+   * substitute `"darwin"`/`"linux"` explicitly so the tty./cu. path
+   * translation is asserted deterministically regardless of which OS
+   * actually runs the test (ticket 014-001 — a test that instead relied
+   * on the real `process.platform` only passed on a darwin runner). */
+  platform?: NodeJS.Platform;
 }
 
 type LinkState = "idle" | "connecting" | "connected" | "closed";
@@ -163,6 +170,7 @@ export class UsbSerialLink implements Link {
   ) => SerialPortLike;
   private readonly pacer: WritePacer;
   private readonly openTimeoutMs: number;
+  private readonly platform: NodeJS.Platform;
   private readonly lineReassembler = new LineReassembler();
   private readonly protocolSession = new Session();
   private readonly lineRouter: LineRouter;
@@ -184,6 +192,7 @@ export class UsbSerialLink implements Link {
     this.portPath = portPath;
     this.createPort = options.createPort ?? defaultCreatePort;
     this.openTimeoutMs = options.openTimeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS;
+    this.platform = options.platform ?? process.platform;
     this.pacer = new WritePacer(
       options.writePaceMs ?? DEFAULT_WRITE_PACE_MS,
       options.scheduler ?? realScheduler,
@@ -255,7 +264,7 @@ export class UsbSerialLink implements Link {
     }
     this.state = "connecting";
 
-    const calloutPath = toCalloutPath(this.portPath);
+    const calloutPath = toCalloutPath(this.portPath, this.platform);
     const port = this.createPort(calloutPath, { baudRate: BAUD_RATE });
     this.port = port;
     this.attachPortListeners(port);

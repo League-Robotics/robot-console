@@ -29,10 +29,14 @@
  *    module fans out to every subscriber of {@link Runtime.telemetry}
  *    (`server.ts`, ticket 005, is the only production subscriber).
  * 4. `createConnector` (ticket 001), given that harvester.
- * 5. `startReconciler` (ticket 002), given that connector — the only
- *    component that decides what should be connected, and the target
- *    `server.ts` forwards an explicit user `session-open`/`session-close`
- *    command to.
+ * 4a. `createRelayBridger` (ticket 016-002), given the same harvester —
+ *    the reset-before-every-candidate fix for default failover's Linux
+ *    bug; a sibling to the connector, not a replacement for it (see that
+ *    module's own doc comment).
+ * 5. `startReconciler` (ticket 002), given that connector and bridger —
+ *    the only component that decides what should be connected, and the
+ *    target `server.ts` forwards an explicit user `session-open`/
+ *    `session-close` command to.
  * 6. `installUnhandledRejectionBackstop` (ticket 003) — the process-wide
  *    last-resort net; see that module's own doc comment for why this is
  *    not a substitute for each component's own error handling.
@@ -69,6 +73,11 @@ import {
   type HarvesterTelemetryEvent,
 } from "./connect/harvester.js";
 import { startReconciler as defaultStartReconciler, type Reconciler, type ReconcilerDeps } from "./connect/reconciler.js";
+import {
+  createRelayBridger as defaultCreateRelayBridger,
+  type RelayBridgerDeps,
+  type RelayBridgerOptions,
+} from "./connect/relayBridger.js";
 import {
   installUnhandledRejectionBackstop as defaultInstallUnhandledRejectionBackstop,
   type UnhandledRejectionBackstopDeps,
@@ -141,10 +150,20 @@ export interface StartRuntimeOptions {
    * instead of overriding these sinks directly. */
   harvesterDeps?: Omit<HarvesterDeps, "onTelemetry" | "onNotice">;
 
+  createRelayBridger?: typeof defaultCreateRelayBridger;
+  /** Every {@link RelayBridgerDeps} field. Ticket 016-002's relay bridger
+   * — always constructed and handed to the reconciler as {@link
+   * ReconcilerDeps.bridger} (see the module doc comment's composition
+   * order), fixing the Linux default-failover bug at its root (a reset
+   * before every candidate). */
+  relayBridgerDeps?: RelayBridgerDeps;
+  relayBridgerOptions?: RelayBridgerOptions;
+
   startReconciler?: typeof defaultStartReconciler;
-  /** Every {@link ReconcilerDeps} field except `connector`, which this
-   * module always wires to its own {@link createConnector} call. */
-  reconcilerDeps?: Omit<ReconcilerDeps, "connector">;
+  /** Every {@link ReconcilerDeps} field except `connector`/`bridger`,
+   * which this module always wires to its own {@link createConnector}/
+   * {@link createRelayBridger} calls. */
+  reconcilerDeps?: Omit<ReconcilerDeps, "connector" | "bridger">;
 
   installUnhandledRejectionBackstop?: typeof defaultInstallUnhandledRejectionBackstop;
   unhandledRejectionDeps?: UnhandledRejectionBackstopDeps;
@@ -168,6 +187,7 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
   const createBonjourBackendFn = options.createBonjourBackend ?? defaultCreateBonjourBackend;
   const createConnectorFn = options.createConnector ?? defaultCreateConnector;
   const createHarvesterFn = options.createHarvester ?? defaultCreateHarvester;
+  const createRelayBridgerFn = options.createRelayBridger ?? defaultCreateRelayBridger;
   const startReconcilerFn = options.startReconciler ?? defaultStartReconciler;
   const installUnhandledRejectionBackstopFn =
     options.installUnhandledRejectionBackstop ?? defaultInstallUnhandledRejectionBackstop;
@@ -206,7 +226,8 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
   });
 
   const connector = createConnectorFn(store, { ...options.connectorDeps, harvester }, options.connectorOptions);
-  const reconciler = startReconcilerFn(store, { ...options.reconcilerDeps, connector });
+  const bridger = createRelayBridgerFn(store, { ...options.relayBridgerDeps, harvester }, options.relayBridgerOptions);
+  const reconciler = startReconcilerFn(store, { ...options.reconcilerDeps, connector, bridger });
   const uninstallUnhandledRejectionBackstop = installUnhandledRejectionBackstopFn(store, options.unhandledRejectionDeps);
 
   let stopped = false;

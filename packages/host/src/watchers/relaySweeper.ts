@@ -401,9 +401,22 @@ export interface RelaySweeperOptions {
 }
 
 export interface RelaySweeperHandle {
-  /** Stop the scan tick and abort every in-flight per-relay pass.
-   * Idempotent. */
-  stop(): void;
+  /** Stop the scan tick, abort every in-flight per-relay pass, and await
+   * every per-relay loop's own cleanup (its current pass's `finally`
+   * block — `stream.close()`, `revocation.clear`,
+   * `store.releaseRelayLease` — plus the loop's own `store.heartbeat`
+   * call) before resolving. Idempotent. Ticket 016-008's own carried
+   * fixup: a caller that closes `store` right after `stop()` (a test's
+   * `store.close()`, or `runtime.ts`'s own shutdown) used to race an
+   * in-flight pass still finishing its cleanup against a closed
+   * database — "database is not open" thrown inside a `.finally()`/
+   * `runRelayLoop` promise nobody awaited, an unhandled rejection ~1 in
+   * 5 runs in `relaySweeper.test.ts`. Awaiting every loop's own promise
+   * here (see {@link startRelaySweeper}'s `activeLoopPromises`) means
+   * every store call a pass still had in flight has already settled by
+   * the time this resolves, so a caller that awaits `stop()` before
+   * closing the store never races it again. */
+  stop(): Promise<void>;
 }
 
 /** Resolve (or reject) once `ms` has elapsed, or immediately once `signal`
@@ -729,6 +742,15 @@ export function startRelaySweeper(store: Store, deps: RelaySweeperDeps, opts: Re
    * `AbortController` registered with the revocation seam inside {@link
    * createRelaySweepPassRunner}. */
   const relayLoops = new Map<string, AbortController>();
+  /** Every currently-running {@link runRelayLoop} promise, keyed by
+   * nothing (a `Set`, not a `Map`) since a loop's own identity — not its
+   * relay — is all `stop()` needs: once a relay goes ineligible,
+   * `scanOnce()` removes its entry from `relayLoops` immediately, but
+   * the loop's own promise (mid `runOnePass`'s `finally` cleanup, or
+   * about to make its own `store.heartbeat` call) stays here until it
+   * actually settles. `stop()` awaits this whole set — see {@link
+   * RelaySweeperHandle.stop}'s own doc comment for why. */
+  const activeLoopPromises = new Set<Promise<void>>();
   let stopped = false;
 
   /** One relay's own forever-loop: pass, quiet period, repeat, until
@@ -759,11 +781,13 @@ export function startRelaySweeper(store: Store, deps: RelaySweeperDeps, opts: Re
   function startLoopFor(relayLinkId: string): void {
     const outerController = new AbortController();
     relayLoops.set(relayLinkId, outerController);
-    void runRelayLoop(relayLinkId, outerController.signal).finally(() => {
+    const loopPromise: Promise<void> = runRelayLoop(relayLinkId, outerController.signal).finally(() => {
       if (relayLoops.get(relayLinkId) === outerController) {
         relayLoops.delete(relayLinkId);
       }
+      activeLoopPromises.delete(loopPromise);
     });
+    activeLoopPromises.add(loopPromise);
   }
 
   /** A `usb`-transport, `kind='relay'` link sitting idle (ticket 001's
@@ -824,7 +848,7 @@ export function startRelaySweeper(store: Store, deps: RelaySweeperDeps, opts: Re
   timer.unref?.();
 
   return {
-    stop(): void {
+    async stop(): Promise<void> {
       if (stopped) {
         return;
       }
@@ -834,6 +858,14 @@ export function startRelaySweeper(store: Store, deps: RelaySweeperDeps, opts: Re
         controller.abort(new Error("relaySweeper: stopped"));
       }
       relayLoops.clear();
+      // Ticket 016-008: wait for every in-flight loop's own cleanup
+      // (finally block, heartbeat) to actually settle before resolving
+      // -- see RelaySweeperHandle.stop's own doc comment. allSettled,
+      // not all: a loop promise is not expected to reject (runRelayLoop
+      // never lets a pass's own error escape), but a caller's stop()
+      // must never itself throw merely because a store call raced a
+      // caller-side close it does not control.
+      await Promise.allSettled([...activeLoopPromises]);
     },
   };
 }

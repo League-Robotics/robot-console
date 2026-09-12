@@ -149,7 +149,7 @@ function installShutdownHandlers(server: RunningServer, runtime: Runtime, exit: 
       // before resolving -- see server.ts's own doc comment.
       await server.close();
     } finally {
-      runtime.stop();
+      await runtime.stop();
     }
     exit(0);
   };

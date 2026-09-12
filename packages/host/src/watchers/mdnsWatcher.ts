@@ -44,7 +44,13 @@
  * row exists. Either way, more than one match (a real possibility — see
  * architecture.md §4's collision math) leaves the link unassigned
  * (`device_id = NULL`) rather than guessing, same principle as
- * `usbWatcher.ts`'s own device-linking discipline.
+ * `usbWatcher.ts`'s own device-linking discipline. Ticket 016-008:
+ * a `wifi`/`mbserial` link that attaches to an owned device this way is
+ * also promoted `discovered` → `connectable` (`promoteOwnedLinkIfDiscovered`,
+ * below), mirroring `usbWatcher.ts`'s own naming->connectable promotion,
+ * so the reconciler's auto-connect (which only ever considers
+ * `connectable` links) actually fires for an owned WiFi/mbserial robot;
+ * an unassigned link is left `discovered`.
  *
  * Unlike `wifi`/`mbserial`, a `mbrelay` link with **zero** matching
  * `kind='relay'` devices does not stay unassigned: ticket 016-005 mints
@@ -288,24 +294,47 @@ export function startMdnsWatcher(
     return matches.length === 1 ? Number(matches[0]?.id) : null;
   }
 
+  /** Ticket 016-008's own carried fixup: promotes `linkId` from
+   * `discovered` to `connectable` the instant it attaches to an owned
+   * device, mirroring `usbWatcher.ts`'s own naming->connectable
+   * promotion (`attach()`'s final `setLinkState` call) — without this,
+   * a freshly mDNS-discovered `wifi`/`mbserial` link for an owned robot
+   * sat in `discovered` forever, since nothing else in this module (or
+   * the reconciler, whose auto-connect only ever considers
+   * `connectable` links) ever promotes it. Reads the link's *current*
+   * stored state — set by {@link upsertLinkAndDetectChange}'s own
+   * `upsertLink` call just above, which only ever assigns `discovered`
+   * to a brand-new row and never touches `state` on an existing one
+   * (`Store.upsertLink`'s own doc comment) — so this only ever promotes
+   * a link still sitting at that initial state. A link already further
+   * along (`connectable`/`connecting`/`connected`/`closed_by_user`/...,
+   * from a prior promotion or a live session) is left exactly as it is;
+   * an unassigned link (`deviceId === null` — unowned, or still
+   * ambiguous) is never touched either way. */
+  function promoteOwnedLinkIfDiscovered(linkId: string, deviceId: number | null): void {
+    if (deviceId === null) {
+      return;
+    }
+    const row = store.snapshotRows().links.find((link) => link.id === linkId);
+    if (row?.state === "discovered") {
+      store.setLinkState({ id: linkId, state: "connectable", at: now(), reason: "mdns-owned-link" });
+    }
+  }
+
   function handleWifi(service: MdnsService): void {
     const name = service.txt?.name ?? service.name;
-    upsertLinkAndDetectChange(
-      `wifi-${name}`,
-      "wifi",
-      { host: service.host, port: service.port },
-      uniqueOwnedDeviceIdByName(name),
-    );
+    const linkId = `wifi-${name}`;
+    const deviceId = uniqueOwnedDeviceIdByName(name);
+    upsertLinkAndDetectChange(linkId, "wifi", { host: service.host, port: service.port }, deviceId);
+    promoteOwnedLinkIfDiscovered(linkId, deviceId);
   }
 
   function handleMbserial(service: MdnsService): void {
     const name = service.name;
-    upsertLinkAndDetectChange(
-      `mbserial-${name}`,
-      "mbserial",
-      { host: service.host, port: service.port },
-      uniqueOwnedDeviceIdByName(name),
-    );
+    const linkId = `mbserial-${name}`;
+    const deviceId = uniqueOwnedDeviceIdByName(name);
+    upsertLinkAndDetectChange(linkId, "mbserial", { host: service.host, port: service.port }, deviceId);
+    promoteOwnedLinkIfDiscovered(linkId, deviceId);
   }
 
   /** Ticket 016-005's device-creation fallback: when **zero** existing

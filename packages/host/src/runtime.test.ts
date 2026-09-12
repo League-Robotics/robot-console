@@ -277,12 +277,16 @@ describe("startRuntime -- telemetry fan-out", () => {
 });
 
 describe("startRuntime -- stop()", () => {
-  it("stops the backstop, the reconciler, the relay sweeper, both watchers, then closes the store, in that order", () => {
+  it("stops the backstop, the reconciler, the relay sweeper, both watchers, then closes the store, in that order", async () => {
     const f = fakeDeps();
     const runtime = startRuntime(f.options);
     f.calls.length = 0; // only care about stop()'s own ordering from here
 
-    runtime.stop();
+    // Ticket 016-008: stop() now awaits the relay sweeper's own stop()
+    // (which itself awaits every in-flight pass's cleanup) before
+    // continuing on to the watchers and the store -- see runtime.ts's
+    // own Runtime.stop doc comment.
+    await runtime.stop();
 
     expect(f.calls).toEqual([
       "uninstallUnhandledRejectionBackstop",
@@ -294,12 +298,12 @@ describe("startRuntime -- stop()", () => {
     ]);
   });
 
-  it("is idempotent -- a second stop() call touches nothing again", () => {
+  it("is idempotent -- a second stop() call touches nothing again", async () => {
     const f = fakeDeps();
     const runtime = startRuntime(f.options);
 
-    runtime.stop();
-    runtime.stop();
+    await runtime.stop();
+    await runtime.stop();
 
     expect(f.uninstallMock).toHaveBeenCalledTimes(1);
     expect(f.reconcilerStopMock).toHaveBeenCalledTimes(1);

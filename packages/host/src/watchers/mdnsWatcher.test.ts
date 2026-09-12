@@ -383,6 +383,80 @@ describe("startMdnsWatcher", () => {
     }
   });
 
+  // ---------------------------------------------------------------------
+  // Ticket 016-008 (carried from ticket 006): a freshly mDNS-discovered
+  // wifi/mbserial link attached to an owned device is promoted
+  // `discovered` -> `connectable`, mirroring usbWatcher.ts's own
+  // naming->connectable promotion, so the reconciler's auto-connect for
+  // owned robots actually fires. An un-owned link stays `discovered`.
+  // ---------------------------------------------------------------------
+  it.each([
+    [
+      "wifi",
+      (backend: ReturnType<typeof fakeBackend>, name: string) =>
+        backend.robotlinkTcp.emitUp(wifiService(name, `${name}.local`, 7654)),
+      (name: string) => `wifi-${name}`,
+    ],
+    [
+      "mbserial",
+      (backend: ReturnType<typeof fakeBackend>, name: string) =>
+        backend.serial.emitUp(mbserialService(name, `${name}.local`, 4795)),
+      (name: string) => `mbserial-${name}`,
+    ],
+  ] as const)(
+    "promotes a freshly-discovered owned %s link to connectable, but leaves an un-owned one discovered (ticket 016-008)",
+    (_transport, emit, linkIdFor) => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const owned = namedDevice(1198504156); // "vevov"
+      const unowned = namedDevice(2); // no devices row at all -- unowned by construction
+      store.upsertDevice({ id: owned.id, name: owned.name, kind: "robot", at: Date.now() });
+      store.setOwned(owned.id, true, Date.now());
+
+      const handle = start(store, backend);
+      try {
+        emit(backend, owned.name);
+        const ownedLink = store.snapshotRows().links.find((l) => l.id === linkIdFor(owned.name));
+        expect(ownedLink?.device_id).toBe(owned.id);
+        expect(ownedLink?.state).toBe("connectable");
+
+        emit(backend, unowned.name);
+        const unownedLink = store.snapshotRows().links.find((l) => l.id === linkIdFor(unowned.name));
+        expect(unownedLink?.device_id).toBeNull();
+        expect(unownedLink?.state).toBe("discovered");
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    },
+  );
+
+  it("does not demote an owned wifi link's state once it has moved past discovered (e.g. already connected) on a later re-observation", () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const owned = namedDevice(1198504156);
+    store.upsertDevice({ id: owned.id, name: owned.name, kind: "robot", at: Date.now() });
+    store.setOwned(owned.id, true, Date.now());
+
+    const handle = start(store, backend);
+    try {
+      backend.robotlinkTcp.emitUp(wifiService(owned.name, `${owned.name}.local`, 7654));
+      const linkId = `wifi-${owned.name}`;
+      expect(store.snapshotRows().links.find((l) => l.id === linkId)?.state).toBe("connectable");
+
+      // Simulate the reconciler having since connected it.
+      store.setLinkState({ id: linkId, state: "connected", at: Date.now() });
+
+      // A later re-observation (e.g. a TXT/SRV re-announce with the
+      // exact same address) must never demote it back to connectable.
+      backend.robotlinkTcp.emitServiceChange(wifiService(owned.name, `${owned.name}.local`, 7654));
+      expect(store.snapshotRows().links.find((l) => l.id === linkId)?.state).toBe("connected");
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
   it(
     "creates a synthetic devices(kind='relay') row when no existing relay device matches the mDNS instance name (ticket 016-005)",
     () => {

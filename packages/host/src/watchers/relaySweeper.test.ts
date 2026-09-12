@@ -708,7 +708,12 @@ describe("startRelaySweeper", () => {
     }
 
     expect(link?.state).toBe("connectable");
-    handle.stop();
+    // Ticket 016-008: await stop() so the sweeper's in-flight loop
+    // (its finally cleanup, its own heartbeat) has fully settled before
+    // the store closes underneath it -- see relaySweeper.ts's own
+    // RelaySweeperHandle.stop doc comment for the "database is not
+    // open" unhandled-rejection flake this fixes at the root.
+    await handle.stop();
     store.close();
   }, 10_000);
 
@@ -756,21 +761,19 @@ describe("startRelaySweeper", () => {
     }
     expect(stream.cgWriteTimes.length).toBeGreaterThan(writesWhileBridged);
 
-    handle.stop();
+    await handle.stop();
     store.close();
   }, 10_000);
 
-  it("stop() is idempotent and stops the scan tick", () => {
+  it("stop() is idempotent, stops the scan tick, and its returned promise resolves", async () => {
     const store = freshStore();
     const handle = startRelaySweeper(
       store,
       { revocation: createRelayLeaseRevocation() },
       { scanIntervalMs: 50_000 },
     );
-    expect(() => {
-      handle.stop();
-      handle.stop();
-    }).not.toThrow();
+    await expect(handle.stop()).resolves.toBeUndefined();
+    await expect(handle.stop()).resolves.toBeUndefined();
     store.close();
   });
 });

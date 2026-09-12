@@ -122,11 +122,15 @@ export interface Runtime {
   readonly store: Store;
   readonly reconciler: Reconciler;
   readonly telemetry: RuntimeTelemetry;
-  /** Stops the reconciler (change-feed subscription + slow tick), both
+  /** Stops the reconciler (change-feed subscription + slow tick), the
+   * relay sweeper (awaited — ticket 016-008: its own `stop()` now waits
+   * for every in-flight per-relay pass's cleanup before resolving, so
+   * this method must await it too, or the store below could still close
+   * out from under a pass's still-running `finally` block), both
    * watchers, uninstalls the unhandled-rejection backstop, and closes
    * the store. Does not close any already-open session — mirrors the
    * reconciler's own `stop()` contract (this module's doc comment). */
-  stop(): void;
+  stop(): Promise<void>;
 }
 
 /** Injectable seams for {@link startRuntime} — every field defaults to
@@ -285,14 +289,19 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
     store,
     reconciler,
     telemetry,
-    stop(): void {
+    async stop(): Promise<void> {
       if (stopped) {
         return;
       }
       stopped = true;
       uninstallUnhandledRejectionBackstop();
       reconciler.stop();
-      relaySweeperHandle.stop();
+      // Awaited: ticket 016-008 fixed relaySweeperHandle.stop() to wait
+      // for every in-flight per-relay pass's own cleanup, precisely so
+      // this store.close() below can never again race a pass still
+      // mid-`finally` (the same "database is not open" unhandled
+      // rejection relaySweeper.test.ts's own flake surfaced).
+      await relaySweeperHandle.stop();
       usbHandle.stop();
       mdnsHandle.stop();
       store.close();

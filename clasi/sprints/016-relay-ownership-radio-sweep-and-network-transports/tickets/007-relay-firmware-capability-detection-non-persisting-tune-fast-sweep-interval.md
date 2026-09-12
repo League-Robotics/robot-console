@@ -1,7 +1,7 @@
 ---
 id: '007'
 title: 'Relay firmware capability detection: non-persisting tune, fast sweep interval'
-status: open
+status: in-progress
 use-cases:
 - SUC-007
 depends-on:

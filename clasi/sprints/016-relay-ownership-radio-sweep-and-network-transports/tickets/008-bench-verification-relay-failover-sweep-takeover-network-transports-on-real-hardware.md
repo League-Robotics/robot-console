@@ -93,6 +93,19 @@ agents.
       directly in this ticket's completion notes... do not patch;
       report") — never silently marked done.
 
+### Carried from ticket 006 (fixups required before sprint close)
+
+- [ ] The intermittent `watchers/relaySweeper.test.ts` flake (unhandled
+      "database is not open" rejection racing `store.close()` in the
+      `startRelaySweeper` tests, ~1 in 5 runs) is fixed at the root —
+      the sweeper's stop must await in-flight passes before the store
+      closes — and the suite passes 10 consecutive runs.
+- [ ] A freshly mDNS-discovered `wifi`/`mbserial` link attached to an
+      owned device is promoted `discovered` → `connectable` by the
+      watcher (mirroring `usbWatcher`), so the reconciler's auto-connect
+      for owned WiFi robots actually fires; un-owned stays `discovered`.
+      Table test in `mdnsWatcher.test.ts`.
+
 ## Implementation Plan
 
 **Approach**: Automated suite first (fast feedback), then the bench pass,

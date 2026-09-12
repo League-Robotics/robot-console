@@ -1,10 +1,12 @@
 ---
-id: '008'
+id: 008
 title: 'UI shared components II: calibration table, WiFi credentials form, radio validation
   consolidation'
-status: open
-use-cases: [SUC-007]
-depends-on: ['007']
+status: in-progress
+use-cases:
+- SUC-007
+depends-on:
+- '007'
 github-issue: ''
 issue: rearch-16-ui-shared-components-dedupe.md
 completes_issue: true

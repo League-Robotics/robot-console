@@ -2,7 +2,7 @@
 id: '002'
 title: 'Relay failover: relayBridger with per-candidate reset, candidate ordering,
   registry-free default failover'
-status: open
+status: in-progress
 use-cases:
 - SUC-002
 depends-on:

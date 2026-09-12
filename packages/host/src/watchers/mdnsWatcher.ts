@@ -351,7 +351,24 @@ export function startMdnsWatcher(
    * has no future merge path — there is no physical chip that could
    * later plug into this host over USB and reconcile against it, unlike
    * a USB placeholder. `upsertDevice` is itself idempotent, so a repeat
-   * observation of an already-created pool is a no-op past its first. */
+   * observation of an already-created pool is a no-op past its first.
+   *
+   * ## A name that isn't a well-formed micro:bit name (ticket 016-008
+   * bench finding)
+   *
+   * `nameToValue` only accepts the standard 5-letter
+   * `[zvgpt][uoiea][zvgpt][uoiea][zvgpt]` micro:bit name shape and
+   * throws for anything else — but an mbrelay pool's own mDNS instance
+   * name is whatever hostname its operator gave it, with no such
+   * constraint (a real bench relay was observed advertising as
+   * `torture`, seven letters, not that shape at all). Before this fix,
+   * that throw propagated straight out of this synchronous mDNS `up`
+   * handler and crashed the whole host process — found live on the
+   * bench starting this exact ticket's own host against real hardware.
+   * A name `nameToValue` rejects is treated exactly like the ambiguous
+   * multiple-match case above: left unassigned (`null`) rather than
+   * crashing or guessing at an id, since there is no other id scheme
+   * this fallback can safely mint one from. */
   function createRelayDeviceIfAbsent(name: string): number | null {
     const matches = store.snapshotRows().devices.filter((row) => row.name === name && row.kind === "relay");
     if (matches.length > 0) {
@@ -360,7 +377,12 @@ export function startMdnsWatcher(
       // minting a third row that would not resolve the ambiguity.
       return null;
     }
-    const id = nameToValue(name);
+    let id: number;
+    try {
+      id = nameToValue(name);
+    } catch {
+      return null;
+    }
     store.upsertDevice({ id, name, kind: "relay", at: now() });
     return id;
   }

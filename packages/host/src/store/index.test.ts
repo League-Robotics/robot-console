@@ -269,6 +269,21 @@ describe("Store: upsertLink / setLinkState / ageLinks", () => {
       store.close();
     }
   });
+
+  it("never ages a link with an open session, however stale its own last_seen (ticket 016-008 bench finding: a live mbserial session must never read as stale)", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertLink({ id: "mbserial-gopiv", transport: "mbserial", address: {}, at: 0 });
+      store.openSession("mbserial-gopiv", 0);
+
+      // Past the ttl by a wide margin -- would ordinarily age.
+      const aged = store.ageLinks("mbserial", 500, 1000);
+      expect(aged).toBe(0);
+      expect(store.snapshotRows().links.find((l) => l.id === "mbserial-gopiv")?.state).toBe("discovered");
+    } finally {
+      store.close();
+    }
+  });
 });
 
 describe("Store: upsertService", () => {

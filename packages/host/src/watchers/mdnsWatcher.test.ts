@@ -484,6 +484,29 @@ describe("startMdnsWatcher", () => {
   );
 
   it(
+    "leaves an mbrelay link unassigned, without crashing, when the instance name is not a well-formed micro:bit name (ticket 016-008 bench finding -- a real relay advertising as 'torture')",
+    () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const handle = start(store, backend);
+      try {
+        expect(() => {
+          backend.relay.emitUp(mbrelayService("torture", "torture.local", 8760, 8761));
+        }).not.toThrow();
+
+        const rows = store.snapshotRows();
+        const link = rows.links.find((l) => l.id === "mbrelay-torture");
+        expect(link).toBeDefined();
+        expect(link?.device_id).toBeNull();
+        expect(rows.devices.some((d) => d.name === "torture")).toBe(false);
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    },
+  );
+
+  it(
     "attaches an mbrelay link to an already-identified local relay device by name (fast path, unchanged -- regression guard)",
     () => {
       const store = freshStore();

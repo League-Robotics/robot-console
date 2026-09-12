@@ -686,13 +686,35 @@ export class Store {
   /** Marks every link of `transport` whose `last_seen` is older than
    * `now - ttlMs` (and is not already `stale`) as `stale`. Returns the
    * number of links aged. One `changes` row (and one queued
-   * {@link ChangeEvent}) per link aged, all in the same transaction. */
+   * {@link ChangeEvent}) per link aged, all in the same transaction.
+   *
+   * Never ages a link with an open `sessions` row, regardless of how
+   * long ago its own mDNS `last_seen` last refreshed (ticket 016-008
+   * bench finding, live on real hardware: `mdnsWatcher.ts`'s aging pass
+   * runs off `links.last_seen` alone, which only advances on a fresh
+   * mDNS `up`/`onServiceChange` observation of the *advertisement* —
+   * not on session/telemetry activity over an already-open connection.
+   * A real `gopiv` mbserial session sat open and actively receiving
+   * telemetry (`sessions.robot_status` updating every poll) while its
+   * `links` row aged past `DEFAULT_MBSERIAL_TTL_MS` purely because the
+   * advertiser did not re-announce within that window — surfacing a
+   * connected link as `stale` to the UI, which would read as "gone"
+   * for a link that is very much alive. This gap was unreachable before
+   * ticket 016-008's own carried fixup (promoting an owned wifi/mbserial
+   * link to `connectable` so the reconciler's auto-connect actually
+   * opens a session on it) gave any wifi/mbserial link a live session to
+   * race against in the first place — usb links never call `ageLinks`
+   * at all (`usbWatcher.ts` has its own poll-driven lifecycle instead),
+   * so this is the first time an aged transport could ever have a
+   * concurrently open session. */
   ageLinks(transport: Transport, ttlMs: number, now: number): number {
     const cutoff = now - ttlMs;
     return this.withChangeBatch("links", () => {
       const stale = this.db
         .prepare(
-          `SELECT id FROM links WHERE transport = ? AND state != 'stale' AND (last_seen IS NULL OR last_seen < ?)`,
+          `SELECT id FROM links
+           WHERE transport = ? AND state != 'stale' AND (last_seen IS NULL OR last_seen < ?)
+             AND id NOT IN (SELECT link_id FROM sessions)`,
         )
         .all(transport, cutoff) as Array<{ id: string }>;
       const stmt = this.db.prepare("UPDATE links SET state = 'stale', state_reason = 'ttl-expired', state_since = ? WHERE id = ?");

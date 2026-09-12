@@ -136,7 +136,12 @@ function fakeRuntime() {
   const sessionsByLink = new Map<string, ConnectedSession>();
   const telemetryListeners = new Set<(linkId: string, event: HarvesterTelemetryEvent) => void>();
   const noticeListeners = new Set<(linkId: string, message: string) => void>();
-  const requestOpen = vi.fn().mockResolvedValue(undefined);
+  // Bench defect 4: the real reconciler.requestOpen resolves to
+  // `{ refusedReason?: string }`, never bare `undefined` -- server.ts's
+  // own session-open handler destructures `refusedReason` off the
+  // result, so this fake must match that shape or every existing
+  // session-open test here would throw on the destructure.
+  const requestOpen = vi.fn().mockResolvedValue({});
   const requestClose = vi.fn().mockResolvedValue(undefined);
 
   const runtime: ServerRuntime & {
@@ -376,6 +381,36 @@ describe("server.ts: session-open/session-close dispatch", () => {
     expect(h.runtime.requestOpen).toHaveBeenCalledWith("usb-1");
   });
 
+  it(
+    "bench defect 4 (2026-09-12): broadcasts a link-scoped notice when the reconciler refuses a {linkId} session-open",
+    async () => {
+      const h = await harness();
+      h.runtime.requestOpen.mockResolvedValueOnce({ refusedReason: "this device is not owned yet -- claim it first" });
+      const ws = fakeWebSocket();
+      h.wss.triggerConnection(ws);
+      ws.sent.length = 0;
+
+      ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", linkId: "wifi-1" })), false);
+      await flush();
+
+      const notice = ws.sent.find((m) => m.type === "notice");
+      expect(notice).toMatchObject({ type: "notice", level: "warn", linkId: "wifi-1" });
+      expect((notice as { text: string }).text).toMatch(/not owned/);
+    },
+  );
+
+  it("broadcasts no notice at all when the reconciler actually opens the link (the default fake resolves to {})", async () => {
+    const h = await harness();
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    ws.sent.length = 0;
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", linkId: "usb-1" })), false);
+    await flush();
+
+    expect(ws.sent.some((m) => m.type === "notice")).toBe(false);
+  });
+
   it("forwards session-close to reconciler.requestClose", async () => {
     const h = await harness();
     const ws = fakeWebSocket();
@@ -410,6 +445,26 @@ describe("server.ts: session-open/session-close dispatch", () => {
       group: derived.group,
     });
   });
+
+  it(
+    "bench defect 4: broadcasts a link-scoped notice, addressed to the new radio child, when the reconciler refuses a {relayLinkId, name} bridge",
+    async () => {
+      const h = await harness();
+      h.runtime.requestOpen.mockResolvedValueOnce({ refusedReason: "already connecting" });
+      const ws = fakeWebSocket();
+      h.wss.triggerConnection(ws);
+      await flush();
+      ws.sent.length = 0;
+
+      ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", relayLinkId: "usb-RELAY", name: "vevov" })), false);
+      await flush();
+
+      const childLinkId = "radio-vevov-via-usb-RELAY";
+      const notice = ws.sent.find((m) => m.type === "notice");
+      expect(notice).toMatchObject({ type: "notice", level: "warn", linkId: childLinkId });
+      expect((notice as { text: string }).text).toMatch(/already connecting/);
+    },
+  );
 
   it("uses the device's own stored radio override, when one exists, instead of the name-derived default", async () => {
     const h = await harness();

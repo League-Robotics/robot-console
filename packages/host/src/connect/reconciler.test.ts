@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { deviceIdToName } from "@robot-console/protocol";
+import { deviceIdToName, nameToValue } from "@robot-console/protocol";
 import { openStoreDb } from "../store/db.js";
 import {
   Store,
@@ -15,7 +15,7 @@ import {
 import { FakeByteStream } from "../link/__fixtures__/FakeByteStream.js";
 import { realScheduler, type Scheduler } from "../link/pacing.js";
 import { createConnector, type Connector, type ConnectedSession } from "./connector.js";
-import { plan, planUserClose, planUserOpen, startReconciler } from "./reconciler.js";
+import { describeUserOpenRefusal, plan, planUserClose, planUserOpen, startReconciler } from "./reconciler.js";
 
 // Sprint 015 ticket 002's own suite: table-driven `plan()`/`planUserOpen`/
 // `planUserClose` cases (pure, no store or network access at all), plus
@@ -277,6 +277,72 @@ describe("planUserOpen", () => {
   });
 });
 
+// ---------------------------------------------------------------------
+// Bench defect 4 (2026-09-12): describeUserOpenRefusal narrates exactly
+// the branches planUserOpen above refuses on -- one table test per
+// planUserOpen case that returns [], confirming a reason string comes
+// back for each, and confirming every job-producing case above narrates
+// to undefined (never a false-positive "refused" the UI would show for
+// something that actually worked).
+// ---------------------------------------------------------------------
+
+describe("describeUserOpenRefusal", () => {
+  it("is undefined whenever planUserOpen would actually produce a job", () => {
+    const opensPlainly = rows({
+      devices: [deviceRow(1, true)],
+      links: [linkRow({ id: "wifi-1", transport: "wifi", deviceId: 1 })],
+    });
+    expect(planUserOpen(opensPlainly, "wifi-1")).not.toEqual([]);
+    expect(describeUserOpenRefusal(opensPlainly, "wifi-1")).toBeUndefined();
+
+    const reopensClosedByUser = rows({
+      devices: [deviceRow(1, true)],
+      links: [linkRow({ id: "usb-1", transport: "usb", deviceId: 1, state: "closed_by_user", userClosed: true })],
+    });
+    expect(describeUserOpenRefusal(reopensClosedByUser, "usb-1")).toBeUndefined();
+
+    const switches = rows({
+      links: [
+        linkRow({ id: "radio-A", transport: "radio", address: { relayLinkId: "relay-1", channel: 1, group: 1 }, state: "connected" }),
+        linkRow({ id: "radio-B", transport: "radio", address: { relayLinkId: "relay-1", channel: 2, group: 1 } }),
+      ],
+      sessions: [{ linkId: "radio-A" }],
+    });
+    expect(describeUserOpenRefusal(switches, "radio-B")).toBeUndefined();
+  });
+
+  it("names an unknown linkId", () => {
+    expect(describeUserOpenRefusal(rows({}), "does-not-exist")).toBe('no such link "does-not-exist"');
+  });
+
+  it("names a not-yet-owned device as the reason a wifi/mbserial open is refused", () => {
+    const input = rows({
+      devices: [deviceRow(1, false)],
+      links: [linkRow({ id: "wifi-1", transport: "wifi", deviceId: 1 })],
+    });
+    expect(planUserOpen(input, "wifi-1")).toEqual([]);
+    expect(describeUserOpenRefusal(input, "wifi-1")).toMatch(/not owned/);
+  });
+
+  it("names an already-open link (session already exists) as the reason", () => {
+    const input = rows({
+      links: [linkRow({ id: "radio-A", transport: "radio", address: { relayLinkId: "relay-1", channel: 1, group: 1 }, state: "connected" })],
+      sessions: [{ linkId: "radio-A" }],
+    });
+    expect(planUserOpen(input, "radio-A")).toEqual([]);
+    expect(describeUserOpenRefusal(input, "radio-A")).toBe("already open");
+  });
+
+  it("names an already-connecting (in-flight) link as the reason", () => {
+    const input = rows({
+      devices: [deviceRow(1, true)],
+      links: [linkRow({ id: "usb-1", transport: "usb", deviceId: 1, state: "connecting" })],
+    });
+    expect(planUserOpen(input, "usb-1")).toEqual([]);
+    expect(describeUserOpenRefusal(input, "usb-1")).toBe("already connecting");
+  });
+});
+
 describe("planUserClose", () => {
   it("closes an open (session-backed) link", () => {
     const input = rows({
@@ -502,6 +568,78 @@ describe("startReconciler -- executor integration (real connector, fake ByteStre
       await reconciler.requestClose("wifi-1");
       expect(reconciler.sessions.get("wifi-1")).toBeUndefined();
       expect(Array.from(reconciler.sessions.values())).toEqual([]);
+    } finally {
+      reconciler.stop();
+    }
+  });
+
+  it(
+    "merges a known-robots placeholder into the real device row via the automatic auto-connect path too, not only a user-initiated session-open (bench defect 2, 2026-09-12)",
+    async () => {
+      // `connect/connector.ts`'s `mergeNamePlaceholderIfAny` runs inside
+      // `attempt()` itself, the same function this executor's automatic
+      // `plan()` pass dispatches a job to -- so there is only one code
+      // path to prove, not a second one to wire up. This test exercises
+      // it through `startReconciler`'s own automatic tick (no
+      // `requestOpen` call at all), confirming the merge fires
+      // regardless of which entry point triggered the connect --
+      // exactly the bench finding this ticket's own evidence flagged as
+      // still open ("confirm the merge also runs for links that are
+      // ALREADY connected at startup").
+      const placeholderId = nameToValue(deviceIdToName(ROBOT_SERIAL)); // "vevov"'s synthetic id
+      store.upsertDevice({ id: placeholderId, name: deviceIdToName(ROBOT_SERIAL), kind: "robot", usbSerial: "0012345678", at: 1 });
+      store.setOwned(placeholderId, true, 1);
+      // The link is already attached to the placeholder -- exactly what
+      // `watchers/mdnsWatcher.ts`'s own device-linking does on the bench
+      // before the real chip has ever been seen (the placeholder is, for
+      // now, "the" owned device of that name).
+      store.upsertLink({ id: "wifi-1", transport: "wifi", address: { host: "10.0.0.5", port: 4000 }, deviceId: placeholderId, at: 1 });
+      store.setLinkState({ id: "wifi-1", state: "connectable", at: 1 });
+
+      const stream = new BannerByteStream(ROBOT_BANNER);
+      const connector = createConnector(store, {
+        createTcpStream: () => stream,
+        scheduler: immediateScheduler,
+        now: () => NOW,
+      });
+
+      const reconciler = startReconciler(store, { connector, now: () => NOW, tickIntervalMs: 1_000_000 });
+      try {
+        await flush(); // let the automatic (no requestOpen) attempt reach stream.open()
+        stream.resolveOpen();
+        await flush();
+        await flush();
+
+        const rows = store.snapshotRows();
+        // One row, not two -- the placeholder merged into the real chip
+        // id, carrying owned/usb_serial forward (store/index.test.ts's
+        // own Store: mergeDevice suite covers that column-by-column).
+        expect(rows.devices).toHaveLength(1);
+        expect(rows.devices[0]).toMatchObject({ id: ROBOT_SERIAL, owned: 1, usb_serial: "0012345678" });
+        expect(rows.links.find((l) => l.id === "wifi-1")?.device_id).toBe(ROBOT_SERIAL);
+      } finally {
+        reconciler.stop();
+      }
+    },
+  );
+
+  it("requestOpen reports a refusedReason for a not-yet-owned link, and none once ownership is granted and the connect actually goes through (bench defect 4)", async () => {
+    store.upsertLink({ id: "wifi-1", transport: "wifi", address: { host: "10.0.0.5", port: 4000 }, deviceId: null, at: 1 });
+    store.setLinkState({ id: "wifi-1", state: "connectable", at: 1 });
+
+    const connector: Connector = {
+      connectAndIdentify: () => new Promise<ConnectedSession>(() => {}),
+    };
+    const reconciler = startReconciler(store, { connector, now: () => NOW, tickIntervalMs: 1_000_000 });
+    try {
+      // deviceId is null (no owned device attached at all) -- refused,
+      // same "not owned" branch as an attached-but-unowned device.
+      const refused = await reconciler.requestOpen("wifi-1");
+      expect(refused.refusedReason).toBeDefined();
+
+      // An unknown linkId is refused too, distinctly.
+      const unknown = await reconciler.requestOpen("does-not-exist");
+      expect(unknown.refusedReason).toBe('no such link "does-not-exist"');
     } finally {
       reconciler.stop();
     }

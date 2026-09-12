@@ -319,6 +319,45 @@ export function planUserOpen(rows: ReconcilerRows, linkId: string): Job[] {
 }
 
 /**
+ * Bench defect 4 (2026-09-12): a human-readable reason {@link
+ * planUserOpen} produced no job for `linkId`, or `undefined` if it would
+ * actually produce one. A user-initiated `session-open` that silently
+ * does nothing is exactly the "I click the buttons and nothing happens"
+ * bench complaint this narrates -- `startReconciler`'s own `requestOpen`
+ * (below) surfaces this to `server.ts`, which turns it into a `notice`
+ * broadcast the UI already knows how to render on the link's own
+ * console log (`WsProvider.tsx`'s `appendNotice`).
+ *
+ * Deliberately a separate function, not a second return value woven
+ * into {@link planUserOpen} itself: that function's own contract (pure,
+ * `(rows, linkId) => Job[]`, unit-tested as a table of inputs/outputs
+ * throughout this module's own suite) is untouched, so the two
+ * functions can never disagree about *whether* a job was produced, only
+ * -- when none was -- about *why not*. Narrates the same three branches
+ * `planUserOpen` itself refuses on; a link that already has a job
+ * coming (a switch, or a plain connect) is not "refused" at all, so
+ * this only ever returns a reason for the branches that return `[]`.
+ */
+export function describeUserOpenRefusal(rows: ReconcilerRows, linkId: string): string | undefined {
+  const link = rows.links.find((candidate) => candidate.id === linkId);
+  if (!link) {
+    return `no such link "${linkId}"`;
+  }
+  if (link.state === "connecting") {
+    return "already connecting";
+  }
+  const openSessionLinkIds = new Set(rows.sessions.map((session) => session.linkId));
+  if (openSessionLinkIds.has(link.id)) {
+    return "already open";
+  }
+  const device = link.deviceId !== null ? rows.devices.find((candidate) => candidate.id === link.deviceId) : undefined;
+  if (requiresOwned(link.transport) && !(device?.owned ?? false)) {
+    return "this device is not owned yet -- claim it first";
+  }
+  return undefined;
+}
+
+/**
  * The user-forwarded `session-close` counterpart to {@link plan}. Pure:
  * returns a `close` job only if `linkId` is actually open (a session
  * row) or opening (`state = 'connecting'`) — closing a link that is
@@ -394,8 +433,17 @@ export interface Reconciler {
    * explicit user `session-open` command to (or ticket 001's own
    * connect flow, per this module's doc comment) — same precedence
    * rules as an automatic job, see {@link planUserOpen}. Resolves once
-   * every job it dispatched has settled (never rejects). */
-  requestOpen(linkId: string): Promise<void>;
+   * every job it dispatched has settled (never rejects).
+   *
+   * Bench defect 4 (2026-09-12): the resolved value's `refusedReason`
+   * is set (via {@link describeUserOpenRefusal}) exactly when this call
+   * produced no job at all — `server.ts`'s own `session-open` handler
+   * turns a set `refusedReason` into a `notice` broadcast, so a refused
+   * open is never silent to the student at the console. Absent when a
+   * job was actually dispatched (successfully or not — a dispatched
+   * job's own failure already surfaces via `links.state = 'failed'`
+   * and the snapshot it produces, not this return value). */
+  requestOpen(linkId: string): Promise<{ refusedReason?: string }>;
   /** The `session-close` counterpart — see {@link planUserClose}. */
   requestClose(linkId: string): Promise<void>;
   /** See {@link ReconcilerSessions}. */
@@ -576,11 +624,17 @@ export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler 
   tick();
 
   return {
-    async requestOpen(linkId: string): Promise<void> {
+    async requestOpen(linkId: string): Promise<{ refusedReason?: string }> {
       const rows = store.reconcilerRows();
-      for (const job of planUserOpen(rows, linkId)) {
+      const jobs = planUserOpen(rows, linkId);
+      if (jobs.length === 0) {
+        const refusedReason = describeUserOpenRefusal(rows, linkId);
+        return refusedReason !== undefined ? { refusedReason } : {};
+      }
+      for (const job of jobs) {
         await dispatch(job);
       }
+      return {};
     },
     async requestClose(linkId: string): Promise<void> {
       const rows = store.reconcilerRows();

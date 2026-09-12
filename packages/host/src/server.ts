@@ -735,7 +735,15 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       return;
     }
     if ("linkId" in message) {
-      await runtime.reconciler.requestOpen(message.linkId);
+      // Bench defect 4 (2026-09-12): a refused open must not be silent
+      // -- see `reconciler.ts`'s own `describeUserOpenRefusal` doc
+      // comment (not owned yet, already open/connecting, or an unknown
+      // link) and `WsProvider.tsx`'s `appendNotice`, which already knows
+      // how to render a link-scoped notice on that card's own console.
+      const { refusedReason } = await runtime.reconciler.requestOpen(message.linkId);
+      if (refusedReason !== undefined) {
+        sendNotice(message.linkId, "warn", `connect refused: ${refusedReason}`);
+      }
       return;
     }
     // {relayLinkId, name}: route one of a relay's several robots (ticket
@@ -797,7 +805,12 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       address: { relayLinkId: message.relayLinkId, channel, group },
       at: Date.now(),
     });
-    await runtime.reconciler.requestOpen(childLinkId);
+    // Bench defect 4: same "never silent" rule as the plain {linkId}
+    // open above.
+    const { refusedReason } = await runtime.reconciler.requestOpen(childLinkId);
+    if (refusedReason !== undefined) {
+      sendNotice(childLinkId, "warn", `connect refused: ${refusedReason}`);
+    }
   });
 
   handlers.set("session-close", async (_ws, message) => {

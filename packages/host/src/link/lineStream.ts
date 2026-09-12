@@ -14,15 +14,16 @@
  * buffered). Mirrors `vendor/radio-robot-lib`'s own
  * `Transport.read_lines()` reassembly discipline.
  *
- * Two things are normalized on every extracted line, unconditionally,
- * before it is handed back:
- *   - a trailing `\r` (a terminal artifact of the wire's own `\n`
- *     convention) is stripped;
- *   - a leading `"< "` prefix is stripped. Nothing the robot/relay
- *     legitimately says begins with `"< "`; making this conditional
- *     (only strip it for carriers that are "known" to add it) becomes a
- *     per-carrier flag the carriers disagree about, so it is applied to
- *     every line unconditionally instead.
+ * A trailing `\r` (a terminal artifact of the wire's own `\n`
+ * convention) is stripped from every extracted line, unconditionally,
+ * before it is handed back. A leading `"< "` receive-prefix is NOT
+ * stripped here (ticket 014-004 moved that into
+ * `@robot-console/protocol`'s `v6/codec.ts` `decodeLine`/
+ * `stripReceivePrefix`, next to the wire framing it is part of) — a
+ * caller that needs a banner or another raw-text inspection normalized
+ * the same way should call `stripReceivePrefix` itself before doing
+ * anything else with a line this class hands back (`parseBanner`'s own
+ * grammar is anchored and does not tolerate the prefix).
  */
 export class LineReassembler {
   private buffer = "";
@@ -40,9 +41,6 @@ export class LineReassembler {
       this.buffer = this.buffer.slice(newlineIndex + 1);
       if (raw.endsWith("\r")) {
         raw = raw.slice(0, -1);
-      }
-      if (raw.startsWith("< ")) {
-        raw = raw.slice(2);
       }
       lines.push(raw);
     }

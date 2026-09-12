@@ -1,11 +1,7 @@
 /**
  * relay/commands.ts — the relay command-plane wire grammar: pure
- * line-builders plus the radio frame-size validators. Named (and
- * deliberately left uncreated) in sprint 004's own Design Rationale: "a
- * module whose only purpose is to be shared by two transports that
- * don't exist yet ... is exactly the 'speculative generality'
- * anti-pattern." Sprint 007's `RelayRadioLink`/`MbrelayLink` (tickets
- * 002/003) are the real consumers, so this module exists now.
+ * line-builders, the reply-side parser/classifier, a preamble step
+ * table, and the radio frame-size validators.
  *
  * Normative spec: `docs/design/specification.md` §3.7/§4.3/§6. Live
  * verification of the wire text this module produces:
@@ -19,37 +15,34 @@
  * ---- This module is pure data in, pure data out — no I/O, ever ----
  *
  * Every export here is a plain function or constant: no sockets, no
- * serial ports, no timers, no `Session`, no knowledge of which
- * transport will eventually send a line or how it will recognize a
- * reply. That is what lets `RelayRadioLink` (USB) and `MbrelayLink`
- * (TCP) share one command-plane implementation
- * (`host/link/RelayCommandPlane.ts`, ticket 002) instead of each
- * re-deriving the preamble and its failure handling independently —
- * the same discipline `v6/session.ts` already applies to ack/nack
- * arithmetic.
+ * serial ports, no timers, no `Session`. Parsing a string is not I/O —
+ * {@link parseRelayStatusLine}/{@link classifyRelayReply} read reply
+ * text the same way `v6/codec.ts`'s `decodeLine` reads a wire line, and
+ * belong here for the same reason: this is the one place that knows the
+ * relay's own reply grammar, so a transport orchestrating the handshake
+ * does not have to reimplement it.
  *
- * Because this module has no I/O, it correspondingly has no reply
- * parsing and no state machine: it hands back one line of wire text
- * per call and nothing more. It does NOT bundle multiple preamble
- * steps into one function, and does NOT provide anything that would
- * let a caller skip inspecting a reply between steps. That is a
- * deliberate shape, not an omission — it is what makes the two
- * sprint-wide invariants enforceable one layer up, in
- * `RelayCommandPlane` (ticket 002):
+ * Because this module has no I/O, it correspondingly has no state
+ * machine of its own: {@link relayPreambleSteps} hands back a plain,
+ * ordered array of steps (line + label + confirmation predicate) and
+ * nothing more. It does NOT bundle multiple steps into one function
+ * call, and does NOT provide anything that would let a caller skip
+ * inspecting a reply between steps. That is a deliberate shape, not an
+ * omission — it is what makes two invariants enforceable one layer up,
+ * in whatever orchestrator drives the handshake over a real transport:
  *
  *   - **A `!CG` rejection must leave the relay in the command plane.**
- *     Because {@link buildSetChannelGroupLine} and {@link buildGoLine}
- *     are two separate calls, not one, `RelayCommandPlane` can inspect
- *     the `!CG` reply and simply never call {@link buildGoLine} on a
- *     rejection — there is no combined "send `!CG` then `!GO`"
- *     function here that could paper over that choice.
+ *     Because each step is a separate array entry with its own
+ *     `confirms` predicate, an orchestrator can inspect the `!CG` step's
+ *     reply and simply stop, never reaching the `!GO` step — there is
+ *     no combined "send `!CG` then `!GO`" function here that could
+ *     paper over that choice.
  *   - **`!GO` must never hang un-timed-out.** This module cannot
  *     itself enforce a timeout (it has no clock, no I/O), so it
- *     enforces the *contract* instead: {@link buildGoLine} only ever
- *     returns wire text, never a promise or anything else a caller
- *     could accidentally `await` forever. Bounding the wait for a
- *     confirmation reply is `RelayCommandPlane`'s job, over whatever
- *     scheduler it is given.
+ *     enforces the *contract* instead: every step is plain data, never
+ *     a promise or anything else a caller could accidentally `await`
+ *     forever. Bounding the wait for a confirmation reply is the
+ *     orchestrator's job, over whatever scheduler it is given.
  *   - **There is no in-band escape from the data plane.** Once `!GO`
  *     has been sent and confirmed, the relay is in the data plane
  *     (specification.md §6: "the only way back to the command plane
@@ -75,11 +68,10 @@
  * "for completeness", since every other verb in the preamble list gets
  * a builder — would hand a future caller an easy way to reconstruct an
  * ongoing liveness probe that resets the session out from under
- * itself. {@link PING_LINE}/{@link STATUS_LINE} are exported below
- * specifically as the correct alternative to reach for instead.
+ * itself.
  */
 
-import { encodeLine } from "../v6/codec.js";
+import { validateRadioAddress } from "../radioAddress.js";
 
 // ---------------------------------------------------------------------
 // Command-plane preamble line-builders
@@ -125,13 +117,11 @@ export class RelayCommandError extends Error {
  * silently inherited by any carrier that does not restate it (see this
  * module's own doc comment / `link.py`'s `relay_setup_lines`).
  *
- * `channel`/`group` are passed through verbatim as base-10 integers —
- * this function does not validate them against
- * `radioAddress.ts`'s legal ranges (25-73 step 2 / 1-126 excluding 10);
- * a caller building an address should get it from
- * {@link nameToRadioAddress} in the first place. It does reject a
- * non-finite-integer input outright, the same class of caller error
- * `encodeLine` itself refuses.
+ * Range-checked via `radioAddress.ts`'s {@link validateRadioAddress}
+ * (channel odd in `[25, 73]`, group in `[1, 126]` excluding the
+ * reserved `10`) — a caller building an address should get it from
+ * `nameToRadioAddress` in the first place, but this refuses a malformed
+ * pair outright rather than silently sending it over the radio.
  */
 export function buildSetChannelGroupLine(channel: number, group: number): string {
   if (!Number.isInteger(channel)) {
@@ -140,7 +130,39 @@ export function buildSetChannelGroupLine(channel: number, group: number): string
   if (!Number.isInteger(group)) {
     throw new RelayCommandError(`group must be an integer, got ${group}`);
   }
+  if (!validateRadioAddress(channel, group)) {
+    throw new RelayCommandError(
+      `(${channel}, ${group}) is not a derived radio address -- channel must be odd in [25, 73], group in [1, 126] excluding the reserved value 10`,
+    );
+  }
   return `!CG ${channel} ${group}\n`;
+}
+
+/**
+ * Transiently tune the relay to `(channel, group)` without persisting
+ * it to flash (`!CGT`, rearch-12's proposed firmware addition — apply
+ * immediately via `applyRadioConfig()`, but skip `saveConfig()`; the
+ * next persisted `!CG`/reset restores the saved pair). Intended for a
+ * background sweep that retunes far more often than a persisted `!CG`
+ * can tolerate (flash is rated for a bounded number of erase cycles per
+ * page). Same range-check as {@link buildSetChannelGroupLine}; a
+ * caller must feature-detect the relay's advertised capability before
+ * relying on this line having any effect (older firmware simply does
+ * not recognize `!CGT`).
+ */
+export function buildTransientChannelGroupLine(channel: number, group: number): string {
+  if (!Number.isInteger(channel)) {
+    throw new RelayCommandError(`channel must be an integer, got ${channel}`);
+  }
+  if (!Number.isInteger(group)) {
+    throw new RelayCommandError(`group must be an integer, got ${group}`);
+  }
+  if (!validateRadioAddress(channel, group)) {
+    throw new RelayCommandError(
+      `(${channel}, ${group}) is not a derived radio address -- channel must be odd in [25, 73], group in [1, 126] excluding the reserved value 10`,
+    );
+  }
+  return `!CGT ${channel} ${group}\n`;
 }
 
 /** Set the relay's radio transmit power to its documented level 7 (see
@@ -157,8 +179,8 @@ export function buildSetPowerLine(): string {
  * **there is no in-band way back**: over TCP a break cannot be sent at
  * all, and even a local serial relay only recovers via a reset. See
  * this module's own doc comment for why bounding the wait for `!GO`'s
- * confirmation is deliberately left to `RelayCommandPlane` (ticket
- * 002), not this function.
+ * confirmation is deliberately left to the orchestrator driving this
+ * step over a real transport, not this function.
  */
 export function buildGoLine(): string {
   return "!GO\n";
@@ -174,31 +196,176 @@ export function buildQueryLine(): string {
   return "?\n";
 }
 
+/**
+ * Send `text` over the radio through the relay's already-tuned
+ * command-plane pass-through (`> <text>`, rearch-12's description §2/
+ * §3.1), without entering the data plane via `!GO`. Lets a caller probe
+ * a robot (e.g. `> ID`) and read back whatever `< <text>` lines the
+ * relay forwards, then move on to the next robot without a `!GO`/reset
+ * round trip. Refuses an empty string or one containing a newline —
+ * neither is representable as a single wire line.
+ */
+export function buildRadioSendLine(text: string): string {
+  if (text.length === 0) {
+    throw new RelayCommandError("text must not be empty");
+  }
+  if (/[\r\n]/.test(text)) {
+    throw new RelayCommandError(`text must not contain a newline: ${JSON.stringify(text)}`);
+  }
+  return `> ${text}\n`;
+}
+
 // ---------------------------------------------------------------------
-// Liveness pair — data, not a runner
+// Reply-side grammar: parse and classify the relay's own `#` lines
 // ---------------------------------------------------------------------
 
-/**
- * The unsequenced `PING` line, exactly as `v6/session.ts`'s
- * `Session.checkLiveness()` produces it (`encodeLine("PING")`).
- * Exported here as plain data — not a function this module calls
- * itself, since this module performs no I/O — so that a caller
- * reaching for "how do I check liveness without HELLO" finds this
- * instead of reconstructing `HELLO` by hand. Actually sending a
- * liveness probe still goes through `Session.checkLiveness()`
- * (SUC-006: "no transport-specific liveness logic exists to test
- * separately"); this constant exists for reference/documentation
- * parity with {@link STATUS_LINE}, not as a second code path.
- */
-export const PING_LINE: string = encodeLine("PING");
+/** One relay status line's fields, positionally parsed from
+ * `# channel: <ch> group: <grp> mode: <mode> power: <power>` — the
+ * reply every one of `!CG`/`!P`/`?` confirms with (the live capture:
+ * `sent '!CG 47 60' -> # channel: 47 group: 60 mode: RAW250 power: 7`). */
+export interface RelayStatusLine {
+  readonly channel: number;
+  readonly group: number;
+  readonly mode: string;
+  readonly power: number;
+}
+
+const STATUS_LINE_PATTERN =
+  /^#\s*channel:\s*(\d+)\s+group:\s*(\d+)\s+mode:\s*(\S+)\s+power:\s*(\d+)\b/i;
 
 /**
- * The unsequenced `STATUS` line, exactly as `Session.sendUnsequenced("STATUS")`
- * would produce it (`encodeLine("STATUS")`) — alive, plus where the
- * sequence currently stands. See {@link PING_LINE}'s doc comment: data
- * only, not a second send path.
+ * Parse one relay status reply line into its four fields. `null` for
+ * anything that does not match the shape — including a status-*looking*
+ * line missing a field (e.g. no `power:`) — this never guesses at a
+ * partial match.
  */
-export const STATUS_LINE: string = encodeLine("STATUS");
+export function parseRelayStatusLine(line: string): RelayStatusLine | null {
+  const match = STATUS_LINE_PATTERN.exec(line.trimStart());
+  if (!match) {
+    return null;
+  }
+  const channelText = match[1]!;
+  const groupText = match[2]!;
+  const mode = match[3]!;
+  const powerText = match[4]!;
+  return {
+    channel: Number(channelText),
+    group: Number(groupText),
+    mode,
+    power: Number(powerText),
+  };
+}
+
+/** Which shape a relay's `#`-prefixed reply line takes. `"status"` is
+ * the full `# channel: ... power: ...` line ({@link parseRelayStatusLine}
+ * parses it); `"echo"`/`"mode"` are the single-field acknowledgements
+ * for `!ECHO`/`!MODE`; `"enteringDataPlane"` is `!GO`'s confirmation;
+ * `"error"` is a rejection of whatever command was just sent;
+ * `"comment"` is any other `#`-prefixed text (boot banner, `!HELP`
+ * output); `"other"` is anything not even `#`-prefixed (radio `DBG:`
+ * chatter, an echoed command). */
+export type RelayReplyKind =
+  | "status"
+  | "echo"
+  | "mode"
+  | "enteringDataPlane"
+  | "error"
+  | "comment"
+  | "other";
+
+const ECHO_PATTERN = /^#\s*echo:\s*(ON|OFF)\b/i;
+const MODE_PATTERN = /^#\s*mode:\s*\S+/i;
+const ENTERING_DATA_PLANE_PATTERN = /^#\s*entering data plane\b/i;
+const ERROR_PATTERN = /^#\s*error\b/i;
+
+/**
+ * Classify one raw reply line from the relay's command plane. Checked
+ * in this fixed order so a full status line (which itself contains
+ * `mode: ...`) is never mistaken for a bare `"# mode: ..."`
+ * acknowledgement: `"status"` (has `channel:`/`group:`) is checked
+ * before `"mode"`.
+ */
+export function classifyRelayReply(line: string): RelayReplyKind {
+  const trimmed = line.trimStart();
+  if (STATUS_LINE_PATTERN.test(trimmed)) {
+    return "status";
+  }
+  if (ECHO_PATTERN.test(trimmed)) {
+    return "echo";
+  }
+  if (MODE_PATTERN.test(trimmed)) {
+    return "mode";
+  }
+  if (ENTERING_DATA_PLANE_PATTERN.test(trimmed)) {
+    return "enteringDataPlane";
+  }
+  if (ERROR_PATTERN.test(trimmed)) {
+    return "error";
+  }
+  if (trimmed.startsWith("#")) {
+    return "comment";
+  }
+  return "other";
+}
+
+// ---------------------------------------------------------------------
+// Preamble step table
+// ---------------------------------------------------------------------
+
+/** One step of the command-plane preamble: the wire line to send, a
+ * human-readable label for diagnostics/error messages, and a predicate
+ * that tells an orchestrator whether a given reply line confirms THIS
+ * step (never bundled with sending the next step — see the module doc
+ * comment's two invariants). */
+export interface RelayPreambleStep {
+  readonly line: string;
+  readonly label: string;
+  readonly confirms: (reply: string) => boolean;
+}
+
+/**
+ * The full `!ECHO OFF` -> `!MODE RAW250` -> `!CG <ch> <grp>` -> `!P 7`
+ * -> `!GO` preamble, as one ordered, pure array — each entry pairs a
+ * line with the predicate that recognizes its own confirmation, so an
+ * orchestrator (over a real transport, with real timeouts) can drive
+ * connect and a sweep off one shared definition instead of each
+ * re-deriving the step order and its reply matching independently.
+ */
+export function relayPreambleSteps(channel: number, group: number): readonly RelayPreambleStep[] {
+  return [
+    {
+      line: buildEchoOffLine(),
+      label: "!ECHO OFF",
+      confirms: (reply) => classifyRelayReply(reply) === "echo",
+    },
+    {
+      line: buildModeRaw250Line(),
+      label: "!MODE RAW250",
+      confirms: (reply) => classifyRelayReply(reply) === "mode",
+    },
+    {
+      line: buildSetChannelGroupLine(channel, group),
+      label: `!CG ${channel} ${group}`,
+      confirms: (reply) => {
+        const status = parseRelayStatusLine(reply);
+        return status !== null && status.channel === channel && status.group === group;
+      },
+    },
+    {
+      line: buildSetPowerLine(),
+      label: "!P 7",
+      confirms: (reply) => {
+        const status = parseRelayStatusLine(reply);
+        return status !== null && status.power === 7;
+      },
+    },
+    {
+      line: buildGoLine(),
+      label: "!GO",
+      confirms: (reply) => classifyRelayReply(reply) === "enteringDataPlane",
+    },
+  ];
+}
 
 // ---------------------------------------------------------------------
 // Frame-size validators

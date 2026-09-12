@@ -59,6 +59,7 @@
 import { SerialPort } from "serialport";
 import {
   parseBanner,
+  stripReceivePrefix,
   Session,
   type ParsedBanner,
   type DecodedLine,
@@ -498,7 +499,7 @@ export class UsbSerialLink implements Link {
    */
   private handleLine(raw: string): void {
     if (this.resolveBannerWait) {
-      const banner = parseBanner(raw);
+      const banner = parseBanner(stripReceivePrefix(raw));
       if (banner) {
         this.resolveBannerWait(banner);
       }

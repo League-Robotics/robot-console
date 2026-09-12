@@ -5,9 +5,9 @@
  * decided. Everything downstream (the UI's per-type page dispatch,
  * `wsMessages.ts`'s `EndpointListEntry.classification`) reads the
  * result of {@link classifyBanner} rather than re-deriving a type from
- * a raw banner itself -- see `sprint.md`'s Step 2 responsibility list
- * ("classifying a banner into a device type" is its own reason to
- * change, independent of banner *parsing* or the wire contract).
+ * a raw banner itself ("classifying a banner into a device type" is its
+ * own reason to change, independent of banner *parsing* or the wire
+ * contract).
  *
  * ## Precedence, and why `commonName` outranks `role`
  *
@@ -31,14 +31,14 @@
  * not a wrong-page problem.
  *
  * Deliberately **not** used as discriminators (per the roadmap issue's
- * design decisions, carried into `sprint.md`'s Design Rationale): the
- * banner *dialect* (the space form is converging on the colon form, so
+ * own design decisions): the banner *dialect* (the space form is
+ * converging on the colon form, so
  * it is not a stable signal), the serial's radix, the OS port path, or
  * whether an HID/MSD volume is present. `dialect` is still carried on
  * {@link DeviceClassification} for diagnostics/logging only -- it must
  * never grow a `switch` of its own.
  *
- * ## The `ID`-verb calibration signal (sprint 011 ticket 001)
+ * ## The `ID`-verb calibration signal
  *
  * A calibration robot and a student robot emit the **identical** banner
  * (`device NEZHA2 robot <name> <serial>`) -- the banner alone can never
@@ -53,24 +53,24 @@
  * independent signal layered on after {@link classifyBanner} rather
  * than folded into it. A robot that never answers `ID` (older firmware,
  * a request that times out, or a build without the verb) simply never
- * has this refinement applied, and stays classified `"robot"` -- see
- * `deviceRegistry.ts`'s own doc comment for where the request is sent
- * and the reply harvested. {@link normalizeDeviceType} treats
- * `"calibration"` as a recognized value now, exactly as it already does
- * `"relay"`/`"robot"` -- see that function's own doc comment for why an
- * older client talking to a newer host still degrades safely for any
- * value it doesn't recognize.
+ * has this refinement applied, and stays classified `"robot"` -- the
+ * host module that issues the `ID` request and harvests the reply owns
+ * that timing, not this file. A wire-level `classification.type` value
+ * of `"calibration"` is one of the values a host/UI-side coercion
+ * treats as recognized now, exactly as `"relay"`/`"robot"` always have
+ * been -- an older client talking to a newer host still degrades safely
+ * for any value it doesn't recognize.
  */
 import type { BannerDialect, ParsedBanner } from "./banner.js";
 
-/** Every device type this client can classify a banner into. See the
- * module doc comment for why a future addition here must go through
- * {@link normalizeDeviceType} rather than growing this union out from
- * under an older, already-shipped client. `"calibration"` (sprint 011
- * ticket 001) is never produced by {@link classifyBanner} itself (the
- * banner cannot distinguish a calibration robot from a student one) --
- * only {@link refineForCalibration}, applied after a matching `ID`
- * reply, ever narrows a `"robot"` classification to `"calibration"`. */
+/** Every device type this client can classify a banner into. A future
+ * addition here must go through a host/UI-side coercion (never grow
+ * this union out from under an older, already-shipped client without
+ * one). `"calibration"` is never produced by {@link classifyBanner}
+ * itself (the banner cannot distinguish a calibration robot from a
+ * student one) -- only {@link refineForCalibration}, applied after a
+ * matching `ID` reply, ever narrows a `"robot"` classification to
+ * `"calibration"`. */
 export type DeviceType = "unknown" | "relay" | "robot" | "calibration";
 
 /** Which signal (if any) produced a {@link DeviceClassification}'s
@@ -237,7 +237,7 @@ const CALIBRATION_PROGRAM_PREFIX = /^calibration-/;
  * Refine a `"robot"` {@link DeviceClassification} using a parsed `ID`
  * reply -- the second, independent signal layered on after {@link
  * classifyBanner}, never folded into it (the `ID` round trip is a
- * separate request `deviceRegistry.ts` sends after a banner already
+ * separate request a host module sends after a banner already
  * classified the endpoint as a plain robot; {@link classifyBanner}
  * itself has no access to it and stays banner-only).
  *
@@ -246,9 +246,9 @@ const CALIBRATION_PROGRAM_PREFIX = /^calibration-/;
  * `"calib-test"` that merely resembles the prefix -- leaves `type`
  * alone. Only ever narrows a `"robot"` classification: called with a
  * `"relay"`/`"unknown"` classification (which should not happen, since
- * `deviceRegistry.ts` only ever sends `ID` after a `"robot"` identify)
- * returns it unchanged rather than misclassifying a non-robot as
- * `"calibration"`. `program`/`version` are always set verbatim from the
+ * `ID` is only ever sent after a `"robot"` identify) returns it
+ * unchanged rather than misclassifying a non-robot as `"calibration"`.
+ * `program`/`version` are always set verbatim from the
  * reply, regardless of whether the prefix matched -- they are
  * diagnostics, preserved for display exactly like {@link
  * DeviceClassification.role} is from the banner.
@@ -265,18 +265,3 @@ export function refineForCalibration(classification: DeviceClassification, idRep
   };
 }
 
-/**
- * Coerce an arbitrary string (e.g. a `classification.type` value read
- * off the wire) to a {@link DeviceType}, treating anything this client
- * doesn't recognize as `"unknown"`. This is the mechanism that makes a
- * future fourth wire-level type purely additive: an older client
- * talking to a newer host degrades a value it has never heard of to
- * `"unknown"` instead of crashing or mis-rendering. `"calibration"`
- * (sprint 011 ticket 001) is now one of the recognized values -- it
- * round-trips exactly like `"relay"`/`"robot"` always have; anything
- * still unrecognized (a hypothetical future fifth type) keeps degrading
- * to `"unknown"`, unchanged.
- */
-export function normalizeDeviceType(value: string): DeviceType {
-  return value === "relay" || value === "robot" || value === "calibration" ? value : "unknown";
-}

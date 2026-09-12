@@ -1,7 +1,7 @@
 ---
 id: '004'
 title: 'Protocol hygiene: receive() facade, relay reply grammar, session/codec fixes'
-status: in-progress
+status: done
 use-cases:
 - SUC-001
 depends-on:
@@ -36,29 +36,29 @@ helpers").
 
 ## Acceptance Criteria
 
-- [ ] `Session.connect()` resets `lastResendN`/`resendStreak`, matching
+- [x] `Session.connect()` resets `lastResendN`/`resendStreak`, matching
       `resyncTo()`; `seq` after connect/resync is documented and
       consistent.
-- [ ] `handleReply` returns `{kind: "malformed"}` for a malformed
+- [x] `handleReply` returns `{kind: "malformed"}` for a malformed
       ack/nack instead of throwing.
-- [ ] `banner.test.ts`'s RADIOBRIDGE fixture is internally consistent
+- [x] `banner.test.ts`'s RADIOBRIDGE fixture is internally consistent
       (`deviceIdToName` matches the fixture's name); a
       `bannerNameMatchesSerial(banner)` helper exists.
-- [ ] `stripReceivePrefix()` is applied in `decodeLine`; a `"foreign"`
+- [x] `stripReceivePrefix()` is applied in `decodeLine`; a `"foreign"`
       observer hook exists for dropped lowercase verbs.
-- [ ] `relay/commands.ts` exports `parseRelayStatusLine`,
+- [x] `relay/commands.ts` exports `parseRelayStatusLine`,
       `classifyRelayReply`, `relayPreambleSteps(ch, grp)`,
       `buildTransientChannelGroupLine`, `buildRadioSendLine(text)`;
       `!CG` is range-checked via `validateRadioAddress`.
-- [ ] A pure `receive()` facade exists encoding the
+- [x] A pure `receive()` facade exists encoding the
       decode→classify→drop→`handleReply`→resend ordering; its test
       reproduces the gap-stall-recover scenario currently only in
       `LineRouter.test.ts`.
-- [ ] `vitest run packages/protocol` on a checkout **without**
+- [x] `vitest run packages/protocol` on a checkout **without**
       submodules runs ≥ 160 synthetic tests and skips only the
       golden-vector `it.each` blocks.
-- [ ] `grep -rn "RelayCommandPlane\|deviceRegistry\|sprint" packages/protocol/src --include=*.ts` (non-test) → nothing.
-- [ ] `PING_LINE`/`STATUS_LINE` are removed; `normalizeDeviceType` moves
+- [x] `grep -rn "RelayCommandPlane\|deviceRegistry\|sprint" packages/protocol/src --include=*.ts` (non-test) → nothing.
+- [x] `PING_LINE`/`STATUS_LINE` are removed; `normalizeDeviceType` moves
       to `wsMessages.ts`.
 
 ## Testing

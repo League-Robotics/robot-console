@@ -6,9 +6,10 @@
  * classification `type` this client doesn't recognize. That `default`
  * arm is the actual mechanism behind the "a fourth device type is
  * purely additive" contract (`wsMessages.ts`'s module doc comment) --
- * `normalizeDeviceType` (ticket 001, `protocol/deviceType.ts`) is what
- * guarantees the *value* reaching here is already safe, but this
- * switch's `default` is what a client actually does with it.
+ * `normalizeDeviceType` (`host/wsMessages.ts`, moved out of
+ * `@robot-console/protocol` by ticket 014-004) is what guarantees the
+ * *value* reaching here is already safe, but this switch's `default`
+ * is what a client actually does with it.
  *
  * **`"calibration"` dispatch (sprint 011 ticket 002).** A
  * `calibration`-classified endpoint is, per `deviceType.ts`'s own doc

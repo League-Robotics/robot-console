@@ -14,9 +14,7 @@
  * ## Raw lines, not decoded v6 lines
  *
  * The write/subscribe pair this module is given operates on raw,
- * already-reassembled wire lines (post-`LineReassembler` — the `< `
- * receive-prefix strip from `lineStream.ts` already applies
- * unconditionally, per `sprint.md`'s Solution section), **not**
+ * already-reassembled wire lines (post-`LineReassembler`), **not**
  * `link/Link.ts`'s `LineListener` (`DecodedLine`, produced by
  * `v6/codec.ts`'s `decodeLine`). The relay's own preamble replies (e.g.
  * the live-captured `# channel: 47 group: 60 mode: RAW250 power: 7`) are
@@ -67,9 +65,10 @@
  * functions rather than one combined call.)
  *
  *   1. **A `!CG` rejection must leave the relay in the command
- *      plane.** {@link runRelayCommandPlane} never calls {@link
- *      buildGoLine} (or {@link buildSetPowerLine}) after a `!CG`
- *      rejection — there is no path from a rejected `!CG` to `!GO`.
+ *      plane.** {@link runRelayCommandPlane} iterates
+ *      `relayPreambleSteps` in order and stops at the first step whose
+ *      reply is an error — it never reaches the `!P 7`/`!GO` steps
+ *      after a `!CG` rejection.
  *   2. **`!GO` must never hang un-timed-out.** The wait for `!GO`'s
  *      confirmation always races against {@link
  *      RelayCommandPlaneOptions.scheduler}'s `delay()` — it resolves
@@ -78,11 +77,10 @@
  */
 
 import {
-  buildEchoOffLine,
-  buildGoLine,
-  buildModeRaw250Line,
-  buildSetChannelGroupLine,
-  buildSetPowerLine,
+  buildQueryLine,
+  classifyRelayReply,
+  relayPreambleSteps,
+  type RelayPreambleStep,
 } from "@robot-console/protocol";
 import { realScheduler, type Scheduler } from "./pacing.js";
 
@@ -123,9 +121,8 @@ export interface RelayCommandPlaneOptions {
   write: (line: string) => void;
   /** Subscribe to every raw, already-reassembled inbound line arriving
    * while the handshake is in progress. Returns an unsubscribe
-   * function. This module subscribes and unsubscribes once per gated
-   * step ({@link buildSetChannelGroupLine}'s reply, then {@link
-   * buildGoLine}'s) -- never more than one listener registered at a
+   * function. This module subscribes and unsubscribes once per
+   * preamble step -- never more than one listener registered at a
    * time. */
   subscribe: (listener: (line: string) => void) => () => void;
   /** Radio channel for `!CG <channel> <group>`. */
@@ -174,7 +171,7 @@ export async function runRelayCommandPlane(options: RelayCommandPlaneOptions): P
   // every command with a `#` line (`!ECHO OFF` -> `# echo: OFF`,
   // `!MODE RAW250` -> `# mode: RAW250`, `!CG c g` / `!P n` / `?` ->
   // `# channel: c group: g mode: RAW250 power: n`, `!GO` -> `# entering
-  // data plane`, a bad `!CG` -> `# error: usage ...`). The previous
+  // data plane`, a bad `!CG` -> `# error: usage ...`). An earlier
   // version wrote the first three commands back to back and took "the
   // next line" as the `!CG` confirmation -- which was really the
   // `!ECHO OFF` reply -- and then "any line" as the `!GO` confirmation,
@@ -184,13 +181,20 @@ export async function runRelayCommandPlane(options: RelayCommandPlaneOptions): P
   // command` to every robot verb. Hence: (1) a sync step that sends `?`
   // until the relay answers, so a still-booting relay is waited for
   // rather than talked past; (2) one command in flight at a time, each
-  // matched against its specific reply, with stray boot text, `DBG:`
-  // radio chatter and stale replies ignored.
+  // matched against its own step's `confirms()` predicate (from
+  // `@robot-console/protocol`'s `relayPreambleSteps` -- the reply
+  // grammar itself lives there now, not as inline regexes here), with
+  // stray boot text, `DBG:` radio chatter and stale replies ignored.
 
   let synced = false;
   for (let attempt = 0; attempt < syncAttempts && !synced; attempt++) {
-    write(QUERY_LINE);
-    const reply = await waitForMatch(subscribe, scheduler, syncRetryMs, isStatusLine);
+    write(buildQueryLine());
+    const reply = await waitForMatch(
+      subscribe,
+      scheduler,
+      syncRetryMs,
+      (candidate) => classifyRelayReply(candidate) === "status",
+    );
     synced = reply !== undefined;
   }
   if (!synced) {
@@ -199,59 +203,41 @@ export async function runRelayCommandPlane(options: RelayCommandPlaneOptions): P
     );
   }
 
-  await step(write, subscribe, scheduler, timeoutMs, buildEchoOffLine(), "!ECHO OFF", /^#\s*echo:\s*OFF\b/i);
-  await step(write, subscribe, scheduler, timeoutMs, buildModeRaw250Line(), "!MODE RAW250", /^#\s*mode:\s*RAW250\b/i);
-  await step(
-    write,
-    subscribe,
-    scheduler,
-    timeoutMs,
-    buildSetChannelGroupLine(channel, group),
-    `!CG ${channel} ${group}`,
-    new RegExp(`^#\\s*channel:\\s*${channel}\\s+group:\\s*${group}\\b`, "i"),
-  );
-  await step(write, subscribe, scheduler, timeoutMs, buildSetPowerLine(), "!P 7", /\bpower:\s*7\b/i);
-  await step(write, subscribe, scheduler, timeoutMs, buildGoLine(), "!GO", /^#\s*entering data plane\b/i);
+  for (const preambleStep of relayPreambleSteps(channel, group)) {
+    await step(write, subscribe, scheduler, timeoutMs, preambleStep);
+  }
 }
 
-/** `?` -- the relay's own status query (`!HELP`: "show channel/group/
- * mode/power"), answered with the same `# channel: ... power: ...` line
- * `!CG`/`!P` confirm with. Used as the sync probe: it changes nothing. */
-const QUERY_LINE = "?\n";
 const DEFAULT_SYNC_RETRY_MS = 500;
 const DEFAULT_SYNC_ATTEMPTS = 16;
 
-function isStatusLine(line: string): boolean {
-  return /^#\s*channel:\s*\d+\s+group:\s*\d+/i.test(line);
-}
-
-function isErrorLine(line: string): boolean {
-  return /^#\s*error\b/i.test(line.trimStart());
-}
-
-/** Write one command and wait for the reply that matches `expect`. A
- * `# error: ...` line in the meantime is a rejection of THIS command
- * (the relay answers in order, one reply per command); any other line
- * (boot text, `DBG:` chatter, a stale earlier reply) is ignored. */
+/** Write one preamble step's line and wait for the reply that confirms
+ * it (`step.confirms`). A `# error: ...` line in the meantime is a
+ * rejection of THIS step (the relay answers in order, one reply per
+ * command); any other line (boot text, `DBG:` chatter, a stale earlier
+ * reply) is ignored. */
 async function step(
   write: RelayCommandPlaneOptions["write"],
   subscribe: RelayCommandPlaneOptions["subscribe"],
   scheduler: Scheduler,
   timeoutMs: number,
-  line: string,
-  label: string,
-  expect: RegExp,
+  preambleStep: RelayPreambleStep,
 ): Promise<void> {
-  write(line);
-  const reply = await waitForMatch(subscribe, scheduler, timeoutMs, (candidate) => expect.test(candidate) || isErrorLine(candidate));
+  write(preambleStep.line);
+  const reply = await waitForMatch(
+    subscribe,
+    scheduler,
+    timeoutMs,
+    (candidate) => preambleStep.confirms(candidate) || classifyRelayReply(candidate) === "error",
+  );
   if (reply === undefined) {
     throw new RelayHandshakeError(
-      `relay never confirmed ${label} within ${timeoutMs}ms -- handshake stopped, relay left in the command plane`,
+      `relay never confirmed ${preambleStep.label} within ${timeoutMs}ms -- handshake stopped, relay left in the command plane`,
     );
   }
-  if (isErrorLine(reply)) {
+  if (classifyRelayReply(reply) === "error") {
     throw new RelayHandshakeError(
-      `relay rejected ${label} (reply: ${JSON.stringify(reply)}) -- handshake stopped, relay left in the command plane`,
+      `relay rejected ${preambleStep.label} (reply: ${JSON.stringify(reply)}) -- handshake stopped, relay left in the command plane`,
     );
   }
 }

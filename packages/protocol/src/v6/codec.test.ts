@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -11,6 +11,7 @@ import {
   isReplyVerb,
   MAX_LINE_BYTES,
   REPLY_VERBS,
+  stripReceivePrefix,
   type DecodedLine,
 } from "./codec.js";
 
@@ -34,6 +35,17 @@ const VECTORS_PATH = path.join(
   REPO_ROOT,
   "vendor/radio-robot-lib/tests/protocol/golden_vectors.txt",
 );
+
+/**
+ * Whether the `vendor/radio-robot-lib` submodule is initialized in this
+ * checkout. Every test below that needs the golden-vectors fixture is
+ * gated on this (via `it.skipIf`/an empty vectors array) so the
+ * synthetic, fixture-free tests in this file always run, even without
+ * `git submodule update --init` (ticket 014-004's fixture-independence
+ * acceptance criterion; `vendorSubmodules.test.ts` is the loud,
+ * dedicated check for the submodule itself).
+ */
+const VENDOR_PRESENT = existsSync(VECTORS_PATH);
 
 function readVectorsFile(): string {
   try {
@@ -138,16 +150,17 @@ function parseWireVectors(raw: string): WireVector[] {
   return vectors;
 }
 
-const ALL_VECTORS = parseWireVectors(readVectorsFile());
+const ALL_VECTORS = VENDOR_PRESENT ? parseWireVectors(readVectorsFile()) : [];
 const SCOPED_VECTORS = ALL_VECTORS.filter((v) =>
   INCLUDED_SECTIONS.some((s) => v.section.startsWith(s)),
 );
 
 // Sanity check on the filter itself: fail loudly (not "0 tests silently
 // skipped") if the fixture's section headers ever get renamed upstream
-// and the filter above stops matching anything.
+// and the filter above stops matching anything. Skipped (not run at
+// all) without the vendor/ submodule -- see VENDOR_PRESENT.
 describe("golden_vectors.txt fixture", () => {
-  it("finds at least one vector in every scoped section", () => {
+  it.skipIf(!VENDOR_PRESENT)("finds at least one vector in every scoped section", () => {
     expect(ALL_VECTORS.length).toBeGreaterThan(0);
     expect(SCOPED_VECTORS.length).toBeGreaterThan(0);
     for (const section of INCLUDED_SECTIONS) {
@@ -368,6 +381,46 @@ describe("blank lines are ignored silently, not malformed", () => {
       expect(decodeLine(raw)).toEqual({ kind: "blank" });
     },
   );
+});
+
+// ---------------------------------------------------------------------
+// The '< ' receive-prefix (ticket 014-004: moved here from
+// host/link/lineStream.ts, next to the '\r' strip decodeLine already
+// applies).
+// ---------------------------------------------------------------------
+
+describe("stripReceivePrefix", () => {
+  it("strips a leading '< ' unconditionally", () => {
+    expect(stripReceivePrefix("< pong")).toBe("pong");
+  });
+
+  it("leaves a line with no leading '< ' untouched", () => {
+    expect(stripReceivePrefix("pong")).toBe("pong");
+  });
+
+  it("does not strip an embedded (non-leading) '< '", () => {
+    expect(stripReceivePrefix("ret 1 < 2")).toBe("ret 1 < 2");
+  });
+});
+
+describe("decodeLine applies stripReceivePrefix next to the '\\r' strip", () => {
+  it("decodes a '< '-prefixed reply line exactly as its unprefixed form", () => {
+    expect(decodeLine("< pong")).toEqual({ kind: "line", verb: "pong", fields: [] });
+  });
+
+  it("strips '< ' and a trailing \\r on the same line", () => {
+    expect(decodeLine("< ack 1 0 none\r\n")).toEqual({
+      kind: "line",
+      verb: "ack",
+      fields: ["1", "0", "none"],
+    });
+  });
+
+  it("a '< '-prefixed banner-shaped line decodes structurally the same as unprefixed", () => {
+    const prefixed = decodeLine("< device NEZHA2 robot testbot SN001") as DecodedLine;
+    const unprefixed = decodeLine("device NEZHA2 robot testbot SN001") as DecodedLine;
+    expect(prefixed).toEqual(unprefixed);
+  });
 });
 
 // ---------------------------------------------------------------------

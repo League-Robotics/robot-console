@@ -49,6 +49,19 @@
  * value of `0`. Flagged here prominently as a deliberate call, not an
  * oversight, in case a future edit want to reconsider it.
  *
+ * **Documented and consistent (ticket 014-004):** every OTHER path that
+ * updates `seq` from a robot-reported next-expected value —
+ * {@link Session.resyncTo} and a `nack N` in {@link Session.handleReply}
+ * — uses the "nothing through `N - 1` is confirmed" reading (`seq = N -
+ * 1`), so `resyncTo(1)` and `nack 1` both leave `seq` at `0` for the
+ * identical robot state (`expectedNext_ = 1`) that `connect()` leaves at
+ * `1`. That is the one, sole, explicitly-named exception above — not an
+ * unnoticed drift between two call sites that should agree. `connect()`
+ * additionally resets {@link Session.pendingCount}'s backing table AND
+ * the give-up streak fields ({@link Session.resyncTo}'s own reset target
+ * list) to `0`, matching `resyncTo()` exactly on every field except
+ * `seq` itself, for the reason stated above.
+ *
  * ---- Retransmits: sourced from `pending`, never freshly constructed ----
  *
  * A retransmitted frame **must reuse its original id** — a fresh id
@@ -116,6 +129,12 @@
  */
 
 import { encodeLine, type DecodedLine, type WireField } from "./codec.js";
+import { isSequencedVerb, SEQUENCED_VERBS } from "./verbs.js";
+
+/** Re-exported from `v6/verbs.ts` (ticket 004 split them out into their
+ * own module) so existing callers importing them from `session.js`
+ * continue to work unchanged. */
+export { SEQUENCED_VERBS, isSequencedVerb };
 
 /** Raised for any caller error this class can catch structurally: using
  * {@link Session.send} for a verb outside the 11-verb allowlist, using
@@ -128,52 +147,6 @@ export class SessionError extends Error {
     super(message);
     this.name = "SessionError";
   }
-}
-
-/** The 11 verbs protocol.md §8.3 sequences — the only verbs
- * {@link Session.send} will assign an id to. Held as an explicit,
- * hand-maintained constant (the same posture `codec.ts`'s own
- * `REPLY_VERBS` takes) rather than derived from anywhere else, since
- * this module is the one place in the stack whose entire job is knowing
- * this list. */
-export const SEQUENCED_VERBS: ReadonlySet<string> = new Set([
-  "GET",
-  "SET",
-  "TLM",
-  "STOP",
-  "RUN",
-  "WHEELS_X",
-  "WHEELS_V",
-  "MOVE_X",
-  "MOVE_V",
-  "GO_TO_R",
-  "GO_TO_W",
-  // FUNCS (added out-of-process, 2026-09-09): the robot firmware's
-  // `wire_handler.cpp` registers FUNCS with a mandatory `#<id>` -- the
-  // ack is what terminates its variable-length `funcs <name>` reply --
-  // so a bare `FUNCS` with no id is malformed there and draws no reply
-  // at all (verified on hardware: `captures/funcs-run-acceptance-
-  // 20260907`).
-  "FUNCS",
-  // WIFICRED (OOP 2026-09-10): `WIFICRED #<id>` lists the credential
-  // slots, `WIFICRED SET <slot> <ssid> <password> #<id>` writes one;
-  // sequenced in the firmware, replied with `wificred <slot> <ssid>
-  // <haspw>` then the ack.
-  "WIFICRED",
-]);
-
-/** Is `verb` one of the 11 id-bearing verbs ({@link SEQUENCED_VERBS})?
- * Case-folded before the lookup: protocol.md §2.1's "case is direction"
- * rule is about what a line looks like ON THE WIRE (this library only
- * ever emits sequenced verbs uppercase), not a license for a caller-
- * supplied verb spelling to silently pick a different code path just
- * because it arrived lowercase. A caller one layer up asking "is `get`
- * sequenced?" should get the same answer as "is `GET` sequenced?" --
- * see {@link Session.send}/{@link Session.sendUnsequenced}, which fold
- * case the same way before both classifying AND encoding, so the two
- * never disagree with each other. */
-export function isSequencedVerb(verb: string): boolean {
-  return SEQUENCED_VERBS.has(verb.toUpperCase());
 }
 
 /** One sequenced command this session has sent and is still holding in
@@ -256,24 +229,52 @@ export interface AckNackEvent {
  * {@link AckNackEvent.gaveUp}. */
 export const MAX_RESENDS = 3;
 
+/**
+ * Returned by {@link Session.handleReply} for an `ack`/`nack` line that
+ * fails to parse (too few fields, or a non-integer `n`/`lastDone`) --
+ * the only outcome wire input can produce here now. This is a **value**,
+ * not a thrown error: wire input is never trusted to be well-formed
+ * (the same posture `codec.ts`'s `decodeLine` already takes -- it never
+ * throws either), so a caller does not need to wrap every
+ * {@link Session.handleReply} call in try/catch just to keep one bad
+ * reply from killing its read loop. `session` state is left completely
+ * untouched by a malformed reply -- `seq`/`lastDone`/`pending` are
+ * exactly what they were before this call.
+ */
+export interface MalformedReplyEvent {
+  readonly kind: "malformed";
+  /** Which reply verb this was -- `"ack"` or `"nack"`. */
+  readonly verb: "ack" | "nack";
+  /** The reply's own decoded fields, verbatim, for diagnostics. */
+  readonly fields: readonly string[];
+  /** Human-readable reason this failed to parse. */
+  readonly reason: string;
+}
+
+type ParsedAckNackFields =
+  | { readonly ok: true; readonly n: number; readonly lastDone: number; readonly reason: string }
+  | { readonly ok: false; readonly reason: string };
+
 function parseAckNackFields(
   verb: "ack" | "nack",
   fields: readonly string[],
-): { n: number; lastDone: number; reason: string } {
+): ParsedAckNackFields {
   const [nText, lastDoneText, reason] = fields;
   if (nText === undefined || lastDoneText === undefined || reason === undefined) {
-    throw new SessionError(
-      `malformed "${verb}" reply -- expected 3 fields (n, lastDone, reason), got ${JSON.stringify(fields)}`,
-    );
+    return {
+      ok: false,
+      reason: `malformed "${verb}" reply -- expected 3 fields (n, lastDone, reason), got ${JSON.stringify(fields)}`,
+    };
   }
   const n = Number(nText);
   const lastDone = Number(lastDoneText);
   if (!Number.isInteger(n) || !Number.isInteger(lastDone)) {
-    throw new SessionError(
-      `malformed "${verb}" reply -- non-integer n/lastDone in ${JSON.stringify(fields)}`,
-    );
+    return {
+      ok: false,
+      reason: `malformed "${verb}" reply -- non-integer n/lastDone in ${JSON.stringify(fields)}`,
+    };
   }
-  return { n, lastDone, reason };
+  return { ok: true, n, lastDone, reason };
 }
 
 /**
@@ -435,6 +436,14 @@ export class Session {
     this.nextId = 1;
     this.pending.clear();
     this.seq = 1;
+    // Matches resyncTo()'s own reset -- a session that hit the give-up
+    // streak before reconnecting must not carry that count into the
+    // fresh session HELLO establishes; otherwise a single ordinary nack
+    // right after connect() could trip resendStreak > MAX_RESENDS on
+    // its very first resend and give up prematurely. See the
+    // streak-reset-after-connect test for the pinned regression case.
+    this.lastResendN = 0;
+    this.resendStreak = 0;
     return encodeLine("HELLO", []);
   }
 
@@ -473,13 +482,18 @@ export class Session {
 
   /**
    * Feed one already-decoded reply line (`codec.ts`'s `decodeLine`
-   * output) to the session. Returns an {@link AckNackEvent} for `ack`/
-   * `nack` replies (updating {@link seq}/{@link lastDone}/
-   * {@link lastDoneReason} and, for a `nack`, resolving which pending
-   * lines must be resent); returns `null` for every other reply verb
-   * (`pong`, `status`, `id`, `ver`, `help`, `estop`, `err`, `ret`,
-   * `debug`, `device`, ...) — this class has no opinion about those, a
-   * caller reads them off wherever it already has the decoded line.
+   * output) to the session. Returns an {@link AckNackEvent} for a
+   * well-formed `ack`/`nack` reply (updating {@link seq}/
+   * {@link lastDone}/{@link lastDoneReason} and, for a `nack`, resolving
+   * which pending lines must be resent); a {@link MalformedReplyEvent}
+   * for an `ack`/`nack` reply that fails to parse (too few fields, or a
+   * non-integer `n`/`lastDone`) — this **never throws**, even for wire
+   * input this class cannot make sense of, matching `codec.ts`'s own
+   * "wire input is data, never an exception" posture; and `null` for
+   * every other reply verb (`pong`, `status`, `id`, `ver`, `help`,
+   * `estop`, `err`, `ret`, `debug`, `device`, ...) — this class has no
+   * opinion about those, a caller reads them off wherever it already has
+   * the decoded line.
    *
    * Deliberately tolerant of a reply-then-trailing-nack pair arriving
    * as two separate lines (protocol.md §8.3's conditional reminder:
@@ -490,7 +504,7 @@ export class Session {
    * own event. There is nothing here that treats that pairing as a
    * protocol violation.
    */
-  handleReply(reply: DecodedLine): AckNackEvent | null {
+  handleReply(reply: DecodedLine): AckNackEvent | MalformedReplyEvent | null {
     if (reply.verb === "ack") {
       return this.handleAck(reply.fields);
     }
@@ -500,8 +514,12 @@ export class Session {
     return null;
   }
 
-  private handleAck(fields: readonly string[]): AckNackEvent {
-    const { n, lastDone, reason } = parseAckNackFields("ack", fields);
+  private handleAck(fields: readonly string[]): AckNackEvent | MalformedReplyEvent {
+    const parsed = parseAckNackFields("ack", fields);
+    if (!parsed.ok) {
+      return { kind: "malformed", verb: "ack", fields, reason: parsed.reason };
+    }
+    const { n, lastDone, reason } = parsed;
     this.seq = n;
     this.lastDone = lastDone;
     this.lastDoneReason = reason;
@@ -511,8 +529,12 @@ export class Session {
     return { kind: "ack", n, seq: this.seq, lastDone, lastDoneReason: reason, resend: [], desynced: false };
   }
 
-  private handleNack(fields: readonly string[]): AckNackEvent {
-    const { n, lastDone, reason } = parseAckNackFields("nack", fields);
+  private handleNack(fields: readonly string[]): AckNackEvent | MalformedReplyEvent {
+    const parsed = parseAckNackFields("nack", fields);
+    if (!parsed.ok) {
+      return { kind: "malformed", verb: "nack", fields, reason: parsed.reason };
+    }
+    const { n, lastDone, reason } = parsed;
     // `nack` carries next-expected, NOT last-good -- everything through
     // n - 1 is what the robot has actually confirmed. See the module
     // doc comment's own worked-through explanation of this arithmetic

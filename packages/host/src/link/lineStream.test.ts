@@ -21,17 +21,17 @@ describe("LineReassembler", () => {
     expect(r.push("pong\r\n")).toEqual(["pong"]);
   });
 
-  it("strips a leading '< ' prefix unconditionally", () => {
+  it("does NOT strip a leading '< ' prefix -- that moved to @robot-console/protocol's decodeLine (ticket 014-004)", () => {
     const r = new LineReassembler();
-    expect(r.push("< pong\n")).toEqual(["pong"]);
+    expect(r.push("< pong\n")).toEqual(["< pong"]);
   });
 
-  it("strips both '< ' and a trailing \\r on the same line", () => {
+  it("strips a trailing \\r even when the line still carries its '< ' prefix", () => {
     const r = new LineReassembler();
-    expect(r.push("< ack 1 0 none\r\n")).toEqual(["ack 1 0 none"]);
+    expect(r.push("< ack 1 0 none\r\n")).toEqual(["< ack 1 0 none"]);
   });
 
-  it("does not strip '< ' if it is not a leading prefix", () => {
+  it("leaves an embedded (non-leading) '< ' untouched, same as before", () => {
     const r = new LineReassembler();
     expect(r.push("ret 1 < 2\n")).toEqual(["ret 1 < 2"]);
   });

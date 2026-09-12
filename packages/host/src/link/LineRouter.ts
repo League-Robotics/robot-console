@@ -45,6 +45,14 @@ import {
   type Session,
 } from "@robot-console/protocol";
 
+// Note (ticket 014-004): `Session.handleReply` used to throw on a
+// malformed ack/nack; it now returns a `{kind: "malformed"}` event
+// instead (never throws on wire input). `handleLine` below narrows that
+// out before touching `event.resend`/`onAckNack` -- a malformed reply
+// still reaches the console via `onUnrouted`, exactly like any other
+// non-actionable reply-direction oddity, rather than crashing the read
+// loop the way an uncaught throw would have.
+
 export interface LineRouterCallbacks {
   /** Every `"reply"`-direction decoded line, `ack`/`nack` included. */
   onLine: (line: DecodedLine) => void;
@@ -85,11 +93,15 @@ export class LineRouter {
 
     if (decoded.verb === "ack" || decoded.verb === "nack") {
       const event = this.session.handleReply(decoded);
-      if (event) {
+      if (event !== null && event.kind !== "malformed") {
         for (const resendLine of event.resend) {
           this.callbacks.resend(resendLine);
         }
         this.callbacks.onAckNack(event);
+      } else if (event !== null) {
+        // event.kind === "malformed" -- surface it the same way any
+        // other non-actionable reply-direction line reaches the console.
+        this.callbacks.onUnrouted?.(raw);
       }
     }
 

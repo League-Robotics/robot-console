@@ -1,16 +1,15 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { deviceIdToName, nameToValue, NAME_SPACE } from "./naming.js";
-import { base5, nameToRadioAddress, radioAddressToName } from "./radioAddress.js";
+import { base5, nameToRadioAddress, radioAddressToName, validateRadioAddress } from "./radioAddress.js";
 
 // ---------------------------------------------------------------------
 // Conformance fixture: read from the vendored submodule, never copied
-// into this repo (stakeholder decision, ticket 002 — supersedes
-// sprint.md's Open Question 1: a copy would silently drift from
-// upstream, while the submodule pins an exact commit and updates
+// into this repo (stakeholder decision — a copy would silently drift
+// from upstream, while the submodule pins an exact commit and updates
 // deliberately).
 //
 // Canonical upstream source:
@@ -23,6 +22,15 @@ const VECTORS_PATH = path.join(
   REPO_ROOT,
   "vendor/pxt-nezha-diffdrive/docs/radio-address-vectors.json",
 );
+
+/**
+ * Whether the `vendor/pxt-nezha-diffdrive` submodule is initialized in
+ * this checkout. The full-space conformance tests below are gated on
+ * this (ticket 014-004's fixture-independence acceptance criterion) so
+ * the synthetic, fixture-free tests in this file (the endianness trap,
+ * the round-trip) always run without `git submodule update --init`.
+ */
+const VENDOR_PRESENT = existsSync(VECTORS_PATH);
 
 interface VectorsFile {
   properties: {
@@ -84,10 +92,10 @@ describe("round-trip via radioAddress.ts's base5", () => {
 });
 
 describe("nameToRadioAddress / radioAddressToName full-space conformance", () => {
-  const vectors = readVectorsFile();
+  const vectors = VENDOR_PRESENT ? readVectorsFile() : undefined;
 
-  it("the vectors file itself declares the expected 3125-name space", () => {
-    expect(vectors.properties.total_names).toBe(NAME_SPACE);
+  it.skipIf(!VENDOR_PRESENT)("the vectors file itself declares the expected 3125-name space", () => {
+    expect(vectors!.properties.total_names).toBe(NAME_SPACE);
   });
 
   // The vectors file publishes two digests for two canonical forms
@@ -128,13 +136,49 @@ describe("nameToRadioAddress / radioAddressToName full-space conformance", () =>
     return { v1: v1Lines.join(""), v2: v2Lines.join("") };
   }
 
-  it("v1 (full_space_sha256) matches -- diagnostic bisector", () => {
+  it.skipIf(!VENDOR_PRESENT)("v1 (full_space_sha256) matches -- diagnostic bisector", () => {
     const { v1 } = buildCanonicalForms();
-    expect(sha256(v1)).toBe(vectors.properties.full_space_sha256);
+    expect(sha256(v1)).toBe(vectors!.properties.full_space_sha256);
   });
 
-  it("v2 (conformance_sha256) matches the entire 3125-name space -- the conformance gate", () => {
+  it.skipIf(!VENDOR_PRESENT)("v2 (conformance_sha256) matches the entire 3125-name space -- the conformance gate", () => {
     const { v2 } = buildCanonicalForms();
-    expect(sha256(v2)).toBe(vectors.properties.conformance_sha256);
+    expect(sha256(v2)).toBe(vectors!.properties.conformance_sha256);
+  });
+});
+
+describe("validateRadioAddress", () => {
+  it("accepts every channel/group value radioAddressToName itself accepts", () => {
+    expect(validateRadioAddress(25, 1)).toBe(true);
+    expect(validateRadioAddress(73, 126)).toBe(true);
+    expect(validateRadioAddress(47, 60)).toBe(true);
+  });
+
+  it("rejects an even channel", () => {
+    expect(validateRadioAddress(26, 1)).toBe(false);
+  });
+
+  it("rejects a channel outside [25, 73]", () => {
+    expect(validateRadioAddress(23, 1)).toBe(false);
+    expect(validateRadioAddress(75, 1)).toBe(false);
+  });
+
+  it("rejects the reserved group 10", () => {
+    expect(validateRadioAddress(25, 10)).toBe(false);
+  });
+
+  it("rejects a group outside [1, 126]", () => {
+    expect(validateRadioAddress(25, 0)).toBe(false);
+    expect(validateRadioAddress(25, 127)).toBe(false);
+  });
+
+  it("never throws, unlike radioAddressToName", () => {
+    expect(() => validateRadioAddress(26, 10)).not.toThrow();
+    expect(() => radioAddressToName(26, 10)).toThrow();
+  });
+
+  it("rejects a non-integer channel/group", () => {
+    expect(validateRadioAddress(25.5, 1)).toBe(false);
+    expect(validateRadioAddress(25, NaN)).toBe(false);
   });
 });

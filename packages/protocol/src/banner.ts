@@ -36,7 +36,14 @@
  * more stable join key across firmware/dialects, since it is the same
  * string regardless of which base a given firmware happens to print the
  * serial in.
+ *
+ * `name` is derivable from `serial` (spec §2.2: the name *is* a base-5
+ * encoding of `FICR.DEVICEID[1]`, the same register `serial` decodes),
+ * so a well-formed banner's two fields must always agree —
+ * {@link bannerNameMatchesSerial} is the free, pure check for that.
  */
+
+import { deviceIdToName } from "./naming.js";
 
 /** Serial radix, keyed by role token. See the module doc for why this is
  * an explicit per-role lookup rather than an inferred/assumed base. */
@@ -148,4 +155,18 @@ export function parseBanner(line: string): ParsedBanner | null {
   }
 
   return null;
+}
+
+/**
+ * Does `banner.name` match `banner.serial`, per the name's own
+ * definition (spec §2.2: `name = deviceIdToName(FICR.DEVICEID[1])`, and
+ * `serial` is that same register, already decoded to the correct radix
+ * by {@link parseBanner})? A mismatch is a free, pure signal that
+ * something is wrong with a banner's own two fields — most commonly a
+ * serial printed/decoded in the wrong radix (a hex value silently reads
+ * as valid decimal digits) — without needing any second source of
+ * truth to compare against.
+ */
+export function bannerNameMatchesSerial(banner: ParsedBanner): boolean {
+  return deviceIdToName(banner.serial) === banner.name;
 }

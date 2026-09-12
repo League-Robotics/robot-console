@@ -1,16 +1,14 @@
 // @vitest-environment jsdom
 /**
  * AddressSourceChip.test.tsx — component tests (sprint 8 ticket 006 /
- * SUC-006).
+ * SUC-006; rewritten sprint 015 ticket 008 against the `Snapshot`
+ * contract's three-way `RadioSourceWire`).
  *
- * Proves: every `addressSource` outcome renders the correct text and
- * neutral/warning `data-variant`; the `"local-derived"` outcome's two
- * different input shapes (`registryWasConsidered` false vs. true) drive
- * two different variants; `(channel, group)` renders alongside the
- * source text; no `addressSource` (or an `mbserial` transport) renders
- * nothing; a non-empty `failoverTrail` renders as plain visible text.
- * Fixture props only -- no live registry, no `WsProvider` dependency,
- * per the ticket.
+ * Proves: each of the three `RadioSourceWire` outcomes renders its own
+ * text, always neutral (no warning variant left -- see the component's
+ * own doc comment); `(channel, group)` renders alongside the source
+ * text; the whole `radio` shape is read straight from a
+ * `SnapshotDevice.radio`-shaped fixture, with no reconstruction.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -48,120 +46,22 @@ function chip(el: HTMLDivElement): HTMLElement | null {
 }
 
 describe("AddressSourceChip resolution outcomes", () => {
-  it("renders neutral for 'config'", () => {
-    const el = mount(<AddressSourceChip addressSource="config" viaRelay={{ channel: 37, group: 3 }} />);
+  it("renders 'set for this device' for 'override'", () => {
+    const el = mount(<AddressSourceChip radio={{ channel: 41, group: 3, source: "override" }} />);
     const node = chip(el)!;
-    expect(node.getAttribute("data-variant")).toBe("neutral");
-    expect(node.textContent).toContain("ch 37 / grp 3");
-    expect(node.textContent).toContain("from config");
+    expect(node.textContent).toContain("ch 41 / grp 3");
+    expect(node.textContent).toContain("set for this device");
   });
 
-  it("renders neutral for 'registry'", () => {
-    const el = mount(<AddressSourceChip addressSource="registry" viaRelay={{ channel: 37, group: 3 }} />);
-    const node = chip(el)!;
-    expect(node.getAttribute("data-variant")).toBe("neutral");
-    expect(node.textContent).toContain("confirmed by registry");
+  it("renders 'confirmed by registry' for 'registry'", () => {
+    const el = mount(<AddressSourceChip radio={{ channel: 37, group: 3, source: "registry" }} />);
+    expect(chip(el)!.textContent).toContain("confirmed by registry");
   });
 
-  it("renders neutral for 'explicit', stating it was entered by the user", () => {
-    const el = mount(<AddressSourceChip addressSource="explicit" viaRelay={{ channel: 55, group: 114 }} />);
+  it("renders 'derived from the name' for 'derived'", () => {
+    const el = mount(<AddressSourceChip radio={{ channel: 55, group: 114, source: "derived" }} />);
     const node = chip(el)!;
-    expect(node.getAttribute("data-variant")).toBe("neutral");
     expect(node.textContent).toContain("ch 55 / grp 114");
-    expect(node.textContent).toContain("entered by you");
-  });
-
-  it("renders warning for 'derived' (registry echoed its own guess)", () => {
-    const el = mount(<AddressSourceChip addressSource="derived" viaRelay={{ channel: 37, group: 3 }} />);
-    const node = chip(el)!;
-    expect(node.getAttribute("data-variant")).toBe("warning");
-    expect(node.textContent).toContain("derived");
-  });
-
-  it("renders neutral for 'local-derived' when no registry was ever discovered (the ordinary classroom path)", () => {
-    const el = mount(
-      <AddressSourceChip
-        addressSource="local-derived"
-        viaRelay={{ channel: 37, group: 3 }}
-        registryWasConsidered={false}
-      />,
-    );
-    const node = chip(el)!;
-    expect(node.getAttribute("data-variant")).toBe("neutral");
-    expect(node.textContent).toContain("derived (no registry)");
-  });
-
-  it("defaults registryWasConsidered to false when omitted, matching the ordinary classroom path", () => {
-    const el = mount(<AddressSourceChip addressSource="local-derived" viaRelay={{ channel: 37, group: 3 }} />);
-    expect(chip(el)!.getAttribute("data-variant")).toBe("neutral");
-  });
-
-  it("renders warning for 'local-derived' when a registry was discovered but the resolution still fell back", () => {
-    const el = mount(
-      <AddressSourceChip
-        addressSource="local-derived"
-        viaRelay={{ channel: 37, group: 3 }}
-        registryWasConsidered={true}
-      />,
-    );
-    const node = chip(el)!;
-    expect(node.getAttribute("data-variant")).toBe("warning");
-  });
-});
-
-describe("AddressSourceChip not-applicable cases", () => {
-  it("renders nothing when addressSource is undefined", () => {
-    const el = mount(<AddressSourceChip />);
-    expect(chip(el)).toBeNull();
-    expect(el.textContent).toBe("");
-  });
-
-  it("renders nothing for an mbserial transport even if addressSource were somehow present", () => {
-    const el = mount(
-      <AddressSourceChip
-        addressSource="config"
-        viaRelay={{ channel: 37, group: 3 }}
-        transport="mbserial"
-      />,
-    );
-    expect(chip(el)).toBeNull();
-  });
-});
-
-describe("AddressSourceChip failover trail", () => {
-  it("renders nothing extra when the trail is empty", () => {
-    const el = mount(<AddressSourceChip addressSource="registry" viaRelay={{ channel: 37, group: 3 }} />);
-    expect(el.querySelector('[data-testid="address-source-chip-trail"]')).toBeNull();
-  });
-
-  it("renders a single abandoned candidate as visible text, not behind a disclosure", () => {
-    const el = mount(
-      <AddressSourceChip
-        addressSource="local-derived"
-        viaRelay={{ channel: 37, group: 3 }}
-        registryWasConsidered={true}
-        failoverTrail={[{ name: "zavaz", transport: "relay-radio", reason: "no reply" }]}
-      />,
-    );
-    const trail = el.querySelector('[data-testid="address-source-chip-trail"]')!;
-    expect(trail.textContent).toBe("gave up on zavaz (no reply)");
-    // Not a <details>/<summary> or any other disclosure control.
-    expect(el.querySelector("details")).toBeNull();
-  });
-
-  it("chains multiple abandoned candidates into one readable line", () => {
-    const el = mount(
-      <AddressSourceChip
-        addressSource="local-derived"
-        viaRelay={{ channel: 37, group: 3 }}
-        registryWasConsidered={true}
-        failoverTrail={[
-          { name: "zavaz", transport: "relay-radio", reason: "no reply" },
-          { name: "kivex", transport: "relay-radio", reason: "timeout" },
-        ]}
-      />,
-    );
-    const trail = el.querySelector('[data-testid="address-source-chip-trail"]')!;
-    expect(trail.textContent).toBe("gave up on zavaz (no reply), tried kivex (timeout)");
+    expect(node.textContent).toContain("derived from the name");
   });
 });

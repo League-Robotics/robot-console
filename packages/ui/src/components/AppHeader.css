@@ -13,6 +13,17 @@
   gap: 1.5rem;
 }
 
+/* Sprint 015 ticket 009: the disconnected-from-host banner (UC-020). */
+.app-header-banner {
+  margin: 0;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--rc-warn-border);
+  background: var(--rc-warn-bg);
+  color: var(--rc-warn-text);
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+}
+
 .app-header h1 {
   font-size: 1.05rem;
   font-weight: 600;

@@ -2,14 +2,23 @@
  * StatusPanel.tsx — the robot's parsed `status` reply, rendered
  * read-mostly on `RobotPage` (added out-of-process, 2026-09-09).
  *
- * Reads `device.robotStatus` only (`wsMessages.ts`'s `RobotStatus`),
- * populated host-side from the most recent `status`/bare `estop` reply
- * on the endpoint's open session. The host polls `STATUS` on its own
- * every few seconds while a session is open, so this panel refreshes
- * itself with no timer of its own beyond the once-a-second "Last
- * updated Ns ago" tick below -- pressing this panel's own Refresh
- * button just requests one out-of-cadence update sooner, it is never
- * the only way this data moves.
+ * Reads `link.session?.robotStatus` only (`wsMessages.ts`'s
+ * `RobotStatus`), populated host-side from the most recent `status`/bare
+ * `estop` reply on the link's open session. The harvester (ticket 003)
+ * polls `STATUS` on its own every few seconds while a session is open,
+ * so this panel refreshes itself passively, with no probe or timer of
+ * its own.
+ *
+ * ## Sprint 015 ticket 009: reads from the snapshot, no on-open probe
+ *
+ * Before this ticket, this panel sent its own one-shot `STATUS` on mount
+ * (if the link was already open) and again on every closed->open
+ * transition, mirroring `CommandStrip`'s discovery `GET` -- duplicating
+ * the harvester's own poll, which now starts as soon as a session opens
+ * (well before this component could ever mount to fire its own request).
+ * That effect is deleted outright, not adapted: `link.session.robotStatus`
+ * already reflects the harvester's own poll cadence, so there is nothing
+ * left for a component-local probe to add.
  *
  * **Headline state word.** Derived from `robotStatus`'s booleans in a
  * fixed priority order (most urgent first): no `robotStatus` at all ->
@@ -34,17 +43,9 @@
  * waiting for the host's next poll tick. Mirrors `EstopControl`'s
  * identical button -- both exist because a student may reach for either
  * panel first; neither supersedes the other.
- *
- * **Deterministic "Last updated" text.** `receivedAt` is a host
- * `Date.now()` timestamp; the elapsed-seconds text is recomputed once a
- * second via an interval that only forces a re-render (the interval's
- * own tick value is never read). `now` is an injectable clock
- * (`() => number`, defaulting to `Date.now`) purely so tests can pin
- * down an exact "Ns ago" string instead of racing a real clock.
  */
-import { useEffect, useRef } from "react";
-import type { EndpointListEntry, RobotStatus } from "@robot-console/host/src/wsMessages.js";
-import { useWsActions } from "../ws/WsProvider";
+import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import { useSendable, useWsActions } from "../ws/WsProvider";
 import "./StatusPanel.css";
 
 /** OOP 2026-09-10: the firmware's `status k=v` keys, given real names
@@ -144,37 +145,21 @@ export function statusRows(fields: Record<string, string>): Array<{ key: string;
 }
 
 export interface StatusPanelProps {
-  device: EndpointListEntry;
+  link: SnapshotLink;
 }
 
-export function StatusPanel({ device }: StatusPanelProps) {
-  const endpointId = device.endpointId;
-  const linkOpen = device.sessionOpen;
+export function StatusPanel({ link }: StatusPanelProps) {
+  const linkId = link.id;
+  const sendable = useSendable();
+  const linkOpen = link.session !== undefined && sendable;
   const { sendCommand } = useWsActions();
-  const status = device.robotStatus;
-
-  // OOP 2026-09-09: never sit on "Unknown" -- ask. The host polls STATUS
-  // on its own once a robot identifies, but this panel also requests one
-  // itself on mount (if the link is already open) and on every
-  // closed->open transition, exactly as CommandStrip's discovery GET
-  // does, so a freshly opened page shows a real state within one round
-  // trip regardless of where the host's poll timer happens to be.
-  // (OOP 2026-09-10: the Refresh button and the "last updated" counter
-  // are gone -- the host's own poll keeps this current.)
-  const wasOpenRef = useRef(false);
-  useEffect(() => {
-    const wasOpen = wasOpenRef.current;
-    wasOpenRef.current = linkOpen;
-    if (linkOpen && !wasOpen) {
-      sendCommand(endpointId, "STATUS");
-    }
-  }, [linkOpen, endpointId, sendCommand]);
+  const status = link.session?.robotStatus ?? undefined;
 
   const isEstopped = status?.estopped === true;
 
   function handleClearEstop(): void {
-    sendCommand(endpointId, "SET", ["estop_clear", "1"]);
-    sendCommand(endpointId, "STATUS");
+    sendCommand(linkId, "SET", ["estop_clear", "1"]);
+    sendCommand(linkId, "STATUS");
   }
 
   return (

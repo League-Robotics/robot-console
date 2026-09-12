@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { openStoreDb } from "./db.js";
 import { DeviceNameMismatchError, Store, type ChangeEvent } from "./index.js";
@@ -102,6 +105,69 @@ describe("Store: setOwned", () => {
       expect(row?.owned).toBe(0);
     } finally {
       store.close();
+    }
+  });
+});
+
+describe("Store: setRadioOverride / clearRadioOverride", () => {
+  it("sets radio_channel/radio_group and radio_source = 'override'; is a no-op if the device does not exist", () => {
+    const { store } = freshStore();
+    try {
+      store.setRadioOverride(999, 41, 3); // no device row yet
+      expect(store.snapshotRows().devices).toHaveLength(0);
+
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 100 });
+      store.setRadioOverride(1198504156, 41, 3);
+      const row = store.snapshotRows().devices[0];
+      expect(row).toMatchObject({ radio_channel: 41, radio_group: 3, radio_source: "override" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("clearRadioOverride returns radio_channel/radio_group/radio_source to NULL", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 100 });
+      store.setRadioOverride(1198504156, 41, 3);
+      store.clearRadioOverride(1198504156);
+      const row = store.snapshotRows().devices[0];
+      expect(row).toMatchObject({ radio_channel: null, radio_group: null, radio_source: null });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("clearRadioOverride is a no-op if the device does not exist", () => {
+    const { store } = freshStore();
+    try {
+      expect(() => store.clearRadioOverride(999)).not.toThrow();
+      expect(store.snapshotRows().devices).toHaveLength(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("persists a radio override across a store close/reopen against the same file (ticket 006 AC1)", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "robot-console-radio-override-test-"));
+    const filePath = path.join(dir, "console.sqlite");
+    try {
+      const store1 = new Store(openStoreDb({ filePath }));
+      store1.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 100 });
+      store1.setRadioOverride(1198504156, 41, 3);
+      store1.close();
+
+      const store2 = new Store(openStoreDb({ filePath }));
+      try {
+        const row = store2.snapshotRows().devices[0];
+        expect(row).toMatchObject({ radio_channel: 41, radio_group: 3, radio_source: "override" });
+        const projected = store2.projectionRows().devices[0];
+        expect(projected).toMatchObject({ radioChannel: 41, radioGroup: 3, radioSource: "override" });
+      } finally {
+        store2.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
@@ -255,6 +321,118 @@ describe("Store: recordSighting", () => {
   });
 });
 
+describe("Store: mergeDevice", () => {
+  it("re-points links/sightings from the placeholder to the real row, merges owned/first_seen/radio_*, and deletes the placeholder", () => {
+    const { store, db } = freshStore();
+    try {
+      // The bench scenario sprint 015 ticket 003's own Description cites
+      // verbatim: `known-robots.json` seeded a placeholder for "vevov"
+      // (nameToValue("vevov") === 1031, a synthetic id), radio-configured
+      // by an earlier session; the real device later identifies as chip
+      // id 536019796 (a *different* name, "vevav" -- the two disagree,
+      // which is exactly why the merge cannot key on `name`).
+      const PLACEHOLDER_ID = 1031;
+      const REAL_ID = 536019796;
+      store.upsertDevice({ id: PLACEHOLDER_ID, name: "vevov", kind: "robot", usbSerial: "0012345678", at: 100 });
+      store.setOwned(PLACEHOLDER_ID, true, 100);
+      db.prepare("UPDATE devices SET radio_channel = ?, radio_group = ?, radio_source = ? WHERE id = ?").run(
+        5,
+        2,
+        "registry",
+        PLACEHOLDER_ID,
+      );
+      store.upsertLink({ id: "radio-vevov", transport: "radio", address: { relayLinkId: "usb-relay", channel: 5, group: 2 }, deviceId: PLACEHOLDER_ID, at: 100 });
+      const sightingId = store.recordSighting({ deviceId: PLACEHOLDER_ID, transport: "radio", at: 100, ok: true });
+
+      store.upsertDevice({ id: REAL_ID, name: "vevav", kind: "robot", at: 500 });
+      store.mergeDevice(PLACEHOLDER_ID, REAL_ID, 500);
+
+      const rows = store.snapshotRows();
+      expect(rows.devices).toHaveLength(1);
+      expect(rows.devices[0]).toMatchObject({
+        id: REAL_ID,
+        name: "vevav",
+        owned: 1,
+        first_seen: 100,
+        radio_channel: 5,
+        radio_group: 2,
+        radio_source: "registry",
+      });
+
+      expect(rows.links).toHaveLength(1);
+      expect(rows.links[0]).toMatchObject({ id: "radio-vevov", device_id: REAL_ID });
+
+      const sightingRows = db.prepare("SELECT id, device_id FROM sightings").all() as Array<{
+        id: number;
+        device_id: number | null;
+      }>;
+      expect(sightingRows).toEqual([{ id: sightingId, device_id: REAL_ID }]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("never clobbers the real row's own already-set radio_* fields with the placeholder's", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1031, name: "vevov", kind: "robot", at: 100 });
+      store.upsertDevice({ id: 536019796, name: "vevav", kind: "robot", radioChannel: 9, radioGroup: 1, radioSource: "override", at: 200 });
+      store.mergeDevice(1031, 536019796, 200);
+      const row = store.snapshotRows().devices[0];
+      expect(row).toMatchObject({ radio_channel: 9, radio_group: 1, radio_source: "override" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("is a no-op (rolls back, changes nothing) when either id has no devices row, or the ids are equal", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 536019796, name: "vevav", kind: "robot", at: 100 });
+      store.mergeDevice(1031, 536019796, 200); // 1031 has no row
+      expect(store.snapshotRows().devices).toHaveLength(1);
+
+      store.mergeDevice(536019796, 536019796, 200); // same id
+      expect(store.snapshotRows().devices).toHaveLength(1);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("Store: deleteDevice", () => {
+  it("deletes the devices row and re-points its links/sightings to device_id NULL rather than deleting them", () => {
+    const { store, db } = freshStore();
+    try {
+      const ID = 536019796;
+      store.upsertDevice({ id: ID, name: "vevav", kind: "robot", at: 100 });
+      store.upsertLink({ id: "usb-vevav", transport: "usb", address: { path: "/dev/cu.vevav" }, deviceId: ID, at: 100 });
+      const sightingId = store.recordSighting({ deviceId: ID, transport: "usb", at: 100, ok: true });
+
+      store.deleteDevice(ID);
+
+      const rows = store.snapshotRows();
+      expect(rows.devices).toHaveLength(0);
+      expect(rows.links).toHaveLength(1);
+      expect(rows.links[0]).toMatchObject({ id: "usb-vevav", device_id: null });
+      const sightingRow = db.prepare("SELECT device_id FROM sightings WHERE id = ?").get(sightingId);
+      expect(sightingRow).toMatchObject({ device_id: null });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("is a no-op for an id with no devices row", () => {
+    const { store } = freshStore();
+    try {
+      store.deleteDevice(1234);
+      expect(store.snapshotRows().devices).toHaveLength(0);
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe("Store: sessions", () => {
   it("opens, updates, and closes a session", () => {
     const { store } = freshStore();
@@ -397,6 +575,212 @@ describe("Store: snapshotRows", () => {
       expect(snapshot.services).toHaveLength(1);
       expect(snapshot.sessions).toHaveLength(1);
       expect(snapshot.tasks).toHaveLength(1);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("Store: reconcilerRows", () => {
+  it("returns typed, camelCased devices/links/sessions/relayLeases", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+      store.setOwned(1198504156, true, 2);
+      store.upsertLink({ id: "link-1", transport: "wifi", address: { host: "10.0.0.5", port: 4000 }, deviceId: 1198504156, at: 3 });
+      store.setLinkState({ id: "link-1", state: "failed", at: 4, reason: "boom", failCount: 2, nextRetryAt: 100 });
+      store.openSession("link-1", 5);
+      store.upsertLink({ id: "relay-1", transport: "usb", address: { path: "/dev/relay" }, at: 5 });
+      store.acquireRelayLease("relay-1", "session:radio-child", 6);
+
+      const rows = store.reconcilerRows();
+
+      expect(rows.devices).toEqual([{ id: 1198504156, kind: "robot", owned: true }]);
+      expect(rows.links.find((l) => l.id === "link-1")).toEqual({
+        id: "link-1",
+        deviceId: 1198504156,
+        transport: "wifi",
+        address: { host: "10.0.0.5", port: 4000 },
+        state: "failed",
+        nextRetryAt: 100,
+        failCount: 2,
+        userClosed: false,
+      });
+      expect(rows.sessions).toEqual([{ linkId: "link-1" }]);
+      expect(rows.relayLeases).toEqual([{ relayLinkId: "relay-1", owner: "session:radio-child" }]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("reports userClosed and a null deviceId/nextRetryAt as their own values, not coerced", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertLink({ id: "link-2", transport: "usb", address: { path: "/dev/x" }, at: 1 });
+      store.setLinkState({ id: "link-2", state: "closed_by_user", at: 2, userClosed: true });
+
+      const rows = store.reconcilerRows();
+      expect(rows.links).toEqual([
+        {
+          id: "link-2",
+          deviceId: null,
+          transport: "usb",
+          address: { path: "/dev/x" },
+          state: "closed_by_user",
+          nextRetryAt: null,
+          failCount: 0,
+          userClosed: true,
+        },
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("Store: projectionRows", () => {
+  it("returns typed, camelCased devices/links/sessions/relayLeases/firmware/tasks", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({
+        id: 1198504156,
+        name: "vevov",
+        kind: "robot",
+        role: "NEZHA2",
+        radioChannel: 41,
+        radioGroup: 3,
+        radioSource: "override",
+        at: 1,
+      });
+      store.setOwned(1198504156, true, 2);
+      store.upsertLink({
+        id: "link-1",
+        transport: "wifi",
+        address: { host: "10.0.0.5", port: 4000 },
+        deviceId: 1198504156,
+        at: 3,
+      });
+      store.setLinkState({ id: "link-1", state: "connected", at: 4 });
+      store.openSession("link-1", 5);
+      store.updateSession("link-1", {
+        seq: 3,
+        pending: 1,
+        lastDone: 2,
+        lastDoneReason: "ok",
+        robotStatus: JSON.stringify({
+          receivedAt: 5,
+          fields: { flags: "1" },
+          ready: true,
+          active: true,
+          estopped: false,
+          stallHalted: false,
+          leaseExpired: false,
+        }),
+        functions: [{ name: "drive" }],
+      });
+      store.upsertLink({ id: "relay-1", transport: "usb", address: { path: "/dev/relay" }, at: 5 });
+      store.acquireRelayLease("relay-1", "sweep", 6);
+      store.setFirmware({ kind: "robot", repo: "org/repo", tag: "v1", available: true, checkedAt: 7 });
+      store.heartbeat("usbWatcher", 8, "polling");
+      store.recordSighting({ deviceId: 1198504156, transport: "wifi", at: 9, ok: true });
+      store.recordSighting({ deviceId: 1198504156, transport: "wifi", at: 11, ok: true });
+
+      const rows = store.projectionRows();
+
+      expect(rows.devices).toEqual([
+        {
+          id: 1198504156,
+          name: "vevov",
+          kind: "robot",
+          role: "NEZHA2",
+          program: null,
+          version: null,
+          radioChannel: 41,
+          radioGroup: 3,
+          radioSource: "override",
+          owned: true,
+          lastSeen: 2,
+        },
+      ]);
+
+      const link1 = rows.links.find((l) => l.id === "link-1");
+      expect(link1).toEqual({
+        id: "link-1",
+        deviceId: 1198504156,
+        transport: "wifi",
+        address: { host: "10.0.0.5", port: 4000 },
+        state: "connected",
+        stateReason: null,
+        stateSince: 4,
+        lastSeen: 3,
+        nextRetryAt: null,
+        failCount: 0,
+        userClosed: false,
+      });
+
+      expect(rows.sessions).toEqual([
+        {
+          linkId: "link-1",
+          seq: 3,
+          pending: 1,
+          lastDone: 2,
+          lastDoneReason: "ok",
+          robotStatus: {
+            receivedAt: 5,
+            fields: { flags: "1" },
+            ready: true,
+            active: true,
+            estopped: false,
+            stallHalted: false,
+            leaseExpired: false,
+          },
+          functions: [{ name: "drive" }],
+        },
+      ]);
+
+      expect(rows.relayLeases).toEqual([{ relayLinkId: "relay-1", owner: "sweep" }]);
+      expect(rows.firmware).toEqual([
+        { kind: "robot", repo: "org/repo", tag: "v1", available: true, reason: null, message: null },
+      ]);
+      expect(rows.tasks).toEqual([{ name: "usbWatcher", state: "running", heartbeatAt: 8 }]);
+      expect(rows.lastChecked).toEqual([{ deviceId: 1198504156, at: 11 }]);
+      expect(rows.wifiCredentials).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("reports an absent session's robotStatus/functions as null, not undefined or a string", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertLink({ id: "link-1", transport: "usb", address: { path: "/dev/x" }, at: 1 });
+      store.openSession("link-1", 2);
+
+      const rows = store.projectionRows();
+      expect(rows.sessions).toEqual([
+        { linkId: "link-1", seq: null, pending: null, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("parses a stored wifiCredentials setting into ssid/password", () => {
+    const { store } = freshStore();
+    try {
+      store.setSetting("wifiCredentials", JSON.stringify({ ssid: "classroom", password: "secret" }));
+      const rows = store.projectionRows();
+      expect(rows.wifiCredentials).toEqual({ ssid: "classroom", password: "secret" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("reports no wifiCredentials as null rather than throwing", () => {
+    const { store } = freshStore();
+    try {
+      const rows = store.projectionRows();
+      expect(rows.wifiCredentials).toBeNull();
     } finally {
       store.close();
     }

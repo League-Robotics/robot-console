@@ -97,7 +97,7 @@ npx robot-console
 
 ## Debugging the store (sprint 014, throwaway)
 
-Two `robot-console` flags let an engineer inspect the host's SQLite
+One `robot-console` flag lets an engineer inspect the host's SQLite
 store (`console.sqlite`) without the browser UI:
 
 ```sh
@@ -105,20 +105,19 @@ store (`console.sqlite`) without the browser UI:
 # Safe to run alongside an already-running host -- opens a short-lived,
 # read-only connection (WAL mode allows a concurrent reader).
 npx robot-console --dump-store
-
-# Run the USB and mDNS watchers headless against the real store, real
-# enumerator, and real mDNS backend, logging every store change as one
-# JSON line to stdout. Does not start the Express/ws server. Ctrl-C
-# (SIGINT) or SIGTERM stops both watchers and closes the store cleanly.
-npx robot-console --watch-store
 ```
 
-Both flags are **sprint-014-only debugging affordances** — the exit
+`--dump-store` is a **sprint-014-only debugging affordance** — the exit
 criterion "watcher rows visible in a debug dump" without any UI change.
-Sprint 015's `rearch-06` replaces `--dump-store` with a real `snapshot`
-projection and server endpoint; neither flag is meant to survive past
-that sprint. See `clasi/sprints/014-.../sprint.md`'s Design Rationale
-and `packages/host/src/debug/dumpStore.ts`.
+See `clasi/sprints/014-.../sprint.md`'s Design Rationale and
+`packages/host/src/debug/dumpStore.ts`.
+
+`--watch-store` (sprint 014's headless USB/mDNS-watcher runner, a
+stand-in for production startup actually exercising the store and
+watchers) is **removed as of sprint 015 ticket 005**: ordinary
+`npx robot-console` startup now composes `openStoreWithImports` and
+both watchers itself (`packages/host/src/runtime.ts`), so the stand-in
+has nothing left to stand in for.
 
 ## Layout
 

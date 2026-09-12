@@ -17,7 +17,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseEnvFile } from "../config.js";
-import { resolveKnownRobotsFilePath } from "./knownRobots.js";
+import { resolveKnownRobotsFilePath } from "./stateDir.js";
 
 export interface WifiCredentials {
   ssid: string;

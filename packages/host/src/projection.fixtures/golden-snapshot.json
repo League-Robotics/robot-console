@@ -1,0 +1,183 @@
+{
+  "type": "snapshot",
+  "seq": 7,
+  "at": 999999,
+  "devices": [
+    {
+      "id": 2,
+      "name": "zuzug",
+      "kind": "relay",
+      "role": "RADIOBRIDGE",
+      "program": null,
+      "version": null,
+      "owned": false,
+      "radio": {
+        "channel": 29,
+        "group": 1,
+        "source": "derived"
+      },
+      "lastSeen": 90,
+      "lastChecked": null,
+      "links": [
+        {
+          "id": "usb-relay-1",
+          "transport": "usb",
+          "label": "USB · /dev/tty.usbmodem-relay1",
+          "state": "connectable",
+          "reason": null,
+          "since": 91,
+          "lastSeen": 90,
+          "nextRetryAt": null,
+          "capabilities": {
+            "open": true,
+            "close": false,
+            "flash": true,
+            "provisionWifi": false
+          }
+        }
+      ]
+    },
+    {
+      "id": 1198504156,
+      "name": "vevov",
+      "kind": "robot",
+      "role": "NEZHA2",
+      "program": "diffdrive",
+      "version": "1.20260907.5",
+      "owned": true,
+      "radio": {
+        "channel": 37,
+        "group": 43,
+        "source": "derived"
+      },
+      "lastSeen": 100,
+      "lastChecked": 160,
+      "links": [
+        {
+          "id": "usb-vevov",
+          "transport": "usb",
+          "label": "USB · /dev/tty.usbmodem-vevov",
+          "state": "connected",
+          "reason": null,
+          "since": 110,
+          "lastSeen": 100,
+          "nextRetryAt": null,
+          "capabilities": {
+            "open": false,
+            "close": true,
+            "flash": true,
+            "provisionWifi": true
+          },
+          "session": {
+            "seq": 5,
+            "pending": 1,
+            "lastDone": 4,
+            "lastDoneReason": "ok",
+            "robotStatus": {
+              "receivedAt": 120,
+              "fields": {
+                "flags": "1"
+              },
+              "ready": true,
+              "active": true,
+              "estopped": false,
+              "stallHalted": false,
+              "leaseExpired": false
+            },
+            "functions": [
+              {
+                "name": "drive",
+                "signature": "n n"
+              }
+            ]
+          }
+        },
+        {
+          "id": "wifi-vevov",
+          "transport": "wifi",
+          "label": "WiFi · vevov.local:7654",
+          "state": "connectable",
+          "reason": null,
+          "since": 131,
+          "lastSeen": 130,
+          "nextRetryAt": null,
+          "capabilities": {
+            "open": true,
+            "close": false,
+            "flash": false,
+            "provisionWifi": false
+          }
+        },
+        {
+          "id": "radio-vevov",
+          "transport": "radio",
+          "label": "Radio · ch41/grp3",
+          "state": "connectable",
+          "reason": null,
+          "since": 141,
+          "lastSeen": 140,
+          "nextRetryAt": null,
+          "capabilities": {
+            "open": true,
+            "close": false,
+            "flash": false,
+            "provisionWifi": false
+          },
+          "via": {
+            "relayLinkId": "usb-relay-1",
+            "relayName": "zuzug",
+            "channel": 41,
+            "group": 3,
+            "addressSource": "derived"
+          }
+        }
+      ]
+    }
+  ],
+  "unassigned": [
+    {
+      "id": "usb-unknown-1",
+      "transport": "usb",
+      "label": "USB · /dev/tty.usbmodem-unknown",
+      "state": "discovered",
+      "reason": null,
+      "since": 97,
+      "lastSeen": 97,
+      "nextRetryAt": null,
+      "capabilities": {
+        "open": true,
+        "close": false,
+        "flash": true,
+        "provisionWifi": false
+      }
+    }
+  ],
+  "relays": [
+    {
+      "linkId": "usb-relay-1",
+      "lease": "sweep"
+    }
+  ],
+  "firmware": {
+    "relay": {
+      "configured": false
+    },
+    "robot": {
+      "configured": true,
+      "repoUrl": "League-Robotics/nezha-diffdrive",
+      "tag": "v1.2.3",
+      "available": true
+    }
+  },
+  "wifi": {
+    "ssid": "classroom-net",
+    "source": "stored"
+  },
+  "tasks": [
+    {
+      "name": "usbWatcher",
+      "state": "running",
+      "heartbeatAt": 210
+    }
+  ]
+}

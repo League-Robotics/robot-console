@@ -2,128 +2,80 @@
  * WsProvider.tsx — the one WebSocket connection the UI holds open to
  * `packages/host`'s `server.ts`, per `wsMessages.ts`'s contract.
  *
- * Ticket 010's plan calls for a single shared connection/context that
- * both the Devices tab and the Console tab consume, rather than each
- * tab opening its own socket. This module is that shared piece: it
- * owns the socket lifecycle (connect, reconnect after an unexpected
- * close, teardown on unmount) exactly as before -- ticket 006 changes
- * how the socket's data is *exposed* to consumers, not how the socket
- * itself behaves.
+ * ## Sprint 015 ticket 007: one `snapshot` slice replaces five
  *
- * **Why a ref-backed store instead of `useState` (ticket 006):**
- * Before this ticket, every field (`devices`, `firmwareStatus`, ...)
- * lived in its own `useState` and was assembled into one context value
- * object literal on every render -- so *every* consumer of `useWs()`
- * re-rendered on *every* WebSocket message, including a `line` message
- * for a device nobody was looking at. Sprint 8 pushes telemetry at
- * 20Hz; that whole-context-value shape cannot survive it, and sprint 4
- * ticket 007's router unmounts/remounts components on navigation, which
- * would also destroy `ConsoleTab`'s in-component log state on every
- * device switch.
+ * Tickets 004/005 replaced the old `endpoints`/`firmwareStatus`/
+ * `rememberedRobots`/`discoveredServices`/`wifiCredentials`/
+ * `wifiProvisionResultByEndpoint`/`flashProgressByEndpoint` grab-bag
+ * with one `Snapshot` message (`type: "snapshot"`), sent in full on
+ * every connect and again on every coalesced host-side change (never a
+ * delta, so a client that missed a broadcast self-heals on the next
+ * one). This module mirrors that: the store now holds a `devicesById`/
+ * `devicesArray`/`unassigned`/`relays`/`firmware`/`wifiSetting`/`tasks`
+ * set built from the latest `Snapshot`, in place of the five old
+ * per-concept slices. `EndpointListEntry` (and the `endpointId` vocabulary
+ * generally) is retired throughout — the addressable unit is now a
+ * `linkId` (`links.id`, opaque, one physical/logical connection), owned
+ * by a `SnapshotDevice` (`devices.id`, a stable chip identity) inside
+ * `devices[]`, or listed bare in `unassigned[]` for a USB board not yet
+ * identified to any device.
  *
- * So state now lives in a plain mutable `Store` object held in a ref
- * (never in React state), mutated only by this provider's socket event
- * handlers, and exposed to consumers via `useSyncExternalStore` through
- * the granular selector hooks below (`useEndpoint`, `useEndpointLog`,
- * ...) rather than one `useWs()` grab-bag. Each selector's `getSnapshot`
- * returns a **cached, referentially stable** value that only changes
- * when the specific slice it reads actually changes -- see `deepEqual`
- * and the structural-sharing logic in `applySnapshot` below, which
- * reuses the previous `EndpointListEntry` object for any endpoint whose
- * fields are unchanged between two `endpoints` snapshots (the snapshot
- * is a fresh `JSON.parse` every time, so naive reuse of `parsed.endpoints`
- * would hand out a new object per endpoint on every message even when
- * nothing about that endpoint changed -- exactly the `getSnapshot`
- * pitfall that makes React re-render, or in the worst case loop). A
- * component that only reads `useEndpoint("A")` therefore does not
- * re-render when endpoint B changes, or when a `line` message arrives
- * for a different endpoint.
+ * **Why a ref-backed store instead of `useState`, and why
+ * `useSyncExternalStore` selectors instead of one `useWs()` grab-bag:**
+ * unchanged from ticket 006's reasoning — every field lived in its own
+ * `useState` before that ticket, re-rendering every consumer on every
+ * message; a plain mutable `Store` in a ref, mutated only by this
+ * provider's socket handlers and read through granular selectors whose
+ * `getSnapshot` returns a referentially stable value when its slice
+ * didn't change, is what makes a 20Hz `telemetry` stream and a busy
+ * `line` log survive without turning every mounted component into a
+ * render storm. `deepEqual`/structural sharing below reuses the
+ * previous `SnapshotDevice`/`SnapshotLink` object for any device/link
+ * whose fields are unchanged between two snapshots — the snapshot is a
+ * fresh `JSON.parse` every time, so naive reuse of `parsed.devices`
+ * would hand out a new object per device on every message even when
+ * nothing about that device changed, exactly the `getSnapshot` pitfall
+ * that makes React re-render (or loop) needlessly.
  *
- * **The hoisted log buffer:** `ConsoleTab.tsx` used to own
- * `logsByDevice` in its own `useState`, which ticket 007's router would
- * destroy on every navigation away from the console. That buffer now
- * lives in this store (`logsByEndpoint`), subscribed once here
- * (independent of which endpoint is currently selected, preserving
- * today's "switching devices never drops a line" behavior) and exposed
- * per-endpoint via `useEndpointLog`, so a mounted console for endpoint
- * A does not re-render when a snapshot update or a line for endpoint B
- * changes only B's slice.
+ * **Socket lifecycle split into `connect()`/`dispatch()`:** the old
+ * 137-line `useEffect` folded socket setup and the whole message
+ * `switch` into one closure. `dispatch(store, message)` below is now a
+ * standalone function the `"message"` listener merely calls, so the
+ * per-message-type handling can be read (and tested indirectly through
+ * `FakeSocket`) independent of the connect/reconnect plumbing.
  *
- * **Buffer bounding:** `MAX_LINES_PER_DEVICE` bounds one endpoint's log
- * length, but endpoints x 500 lines is itself unbounded once sprint 7
- * adds network endpoints that can appear and disappear over a long
- * session. This store additionally keeps only the
- * `MAX_TRACKED_ENDPOINT_LOGS` (8) most recently *active* endpoints'
- * logs at all -- the least-recently-touched endpoint's entire log is
- * evicted once a 9th distinct endpoint logs a line. "Recently active"
- * (touched when a line is appended) was chosen over "recently viewed"
- * (touched when a component reads it) because the latter would require
- * mutating store state from inside a selector's `getSnapshot`, which
- * `useSyncExternalStore` requires to be a pure read -- write-side
- * touching keeps every mutation on the socket message handlers, which
- * is where every other slice of this store is already mutated.
+ * **Snapshot staleness (rearch-07 / UC-020):** `store.stale` starts
+ * `false`, flips to `true` the instant the socket closes (whether or
+ * not a snapshot was ever held — harmless either way), and is cleared
+ * only by the next `"snapshot"` message actually landing. Combined with
+ * `status` via `useHostConnection()`, this is what feeds ticket 009's
+ * disconnected banner: the UI never blanks the last-known device list
+ * on a drop (matches the old behavior), but a consumer that cares can
+ * now tell "this list is current" from "this list is what we had before
+ * we lost the host".
  *
- * **Flash progress for both source kinds (ticket 005's flagged gap):**
- * `EndpointListEntry.flashStatus` is frozen as `{ firmware, phase }` --
- * it has no shape for a local-hex source (see `wsMessages.ts`'s
- * `FirmwareSourceRef`), so a local-hex flash leaves `flashStatus`
- * undefined in every `endpoints` snapshot. The server still emits
- * `flash-progress` events (carrying the full `source`, release or
- * local-hex) for every flash, so this store now handles that message
- * type -- previously ignored entirely -- and keeps the latest
- * `{ source, phase }` per endpoint in `flashProgressByEndpoint`,
- * cleared on the terminal `flash-result`. `useFlashProgress(endpointId)`
- * exposes this for both source kinds. This does not fix the frozen
- * wire type (out of scope, per the ticket): a client that reconnects
- * mid-local-hex-flash still has no snapshot field to self-heal
- * `flashStatus` from, and so will not see progress until the next
- * `flash-progress` event arrives -- release-kind flashes are unaffected
- * since `flashStatus` already self-heals those via the snapshot.
+ * **The hoisted log buffer, the telemetry ring, flash progress, Wi-Fi
+ * credentials/provision results:** all carried over from ticket 006
+ * essentially unchanged, just re-keyed by `linkId` instead of
+ * `endpointId` (`LineMessage`/`TelemetryMessage`/`FlashProgressMessage`/
+ * `FlashResultMessage`/`WifiProvisionResultMessage` all rename that
+ * field the same way). `useFlashProgress` still prefers a live
+ * `flash-progress` event when one has arrived, but now falls back to
+ * the snapshot's own `SnapshotLink.flash` (populated host-side,
+ * `server.ts`, from the same in-memory flash state) rather than to
+ * nothing — a client that reconnects mid-flash self-heals for every
+ * source kind, closing the gap ticket 006's own doc comment flagged for
+ * a local-hex source.
  *
- * **Host errors surfaced in the console log (ticket 012-003):** a host
- * `type: "error"` message (e.g. `deviceRegistry.ts` refusing a live
- * `"HELLO"` command, or "no open link") used to be dropped here as an
- * explicit no-op -- nothing ever subscribed to it, so it vanished with
- * no trace. `appendHostError` now appends it to the firing endpoint's
- * existing console log (`logsByEndpoint`, the same store `line`
- * messages populate) as a `LogEntry` with `origin: "host"`, which
- * `DeviceConsole` renders with the same "error" kind styling as a
- * device-sent `err`/`nack` line rather than a new fourth `direction`
- * value -- see `LogEntry`'s own doc comment. This is this sprint's only
- * consumer of `type: "error"`; an error with no `endpointId` (no
- * current caller produces one) is deliberately dropped rather than
- * shown as a global banner, since this store owns no UI surface outside
- * the per-endpoint log -- see `appendHostError`'s own doc comment.
- *
- * **Poll-origin lines carried through (added out-of-process,
- * 2026-09-09):** `appendLine` now copies `LineMessage.origin` (`"poll"`
- * for a line the host sent/received on its own initiative -- its
- * periodic `STATUS` poll against an open robot session, per
- * `wsMessages.ts`) onto the `LogEntry` it appends, verbatim and only
- * when present. This store does no filtering of its own on `origin` --
- * every line the host forwards is still appended to the log and counted
- * against `MAX_LINES_PER_DEVICE` exactly as before; `DeviceConsole`
- * decides, at render time, whether a `"poll"`-origin entry is currently
- * shown.
- *
- * **Telemetry: a ref-backed ring buffer that never triggers a React
- * re-render on its own (sprint 9 ticket 003):** `TelemetryMessage`
- * (ticket 002) can arrive at up to tens of times a second per endpoint
- * -- an order of magnitude past what `logsByEndpoint`/`notify` were
- * ever designed for. Routing each frame through `notify(store)` would
- * re-render every `useSyncExternalStore` consumer of this store on
- * every frame, exactly the whole-context-value problem this module's
- * ref-backed redesign exists to avoid. So a frame is stored into a
- * per-endpoint `TelemetryRing` and fanned out to that endpoint's own
- * `frameListeners` directly -- a second, narrower pub/sub that never
- * touches `store.listeners`/`notify` at all. `useTelemetry` hands
- * consumers (chart/trace panels, tickets 004/005) a stable object with
- * live getters and a `subscribe`, so they can read the ring on their
- * own schedule (an animation frame) instead of on every incoming
- * frame. Only the header -- which changes far less often -- goes
- * through the normal `notify`/`useSyncExternalStore` path via
- * `useTelemetryHeader`, so a "waiting for header" banner can still be
- * ordinary reactive React state.
+ * **`type: "notice"` replaces `type: "error"`:** a notice carries an
+ * optional `linkId` (scoped) and a `level` (`"info"|"warn"|"error"`). A
+ * link-scoped notice is appended to that link's console log exactly as
+ * a host error used to be (`origin: "host"`, forcing the same "error"
+ * kind styling regardless of `level` — `DeviceConsole`'s own level-aware
+ * styling is left for a later ticket). A connection-level notice (no
+ * `linkId` — a malformed message, a task failure) is dropped rather
+ * than shown anywhere, mirroring the old no-`endpointId` behavior: this
+ * store still has no global banner surface of its own.
  */
 import {
   createContext,
@@ -136,9 +88,6 @@ import {
 } from "react";
 import type {
   ClientMessage,
-  DiscoveredServicesSnapshot,
-  EndpointListEntry,
-  ErrorMessage,
   FirmwareAvailability,
   FirmwareKind,
   FirmwareSourceRef,
@@ -146,8 +95,11 @@ import type {
   FlashPhase,
   FlashResultMessage,
   LineMessage,
-  RememberedRobotEntry,
   ServerMessage,
+  Snapshot,
+  SnapshotDevice,
+  SnapshotLink,
+  SnapshotRelay,
   TelemetryMessage,
   WifiCredentialsMessage,
   WifiProvisionResultMessage,
@@ -156,133 +108,74 @@ import type { WireField } from "@robot-console/protocol";
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
 
-/** One line in an endpoint's console log, in the order it was
- * appended. Hoisted here (from `ConsoleTab.tsx`) as part of ticket
- * 006's store; `ConsoleTab` re-exports this type for its own call
- * sites rather than importing it twice under two names. */
+/** Combined connection status + snapshot staleness -- see this module's
+ * doc comment ("Snapshot staleness"). Feeds ticket 009's disconnected
+ * banner (`useHostConnection`). */
+export interface HostConnectionState {
+  status: ConnectionStatus;
+  /** `true` once the socket has closed since the last `snapshot`
+   * arrived (or before any has ever arrived) -- the held device list
+   * may no longer reflect reality. Cleared the instant a fresh
+   * `snapshot` lands. */
+  stale: boolean;
+}
+
+/** One line in a link's console log, in the order it was appended.
+ * Unchanged from ticket 006's `LogEntry` except in name only (this
+ * module now speaks `linkId`, not `endpointId`) -- see that ticket's own
+ * doc comment for `origin`'s two values. */
 export interface LogEntry {
   id: number;
   direction: "tx" | "rx";
   line: string;
-  /** `"host"` for an entry synthesized from a host `type: "error"`
-   * message (ticket 012-003); `"poll"` for an ordinary `line` message
-   * the host itself marked `origin: "poll"` (added out-of-process,
-   * 2026-09-09) -- the host's own periodic `STATUS` poll against an open
-   * robot session, carried through verbatim from `LineMessage.origin`
-   * (see `wsMessages.ts`'s own doc comment) rather than re-derived here.
-   * Absent for an ordinary user-originated `line` message. `direction`
-   * is still `"rx"` for both a host error and a poll reply (each arrives
-   * at the client the same way a device reply does, and no extra
-   * `direction` value is warranted just for this), so `origin` is what a
-   * consumer checks instead: `DeviceConsole` forces the "error" kind
-   * styling for `"host"` regardless of the message text (a host error's
-   * wording, e.g. "no open link", does not necessarily start with
-   * "err"/"nack", so `classifyLine`'s text sniffing alone would
-   * misclassify most of them as ordinary `data`), and hides a `"poll"`
-   * entry from the log by default (still retained in the store -- see
-   * `DeviceConsole.tsx`'s own doc comment; filtering is presentation
-   * only). */
   origin?: "host" | "poll";
 }
 
-/** Maximum lines retained per endpoint in the in-memory log. Oldest
- * lines are dropped once an endpoint's log exceeds this so a busy
- * board (telemetry lands in a later sprint at up to 20Hz) can't grow
- * the log without bound. Exported so tests can exercise the exact
- * boundary rather than duplicating the number -- unchanged from
- * `ConsoleTab.tsx`'s pre-ticket-006 constant of the same name and
- * value. */
-export const MAX_LINES_PER_DEVICE = 500;
+/** Maximum lines retained per link in the in-memory log. Renamed from
+ * `MAX_LINES_PER_DEVICE` (ticket 006) -- same constant, same value, the
+ * link vocabulary this ticket completes. */
+export const MAX_LINES_PER_LINK = 500;
 
-/** How many distinct endpoints' logs this store keeps at once -- see
- * this module's doc comment ("Buffer bounding") for why eviction is
- * driven by log-write recency rather than view recency. Exported so
- * tests can pin down the exact eviction boundary rather than
- * duplicating the number. */
-export const MAX_TRACKED_ENDPOINT_LOGS = 8;
+/** How many distinct links' logs this store keeps at once. Renamed
+ * from `MAX_TRACKED_ENDPOINT_LOGS` for the same reason as {@link
+ * MAX_LINES_PER_LINK}. */
+export const MAX_TRACKED_LINK_LOGS = 8;
 
-/** Shared empty array returned by `useEndpointLog` for an endpoint
- * with no log yet, so repeated calls before any line arrives return
- * the same reference rather than a fresh `[]` each time (which would
- * otherwise look like a change to `useSyncExternalStore`). */
+/** Shared empty array returned by `useLinkLog` for a link with no log
+ * yet, so repeated calls before any line arrives return the same
+ * reference. */
 const EMPTY_LOG: readonly LogEntry[] = [];
 
 let nextLogEntryId = 0;
 
-/** Maximum frames retained per endpoint in the telemetry ring buffer
- * (sprint 9 ticket 003) -- deliberately independent of
- * {@link MAX_LINES_PER_DEVICE}, which bounds a completely different
- * kind of data at a completely different rate (a handful of console
- * lines a second, versus telemetry's up to tens of frames a second per
- * `sprint.md`'s Architecture). 600 frames is about 60 seconds of
- * history at a typical 10Hz telemetry rate -- enough for the chart/
- * trace panels (tickets 004/005) to show a meaningful recent window
- * without growing without bound over a long session. Exported so tests
- * can pin down the exact eviction boundary, mirroring
- * `MAX_LINES_PER_DEVICE`'s own reasoning. */
+/** Maximum frames retained per link in the telemetry ring buffer.
+ * Unchanged from ticket 006 (sprint 9 ticket 003) -- see that ticket's
+ * own doc comment for the 600-frame/60s reasoning. */
 export const TELEMETRY_RING_CAPACITY = 600;
 
-/** One decoded telemetry frame, ready for chart/trace consumption. `t`
- * is this client's own receipt time (`Date.now()`), not anything the
- * wire sends -- `TelemetryMessage.frame` carries no timestamp of its
- * own -- so panels can plot against a consistent wall-clock axis even
- * across a header change. `values` is `TelemetryMessage.frame`'s raw
- * wire strings parsed with `Number()`; a missing or non-numeric field
- * parses to `NaN` rather than being dropped, so a frame's keys always
- * match `header` 1:1 even when one column is briefly unparsable --
- * consumers of a numeric series already have to handle `NaN` (e.g. skip
- * drawing that point) rather than a hole in the object shape. */
+/** One decoded telemetry frame, ready for chart/trace consumption.
+ * Unchanged from ticket 006. */
 export interface TelemetryFrame {
   t: number;
   values: Record<string, number>;
 }
 
-/** Which telemetry stream, if any, an endpoint's robot should push --
- * sent to the robot via `useWsActions().telemetrySubscribe`, which
- * forwards it as `TLM <mode>` (see that action's own doc comment).
- * `"HDR"` re-requests just the current column header without changing
- * which frames stream, mirroring `deviceRegistry.ts`'s own one-shot
- * `TLM HDR` gap-recovery request (`sprint.md`'s Architecture, Design
- * Rationale #3). */
+/** Which telemetry stream, if any, a robot should push -- unchanged
+ * from ticket 006. */
 export type TelemetryMode = "POSE" | "FULL" | "OFF" | "HDR";
 
-/** The imperative, non-React-reactive interface to one endpoint's
- * telemetry ring, returned by `useTelemetry`. `header` and `latest` are
- * live getters -- each read goes straight to the store, not to cached
- * React state -- and `subscribe` fires its callback synchronously on
- * every incoming frame, entirely outside React's render cycle. This
- * lets a chart/trace consumer (tickets 004/005) pull `snapshot()` (or
- * accumulate frames via `subscribe`) on its own schedule, typically
- * once per animation frame, instead of re-rendering on every frame the
- * way a `useSyncExternalStore` selector would -- see this module's doc
- * comment ("Telemetry: a ref-backed ring buffer...") for why. */
+/** The imperative, non-React-reactive interface to one link's
+ * telemetry ring. Unchanged from ticket 006 except in name (`linkId`). */
 export interface TelemetryHandle {
   readonly header: readonly string[] | undefined;
   readonly latest: TelemetryFrame | undefined;
-  /** All frames currently retained, oldest first -- a fresh array each
-   * call, safe to hold onto without it mutating underneath the
-   * caller. */
   snapshot(): TelemetryFrame[];
-  /** Register `cb` to be called, synchronously and outside React, with
-   * each frame as it arrives for this endpoint. Returns the
-   * unsubscribe function. */
   subscribe(cb: (frame: TelemetryFrame) => void): () => void;
-  /** Empty this endpoint's ring (ticket 005's Clear button). Does not
-   * touch the current header -- the column layout hasn't changed, only
-   * the retained history has. Equivalent to
-   * `useWsActions().clearTelemetry(endpointId)`. */
   clear(): void;
 }
 
-/** Fixed-capacity ring buffer backing one endpoint's telemetry slice --
- * the "ref-backed ring buffer" this ticket introduces. Writes
- * circularly into a single `capacity`-length array (no `splice`/`shift`
- * per push) so pushing at capacity is O(1) regardless of how full the
- * ring is, unlike `pushLogEntry`'s trim-from-the-front approach above
- * (fine at the console log's much lower rate, but an O(n) copy on every
- * incoming frame here would not be, at telemetry's 10-20Hz). Not
- * exported -- `TelemetryHandle`'s `snapshot`/`latest`/`subscribe`/
- * `clear` are the only surface consumers need. */
+/** Fixed-capacity ring buffer backing one link's telemetry slice.
+ * Unchanged from ticket 006. */
 class TelemetryRing {
   private readonly buffer: (TelemetryFrame | undefined)[];
   private start = 0;
@@ -324,61 +217,107 @@ class TelemetryRing {
   }
 }
 
-/** One endpoint's telemetry state: the current column header (or
- * `undefined` before any `thdr` has been recovered / after a session
- * close), its ring of decoded frames, and the frame-arrival
- * subscribers that bypass `notify`/`store.listeners` entirely -- see
- * this module's doc comment. Not part of `Store`'s React-visible
- * fields the way `endpointsById`/`logsByEndpoint` are read via
- * `useSyncExternalStore`; only `header` is ever exposed that way, via
- * `useTelemetryHeader`. */
+/** One link's telemetry state. Unchanged from ticket 006 except in
+ * name (`linkId`-keyed). */
 interface TelemetrySlice {
   header: readonly string[] | undefined;
   ring: TelemetryRing;
   frameListeners: Set<(frame: TelemetryFrame) => void>;
 }
 
-/** The latest known progress of an in-flight flash for one endpoint,
- * populated from live `flash-progress` events -- see this module's doc
- * comment ("Flash progress for both source kinds"). */
+/** The latest known progress of an in-flight flash for one link, from a
+ * live `flash-progress` event -- shape mirrors `SnapshotLink.flash`
+ * exactly (both are `{ source, phase }`), so `useFlashProgress` can fall
+ * back to the snapshot's own value with no conversion. */
 export interface FlashProgressState {
   source: FirmwareSourceRef;
   phase: FlashPhase;
 }
 
-/** Firmware availability before the first `devices` snapshot has ever
- * arrived (e.g. the instant after this provider mounts). Treated the
- * same as "not configured" -- disabled, no reason text -- rather than
- * inventing a fourth, provider-only state; the real snapshot (sent by
- * `server.ts` on every connection, per `wsMessages.ts`) replaces this
- * within one round trip. */
 const DEFAULT_FIRMWARE_STATUS: Record<FirmwareKind, FirmwareAvailability> = {
   relay: { configured: false },
   robot: { configured: false },
 };
 
-/** {@link DiscoveredServicesSnapshot} before the first `endpoints`
- * snapshot has ever arrived (or for an old-shaped/test-fixture message
- * that omits the field entirely) -- both lists empty, mirroring
- * {@link DEFAULT_FIRMWARE_STATUS}'s own "not yet known" default. Sprint
- * 8 ticket 005's `useDiscoveredServices` selector. */
-const DEFAULT_DISCOVERED_SERVICES: DiscoveredServicesSnapshot = { relays: [], robots: [] };
+const DEFAULT_WIFI_SETTING: Snapshot["wifi"] = { ssid: null, source: null };
 
-/**
- * The slice of the browser `WebSocket` API this module actually uses.
- * Kept narrow and exported so tests can inject a fully synthetic fake
- * (no real network, no dependence on jsdom implementing `WebSocket`)
- * -- mirrors `deviceRegistry.ts`'s `UsbSerialLinkLike` seam on the host
- * side of this same contract.
- */
+/** Carried from ticket 006 (rearch-08 UI remainder): "Migration nicety:
+ * on first load, if `localStorage` holds a radio override for a device
+ * present in the snapshot, offer to push it via `set-radio-override`,
+ * then clear the key; no prompt otherwise."
+ *
+ * Sprint 015 ticket 006 removed the reader/writer for this key
+ * (`RelayPage.tsx`'s former `readStoredAddress`/`writeStoredAddress`)
+ * entirely as part of moving radio overrides into the host DB, but a
+ * student's browser from before that ticket may still hold one of these
+ * keys -- this scan is the one-shot bridge from that old cache into the
+ * new `set-radio-override` message, so a value nobody else can see any
+ * more doesn't just silently stop applying. `robot-console:relay-
+ * address:<name>` was the old per-name key; the value's shape and
+ * validation mirror `readStoredAddress` exactly (an integer
+ * `{channel, group}`, anything else treated as nothing stored). */
+const RADIO_MIGRATION_KEY_PREFIX = "robot-console:relay-address:";
+
+export interface PendingRadioMigration {
+  deviceId: number;
+  name: string;
+  channel: number;
+  group: number;
+  /** The exact `localStorage` key this candidate came from -- needed to
+   * clear it once the student has been offered the choice. */
+  storageKey: string;
+}
+
+/** Scan `localStorage` once for every `robot-console:relay-address:<name>`
+ * key whose `<name>` matches a device in the current snapshot -- see
+ * this module's own doc comment. Best-effort: a disabled/quota-exceeded
+ * `localStorage`, or malformed JSON left by an older build, is treated
+ * as "nothing to offer", never thrown (mirrors the retired
+ * `readStoredAddress`'s own failure handling). */
+function scanPendingRadioMigrations(devices: readonly SnapshotDevice[]): PendingRadioMigration[] {
+  const results: PendingRadioMigration[] = [];
+  try {
+    const deviceByName = new Map(devices.map((d) => [d.name, d] as const));
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const storageKey = window.localStorage.key(i);
+      if (!storageKey || !storageKey.startsWith(RADIO_MIGRATION_KEY_PREFIX)) {
+        continue;
+      }
+      const name = storageKey.slice(RADIO_MIGRATION_KEY_PREFIX.length);
+      const device = deviceByName.get(name);
+      if (!device) {
+        continue;
+      }
+      const raw = window.localStorage.getItem(storageKey);
+      if (!raw) {
+        continue;
+      }
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (
+          typeof parsed === "object" &&
+          parsed !== null &&
+          Number.isInteger((parsed as { channel: unknown }).channel) &&
+          Number.isInteger((parsed as { group: unknown }).group)
+        ) {
+          const { channel, group } = parsed as { channel: number; group: number };
+          results.push({ deviceId: device.id, name, channel, group, storageKey });
+        }
+      } catch {
+        // Malformed JSON left by an older build -- nothing to offer for
+        // this key, but keep scanning the rest.
+      }
+    }
+  } catch {
+    // localStorage disabled/unavailable entirely -- nothing to offer.
+  }
+  return results;
+}
+
+/** The slice of the browser `WebSocket` API this module actually uses.
+ * Unchanged from ticket 006. */
 export interface WebSocketLike {
   readonly readyState: number;
-  /** `string` for every JSON control message this module sends; a raw
-   * binary payload only for the local-hex upload's one binary frame
-   * (ticket 008's `sendBinary` action) -- never a `Blob`, since this
-   * client always has the bytes in hand already (`File.arrayBuffer()`)
-   * and has no reason to hand the browser a lazy-read wrapper around
-   * them. */
   send(data: string | ArrayBufferLike | ArrayBufferView): void;
   close(): void;
   addEventListener(type: string, listener: (event: unknown) => void): void;
@@ -388,14 +327,9 @@ export interface WebSocketLike {
 const WEBSOCKET_OPEN = 1;
 
 /** Structural (deep) equality over plain JSON-shaped values -- every
- * field on `EndpointListEntry`/`FirmwareAvailability` is a primitive,
- * plain object, or array of those, so a generic recursive comparison
- * is enough; no `Map`/`Set`/`Date`/class instances ever appear here.
- * Used to decide whether a freshly-parsed value (every `endpoints`
- * message is a brand-new `JSON.parse`) actually differs from what the
- * store already has, so unchanged slices can keep their old object
- * reference -- see this module's doc comment on `getSnapshot`
- * stability. */
+ * field on `SnapshotDevice`/`SnapshotLink`/`FirmwareAvailability` is a
+ * primitive, plain object, or array of those, so a generic recursive
+ * comparison is enough. Unchanged from ticket 006. */
 function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) {
     return true;
@@ -431,136 +365,84 @@ function deepEqual(a: unknown, b: unknown): boolean {
 
 /** The ref-backed store: one instance per `WsProvider` mount, mutated
  * only by that provider's socket event handlers, and read by consumer
- * hooks via `useSyncExternalStore`. Never itself placed in React
- * state -- see this module's doc comment. */
+ * hooks via `useSyncExternalStore`. */
 interface Store {
   status: ConnectionStatus;
-  /** `false` until the first `endpoints` message is processed, `true`
-   * forever after -- including across a reconnect, since the last
-   * known snapshot is still meaningful (mirrors `devices` itself never
-   * being cleared on close). */
+  /** `false` until the first `snapshot` message is processed, `true`
+   * forever after -- including across a reconnect (see {@link stale}
+   * for the "is this still current" question `hasSnapshot` alone no
+   * longer answers on its own). */
   hasSnapshot: boolean;
-  endpointIds: string[];
-  endpointsById: Map<string, EndpointListEntry>;
-  /** Cached array form of `endpointsById` in `endpointIds` order, for
-   * `useEndpoints()`. Only rebuilt when some endpoint actually changed,
-   * was added, removed, or reordered -- see `applySnapshot`. */
-  endpointsArray: EndpointListEntry[];
-  firmwareStatus: Record<FirmwareKind, FirmwareAvailability>;
-  /** The full remembered-robot roster from the most recent `endpoints`
-   * snapshot (sprint 5) -- see `wsMessages.ts`'s
-   * `EndpointsMessage.rememberedRobots` doc comment. Starts at `[]`
-   * before any snapshot arrives, and is only ever replaced (not
-   * mutated in place) by `applySnapshot`, which also guards against an
-   * old-shaped/test-fixture message that omits the field entirely --
-   * see that function's own doc comment. */
-  rememberedRobots: RememberedRobotEntry[];
-  /** Sprint 8 ticket 004/005: the current mDNS discovery snapshot
-   * (relays + robots) from the most recent `endpoints` snapshot --
-   * mirrors {@link rememberedRobots}'s own always-present-even-when-
-   * empty discipline. `{ relays: [], robots: [] }` before the first
-   * snapshot arrives. Feeds `RelayPage`'s dropdown (ticket 005) and the
-   * disclosure chip's `registryWasConsidered` (ticket 006) -- never
-   * populated by a registry lookup of its own; this is a passive
-   * mirror of `server.ts`'s `discoveredServices` field. */
-  discoveredServices: DiscoveredServicesSnapshot;
-  logsByEndpoint: Map<string, LogEntry[]>;
-  /** LRU order for `logsByEndpoint`, oldest-touched first. See
-   * `touchLog`. */
+  /** See {@link HostConnectionState.stale}'s own doc comment. */
+  stale: boolean;
+  deviceIds: number[];
+  devicesById: Map<number, SnapshotDevice>;
+  /** Cached array form of `devicesById` in `deviceIds` (host) order, for
+   * `useDevices()`. Only rebuilt when some device actually changed, was
+   * added, removed, or reordered. */
+  devicesArray: SnapshotDevice[];
+  unassignedIds: string[];
+  /** Cached array form for `useUnassigned()`, same rebuild discipline as
+   * {@link devicesArray}. */
+  unassignedArray: SnapshotLink[];
+  /** Every link from `devices[].links` and `unassigned[]`, flattened and
+   * keyed by `linkId`, with the same per-entry structural sharing as
+   * {@link devicesById} -- backs `useLink`. */
+  linksById: Map<string, SnapshotLink>;
+  /** `linkId -> deviceId` for every link inside a `devices[]` entry
+   * (never for an `unassigned` link, which has no owning device) --
+   * backs `useDeviceForLink`. */
+  linkOwnerById: Map<string, number>;
+  relays: SnapshotRelay[];
+  firmware: Record<FirmwareKind, FirmwareAvailability>;
+  wifiSetting: Snapshot["wifi"];
+  tasks: Snapshot["tasks"];
+  logsByLink: Map<string, LogEntry[]>;
+  /** LRU order for `logsByLink`, oldest-touched first. */
   logOrder: string[];
-  flashProgressByEndpoint: Map<string, FlashProgressState>;
+  /** Live `flash-progress` overlay -- see `useFlashProgress`'s own doc
+   * comment for why this is consulted ahead of, not instead of, the
+   * snapshot's own `SnapshotLink.flash`. */
+  flashProgressByLink: Map<string, FlashProgressState>;
   flashResultHandlers: Set<(message: FlashResultMessage) => void>;
-  /** OOP 2026-09-10: the host's stored WiFi network (never the
-   * password) -- `undefined` until asked for. */
-  wifiCredentials: WifiCredentialsMessage | undefined;
-  /** OOP 2026-09-10: the most recent provisioning outcome per endpoint. */
-  wifiProvisionResultByEndpoint: Map<string, WifiProvisionResultMessage>;
-  /** Subscribers to the local-hex upload handshake's `flash-local-ready`
-   * reply (ticket 008) -- see `WsActions.onFlashLocalReady`'s own doc
-   * comment. Not store-backed state (no `endpoints`/log-buffer slice
-   * changes because of this message), so firing these handlers never
-   * needs a matching `notify(store)` call the way `flash-result`'s
-   * handling does. */
   flashLocalReadyHandlers: Set<(message: FlashLocalReadyMessage) => void>;
-  /** Per-endpoint telemetry state (sprint 9 ticket 003) -- see
-   * `TelemetrySlice`'s own doc comment. Created lazily, on first
-   * reference (a `"telemetry"` message, or a `useTelemetry`/
-   * `useTelemetryHeader` call), by `getOrCreateTelemetrySlice`. */
-  telemetryByEndpoint: Map<string, TelemetrySlice>;
+  wifiCredentials: WifiCredentialsMessage | undefined;
+  wifiProvisionResultByLink: Map<string, WifiProvisionResultMessage>;
+  telemetryByLink: Map<string, TelemetrySlice>;
+  /** See `scanPendingRadioMigrations`'s own doc comment -- populated
+   * once, the first time a snapshot arrives, never rescanned after. */
+  pendingRadioMigrations: PendingRadioMigration[];
+  radioMigrationScanned: boolean;
   listeners: Set<() => void>;
-  /** `useSyncExternalStore`'s subscribe half -- registers `cb` to be
-   * called after any store mutation, returns the unsubscribe function.
-   * A stable method (defined once, in `createStore`) so every selector
-   * hook below can pass it straight to `useSyncExternalStore` with no
-   * `useCallback` wrapper of its own. Every hook shares this one
-   * "something changed" signal; the fine-grained re-render bail-out
-   * comes from each hook's own `getSnapshot` returning a referentially
-   * stable value when its particular slice didn't change (see
-   * `applySnapshot`/`appendLine`'s structural-sharing logic), not from
-   * subscribing more narrowly here. */
   subscribe: (cb: () => void) => () => void;
-  /** Built once, in `WsProvider`, right after the store itself --
-   * split out of `createStore` only because `send` needs to close over
-   * the component's `socketRef`, which the store itself does not
-   * hold. */
   actions: WsActions;
 }
 
 export interface WsActions {
   send: (message: ClientMessage) => void;
   /** Send one raw binary WebSocket frame -- the local-hex upload
-   * handshake's binary half (ticket 005's convention, frozen in
-   * `wsMessages.ts`'s module doc comment): `uploadId` (ASCII,
-   * `UPLOAD_ID_BYTE_LENGTH` bytes) immediately followed by the file's
-   * raw bytes, no JSON envelope, no length prefix. Building that exact
-   * layout is the caller's job (`UnknownDevicePage`, ticket 008); this
-   * action only forwards the finished frame to the socket, mirroring
-   * `send`'s own readyState guard -- a frame sent while disconnected is
-   * silently dropped rather than queued, same as every other outbound
-   * message this module sends. */
+   * handshake's binary half. Unchanged from ticket 006. */
   sendBinary: (data: Uint8Array) => void;
-  /** Send one protocol verb, with optional fields, to an endpoint's open
-   * session -- forwards `{ type: "send-command", endpointId, verb,
-   * fields }` through `send`'s existing readyState guard (silently
-   * dropped if the socket isn't open, same as every other action here;
-   * no queuing). Deliberately does not classify `verb` as sequenced or
-   * unsequenced: that decision belongs to `@robot-console/protocol`'s
-   * `isSequencedVerb`, applied host-side by `deviceRegistry.ts` (ticket
-   * 003) -- duplicating it here would be exactly the client/host drift
-   * the architecture forbids. `fields` omitted is equivalent to an
-   * empty array (`SendCommandMessage`'s own doc comment), so callers
-   * with a bare verb like `STATUS` or `GET` can omit it entirely. */
-  sendCommand: (endpointId: string, verb: string, fields?: WireField[]) => void;
+  /** Send one protocol verb, with optional fields, to a link's open
+   * session -- forwards `{ type: "send-command", linkId, verb, fields
+   * }`. Unchanged from ticket 006 except the field rename. */
+  sendCommand: (linkId: string, verb: string, fields?: WireField[]) => void;
   onFlashResult: (handler: (message: FlashResultMessage) => void) => () => void;
-  /** Subscribe to the local-hex upload handshake's `flash-local-ready`
-   * reply -- the server's go-ahead to send the binary frame, carrying
-   * the `uploadId` the client must prefix that frame with and later
-   * reference in `flash-start`'s `source`. Mirrors `onFlashResult`'s
-   * pub/sub shape; `UnknownDevicePage` (ticket 008) is this sprint's
-   * only subscriber. */
   onFlashLocalReady: (handler: (message: FlashLocalReadyMessage) => void) => () => void;
-  /** Empty one endpoint's log buffer -- `ConsoleTab`'s "Clear log"
-   * button used to do this directly via its own `setLogsByDevice`
-   * before the buffer was hoisted into this store; now that the store
-   * owns it, clearing has to go through an action instead of local
-   * state. Does not evict the endpoint from the LRU tracked set (see
-   * `touchLog`) -- an explicit clear is not the same signal as
-   * inactivity. */
-  clearEndpointLog: (endpointId: string) => void;
-  /** Empty one endpoint's telemetry ring (ticket 005's Clear button) --
-   * see `TelemetryHandle.clear`'s own doc comment. Equivalent to
-   * calling `clear()` on the handle `useTelemetry(endpointId)` returns;
-   * exposed here too so a component that only needs to clear (and
-   * doesn't otherwise read telemetry) can use `useWsActions()` alone. */
-  clearTelemetry: (endpointId: string) => void;
-  /** Request the robot change (or re-announce) its telemetry stream --
-   * forwards `{ type: "send-command", endpointId, verb: "TLM", fields:
-   * [mode] }` through `sendCommand`'s existing readyState guard (see
-   * that action's own doc comment). `RobotPage` (ticket 004) decides
-   * when to call this (e.g. `"POSE"`/`"FULL"` on mount or tab-select,
-   * `"OFF"` on unmount) -- this action only owns the wire shape, not
-   * the policy of when to send it. */
-  telemetrySubscribe: (endpointId: string, mode: TelemetryMode) => void;
+  /** Empty one link's log buffer. Renamed from `clearEndpointLog`. */
+  clearLinkLog: (linkId: string) => void;
+  /** Empty one link's telemetry ring. Unchanged from ticket 006 except
+   * the field rename. */
+  clearTelemetry: (linkId: string) => void;
+  /** Request the robot change (or re-announce) its telemetry stream.
+   * Unchanged from ticket 006 except the field rename. */
+  telemetrySubscribe: (linkId: string, mode: TelemetryMode) => void;
+  /** Resolve one `useRadioMigrationOffers()` candidate: `apply: true`
+   * sends `set-radio-override` with the candidate's stored
+   * `channel`/`group` first; either way, the `localStorage` key is
+   * cleared and the candidate removed from the pending list -- a
+   * decline is still a resolution, not a re-prompt-next-time. */
+  resolveRadioMigration: (deviceId: number, apply: boolean) => void;
 }
 
 function notify(store: Store): void {
@@ -569,188 +451,99 @@ function notify(store: Store): void {
   }
 }
 
-function touchLog(store: Store, endpointId: string): void {
-  const idx = store.logOrder.indexOf(endpointId);
+/** The `linkId` a `ClientMessage` is scoped to, if any -- either its own
+ * `linkId` field, or (for `SessionOpenMessage`'s `{relayLinkId, name}`
+ * shape) the relay's own connectivity link, which does have a console
+ * log even though no session is open on it yet. Everything else
+ * (`SetRadioOverrideMessage`, `ForgetDeviceMessage`,
+ * `GetWifiCredentialsMessage`, `SetWifiCredentialsMessage`,
+ * `FlashLocalBeginMessage`) has no link-scoped console to write a
+ * dropped-send notice into. */
+function messageLogLinkId(message: ClientMessage): string | undefined {
+  if ("linkId" in message && typeof message.linkId === "string") {
+    return message.linkId;
+  }
+  if ("relayLinkId" in message && typeof message.relayLinkId === "string") {
+    return message.relayLinkId;
+  }
+  return undefined;
+}
+
+function touchLog(store: Store, linkId: string): void {
+  const idx = store.logOrder.indexOf(linkId);
   if (idx !== -1) {
     store.logOrder.splice(idx, 1);
   }
-  store.logOrder.push(endpointId);
-  while (store.logOrder.length > MAX_TRACKED_ENDPOINT_LOGS) {
+  store.logOrder.push(linkId);
+  while (store.logOrder.length > MAX_TRACKED_LINK_LOGS) {
     const evicted = store.logOrder.shift();
     if (evicted !== undefined) {
-      store.logsByEndpoint.delete(evicted);
+      store.logsByLink.delete(evicted);
     }
   }
 }
 
-/** Shared tail of `appendLine`/`appendHostError`: append one entry to
- * `endpointId`'s log, enforce `MAX_LINES_PER_DEVICE`, and mark the
- * endpoint as recently active for the LRU tracked set. `entry` omits
- * `id`, minted here so every appender gets a unique, ordered one
- * without duplicating that bookkeeping. */
-function pushLogEntry(store: Store, endpointId: string, entry: Omit<LogEntry, "id">): void {
-  const existing = store.logsByEndpoint.get(endpointId) ?? [];
+/** Shared tail of `appendLine`/`appendNotice`: append one entry to
+ * `linkId`'s log, enforce `MAX_LINES_PER_LINK`, and mark the link as
+ * recently active for the LRU tracked set. */
+function pushLogEntry(store: Store, linkId: string, entry: Omit<LogEntry, "id">): void {
+  const existing = store.logsByLink.get(linkId) ?? [];
   const next = existing.concat({ id: nextLogEntryId++, ...entry });
-  if (next.length > MAX_LINES_PER_DEVICE) {
-    next.splice(0, next.length - MAX_LINES_PER_DEVICE);
+  if (next.length > MAX_LINES_PER_LINK) {
+    next.splice(0, next.length - MAX_LINES_PER_LINK);
   }
-  store.logsByEndpoint.set(endpointId, next);
-  touchLog(store, endpointId);
+  store.logsByLink.set(linkId, next);
+  touchLog(store, linkId);
 }
 
 function appendLine(store: Store, message: LineMessage): void {
   // `exactOptionalPropertyTypes` forbids `origin: undefined` -- the key
-  // must be absent entirely (not present-with-undefined) when the
-  // incoming message carries none, mirroring `sendCommand`'s own
-  // present/absent handling of `fields` above.
+  // must be absent entirely when the incoming message carries none.
   pushLogEntry(
     store,
-    message.endpointId,
+    message.linkId,
     message.origin !== undefined
       ? { direction: message.direction, line: message.line, origin: message.origin }
       : { direction: message.direction, line: message.line },
   );
 }
 
-/** Append a synthesized log entry for a host `type: "error"` message
- * to its firing endpoint's log -- see this module's doc comment ("Host
- * errors surfaced in the console log"). `deviceRegistry.ts`'s two
- * `emitError` call sites (`sendLine`/`sendCommand`'s "no open link"
- * cases, and `sendCommand`'s live-`"HELLO"` refusal) always carry an
- * `endpointId`; a hypothetical error with none is dropped rather than
- * shown as a global banner -- this store has no UI surface outside the
- * per-endpoint log, and inventing one for a case nothing currently
- * triggers would be speculative generality ahead of an actual caller.
- * Returns whether an entry was actually appended, so the caller can
- * skip an unnecessary `notify(store)` when nothing changed. */
-function appendHostError(store: Store, message: ErrorMessage): boolean {
-  if (!message.endpointId) {
+/** Append a synthesized log entry for a link-scoped `type: "notice"`
+ * message -- see this module's doc comment ("`type: "notice"` replaces
+ * `type: "error"`"). Returns whether an entry was actually appended, so
+ * the caller can skip an unnecessary `notify(store)` when nothing
+ * changed. */
+function appendNotice(store: Store, message: Extract<ServerMessage, { type: "notice" }>): boolean {
+  if (message.linkId === undefined) {
     return false;
   }
-  pushLogEntry(store, message.endpointId, { direction: "rx", line: message.message, origin: "host" });
+  pushLogEntry(store, message.linkId, { direction: "rx", line: message.text, origin: "host" });
   return true;
 }
 
-function applySnapshot(
-  store: Store,
-  endpoints: EndpointListEntry[],
-  // `server.ts` always populates this field on a real `endpoints`
-  // message (`EndpointsMessage.firmwareStatus` is required); typed as
-  // possibly `undefined` here only because nothing on this client-side
-  // parse path (`isServerMessage`, per this module's own doc comment)
-  // actually validates an incoming message's shape against the wire
-  // contract the way `parseClientMessage` does for the other
-  // direction. Guarded below so a message missing it (also a common
-  // shorthand in tests that don't care about firmware gating) can
-  // never clobber a previously-good `store.firmwareStatus` with
-  // `undefined`.
-  firmwareStatus: Record<FirmwareKind, FirmwareAvailability> | undefined,
-  // Same shorthand as `firmwareStatus` above: `EndpointsMessage.rememberedRobots`
-  // is required on a real message, but typed as possibly `undefined`
-  // here so an old-shaped message (or a test fixture built before this
-  // field existed) never clobbers a previously-good
-  // `store.rememberedRobots` with `undefined` -- it just keeps whatever
-  // the store already had.
-  rememberedRobots: RememberedRobotEntry[] | undefined,
-  // Same shorthand again: `EndpointsMessage.discoveredServices` is
-  // required on a real message, but typed as possibly `undefined` here
-  // so an old-shaped message never clobbers a previously-good
-  // `store.discoveredServices` with `undefined`.
-  discoveredServices: DiscoveredServicesSnapshot | undefined,
-): void {
-  const nextIds: string[] = [];
-  const nextMap = new Map<string, EndpointListEntry>();
-  for (const entry of endpoints) {
-    const previous = store.endpointsById.get(entry.endpointId);
-    nextMap.set(entry.endpointId, previous && deepEqual(previous, entry) ? previous : entry);
-    nextIds.push(entry.endpointId);
-    // Sprint 9 ticket 003: a session that just closed leaves its
-    // telemetry ring holding frames from a session that no longer
-    // exists -- reset it (but keep the header; the column layout
-    // itself hasn't changed, only the retained history has, mirroring
-    // `clearTelemetrySlice`'s own scope).
-    if (previous?.sessionOpen && !entry.sessionOpen) {
-      clearTelemetrySlice(store, entry.endpointId);
-    }
-  }
-
-  const idsChanged =
-    nextIds.length !== store.endpointIds.length ||
-    nextIds.some((id, i) => id !== store.endpointIds[i]);
-  const anyEntryChanged =
-    idsChanged || nextIds.some((id) => nextMap.get(id) !== store.endpointsById.get(id));
-
-  store.endpointIds = nextIds;
-  store.endpointsById = nextMap;
-  if (anyEntryChanged) {
-    store.endpointsArray = nextIds.map((id) => nextMap.get(id)!);
-  }
-
-  if (firmwareStatus && !deepEqual(store.firmwareStatus, firmwareStatus)) {
-    store.firmwareStatus = firmwareStatus;
-  }
-
-  if (rememberedRobots !== undefined && !deepEqual(store.rememberedRobots, rememberedRobots)) {
-    store.rememberedRobots = rememberedRobots;
-  }
-
-  if (discoveredServices !== undefined && !deepEqual(store.discoveredServices, discoveredServices)) {
-    store.discoveredServices = discoveredServices;
-  }
-
-  // A flash's terminal `flash-result` clears `flashStatus` from the
-  // snapshot; mirror that into our own progress map for any endpoint
-  // this client has been tracking, so a stale bar never lingers past
-  // the snapshot that says the flash is over.
-  for (const entry of endpoints) {
-    if (!entry.flashStatus) {
-      store.flashProgressByEndpoint.delete(entry.endpointId);
-    }
-  }
-
-  store.hasSnapshot = true;
+/** Empty `linkId`'s telemetry ring, if a slice exists for it yet -- a
+ * no-op otherwise. Shared by `applySnapshot`'s session-close handling
+ * and `WsActions.clearTelemetry`/`TelemetryHandle.clear`. Never touches
+ * `header`. */
+function clearTelemetrySlice(store: Store, linkId: string): void {
+  store.telemetryByLink.get(linkId)?.ring.clear();
 }
 
-/** Return `endpointId`'s telemetry slice, creating an empty one (no
- * header, empty ring) on first reference -- mirrors
- * `logsByEndpoint.get(id) ?? []`'s "doesn't exist yet" handling
- * elsewhere in this module, but as a real map entry rather than a
- * shared empty constant, since a slice's ring/listeners need to be a
- * live, mutable identity once frames start arriving for it. */
-function getOrCreateTelemetrySlice(store: Store, endpointId: string): TelemetrySlice {
-  let slice = store.telemetryByEndpoint.get(endpointId);
+/** Return `linkId`'s telemetry slice, creating an empty one on first
+ * reference. */
+function getOrCreateTelemetrySlice(store: Store, linkId: string): TelemetrySlice {
+  let slice = store.telemetryByLink.get(linkId);
   if (!slice) {
     slice = { header: undefined, ring: new TelemetryRing(TELEMETRY_RING_CAPACITY), frameListeners: new Set() };
-    store.telemetryByEndpoint.set(endpointId, slice);
+    store.telemetryByLink.set(linkId, slice);
   }
   return slice;
 }
 
-/** Empty `endpointId`'s telemetry ring, if a slice exists for it yet --
- * a no-op otherwise (nothing to clear). Shared by `applySnapshot`'s
- * session-close handling and `WsActions.clearTelemetry`/
- * `TelemetryHandle.clear`. Never touches `header` -- see both callers'
- * own doc comments for why. */
-function clearTelemetrySlice(store: Store, endpointId: string): void {
-  store.telemetryByEndpoint.get(endpointId)?.ring.clear();
-}
-
-/** Handle one `"telemetry"` message (ticket 002's `TelemetryMessage`):
- * a header update replaces the current header and resets the ring
- * (SUC-003's "header recovered" -- the previous frames' columns no
- * longer describe anything, per this ticket's acceptance criteria), and
- * is the one telemetry event that goes through `notify(store)`, since
- * `useTelemetryHeader` is an ordinary reactive selector. A frame update
- * with no header held yet is dropped rather than buffered or thrown on
- * (AC5) -- there is no column layout to attach it to, and the header
- * will be re-sent once `deviceRegistry.ts`'s gap-recovery `TLM HDR`
- * completes host-side. A frame update with a header held is parsed
- * (`Number()` per field, `NaN` for anything unparsable -- see
- * `TelemetryFrame`'s own doc comment), pushed into the ring, and fanned
- * out to `frameListeners` directly -- deliberately *not* through
- * `notify(store)`, per this module's doc comment. */
+/** Handle one `"telemetry"` message. Unchanged from ticket 006 except
+ * the field rename -- see that ticket's own doc comment. */
 function handleTelemetryMessage(store: Store, message: TelemetryMessage): void {
-  const slice = getOrCreateTelemetrySlice(store, message.endpointId);
+  const slice = getOrCreateTelemetrySlice(store, message.linkId);
   if (message.header !== undefined) {
     slice.header = message.header;
     slice.ring.clear();
@@ -772,25 +565,141 @@ function handleTelemetryMessage(store: Store, message: TelemetryMessage): void {
   }
 }
 
+/** Rebuild an ordered array from a map of structurally-shared entries,
+ * reusing the previous array reference whenever the ids and every
+ * entry's identity are unchanged -- the same "only rebuild when
+ * something actually changed" discipline `applySnapshot` used for
+ * `endpointsArray` pre-ticket-007, generalized so `devicesArray` and
+ * `unassignedArray` share one implementation. */
+function rebuildArray<K, V>(
+  previousIds: readonly K[],
+  previousArray: readonly V[],
+  nextIds: readonly K[],
+  nextById: ReadonlyMap<K, V>,
+): V[] {
+  const idsChanged = nextIds.length !== previousIds.length || nextIds.some((id, i) => id !== previousIds[i]);
+  const anyEntryChanged = idsChanged || nextIds.some((id, i) => nextById.get(id) !== previousArray[i]);
+  if (!anyEntryChanged) {
+    return previousArray as V[];
+  }
+  return nextIds.map((id) => nextById.get(id)!);
+}
+
+/** Apply one `Snapshot` to the store: structural-shares every device
+ * and link that is byte-for-byte unchanged from the previous snapshot
+ * (so an unrelated `useDevice`/`useLink` consumer's cached value keeps
+ * its identity and does not re-render), replaces `relays`/`firmware`/
+ * `wifiSetting`/`tasks` only when they actually differ, resets a link's
+ * telemetry ring on a session-close transition, and clears the
+ * `flash-progress` overlay for any link the snapshot no longer reports
+ * mid-flash. */
+function applySnapshot(store: Store, snapshot: Snapshot): void {
+  const nextLinksById = new Map<string, SnapshotLink>();
+  const nextLinkOwnerById = new Map<string, number>();
+
+  function shareLink(link: SnapshotLink): SnapshotLink {
+    const previous = store.linksById.get(link.id);
+    const shared = previous && deepEqual(previous, link) ? previous : link;
+    nextLinksById.set(link.id, shared);
+    return shared;
+  }
+
+  const nextDeviceIds: number[] = [];
+  const nextDevicesById = new Map<number, SnapshotDevice>();
+  for (const device of snapshot.devices) {
+    // Share every link first (regardless of whether the device object
+    // itself is reused) so `useLink`/`useDeviceForLink` stay stable even
+    // when a sibling link on the same device changed.
+    for (const link of device.links) {
+      shareLink(link);
+      nextLinkOwnerById.set(link.id, device.id);
+    }
+    const previousDevice = store.devicesById.get(device.id);
+    const deviceObj = previousDevice && deepEqual(previousDevice, device) ? previousDevice : device;
+    nextDevicesById.set(device.id, deviceObj);
+    nextDeviceIds.push(device.id);
+  }
+
+  const nextUnassignedIds: string[] = [];
+  for (const link of snapshot.unassigned) {
+    shareLink(link);
+    nextUnassignedIds.push(link.id);
+  }
+
+  // Telemetry reset + flash-progress overlay cleanup, over every link in
+  // the new snapshot (owned or unassigned) -- mirrors ticket 006's own
+  // per-entry pass.
+  for (const [linkId, link] of nextLinksById) {
+    const previousLink = store.linksById.get(linkId);
+    if (previousLink?.session !== undefined && link.session === undefined) {
+      clearTelemetrySlice(store, linkId);
+    }
+    if (!link.flash) {
+      store.flashProgressByLink.delete(linkId);
+    }
+  }
+
+  store.devicesArray = rebuildArray(store.deviceIds, store.devicesArray, nextDeviceIds, nextDevicesById);
+  store.unassignedArray = rebuildArray(store.unassignedIds, store.unassignedArray, nextUnassignedIds, nextLinksById);
+  store.deviceIds = nextDeviceIds;
+  store.devicesById = nextDevicesById;
+  store.unassignedIds = nextUnassignedIds;
+  store.linksById = nextLinksById;
+  store.linkOwnerById = nextLinkOwnerById;
+
+  if (!deepEqual(store.relays, snapshot.relays)) {
+    store.relays = snapshot.relays;
+  }
+  if (!deepEqual(store.firmware, snapshot.firmware)) {
+    store.firmware = snapshot.firmware;
+  }
+  if (!deepEqual(store.wifiSetting, snapshot.wifi)) {
+    store.wifiSetting = snapshot.wifi;
+  }
+  if (!deepEqual(store.tasks, snapshot.tasks)) {
+    store.tasks = snapshot.tasks;
+  }
+
+  store.hasSnapshot = true;
+  store.stale = false;
+
+  // Migration nicety (carried from ticket 006): scan for a leftover
+  // localStorage radio override exactly once, the first time a
+  // snapshot's device roster is known -- see `scanPendingRadioMigrations`'s
+  // own doc comment.
+  if (!store.radioMigrationScanned) {
+    store.pendingRadioMigrations = scanPendingRadioMigrations(store.devicesArray);
+    store.radioMigrationScanned = true;
+  }
+}
+
 function createStore(): Store {
   const listeners = new Set<() => void>();
   const store: Store = {
     status: "connecting",
     hasSnapshot: false,
-    endpointIds: [],
-    endpointsById: new Map(),
-    endpointsArray: [],
-    firmwareStatus: DEFAULT_FIRMWARE_STATUS,
-    rememberedRobots: [],
-    discoveredServices: DEFAULT_DISCOVERED_SERVICES,
-    logsByEndpoint: new Map(),
+    stale: false,
+    deviceIds: [],
+    devicesById: new Map(),
+    devicesArray: [],
+    unassignedIds: [],
+    unassignedArray: [],
+    linksById: new Map(),
+    linkOwnerById: new Map(),
+    relays: [],
+    firmware: DEFAULT_FIRMWARE_STATUS,
+    wifiSetting: DEFAULT_WIFI_SETTING,
+    tasks: [],
+    logsByLink: new Map(),
     logOrder: [],
-    flashProgressByEndpoint: new Map(),
-    wifiCredentials: undefined,
-    wifiProvisionResultByEndpoint: new Map(),
+    flashProgressByLink: new Map(),
     flashResultHandlers: new Set(),
     flashLocalReadyHandlers: new Set(),
-    telemetryByEndpoint: new Map(),
+    wifiCredentials: undefined,
+    wifiProvisionResultByLink: new Map(),
+    telemetryByLink: new Map(),
+    pendingRadioMigrations: [],
+    radioMigrationScanned: false,
     listeners,
     subscribe: (cb: () => void) => {
       listeners.add(cb);
@@ -805,19 +714,11 @@ function createStore(): Store {
 
 const StoreContext = createContext<Store | undefined>(undefined);
 
-/** Fixed delay before retrying after an unexpected close. The host
- * process is local and either up or not -- there is no meaningful
- * backoff ladder to tune here, just "keep trying". */
+/** Fixed delay before retrying after an unexpected close. Unchanged
+ * from ticket 006. */
 const RECONNECT_DELAY_MS = 1500;
 
 function defaultSocketUrl(): string {
-  // Development only: `npm run dev` (scripts/dev.mjs) serves this page
-  // from Vite on its own port while the host runs on another, so the
-  // page cannot find the host by looking at its own origin. That script
-  // `define`s this to the host's real address. A production `vite build`
-  // never sets it, so the fallback below -- connect back to whoever
-  // served the page, which under `npx robot-console` is the host itself
-  // -- remains the only path that ships.
   const configured = import.meta.env.VITE_WS_URL;
   if (typeof configured === "string" && configured !== "") {
     return configured;
@@ -831,11 +732,63 @@ function defaultSocketFactory(url: string): WebSocketLike {
 }
 
 function isServerMessage(value: unknown): value is ServerMessage {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    typeof (value as { type?: unknown }).type === "string"
-  );
+  return typeof value === "object" && value !== null && typeof (value as { type?: unknown }).type === "string";
+}
+
+/** Handle one already-JSON-parsed, already-shape-checked server
+ * message: the per-`type` dispatch the old inline `switch` inside the
+ * socket effect used to hold -- split out (this module's doc comment,
+ * "Socket lifecycle split into connect()/dispatch()") so the connect/
+ * reconnect plumbing around it stays small. */
+function dispatch(store: Store, message: ServerMessage): void {
+  switch (message.type) {
+    case "snapshot":
+      applySnapshot(store, message);
+      notify(store);
+      break;
+    case "notice":
+      if (appendNotice(store, message)) {
+        notify(store);
+      }
+      break;
+    case "line":
+      appendLine(store, message);
+      notify(store);
+      break;
+    case "flash-progress":
+      store.flashProgressByLink.set(message.linkId, { source: message.source, phase: message.phase });
+      notify(store);
+      break;
+    case "flash-result":
+      store.flashProgressByLink.delete(message.linkId);
+      for (const handler of store.flashResultHandlers) {
+        handler(message);
+      }
+      notify(store);
+      break;
+    case "flash-local-ready":
+      // Not store-backed state -- no `notify(store)` needed, mirroring
+      // ticket 006's own `flashLocalReadyHandlers` doc comment.
+      for (const handler of store.flashLocalReadyHandlers) {
+        handler(message);
+      }
+      break;
+    case "wifi-credentials":
+      store.wifiCredentials = message;
+      notify(store);
+      break;
+    case "wifi-provision-result":
+      store.wifiProvisionResultByLink.set(message.linkId, message);
+      notify(store);
+      break;
+    case "telemetry":
+      // Deliberately does not call `notify(store)` itself here --
+      // `handleTelemetryMessage` only does so for a header update; a
+      // frame update fans out to that link's own `frameListeners`
+      // instead, per this module's doc comment.
+      handleTelemetryMessage(store, message);
+      break;
+  }
 }
 
 export interface WsProviderProps {
@@ -856,16 +809,24 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
   const store = storeRef.current;
   const socketRef = useRef<WebSocketLike | null>(null);
 
-  // Stable across the store's lifetime -- `send` closes over `socketRef`
-  // (a plain React ref, not state) and `onFlashResult` over
-  // `store.flashResultHandlers`, so this object never needs to change
-  // and effects that depend on it never need to re-run.
   if (!store.actions) {
     store.actions = {
       send: (message: ClientMessage) => {
         const socket = socketRef.current;
         if (socket && socket.readyState === WEBSOCKET_OPEN) {
           socket.send(JSON.stringify(message));
+          return;
+        }
+        // Ticket 009 / UC-020 ("no-disconnected-from-host-banner-in-the-
+        // ui.md"): no silent drop -- if the message is scoped to a link,
+        // say so in that link's own console log, styled exactly like a
+        // host notice, so a send attempted while disconnected (e.g. a
+        // control that raced the banner) is visibly explained rather
+        // than silently swallowed.
+        const linkId = messageLogLinkId(message);
+        if (linkId !== undefined) {
+          pushLogEntry(store, linkId, { direction: "tx", line: "Not sent -- no connection to the host.", origin: "host" });
+          notify(store);
         }
       },
       sendBinary: (data: Uint8Array) => {
@@ -874,14 +835,9 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
           socket.send(data);
         }
       },
-      sendCommand: (endpointId: string, verb: string, fields?: WireField[]) => {
-        // `exactOptionalPropertyTypes` forbids `fields: undefined` --
-        // the key must be absent entirely, not present-with-undefined,
-        // to satisfy `SendCommandMessage.fields?: WireField[]`.
+      sendCommand: (linkId: string, verb: string, fields?: WireField[]) => {
         store.actions.send(
-          fields !== undefined
-            ? { type: "send-command", endpointId, verb, fields }
-            : { type: "send-command", endpointId, verb },
+          fields !== undefined ? { type: "send-command", linkId, verb, fields } : { type: "send-command", linkId, verb },
         );
       },
       onFlashResult: (handler: (message: FlashResultMessage) => void) => {
@@ -896,15 +852,32 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
           store.flashLocalReadyHandlers.delete(handler);
         };
       },
-      clearEndpointLog: (endpointId: string) => {
-        store.logsByEndpoint.set(endpointId, []);
+      clearLinkLog: (linkId: string) => {
+        store.logsByLink.set(linkId, []);
         notify(store);
       },
-      clearTelemetry: (endpointId: string) => {
-        clearTelemetrySlice(store, endpointId);
+      clearTelemetry: (linkId: string) => {
+        clearTelemetrySlice(store, linkId);
       },
-      telemetrySubscribe: (endpointId: string, mode: TelemetryMode) => {
-        store.actions.sendCommand(endpointId, "TLM", [mode]);
+      telemetrySubscribe: (linkId: string, mode: TelemetryMode) => {
+        store.actions.sendCommand(linkId, "TLM", [mode]);
+      },
+      resolveRadioMigration: (deviceId: number, apply: boolean) => {
+        const candidate = store.pendingRadioMigrations.find((c) => c.deviceId === deviceId);
+        if (!candidate) {
+          return;
+        }
+        if (apply) {
+          store.actions.send({ type: "set-radio-override", deviceId, channel: candidate.channel, group: candidate.group });
+        }
+        try {
+          window.localStorage.removeItem(candidate.storageKey);
+        } catch {
+          // Best-effort only -- see scanPendingRadioMigrations's own
+          // doc comment.
+        }
+        store.pendingRadioMigrations = store.pendingRadioMigrations.filter((c) => c.deviceId !== deviceId);
+        notify(store);
       },
     };
   }
@@ -951,90 +924,22 @@ export function WsProvider({ children, url, socketFactory }: WsProviderProps) {
         if (!isServerMessage(parsed)) {
           return;
         }
-        switch (parsed.type) {
-          case "endpoints":
-            applySnapshot(
-              store,
-              parsed.endpoints,
-              parsed.firmwareStatus,
-              parsed.rememberedRobots,
-              parsed.discoveredServices,
-            );
-            notify(store);
-            break;
-          case "line":
-            appendLine(store, parsed);
-            notify(store);
-            break;
-          case "error":
-            // Ticket 012-003: a host error now lands in the firing
-            // endpoint's console log via `appendHostError`, rendered by
-            // `DeviceConsole` with the same "error" kind styling as a
-            // device-sent `err`/`nack` line (`LogEntry.origin: "host"`
-            // forces that classification -- see `appendHostError`'s own
-            // doc comment for the no-`endpointId` case).
-            if (appendHostError(store, parsed)) {
-              notify(store);
-            }
-            break;
-          case "flash-progress":
-            store.flashProgressByEndpoint.set(parsed.endpointId, {
-              source: parsed.source,
-              phase: parsed.phase,
-            });
-            notify(store);
-            break;
-          case "flash-result":
-            store.flashProgressByEndpoint.delete(parsed.endpointId);
-            for (const handler of store.flashResultHandlers) {
-              handler(parsed);
-            }
-            notify(store);
-            break;
-          case "flash-local-ready":
-            // Local-hex upload handshake (ticket 005's JSON half, wired
-            // to the UI by ticket 008): fan out to whoever is waiting to
-            // send the binary frame this unlocks (`UnknownDevicePage`).
-            // Not store-backed state -- no `notify(store)` needed, per
-            // `flashLocalReadyHandlers`'s own doc comment.
-            for (const handler of store.flashLocalReadyHandlers) {
-              handler(parsed);
-            }
-            break;
-          case "wifi-credentials":
-            store.wifiCredentials = parsed;
-            notify(store);
-            break;
-          case "wifi-provision-result":
-            store.wifiProvisionResultByEndpoint.set(parsed.endpointId, parsed);
-            notify(store);
-            break;
-          case "telemetry":
-            // Sprint 9 ticket 003: deliberately does not call
-            // `notify(store)` itself here -- `handleTelemetryMessage`
-            // only does so for a header update; a frame update fans out
-            // to that endpoint's own `frameListeners` instead, per this
-            // module's doc comment.
-            handleTelemetryMessage(store, parsed);
-            break;
-        }
+        dispatch(store, parsed);
       });
 
-      // The subsequent "close" event (browsers always fire close after
-      // error on a socket that never opened, or after a mid-session
-      // drop) is what drives reconnection below -- nothing extra to do
-      // on "error" itself.
       socket.addEventListener("error", () => {});
 
       socket.addEventListener("close", () => {
         if (cancelled) {
           return;
         }
-        // Deliberately does not clear `endpointsById`/`endpointsArray`:
-        // a dropped connection should not blank out the last-known list
-        // while reconnecting. `hasSnapshot` is likewise never reset --
-        // see this module's doc comment.
+        // Deliberately does not clear `devicesById`/`devicesArray`/
+        // `unassignedArray`: a dropped connection should not blank out
+        // the last-known list while reconnecting. `hasSnapshot` is
+        // likewise never reset -- only `stale` flips, so a consumer
+        // that cares can tell the list is no longer current.
         store.status = "closed";
+        store.stale = true;
         notify(store);
         socketRef.current = null;
         reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
@@ -1074,84 +979,130 @@ export function useHasSnapshot(): boolean {
   return useSyncExternalStore(store.subscribe, () => store.hasSnapshot);
 }
 
-/** The full endpoint list, for the front page -- still one
- * subscription, since the front page legitimately needs the whole
- * list. Not the render-storm case telemetry will be; per-endpoint
- * pages (ticket 008) should use `useEndpoint` instead. */
-export function useEndpoints(): EndpointListEntry[] {
+/** Combined connection status + snapshot staleness -- see this
+ * module's doc comment ("Snapshot staleness"). The composed object is
+ * cached in a ref and only replaced when `status`/`stale` actually
+ * change, so it stays a stable `useSyncExternalStore` snapshot. */
+export function useHostConnection(): HostConnectionState {
   const store = useStore();
-  return useSyncExternalStore(store.subscribe, () => store.endpointsArray);
+  const cacheRef = useRef<HostConnectionState | null>(null);
+  return useSyncExternalStore(store.subscribe, () => {
+    const cached = cacheRef.current;
+    if (cached && cached.status === store.status && cached.stale === store.stale) {
+      return cached;
+    }
+    const next: HostConnectionState = { status: store.status, stale: store.stale };
+    cacheRef.current = next;
+    return next;
+  });
 }
 
-/** One endpoint's slice of the latest snapshot, or `undefined` if no
- * endpoint with this id exists. Subscribes only to that one endpoint --
- * a component reading `useEndpoint("A")` does not re-render when
- * endpoint B changes or when a `line`/`flash-progress` message arrives
- * for a different endpoint. */
-export function useEndpoint(endpointId: string): EndpointListEntry | undefined {
+/** Whether a send is currently meaningful: the socket is open and the
+ * held snapshot is not stale (see {@link HostConnectionState.stale}'s
+ * own doc comment). Ticket 009 / UC-020: a link's own `session` field
+ * survives a reconnect in the last-known snapshot, so a component that
+ * gates a send-capable control on `link.session !== undefined` alone
+ * cannot tell "still connected" from "what we had before we lost the
+ * host" -- every such control multiplies that by this hook too. */
+export function useSendable(): boolean {
+  const { status, stale } = useHostConnection();
+  return status === "open" && !stale;
+}
+
+/** The full device list, host order, for the front page. */
+export function useDevices(): SnapshotDevice[] {
+  const store = useStore();
+  return useSyncExternalStore(store.subscribe, () => store.devicesArray);
+}
+
+/** One device's slice of the latest snapshot, or `undefined` if no
+ * device with this id exists. Subscribes only to that one device. */
+export function useDevice(deviceId: number): SnapshotDevice | undefined {
   const store = useStore();
   return useSyncExternalStore(
     store.subscribe,
-    useCallback(() => store.endpointsById.get(endpointId), [store, endpointId]),
+    useCallback(() => store.devicesById.get(deviceId), [store, deviceId]),
   );
 }
 
-/** One endpoint's console log, hoisted out of `ConsoleTab`'s own
- * state. Subscribes only to that endpoint's log -- a mounted console
- * for endpoint A does not re-render on an `endpoints` snapshot update
- * that leaves A's log untouched, or on a line for a different
- * endpoint. Returns a shared stable empty array before any line has
- * arrived for this endpoint. */
-export function useEndpointLog(endpointId: string): LogEntry[] {
+/** The device that owns `linkId`, or `undefined` if no device in the
+ * current snapshot has a link with this id (including every
+ * `unassigned` link, which has no owning device by definition). */
+export function useDeviceForLink(linkId: string | undefined): SnapshotDevice | undefined {
   const store = useStore();
   return useSyncExternalStore(
     store.subscribe,
-    useCallback(() => store.logsByEndpoint.get(endpointId) ?? (EMPTY_LOG as LogEntry[]), [store, endpointId]),
+    useCallback(() => {
+      if (linkId === undefined) {
+        return undefined;
+      }
+      const deviceId = store.linkOwnerById.get(linkId);
+      return deviceId === undefined ? undefined : store.devicesById.get(deviceId);
+    }, [store, linkId]),
   );
 }
 
-/** Per-firmware availability from the most recent `endpoints` snapshot
- * (sprint 2) -- see `wsMessages.ts`'s `EndpointsMessage.firmwareStatus`
- * doc comment. Drives the robot/relay flash buttons' disabled state in
- * `DevicesTab`; never a hardcoded UI flag. */
-export function useFirmwareStatus(): Record<FirmwareKind, FirmwareAvailability> {
+/** USB boards seen but not yet identified to a device -- host order. */
+export function useUnassigned(): SnapshotLink[] {
   const store = useStore();
-  return useSyncExternalStore(store.subscribe, () => store.firmwareStatus);
+  return useSyncExternalStore(store.subscribe, () => store.unassignedArray);
 }
 
-/** The full remembered-robot roster from the most recent `endpoints`
- * snapshot (sprint 5) -- robots this host has seen over USB before but
- * are not currently attached (the host already excludes currently-
- * attached names from this list, so a consumer never needs to filter
- * against `useEndpoints()` itself). `[]` before the first snapshot
- * arrives. No new action is needed to forget one -- send
- * `{ type: "forget-known-robot", name }` via `useWsActions().send`. */
-export function useRememberedRobots(): RememberedRobotEntry[] {
+/** One link's slice of the latest snapshot (owned or unassigned), or
+ * `undefined` if no link with this id exists. Subscribes only to that
+ * one link. */
+export function useLink(linkId: string): SnapshotLink | undefined {
   const store = useStore();
-  return useSyncExternalStore(store.subscribe, () => store.rememberedRobots);
+  return useSyncExternalStore(
+    store.subscribe,
+    useCallback(() => store.linksById.get(linkId), [store, linkId]),
+  );
 }
 
-/** The current mDNS discovery snapshot (relays + robots) from the most
- * recent `endpoints` snapshot (sprint 8 ticket 004/005) -- mirrors
- * {@link useRememberedRobots} exactly. `{ relays: [], robots: [] }`
- * before the first snapshot arrives. Rendering or opening a dropdown
- * fed by this selector never triggers a registry lookup of its own --
- * this is a passive mirror of the host's already-live discovery
- * browse, per `sprint.md`'s Solution. */
-export function useDiscoveredServices(): DiscoveredServicesSnapshot {
+/** Every relay's lease/bridging status from the most recent snapshot. */
+export function useRelays(): SnapshotRelay[] {
   const store = useStore();
-  return useSyncExternalStore(store.subscribe, () => store.discoveredServices);
+  return useSyncExternalStore(store.subscribe, () => store.relays);
 }
 
-/** Live progress of an in-flight flash for one endpoint, populated
- * from `flash-progress` events -- works for both a release source and
- * a local-hex source (unlike `EndpointListEntry.flashStatus`, which is
- * frozen to `{ firmware, phase }` and cannot represent local-hex). See
- * this module's doc comment ("Flash progress for both source kinds")
- * for the reconnect-gap this does not close. */
-/** OOP 2026-09-10: the host's stored WiFi network description (see
- * `wsMessages.ts`'s `WifiCredentialsMessage`), `undefined` until a
- * `get-wifi-credentials` has been answered. */
+/** Per-firmware availability from the most recent snapshot. */
+export function useFirmware(): Record<FirmwareKind, FirmwareAvailability> {
+  const store = useStore();
+  return useSyncExternalStore(store.subscribe, () => store.firmware);
+}
+
+/** Compatibility alias for `useFirmware` -- trivially removable once
+ * `FlashDialog.tsx`/`FlashControls.tsx` (tickets 008/009) migrate off
+ * the retired `useFirmwareStatus` name; kept only so those files fail
+ * on the (unrelated, pre-existing) `EndpointListEntry` type gap they
+ * still have, not on a missing export. */
+export const useFirmwareStatus = useFirmware;
+
+/** The network the host would provision robots onto, as currently
+ * stored (never the password) -- from the most recent snapshot. */
+export function useWifiSetting(): Snapshot["wifi"] {
+  const store = useStore();
+  return useSyncExternalStore(store.subscribe, () => store.wifiSetting);
+}
+
+/** Running background tasks from the most recent snapshot. */
+export function useTasks(): Snapshot["tasks"] {
+  const store = useStore();
+  return useSyncExternalStore(store.subscribe, () => store.tasks);
+}
+
+/** One link's console log. Renamed from `useEndpointLog`. */
+export function useLinkLog(linkId: string): LogEntry[] {
+  const store = useStore();
+  return useSyncExternalStore(
+    store.subscribe,
+    useCallback(() => store.logsByLink.get(linkId) ?? (EMPTY_LOG as LogEntry[]), [store, linkId]),
+  );
+}
+
+/** OOP 2026-09-10 (carried through ticket 007): the host's stored WiFi
+ * network description, `undefined` until a `get-wifi-credentials` has
+ * been answered. */
 export function useWifiCredentials(): WifiCredentialsMessage | undefined {
   const store = useStore();
   return useSyncExternalStore(
@@ -1160,85 +1111,49 @@ export function useWifiCredentials(): WifiCredentialsMessage | undefined {
   );
 }
 
-/** OOP 2026-09-10: the latest `wifi-provision-result` for one endpoint. */
-export function useWifiProvisionResult(endpointId: string): WifiProvisionResultMessage | undefined {
+/** OOP 2026-09-10 (carried through ticket 007): the latest
+ * `wifi-provision-result` for one link. */
+export function useWifiProvisionResult(linkId: string): WifiProvisionResultMessage | undefined {
   const store = useStore();
   return useSyncExternalStore(
     store.subscribe,
-    useCallback(() => store.wifiProvisionResultByEndpoint.get(endpointId), [store, endpointId]),
+    useCallback(() => store.wifiProvisionResultByLink.get(linkId), [store, linkId]),
   );
 }
 
-export function useFlashProgress(endpointId: string): FlashProgressState | undefined {
+/** Live progress of an in-flight flash for one link -- prefers a live
+ * `flash-progress` event, falling back to the snapshot's own
+ * `SnapshotLink.flash` (self-healing a reconnect mid-flash, for any
+ * source kind) once the overlay has nothing. See this module's doc
+ * comment. */
+export function useFlashProgress(linkId: string): FlashProgressState | undefined {
   const store = useStore();
   return useSyncExternalStore(
     store.subscribe,
-    useCallback(() => store.flashProgressByEndpoint.get(endpointId), [store, endpointId]),
+    useCallback(() => store.flashProgressByLink.get(linkId) ?? store.linksById.get(linkId)?.flash, [store, linkId]),
   );
 }
 
-/** One endpoint's sequencing state from the most recent `endpoints`
- * snapshot (ticket 002's `EndpointListEntry.sequencing`, populated
- * host-side by ticket 003) -- `undefined` before any snapshot has
- * arrived, or whenever the endpoint has no session open (the field is
- * only present while `sessionOpen`, per `wsMessages.ts`). No new
- * store-mutation logic is needed: `sequencing` travels inside the
- * existing `endpoints` snapshot, already covered by `applySnapshot`'s
- * per-entry `deepEqual`/structural-sharing, so an unchanged `sequencing`
- * value keeps its object identity across snapshots exactly like every
- * other `EndpointListEntry` field. Subscribes only to that one
- * endpoint's slice of the store, mirroring `useFlashProgress` -- a
- * component reading `useSequencing("A")` does not re-render when
- * endpoint B's `sequencing` changes, or when an unrelated `line`/
- * `flash-progress` message arrives. This matters more than usual here:
- * `sequencing` updates on every ack/nack, so a naive whole-snapshot
- * subscription would re-render every consumer on every protocol
- * reply. */
-export function useSequencing(endpointId: string): EndpointListEntry["sequencing"] {
+/** One link's current telemetry column header, or `undefined` before
+ * any `thdr` has been recovered for it. Unchanged from ticket 006
+ * except the field rename. */
+export function useTelemetryHeader(linkId: string): readonly string[] | undefined {
   const store = useStore();
   return useSyncExternalStore(
     store.subscribe,
-    useCallback(() => store.endpointsById.get(endpointId)?.sequencing, [store, endpointId]),
+    useCallback(() => store.telemetryByLink.get(linkId)?.header, [store, linkId]),
   );
 }
 
-/** One endpoint's current telemetry column header, or `undefined`
- * before any `thdr` has been recovered for it (or after its session has
- * closed and no new header has arrived yet) -- an ordinary reactive
- * selector via `useSyncExternalStore`, unlike `useTelemetry` below,
- * since headers change rarely enough (per this ticket's design) that
- * React state is the right tool for a "waiting for header" banner.
- * Subscribes only to that one endpoint's header -- a component reading
- * `useTelemetryHeader("A")` does not re-render when endpoint B's header
- * changes, or on any frame arriving for either endpoint (frames never
- * call `notify(store)` -- see this module's doc comment). */
-export function useTelemetryHeader(endpointId: string): readonly string[] | undefined {
+/** The imperative, non-React-reactive handle to one link's telemetry
+ * ring. Unchanged from ticket 006 except the field rename. */
+export function useTelemetry(linkId: string): TelemetryHandle {
   const store = useStore();
-  return useSyncExternalStore(
-    store.subscribe,
-    useCallback(() => store.telemetryByEndpoint.get(endpointId)?.header, [store, endpointId]),
-  );
-}
-
-/** The imperative, non-React-reactive handle to one endpoint's
- * telemetry ring -- see `TelemetryHandle`'s own doc comment for what it
- * exposes and why. Returns the *same* handle object for as long as
- * `endpointId` doesn't change (built once per endpoint via a plain
- * `useRef`, not `useSyncExternalStore`), so a consumer's
- * `useEffect(() => handle.subscribe(cb), [handle])` never re-runs on an
- * unrelated render the way it would if a fresh object were handed back
- * every time. `header`/`latest` on the returned handle are live
- * getters, so they can be read at any point after this hook returns
- * (e.g. inside a `requestAnimationFrame` callback) and always reflect
- * the current store, not a value frozen at the render that created the
- * handle. */
-export function useTelemetry(endpointId: string): TelemetryHandle {
-  const store = useStore();
-  const ref = useRef<{ endpointId: string; handle: TelemetryHandle } | null>(null);
-  if (ref.current === null || ref.current.endpointId !== endpointId) {
-    const getSlice = () => getOrCreateTelemetrySlice(store, endpointId);
+  const ref = useRef<{ linkId: string; handle: TelemetryHandle } | null>(null);
+  if (ref.current === null || ref.current.linkId !== linkId) {
+    const getSlice = () => getOrCreateTelemetrySlice(store, linkId);
     ref.current = {
-      endpointId,
+      linkId,
       handle: {
         get header() {
           return getSlice().header;
@@ -1255,7 +1170,7 @@ export function useTelemetry(endpointId: string): TelemetryHandle {
           };
         },
         clear: () => {
-          clearTelemetrySlice(store, endpointId);
+          clearTelemetrySlice(store, linkId);
         },
       },
     };
@@ -1263,22 +1178,20 @@ export function useTelemetry(endpointId: string): TelemetryHandle {
   return ref.current.handle;
 }
 
-/** The imperative surface: send a client message (`send`/`sendBinary`/
- * `sendCommand`), and subscribe to the terminal outcome of a flash
- * (`onFlashResult`) or
- * the local-hex upload handshake's go-ahead (`onFlashLocalReady`,
- * ticket 008). Per-phase progress does *not* need a matching
- * subscription here: `useFlashProgress` (ticket 006) and
- * `EndpointListEntry.flashStatus` already carry live progress; only the
- * terminal `flash-result`'s `message` (present on `status: "error"`)
- * and `flash-local-ready`'s `uploadId` are not represented anywhere in
- * the snapshot, so those two events keep their own subscriptions.
- * `onLine`/`onError` from the pre-ticket-006 context are gone: log
- * population is now internal store logic (`useEndpointLog`), and
- * nothing outside this module ever consumed `onError`. Returns a
- * stable object for this store's whole lifetime, so
- * `useEffect(() => onFlashResult(...), [onFlashResult])` never re-runs
- * on an unrelated render. */
+/** Migration nicety (carried from ticket 006): every leftover
+ * `localStorage` radio override found for a device in the current
+ * snapshot, offered exactly once per session -- see
+ * `scanPendingRadioMigrations`'s own doc comment. `FrontPage` renders
+ * one dismissible offer per entry; resolving one (`useWsActions()
+ * .resolveRadioMigration`) removes it from this list. */
+export function useRadioMigrationOffers(): PendingRadioMigration[] {
+  const store = useStore();
+  return useSyncExternalStore(store.subscribe, () => store.pendingRadioMigrations);
+}
+
+/** The imperative surface: send a client message, and subscribe to the
+ * terminal outcome of a flash or the local-hex upload handshake's
+ * go-ahead. Unchanged from ticket 006 except the field renames. */
 export function useWsActions(): WsActions {
   const store = useStore();
   return store.actions;

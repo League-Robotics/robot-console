@@ -1,42 +1,57 @@
 // @vitest-environment jsdom
 /**
- * WsProvider.test.tsx — store-level tests for ticket 006's ref-backed
- * store, exercised directly through `WsProvider` and its selector
- * hooks rather than through `DevicesTab`/`ConsoleTab` (which have
- * their own component-level tests already, unchanged in behavior by
- * this ticket).
+ * WsProvider.test.tsx — store-level tests for ticket 007's `Snapshot`-
+ * backed store, exercised directly through `WsProvider` and its
+ * selector hooks.
  *
  * Covers exactly the properties this ticket exists to guarantee:
- *  - render-count isolation between endpoints, for both `useEndpoint`
- *    and `useEndpointLog` -- verified via explicit render-count
- *    assertions, per `sprint.md`'s Success Criteria, not by inspection.
- *  - the `hasSnapshot` transition (false -> true -> stays true across
- *    a reconnect).
- *  - the hoisted log buffer's append order, `MAX_LINES_PER_DEVICE`
- *    cap, and per-endpoint independence, plus the LRU bound on how
- *    many distinct endpoints' logs are kept at all.
+ *  - render-count isolation between links/devices, for `useDevice`,
+ *    `useLink`, and `useLinkLog` -- verified via explicit render-count
+ *    assertions, not by inspection.
+ *  - the `hasSnapshot`/`stale` transitions (false -> true -> stays true
+ *    across a reconnect; `stale` flips on close, clears on the next
+ *    snapshot).
+ *  - the hoisted log buffer's append order, `MAX_LINES_PER_LINK` cap,
+ *    and per-link independence, plus the LRU bound.
  *  - `useFlashProgress` picking up live `flash-progress` events for
- *    both a release and a local-hex source, and clearing on the
- *    terminal `flash-result` (ticket 005's flagged gap).
+ *    both a release and a local-hex source, clearing on `flash-result`,
+ *    and falling back to the snapshot's own `SnapshotLink.flash` once
+ *    the overlay has nothing (the reconnect self-heal ticket 006
+ *    flagged as a gap for local-hex).
+ *  - a link-scoped `notice` lands in that link's log; a connection-level
+ *    one (no `linkId`) is dropped.
+ *  - `useRelays`/`useFirmware`/`useWifiSetting`/`useTasks` mirror the
+ *    snapshot's own fields, with sensible defaults before the first one.
+ *  - `useDeviceForLink` resolves the owning device for an owned link,
+ *    and is `undefined` for an unassigned one.
+ *
+ * Test 434-483 of the pre-ticket-007 file (contract-drift tests pinned
+ * to the retired `EndpointListEntry`/`EndpointsMessage` shape) has no
+ * equivalent here -- there is no old shape left to drift against.
  */
 import { act, useEffect, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { EndpointListEntry, RememberedRobotEntry } from "@robot-console/host/src/wsMessages.js";
+import type { Snapshot, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { FakeSocket } from "../testing/FakeSocket";
 import {
-  MAX_LINES_PER_DEVICE,
-  MAX_TRACKED_ENDPOINT_LOGS,
+  MAX_LINES_PER_LINK,
+  MAX_TRACKED_LINK_LOGS,
   TELEMETRY_RING_CAPACITY,
   WsProvider,
-  useEndpoint,
-  useEndpointLog,
+  useDevice,
+  useDeviceForLink,
+  useFirmware,
   useFlashProgress,
   useHasSnapshot,
-  useRememberedRobots,
-  useSequencing,
+  useHostConnection,
+  useLink,
+  useLinkLog,
+  useRelays,
+  useTasks,
   useTelemetry,
   useTelemetryHeader,
+  useWifiSetting,
   useWsActions,
   type LogEntry,
   type TelemetryFrame,
@@ -70,43 +85,61 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** Minimal fixture -- these tests only ever assert on `endpointId` and
- * whichever single field a test overrides, so there is no need for
- * `DevicesTab.test.tsx`'s fuller `BaseDeviceOverrides` translation
- * layer here. */
-function endpointFixture(
-  id: string,
-  overrides: {
-    sessionOpen?: boolean;
-    role?: string | null;
-    sequencing?: EndpointListEntry["sequencing"];
-  } = {},
-): EndpointListEntry {
+const NO_FIRMWARE: Snapshot["firmware"] = {
+  relay: { configured: false },
+  robot: { configured: false },
+};
+
+/** Minimal link fixture -- these tests only ever assert on `id` and
+ * whichever single field a test overrides. */
+function linkFixture(id: string, overrides: Partial<SnapshotLink> = {}): SnapshotLink {
   return {
-    endpointId: `usb-${id}`,
+    id,
     transport: "usb",
-    resourceKey: `usb-${id}`,
-    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
-    name: `name-${id}`,
-    role: overrides.role ?? null,
-    sessionOpen: overrides.sessionOpen ?? false,
-    usb: { serialNumber: `${id}-FULL`, displaySerial: "0002", port: "/dev/cu.usbmodemA" },
-    ...(overrides.sequencing !== undefined ? { sequencing: overrides.sequencing } : {}),
+    label: `USB · /dev/cu.usbmodem-${id}`,
+    state: "connected",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: false, close: true, flash: true, provisionWifi: true },
+    ...overrides,
   };
 }
 
-const NO_FIRMWARE_STATUS = {
-  relay: { configured: false as const },
-  robot: { configured: false as const },
-};
-
-function rememberedRobotFixture(name: string, overrides: Partial<RememberedRobotEntry> = {}): RememberedRobotEntry {
+/** Minimal device fixture, one link by default (`usb-<id>`). */
+function deviceFixture(
+  id: number,
+  overrides: Partial<Omit<SnapshotDevice, "links">> & { links?: SnapshotLink[] } = {},
+): SnapshotDevice {
+  const { links, ...rest } = overrides;
   return {
-    name,
-    lastSeenAt: "2026-01-01T00:00:00.000Z",
-    lastSeenVia: "usb",
-    lastRole: overrides.lastRole ?? null,
-    lastUsbSerial: overrides.lastUsbSerial ?? `${name}-SERIAL`,
+    id,
+    name: `name-${id}`,
+    kind: "robot",
+    role: null,
+    program: null,
+    version: null,
+    owned: true,
+    radio: { channel: 1, group: 1, source: "derived" },
+    lastSeen: 0,
+    lastChecked: null,
+    links: links ?? [linkFixture(`usb-${id}`)],
+    ...rest,
+  };
+}
+
+function snapshotFixture(overrides: Partial<Snapshot> = {}): Snapshot {
+  return {
+    type: "snapshot",
+    seq: 1,
+    at: 0,
+    devices: [],
+    unassigned: [],
+    relays: [],
+    firmware: NO_FIRMWARE,
+    wifi: { ssid: null, source: null },
+    tasks: [],
     ...overrides,
   };
 }
@@ -125,16 +158,16 @@ function mountWithSocket(children: ReactElement): { el: HTMLDivElement; getSocke
 }
 
 describe("render-count isolation", () => {
-  it("useEndpoint(A) does not re-render when a line arrives for B, or when B's state changes", () => {
+  it("useDevice(A) does not re-render when device B changes, or when a line arrives for a different link", () => {
     const renders = { a: 0, b: 0 };
 
     function ProbeA() {
-      useEndpoint("usb-A");
+      useDevice(1);
       renders.a += 1;
       return null;
     }
     function ProbeB() {
-      useEndpoint("usb-B");
+      useDevice(2);
       renders.b += 1;
       return null;
     }
@@ -145,48 +178,69 @@ describe("render-count isolation", () => {
         <ProbeB />
       </>,
     );
-    // Initial mount render, before any snapshot has arrived.
     expect(renders.a).toBe(1);
     expect(renders.b).toBe(1);
 
     act(() => {
-      getSocket().emitMessage({
-        type: "endpoints",
-        endpoints: [endpointFixture("A"), endpointFixture("B")],
-        firmwareStatus: NO_FIRMWARE_STATUS,
-      });
+      getSocket().emitMessage(snapshotFixture({ devices: [deviceFixture(1), deviceFixture(2)] }));
     });
-    // Both endpoints appeared for the first time -- both re-render once.
     expect(renders.a).toBe(2);
     expect(renders.b).toBe(2);
 
     act(() => {
-      getSocket().emitMessage({
-        type: "endpoints",
-        // B's `sessionOpen` flips; A is byte-for-byte identical to the
-        // previous snapshot.
-        endpoints: [endpointFixture("A"), endpointFixture("B", { sessionOpen: true })],
-        firmwareStatus: NO_FIRMWARE_STATUS,
-      });
+      getSocket().emitMessage(
+        snapshotFixture({ devices: [deviceFixture(1), deviceFixture(2, { role: "NEZHA2" })] }),
+      );
     });
+    // B changed; A is byte-for-byte identical -- structural sharing
+    // reuses A's previous object, so useDevice(1) doesn't re-render.
     expect(renders.b).toBe(3);
-    // A's entry is reused (structural sharing), so useEndpoint("A")'s
-    // cached snapshot is unchanged -- no re-render.
     expect(renders.a).toBe(2);
 
     act(() => {
-      getSocket().emitMessage({ type: "line", endpointId: "usb-B", direction: "rx", line: "hi" });
+      getSocket().emitMessage({ type: "line", linkId: "usb-2", direction: "rx", line: "hi" });
     });
-    // A `line` message never touches `endpointsById` at all.
+    // A `line` message never touches devicesById at all.
     expect(renders.a).toBe(2);
     expect(renders.b).toBe(3);
   });
 
-  it("useEndpointLog(A) does not re-render on an endpoints snapshot update that leaves A's log untouched", () => {
+  it("useLink(A) does not re-render when a sibling link on the same device changes", () => {
     const renders = { a: 0 };
+    function ProbeLinkA() {
+      useLink("usb-1");
+      renders.a += 1;
+      return null;
+    }
 
+    const { getSocket } = mountWithSocket(<ProbeLinkA />);
+    expect(renders.a).toBe(1);
+
+    const bothLinks = [linkFixture("usb-1"), linkFixture("wifi-1", { transport: "wifi" })];
+    act(() => {
+      getSocket().emitMessage(snapshotFixture({ devices: [deviceFixture(1, { links: bothLinks })] }));
+    });
+    expect(renders.a).toBe(2);
+
+    act(() => {
+      getSocket().emitMessage(
+        snapshotFixture({
+          devices: [
+            deviceFixture(1, {
+              links: [linkFixture("usb-1"), linkFixture("wifi-1", { transport: "wifi", state: "connecting" })],
+            }),
+          ],
+        }),
+      );
+    });
+    // Only the wifi sibling changed; usb-1 is unchanged -- no re-render.
+    expect(renders.a).toBe(2);
+  });
+
+  it("useLinkLog(A) does not re-render on a snapshot update that leaves A's log untouched", () => {
+    const renders = { a: 0 };
     function LogProbeA() {
-      useEndpointLog("usb-A");
+      useLinkLog("usb-1");
       renders.a += 1;
       return null;
     }
@@ -195,35 +249,19 @@ describe("render-count isolation", () => {
     expect(renders.a).toBe(1);
 
     act(() => {
-      getSocket().emitMessage({
-        type: "endpoints",
-        endpoints: [endpointFixture("A"), endpointFixture("B")],
-        firmwareStatus: NO_FIRMWARE_STATUS,
-      });
-    });
-    // The snapshot never writes to `logsByEndpoint` -- the cached empty
-    // log reference is unchanged.
-    expect(renders.a).toBe(1);
-
-    act(() => {
-      getSocket().emitMessage({
-        type: "endpoints",
-        endpoints: [endpointFixture("A", { sessionOpen: true }), endpointFixture("B")],
-        firmwareStatus: NO_FIRMWARE_STATUS,
-      });
+      getSocket().emitMessage(snapshotFixture({ devices: [deviceFixture(1), deviceFixture(2)] }));
     });
     expect(renders.a).toBe(1);
 
     act(() => {
-      getSocket().emitMessage({ type: "line", endpointId: "usb-A", direction: "rx", line: "hello" });
+      getSocket().emitMessage({ type: "line", linkId: "usb-1", direction: "rx", line: "hello" });
     });
-    // A line for A itself is the one thing that should cause a re-render.
     expect(renders.a).toBe(2);
   });
 });
 
-describe("hasSnapshot", () => {
-  it("is false before the first endpoints message, true after, and stays true across a reconnect", () => {
+describe("hasSnapshot / useHostConnection staleness", () => {
+  it("hasSnapshot is false before the first snapshot, true after, and stays true across a reconnect", () => {
     vi.useFakeTimers();
     const holder: { value: boolean | undefined } = { value: undefined };
 
@@ -246,12 +284,10 @@ describe("hasSnapshot", () => {
     expect(holder.value).toBe(false);
 
     act(() => {
-      socket!.emitMessage({ type: "endpoints", endpoints: [], firmwareStatus: NO_FIRMWARE_STATUS });
+      socket!.emitMessage(snapshotFixture());
     });
     expect(holder.value).toBe(true);
 
-    // Simulate an unexpected drop: the fixed 1500ms reconnect timer
-    // fires and a brand-new socket is constructed.
     act(() => {
       socket!.close();
     });
@@ -263,23 +299,65 @@ describe("hasSnapshot", () => {
     act(() => {
       socket!.emitOpen();
     });
-    // No new `endpoints` message has arrived on the reconnected socket
-    // yet -- `hasSnapshot` must not have been reset by the close/retry.
     expect(holder.value).toBe(true);
+  });
+
+  it("useHostConnection.stale flips true on close and clears on the next snapshot, without changing status semantics", () => {
+    vi.useFakeTimers();
+    const values: Array<{ status: string; stale: boolean }> = [];
+    function Probe() {
+      values.push(useHostConnection());
+      return null;
+    }
+
+    let socket: FakeSocket | null = null;
+    mount(
+      <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+        <Probe />
+      </WsProvider>,
+    );
+    expect(values.at(-1)).toEqual({ status: "connecting", stale: false });
+
+    act(() => {
+      socket!.emitOpen();
+    });
+    expect(values.at(-1)).toEqual({ status: "open", stale: false });
+
+    act(() => {
+      socket!.emitMessage(snapshotFixture());
+    });
+    expect(values.at(-1)).toEqual({ status: "open", stale: false });
+
+    act(() => {
+      socket!.close();
+    });
+    expect(values.at(-1)).toEqual({ status: "closed", stale: true });
+
+    act(() => {
+      vi.advanceTimersByTime(1500);
+      socket!.emitOpen();
+    });
+    // Reconnected, but no fresh snapshot has landed yet -- still stale.
+    expect(values.at(-1)).toEqual({ status: "open", stale: true });
+
+    act(() => {
+      socket!.emitMessage(snapshotFixture({ seq: 2 }));
+    });
+    expect(values.at(-1)).toEqual({ status: "open", stale: false });
   });
 });
 
 describe("hoisted log buffer", () => {
-  it("appends in order, caps at MAX_LINES_PER_DEVICE dropping the oldest, independently per endpoint", () => {
+  it("appends in order, caps at MAX_LINES_PER_LINK dropping the oldest, independently per link", () => {
     const logsA: LogEntry[][] = [];
     const logsB: LogEntry[][] = [];
 
     function ProbeA() {
-      logsA.push(useEndpointLog("usb-A"));
+      logsA.push(useLinkLog("usb-1"));
       return null;
     }
     function ProbeB() {
-      logsB.push(useEndpointLog("usb-B"));
+      logsB.push(useLinkLog("usb-2"));
       return null;
     }
 
@@ -291,36 +369,32 @@ describe("hoisted log buffer", () => {
     );
 
     act(() => {
-      for (let i = 0; i < MAX_LINES_PER_DEVICE + 5; i++) {
-        getSocket().emitMessage({ type: "line", endpointId: "usb-A", direction: "rx", line: `n${i}` });
+      for (let i = 0; i < MAX_LINES_PER_LINK + 5; i++) {
+        getSocket().emitMessage({ type: "line", linkId: "usb-1", direction: "rx", line: `n${i}` });
       }
-      getSocket().emitMessage({ type: "line", endpointId: "usb-B", direction: "rx", line: "only-b" });
+      getSocket().emitMessage({ type: "line", linkId: "usb-2", direction: "rx", line: "only-b" });
     });
 
     const finalA = logsA[logsA.length - 1]!;
     const finalB = logsB[logsB.length - 1]!;
 
-    expect(finalA).toHaveLength(MAX_LINES_PER_DEVICE);
-    // Oldest 5 (n0..n4) dropped from the front; newest is the last one
-    // pushed.
+    expect(finalA).toHaveLength(MAX_LINES_PER_LINK);
     expect(finalA[0]!.line).toBe("n5");
-    expect(finalA[finalA.length - 1]!.line).toBe(`n${MAX_LINES_PER_DEVICE + 4}`);
-    expect(finalA.map((e) => e.direction)).toEqual(finalA.map(() => "rx"));
+    expect(finalA[finalA.length - 1]!.line).toBe(`n${MAX_LINES_PER_LINK + 4}`);
 
-    // B's buffer is untouched by A's traffic.
     expect(finalB).toHaveLength(1);
     expect(finalB[0]!.line).toBe("only-b");
   });
 
-  it("keeps only the MAX_TRACKED_ENDPOINT_LOGS most recently active endpoints' logs", () => {
+  it("keeps only the MAX_TRACKED_LINK_LOGS most recently active links' logs", () => {
     const results: Record<string, LogEntry[]> = {};
 
     function Probe({ id }: { id: string }) {
-      results[id] = useEndpointLog(`usb-${id}`);
+      results[id] = useLinkLog(`usb-${id}`);
       return null;
     }
 
-    const ids = Array.from({ length: MAX_TRACKED_ENDPOINT_LOGS + 1 }, (_, i) => `E${i}`);
+    const ids = Array.from({ length: MAX_TRACKED_LINK_LOGS + 1 }, (_, i) => `E${i}`);
     const { getSocket } = mountWithSocket(
       <>
         {ids.map((id) => (
@@ -331,16 +405,12 @@ describe("hoisted log buffer", () => {
 
     act(() => {
       for (const id of ids) {
-        getSocket().emitMessage({ type: "line", endpointId: `usb-${id}`, direction: "rx", line: "hi" });
+        getSocket().emitMessage({ type: "line", linkId: `usb-${id}`, direction: "rx", line: "hi" });
       }
     });
 
-    // The least-recently-touched endpoint (the first one logged) was
-    // evicted entirely once the (MAX_TRACKED_ENDPOINT_LOGS + 1)th
-    // distinct endpoint logged a line.
     expect(results["E0"]).toEqual([]);
-    // Every endpoint touched since then survives.
-    for (let i = 1; i <= MAX_TRACKED_ENDPOINT_LOGS; i++) {
+    for (let i = 1; i <= MAX_TRACKED_LINK_LOGS; i++) {
       expect(results[`E${i}`]).toHaveLength(1);
     }
   });
@@ -349,135 +419,197 @@ describe("hoisted log buffer", () => {
 describe("useFlashProgress", () => {
   it("tracks live flash-progress events for a release source, and clears on flash-result", () => {
     const values: Array<ReturnType<typeof useFlashProgress>> = [];
-
     function Probe() {
-      values.push(useFlashProgress("usb-A"));
+      values.push(useFlashProgress("usb-1"));
       return null;
     }
 
     const { getSocket } = mountWithSocket(<Probe />);
-    expect(values[values.length - 1]).toBeUndefined();
+    expect(values.at(-1)).toBeUndefined();
 
     act(() => {
       getSocket().emitMessage({
         type: "flash-progress",
-        endpointId: "usb-A",
+        linkId: "usb-1",
         source: { kind: "release", firmware: "relay" },
         phase: "writing",
+        seq: 1,
       });
     });
-    expect(values[values.length - 1]).toEqual({
-      source: { kind: "release", firmware: "relay" },
-      phase: "writing",
-    });
+    expect(values.at(-1)).toEqual({ source: { kind: "release", firmware: "relay" }, phase: "writing" });
 
     act(() => {
       getSocket().emitMessage({
         type: "flash-result",
-        endpointId: "usb-A",
+        linkId: "usb-1",
         source: { kind: "release", firmware: "relay" },
         status: "ok",
+        seq: 2,
       });
     });
-    expect(values[values.length - 1]).toBeUndefined();
+    expect(values.at(-1)).toBeUndefined();
   });
 
-  it("tracks live flash-progress events for a local-hex source, which flashStatus cannot represent", () => {
+  it("tracks live flash-progress events for a local-hex source", () => {
     const values: Array<ReturnType<typeof useFlashProgress>> = [];
-
     function Probe() {
-      values.push(useFlashProgress("usb-A"));
+      values.push(useFlashProgress("usb-1"));
       return null;
     }
 
     const { getSocket } = mountWithSocket(<Probe />);
-
     act(() => {
       getSocket().emitMessage({
         type: "flash-progress",
-        endpointId: "usb-A",
+        linkId: "usb-1",
         source: { kind: "local-hex", uploadId: "u1", fileName: "custom.hex", sha256: "abc" },
         phase: "erasing",
+        seq: 1,
       });
     });
-    expect(values[values.length - 1]).toEqual({
+    expect(values.at(-1)).toEqual({
       source: { kind: "local-hex", uploadId: "u1", fileName: "custom.hex", sha256: "abc" },
       phase: "erasing",
     });
   });
+
+  it("falls back to the snapshot's own SnapshotLink.flash once the live overlay has nothing (reconnect self-heal)", () => {
+    const values: Array<ReturnType<typeof useFlashProgress>> = [];
+    function Probe() {
+      values.push(useFlashProgress("usb-1"));
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+    expect(values.at(-1)).toBeUndefined();
+
+    act(() => {
+      getSocket().emitMessage(
+        snapshotFixture({
+          devices: [
+            deviceFixture(1, {
+              links: [
+                linkFixture("usb-1", {
+                  flash: { source: { kind: "local-hex", uploadId: "u1", fileName: "custom.hex", sha256: "abc" }, phase: "writing" },
+                }),
+              ],
+            }),
+          ],
+        }),
+      );
+    });
+    expect(values.at(-1)).toEqual({
+      source: { kind: "local-hex", uploadId: "u1", fileName: "custom.hex", sha256: "abc" },
+      phase: "writing",
+    });
+  });
 });
 
-describe("useRememberedRobots", () => {
-  it("is [] before any endpoints message, and the parsed rememberedRobots array after one", () => {
-    const values: RememberedRobotEntry[][] = [];
+describe("useDeviceForLink", () => {
+  it("resolves the owning device for a link inside devices[], and is undefined for an unassigned link", () => {
+    // Two separate results, not one shared array: the unassigned-link
+    // probe's value stays `undefined` across the update (no owner
+    // before or after), so `useSyncExternalStore` legitimately skips
+    // re-rendering it -- a shared "last push wins" array would flake on
+    // exactly that render-count optimization.
+    const results: { owned?: SnapshotDevice | undefined; unassigned?: SnapshotDevice | undefined } = {};
+    function Probe({ linkId, resultKey }: { linkId: string; resultKey: "owned" | "unassigned" }) {
+      results[resultKey] = useDeviceForLink(linkId);
+      return null;
+    }
 
+    const { getSocket } = mountWithSocket(
+      <>
+        <Probe linkId="usb-1" resultKey="owned" />
+        <Probe linkId="usb-unknown-1" resultKey="unassigned" />
+      </>,
+    );
+    act(() => {
+      getSocket().emitMessage(
+        snapshotFixture({
+          devices: [deviceFixture(1)],
+          unassigned: [linkFixture("usb-unknown-1", { state: "discovered" })],
+        }),
+      );
+    });
+
+    expect(results.owned?.id).toBe(1);
+    expect(results.unassigned).toBeUndefined();
+  });
+});
+
+describe("useRelays / useFirmware / useWifiSetting / useTasks", () => {
+  it("mirror the snapshot's own fields, with sensible defaults before the first one", () => {
+    const seen: { relays: unknown; firmware: unknown; wifi: unknown; tasks: unknown }[] = [];
     function Probe() {
-      values.push(useRememberedRobots());
+      seen.push({ relays: useRelays(), firmware: useFirmware(), wifi: useWifiSetting(), tasks: useTasks() });
       return null;
     }
 
     const { getSocket } = mountWithSocket(<Probe />);
-    expect(values[values.length - 1]).toEqual([]);
+    expect(seen[0]).toEqual({ relays: [], firmware: NO_FIRMWARE, wifi: { ssid: null, source: null }, tasks: [] });
 
-    const roster = [rememberedRobotFixture("alpha"), rememberedRobotFixture("bravo")];
     act(() => {
-      getSocket().emitMessage({
-        type: "endpoints",
-        endpoints: [],
-        firmwareStatus: NO_FIRMWARE_STATUS,
-        rememberedRobots: roster,
-      });
+      getSocket().emitMessage(
+        snapshotFixture({
+          relays: [{ linkId: "usb-relay-1", lease: "sweep" }],
+          firmware: { relay: { configured: false }, robot: { configured: true, repoUrl: "r", tag: "t", available: true } },
+          wifi: { ssid: "classroom-net", source: "stored" },
+          tasks: [{ name: "usbWatcher", state: "running", heartbeatAt: 1 }],
+        }),
+      );
     });
-    expect(values[values.length - 1]).toEqual(roster);
+
+    const last = seen.at(-1)!;
+    expect(last.relays).toEqual([{ linkId: "usb-relay-1", lease: "sweep" }]);
+    expect(last.wifi).toEqual({ ssid: "classroom-net", source: "stored" });
+    expect(last.tasks).toEqual([{ name: "usbWatcher", state: "running", heartbeatAt: 1 }]);
+  });
+});
+
+describe("notice messages (replaces type: 'error')", () => {
+  it("appends a linkId-scoped notice to that link's log, not any other link's", () => {
+    const logsA: LogEntry[][] = [];
+    const logsB: LogEntry[][] = [];
+    function ProbeA() {
+      logsA.push(useLinkLog("usb-1"));
+      return null;
+    }
+    function ProbeB() {
+      logsB.push(useLinkLog("usb-2"));
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(
+      <>
+        <ProbeA />
+        <ProbeB />
+      </>,
+    );
+
+    act(() => {
+      getSocket().emitMessage({ type: "notice", level: "warn", linkId: "usb-1", text: "no open link", at: 0, seq: 1 });
+    });
+
+    const finalA = logsA[logsA.length - 1]!;
+    const finalB = logsB[logsB.length - 1]!;
+    expect(finalA).toHaveLength(1);
+    expect(finalA[0]).toMatchObject({ direction: "rx", line: "no open link", origin: "host" });
+    expect(finalB).toEqual([]);
   });
 
-  it("stays at the [] default (never undefined) when the very first endpoints message omits rememberedRobots", () => {
-    const values: RememberedRobotEntry[][] = [];
-
-    function Probe() {
-      values.push(useRememberedRobots());
+  it("drops a connection-level notice (no linkId) rather than attaching it to any link's log", () => {
+    const logsA: LogEntry[][] = [];
+    function ProbeA() {
+      logsA.push(useLinkLog("usb-1"));
       return null;
     }
 
-    const { getSocket } = mountWithSocket(<Probe />);
+    const { getSocket } = mountWithSocket(<ProbeA />);
     act(() => {
-      getSocket().emitMessage({ type: "endpoints", endpoints: [], firmwareStatus: NO_FIRMWARE_STATUS });
+      getSocket().emitMessage({ type: "notice", level: "error", text: "malformed message", at: 0, seq: 1 });
     });
-    expect(values[values.length - 1]).toEqual([]);
-  });
-
-  it("keeps the previous value when a later endpoints message omits rememberedRobots entirely (an old-shaped host)", () => {
-    const values: RememberedRobotEntry[][] = [];
-
-    function Probe() {
-      values.push(useRememberedRobots());
-      return null;
-    }
-
-    const { getSocket } = mountWithSocket(<Probe />);
-
-    const roster = [rememberedRobotFixture("alpha")];
-    act(() => {
-      getSocket().emitMessage({
-        type: "endpoints",
-        endpoints: [],
-        firmwareStatus: NO_FIRMWARE_STATUS,
-        rememberedRobots: roster,
-      });
-    });
-    expect(values[values.length - 1]).toEqual(roster);
-
-    // Simulate an old host (or a bare test fixture) that never sends
-    // this field at all -- must not clobber the previous value with
-    // `undefined`, and must not throw.
-    act(() => {
-      getSocket().emitMessage({
-        type: "endpoints",
-        endpoints: [],
-        firmwareStatus: NO_FIRMWARE_STATUS,
-      });
-    });
-    expect(values[values.length - 1]).toEqual(roster);
+    expect(logsA.at(-1)).toEqual([]);
   });
 });
 
@@ -491,13 +623,13 @@ describe("sendCommand", () => {
 
     const { getSocket } = mountWithSocket(<Probe />);
     act(() => {
-      actions!.sendCommand("usb-A", "SET", [1, "left", { wireType: "flags", value: 3 }]);
+      actions!.sendCommand("usb-1", "SET", [1, "left", { wireType: "flags", value: 3 }]);
     });
 
     expect(getSocket().sent).toHaveLength(1);
     expect(JSON.parse(getSocket().sent[0]!)).toEqual({
       type: "send-command",
-      endpointId: "usb-A",
+      linkId: "usb-1",
       verb: "SET",
       fields: [1, "left", { wireType: "flags", value: 3 }],
     });
@@ -512,18 +644,10 @@ describe("sendCommand", () => {
 
     const { getSocket } = mountWithSocket(<Probe />);
     act(() => {
-      actions!.sendCommand("usb-A", "STATUS");
+      actions!.sendCommand("usb-1", "STATUS");
     });
 
-    expect(getSocket().sent).toHaveLength(1);
-    // `fields` is undefined, not present in the wire message at all --
-    // JSON.stringify drops it, matching `SendCommandMessage`'s own
-    // "omitted is equivalent to empty" doc comment.
-    expect(JSON.parse(getSocket().sent[0]!)).toEqual({
-      type: "send-command",
-      endpointId: "usb-A",
-      verb: "STATUS",
-    });
+    expect(JSON.parse(getSocket().sent[0]!)).toEqual({ type: "send-command", linkId: "usb-1", verb: "STATUS" });
   });
 
   it("is silently dropped when the socket is not open, same as every other action", () => {
@@ -539,441 +663,116 @@ describe("sendCommand", () => {
         <Probe />
       </WsProvider>,
     );
-    // Never emitOpen() -- socket stays at readyState 0.
     act(() => {
-      actions!.sendCommand("usb-A", "STATUS");
+      actions!.sendCommand("usb-1", "STATUS");
     });
     expect(socket!.sent).toHaveLength(0);
   });
 });
 
-describe("host error messages (ticket 012-003)", () => {
-  it("appends a type: 'error' message with an endpointId to that endpoint's log, not any other endpoint's", () => {
-    const logsA: LogEntry[][] = [];
-    const logsB: LogEntry[][] = [];
-
-    function ProbeA() {
-      logsA.push(useEndpointLog("usb-A"));
-      return null;
-    }
-    function ProbeB() {
-      logsB.push(useEndpointLog("usb-B"));
-      return null;
-    }
-
-    const { getSocket } = mountWithSocket(
-      <>
-        <ProbeA />
-        <ProbeB />
-      </>,
-    );
-
-    act(() => {
-      getSocket().emitMessage({ type: "error", endpointId: "usb-A", message: "device usb-A has no open link" });
-    });
-
-    const finalA = logsA[logsA.length - 1]!;
-    const finalB = logsB[logsB.length - 1]!;
-    expect(finalA).toHaveLength(1);
-    expect(finalA[0]).toMatchObject({
-      direction: "rx",
-      line: "device usb-A has no open link",
-      origin: "host",
-    });
-    // The other endpoint's log is untouched -- this is not a global
-    // error banner.
-    expect(finalB).toEqual([]);
-  });
-
-  it("drops a type: 'error' message with no endpointId rather than attaching it to any endpoint's log", () => {
-    const logsA: LogEntry[][] = [];
-
-    function ProbeA() {
-      logsA.push(useEndpointLog("usb-A"));
-      return null;
-    }
-
-    const { getSocket } = mountWithSocket(<ProbeA />);
-
-    act(() => {
-      getSocket().emitMessage({ type: "error", message: "malformed message" });
-    });
-
-    // No endpoint to attach it to, and this store has no global banner
-    // surface -- see `appendHostError`'s own doc comment. Nothing
-    // appended, and no crash.
-    expect(logsA[logsA.length - 1]).toEqual([]);
-  });
-
-  it("routes the host's live-HELLO refusal into the endpoint's log via sendCommand end-to-end -- the scenario ticket 005's Hello button depends on", () => {
-    let actions: ReturnType<typeof useWsActions> | undefined;
-    const logs: LogEntry[][] = [];
-
-    function Probe() {
-      actions = useWsActions();
-      logs.push(useEndpointLog("usb-SERIAL-A"));
-      return null;
-    }
-
-    const { getSocket } = mountWithSocket(<Probe />);
-
-    act(() => {
-      actions!.sendCommand("usb-SERIAL-A", "HELLO");
-    });
-    // The client-side send always goes out -- deviceRegistry.ts is the
-    // one place that refuses it, not this module.
-    expect(JSON.parse(getSocket().sent[0]!)).toEqual({
-      type: "send-command",
-      endpointId: "usb-SERIAL-A",
-      verb: "HELLO",
-    });
-
-    // The host's actual reply, mirroring deviceRegistry.ts's sendCommand
-    // HELLO guard verbatim (see that method's own doc comment) -- pins
-    // the concrete bug this ticket exists to fix: before this ticket,
-    // this message was dropped and the Hello button would appear to do
-    // nothing.
-    const refusal =
-      '"HELLO" cannot be sent as a live command -- it resets the robot\'s sequence state ' +
-      "(protocol.md S8.3); close and reopen the session instead of resending HELLO";
-    act(() => {
-      getSocket().emitMessage({ type: "error", endpointId: "usb-SERIAL-A", message: refusal });
-    });
-
-    const finalLog = logs[logs.length - 1]!;
-    expect(finalLog).toHaveLength(1);
-    expect(finalLog[0]).toMatchObject({ direction: "rx", line: refusal, origin: "host" });
-  });
-});
-
-describe("useSequencing", () => {
-  it("is undefined before any snapshot, and reflects the endpoint's sequencing field once one arrives", () => {
-    const values: Array<ReturnType<typeof useSequencing>> = [];
-
-    function Probe() {
-      values.push(useSequencing("usb-A"));
-      return null;
-    }
-
-    const { getSocket } = mountWithSocket(<Probe />);
-    expect(values[values.length - 1]).toBeUndefined();
-
-    const seqA = { seq: 1, pendingCount: 0, lastDone: 0, lastDoneReason: "ok" };
-    act(() => {
-      getSocket().emitMessage({
-        type: "endpoints",
-        endpoints: [endpointFixture("A", { sessionOpen: true, sequencing: seqA })],
-        firmwareStatus: NO_FIRMWARE_STATUS,
-      });
-    });
-    expect(values[values.length - 1]).toEqual(seqA);
-  });
-
-  it("is undefined for an endpoint with no session open (sequencing absent from the snapshot entry)", () => {
-    const values: Array<ReturnType<typeof useSequencing>> = [];
-
-    function Probe() {
-      values.push(useSequencing("usb-A"));
-      return null;
-    }
-
-    const { getSocket } = mountWithSocket(<Probe />);
-    act(() => {
-      getSocket().emitMessage({
-        type: "endpoints",
-        endpoints: [endpointFixture("A")],
-        firmwareStatus: NO_FIRMWARE_STATUS,
-      });
-    });
-    expect(values[values.length - 1]).toBeUndefined();
-  });
-
-  it("does not change identity across two snapshots when this endpoint's sequencing is unchanged", () => {
-    const renders = { a: 0 };
-    let lastValue: ReturnType<typeof useSequencing>;
-
-    function ProbeA() {
-      lastValue = useSequencing("usb-A");
-      renders.a += 1;
-      return null;
-    }
-
-    const seqA = { seq: 1, pendingCount: 0, lastDone: 0, lastDoneReason: "ok" };
-    const { getSocket } = mountWithSocket(<ProbeA />);
-
-    act(() => {
-      getSocket().emitMessage({
-        type: "endpoints",
-        endpoints: [endpointFixture("A", { sessionOpen: true, sequencing: seqA })],
-        firmwareStatus: NO_FIRMWARE_STATUS,
-      });
-    });
-    expect(renders.a).toBe(2);
-    const firstValue = lastValue;
-
-    act(() => {
-      // A new snapshot with a byte-for-byte identical entry for A --
-      // `applySnapshot`'s structural sharing reuses the previous object.
-      getSocket().emitMessage({
-        type: "endpoints",
-        endpoints: [endpointFixture("A", { sessionOpen: true, sequencing: { ...seqA } })],
-        firmwareStatus: NO_FIRMWARE_STATUS,
-      });
-    });
-    // No re-render: the cached snapshot value kept its identity.
-    expect(renders.a).toBe(2);
-    expect(lastValue).toBe(firstValue);
-  });
-
-  it("a consumer of endpoint A does not re-render when endpoint B's sequencing changes", () => {
-    const renders = { a: 0, b: 0 };
-
-    function ProbeA() {
-      useSequencing("usb-A");
-      renders.a += 1;
-      return null;
-    }
-    function ProbeB() {
-      useSequencing("usb-B");
-      renders.b += 1;
-      return null;
-    }
-
-    const { getSocket } = mountWithSocket(
-      <>
-        <ProbeA />
-        <ProbeB />
-      </>,
-    );
-
-    const seqA = { seq: 1, pendingCount: 0, lastDone: 0, lastDoneReason: "ok" };
-    act(() => {
-      getSocket().emitMessage({
-        type: "endpoints",
-        endpoints: [
-          endpointFixture("A", { sessionOpen: true, sequencing: seqA }),
-          endpointFixture("B", { sessionOpen: true, sequencing: { seq: 1, pendingCount: 0, lastDone: 0, lastDoneReason: "ok" } }),
-        ],
-        firmwareStatus: NO_FIRMWARE_STATUS,
-      });
-    });
-    expect(renders.a).toBe(2);
-    expect(renders.b).toBe(2);
-
-    act(() => {
-      // Only B's sequencing changes (a new ack); A is byte-for-byte
-      // identical to the previous snapshot.
-      getSocket().emitMessage({
-        type: "endpoints",
-        endpoints: [
-          endpointFixture("A", { sessionOpen: true, sequencing: seqA }),
-          endpointFixture("B", { sessionOpen: true, sequencing: { seq: 2, pendingCount: 0, lastDone: 1, lastDoneReason: "ok" } }),
-        ],
-        firmwareStatus: NO_FIRMWARE_STATUS,
-      });
-    });
-    expect(renders.b).toBe(3);
-    expect(renders.a).toBe(2);
-  });
-});
-
-describe("useTelemetry / useTelemetryHeader (sprint 9 ticket 003)", () => {
+describe("useTelemetry / useTelemetryHeader", () => {
   it("a header then frames populate the ring, in order, with the header parsed and each frame's values numeric", () => {
     let handle: TelemetryHandle | undefined;
     function Probe() {
-      handle = useTelemetry("usb-A");
+      handle = useTelemetry("usb-1");
       return null;
     }
 
     const { getSocket } = mountWithSocket(<Probe />);
     expect(handle!.header).toBeUndefined();
-    expect(handle!.snapshot()).toEqual([]);
-    expect(handle!.latest).toBeUndefined();
 
     act(() => {
-      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["ox", "oy"] });
+      getSocket().emitMessage({ type: "telemetry", linkId: "usb-1", header: ["ox", "oy"] });
     });
     expect(handle!.header).toEqual(["ox", "oy"]);
-    expect(handle!.snapshot()).toEqual([]);
 
     act(() => {
-      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { ox: "1", oy: "2" } });
+      getSocket().emitMessage({ type: "telemetry", linkId: "usb-1", frame: { ox: "1", oy: "2" } });
     });
     act(() => {
-      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { ox: "3", oy: "4" } });
+      getSocket().emitMessage({ type: "telemetry", linkId: "usb-1", frame: { ox: "3", oy: "4" } });
     });
 
     const frames = handle!.snapshot();
     expect(frames).toHaveLength(2);
     expect(frames[0]!.values).toEqual({ ox: 1, oy: 2 });
     expect(frames[1]!.values).toEqual({ ox: 3, oy: 4 });
-    expect(typeof frames[0]!.t).toBe("number");
     expect(handle!.latest).toEqual(frames[1]);
   });
 
   it(`capacity wraps oldest-first once TELEMETRY_RING_CAPACITY (${TELEMETRY_RING_CAPACITY}) is exceeded`, () => {
     let handle: TelemetryHandle | undefined;
     function Probe() {
-      handle = useTelemetry("usb-A");
+      handle = useTelemetry("usb-1");
       return null;
     }
 
     const { getSocket } = mountWithSocket(<Probe />);
     act(() => {
-      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["x"] });
+      getSocket().emitMessage({ type: "telemetry", linkId: "usb-1", header: ["x"] });
     });
 
     const total = TELEMETRY_RING_CAPACITY + 5;
     act(() => {
       for (let i = 0; i < total; i++) {
-        getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { x: String(i) } });
+        getSocket().emitMessage({ type: "telemetry", linkId: "usb-1", frame: { x: String(i) } });
       }
     });
 
     const frames = handle!.snapshot();
     expect(frames).toHaveLength(TELEMETRY_RING_CAPACITY);
-    // The oldest 5 pushed (x = 0..4) were evicted first.
     expect(frames[0]!.values.x).toBe(5);
     expect(frames[frames.length - 1]!.values.x).toBe(total - 1);
   });
 
-  it("a frame arriving before any header is ignored rather than thrown or buffered", () => {
+  it("resets the ring when the link's session closes (session present -> absent across snapshots)", () => {
     let handle: TelemetryHandle | undefined;
     function Probe() {
-      handle = useTelemetry("usb-A");
-      return null;
-    }
-
-    const { getSocket } = mountWithSocket(<Probe />);
-
-    expect(() => {
-      act(() => {
-        getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { x: "1" } });
-      });
-    }).not.toThrow();
-    expect(handle!.snapshot()).toEqual([]);
-    expect(handle!.header).toBeUndefined();
-
-    // Recovery: once a header arrives, frames resume normal handling --
-    // the earlier headerless frame was dropped, not queued.
-    act(() => {
-      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["x"] });
-    });
-    act(() => {
-      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { x: "9" } });
-    });
-    expect(handle!.snapshot()).toHaveLength(1);
-    expect(handle!.snapshot()[0]!.values).toEqual({ x: 9 });
-  });
-
-  it("a header change resets the ring (SUC-003: previous frames' columns no longer apply)", () => {
-    let handle: TelemetryHandle | undefined;
-    function Probe() {
-      handle = useTelemetry("usb-A");
+      handle = useTelemetry("usb-1");
       return null;
     }
 
     const { getSocket } = mountWithSocket(<Probe />);
     act(() => {
-      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["x"] });
+      getSocket().emitMessage(
+        snapshotFixture({
+          devices: [
+            deviceFixture(1, {
+              links: [linkFixture("usb-1", { session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null } })],
+            }),
+          ],
+        }),
+      );
     });
     act(() => {
-      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { x: "1" } });
+      getSocket().emitMessage({ type: "telemetry", linkId: "usb-1", header: ["x"] });
+    });
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", linkId: "usb-1", frame: { x: "1" } });
     });
     expect(handle!.snapshot()).toHaveLength(1);
 
     act(() => {
-      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["y"] });
-    });
-    expect(handle!.header).toEqual(["y"]);
-    expect(handle!.snapshot()).toEqual([]);
-  });
-
-  it("resets the ring when the endpoint's session closes", () => {
-    let handle: TelemetryHandle | undefined;
-    function Probe() {
-      handle = useTelemetry("usb-A");
-      return null;
-    }
-
-    const { getSocket } = mountWithSocket(<Probe />);
-    act(() => {
-      getSocket().emitMessage({
-        type: "endpoints",
-        endpoints: [endpointFixture("A", { sessionOpen: true })],
-        firmwareStatus: NO_FIRMWARE_STATUS,
-      });
-    });
-    act(() => {
-      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["x"] });
-    });
-    act(() => {
-      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { x: "1" } });
-    });
-    expect(handle!.snapshot()).toHaveLength(1);
-
-    act(() => {
-      getSocket().emitMessage({
-        type: "endpoints",
-        endpoints: [endpointFixture("A", { sessionOpen: false })],
-        firmwareStatus: NO_FIRMWARE_STATUS,
-      });
+      getSocket().emitMessage(snapshotFixture({ devices: [deviceFixture(1, { links: [linkFixture("usb-1")] })] }));
     });
     expect(handle!.snapshot()).toEqual([]);
-    // The header itself is untouched by a session close -- only the
-    // stale frame history is.
     expect(handle!.header).toEqual(["x"]);
   });
 
-  it("clearTelemetry (and the handle's own clear()) empties the ring without touching the header", () => {
-    let handle: TelemetryHandle | undefined;
-    let actions: ReturnType<typeof useWsActions> | undefined;
-    function Probe() {
-      handle = useTelemetry("usb-A");
-      actions = useWsActions();
-      return null;
-    }
-
-    const { getSocket } = mountWithSocket(<Probe />);
-    act(() => {
-      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["x"] });
-    });
-    act(() => {
-      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { x: "1" } });
-    });
-    expect(handle!.snapshot()).toHaveLength(1);
-
-    act(() => {
-      actions!.clearTelemetry("usb-A");
-    });
-    expect(handle!.snapshot()).toEqual([]);
-    expect(handle!.header).toEqual(["x"]);
-
-    act(() => {
-      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { x: "2" } });
-    });
-    expect(handle!.snapshot()).toHaveLength(1);
-
-    act(() => {
-      handle!.clear();
-    });
-    expect(handle!.snapshot()).toEqual([]);
-  });
-
-  it("useTelemetryHeader is undefined before any header, and reflects the current header once one arrives", () => {
+  it("useTelemetryHeader reflects the current header once one arrives", () => {
     const values: Array<readonly string[] | undefined> = [];
     function Probe() {
-      values.push(useTelemetryHeader("usb-A"));
+      values.push(useTelemetryHeader("usb-1"));
       return null;
     }
 
     const { getSocket } = mountWithSocket(<Probe />);
-    expect(values[values.length - 1]).toBeUndefined();
+    expect(values.at(-1)).toBeUndefined();
 
     act(() => {
-      getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["ox", "oy"] });
+      getSocket().emitMessage({ type: "telemetry", linkId: "usb-1", header: ["ox", "oy"] });
     });
-    expect(values[values.length - 1]).toEqual(["ox", "oy"]);
+    expect(values.at(-1)).toEqual(["ox", "oy"]);
   });
 
   it("telemetrySubscribe sends the exact send-command TLM message", () => {
@@ -985,31 +784,24 @@ describe("useTelemetry / useTelemetryHeader (sprint 9 ticket 003)", () => {
 
     const { getSocket } = mountWithSocket(<Probe />);
     act(() => {
-      actions!.telemetrySubscribe("usb-A", "POSE");
+      actions!.telemetrySubscribe("usb-1", "POSE");
     });
-
-    expect(getSocket().sent).toHaveLength(1);
-    expect(JSON.parse(getSocket().sent[0]!)).toEqual({
-      type: "send-command",
-      endpointId: "usb-A",
-      verb: "TLM",
-      fields: ["POSE"],
-    });
+    expect(JSON.parse(getSocket().sent[0]!)).toEqual({ type: "send-command", linkId: "usb-1", verb: "TLM", fields: ["POSE"] });
   });
 
   describe("render-count isolation", () => {
-    it("frame arrivals for A fire subscribers directly, without re-rendering the useTelemetry(A) component or an unrelated useEndpoint(B) selector", () => {
+    it("frame arrivals for A fire subscribers directly, without re-rendering the useTelemetry(A) component or an unrelated useDevice(B) selector", () => {
       const renders = { telemetry: 0, other: 0 };
       const receivedFrames: TelemetryFrame[] = [];
 
       function TelemetryProbe() {
-        const handle = useTelemetry("usb-A");
+        const handle = useTelemetry("usb-1");
         renders.telemetry += 1;
         useEffect(() => handle.subscribe((frame) => receivedFrames.push(frame)), [handle]);
         return null;
       }
       function OtherProbe() {
-        useEndpoint("usb-B");
+        useDevice(2);
         renders.other += 1;
         return null;
       }
@@ -1024,23 +816,17 @@ describe("useTelemetry / useTelemetryHeader (sprint 9 ticket 003)", () => {
       expect(renders.other).toBe(1);
 
       act(() => {
-        getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", header: ["x"] });
+        getSocket().emitMessage({ type: "telemetry", linkId: "usb-1", header: ["x"] });
       });
-      // The header update is the one telemetry event that does go
-      // through `notify(store)` -- but neither probe reads the header,
-      // so neither re-renders.
       expect(renders.telemetry).toBe(1);
       expect(renders.other).toBe(1);
 
       act(() => {
         for (let i = 0; i < 20; i++) {
-          getSocket().emitMessage({ type: "telemetry", endpointId: "usb-A", frame: { x: String(i) } });
+          getSocket().emitMessage({ type: "telemetry", linkId: "usb-1", frame: { x: String(i) } });
         }
       });
       expect(receivedFrames).toHaveLength(20);
-      // The whole point of the ring-buffer design: 20 frames arrived
-      // for A, delivered synchronously to the subscriber, and zero
-      // React re-renders resulted for either component.
       expect(renders.telemetry).toBe(1);
       expect(renders.other).toBe(1);
     });

@@ -76,6 +76,18 @@
  * (this is a bench tool used from current Chrome/Firefox/Safari) has
  * shipped `showModal()` for years, so this fallback is a test-only
  * concession, not a supported degraded mode for students.
+ *
+ * ## Sprint 015 ticket 008: takes a `SnapshotLink`, not an `EndpointListEntry`
+ *
+ * Flashability is now a per-link capability (`link.capabilities.flash`,
+ * `deviceDisplay.ts`'s `canBeFlashed`) rather than a device-level
+ * `role === null` guess, and flash progress rides on `linkId`
+ * (`useFlashProgress(link.id)`, `flash-start`'s `linkId` field) instead
+ * of `endpointId`. `name` is passed in by the caller for the dialog's
+ * own title/warning text -- a link has no name of its own (only its
+ * owning `SnapshotDevice` does, and an `unassigned` link has no device
+ * at all), so the caller (which already knows whether it has a device
+ * to name) supplies it directly rather than this component guessing one.
  */
 import {
   useCallback,
@@ -86,18 +98,22 @@ import {
   type MouseEvent as ReactMouseEvent,
   type SyntheticEvent,
 } from "react";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
-import { useFlashProgress } from "../ws/WsProvider";
+import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import { useFlashProgress, useSendable } from "../ws/WsProvider";
 import { canBeFlashed } from "../deviceDisplay";
 import { FlashControls } from "./FlashControls";
 import "./FlashDialog.css";
 
 export interface FlashDialogProps {
-  endpoint: EndpointListEntry;
+  link: SnapshotLink;
+  /** Display label for this dialog's title/warning text -- the owning
+   * device's name, or the link's own label when there is no device yet
+   * (an `unassigned` board). */
+  name: string;
   /** Bypass the `canBeFlashed` gate on the trigger button and render it
-   * regardless of `endpoint.role` -- see this module's doc comment.
-   * Default `false`; only `AppHeader` passes `true`, for an identified
-   * relay/robot device. */
+   * regardless of `link.capabilities.flash` -- see this module's doc
+   * comment. Default `false`; only `AppHeader` passes `true`, for an
+   * identified relay/robot device. */
   forceShow?: boolean;
   /** Trigger button's visible label. Every call site uses the default
    * ("Flash") per the stakeholder's own phrasing; overridable for a
@@ -126,28 +142,35 @@ function focusableElements(container: HTMLElement): HTMLElement[] {
 }
 
 export function FlashDialog({
-  endpoint,
+  link,
+  name,
   forceShow = false,
   triggerLabel = "Flash",
   triggerClassName = "device-button",
 }: FlashDialogProps) {
-  const progress = useFlashProgress(endpoint.endpointId);
+  const progress = useFlashProgress(link.id);
   const inProgress = progress !== undefined;
+  // Ticket 011 (carried from 009's send-gating sweep): the trigger
+  // gates on `useSendable()` here, in the one shared component every
+  // Flash trigger (`FrontPage`'s unassigned-board card, `AppHeader`,
+  // `UnknownDevicePage`) mounts -- covers all three call sites without
+  // each one repeating the check.
+  const sendable = useSendable();
 
   const [open, setOpen] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
-  // A dialog opened for one device must not silently carry over to the
-  // next. `AppHeader` renders one `FlashDialog` instance whose
-  // `endpoint` prop swaps to a different device as the route changes
-  // (react-router does not remount it just because the matched
-  // endpoint changed -- see `AppHeader.tsx`'s doc comment), so this
-  // guards that case; it is a harmless no-op for `FrontPage`/
-  // `UnknownDevicePage`, which get a fresh instance per device already.
+  // A dialog opened for one link must not silently carry over to the
+  // next. `AppHeader` renders one `FlashDialog` instance whose `link`
+  // prop swaps to a different device as the route changes (react-router
+  // does not remount it just because the matched link changed -- see
+  // `AppHeader.tsx`'s doc comment), so this guards that case; it is a
+  // harmless no-op for `FrontPage`/`UnknownDevicePage`, which get a
+  // fresh instance per link already.
   useEffect(() => {
     setOpen(false);
-  }, [endpoint.endpointId]);
+  }, [link.id]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -235,15 +258,15 @@ export function FlashDialog({
     }
   }, []);
 
-  if (!forceShow && !canBeFlashed(endpoint)) {
+  if (!forceShow && !canBeFlashed(link)) {
     return null;
   }
 
   // Set only for the case `forceShow` exists to cover: an already-
   // identified device. A `canBeFlashed` device (the common case) is
   // never mid-mission, so it gets no warning line.
-  const showReflashWarning = !canBeFlashed(endpoint);
-  const deviceLabel = endpoint.name ?? endpoint.endpointId;
+  const showReflashWarning = !canBeFlashed(link);
+  const deviceLabel = name;
 
   return (
     <>
@@ -253,7 +276,9 @@ export function FlashDialog({
         className={triggerClassName}
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => setOpen(true)}
+        disabled={!sendable}
+        title={sendable ? undefined : "Disconnected from the host"}
+        onClick={() => sendable && setOpen(true)}
       >
         {triggerLabel}
       </button>
@@ -280,7 +305,7 @@ export function FlashDialog({
                 Reflashing "{deviceLabel}" will interrupt whatever it's currently running.
               </p>
             )}
-            <FlashControls endpoint={endpoint} />
+            <FlashControls link={link} />
           </div>
         </dialog>
       )}

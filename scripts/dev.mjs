@@ -31,6 +31,7 @@ import { register } from "tsx/esm/api";
 register();
 
 const { startServer, DEFAULT_PORT } = await import("../packages/host/src/server.ts");
+const { startRuntime } = await import("../packages/host/src/runtime.ts");
 const { createServer } = await import("vite");
 const path = await import("node:path");
 const { fileURLToPath } = await import("node:url");
@@ -65,8 +66,12 @@ const argv = process.argv.slice(2);
 const hostPort = parsePort(argv, process.env);
 
 // The host first: if its port is busy it throws a clear error, and
-// there is no point standing Vite up only to tear it down again.
-const host = await startServer({ port: hostPort });
+// there is no point standing Vite up only to tear it down again. Ticket
+// 015-005: `startServer` no longer composes the store/watchers/
+// reconciler itself -- `startRuntime` (`runtime.ts`) is the composition
+// root, mirroring `cli.ts`'s own `main()`.
+const runtime = startRuntime();
+const host = await startServer({ store: runtime.store, runtime, port: hostPort });
 console.log(`robot-console: host listening on ${host.url}`);
 
 const vite = await createServer({
@@ -95,6 +100,7 @@ async function shutdown() {
   shuttingDown = true;
   console.log("\nrobot-console: shutting down...");
   await Promise.allSettled([vite.close(), host.close()]);
+  runtime.stop();
   process.exit(0);
 }
 

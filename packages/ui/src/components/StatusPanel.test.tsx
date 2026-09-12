@@ -1,19 +1,26 @@
 // @vitest-environment jsdom
 /**
  * StatusPanel.test.tsx — component tests (added out-of-process,
- * 2026-09-09).
+ * 2026-09-09; migrated to the `Snapshot` contract, sprint 015 ticket
+ * 009).
  *
  * Proves: the headline state word for every `robotStatus` combination
  * (including the no-`robotStatus` "Unknown" case and estopped's
  * priority over every other flag); the raw `fields` render verbatim;
- * Refresh sends a bare `STATUS`; Clear E-STOP sends `SET estop_clear 1`
- * then `STATUS`, in that order, and only appears while `estopped` is
- * `true`; every button disables with no session open.
+ * Clear E-STOP sends `SET estop_clear 1` then `STATUS`, in that order,
+ * and only appears while `estopped` is `true`; every button disables
+ * with no session open.
+ *
+ * Sprint 015 ticket 009: `link.session?.robotStatus` replaces
+ * `device.robotStatus`; the panel's own on-open `STATUS` probe is
+ * deleted outright (the harvester already polls `STATUS` on its own),
+ * so the "asks for STATUS itself on mount / on reopen" pinned test case
+ * this file used to carry is deleted too, not adapted.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import type { EndpointListEntry, RobotStatus } from "@robot-console/host/src/wsMessages.js";
+import type { RobotStatus, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { StatusPanel, describeStatusValue, statusRows } from "./StatusPanel";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
@@ -44,20 +51,6 @@ afterEach(() => {
   }
 });
 
-function baseDevice(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
-  return {
-    endpointId: "usb-ROBOT-A",
-    transport: "usb",
-    resourceKey: "usb-ROBOT-A",
-    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
-    name: "zavaz",
-    role: "NEZHA2",
-    sessionOpen: true,
-    usb: { serialNumber: "ROBOT-A-FULL", displaySerial: "0004", port: "/dev/cu.usbmodemC" },
-    ...overrides,
-  };
-}
-
 function baseStatus(overrides: Partial<RobotStatus> = {}): RobotStatus {
   return {
     receivedAt: 2000,
@@ -71,13 +64,45 @@ function baseStatus(overrides: Partial<RobotStatus> = {}): RobotStatus {
   };
 }
 
-function mountPanel(
-  device: EndpointListEntry,
-): { el: HTMLDivElement; socket: FakeSocket } {
+/** A link with an open session, optionally carrying a `robotStatus` --
+ * `undefined` (the default) means "session open, no status reply yet". */
+function openLink(status?: RobotStatus, overrides: Partial<SnapshotLink> = {}): SnapshotLink {
+  return {
+    id: "usb-ROBOT-A",
+    transport: "usb",
+    label: "USB · /dev/cu.usbmodemC",
+    state: "connected",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: false, close: true, flash: true, provisionWifi: true },
+    session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: status ?? null, functions: null },
+    ...overrides,
+  };
+}
+
+/** A link with no open session at all -- "No link open". */
+function closedLink(overrides: Partial<Omit<SnapshotLink, "session">> = {}): SnapshotLink {
+  return {
+    id: "usb-ROBOT-A",
+    transport: "usb",
+    label: "USB · /dev/cu.usbmodemC",
+    state: "connectable",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: true, close: false, flash: true, provisionWifi: false },
+    ...overrides,
+  };
+}
+
+function mountPanel(link: SnapshotLink): { el: HTMLDivElement; socket: FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <StatusPanel device={device} />
+      <StatusPanel link={link} />
     </WsProvider>,
   );
   act(() => {
@@ -92,20 +117,18 @@ function stateText(el: HTMLDivElement): string | null {
 
 describe("StatusPanel state word", () => {
   it("shows a waiting note (not a state word) while there is no robotStatus yet", () => {
-    const { el } = mountPanel(baseDevice());
+    const { el } = mountPanel(openLink());
     expect(stateText(el)).toContain("Waiting for the robot");
   });
 
   it("shows E-STOPPED on the heading line when estopped", () => {
-    const { el } = mountPanel(
-      baseDevice({ robotStatus: baseStatus({ estopped: true, active: true, ready: true }) }),
-    );
+    const { el } = mountPanel(openLink(baseStatus({ estopped: true, active: true, ready: true })));
     expect(stateText(el)).toBe("E-STOPPED");
   });
 
   it("OOP 2026-09-10 (stakeholder): shows no Ready/Moving word on the heading line -- the table carries both", () => {
     for (const status of [baseStatus(), baseStatus({ active: true }), baseStatus({ ready: false }), baseStatus({ stallHalted: true })]) {
-      const { el } = mountPanel(baseDevice({ robotStatus: status }));
+      const { el } = mountPanel(openLink(status));
       expect(stateText(el)).toBeNull();
       expect(el.querySelector(".status-panel-heading")?.textContent).toBe("Status");
     }
@@ -115,11 +138,11 @@ describe("StatusPanel state word", () => {
 describe("StatusPanel fields (OOP 2026-09-10: a named table, no refresh, no counter)", () => {
   it("renders the firmware's keys as labelled rows with decoded values, unknown keys raw", () => {
     const { el } = mountPanel(
-      baseDevice({
-        robotStatus: baseStatus({
+      openLink(
+        baseStatus({
           fields: { ready: "1", connL: "1", connR: "0", otos: "1", flags: "5", cyc: "1234", tlm: "off", reason: "stop", zzz: "7" },
         }),
-      }),
+      ),
     );
     const table = el.querySelector('[data-testid="status-panel-fields"]')!;
     expect(table.tagName).toBe("TABLE");
@@ -144,7 +167,7 @@ describe("StatusPanel fields (OOP 2026-09-10: a named table, no refresh, no coun
   });
 
   it("shows just the Status heading, with no Refresh button or last-updated counter", () => {
-    const { el } = mountPanel(baseDevice({ robotStatus: baseStatus({ receivedAt: 2000 }) }));
+    const { el } = mountPanel(openLink(baseStatus({ receivedAt: 2000 })));
     const heading = el.querySelector(".status-panel-heading")!;
     expect(heading.querySelector("h3")?.textContent).toBe("Status");
     expect(heading.querySelector('[data-testid="status-panel-state"]')).toBeNull();
@@ -153,59 +176,21 @@ describe("StatusPanel fields (OOP 2026-09-10: a named table, no refresh, no coun
     expect(el.textContent).not.toContain("Refresh");
   });
 
-  it("asks for STATUS itself on mount when the link is already open, and again on a closed->open transition", () => {
-    // Socket already open before the panel renders (the real app's
-    // shape: WsProvider connected long before a device page mounts) --
-    // same pattern as CommandStrip.test.tsx's mountReady.
-    let socket: FakeSocket | null = null;
-    const socketFactory = () => (socket = new FakeSocket());
-    const url = "ws://test/";
-    mount(
-      <WsProvider url={url} socketFactory={socketFactory}>
-        <div />
-      </WsProvider>,
-    );
-    act(() => {
-      socket!.emitOpen();
-    });
-    const render = (next: EndpointListEntry) => {
-      act(() => {
-        root!.render(
-          <WsProvider url={url} socketFactory={socketFactory}>
-            <StatusPanel device={next} />
-          </WsProvider>,
-        );
-      });
-    };
-    const statusMessage = JSON.stringify({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "STATUS" });
-
-    render(baseDevice({ sessionOpen: false }));
-    expect(socket!.sent).toEqual([]);
-    render(baseDevice());
-    expect(socket!.sent).toEqual([statusMessage]);
-    render(baseDevice({ robotStatus: baseStatus() })); // still open: no repeat
-    expect(socket!.sent).toEqual([statusMessage]);
-    render(baseDevice({ sessionOpen: false }));
-    render(baseDevice());
-    expect(socket!.sent).toEqual([statusMessage, statusMessage]);
-  });
-
   it("says so when no link is open instead of pretending to wait", () => {
-    const { el, socket } = mountPanel(baseDevice({ sessionOpen: false }));
+    const { el, socket } = mountPanel(closedLink());
     expect(socket.sent).toEqual([]);
     expect(stateText(el)).toBe("No link open");
   });
-
 });
 
 describe("StatusPanel Clear E-STOP", () => {
   it("is absent when not estopped", () => {
-    const { el } = mountPanel(baseDevice({ robotStatus: baseStatus() }));
+    const { el } = mountPanel(openLink(baseStatus()));
     expect(el.querySelector('[data-testid="status-panel-clear-estop"]')).toBeNull();
   });
 
   it("appears and sends SET estop_clear 1 then STATUS, in order, when estopped", () => {
-    const { el, socket } = mountPanel(baseDevice({ robotStatus: baseStatus({ estopped: true }) }));
+    const { el, socket } = mountPanel(openLink(baseStatus({ estopped: true })));
     const button = el.querySelector<HTMLButtonElement>('[data-testid="status-panel-clear-estop"]')!;
     socket.sent.length = 0;
     act(() => {
@@ -214,20 +199,24 @@ describe("StatusPanel Clear E-STOP", () => {
     expect(socket.sent).toEqual([
       JSON.stringify({
         type: "send-command",
-        endpointId: "usb-ROBOT-A",
+        linkId: "usb-ROBOT-A",
         verb: "SET",
         fields: ["estop_clear", "1"],
       }),
-      JSON.stringify({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "STATUS" }),
+      JSON.stringify({ type: "send-command", linkId: "usb-ROBOT-A", verb: "STATUS" }),
     ]);
   });
 
-  it("disables Clear E-STOP when there is no open session", () => {
-    const { el } = mountPanel(
-      baseDevice({ sessionOpen: false, robotStatus: baseStatus({ estopped: true }) }),
-    );
-    expect(
-      el.querySelector<HTMLButtonElement>('[data-testid="status-panel-clear-estop"]')!.disabled,
-    ).toBe(true);
+  it("never shows Clear E-STOP for a closed link -- a closed link's session (and its robotStatus) no longer exist under the Snapshot contract", () => {
+    // Under `EndpointListEntry`, `robotStatus` and `sessionOpen` were
+    // independent flat fields, so a stale "estopped" status could
+    // outlive a session close. `SnapshotLink.session` (and everything
+    // inside it, including `robotStatus`) is now present only *while a
+    // session is open* (`wsMessages.ts`'s own doc comment) -- a closed
+    // link structurally has no status to be estopped from, so this
+    // replaces the old "estopped but closed, disabled" case with the
+    // one that is actually reachable now.
+    const { el } = mountPanel(closedLink());
+    expect(el.querySelector('[data-testid="status-panel-clear-estop"]')).toBeNull();
   });
 });

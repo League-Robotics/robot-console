@@ -1,23 +1,22 @@
 // @vitest-environment jsdom
 /**
  * UnknownDevicePage.test.tsx — component-level tests for the unknown-
- * device page (SUC-002, SUC-003, SUC-004), trimmed by ticket 012-002 to
- * what's still page-specific now that `FlashControls.tsx` owns the
- * release/local-hex flash flow, its progress rendering, and its
- * `onFlashResult`/`onFlashLocalReady` subscriptions (see
- * `../components/FlashControls.test.tsx` for that coverage, migrated
- * from this file).
+ * device page (SUC-002, SUC-003, SUC-004), migrated sprint 015 ticket
+ * 008 to the `Snapshot` contract: a bare `SnapshotLink` (no owning
+ * device -- this is `Snapshot.unassigned`'s own page) in place of the
+ * retired `EndpointListEntry`.
  *
- * What's left here: the page header, the endpoint's own `sessionError`
- * note (page-level, not part of the flash flow), that `FlashControls`
- * is actually wired up as a child (a thin smoke test -- the flash
- * behavior itself is exercised against the standalone component, not
+ * What's covered here: the page header (the link's own `label`), the
+ * link's own failure reason note (page-level, not part of the flash
+ * flow), that `FlashControls` is actually wired up as a child (a thin
+ * smoke test -- the flash behavior itself is exercised against the
+ * standalone component, `../components/FlashControls.test.tsx`, not
  * duplicated here), and that `DeviceConsole` renders alongside it.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import type { EndpointListEntry, FirmwareKind, FirmwareAvailability } from "@robot-console/host/src/wsMessages.js";
+import type { FirmwareAvailability, FirmwareKind, Snapshot, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { UnknownDevicePage } from "./UnknownDevicePage";
 import { AppHeader } from "../components/AppHeader";
 import { WsProvider } from "../ws/WsProvider";
@@ -50,16 +49,17 @@ afterEach(() => {
   }
 });
 
-function baseDevice(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+function baseLink(overrides: Partial<SnapshotLink> = {}): SnapshotLink {
   return {
-    endpointId: "usb-SERIAL-A",
+    id: "usb-SERIAL-A",
     transport: "usb",
-    resourceKey: "usb-SERIAL-A",
-    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
-    name: "zeguz",
-    role: null,
-    sessionOpen: false,
-    usb: { serialNumber: "SERIAL-A-FULL", displaySerial: "0002", port: "/dev/cu.usbmodemA" },
+    label: "zeguz",
+    state: "connectable",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: true, close: false, flash: true, provisionWifi: false },
     ...overrides,
   };
 }
@@ -81,61 +81,74 @@ function firmwareStatusFixture(): Record<FirmwareKind, FirmwareAvailability> {
   };
 }
 
+function snapshotWith(link: SnapshotLink, firmware: Record<FirmwareKind, FirmwareAvailability>): Snapshot {
+  return {
+    type: "snapshot",
+    seq: 1,
+    at: 0,
+    devices: [],
+    unassigned: [link],
+    relays: [],
+    firmware,
+    wifi: { ssid: null, source: null },
+    tasks: [],
+  };
+}
+
 function mountUnknownPage(
-  endpoint: EndpointListEntry,
+  link: SnapshotLink,
   options: { firmwareStatus?: Record<FirmwareKind, FirmwareAvailability> } = {},
 ): { el: HTMLDivElement; socket: () => FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     withRouter(
       <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-        <UnknownDevicePage endpoint={endpoint} />
+        <UnknownDevicePage link={link} />
       </WsProvider>,
-      { initialEntries: [`/d/${endpoint.endpointId}`] },
+      { initialEntries: [`/d/${link.id}`] },
     ),
   );
   act(() => {
     socket!.emitOpen();
   });
-  if (options.firmwareStatus) {
+  const firmwareStatus = options.firmwareStatus;
+  if (firmwareStatus) {
     act(() => {
-      socket!.emitMessage({ type: "endpoints", endpoints: [endpoint], firmwareStatus: options.firmwareStatus });
+      socket!.emitMessage(snapshotWith(link, firmwareStatus));
     });
   }
   return { el, socket: () => socket! };
 }
 
 describe("UnknownDevicePage", () => {
-  it("renders the endpoint's name as its header", () => {
-    const { el } = mountUnknownPage(baseDevice({ name: "zeguz" }));
-    expect(el.querySelector("h2")?.textContent).toBe("zeguz");
+  it("renders the link's own label as its header", () => {
+    const { el } = mountUnknownPage(baseLink({ label: "USB · /dev/cu.usbmodemA" }));
+    expect(el.querySelector("h2")?.textContent).toBe("USB · /dev/cu.usbmodemA");
   });
 
-  it("falls back to the endpointId as its header when the device has no name", () => {
-    const { el } = mountUnknownPage(baseDevice({ name: null }));
-    expect(el.querySelector("h2")?.textContent).toBe("usb-SERIAL-A");
-  });
-
-  it("shows a sessionError note when the session failed to link", () => {
-    const { el } = mountUnknownPage(
-      baseDevice({ sessionError: "HELLO reply timed out after 2000ms" }),
-    );
+  it("shows a failure-reason note when the link's own state is failed with a reason", () => {
+    const { el } = mountUnknownPage(baseLink({ state: "failed", reason: "HELLO reply timed out after 2000ms" }));
     expect(el.textContent).toContain("Link attempt: HELLO reply timed out after 2000ms");
   });
 
-  it("shows no sessionError note when the session has no error", () => {
-    const { el } = mountUnknownPage(baseDevice());
+  it("shows a failure-reason note for an unresponsive link too", () => {
+    const { el } = mountUnknownPage(baseLink({ state: "unresponsive", reason: "no reply" }));
+    expect(el.textContent).toContain("Link attempt: no reply");
+  });
+
+  it("shows no failure note for a connectable link with no reason", () => {
+    const { el } = mountUnknownPage(baseLink());
     expect(el.textContent).not.toContain("Link attempt:");
   });
 
-  it("mounts FlashDialog, offering a Flash trigger for a role-less device", () => {
-    const { el } = mountUnknownPage(baseDevice({ role: null }), { firmwareStatus: firmwareStatusFixture() });
+  it("mounts FlashDialog, offering a Flash trigger for a flashable link", () => {
+    const { el } = mountUnknownPage(baseLink(), { firmwareStatus: firmwareStatusFixture() });
     const flashTrigger = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash");
     expect(flashTrigger).toBeDefined();
   });
 
-  it("opening the Flash trigger reveals the flash flow for a role-less device", () => {
-    const { el } = mountUnknownPage(baseDevice({ role: null }), { firmwareStatus: firmwareStatusFixture() });
+  it("opening the Flash trigger reveals the flash flow for a flashable link", () => {
+    const { el } = mountUnknownPage(baseLink(), { firmwareStatus: firmwareStatusFixture() });
     const flashTrigger = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash");
     act(() => {
       flashTrigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -144,9 +157,9 @@ describe("UnknownDevicePage", () => {
     expect(el.textContent).toContain("Flash robot firmware");
   });
 
-  it("shows no Flash trigger for an identified device (FlashDialog's own canBeFlashed gate)", () => {
+  it("shows no Flash trigger for a non-flashable link (FlashDialog's own canBeFlashed gate)", () => {
     const { el } = mountUnknownPage(
-      baseDevice({ role: "NEZHA2", sessionOpen: true }),
+      baseLink({ capabilities: { open: false, close: true, flash: false, provisionWifi: true } }),
       { firmwareStatus: firmwareStatusFixture() },
     );
     const flashTrigger = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash");
@@ -154,7 +167,7 @@ describe("UnknownDevicePage", () => {
   });
 
   it("renders DeviceConsole alongside the flash controls", () => {
-    const { el } = mountUnknownPage(baseDevice());
+    const { el } = mountUnknownPage(baseLink());
     expect(el.querySelector('[aria-label="Console"]')).not.toBeNull();
     expect(el.querySelector('[data-testid="console-send-input"]')).not.toBeNull();
   });
@@ -165,26 +178,26 @@ describe("UnknownDevicePage under AppHeader (ticket 012-004)", () => {
   // (see AppHeader.test.tsx for the full behavior matrix); this is a
   // cheap per-page smoke test proving both actually show up on a real
   // unknown-device page's route, not just in AppHeader's own isolated
-  // tests. An unknown device's own on-page Flash trigger (already
+  // tests. An unassigned link's own on-page Flash trigger (already
   // covered above) and AppHeader's Flash trigger coexist without
   // conflict -- each opens its own independent `FlashDialog` instance.
   it("shows a back-to-devices link and two independent, enabled Flash triggers alongside the unknown-device page", () => {
-    const device = baseDevice({ role: null });
+    const link = baseLink();
     let socket: FakeSocket | null = null;
     const el = mount(
       withRouter(
         <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
           <AppHeader />
-          <UnknownDevicePage endpoint={device} />
+          <UnknownDevicePage link={link} />
         </WsProvider>,
-        { initialEntries: [`/d/${device.endpointId}`] },
+        { initialEntries: [`/d/${link.id}`] },
       ),
     );
     act(() => {
       socket!.emitOpen();
     });
     act(() => {
-      socket!.emitMessage({ type: "endpoints", endpoints: [device], firmwareStatus: firmwareStatusFixture() });
+      socket!.emitMessage(snapshotWith(link, firmwareStatusFixture()));
     });
 
     const backLink = el.querySelector("a");

@@ -35,10 +35,34 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { nameToValue } from "@robot-console/protocol";
-import type { KnownRobotRecord, KnownRobotsFile } from "../knownRobots.js";
 import type { Store } from "../index.js";
 
 const IMPORT_GUARD_KEY = "import:known-robots";
+
+/**
+ * The on-disk `known-robots.json` record/file shape this importer reads.
+ * Sprint 015 ticket 003 inlines these here (previously imported from
+ * `store/knownRobots.ts`, the old in-memory `KnownRobotsStore` module
+ * that ticket retires along with `deviceRegistry.ts`) — this importer is
+ * the shape's one remaining reader, so a shared module is no longer
+ * warranted. Field-for-field identical to the retired module's own
+ * types; see this file's own module doc comment for what each field
+ * means.
+ */
+export interface KnownRobotRecord {
+  name: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastSeenVia: "usb";
+  lastUsbSerial: string;
+  lastRole: string | null;
+  lastType: "robot";
+}
+
+export interface KnownRobotsFile {
+  version: number;
+  robots: KnownRobotRecord[];
+}
 
 export interface ImportKnownRobotsResult {
   /** Number of records upserted this call — always `0` once the guard

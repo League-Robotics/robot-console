@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 /**
  * RobotPage.test.tsx — integration-level rendering tests for the robot
- * page (ticket 012-005 / SUC-001, SUC-003, SUC-004, SUC-006, SUC-007).
+ * page (ticket 012-005 / SUC-001, SUC-003, SUC-004, SUC-006, SUC-007;
+ * migrated to the `Snapshot` contract, sprint 015 ticket 009).
  *
  * This ticket replaces the sprint 006 single-column shell (three
  * separate response areas reading the same rx log, one of them -- the
@@ -18,15 +19,15 @@
  * `CommandStrip.test.tsx`); this file proves the page assembles them
  * correctly, that the layout's structural constraints hold (no second
  * console/reply region anywhere on the page, `EstopControl` not nested
- * inside either column's scroll container), and that a `HELLO` refusal
- * routed by ticket 012-003 actually surfaces here.
- * `RobotPage.transportBlind.test.ts` separately enforces the
- * transport-blindness property with a source scan.
+ * inside either column's scroll container), and that a host `notice`
+ * routed by ticket 012-003 (now `type: "notice"`, ticket 004) actually
+ * surfaces here. `RobotPage.transportBlind.test.ts` separately enforces
+ * the transport-blindness property with a source scan.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import type { Snapshot, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { RobotPage } from "./RobotPage";
 import { AppHeader } from "../components/AppHeader";
 import { WsProvider } from "../ws/WsProvider";
@@ -60,25 +61,61 @@ afterEach(() => {
   }
 });
 
-function robotFixture(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+const LINK_ID = "usb-ROBOT-A";
+
+function robotLink(overrides: Partial<SnapshotLink> = {}): SnapshotLink {
   return {
-    endpointId: "usb-ROBOT-A",
+    id: LINK_ID,
     transport: "usb",
-    resourceKey: "usb-ROBOT-A",
-    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
-    name: "vevav",
-    role: "NEZHA2",
-    sessionOpen: true,
-    usb: { serialNumber: "ROBOT-A-FULL", displaySerial: "0004", port: "/dev/cu.usbmodemC" },
+    label: "USB · /dev/cu.usbmodemC",
+    state: "connected",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: false, close: true, flash: true, provisionWifi: true },
+    session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
     ...overrides,
   };
 }
 
-function mountRobotPage(endpoint: EndpointListEntry): { el: HTMLDivElement; socket: FakeSocket } {
+function robotDevice(overrides: Partial<Omit<SnapshotDevice, "links">> = {}): SnapshotDevice {
+  return {
+    id: 1,
+    name: "vevav",
+    kind: "robot",
+    role: "NEZHA2",
+    program: null,
+    version: null,
+    owned: true,
+    radio: { channel: 1, group: 1, source: "derived" },
+    lastSeen: 0,
+    lastChecked: null,
+    links: [robotLink()],
+    ...overrides,
+  };
+}
+
+function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
+  return {
+    type: "snapshot",
+    seq: 1,
+    at: 0,
+    devices: [],
+    unassigned: [],
+    relays: [],
+    firmware: { relay: { configured: false }, robot: { configured: false } },
+    wifi: { ssid: null, source: null },
+    tasks: [],
+    ...overrides,
+  };
+}
+
+function mountRobotPage(device: SnapshotDevice = robotDevice()): { el: HTMLDivElement; socket: FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <RobotPage endpoint={endpoint} />
+      <RobotPage device={device} link={device.links[0]!} />
     </WsProvider>,
   );
   act(() => {
@@ -88,23 +125,23 @@ function mountRobotPage(endpoint: EndpointListEntry): { el: HTMLDivElement; sock
 }
 
 describe("RobotPage", () => {
-  it("renders a header with the endpoint's name", () => {
-    const { el } = mountRobotPage(robotFixture());
+  it("renders a header with the device's name", () => {
+    const { el } = mountRobotPage(robotDevice());
     expect(el.textContent).toContain("vevav");
   });
 
   it("OOP 2026-09-10: the Main tab shows status and drive on the left, console (with sequencing at its top) and command strip on the right", () => {
-    const { el } = mountRobotPage(robotFixture());
+    const { el } = mountRobotPage();
     const left = el.querySelector(".robot-page-column-left");
     expect(left).not.toBeNull();
     expect(left!.querySelector('[aria-label="Robot status"]')).not.toBeNull();
     expect(left!.querySelector('[aria-label="Drive controls"]')).not.toBeNull();
     expect(Array.from(left!.querySelectorAll("h3")).map((h) => h.textContent)).toEqual(["Status", "Drive"]);
-    const console = el.querySelector('[aria-label="Console"]')!;
-    expect(console.querySelector('[aria-label="Sequencing state"]')).not.toBeNull();
+    const consoleEl = el.querySelector('[aria-label="Console"]')!;
+    expect(consoleEl.querySelector('[aria-label="Sequencing state"]')).not.toBeNull();
     // Sequencing precedes the log inside the console.
-    const seq = console.querySelector('[aria-label="Sequencing state"]')!;
-    const log = console.querySelector('[data-testid="console-log"]')!;
+    const seq = consoleEl.querySelector('[aria-label="Sequencing state"]')!;
+    const log = consoleEl.querySelector('[data-testid="console-log"]')!;
     expect(seq.compareDocumentPosition(log) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // Nothing from the other tabs is mounted.
     expect(el.querySelector('[aria-label="Functions"]')).toBeNull();
@@ -115,7 +152,7 @@ describe("RobotPage", () => {
   });
 
   it("OOP 2026-09-10: tabs sit beside the name; a plain robot gets Main, Drive, Functions & charts and Configuration", () => {
-    const { el } = mountRobotPage(robotFixture());
+    const { el } = mountRobotPage();
     const row = el.querySelector(".robot-page-title-row")!;
     expect(row.querySelector("h2")?.textContent).toBe("vevav");
     expect(Array.from(row.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Functions & charts", "Configuration"]);
@@ -123,7 +160,7 @@ describe("RobotPage", () => {
   });
 
   it("OOP 2026-09-10: the Functions & charts tab shows functions and the drive pad on the left and charts plus path trace on the right", () => {
-    const { el } = mountRobotPage(robotFixture());
+    const { el } = mountRobotPage();
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-functions"]')!.click();
     });
@@ -139,11 +176,7 @@ describe("RobotPage", () => {
   });
 
   it("OOP 2026-09-10: a calibration robot gets a Calibration tab with both wizards, the code block, and the current calibration", () => {
-    const { el } = mountRobotPage(
-      robotFixture({
-        classification: { type: "calibration", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: "calibration-1", version: "1" },
-      }),
-    );
+    const { el } = mountRobotPage(robotDevice({ program: "calibration-1", version: "1" }));
     expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Calibration", "Functions & charts", "Configuration"]);
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
@@ -157,7 +190,7 @@ describe("RobotPage", () => {
   });
 
   it("renders exactly one console and a command strip in the right column", () => {
-    const { el } = mountRobotPage(robotFixture());
+    const { el } = mountRobotPage();
     const right = el.querySelector(".robot-page-column-right");
     expect(right).not.toBeNull();
     expect(right!.querySelector('[aria-label="Console"]')).not.toBeNull();
@@ -170,7 +203,7 @@ describe("RobotPage", () => {
   });
 
   it("renders STOP/E-STOP inside DriveControls' pad in the left column, not as a page-level sibling (out-of-process, 2026-09-10)", () => {
-    const { el } = mountRobotPage(robotFixture());
+    const { el } = mountRobotPage();
     const stop = el.querySelector('[data-testid="stop-button"]');
     const estop = el.querySelector('[aria-label="Emergency stop"]');
     expect(stop).not.toBeNull();
@@ -195,12 +228,12 @@ describe("RobotPage", () => {
   });
 
   it("has no second echoed region anywhere on the page for a populated rx log with nothing sent (retired Get/Set panel bug regression)", () => {
-    const { el, socket } = mountRobotPage(robotFixture());
+    const { el, socket } = mountRobotPage();
 
     act(() => {
-      socket.emitMessage({ type: "line", endpointId: "usb-ROBOT-A", direction: "rx", line: "status a=1" });
-      socket.emitMessage({ type: "line", endpointId: "usb-ROBOT-A", direction: "rx", line: "get name value" });
-      socket.emitMessage({ type: "line", endpointId: "usb-ROBOT-A", direction: "rx", line: "ack 1 0 none" });
+      socket.emitMessage({ type: "line", linkId: LINK_ID, direction: "rx", line: "status a=1" });
+      socket.emitMessage({ type: "line", linkId: LINK_ID, direction: "rx", line: "get name value" });
+      socket.emitMessage({ type: "line", linkId: LINK_ID, direction: "rx", line: "ack 1 0 none" });
     });
 
     // Each rx line appears exactly once on the whole page -- the
@@ -215,7 +248,7 @@ describe("RobotPage", () => {
   });
 
   it("command strip's HELLO/ID/VER/STATUS buttons send their bare verb via sendCommand", () => {
-    const { el, socket } = mountRobotPage(robotFixture());
+    const { el, socket } = mountRobotPage();
 
     for (const [testId, verb] of [
       ["command-strip-hello", "HELLO"],
@@ -227,14 +260,12 @@ describe("RobotPage", () => {
       act(() => {
         el.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`)!.click();
       });
-      expect(socket.sent).toEqual([
-        JSON.stringify({ type: "send-command", endpointId: "usb-ROBOT-A", verb }),
-      ]);
+      expect(socket.sent).toEqual([JSON.stringify({ type: "send-command", linkId: LINK_ID, verb })]);
     }
   });
 
-  it("shows the host's HELLO rejection text in the single console when pressed against an open session", () => {
-    const { el, socket } = mountRobotPage(robotFixture());
+  it("shows the host's notice text in the single console when a HELLO resync gets no reply", () => {
+    const { el, socket } = mountRobotPage();
 
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="command-strip-hello"]')!.click();
@@ -244,7 +275,7 @@ describe("RobotPage", () => {
       '"HELLO" cannot be sent as a live command -- it resets the robot\'s sequence state ' +
       "(protocol.md S8.3); close and reopen the session instead of resending HELLO";
     act(() => {
-      socket.emitMessage({ type: "error", endpointId: "usb-ROBOT-A", message: refusal });
+      socket.emitMessage({ type: "notice", level: "error", linkId: LINK_ID, text: refusal, at: 0, seq: 1 });
     });
 
     const log = el.querySelector('[data-testid="console-log"]')!;
@@ -259,25 +290,13 @@ describe("RobotPage", () => {
 
 describe("RobotPage program/version diagnostics (sprint 011 ticket 002)", () => {
   it("renders no diagnostics line when program/version are both null (a robot that never answered ID) -- regression", () => {
-    const { el } = mountRobotPage(robotFixture());
+    const { el } = mountRobotPage(robotDevice());
 
     expect(el.querySelector('[data-testid="robot-page-diagnostics"]')).toBeNull();
   });
 
-  it("shows the raw program/version strings for a robot-classified endpoint that answered ID", () => {
-    const { el } = mountRobotPage(
-      robotFixture({
-        classification: {
-          type: "robot",
-          role: "NEZHA2",
-          commonName: "robot",
-          dialect: "space",
-          evidence: "role",
-          program: "tovez",
-          version: "0.20260901.1",
-        },
-      }),
-    );
+  it("shows the raw program/version strings for a robot device that answered ID", () => {
+    const { el } = mountRobotPage(robotDevice({ program: "tovez", version: "0.20260901.1" }));
 
     const diagnostics = el.querySelector('[data-testid="robot-page-diagnostics"]');
     expect(diagnostics).not.toBeNull();
@@ -285,20 +304,8 @@ describe("RobotPage program/version diagnostics (sprint 011 ticket 002)", () => 
     expect(diagnostics!.textContent).toContain("0.20260901.1");
   });
 
-  it("shows the raw program/version strings for a calibration-classified endpoint", () => {
-    const { el } = mountRobotPage(
-      robotFixture({
-        classification: {
-          type: "calibration",
-          role: "NEZHA2",
-          commonName: "robot",
-          dialect: "space",
-          evidence: "role",
-          program: "calibration-0.20260907.2",
-          version: "0.20260907.2",
-        },
-      }),
-    );
+  it("shows the raw program/version strings for a calibration-program device", () => {
+    const { el } = mountRobotPage(robotDevice({ program: "calibration-0.20260907.2", version: "0.20260907.2" }));
 
     const diagnostics = el.querySelector('[data-testid="robot-page-diagnostics"]');
     expect(diagnostics).not.toBeNull();
@@ -314,22 +321,22 @@ describe("RobotPage under AppHeader (ticket 012-004)", () => {
   // robot device page's route, not just in AppHeader's own isolated
   // tests.
   it("shows a back-to-devices link and an enabled Flash entry alongside the robot page", () => {
-    const robot = robotFixture();
+    const robot = robotDevice();
     let socket: FakeSocket | null = null;
     const el = mount(
       withRouter(
         <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
           <AppHeader />
-          <RobotPage endpoint={robot} />
+          <RobotPage device={robot} link={robot.links[0]!} />
         </WsProvider>,
-        { initialEntries: [`/d/${robot.endpointId}`] },
+        { initialEntries: [`/d/${robot.links[0]!.id}`] },
       ),
     );
     act(() => {
       socket!.emitOpen();
     });
     act(() => {
-      socket!.emitMessage({ type: "endpoints", endpoints: [robot] });
+      socket!.emitMessage(snapshot({ devices: [robot] }));
     });
 
     const backLink = el.querySelector("a");

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
- * DriveControls.test.tsx — component tests (ticket 005 / SUC-001).
+ * DriveControls.test.tsx — component tests (ticket 005 / SUC-001;
+ * migrated to the `Snapshot` contract, sprint 015 ticket 009).
  *
  * Proves the hold-resend-release lease discipline this module's own
  * doc comment describes: pressing sends `WHEELS_V` immediately; holding
@@ -22,7 +23,7 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { DriveControls } from "./DriveControls";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
@@ -54,25 +55,44 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function baseDevice(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+const LINK_ID = "usb-ROBOT-A";
+
+function openLink(overrides: Partial<SnapshotLink> = {}): SnapshotLink {
   return {
-    endpointId: "usb-ROBOT-A",
+    id: LINK_ID,
     transport: "usb",
-    resourceKey: "usb-ROBOT-A",
-    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
-    name: "zavaz",
-    role: "NEZHA2",
-    sessionOpen: true,
-    usb: { serialNumber: "ROBOT-A-FULL", displaySerial: "0004", port: "/dev/cu.usbmodemC" },
+    label: "USB · /dev/cu.usbmodemC",
+    state: "connected",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: false, close: true, flash: true, provisionWifi: true },
+    session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
     ...overrides,
   };
 }
 
-function mountControls(device: EndpointListEntry): { el: HTMLDivElement; socket: FakeSocket } {
+function closedLink(overrides: Partial<Omit<SnapshotLink, "session">> = {}): SnapshotLink {
+  return {
+    id: LINK_ID,
+    transport: "usb",
+    label: "USB · /dev/cu.usbmodemC",
+    state: "connectable",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: true, close: false, flash: true, provisionWifi: false },
+    ...overrides,
+  };
+}
+
+function mountControls(link: SnapshotLink): { el: HTMLDivElement; socket: FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <DriveControls device={device} />
+      <DriveControls link={link} />
     </WsProvider>,
   );
   act(() => {
@@ -92,14 +112,14 @@ function mountControls(device: EndpointListEntry): { el: HTMLDivElement; socket:
  * between a child's cleanup and its parent's is not something this
  * component should need to depend on. */
 function mountControlsRemovable(
-  device: EndpointListEntry,
+  link: SnapshotLink,
 ): { el: HTMLDivElement; socket: FakeSocket; unmountDriveControls: () => Promise<void> } {
   let socket: FakeSocket | null = null;
   const socketFactory = () => (socket = new FakeSocket());
   const url = "ws://test/";
   const el = mount(
     <WsProvider url={url} socketFactory={socketFactory}>
-      <DriveControls device={device} />
+      <DriveControls link={link} />
     </WsProvider>,
   );
   act(() => {
@@ -126,7 +146,7 @@ function sentMessages(socket: FakeSocket): unknown[] {
 
 describe("DriveControls", () => {
   it("sends WHEELS_V immediately on press", () => {
-    const { el, socket } = mountControls(baseDevice());
+    const { el, socket } = mountControls(openLink());
     const forward = el.querySelector<HTMLButtonElement>('[data-testid="drive-forward"]')!;
 
     act(() => {
@@ -134,13 +154,13 @@ describe("DriveControls", () => {
     });
 
     expect(sentMessages(socket)).toEqual([
-      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "WHEELS_V", fields: [150, 150, 400] },
+      { type: "send-command", linkId: LINK_ID, verb: "WHEELS_V", fields: [150, 150, 400] },
     ]);
   });
 
   it("resends WHEELS_V periodically while held, before the lease expires", () => {
     vi.useFakeTimers();
-    const { el, socket } = mountControls(baseDevice());
+    const { el, socket } = mountControls(openLink());
     const forward = el.querySelector<HTMLButtonElement>('[data-testid="drive-forward"]')!;
 
     act(() => {
@@ -165,7 +185,7 @@ describe("DriveControls", () => {
 
   it("sends STOP with no fields on release, and stops resending", () => {
     vi.useFakeTimers();
-    const { el, socket } = mountControls(baseDevice());
+    const { el, socket } = mountControls(openLink());
     const forward = el.querySelector<HTMLButtonElement>('[data-testid="drive-forward"]')!;
 
     act(() => {
@@ -183,7 +203,7 @@ describe("DriveControls", () => {
     const messages = sentMessages(socket);
     expect(messages[messages.length - 1]).toEqual({
       type: "send-command",
-      endpointId: "usb-ROBOT-A",
+      linkId: LINK_ID,
       verb: "STOP",
     });
 
@@ -195,7 +215,7 @@ describe("DriveControls", () => {
   });
 
   it("stops (sends STOP) when the mouse leaves the button while held", () => {
-    const { el, socket } = mountControls(baseDevice());
+    const { el, socket } = mountControls(openLink());
     const left = el.querySelector<HTMLButtonElement>('[data-testid="drive-left"]')!;
 
     act(() => {
@@ -214,13 +234,13 @@ describe("DriveControls", () => {
 
     const messages = sentMessages(socket);
     expect(messages).toEqual([
-      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "WHEELS_V", fields: [-150, 150, 400] },
-      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "STOP" },
+      { type: "send-command", linkId: LINK_ID, verb: "WHEELS_V", fields: [-150, 150, 400] },
+      { type: "send-command", linkId: LINK_ID, verb: "STOP" },
     ]);
   });
 
   it("sends mirrored wheel velocities for turning right", () => {
-    const { el, socket } = mountControls(baseDevice());
+    const { el, socket } = mountControls(openLink());
     const right = el.querySelector<HTMLButtonElement>('[data-testid="drive-right"]')!;
 
     act(() => {
@@ -228,12 +248,12 @@ describe("DriveControls", () => {
     });
 
     expect(sentMessages(socket)).toEqual([
-      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "WHEELS_V", fields: [150, -150, 400] },
+      { type: "send-command", linkId: LINK_ID, verb: "WHEELS_V", fields: [150, -150, 400] },
     ]);
   });
 
   it("sends negative wheel velocities for backward", () => {
-    const { el, socket } = mountControls(baseDevice());
+    const { el, socket } = mountControls(openLink());
     const backward = el.querySelector<HTMLButtonElement>('[data-testid="drive-backward"]')!;
 
     act(() => {
@@ -241,12 +261,12 @@ describe("DriveControls", () => {
     });
 
     expect(sentMessages(socket)).toEqual([
-      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "WHEELS_V", fields: [-150, -150, 400] },
+      { type: "send-command", linkId: LINK_ID, verb: "WHEELS_V", fields: [-150, -150, 400] },
     ]);
   });
 
   it("sends STOP when DriveControls itself unmounts while held", async () => {
-    const { el, socket, unmountDriveControls } = mountControlsRemovable(baseDevice());
+    const { el, socket, unmountDriveControls } = mountControlsRemovable(openLink());
     const forward = el.querySelector<HTMLButtonElement>('[data-testid="drive-forward"]')!;
 
     act(() => {
@@ -259,20 +279,20 @@ describe("DriveControls", () => {
     const messages = sentMessages(socket);
     expect(messages[messages.length - 1]).toEqual({
       type: "send-command",
-      endpointId: "usb-ROBOT-A",
+      linkId: LINK_ID,
       verb: "STOP",
     });
   });
 
   it("disables the pad with a hint when no session is open", () => {
-    const { el } = mountControls(baseDevice({ sessionOpen: false }));
+    const { el } = mountControls(closedLink());
 
     expect(el.querySelector<HTMLButtonElement>('[data-testid="drive-forward"]')!.disabled).toBe(true);
     expect(el.textContent).toContain("No link open");
   });
 
   it("does not send anything when pressed with no session open", () => {
-    const { el, socket } = mountControls(baseDevice({ sessionOpen: false }));
+    const { el, socket } = mountControls(closedLink());
     const forward = el.querySelector<HTMLButtonElement>('[data-testid="drive-forward"]')!;
 
     act(() => {
@@ -285,57 +305,55 @@ describe("DriveControls", () => {
 
 describe("DriveControls STOP (non-latching, ported from EstopControl.test.tsx, out-of-process 2026-09-10)", () => {
   it("sends STOP now on press, and nothing else when the robot has no abort function", () => {
-    const { el, socket } = mountControls(baseDevice());
+    const { el, socket } = mountControls(openLink());
     socket.sent.length = 0;
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="stop-button"]')!.click();
     });
     expect(sentMessages(socket)).toEqual([
-      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "STOP", fields: ["now"] },
+      { type: "send-command", linkId: LINK_ID, verb: "STOP", fields: ["now"] },
     ]);
   });
 
   it("also sends RUN abort when the robot's function list includes abort", () => {
-    const { el, socket } = mountControls(baseDevice({ functions: [{ name: "clearestop" }, { name: "abort" }] }));
+    const { el, socket } = mountControls(
+      openLink({ session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: [{ name: "clearestop" }, { name: "abort" }] } }),
+    );
     socket.sent.length = 0;
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="stop-button"]')!.click();
     });
     expect(sentMessages(socket)).toEqual([
-      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "STOP", fields: ["now"] },
-      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "RUN", fields: ["abort"] },
+      { type: "send-command", linkId: LINK_ID, verb: "STOP", fields: ["now"] },
+      { type: "send-command", linkId: LINK_ID, verb: "RUN", fields: ["abort"] },
     ]);
   });
 
   it("is disabled with no session open", () => {
-    const { el } = mountControls(baseDevice({ sessionOpen: false }));
+    const { el } = mountControls(closedLink());
     expect(el.querySelector<HTMLButtonElement>('[data-testid="stop-button"]')!.disabled).toBe(true);
   });
 });
 
 describe("DriveControls E-STOP (ported from EstopControl.test.tsx, out-of-process 2026-09-10)", () => {
   it("sends unsequenced ESTOP with no fields on press", () => {
-    const { el, socket } = mountControls(baseDevice());
+    const { el, socket } = mountControls(openLink());
     const button = el.querySelector<HTMLButtonElement>('[data-testid="estop-button"]')!;
 
     act(() => {
       button.click();
     });
 
-    expect(sentMessages(socket)).toEqual([
-      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "ESTOP" },
-    ]);
+    expect(sentMessages(socket)).toEqual([{ type: "send-command", linkId: LINK_ID, verb: "ESTOP" }]);
   });
 
   it("remains reachable and sends immediately while another panel has a pending sequenced WHEELS_V", () => {
-    // A device snapshot mid-drive-lease: `sequencing.pendingCount` is
-    // nonzero, exactly the state this component's own resend loop
-    // leaves an endpoint in while a direction is held. E-STOP must not
-    // notice or care.
-    const device = baseDevice({
-      sequencing: { seq: 3, pendingCount: 1, lastDone: 2, lastDoneReason: "none" },
-    });
-    const { el, socket } = mountControls(device);
+    // A link snapshot mid-drive-lease: `session.pending` is nonzero,
+    // exactly the state this component's own resend loop leaves a link
+    // in while a direction is held. E-STOP must not notice or care --
+    // it never reads `session.pending`/`session.seq` at all.
+    const link = openLink({ session: { seq: 3, pending: 1, lastDone: 2, lastDoneReason: "none", robotStatus: null, functions: null } });
+    const { el, socket } = mountControls(link);
     const button = el.querySelector<HTMLButtonElement>('[data-testid="estop-button"]')!;
 
     expect(button.disabled).toBe(false);
@@ -344,29 +362,23 @@ describe("DriveControls E-STOP (ported from EstopControl.test.tsx, out-of-proces
       button.click();
     });
 
-    expect(sentMessages(socket)).toEqual([
-      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "ESTOP" },
-    ]);
+    expect(sentMessages(socket)).toEqual([{ type: "send-command", linkId: LINK_ID, verb: "ESTOP" }]);
   });
 
   it("remains reachable and sends immediately while a GET is pending", () => {
-    const device = baseDevice({
-      sequencing: { seq: 5, pendingCount: 2, lastDone: 3, lastDoneReason: "none" },
-    });
-    const { el, socket } = mountControls(device);
+    const link = openLink({ session: { seq: 5, pending: 2, lastDone: 3, lastDoneReason: "none", robotStatus: null, functions: null } });
+    const { el, socket } = mountControls(link);
     const button = el.querySelector<HTMLButtonElement>('[data-testid="estop-button"]')!;
 
     act(() => {
       button.click();
     });
 
-    expect(sentMessages(socket)).toEqual([
-      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "ESTOP" },
-    ]);
+    expect(sentMessages(socket)).toEqual([{ type: "send-command", linkId: LINK_ID, verb: "ESTOP" }]);
   });
 
   it("treats repeated presses as harmless -- each is an independent unsequenced send, never queued or blocked", () => {
-    const { el, socket } = mountControls(baseDevice());
+    const { el, socket } = mountControls(openLink());
     const button = el.querySelector<HTMLButtonElement>('[data-testid="estop-button"]')!;
 
     act(() => {
@@ -380,9 +392,9 @@ describe("DriveControls E-STOP (ported from EstopControl.test.tsx, out-of-proces
     });
 
     expect(sentMessages(socket)).toEqual([
-      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "ESTOP" },
-      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "ESTOP" },
-      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "ESTOP" },
+      { type: "send-command", linkId: LINK_ID, verb: "ESTOP" },
+      { type: "send-command", linkId: LINK_ID, verb: "ESTOP" },
+      { type: "send-command", linkId: LINK_ID, verb: "ESTOP" },
     ]);
     // Still enabled and clickable after repeated presses -- no
     // disable-after-click, no cooldown, no error state.
@@ -390,7 +402,7 @@ describe("DriveControls E-STOP (ported from EstopControl.test.tsx, out-of-proces
   });
 
   it("disables with a hint (not hidden) when no session is open", () => {
-    const { el } = mountControls(baseDevice({ sessionOpen: false }));
+    const { el } = mountControls(closedLink());
     const button = el.querySelector<HTMLButtonElement>('[data-testid="estop-button"]')!;
 
     expect(button).not.toBeNull();
@@ -399,7 +411,7 @@ describe("DriveControls E-STOP (ported from EstopControl.test.tsx, out-of-proces
   });
 
   it("does not send anything when pressed with no session open", () => {
-    const { el, socket } = mountControls(baseDevice({ sessionOpen: false }));
+    const { el, socket } = mountControls(closedLink());
     const button = el.querySelector<HTMLButtonElement>('[data-testid="estop-button"]')!;
 
     act(() => {
@@ -411,37 +423,51 @@ describe("DriveControls E-STOP (ported from EstopControl.test.tsx, out-of-proces
 });
 
 describe("DriveControls Clear E-STOP (ported from EstopControl.test.tsx, out-of-process 2026-09-10)", () => {
-  function estoppedDevice(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
-    return baseDevice({
-      robotStatus: {
-        receivedAt: 1000,
-        fields: { flags: "3" },
-        ready: true,
-        active: false,
-        estopped: true,
-        stallHalted: false,
-        leaseExpired: false,
+  function estoppedLink(overrides: Partial<SnapshotLink> = {}): SnapshotLink {
+    return openLink({
+      session: {
+        seq: 0,
+        pending: 0,
+        lastDone: null,
+        lastDoneReason: null,
+        functions: null,
+        robotStatus: {
+          receivedAt: 1000,
+          fields: { flags: "3" },
+          ready: true,
+          active: false,
+          estopped: true,
+          stallHalted: false,
+          leaseExpired: false,
+        },
       },
       ...overrides,
     });
   }
 
   it("is absent when robotStatus is missing", () => {
-    const { el } = mountControls(baseDevice());
+    const { el } = mountControls(openLink());
     expect(el.querySelector('[data-testid="estop-clear-button"]')).toBeNull();
   });
 
   it("is absent when robotStatus.estopped is false", () => {
     const { el } = mountControls(
-      baseDevice({
-        robotStatus: {
-          receivedAt: 1000,
-          fields: {},
-          ready: true,
-          active: false,
-          estopped: false,
-          stallHalted: false,
-          leaseExpired: false,
+      openLink({
+        session: {
+          seq: 0,
+          pending: 0,
+          lastDone: null,
+          lastDoneReason: null,
+          functions: null,
+          robotStatus: {
+            receivedAt: 1000,
+            fields: {},
+            ready: true,
+            active: false,
+            estopped: false,
+            stallHalted: false,
+            leaseExpired: false,
+          },
         },
       }),
     );
@@ -449,7 +475,7 @@ describe("DriveControls Clear E-STOP (ported from EstopControl.test.tsx, out-of-
   });
 
   it("appears when robotStatus.estopped is true and sends SET estop_clear 1 then STATUS", () => {
-    const { el, socket } = mountControls(estoppedDevice());
+    const { el, socket } = mountControls(estoppedLink());
     const button = el.querySelector<HTMLButtonElement>('[data-testid="estop-clear-button"]')!;
     expect(button).not.toBeNull();
 
@@ -460,18 +486,21 @@ describe("DriveControls Clear E-STOP (ported from EstopControl.test.tsx, out-of-
     expect(sentMessages(socket)).toEqual([
       {
         type: "send-command",
-        endpointId: "usb-ROBOT-A",
+        linkId: LINK_ID,
         verb: "SET",
         fields: ["estop_clear", "1"],
       },
-      { type: "send-command", endpointId: "usb-ROBOT-A", verb: "STATUS" },
+      { type: "send-command", linkId: LINK_ID, verb: "STATUS" },
     ]);
   });
 
   it("disables Clear E-STOP when no session is open", () => {
-    const { el } = mountControls(estoppedDevice({ sessionOpen: false }));
-    const button = el.querySelector<HTMLButtonElement>('[data-testid="estop-clear-button"]')!;
-    expect(button.disabled).toBe(true);
+    // A closed link has no `session` (and so no `robotStatus`) at all
+    // under the Snapshot contract, so Clear E-STOP cannot render for
+    // one in the first place -- see `StatusPanel.test.tsx`'s identical
+    // note.
+    const { el } = mountControls(closedLink());
+    expect(el.querySelector('[data-testid="estop-clear-button"]')).toBeNull();
   });
 });
 
@@ -492,20 +521,18 @@ describe("DriveControls fixed-angle turns (MOVE_X, added out-of-process 2026-09-
 
   for (const { testId, fields } of cases) {
     it(`${testId} sends exactly one MOVE_X with fields ${JSON.stringify(fields)} on click`, () => {
-      const { el, socket } = mountControls(baseDevice());
+      const { el, socket } = mountControls(openLink());
       const button = el.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`)!;
 
       act(() => {
         button.click();
       });
 
-      expect(sentMessages(socket)).toEqual([
-        { type: "send-command", endpointId: "usb-ROBOT-A", verb: "MOVE_X", fields },
-      ]);
+      expect(sentMessages(socket)).toEqual([{ type: "send-command", linkId: LINK_ID, verb: "MOVE_X", fields }]);
     });
 
     it(`${testId} sends nothing more on a second click -- one click, one MOVE_X`, () => {
-      const { el, socket } = mountControls(baseDevice());
+      const { el, socket } = mountControls(openLink());
       const button = el.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`)!;
 
       act(() => {
@@ -516,13 +543,13 @@ describe("DriveControls fixed-angle turns (MOVE_X, added out-of-process 2026-09-
       });
 
       expect(sentMessages(socket)).toEqual([
-        { type: "send-command", endpointId: "usb-ROBOT-A", verb: "MOVE_X", fields },
-        { type: "send-command", endpointId: "usb-ROBOT-A", verb: "MOVE_X", fields },
+        { type: "send-command", linkId: LINK_ID, verb: "MOVE_X", fields },
+        { type: "send-command", linkId: LINK_ID, verb: "MOVE_X", fields },
       ]);
     });
 
     it(`${testId} is disabled and sends nothing with no session open`, () => {
-      const { el, socket } = mountControls(baseDevice({ sessionOpen: false }));
+      const { el, socket } = mountControls(closedLink());
       const button = el.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`)!;
 
       expect(button.disabled).toBe(true);
@@ -536,7 +563,7 @@ describe("DriveControls fixed-angle turns (MOVE_X, added out-of-process 2026-09-
   }
 
   it("gives each turn button an explicit, icon-independent aria-label", () => {
-    const { el } = mountControls(baseDevice());
+    const { el } = mountControls(openLink());
     expect(el.querySelector('[data-testid="turn-90-left"]')!.getAttribute("aria-label")).toBe(
       "Turn 90 degrees left",
     );

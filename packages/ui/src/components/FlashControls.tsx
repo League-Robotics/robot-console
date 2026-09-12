@@ -90,34 +90,40 @@
  * comment's to close, not this component's).
  *
  * **Post-flash navigation** (SUC-002 step 4, SUC-004): subscribes to
- * `onFlashResult` for this endpoint only. `status: "ok"` with no
+ * `onFlashResult` for this link only. `status: "ok"` with no
  * `reidentify` field navigates to the front page immediately -- the
- * message's own `classification` is already folded into the next
- * `endpoints` snapshot by the time this arrives (reidentify-before-
- * result sequencing), so there is no stale-type flash to land on.
- * Mounted from the front page itself (`FrontPage.tsx`'s `EndpointCard`)
- * this is a harmless no-op navigation, not a special case this
- * component needs to know about -- exactly the kind of caller-blindness
- * the "no knowledge of caller" contract above is meant to buy.
- * `status: "ok", reidentify: "timeout"` deliberately does **not**
- * navigate -- SUC-004 calls for rendering "waiting for the board to
- * come back" in place instead. `status: "error"` never navigates; the
- * message surfaces as a flash-error note instead. A result for a
- * *different* endpoint (the student navigated to another device while
- * a flash from this one was still in flight) is ignored -- checked via
- * a closure over the current `endpoint.endpointId`, kept fresh by this
- * effect's own dependency array, since `react-router` does not unmount
- * a component just because its `endpoint` prop changed to a different
- * device.
+ * message's own re-identify is already folded into the next `snapshot`
+ * by the time this arrives (reidentify-before-result sequencing), so
+ * there is no stale-type flash to land on. Mounted from the front page
+ * itself (`FrontPage.tsx`'s unassigned-board card) this is a harmless
+ * no-op navigation, not a special case this component needs to know
+ * about -- exactly the kind of caller-blindness the "no knowledge of
+ * caller" contract above is meant to buy. `status: "ok", reidentify:
+ * "timeout"` deliberately does **not** navigate -- SUC-004 calls for
+ * rendering "waiting for the board to come back" in place instead.
+ * `status: "error"` never navigates; the message surfaces as a
+ * flash-error note instead. A result for a *different* link (the
+ * student navigated to another device while a flash from this one was
+ * still in flight) is ignored -- checked via a closure over the current
+ * `link.id`, kept fresh by this effect's own dependency array, since
+ * `react-router` does not unmount a component just because its `link`
+ * prop changed to a different one.
+ *
+ * ## Sprint 015 ticket 008: takes a `SnapshotLink`, not an `EndpointListEntry`
+ *
+ * `link.id` replaces `endpoint.endpointId` throughout (`flash-start`'s
+ * `linkId` field, `useFlashProgress(link.id)`, `onFlashResult`'s own
+ * `linkId` field) -- `useFirmwareStatus` is unaffected (still one
+ * global `Record<FirmwareKind, FirmwareAvailability>`, not per-link).
  */
 import { useCallback, useEffect, useState, type ChangeEvent } from "react";
 import { useNavigate } from "react-router";
 import type {
-  EndpointListEntry,
   FirmwareKind,
   FlashLocalReadyMessage,
+  SnapshotLink,
 } from "@robot-console/host/src/wsMessages.js";
-import { useFirmwareStatus, useFlashProgress, useWsActions, type FlashProgressState } from "../ws/WsProvider";
+import { useFirmwareStatus, useFlashProgress, useSendable, useWsActions, type FlashProgressState } from "../ws/WsProvider";
 import { FIRMWARE_LABEL, PHASE_LABEL, firmwareDiagnosticDetail, firmwareDisabledReason } from "../deviceDisplay";
 import "./FlashControls.css";
 
@@ -169,14 +175,20 @@ function flashProgressText(progress: FlashProgressState): string {
 }
 
 export interface FlashControlsProps {
-  endpoint: EndpointListEntry;
+  link: SnapshotLink;
 }
 
-export function FlashControls({ endpoint }: FlashControlsProps) {
+export function FlashControls({ link }: FlashControlsProps) {
   const firmwareStatus = useFirmwareStatus();
-  const progress = useFlashProgress(endpoint.endpointId);
+  const progress = useFlashProgress(link.id);
   const { send, sendBinary, onFlashResult, onFlashLocalReady } = useWsActions();
   const navigate = useNavigate();
+  // Ticket 011 (carried from 009's send-gating sweep): the dialog's
+  // trigger (`FlashDialog.tsx`) already gates opening on `useSendable()`,
+  // but a connection can still drop while the dialog is already open --
+  // these buttons gate independently so a stale-open dialog doesn't
+  // leave a live-looking send control active.
+  const sendable = useSendable();
 
   const [flashError, setFlashError] = useState<string | null>(null);
   const [reidentifyTimedOut, setReidentifyTimedOut] = useState(false);
@@ -184,7 +196,7 @@ export function FlashControls({ endpoint }: FlashControlsProps) {
 
   useEffect(() => {
     return onFlashResult((message) => {
-      if (message.endpointId !== endpoint.endpointId) {
+      if (message.linkId !== link.id) {
         return;
       }
       if (message.status === "error") {
@@ -201,7 +213,7 @@ export function FlashControls({ endpoint }: FlashControlsProps) {
       }
       navigate("/");
     });
-  }, [endpoint.endpointId, navigate, onFlashResult]);
+  }, [link.id, navigate, onFlashResult]);
 
   useEffect(() => {
     return onFlashLocalReady((message: FlashLocalReadyMessage) => {
@@ -220,11 +232,14 @@ export function FlashControls({ endpoint }: FlashControlsProps) {
 
   const flashRelease = useCallback(
     (firmware: FirmwareKind) => {
+      if (!sendable) {
+        return;
+      }
       setFlashError(null);
       setReidentifyTimedOut(false);
-      send({ type: "flash-start", endpointId: endpoint.endpointId, source: { kind: "release", firmware } });
+      send({ type: "flash-start", linkId: link.id, source: { kind: "release", firmware } });
     },
-    [endpoint.endpointId, send],
+    [link.id, send, sendable],
   );
 
   const handleFileSelected = useCallback(
@@ -233,7 +248,7 @@ export function FlashControls({ endpoint }: FlashControlsProps) {
       // Reset immediately so selecting the same file again still fires
       // `onChange`.
       event.target.value = "";
-      if (!file) {
+      if (!file || !sendable) {
         return;
       }
       setFlashError(null);
@@ -249,22 +264,22 @@ export function FlashControls({ endpoint }: FlashControlsProps) {
         send({ type: "flash-local-begin", fileName: file.name, byteLength: file.size, sha256 });
       })();
     },
-    [send],
+    [send, sendable],
   );
 
   const flashLocalFile = useCallback(() => {
-    if (localHex.phase !== "uploaded") {
+    if (localHex.phase !== "uploaded" || !sendable) {
       return;
     }
     setFlashError(null);
     setReidentifyTimedOut(false);
     send({
       type: "flash-start",
-      endpointId: endpoint.endpointId,
+      linkId: link.id,
       source: { kind: "local-hex", uploadId: localHex.uploadId, fileName: localHex.fileName, sha256: localHex.sha256 },
     });
     setLocalHex({ phase: "idle" });
-  }, [endpoint.endpointId, localHex, send]);
+  }, [link.id, localHex, send, sendable]);
 
   const relayReason = firmwareDisabledReason(firmwareStatus.relay);
   const robotReason = firmwareDisabledReason(firmwareStatus.robot);
@@ -285,7 +300,7 @@ export function FlashControls({ endpoint }: FlashControlsProps) {
               <button
                 type="button"
                 className="device-button"
-                disabled={relayReason !== null}
+                disabled={relayReason !== null || !sendable}
                 onClick={() => flashRelease("relay")}
               >
                 Flash relay firmware
@@ -302,7 +317,7 @@ export function FlashControls({ endpoint }: FlashControlsProps) {
               <button
                 type="button"
                 className="device-button"
-                disabled={robotReason !== null}
+                disabled={robotReason !== null || !sendable}
                 onClick={() => flashRelease("robot")}
               >
                 Flash robot firmware
@@ -329,7 +344,7 @@ export function FlashControls({ endpoint }: FlashControlsProps) {
               accept=".hex"
               data-testid="local-hex-file-input"
               onChange={handleFileSelected}
-              disabled={localHexBusy}
+              disabled={localHexBusy || !sendable}
             />
             {localHex.phase === "oversize" && (
               <p className="device-note device-note-error" role="alert">
@@ -348,6 +363,7 @@ export function FlashControls({ endpoint }: FlashControlsProps) {
                 <button
                   type="button"
                   className="device-button device-button-primary"
+                  disabled={!sendable}
                   onClick={flashLocalFile}
                 >
                   Flash this file

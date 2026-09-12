@@ -1,55 +1,22 @@
 /**
- * LineLink.ts — the transport-agnostic core replacing the shared
- * ~85-90% of `UsbSerialLink`/`RelayRadioLink`/`MbrelayLink`/
- * `MbserialLink` (issue `rearch-04-linelink-core-replaces-four-link-
- * classes.md`; `docs/reviews/2026-09-11/02-host-transport.md` §2's
- * measured duplication table). Per `sprint.md`'s Design Rationale
- * ("`LineLink` ships as a new, parallel module"): this ticket (014-005)
- * builds ONLY this core, verified entirely against a fake {@link
- * ByteStream} ({@link "./__fixtures__/FakeByteStream.js"}) — it does
- * not touch, wrap, or replace the four old classes, which keep running
- * completely unchanged until sprint 015's connector switches over and
- * deletes them. Real adapters (`serialStream`, `tcpStream`, the relay
- * preamble) are ticket 014-006's job, composing the {@link ByteStream}
- * seam this module defines rather than this module reaching into any
- * real transport itself.
+ * LineLink.ts — the transport-agnostic core replacing the shared ~85-90%
+ * of the old `UsbSerialLink`/`RelayRadioLink`/`MbrelayLink`/
+ * `MbserialLink` classes (`docs/reviews/2026-09-11/02-host-transport.md`
+ * §2's measured duplication table). Depends only on {@link ByteStream} —
+ * real adapters (`serialStream`, `tcpStream`, the relay preamble) compose
+ * that seam rather than this module touching any real transport itself.
  *
- * ## What this core fixes, relative to the four old classes
- *
- * (See `02-host-transport.md` §5/§6 for the full inventory; each item
- * below is a numbered failure mode there.)
- *
- * - **`onClose` exists.** The old classes flip `state = "closed"` on a
- *   port/socket `close` event and tell no one (§5.1) — the single
- *   largest source of the error storms the review investigated. Every
- *   {@link LineLink} transition to `"closed"` — requested or
- *   unsolicited — fires {@link LineLink.onClose} exactly once.
- * - **`identify()` truly never rejects** (§5.2/§1's "contract
- *   violation" table): a closed/not-yet-connected link resolves `null`
- *   immediately rather than throwing out of `assertConnected()`.
- * - **Lines are not lost during `identify()`'s banner wait** (§5.9): the
- *   old classes silently discard every non-banner line while waiting
- *   for `HELLO`'s reply, losing in-flight acks/nacks. This core still
- *   runs every line through {@link "@robot-console/protocol"}'s
- *   `receive()` while a banner wait is pending; only a line that
- *   actually parses as a banner is diverted to resolve the wait instead
- *   of being dispatched.
- * - **`connect()` is bounded** (§5.6/§1: "no connect timeout... hangs
- *   indefinitely") via `{ timeoutMs, signal }`, combined with any
- *   caller-supplied `AbortSignal` into one signal passed to {@link
- *   ByteStream.open} — every adapter gets this for free rather than
- *   each reimplementing its own timer.
- * - **Write failures are no longer invisible** (§5.8/§6): {@link
- *   ByteStream.write}'s callback failure is reported through {@link
- *   LineLink.onError} via `pacing.ts`'s now error-reporting
- *   `WritePacer.schedule`, instead of being swallowed.
- * - **Uses `receive()` instead of re-deriving decode → classify →
- *   ack/nack → resend ordering** (this ticket's own acceptance
- *   criteria; `sprint.md` Step 3's linelink → protocol boundary): this
- *   core has no hand-rolled equivalent of `LineRouter.ts`'s dance —
- *   `LineRouter` still exists for the four old classes it was written
- *   for, but this module calls the protocol package's own `receive()`
- *   facade (ticket 014-004) directly.
+ * What this core fixes, relative to the four old classes (full inventory
+ * in `02-host-transport.md` §5/§6): `onClose` fires exactly once per
+ * connected lifetime, requested or unsolicited (§5.1, the review's
+ * biggest error-storm source); `identify()` truly never rejects (§5.2);
+ * non-banner lines are still routed through `receive()` during the
+ * banner wait instead of discarded, so in-flight acks/nacks are never
+ * lost (§5.9); `connect()` is bounded via `{ timeoutMs, signal }` (§5.6);
+ * a write failure surfaces via {@link LineLink.onError} instead of being
+ * swallowed (§5.8); and this module calls `@robot-console/protocol`'s
+ * `receive()` facade directly instead of re-deriving decode → classify →
+ * ack/nack → resend ordering by hand.
  */
 import {
   parseBanner,
@@ -64,55 +31,34 @@ import {
 import { LineReassembler, type LineReassemblerOptions } from "./lineStream.js";
 import { WritePacer, realScheduler, type Scheduler } from "./pacing.js";
 
-// ---------------------------------------------------------------------
-// ByteStream — the adapter seam ticket 014-006 implements
-// ---------------------------------------------------------------------
-
-/**
- * The narrow surface every real transport adapter (serial, TCP, a relay
+/** The narrow surface every real transport adapter (serial, TCP, a relay
  * preamble wrapping either) implements, and the only thing {@link
- * LineLink} depends on for actual I/O. Kept intentionally small — no
- * `SerialPort`/`net.Socket`-specific members — so a test can supply a
- * fully synthetic fake (`./__fixtures__/FakeByteStream.js`) with no real
- * I/O at all, exactly the seam `UsbSerialLink.ts`'s own `SerialPortLike`
- * establishes for one transport, generalized here for every transport.
- */
+ * LineLink} depends on for actual I/O — small enough that a test can
+ * supply a fully synthetic fake (`./__fixtures__/FakeByteStream.js`). */
 export interface ByteStream {
-  /** Establish the transport (open the port / connect the socket).
-   * Bounded by `signal` — an adapter must reject (or otherwise stop
-   * trying) once `signal` aborts, whether that abort came from {@link
-   * LineLink.connect}'s own `timeoutMs` or a caller-supplied
-   * `AbortSignal`. Never sends any protocol bytes itself. */
+  /** Establish the transport. Bounded by `signal` — an adapter must
+   * reject once `signal` aborts. Never sends any protocol bytes. */
   open(signal: AbortSignal): Promise<void>;
-  /** Write raw text. `callback` is invoked once with `undefined`/`null`
-   * on success or an `Error` on failure — never swallowed by this
-   * interface itself; {@link LineLink} reports a failure through {@link
-   * LineLink.onError} rather than dropping it (see the module doc
-   * comment). */
+  /** Write raw text; `callback` gets `undefined`/`null` on success or an
+   * `Error` on failure — never swallowed here (see {@link LineLink.onError}). */
   write(bytes: string, callback: (err?: Error | null) => void): void;
   on(event: "data", listener: (chunk: Buffer | string) => void): void;
   on(event: "error", listener: (err: Error) => void): void;
   on(event: "close", listener: () => void): void;
-  /** Close the transport. `LineLink.close()` itself is idempotent and
-   * guards against calling this more than once; an adapter is free to
-   * treat a repeat call as a no-op regardless. */
+  /** Close the transport. Idempotent from `LineLink.close()`'s side; an
+   * adapter is free to treat a repeat call as a no-op regardless. */
   close(): Promise<void>;
 }
 
-// ---------------------------------------------------------------------
-// Listener types — mirror link/Link.ts's shape, plus onClose
-// ---------------------------------------------------------------------
+// ---- listener types ---------------------------------------------------
 
 export type LineListener = (line: DecodedLine) => void;
 export type RawLineListener = (raw: string) => void;
 export type AckNackListener = (event: AckNackEvent) => void;
 export type LinkErrorListener = (err: Error) => void;
-/** Fired exactly once per connected lifetime, whenever the underlying
- * {@link ByteStream} closes — requested via {@link LineLink.close} or
- * unsolicited (a peer disconnect, a port yanked out). `reason` is the
- * most recent error {@link ByteStream}'s `"error"` event reported before
- * the close, if any; `undefined` for a clean close. This is the fix for
- * `02-host-transport.md` §5.1 — see the module doc comment. */
+/** Fired exactly once per connected lifetime when the underlying {@link
+ * ByteStream} closes — requested or unsolicited. `reason` is the most
+ * recent `"error"` event before the close, if any; `undefined` if clean. */
 export type LinkCloseListener = (reason?: Error) => void;
 
 /** Options to {@link LineLink}'s constructor. */
@@ -123,28 +69,21 @@ export interface LineLinkOptions {
    * LineLink.identify} before resolving `null`; default {@link
    * DEFAULT_IDENTIFY_TIMEOUT_MS}. */
   identifyTimeoutMs?: number;
-  /** Default `timeoutMs` for {@link LineLink.connect} when its own
-   * options don't specify one; default {@link
+  /** Default `timeoutMs` for {@link LineLink.connect}; default {@link
    * DEFAULT_CONNECT_TIMEOUT_MS}. */
   connectTimeoutMs?: number;
-  /** Injectable write-pacing scheduler; defaults to real timers. Tests
-   * substitute a fake to assert pacing without real wall-clock delays. */
+  /** Injectable write-pacing scheduler; defaults to real timers. */
   scheduler?: Scheduler;
-  /** Forwarded to the internal {@link LineReassembler}'s max-buffer
-   * guard — see that class's own doc comment. */
+  /** Forwarded to {@link LineReassembler}'s max-buffer guard. */
   maxBufferChars?: LineReassemblerOptions["maxBufferChars"];
   /** Forwarded to `@robot-console/protocol`'s `receive()` — called with
    * the raw text of any line classified `"foreign"`. Optional. */
   onForeign?: (raw: string) => void;
-  /**
-   * Runs once {@link ByteStream.open} has resolved, before {@link
-   * LineLink.connect} returns (and therefore strictly before any
-   * caller can reach {@link LineLink.identify}) — the relay command-
-   * plane handshake's hook (`RelayCommandPlane`, ticket 014-006). Bound
-   * by the same combined signal {@link LineLink.connect} passed to
-   * `open()`. A rejection here fails `connect()` itself, exactly like
-   * `open()` failing — see the module doc comment.
-   */
+  /** Runs once {@link ByteStream.open} resolves, before {@link
+   * LineLink.connect} returns — the relay command-plane handshake's hook
+   * (`RelayCommandPlane`). Bound by the same combined signal `open()`
+   * sees. A rejection here fails `connect()`, exactly like `open()`
+   * failing. */
   preamble?: (stream: ByteStream, signal: AbortSignal) => Promise<void>;
 }
 
@@ -164,11 +103,27 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
 
 type LineLinkState = "idle" | "connecting" | "connected" | "closing" | "closed";
 
-/**
- * The transport-agnostic LineLink core. See the module doc comment for
- * the full rationale; see `ByteStream` above for the one thing it
- * depends on for actual I/O.
- */
+/** Tiny multi-listener Set wrapper — every `onX`/dispatch pair below
+ * (line, raw line, ack/nack, error, close) shares this same add/remove/
+ * fan-out shape, so it is factored out once rather than five times. */
+class Emitter<T> {
+  private readonly listeners = new Set<(arg: T) => void>();
+
+  on(listener: (arg: T) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  dispatch(arg: T): void {
+    for (const listener of this.listeners) {
+      listener(arg);
+    }
+  }
+}
+
+/** The transport-agnostic LineLink core — see the module doc comment. */
 export class LineLink {
   private readonly pacer: WritePacer;
   private readonly reassembler: LineReassembler;
@@ -179,11 +134,11 @@ export class LineLink {
   private readonly onForeign: ((raw: string) => void) | undefined;
   private readonly preamble: ((stream: ByteStream, signal: AbortSignal) => Promise<void>) | undefined;
 
-  private readonly lineListeners = new Set<LineListener>();
-  private readonly rawLineListeners = new Set<RawLineListener>();
-  private readonly ackNackListeners = new Set<AckNackListener>();
-  private readonly errorListeners = new Set<LinkErrorListener>();
-  private readonly closeListeners = new Set<LinkCloseListener>();
+  private readonly lineEmitter = new Emitter<DecodedLine>();
+  private readonly rawLineEmitter = new Emitter<string>();
+  private readonly ackNackEmitter = new Emitter<AckNackEvent>();
+  private readonly errorEmitter = new Emitter<Error>();
+  private readonly closeEmitter = new Emitter<Error | undefined>();
 
   private state: LineLinkState = "idle";
   private parsedBanner: ParsedBanner | undefined;
@@ -191,11 +146,10 @@ export class LineLink {
   private closeNotified = false;
 
   /** Set only while {@link identify} is actively waiting for a `HELLO`
-   * banner reply — see {@link handleRawLine}'s own doc comment. */
+   * banner reply — see {@link handleRawLine}. */
   private resolveBannerWait: ((banner: ParsedBanner | null) => void) | undefined;
   /** The in-flight {@link identify} promise, if any — re-entrant calls
-   * share this one wait rather than re-sending `HELLO` (this ticket's
-   * own acceptance criterion). */
+   * share this wait instead of re-sending `HELLO`. */
   private pendingIdentify: Promise<ParsedBanner | null> | undefined;
 
   constructor(
@@ -209,7 +163,7 @@ export class LineLink {
       // different (and rejected) thing from omitting it entirely.
       ...(options.maxBufferChars !== undefined ? { maxBufferChars: options.maxBufferChars } : {}),
       onOverflow: (discarded) => {
-        this.dispatchError(
+        this.errorEmitter.dispatch(
           new Error(`LineLink: discarded ${discarded.length}-char partial line -- max buffer exceeded with no newline`),
         );
       },
@@ -220,8 +174,7 @@ export class LineLink {
     this.preamble = options.preamble;
   }
 
-  // ---- identity, populated once identify() resolves a banner ---------
-
+  // ---- identity, populated once identify() resolves a banner ----
   get banner(): ParsedBanner | undefined {
     return this.parsedBanner;
   }
@@ -245,23 +198,20 @@ export class LineLink {
   }
 
   /** The underlying `@robot-console/protocol` `Session` — sequencing
-   * state (`seq`/`pendingCount`/...), mirroring `link/Link.ts`'s own
-   * `session` accessor. */
+   * state (`seq`/`pendingCount`/...). */
   get session(): Session {
     return this.protocolSession;
   }
 
-  // ---- lifecycle --------------------------------------------------------
+  // ---- lifecycle ----
 
-  /**
-   * Open the transport (via {@link ByteStream.open}) and, if given, run
-   * the {@link LineLinkOptions.preamble} hook — bounded overall by
-   * `options.timeoutMs` (default {@link DEFAULT_CONNECT_TIMEOUT_MS})
-   * combined with `options.signal`. Never sends `HELLO`, never waits for
-   * a banner (see {@link identify}). Rejects only on a transport-level
-   * failure or the bound expiring; a link may only be connected once —
-   * a second call while not `"idle"` rejects immediately.
-   */
+  /** Open the transport (via {@link ByteStream.open}) and, if given, run
+   * the {@link LineLinkOptions.preamble} hook — bounded by
+   * `options.timeoutMs` combined with `options.signal`. Never sends
+   * `HELLO`, never waits for a banner (see {@link identify}). Rejects
+   * only on a transport-level failure or the bound expiring; a link may
+   * only be connected once — a second call while not `"idle"` rejects
+   * immediately. */
   async connect(options: ConnectOptions = {}): Promise<void> {
     if (this.state !== "idle") {
       throw new Error(`LineLink.connect() called while state is "${this.state}" -- a link may only be connected once`);
@@ -309,14 +259,11 @@ export class LineLink {
     this.state = "connected";
   }
 
-  /**
-   * Send `HELLO` and wait for the banner reply. Resolves the parsed
-   * banner, or `null` if no banner-shaped reply arrives within
-   * `identifyTimeoutMs`, or immediately if the link is not currently
-   * `"connected"` — **never rejects**. A call made while a previous
-   * call's wait is still pending shares that same wait rather than
-   * re-sending `HELLO`.
-   */
+  /** Send `HELLO` and wait for the banner reply. Resolves the parsed
+   * banner, or `null` if none arrives within `identifyTimeoutMs`, or
+   * immediately if not `"connected"` — **never rejects**. A call made
+   * while a previous call's wait is still pending shares that wait
+   * rather than re-sending `HELLO`. */
   async identify(): Promise<ParsedBanner | null> {
     if (this.state !== "connected") {
       return null;
@@ -340,11 +287,9 @@ export class LineLink {
       this.pendingIdentify = undefined;
     });
 
-    // The one and only place this module ever sends HELLO -- via
-    // Session.connect(), never a hand-formatted line -- see
-    // link/UsbSerialLink.ts's own module doc comment for why (it
-    // resets the robot's sequence state, so the session's local
-    // counter must reset in lockstep).
+    // The only place this module sends HELLO -- via Session.connect(),
+    // which resets the robot's sequence state in lockstep with the
+    // session's own local counter.
     const helloLine = this.protocolSession.connect();
     this.paceWrite(helloLine);
 
@@ -355,10 +300,9 @@ export class LineLink {
     return banner;
   }
 
-  /** Close the transport. Idempotent — calling it again (or before
-   * {@link connect} ever succeeded) is a no-op. Never rejects on its own
-   * account; {@link onClose} fires once the underlying {@link
-   * ByteStream} actually closes. */
+  /** Close the transport. Idempotent — calling it again, or before
+   * {@link connect} ever succeeded, is a no-op. Never rejects; {@link
+   * onClose} fires once the underlying {@link ByteStream} closes. */
   async close(): Promise<void> {
     if (this.state === "closed" || this.state === "closing") {
       return;
@@ -371,17 +315,17 @@ export class LineLink {
     await this.stream.close();
   }
 
-  // ---- sending ------------------------------------------------------
+  // ---- sending ----
 
   /** Send an already-formatted line verbatim (a trailing `\n` is added
-   * if not already present). Paced like every other write. */
+   * if missing). Paced like every other write. */
   sendLine(line: string): void {
     this.assertConnected("sendLine");
     this.paceWrite(line.endsWith("\n") ? line : `${line}\n`);
   }
 
   /** Send one of the 11 id-bearing verbs, sequenced via `Session.send()`.
-   * Paced like every other write. Returns the exact line text sent. */
+   * Paced; returns the exact line text sent. */
   sendCommand(verb: string, fields: readonly WireField[] = []): string {
     this.assertConnected("sendCommand");
     const line = this.protocolSession.send(verb, fields);
@@ -389,8 +333,7 @@ export class LineLink {
     return line;
   }
 
-  /** Send an unsequenced verb via `Session.sendUnsequenced()`. Paced
-   * like every other write. */
+  /** Send an unsequenced verb via `Session.sendUnsequenced()`. Paced. */
   sendUnsequenced(verb: string, fields: readonly WireField[] = []): string {
     this.assertConnected("sendUnsequenced");
     const line = this.protocolSession.sendUnsequenced(verb, fields);
@@ -411,11 +354,8 @@ export class LineLink {
     }
   }
 
-  /** Schedule a paced write; a failure reported through {@link
-   * ByteStream.write}'s callback surfaces via {@link onError} rather
-   * than being swallowed (`pacing.ts`'s `WritePacer.schedule` now
-   * accepts an async write plus an `onError` callback for exactly this
-   * -- see the module doc comment). */
+  /** Schedule a paced write; a {@link ByteStream.write} callback failure
+   * surfaces via {@link onError} instead of being swallowed. */
   private paceWrite(lineText: string): void {
     this.pacer.schedule(
       () =>
@@ -428,47 +368,32 @@ export class LineLink {
             }
           });
         }),
-      (err) => this.dispatchError(err),
+      (err) => this.errorEmitter.dispatch(err),
     );
   }
 
-  // ---- receiving ------------------------------------------------------
+  // ---- receiving ----
 
   onLine(listener: LineListener): () => void {
-    this.lineListeners.add(listener);
-    return () => {
-      this.lineListeners.delete(listener);
-    };
+    return this.lineEmitter.on(listener);
   }
 
   onRawLine(listener: RawLineListener): () => void {
-    this.rawLineListeners.add(listener);
-    return () => {
-      this.rawLineListeners.delete(listener);
-    };
+    return this.rawLineEmitter.on(listener);
   }
 
   onAckNack(listener: AckNackListener): () => void {
-    this.ackNackListeners.add(listener);
-    return () => {
-      this.ackNackListeners.delete(listener);
-    };
+    return this.ackNackEmitter.on(listener);
   }
 
   onError(listener: LinkErrorListener): () => void {
-    this.errorListeners.add(listener);
-    return () => {
-      this.errorListeners.delete(listener);
-    };
+    return this.errorEmitter.on(listener);
   }
 
   /** Subscribe to the link's own close — see {@link LinkCloseListener}'s
    * doc comment. Returns an unsubscribe function. */
   onClose(listener: LinkCloseListener): () => void {
-    this.closeListeners.add(listener);
-    return () => {
-      this.closeListeners.delete(listener);
-    };
+    return this.closeEmitter.on(listener);
   }
 
   private attachStreamListeners(): void {
@@ -479,32 +404,21 @@ export class LineLink {
     });
     this.stream.on("error", (err) => {
       this.lastError = err;
-      this.dispatchError(err);
+      this.errorEmitter.dispatch(err);
     });
     this.stream.on("close", () => {
       this.handleStreamClose();
     });
   }
 
-  /**
-   * Handle one already-reassembled, already-normalized inbound line.
-   *
-   * While {@link identify} is actively waiting for a banner reply
-   * ({@link resolveBannerWait} is set): the line is first tried against
-   * {@link parseBanner} (after {@link stripReceivePrefix}, whose grammar
-   * does not tolerate the "< " receive-prefix). A match resolves the
-   * wait and is consumed here — it is not also dispatched to a listener,
-   * mirroring the old classes' behavior for the banner line itself. Any
-   * OTHER line — critically, unlike the four old classes
-   * (`02-host-transport.md` §5.9) — is still run through {@link receive}
-   * and dispatched normally instead of being silently discarded; this is
-   * the fix for lines (most importantly in-flight acks/nacks) being lost
-   * during the banner wait.
-   *
-   * Once there is no banner wait pending (identify never called yet,
-   * already resolved, or timed out), every line runs through {@link
-   * receive} unconditionally.
-   */
+  /** Handle one already-reassembled, already-normalized inbound line.
+   * While {@link identify} is waiting for a banner ({@link
+   * resolveBannerWait} set), the line is first tried against {@link
+   * parseBanner} (after {@link stripReceivePrefix}); a match resolves the
+   * wait and is consumed here, not dispatched. Any other line — banner
+   * wait pending or not — still runs through {@link receive} and
+   * dispatches normally, so in-flight acks/nacks are never lost during
+   * the wait. */
   private handleRawLine(raw: string): void {
     if (this.resolveBannerWait) {
       const banner = parseBanner(stripReceivePrefix(raw));
@@ -514,14 +428,10 @@ export class LineLink {
       }
     }
 
-    // exactOptionalPropertyTypes: only include `onForeign` when actually
-    // configured -- see the constructor's own reassembler options for
-    // the identical reasoning.
+    // exactOptionalPropertyTypes: only include `onForeign` when configured.
     const result = receive(this.protocolSession, raw, this.onForeign ? { onForeign: this.onForeign } : {});
 
-    // The resend MUST go out before anything else -- receive()'s own
-    // contract (protocol.md S8.1: a resend reordered behind other
-    // traffic breaks "resend from next forward, in order").
+    // The resend MUST go out before anything else -- protocol.md S8.1.
     for (const resendLine of result.resend) {
       this.paceWrite(resendLine);
     }
@@ -529,28 +439,26 @@ export class LineLink {
     if (result.ackNack) {
       if (result.ackNack.kind === "malformed") {
         // Still reach the console, exactly like any other non-
-        // actionable reply-direction oddity (mirrors LineRouter.ts's
-        // own handling of this case).
-        this.dispatchRawLine(raw);
+        // actionable reply-direction oddity.
+        this.rawLineEmitter.dispatch(raw);
       } else {
-        this.dispatchAckNack(result.ackNack);
+        this.ackNackEmitter.dispatch(result.ackNack);
       }
     }
 
     if (result.line) {
-      this.dispatchLine(result.line);
+      this.lineEmitter.dispatch(result.line);
     }
     if (result.unrouted !== undefined) {
-      this.dispatchRawLine(result.unrouted);
+      this.rawLineEmitter.dispatch(result.unrouted);
     }
     // result.dropped ("blank" | "tooLong") -- nothing to do.
   }
 
-  /** Guarded to fire {@link onClose} exactly once per connected
-   * lifetime, whether reached via {@link close}'s own `stream.close()`
-   * call or an unsolicited `"close"` event. If {@link identify} is
-   * actively waiting, the wait resolves `null` immediately instead of
-   * hanging until its timeout. */
+  /** Fires {@link onClose} exactly once, whether reached via {@link
+   * close} or an unsolicited `"close"` event; resolves a pending {@link
+   * identify} wait `null` immediately rather than hanging to its
+   * timeout. */
   private handleStreamClose(): void {
     if (this.closeNotified) {
       return;
@@ -558,34 +466,6 @@ export class LineLink {
     this.closeNotified = true;
     this.state = "closed";
     this.resolveBannerWait?.(null);
-
-    const reason = this.lastError;
-    for (const listener of this.closeListeners) {
-      listener(reason);
-    }
-  }
-
-  private dispatchLine(line: DecodedLine): void {
-    for (const listener of this.lineListeners) {
-      listener(line);
-    }
-  }
-
-  private dispatchRawLine(raw: string): void {
-    for (const listener of this.rawLineListeners) {
-      listener(raw);
-    }
-  }
-
-  private dispatchAckNack(event: AckNackEvent): void {
-    for (const listener of this.ackNackListeners) {
-      listener(event);
-    }
-  }
-
-  private dispatchError(err: Error): void {
-    for (const listener of this.errorListeners) {
-      listener(err);
-    }
+    this.closeEmitter.dispatch(this.lastError);
   }
 }

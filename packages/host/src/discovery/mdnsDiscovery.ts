@@ -409,19 +409,17 @@ function parseWifiRobotService(service: MdnsService): WifiRobotService {
   };
 }
 
-// TODO(rearch-05): `MdnsDiscovery`'s `wifiLiveness` private-field
-// liveness bookkeeping (below) is superseded by `mdnsWatcher.ts`'s own
-// DB-backed `last_seen`/TTL aging (ticket 014-008) and was a candidate
-// for retirement in that same ticket's pass. Deferred: `deviceRegistry.ts`
-// and its coordinator construct and drive this class directly and must
-// keep working unchanged this sprint (ticket 014-008's own scope note),
-// and this class's `stop()` intentionally leaves `relays`/`robots`/
-// `wifiRobots` populated across a restart (only `wifiLiveness` is
-// cleared) -- removing the hack without also fixing that would make
-// `deviceRegistry.ts`'s WiFi aging silently worse, not better. Retire
-// this whole class (and the old `deviceRegistry.ts` path that depends on
-// it) once sprint 015's reconciler replaces it, per the issue's own
-// "Depends on" note.
+// `MdnsDiscovery`'s `wifiLiveness` private-field liveness bookkeeping
+// (below) is superseded by `mdnsWatcher.ts`'s own DB-backed `last_seen`/
+// TTL aging (ticket 014-008). `deviceRegistry.ts` (sprint 015 ticket 003
+// retires it, along with `wifi/wifiRobotGate.ts` and
+// `relay/RelayConnectionCoordinator.ts`) no longer exists, but `server.ts`
+// still constructs and drives this class directly until ticket 005's
+// composition root rewires it onto the reconciler -- this class's
+// `stop()` still intentionally leaves `relays`/`robots`/`wifiRobots`
+// populated across a restart (only `wifiLiveness` is cleared), so it is
+// not yet safe to simplify on its own. Retire this whole class once
+// ticket 005 finishes moving `server.ts` off of it.
 /**
  * Live browse session over `_mbrelay._tcp`, `_mbserial._tcp`, and
  * `_robotlink._tcp`/`_robotlink._udp`: subscribes to an injected

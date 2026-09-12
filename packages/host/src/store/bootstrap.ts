@@ -21,14 +21,13 @@
  * `--watch-store` (`cli.ts`) does use it, since it already opens the
  * store read-write.
  *
- * TODO(rearch-05): call this from the server's real startup path once
- * sprint 015 wires the store into `server.ts`/`deviceRegistry.ts` — out
- * of scope for ticket 014-010, which was told explicitly not to touch
- * those files.
+ * Sprint 015 ticket 003 wires this into the reconciler-based startup
+ * path (`server.ts`, ticket 005) — until then it has no production call
+ * site of its own besides `cli.ts`'s `--watch-store`.
  */
 import { openStore, type Store } from "./index.js";
 import type { StoreDbOptions } from "./db.js";
-import { resolveKnownRobotsFilePath } from "./knownRobots.js";
+import { resolveKnownRobotsFilePath } from "./stateDir.js";
 import { resolveWifiCredentialsFilePath } from "./wifiCredentials.js";
 import { importKnownRobots } from "./importers/knownRobots.js";
 import { importWifiCredentials } from "./importers/wifiCredentials.js";

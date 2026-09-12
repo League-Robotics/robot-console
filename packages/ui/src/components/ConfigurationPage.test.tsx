@@ -2,7 +2,7 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import type { SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
 import { ConfigurationPage, MASKED_PASSWORD, configurationCode } from "./ConfigurationPage";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
@@ -37,16 +37,33 @@ afterEach(() => {
   }
 });
 
-function robot(): EndpointListEntry {
+function robot(overrides: Partial<Omit<SnapshotDevice, "links">> = {}): SnapshotDevice {
   return {
-    endpointId: "usb-ROBOT-A",
-    transport: "usb",
-    resourceKey: "usb-ROBOT-A",
-    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
+    id: 1198504156,
     name: "tigez",
+    kind: "robot",
     role: "NEZHA2",
-    sessionOpen: true,
-    usb: { serialNumber: "ROBOT-A-FULL", displaySerial: "0004", port: "/dev/cu.usbmodemC" },
+    program: null,
+    version: null,
+    owned: true,
+    radio: { channel: 41, group: 3, source: "derived" },
+    lastSeen: 0,
+    lastChecked: null,
+    links: [
+      {
+        id: "usb-ROBOT-A",
+        transport: "usb",
+        label: "USB · /dev/cu.usbmodemC",
+        state: "connected",
+        reason: null,
+        since: 0,
+        lastSeen: 0,
+        nextRetryAt: null,
+        capabilities: { open: false, close: true, flash: true, provisionWifi: true },
+        session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+      },
+    ],
+    ...overrides,
   };
 }
 
@@ -114,14 +131,13 @@ describe("ConfigurationPage", () => {
     expect(code).toContain('diffDrive.setupWifi("Busboom_Garage", "hunter2")');
   });
 
-  it("Save writes the console's per-name radio address and updates the code; a bad channel is refused", () => {
+  it("Save updates the draft radio address and the code (ticket 006: no longer persisted to localStorage); a bad channel is refused", () => {
     const { el } = mountPage();
     type(el, '[data-testid="configuration-radio-channel"]', "55");
     type(el, '[data-testid="configuration-radio-group"]', "114");
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="configuration-save"]')!.click();
     });
-    expect(JSON.parse(window.localStorage.getItem("robot-console:relay-address:tigez") ?? "{}")).toEqual({ channel: 55, group: 114 });
     expect(el.querySelector('[data-testid="configuration-code"]')?.textContent).toContain("diffDrive.setupRadio(55, 114)");
     type(el, '[data-testid="configuration-radio-channel"]', "200");
     act(() => {
@@ -157,7 +173,47 @@ describe("ConfigurationPage", () => {
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.click();
     });
-    expect(sent(socket).at(-1)).toEqual({ type: "provision-wifi", endpointId: "usb-ROBOT-A", slot: 0 });
+    expect(sent(socket).at(-1)).toEqual({ type: "provision-wifi", linkId: "usb-ROBOT-A", slot: 0 });
+  });
+
+  // Ticket 011 (carried from 009's send-gating sweep): both Save and
+  // Write to robot gate on `useSendable()`, since Save also sends
+  // (`saveWifi`) whenever a Wi-Fi network is stored.
+  it("Save and Write to robot both disable once the socket closes, and no message is sent while disabled", () => {
+    const { el, socket } = mountPage();
+    act(() => {
+      socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "stored", password: "hunter2" });
+    });
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="configuration-save"]')!.disabled).toBe(false);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.disabled).toBe(false);
+
+    act(() => {
+      socket.close();
+    });
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="configuration-save"]')!.disabled).toBe(true);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.disabled).toBe(true);
+
+    const sentBeforeClicks = sent(socket).length;
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="configuration-save"]')!.click();
+    });
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.click();
+    });
+    expect(sent(socket).length).toBe(sentBeforeClicks);
+  });
+
+  it("seeds the radio draft from device.radio and shows its source via the shared AddressSourceChip", () => {
+    const el = mount(
+      <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
+        <ConfigurationPage device={robot({ radio: { channel: 55, group: 114, source: "override" } })} />
+      </WsProvider>,
+    );
+    expect(el.querySelector<HTMLInputElement>('[data-testid="configuration-radio-channel"]')!.value).toBe("55");
+    expect(el.querySelector<HTMLInputElement>('[data-testid="configuration-radio-group"]')!.value).toBe("114");
+    const chip = el.querySelector('[data-testid="address-source-chip"]');
+    expect(chip?.textContent).toContain("ch 55 / grp 114");
+    expect(chip?.textContent).toContain("set for this device");
   });
 
   it("edits to the calibration values persist to the same per-robot state the Calibration tab uses and show up in the code", () => {

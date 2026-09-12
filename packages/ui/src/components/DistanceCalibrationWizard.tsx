@@ -10,19 +10,22 @@
  * already has -- no new host/wire work:
  *
  *  - **Availability, `FUNCS`-gated, not classification-gated** (see
- *    `sprint.md`'s Design Rationale): this panel fires its own one-shot
- *    `FUNCS` probe on mount (if a session is already open) and again on
- *    every closed->open transition, mirroring `CommandStrip`'s identical
- *    one-shot bare-`GET` pattern. Go is enabled only once `calx` appears
- *    in `device.functions`; `device.functions === undefined` (no `FUNCS`
- *    round yet) and "answered, but `calx` absent" are rendered as two
- *    distinct, calm messages -- neither is a spinner or a timeout-shaped
- *    wait.
+ *    `sprint.md`'s Design Rationale): Go is enabled only once `calx`
+ *    appears in `link.session.functions`; no session at all or a session
+ *    whose `functions` is still `null` (no `FUNCS` round answered yet)
+ *    and "answered, but `calx` absent" are rendered as two distinct,
+ *    calm messages -- neither is a spinner or a timeout-shaped wait.
+ *    Sprint 015 ticket 009 removed this panel's own one-shot `FUNCS`
+ *    probe on mount/reopen (it duplicated no host behavior -- the
+ *    harvester never auto-sends `FUNCS` either, so a session's `functions`
+ *    field only ever populates from an explicit `FUNCS` press elsewhere,
+ *    e.g. `CommandStrip`'s or `FunctionsPanel`'s own button); this panel
+ *    just reads whatever the snapshot already reports.
  *  - **Running**, `RUN calx` dispatched via `sendCommand`, exactly the
  *    same call `FunctionsPanel`'s own Go button makes.
- *  - **Progress**, derived from the endpoint's own rx log
- *    (`useEndpointLog` -- the same log `CommandStrip` reads for its
- *    `GET`-reply harvesting) via `CalibrationReport.parseCalibrationLine`.
+ *  - **Progress**, derived from the link's own rx log (`useLinkLog` --
+ *    the same log `CommandStrip` reads for its `GET`-reply harvesting)
+ *    via `CalibrationReport.parseCalibrationLine`.
  *    Every new `rx` line appended since this panel's own Go press is
  *    replayed, in order, into one of: an opaque progress event (rendered
  *    as its own raw text -- `"begin ..."` and `"start line found"` are
@@ -49,9 +52,9 @@
  * this panel by design, not merely unimplemented.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { parseCalibrationLine } from "./CalibrationReport";
-import { useEndpointLog, useWsActions } from "../ws/WsProvider";
+import { useLinkLog, useSendable, useWsActions } from "../ws/WsProvider";
 import "./DistanceCalibrationWizard.css";
 
 /** Matches a bare `err ...` reply to the `RUN` command itself (e.g.
@@ -164,39 +167,28 @@ function round2(value: number): number {
 }
 
 export interface DistanceCalibrationWizardProps {
-  device: EndpointListEntry;
+  link: SnapshotLink;
   /** OOP 2026-09-10: called whenever the current run's derived state
    * changes, so `CalibrationPage` can fold a succeeded run's wheel
    * diameter into the robot's calibration state. */
   onRun?: (run: DistanceCalibrationRun | undefined) => void;
 }
 
-export function DistanceCalibrationWizard({ device, onRun }: DistanceCalibrationWizardProps) {
-  const endpointId = device.endpointId;
-  const linkOpen = device.sessionOpen;
+export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWizardProps) {
+  const linkId = link.id;
+  const sendable = useSendable();
+  const linkOpen = link.session !== undefined && sendable;
   const { sendCommand } = useWsActions();
-  const log = useEndpointLog(endpointId);
-  const functions = device.functions;
+  const log = useLinkLog(linkId);
+  const functions = link.session?.functions ?? undefined;
   const available = functions?.some((fn) => fn.name === "calx") ?? false;
 
-  // One-shot FUNCS probe on mount (if already open) and on every
-  // closed->open transition -- see this module's doc comment;
-  // identical shape to CommandStrip's bare-GET discovery effect.
-  const wasOpenRef = useRef(false);
-  useEffect(() => {
-    const wasOpen = wasOpenRef.current;
-    wasOpenRef.current = linkOpen;
-    if (linkOpen && !wasOpen) {
-      sendCommand(endpointId, "FUNCS");
-    }
-  }, [linkOpen, endpointId, sendCommand]);
-
   // OOP 2026-09-10: the run's window is anchored on the log entry *id*
-  // minted at Go, not an array index. `useEndpointLog` is a bounded
-  // ring (MAX_LINES_PER_DEVICE) trimmed from the front, so in a tab
-  // that has been open a while an index-based window slides and the
-  // terminal `apply` line scrolls straight out of it -- the
-  // stakeholder's "lots of details, then no code" report.
+  // minted at Go, not an array index. `useLinkLog` is a bounded ring
+  // (MAX_LINES_PER_LINK) trimmed from the front, so in a tab that has
+  // been open a while an index-based window slides and the terminal
+  // `apply` line scrolls straight out of it -- the stakeholder's "lots
+  // of details, then no code" report.
   const [runStartId, setRunStartId] = useState<number | undefined>(undefined);
   const derived = useMemo<DistanceCalibrationRun | undefined>(() => {
     if (runStartId === undefined) {
@@ -223,7 +215,7 @@ export function DistanceCalibrationWizard({ device, onRun }: DistanceCalibration
     }
     const last = log[log.length - 1];
     setRunStartId(last ? last.id + 1 : 0);
-    sendCommand(endpointId, "RUN", ["calx"]);
+    sendCommand(linkId, "RUN", ["calx"]);
   }
 
   const diameterMm = run?.kind === "succeeded" ? deriveWheelDiameterMm(run.events, run.snippet) : undefined;

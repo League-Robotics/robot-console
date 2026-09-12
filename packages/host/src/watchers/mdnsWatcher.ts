@@ -7,12 +7,15 @@
  * are sound (per the issue), so this module's own job is the re-query
  * timer, per-type aging, and row-upsert glue that `MdnsDiscovery` itself
  * does not do. Deliberately does **not** go through the `MdnsDiscovery`
- * class: that class stays wired into the old `deviceRegistry.ts` path
- * unchanged this sprint (see that file's own `TODO(rearch-05)` comment),
- * and this watcher's rows are read-path-independent of it — the two
- * consumers just happen to share one browse backend, browsed in two
- * separate sessions this sprint (an acceptable, called-out duplication
- * until sprint 015 retires the old path).
+ * class: sprint 015 ticket 003 retires `deviceRegistry.ts` (that class's
+ * only production caller before this sprint), but `server.ts` still
+ * constructs and drives `MdnsDiscovery` directly until ticket 005's
+ * composition root rewires it onto the reconciler (see
+ * `discovery/mdnsDiscovery.ts`'s own doc comment) — this watcher's rows
+ * are read-path-independent of it either way, so the two consumers just
+ * happen to share one browse backend, browsed in two separate sessions
+ * (an acceptable, called-out duplication until ticket 005 retires the
+ * old path for good).
  *
  * ## Per-observation flow
  *

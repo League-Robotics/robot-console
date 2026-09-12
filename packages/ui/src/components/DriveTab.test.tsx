@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
 /**
- * DriveTab.test.tsx — cursor-key and gamepad driving (OOP 2026-09-10).
- * Both must speak DriveControls' held-button dialect exactly:
- * `WHEELS_V left right 400` on press, re-sent every 150 ms, one `STOP`
- * on release.
+ * DriveTab.test.tsx — cursor-key and gamepad driving (OOP 2026-09-10;
+ * migrated to the `Snapshot` contract, sprint 015 ticket 009). Both
+ * must speak DriveControls' held-button dialect exactly: `WHEELS_V left
+ * right 400` on press, re-sent every 150 ms, one `STOP` on release.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { DriveTab, gamepadTarget, keyboardTarget, mixWheels } from "./DriveTab";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
@@ -45,25 +45,44 @@ afterEach(() => {
   delete (navigator as unknown as { getGamepads?: unknown }).getGamepads;
 });
 
-function device(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+const LINK_ID = "usb-ROBOT-A";
+
+function openLink(overrides: Partial<SnapshotLink> = {}): SnapshotLink {
   return {
-    endpointId: "usb-ROBOT-A",
+    id: LINK_ID,
     transport: "usb",
-    resourceKey: "usb-ROBOT-A",
-    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
-    name: "vevav",
-    role: "NEZHA2",
-    sessionOpen: true,
-    usb: { serialNumber: "ROBOT-A-FULL", displaySerial: "0004", port: "/dev/cu.usbmodemC" },
+    label: "USB · /dev/cu.usbmodemC",
+    state: "connected",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: false, close: true, flash: true, provisionWifi: true },
+    session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
     ...overrides,
   };
 }
 
-function mountTab(entry: EndpointListEntry = device()): { el: HTMLDivElement; socket: FakeSocket } {
+function closedLink(overrides: Partial<Omit<SnapshotLink, "session">> = {}): SnapshotLink {
+  return {
+    id: LINK_ID,
+    transport: "usb",
+    label: "USB · /dev/cu.usbmodemC",
+    state: "connectable",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: true, close: false, flash: true, provisionWifi: false },
+    ...overrides,
+  };
+}
+
+function mountTab(link: SnapshotLink = openLink()): { el: HTMLDivElement; socket: FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <DriveTab device={entry} />
+      <DriveTab link={link} />
     </WsProvider>,
   );
   act(() => {
@@ -108,7 +127,7 @@ describe("DriveTab keyboard", () => {
   it("ArrowUp sends WHEELS_V immediately, re-sends while held, and STOPs on release", () => {
     const { socket } = mountTab();
     key("keydown", "ArrowUp");
-    expect(sent(socket)).toEqual([{ type: "send-command", endpointId: "usb-ROBOT-A", verb: "WHEELS_V", fields: [150, 150, 400] }]);
+    expect(sent(socket)).toEqual([{ type: "send-command", linkId: LINK_ID, verb: "WHEELS_V", fields: [150, 150, 400] }]);
     act(() => {
       vi.advanceTimersByTime(320);
     });
@@ -116,7 +135,7 @@ describe("DriveTab keyboard", () => {
     key("keydown", "ArrowUp", window, true); // auto-repeat: ignored
     expect(sent(socket).filter((m) => m.verb === "WHEELS_V")).toHaveLength(3);
     key("keyup", "ArrowUp");
-    expect(sent(socket).at(-1)).toEqual({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "STOP" });
+    expect(sent(socket).at(-1)).toEqual({ type: "send-command", linkId: LINK_ID, verb: "STOP" });
     act(() => {
       vi.advanceTimersByTime(500);
     });
@@ -130,11 +149,11 @@ describe("DriveTab keyboard", () => {
     act(() => {
       vi.advanceTimersByTime(150);
     });
-    expect(sent(socket).at(-1)).toEqual({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "WHEELS_V", fields: [150, 0, 400] });
+    expect(sent(socket).at(-1)).toEqual({ type: "send-command", linkId: LINK_ID, verb: "WHEELS_V", fields: [150, 0, 400] });
     key("keydown", "Space");
     const tail = sent(socket).slice(-2);
-    expect(tail[0]).toEqual({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "STOP" });
-    expect(tail[1]).toEqual({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "STOP", fields: ["now"] });
+    expect(tail[0]).toEqual({ type: "send-command", linkId: LINK_ID, verb: "STOP" });
+    expect(tail[1]).toEqual({ type: "send-command", linkId: LINK_ID, verb: "STOP", fields: ["now"] });
   });
 
   it("ignores keys typed into a text field and sends nothing with no link open", () => {
@@ -151,7 +170,7 @@ describe("DriveTab keyboard", () => {
     root = null;
     container?.remove();
     container = null;
-    const closed = mountTab(device({ sessionOpen: false }));
+    const closed = mountTab(closedLink());
     key("keydown", "ArrowUp");
     expect(sent(closed.socket)).toEqual([]);
   });
@@ -185,14 +204,14 @@ describe("DriveTab gamepad", () => {
     act(() => {
       vi.advanceTimersByTime(60);
     });
-    expect(sent(socket)[0]).toEqual({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "WHEELS_V", fields: [150, 90, 400] });
+    expect(sent(socket)[0]).toEqual({ type: "send-command", linkId: LINK_ID, verb: "WHEELS_V", fields: [150, 90, 400] });
     expect(el.querySelector('[data-testid="drive-tab-gamepad"]')?.textContent).toContain("Wheels 150 / 90 mm/s");
 
     stubGamepad([0, 0]);
     act(() => {
       vi.advanceTimersByTime(60);
     });
-    expect(sent(socket).at(-1)).toEqual({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "STOP" });
+    expect(sent(socket).at(-1)).toEqual({ type: "send-command", linkId: LINK_ID, verb: "STOP" });
   });
 
   it("never sends more often than the resend cadence while the stick keeps moving; the latest position rides the next tick", () => {
@@ -202,7 +221,7 @@ describe("DriveTab gamepad", () => {
     act(() => {
       vi.advanceTimersByTime(60);
     });
-    expect(sent(socket)).toEqual([{ type: "send-command", endpointId: "usb-ROBOT-A", verb: "WHEELS_V", fields: [75, 75, 400] }]);
+    expect(sent(socket)).toEqual([{ type: "send-command", linkId: LINK_ID, verb: "WHEELS_V", fields: [75, 75, 400] }]);
     stubGamepad([0, -0.7]);
     act(() => {
       vi.advanceTimersByTime(50);
@@ -217,7 +236,7 @@ describe("DriveTab gamepad", () => {
       vi.advanceTimersByTime(60);
     });
     expect(sent(socket)).toHaveLength(2);
-    expect(sent(socket)[1]).toEqual({ type: "send-command", endpointId: "usb-ROBOT-A", verb: "WHEELS_V", fields: [150, 150, 400] });
+    expect(sent(socket)[1]).toEqual({ type: "send-command", linkId: LINK_ID, verb: "WHEELS_V", fields: [150, 150, 400] });
   });
 
   it("says none detected without a pad", () => {

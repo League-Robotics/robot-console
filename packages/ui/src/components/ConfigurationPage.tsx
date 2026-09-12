@@ -12,15 +12,45 @@
  *    code line (`diffDrive.setupWifi(ssid, password)`) -- stakeholder
  *    direction: everybody in the room knows it. (The header's Set Wi-Fi
  *    dialog is the only other place it appears.)
- *  - **Radio**: the console's per-name relay address (the same stored
- *    channel/group `RelayPage` reads), emitted as
+ *  - **Radio**: the device's radio address, emitted as
  *    `diffDrive.setupRadio(channel, group)`.
+ *
+ * ## Sprint 015 ticket 007: reads `device.radio` from the snapshot
+ *
+ * Ticket 006 moved radio overrides out of browser `localStorage` and
+ * into the host DB (`set-radio-override`), but this panel could not yet
+ * read the *result* of that back: `device` was still the retired
+ * `EndpointListEntry` (no `radio` field, no numeric `devices.id`).
+ * Ticket 007 migrates this page to `SnapshotDevice`, so the panel now
+ * seeds its draft from `device.radio` (`override -> registry ->
+ * derived`, always a concrete `{channel, group, source}` --
+ * `projection.ts`'s own resolution). Saving still only updates this
+ * component's own in-memory draft (feeding the code panel on the
+ * right) -- it does not itself send `set-radio-override`; use the
+ * device page's "Set Radio" dialog (`RadioAddressDialog`) for a
+ * durable, host-side override.
+ *
+ * ## Sprint 015 ticket 008: back onto the shared `AddressSourceChip`
+ *
+ * Ticket 007's own inline `radioSourceLabel` paragraph was a stand-in
+ * for the ticket 006 gap that adapting `AddressSourceChip` to the
+ * `Snapshot` contract closed -- this panel now mounts that shared
+ * component directly (`<AddressSourceChip radio={device.radio} />`),
+ * matching `RelayPage.tsx`'s own connected-child chip, rather than
+ * duplicating its wording locally.
  */
 import { useEffect, useMemo, useState } from "react";
 import { nameToRadioAddress } from "@robot-console/protocol";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
-import { useConnectionStatus, useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
-import { readStoredAddress, writeStoredAddress, type RadioAddress } from "../pages/RelayPage";
+import type { SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
+import {
+  useConnectionStatus,
+  useSendable,
+  useWifiCredentials,
+  useWifiProvisionResult,
+  useWsActions,
+} from "../ws/WsProvider";
+import type { RadioAddress } from "../pages/RelayPage";
+import { AddressSourceChip } from "./AddressSourceChip";
 import {
   calibrationCode,
   deriveCalibration,
@@ -68,14 +98,28 @@ export function configurationCode(input: ConfigurationCodeInput): string {
 }
 
 export interface ConfigurationPageProps {
-  device: EndpointListEntry;
+  device: SnapshotDevice;
 }
 
 export function ConfigurationPage({ device }: ConfigurationPageProps) {
-  const robotName = device.name ?? device.endpointId;
+  const robotName = device.name;
   const { send } = useWsActions();
+  // Ticket 011 (carried from 009's send-gating sweep): Save (via
+  // `saveWifi`) and Write to robot both send over the wire, so both
+  // gate on `useSendable()` the same way every other send-capable
+  // control in the app now does -- see `WsProvider.tsx`'s own doc
+  // comment on `useSendable`.
+  const sendable = useSendable();
   const stored = useWifiCredentials();
-  const provisionResult = useWifiProvisionResult(device.endpointId);
+  // The link currently used for session-scoped actions (Write to robot)
+  // -- the first link with an open session, if any. A device can have
+  // several links under the new contract; which one "the" session is
+  // for a Configuration tab reached via one specific link is ticket
+  // 009's own `RobotPage` rewrite to settle precisely -- this mirrors
+  // the pre-ticket-007 single-endpoint behavior closely enough in the
+  // common case (one open link at a time).
+  const openLink = device.links.find((candidate) => candidate.session !== undefined);
+  const provisionResult = useWifiProvisionResult(openLink?.id ?? "");
 
   // Calibration values -- shared with the Calibration tab through localStorage.
   const [calibration, setCalibration] = useState<CalibrationState>(() => readCalibrationState(robotName));
@@ -95,10 +139,13 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
     });
   }
 
-  // Radio address -- the console's per-name relay address.
-  const [radio, setRadio] = useState<RadioAddress>(
-    () => (device.name ? readStoredAddress(device.name) : null) ?? nameToRadioAddress(robotName),
-  );
+  // Radio address. Ticket 007: seeded from the snapshot's own
+  // `device.radio` (override -> registry -> derived, always concrete --
+  // see this module's own doc comment) rather than always the
+  // name-derived default. `saveRadio` still only updates this
+  // component's own draft (feeding the code panel on the right), not a
+  // `set-radio-override` send -- use `RadioAddressDialog` for that.
+  const [radio, setRadio] = useState<RadioAddress>(() => ({ channel: device.radio.channel, group: device.radio.group }));
   const [radioDraft, setRadioDraft] = useState({ channel: String(radio.channel), group: String(radio.group) });
   const [radioError, setRadioError] = useState<string | null>(null);
   function saveRadio(): boolean {
@@ -113,11 +160,7 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
       return false;
     }
     setRadioError(null);
-    const next = { channel, group };
-    setRadio(next);
-    if (device.name) {
-      writeStoredAddress(device.name, next);
-    }
+    setRadio({ channel, group });
     return true;
   }
 
@@ -158,6 +201,9 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
 
   const [savedNote, setSavedNote] = useState<string | null>(null);
   function saveAll(): void {
+    if (!sendable) {
+      return;
+    }
     const radioOk = saveRadio();
     const wifiOk = saveWifi();
     writeCalibrationState(robotName, calibration);
@@ -298,6 +344,7 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
 
         <div className="robot-page-panel" aria-label="Radio values">
           <h3>Radio</h3>
+          <AddressSourceChip radio={device.radio} />
           <table className="calibration-table" data-testid="configuration-radio">
             <tbody>
               <tr>
@@ -363,19 +410,27 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
             </p>
           )}
           <div className="configuration-actions">
-            <button type="button" className="calibration-code-copy" data-testid="configuration-save" onClick={saveAll}>
+            <button
+              type="button"
+              className="calibration-code-copy"
+              data-testid="configuration-save"
+              disabled={!sendable}
+              onClick={saveAll}
+            >
               Save
             </button>
             <button
               type="button"
               data-testid="configuration-write"
-              disabled={!device.sessionOpen || !stored?.ssid}
+              disabled={!openLink || !stored?.ssid || !sendable}
               title={
-                device.sessionOpen
-                  ? "Write the saved Wi-Fi network to the robot's credential slot 0"
-                  : "Open a link to the robot first"
+                !sendable
+                  ? "Disconnected from the host"
+                  : openLink
+                    ? "Write the saved Wi-Fi network to the robot's credential slot 0"
+                    : "Open a link to the robot first"
               }
-              onClick={() => send({ type: "provision-wifi", endpointId: device.endpointId, slot: 0 })}
+              onClick={() => openLink && sendable && send({ type: "provision-wifi", linkId: openLink.id, slot: 0 })}
             >
               Write to robot
             </button>

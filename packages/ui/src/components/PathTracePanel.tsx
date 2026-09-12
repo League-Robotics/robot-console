@@ -75,7 +75,7 @@ import { useTelemetry, useTelemetryHeader, useWsActions, type TelemetryFrame } f
 import "./PathTracePanel.css";
 
 export interface PathTracePanelProps {
-  endpointId: string;
+  linkId: string;
 }
 
 interface TracePoint {
@@ -198,9 +198,9 @@ class TraceRing {
   }
 }
 
-export function PathTracePanel({ endpointId }: PathTracePanelProps) {
-  const header = useTelemetryHeader(endpointId);
-  const telemetry = useTelemetry(endpointId);
+export function PathTracePanel({ linkId }: PathTracePanelProps) {
+  const header = useTelemetryHeader(linkId);
+  const telemetry = useTelemetry(linkId);
   const { clearTelemetry } = useWsActions();
 
   const hasHeader = header !== undefined;
@@ -319,7 +319,7 @@ export function PathTracePanel({ endpointId }: PathTracePanelProps) {
     // notion of "clear", so nothing is sent over the wire here.
     traceRingRef.current!.clear();
     latestPoseRef.current = undefined;
-    clearTelemetry(endpointId);
+    clearTelemetry(linkId);
     // Redraw synchronously (not via rAF) so the plot visibly resets the
     // instant Clear is pressed, rather than waiting for the next
     // telemetry frame to arrive and schedule one.

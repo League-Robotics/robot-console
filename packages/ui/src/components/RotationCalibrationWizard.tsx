@@ -4,13 +4,15 @@
  *
  * Mirrors `DistanceCalibrationWizard.tsx`'s structure exactly (see that
  * module's own doc comment for the full rationale this one shares:
- * `FUNCS`-gated availability, `RUN`-dispatch on Go, progress derived
- * from the endpoint's own rx log via `CalibrationReport.parseCalibrationLine`,
- * the run's phase recomputed from `log.filter(id >= runStartId)` on every
- * render rather than accumulated as incremental state) — per
- * `sprint.md`'s Step 3 module table, this wizard "differs from the
- * distance wizard mainly in having more distinct pass stages to show
- * ... rather than in its underlying mechanics."
+ * `FUNCS`-gated availability read straight from `link.session.functions`
+ * with no on-open probe of its own (sprint 015 ticket 009), `RUN`-dispatch
+ * on Go, progress derived from the link's own rx log via
+ * `CalibrationReport.parseCalibrationLine`, the run's phase recomputed
+ * from `log.filter(id >= runStartId)` on every render rather than
+ * accumulated as incremental state) — per `sprint.md`'s Step 3 module
+ * table, this wizard "differs from the distance wizard mainly in having
+ * more distinct pass stages to show ... rather than in its underlying
+ * mechanics."
  *
  * `test/calibratea.ts` (`nezha-robot-template`, read directly) is a
  * fully autonomous rotation calibration with **no beam pointer and no
@@ -56,9 +58,9 @@
  * identical carve-out.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { parseCalibrationLine } from "./CalibrationReport";
-import { useEndpointLog, useWsActions } from "../ws/WsProvider";
+import { useLinkLog, useSendable, useWsActions } from "../ws/WsProvider";
 import "./RotationCalibrationWizard.css";
 
 /** Matches a bare `err ...` reply to the `RUN` command itself -- same
@@ -204,7 +206,7 @@ export function reportedTrackWidthCm(run: RotationCalibrationRun): number | unde
 }
 
 export interface RotationCalibrationWizardProps {
-  device: EndpointListEntry;
+  link: SnapshotLink;
   /** OOP 2026-09-10: called whenever the current run's derived state
    * changes -- `CalibrationPage` folds a succeeded run's reported track
    * width into the robot's calibration state, and drops it again on a
@@ -216,32 +218,21 @@ export interface RotationCalibrationWizardProps {
   disabledReason?: string;
 }
 
-export function RotationCalibrationWizard({ device, onRun, disabled = false, disabledReason }: RotationCalibrationWizardProps) {
-  const endpointId = device.endpointId;
-  const linkOpen = device.sessionOpen;
+export function RotationCalibrationWizard({ link, onRun, disabled = false, disabledReason }: RotationCalibrationWizardProps) {
+  const linkId = link.id;
+  const sendable = useSendable();
+  const linkOpen = link.session !== undefined && sendable;
   const { sendCommand } = useWsActions();
-  const log = useEndpointLog(endpointId);
-  const functions = device.functions;
+  const log = useLinkLog(linkId);
+  const functions = link.session?.functions ?? undefined;
   const available = functions?.some((fn) => fn.name === "cala") ?? false;
 
-  // One-shot FUNCS probe on mount (if already open) and on every
-  // closed->open transition -- identical shape to
-  // DistanceCalibrationWizard's own effect.
-  const wasOpenRef = useRef(false);
-  useEffect(() => {
-    const wasOpen = wasOpenRef.current;
-    wasOpenRef.current = linkOpen;
-    if (linkOpen && !wasOpen) {
-      sendCommand(endpointId, "FUNCS");
-    }
-  }, [linkOpen, endpointId, sendCommand]);
-
   // OOP 2026-09-10: the run's window is anchored on the log entry *id*
-  // minted at Go, not an array index. `useEndpointLog` is a bounded
-  // ring (MAX_LINES_PER_DEVICE) trimmed from the front, so in a tab
-  // that has been open a while an index-based window slides and the
-  // terminal `apply` line scrolls straight out of it -- the
-  // stakeholder's "lots of details, then no code" report.
+  // minted at Go, not an array index. `useLinkLog` is a bounded ring
+  // (MAX_LINES_PER_LINK) trimmed from the front, so in a tab that has
+  // been open a while an index-based window slides and the terminal
+  // `apply` line scrolls straight out of it -- the stakeholder's "lots
+  // of details, then no code" report.
   const [runStartId, setRunStartId] = useState<number | undefined>(undefined);
   const derived = useMemo<RotationCalibrationRun | undefined>(() => {
     if (runStartId === undefined) {
@@ -278,7 +269,7 @@ export function RotationCalibrationWizard({ device, onRun, disabled = false, dis
     }
     const last = log[log.length - 1];
     setRunStartId(last ? last.id + 1 : 0);
-    sendCommand(endpointId, "RUN", ["cala"]);
+    sendCommand(linkId, "RUN", ["cala"]);
   }
 
   return (

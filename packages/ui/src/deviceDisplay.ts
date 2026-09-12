@@ -1,68 +1,69 @@
 /**
- * deviceDisplay.ts — presentational helpers for rendering an
- * `EndpointListEntry`, shared across the front page and every
- * per-device page.
+ * deviceDisplay.ts — presentational helpers for rendering a
+ * `SnapshotDevice`/`SnapshotLink` (sprint 015 ticket 007: migrated off
+ * the retired `EndpointListEntry`), shared across the front page and
+ * every per-device page.
  *
- * Ticket 008 extracts these from `DevicesTab.tsx` (sprint 1's flat
- * Devices tab) as that file is retired: its rendering logic is fully
- * redistributed by this sprint (`FrontPage.tsx`, ticket 007; the
- * per-device pages, this ticket), so nothing depends on the component
- * itself any more, but `nameDisplay`/`roleDisplay` were already shared
- * with `FrontPage.tsx` and the flash-gating helpers are needed fresh by
- * `UnknownDevicePage.tsx` -- this module is the one place both land
- * instead of either being duplicated or `DevicesTab.tsx` being kept
- * alive as a component-less grab bag.
+ * ## Ticket 007: device/link split
+ *
+ * `EndpointListEntry` folded a device's identity, its one connection,
+ * and that connection's session state into one flat object -- `name`
+ * could be `null` (naming not yet resolved or failed), and
+ * `sessionError` doubled as an "unresponsive" signal. Under the new
+ * `Snapshot` contract, `devices[]` only ever lists an *identified*
+ * device (`SnapshotDevice.name` is always a resolved string --
+ * `devices.name`, `deviceIdToName(id)`, never absent); a board that
+ * hasn't identified yet has no device row at all, and shows up in
+ * `Snapshot.unassigned` as a bare `SnapshotLink` with no name to
+ * display -- so `nameDisplay`'s old "flagged"/"Naming…" states have no
+ * device-level equivalent any more. `roleDisplay`'s old
+ * `sessionError`-driven "Unresponsive" case moves the same way: link
+ * reachability (`state`/`reason`) is now a per-`SnapshotLink` concept,
+ * rendered by `FrontPage.tsx`'s own `linkStatusText`, not folded into a
+ * device's role text.
  */
-import type {
-  EndpointListEntry,
-  FirmwareAvailability,
-  FirmwareKind,
-  FlashPhase,
-} from "@robot-console/host/src/wsMessages.js";
+import type { FirmwareAvailability, FirmwareKind, FlashPhase, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 
-/** Exported so `FrontPage.tsx` and `UnknownDevicePage.tsx` can reuse
- * this rendering rule verbatim rather than re-deriving it. */
-export function nameDisplay(device: EndpointListEntry): { text: string; flagged: boolean } {
-  if (device.name) {
-    return { text: device.name, flagged: false };
-  }
-  if (device.nameError) {
-    return { text: "Unnamed device", flagged: true };
-  }
-  // Detected but naming hasn't resolved (or failed) yet -- an ordinary,
-  // momentary state, never shown as an error.
-  return { text: "Naming…", flagged: false };
+/** A device's display name. `SnapshotDevice.name` is always a resolved
+ * string (see this module's doc comment), so this is never anything
+ * but that name -- the `{ text, flagged }` shape is kept (rather than
+ * returning a bare string) only so a future caller that still expects
+ * this wrapper (ticket 008/009's per-device pages) doesn't need to
+ * change its own destructuring, not because `flagged` can ever be
+ * `true` for an identified device any more. */
+export function nameDisplay(device: SnapshotDevice): { text: string; flagged: boolean } {
+  return { text: device.name, flagged: false };
 }
 
-/** Exported for the same reason as {@link nameDisplay} above. */
-export function roleDisplay(device: EndpointListEntry): string {
-  if (device.role) {
-    return device.role;
-  }
-  if (device.sessionError) {
-    // No banner reply ever arrived -- per UC-001's error flow, shown as
-    // unresponsive rather than assigned a role.
-    return "Unresponsive";
-  }
-  // The common, unalarming case: a board running its own code (or not
-  // yet linked) that simply hasn't announced a role. Not an error, not
-  // a spinner.
-  return "No role announced";
+/** A device's role text: the announced `role`, or a calm "not yet
+ * announced" placeholder. The old `sessionError`-driven "Unresponsive"
+ * branch has no device-level equivalent -- see this module's doc
+ * comment. */
+export function roleDisplay(device: SnapshotDevice): string {
+  return device.role ?? "No role announced";
 }
 
-/** Whether a device is eligible for the flash controls on
- * `UnknownDevicePage` -- any device that hasn't identified with a role
- * yet, regardless of whether it announced an explicit `sessionError`.
- * This deliberately covers both the "auto-probed and failed to
- * identify" case (UC-001's error flow: a `HELLO` reply never arrived,
- * `sessionError` set) *and* the common, unalarming "silent, unflashed
- * board" case -- a session that opened fine and whose `identify()`
- * simply resolved `null` without ever setting `sessionError`. Both are
- * boards a student needs to be able to flash from this page, so both
- * get the recovery path. Only a device that has identified successfully
- * (`role` set) is excluded. */
-export function canBeFlashed(device: EndpointListEntry): boolean {
-  return device.role === null;
+/** Whether `device.program` marks it as a calibration build --
+ * `SnapshotDevice` carries `program`/`version` directly (no
+ * `classification.type` field any more; that concept was folded into
+ * `kind: "robot" | "relay"` plus these two strings), so this is now a
+ * simple prefix check rather than a read of a pre-computed
+ * classification. Mirrors the pre-ticket-007 `classification.type ===
+ * "calibration"` rule (a program name prefixed `calibration-`). */
+export function isCalibrationProgram(program: string | null): boolean {
+  return program !== null && program.startsWith("calibration-");
+}
+
+/** Whether a link is eligible for the flash controls -- now a direct
+ * read of the host-computed `SnapshotLink.capabilities.flash`
+ * (`projection.ts`: true for any `usb` link, regardless of whether its
+ * owning device has identified) rather than a UI-side `role === null`
+ * guess. Renamed input only (`link`, not `device`) -- flashability is a
+ * per-link capability under the new contract, since a device can have
+ * several links (only its `usb` one is ever flashable) and an
+ * unidentified board (no device at all) is still flashable. */
+export function canBeFlashed(link: SnapshotLink): boolean {
+  return link.capabilities.flash;
 }
 
 /** Turn one firmware's live availability into either `null` (button

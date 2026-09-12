@@ -104,9 +104,9 @@
  *    the host never queues, rejects, or errors on a second one arriving
  *    while the first is still being acted on. Its icon gets a
  *    "latched" visual variant while
- *    `device.robotStatus?.estopped` is `true`.
+ *    `link.session?.robotStatus?.estopped` is `true`.
  *  - **Clear E-STOP** (`data-testid="estop-clear-button"`) — rendered
- *    directly under the pad, only while `device.robotStatus?.estopped`
+ *    directly under the pad, only while `link.session?.robotStatus?.estopped`
  *    is `true` (hidden entirely, not just disabled, the rest of the
  *    time — there is nothing to clear, and showing it regardless would
  *    invite a confusing no-op press): `SET estop_clear 1` (sequenced)
@@ -116,7 +116,8 @@
  *
  * None of the above three read or care about `sequencing` in any form
  * — the only thing that disables any button on this pad is
- * `device.sessionOpen` being false (nothing to send at all).
+ * `link.session` being absent or the host connection not being sendable
+ * (nothing to send at all).
  *
  * **Hardware-deferred claim.** This component's own tests (fake
  * `WsProvider` socket) prove only that pressing a button sends the
@@ -131,8 +132,8 @@
  * corner turn buttons, which are one-shot clicks, not holds.
  */
 import { useEffect, useRef, useState } from "react";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
-import { useWsActions } from "../ws/WsProvider";
+import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import { useSendable, useWsActions } from "../ws/WsProvider";
 import "./DriveControls.css";
 
 /** [mm/s] -- see this module's doc comment for why 150. */
@@ -332,12 +333,13 @@ function StopSignIcon({ letter, latched }: { letter: boolean; latched: boolean }
 }
 
 export interface DriveControlsProps {
-  device: EndpointListEntry;
+  link: SnapshotLink;
 }
 
-export function DriveControls({ device }: DriveControlsProps) {
-  const endpointId = device.endpointId;
-  const linkOpen = device.sessionOpen;
+export function DriveControls({ link }: DriveControlsProps) {
+  const linkId = link.id;
+  const sendable = useSendable();
+  const linkOpen = link.session !== undefined && sendable;
   const { sendCommand } = useWsActions();
   const [activeDirection, setActiveDirection] = useState<DriveDirection | null>(null);
   const activeRef = useRef<DriveDirection | null>(null);
@@ -349,7 +351,7 @@ export function DriveControls({ device }: DriveControlsProps) {
       intervalRef.current = undefined;
     }
     if (activeRef.current !== null) {
-      sendCommand(endpointId, "STOP");
+      sendCommand(linkId, "STOP");
     }
     activeRef.current = null;
     setActiveDirection(null);
@@ -362,7 +364,7 @@ export function DriveControls({ device }: DriveControlsProps) {
     activeRef.current = direction;
     setActiveDirection(direction);
     const [left, right] = wheelVelocities(direction);
-    const resend = () => sendCommand(endpointId, "WHEELS_V", [left, right, DRIVE_LEASE_MS]);
+    const resend = () => sendCommand(linkId, "WHEELS_V", [left, right, DRIVE_LEASE_MS]);
     resend();
     intervalRef.current = setInterval(resend, DRIVE_RESEND_INTERVAL_MS);
   }
@@ -375,7 +377,7 @@ export function DriveControls({ device }: DriveControlsProps) {
     if (!linkOpen) {
       return;
     }
-    sendCommand(endpointId, "MOVE_X", [
+    sendCommand(linkId, "MOVE_X", [
       0,
       degreesToMilliradians(rotationDeg),
       TURN_CRUISE_MM_S,
@@ -383,15 +385,15 @@ export function DriveControls({ device }: DriveControlsProps) {
     ]);
   }
 
-  const canAbortRun = device.functions?.some((fn) => fn.name === "abort") === true;
+  const canAbortRun = link.session?.functions?.some((fn) => fn.name === "abort") === true;
   function handleStop(): void {
-    sendCommand(endpointId, "STOP", ["now"]);
+    sendCommand(linkId, "STOP", ["now"]);
     if (canAbortRun) {
-      sendCommand(endpointId, "RUN", ["abort"]);
+      sendCommand(linkId, "RUN", ["abort"]);
     }
   }
 
-  const estopped = device.robotStatus?.estopped === true;
+  const estopped = link.session?.robotStatus?.estopped === true;
 
   // A held direction must not survive the link closing out from under
   // it (disconnect/session close mid-hold) -- release() sends STOP,
@@ -493,7 +495,7 @@ export function DriveControls({ device }: DriveControlsProps) {
             aria-label="Emergency stop"
             title={estopped ? "Emergency stop (latched)" : "Emergency stop"}
             disabled={!linkOpen}
-            onClick={() => sendCommand(endpointId, "ESTOP")}
+            onClick={() => sendCommand(linkId, "ESTOP")}
           >
             <StopSignIcon letter={true} latched={estopped} />
           </button>
@@ -511,8 +513,8 @@ export function DriveControls({ device }: DriveControlsProps) {
           data-testid="estop-clear-button"
           disabled={!linkOpen}
           onClick={() => {
-            sendCommand(endpointId, "SET", ["estop_clear", "1"]);
-            sendCommand(endpointId, "STATUS");
+            sendCommand(linkId, "SET", ["estop_clear", "1"]);
+            sendCommand(linkId, "STATUS");
           }}
         >
           Clear E-STOP

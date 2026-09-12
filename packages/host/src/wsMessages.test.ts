@@ -1,58 +1,87 @@
 import { describe, expect, it } from "vitest";
-import { normalizeDeviceType, parseClientMessage } from "./wsMessages.js";
-import type { EndpointListEntry, ServerMessage, TelemetryMessage } from "./wsMessages.js";
+import { parseClientMessage } from "./wsMessages.js";
+import type { ServerMessage, TelemetryMessage } from "./wsMessages.js";
 
 describe("parseClientMessage", () => {
-  it("accepts a well-formed session-open message", () => {
-    expect(parseClientMessage({ type: "session-open", endpointId: "usb-abc" })).toEqual({
-      type: "session-open",
-      endpointId: "usb-abc",
+  describe("session-open", () => {
+    it("accepts the {linkId} shape", () => {
+      expect(parseClientMessage({ type: "session-open", linkId: "usb-abc" })).toEqual({
+        type: "session-open",
+        linkId: "usb-abc",
+      });
+    });
+
+    it("accepts the {relayLinkId, name} shape", () => {
+      expect(
+        parseClientMessage({ type: "session-open", relayLinkId: "relay-1", name: "zeguz" }),
+      ).toEqual({ type: "session-open", relayLinkId: "relay-1", name: "zeguz" });
+    });
+
+    it("rejects a message carrying both linkId and relayLinkId (mutually exclusive shapes)", () => {
+      expect(
+        parseClientMessage({ type: "session-open", linkId: "usb-abc", relayLinkId: "relay-1", name: "zeguz" }),
+      ).toBeUndefined();
+    });
+
+    it("rejects a message carrying neither shape", () => {
+      expect(parseClientMessage({ type: "session-open" })).toBeUndefined();
+    });
+
+    it("rejects relayLinkId with no name", () => {
+      expect(parseClientMessage({ type: "session-open", relayLinkId: "relay-1" })).toBeUndefined();
+    });
+
+    it("rejects name with no relayLinkId", () => {
+      expect(parseClientMessage({ type: "session-open", name: "zeguz" })).toBeUndefined();
+    });
+
+    it("rejects a radio override field -- that argument no longer exists on this message (ticket 006 replaces it with set-radio-override)", () => {
+      // The parser only ever reads linkId/relayLinkId/name off the wire,
+      // so a rogue `radio` property is silently dropped rather than
+      // rejected -- asserting here that it never surfaces on the parsed
+      // result, which is what actually matters (the type has no `radio`
+      // field for a caller to read).
+      const parsed = parseClientMessage({
+        type: "session-open",
+        relayLinkId: "relay-1",
+        name: "zeguz",
+        radio: { channel: 41, group: 3 },
+      });
+      expect(parsed).toEqual({ type: "session-open", relayLinkId: "relay-1", name: "zeguz" });
+      expect(parsed).not.toHaveProperty("radio");
+    });
+
+    it("rejects a non-string linkId", () => {
+      expect(parseClientMessage({ type: "session-open", linkId: 5 })).toBeUndefined();
+    });
+
+    it("rejects an empty-string linkId", () => {
+      expect(parseClientMessage({ type: "session-open", linkId: "" })).toBeUndefined();
     });
   });
 
-  it("accepts a session-open message carrying the reserved robotName field", () => {
-    expect(
-      parseClientMessage({ type: "session-open", endpointId: "usb-abc", robotName: "zeguz" }),
-    ).toEqual({ type: "session-open", endpointId: "usb-abc", robotName: "zeguz" });
-  });
+  describe("session-close", () => {
+    it("accepts a well-formed message", () => {
+      expect(parseClientMessage({ type: "session-close", linkId: "usb-abc" })).toEqual({
+        type: "session-close",
+        linkId: "usb-abc",
+      });
+    });
 
-  it("rejects a session-open message with a non-string robotName", () => {
-    expect(
-      parseClientMessage({ type: "session-open", endpointId: "usb-abc", robotName: 5 }),
-    ).toBeUndefined();
-  });
-
-  it("accepts a session-open message with autoRobot: true and no robotName (sprint 8 ticket 005 default failover)", () => {
-    expect(
-      parseClientMessage({ type: "session-open", endpointId: "usb-abc", autoRobot: true }),
-    ).toEqual({ type: "session-open", endpointId: "usb-abc", autoRobot: true });
-  });
-
-  it("rejects a session-open message with autoRobot set to anything other than true", () => {
-    expect(
-      parseClientMessage({ type: "session-open", endpointId: "usb-abc", autoRobot: false }),
-    ).toBeUndefined();
-    expect(
-      parseClientMessage({ type: "session-open", endpointId: "usb-abc", autoRobot: "true" }),
-    ).toBeUndefined();
-  });
-
-  it("accepts a well-formed session-close message", () => {
-    expect(parseClientMessage({ type: "session-close", endpointId: "usb-abc" })).toEqual({
-      type: "session-close",
-      endpointId: "usb-abc",
+    it("rejects a message with no linkId", () => {
+      expect(parseClientMessage({ type: "session-close" })).toBeUndefined();
     });
   });
 
   it("accepts a well-formed outbound line message", () => {
     expect(
-      parseClientMessage({ type: "line", endpointId: "usb-abc", direction: "tx", line: "HELLO" }),
-    ).toEqual({ type: "line", endpointId: "usb-abc", direction: "tx", line: "HELLO" });
+      parseClientMessage({ type: "line", linkId: "usb-abc", direction: "tx", line: "HELLO" }),
+    ).toEqual({ type: "line", linkId: "usb-abc", direction: "tx", line: "HELLO" });
   });
 
   it("rejects a line message claiming direction rx from a client (server-only direction)", () => {
     expect(
-      parseClientMessage({ type: "line", endpointId: "usb-abc", direction: "rx", line: "HELLO" }),
+      parseClientMessage({ type: "line", linkId: "usb-abc", direction: "rx", line: "HELLO" }),
     ).toBeUndefined();
   });
 
@@ -60,12 +89,12 @@ describe("parseClientMessage", () => {
     expect(
       parseClientMessage({
         type: "flash-start",
-        endpointId: "usb-abc",
+        linkId: "usb-abc",
         source: { kind: "release", firmware: "relay" },
       }),
     ).toEqual({
       type: "flash-start",
-      endpointId: "usb-abc",
+      linkId: "usb-abc",
       source: { kind: "release", firmware: "relay" },
     });
   });
@@ -74,12 +103,12 @@ describe("parseClientMessage", () => {
     expect(
       parseClientMessage({
         type: "flash-start",
-        endpointId: "usb-abc",
+        linkId: "usb-abc",
         source: { kind: "local-hex", uploadId: "upload-1", fileName: "custom.hex", sha256: "deadbeef" },
       }),
     ).toEqual({
       type: "flash-start",
-      endpointId: "usb-abc",
+      linkId: "usb-abc",
       source: { kind: "local-hex", uploadId: "upload-1", fileName: "custom.hex", sha256: "deadbeef" },
     });
   });
@@ -88,49 +117,109 @@ describe("parseClientMessage", () => {
     expect(
       parseClientMessage({
         type: "send-command",
-        endpointId: "usb-abc",
+        linkId: "usb-abc",
         verb: "SET",
         fields: ["k1", 42, { wireType: "flags", value: 216 }],
       }),
     ).toEqual({
       type: "send-command",
-      endpointId: "usb-abc",
+      linkId: "usb-abc",
       verb: "SET",
       fields: ["k1", 42, { wireType: "flags", value: 216 }],
     });
   });
 
   it("accepts a send-command message with fields omitted (bare-verb style, e.g. GET/STATUS)", () => {
-    expect(parseClientMessage({ type: "send-command", endpointId: "usb-abc", verb: "STATUS" })).toEqual({
+    expect(parseClientMessage({ type: "send-command", linkId: "usb-abc", verb: "STATUS" })).toEqual({
       type: "send-command",
-      endpointId: "usb-abc",
+      linkId: "usb-abc",
       verb: "STATUS",
     });
   });
 
   it("accepts a send-command message with an explicit empty fields array", () => {
     expect(
-      parseClientMessage({ type: "send-command", endpointId: "usb-abc", verb: "GET", fields: [] }),
-    ).toEqual({ type: "send-command", endpointId: "usb-abc", verb: "GET", fields: [] });
+      parseClientMessage({ type: "send-command", linkId: "usb-abc", verb: "GET", fields: [] }),
+    ).toEqual({ type: "send-command", linkId: "usb-abc", verb: "GET", fields: [] });
   });
 
-  it("accepts a well-formed forget-known-robot message", () => {
-    expect(parseClientMessage({ type: "forget-known-robot", name: "zeguz" })).toEqual({
-      type: "forget-known-robot",
-      name: "zeguz",
+  describe("forget-device (replaces forget-known-robot)", () => {
+    it("accepts a well-formed message", () => {
+      expect(parseClientMessage({ type: "forget-device", deviceId: 1198504156 })).toEqual({
+        type: "forget-device",
+        deviceId: 1198504156,
+      });
+    });
+
+    it("rejects a message with no deviceId", () => {
+      expect(parseClientMessage({ type: "forget-device" })).toBeUndefined();
+    });
+
+    it("rejects a non-integer deviceId", () => {
+      expect(parseClientMessage({ type: "forget-device", deviceId: "1198504156" })).toBeUndefined();
+      expect(parseClientMessage({ type: "forget-device", deviceId: 1.5 })).toBeUndefined();
+    });
+
+    it("rejects the retired forget-known-robot message shape entirely", () => {
+      expect(parseClientMessage({ type: "forget-known-robot", name: "zeguz" })).toBeUndefined();
     });
   });
 
-  it("rejects a forget-known-robot message with no name", () => {
-    expect(parseClientMessage({ type: "forget-known-robot" })).toBeUndefined();
-  });
+  describe("set-radio-override", () => {
+    it("accepts a well-formed {channel, group} message", () => {
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: 1198504156, channel: 41, group: 3 })).toEqual({
+        type: "set-radio-override",
+        deviceId: 1198504156,
+        channel: 41,
+        group: 3,
+      });
+    });
 
-  it("rejects a forget-known-robot message with an empty name", () => {
-    expect(parseClientMessage({ type: "forget-known-robot", name: "" })).toBeUndefined();
-  });
+    it("accepts a well-formed {clear: true} message", () => {
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: 1198504156, clear: true })).toEqual({
+        type: "set-radio-override",
+        deviceId: 1198504156,
+        clear: true,
+      });
+    });
 
-  it("rejects a forget-known-robot message with a non-string name", () => {
-    expect(parseClientMessage({ type: "forget-known-robot", name: 5 })).toBeUndefined();
+    it("rejects a message with neither channel/group nor clear", () => {
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: 1198504156 })).toBeUndefined();
+    });
+
+    it("rejects a message carrying both clear and channel/group", () => {
+      expect(
+        parseClientMessage({ type: "set-radio-override", deviceId: 1198504156, clear: true, channel: 41, group: 3 }),
+      ).toBeUndefined();
+    });
+
+    it("rejects clear: false (not a legal value for this field)", () => {
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: 1198504156, clear: false })).toBeUndefined();
+    });
+
+    it("rejects a non-integer deviceId", () => {
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: "1198504156", channel: 41, group: 3 })).toBeUndefined();
+    });
+
+    it("rejects a non-numeric channel or group (range/integer validation is server.ts's job, not this module's -- see the type's own doc comment)", () => {
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: 1198504156, channel: "41", group: 3 })).toBeUndefined();
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: 1198504156, channel: 41, group: "3" })).toBeUndefined();
+    });
+
+    it("passes a numeric but out-of-range/non-integer channel or group through -- shape is still well-formed (server.ts rejects it, not this parser)", () => {
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: 1198504156, channel: 999, group: 3 })).toEqual({
+        type: "set-radio-override",
+        deviceId: 1198504156,
+        channel: 999,
+        group: 3,
+      });
+      expect(parseClientMessage({ type: "set-radio-override", deviceId: 1198504156, channel: 41.5, group: 3 })).toEqual({
+        type: "set-radio-override",
+        deviceId: 1198504156,
+        channel: 41.5,
+        group: 3,
+      });
+    });
   });
 
   it("accepts a well-formed flash-local-begin message", () => {
@@ -153,58 +242,55 @@ describe("parseClientMessage", () => {
     ["not an object", "nope"],
     ["null", null],
     ["missing type", {}],
-    ["unknown type", { type: "flarp", endpointId: "usb-abc" }],
-    ["session-open with no endpointId", { type: "session-open" }],
-    ["session-open with empty endpointId", { type: "session-open", endpointId: "" }],
-    ["session-open with non-string endpointId", { type: "session-open", endpointId: 5 }],
-    ["session-close with no endpointId", { type: "session-close" }],
-    ["line missing line field", { type: "line", endpointId: "usb-abc", direction: "tx" }],
-    ["line with non-string line field", { type: "line", endpointId: "usb-abc", direction: "tx", line: 5 }],
-    ["send-command with no endpointId", { type: "send-command", verb: "GET" }],
-    ["send-command with empty endpointId", { type: "send-command", endpointId: "", verb: "GET" }],
-    ["send-command with non-string endpointId", { type: "send-command", endpointId: 5, verb: "GET" }],
-    ["send-command with no verb", { type: "send-command", endpointId: "usb-abc" }],
-    ["send-command with empty verb", { type: "send-command", endpointId: "usb-abc", verb: "" }],
-    ["send-command with non-string verb", { type: "send-command", endpointId: "usb-abc", verb: 5 }],
+    ["unknown type", { type: "flarp", linkId: "usb-abc" }],
+    ["session-close with no linkId", { type: "session-close" }],
+    ["line missing line field", { type: "line", linkId: "usb-abc", direction: "tx" }],
+    ["line with non-string line field", { type: "line", linkId: "usb-abc", direction: "tx", line: 5 }],
+    ["send-command with no linkId", { type: "send-command", verb: "GET" }],
+    ["send-command with empty linkId", { type: "send-command", linkId: "", verb: "GET" }],
+    ["send-command with non-string linkId", { type: "send-command", linkId: 5, verb: "GET" }],
+    ["send-command with no verb", { type: "send-command", linkId: "usb-abc" }],
+    ["send-command with empty verb", { type: "send-command", linkId: "usb-abc", verb: "" }],
+    ["send-command with non-string verb", { type: "send-command", linkId: "usb-abc", verb: 5 }],
     [
       "send-command with a fields array containing a boolean",
-      { type: "send-command", endpointId: "usb-abc", verb: "SET", fields: [true] },
+      { type: "send-command", linkId: "usb-abc", verb: "SET", fields: [true] },
     ],
     [
       "send-command with a fields array containing an object missing wireType",
-      { type: "send-command", endpointId: "usb-abc", verb: "SET", fields: [{ value: 216 }] },
+      { type: "send-command", linkId: "usb-abc", verb: "SET", fields: [{ value: 216 }] },
     ],
     [
       "send-command with a fields array containing a flags-shaped object with a non-numeric value",
-      { type: "send-command", endpointId: "usb-abc", verb: "SET", fields: [{ wireType: "flags", value: "216" }] },
+      { type: "send-command", linkId: "usb-abc", verb: "SET", fields: [{ wireType: "flags", value: "216" }] },
     ],
     [
       "send-command with a non-array fields",
-      { type: "send-command", endpointId: "usb-abc", verb: "SET", fields: "nope" },
+      { type: "send-command", linkId: "usb-abc", verb: "SET", fields: "nope" },
     ],
-    ["flash-start with no endpointId", { type: "flash-start", source: { kind: "release", firmware: "relay" } }],
+    ["flash-start with no linkId", { type: "flash-start", source: { kind: "release", firmware: "relay" } }],
     [
-      "flash-start with empty endpointId",
-      { type: "flash-start", endpointId: "", source: { kind: "release", firmware: "relay" } },
+      "flash-start with empty linkId",
+      { type: "flash-start", linkId: "", source: { kind: "release", firmware: "relay" } },
     ],
     [
-      "flash-start with non-string endpointId",
-      { type: "flash-start", endpointId: 5, source: { kind: "release", firmware: "relay" } },
+      "flash-start with non-string linkId",
+      { type: "flash-start", linkId: 5, source: { kind: "release", firmware: "relay" } },
     ],
-    ["flash-start with no source", { type: "flash-start", endpointId: "usb-abc" }],
+    ["flash-start with no source", { type: "flash-start", linkId: "usb-abc" }],
     [
       "flash-start with an invalid firmware value",
-      { type: "flash-start", endpointId: "usb-abc", source: { kind: "release", firmware: "relayx" } },
+      { type: "flash-start", linkId: "usb-abc", source: { kind: "release", firmware: "relayx" } },
     ],
     [
       "flash-start with an unknown source kind",
-      { type: "flash-start", endpointId: "usb-abc", source: { kind: "carrier-pigeon" } },
+      { type: "flash-start", linkId: "usb-abc", source: { kind: "carrier-pigeon" } },
     ],
     [
       "flash-start with a local-hex source missing sha256",
       {
         type: "flash-start",
-        endpointId: "usb-abc",
+        linkId: "usb-abc",
         source: { kind: "local-hex", uploadId: "upload-1", fileName: "custom.hex" },
       },
     ],
@@ -223,129 +309,24 @@ describe("parseClientMessage", () => {
   });
 });
 
-describe("EndpointListEntry", () => {
-  it("still round-trips as a valid EndpointListEntry when every optional field is absent", () => {
-    // Type-level fixture: this compiles only if nameError/sessionError/
-    // flashStatus/usb are all optional, proving the reshaped entry is
-    // additive over the fields that were already optional pre-sprint-4.
-    const entry: EndpointListEntry = {
-      endpointId: "usb-SERIAL-A",
-      transport: "usb",
-      resourceKey: "usb-SERIAL-A",
-      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
-      role: "NEZHA2",
-      name: "zeguz",
-      sessionOpen: true,
-    };
-    expect(entry.flashStatus).toBeUndefined();
-    expect(entry.usb).toBeUndefined();
-    expect(entry.nameError).toBeUndefined();
-    expect(entry.sessionError).toBeUndefined();
-    expect(entry.sequencing).toBeUndefined();
-    expect(entry.relayBridge).toBeUndefined();
-  });
-
-  it("carries a zero-state sequencing field distinguishable from absent", () => {
-    // A client can tell "session just opened, nothing sent or confirmed
-    // yet" (sequencing present with zeroed counters) apart from "no
-    // session open" or "talking to an old server" (sequencing absent
-    // entirely) -- see wsMessages.ts's "Sprint 6 addition" doc comment.
-    const entry: EndpointListEntry = {
-      endpointId: "usb-SERIAL-A",
-      transport: "usb",
-      resourceKey: "usb-SERIAL-A",
-      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role" },
-      role: "NEZHA2",
-      name: "zeguz",
-      sessionOpen: true,
-      sequencing: { seq: 0, pendingCount: 0, lastDone: 0, lastDoneReason: "none" },
-    };
-    expect(entry.sequencing).toEqual({ seq: 0, pendingCount: 0, lastDone: 0, lastDoneReason: "none" });
-  });
-
-  it("carries a connecting relayBridge state (sprint 013 ticket 001)", () => {
-    // Type-level + shape fixture: relayBridge is present only while a
-    // radio-bridging attempt is in flight or recently failed -- see
-    // wsMessages.ts's own doc comment on the field. robotName/triedNames
-    // are optional even within relayBridge (a no-pick default-failover
-    // attempt may not know a name yet).
-    const entry: EndpointListEntry = {
-      endpointId: "usb-SERIAL-A",
-      transport: "usb",
-      resourceKey: "usb-SERIAL-A",
-      classification: { type: "relay", role: "RADIOBRIDGE", commonName: "relay", dialect: "space", evidence: "role" },
-      role: "RADIOBRIDGE",
-      name: "zeguz",
-      sessionOpen: true,
-      relayBridge: { state: "connecting", robotName: "abcde" },
-    };
-    expect(entry.relayBridge).toEqual({ state: "connecting", robotName: "abcde" });
-  });
-
-  it("carries a failed relayBridge state with error and triedNames (sprint 013 ticket 001)", () => {
-    const entry: EndpointListEntry = {
-      endpointId: "usb-SERIAL-A",
-      transport: "usb",
-      resourceKey: "usb-SERIAL-A",
-      classification: { type: "relay", role: "RADIOBRIDGE", commonName: "relay", dialect: "space", evidence: "role" },
-      role: "RADIOBRIDGE",
-      name: "zeguz",
-      sessionOpen: true,
-      relayBridge: { state: "failed", triedNames: ["abcde", "fghij"], error: "no candidates responded" },
-    };
-    expect(entry.relayBridge).toEqual({
-      state: "failed",
-      triedNames: ["abcde", "fghij"],
-      error: "no candidates responded",
-    });
-  });
-});
-
-describe("TelemetryMessage (sprint 009 ticket 002)", () => {
-  it("is a distinct type discriminator from line/endpoints, carrying either a header or a frame", () => {
+describe("TelemetryMessage (linkId-keyed, sprint 15 reshape)", () => {
+  it("is a distinct type discriminator from line/snapshot, carrying either a header or a frame", () => {
     // Type-level fixture: this compiles only if both shapes below are
-    // legal TelemetryMessage/ServerMessage values -- see wsMessages.ts's
-    // own doc comment for why header/frame are mutually exclusive on
-    // the wire (deviceRegistry.ts never sends both on one message).
+    // legal TelemetryMessage/ServerMessage values.
     const header: TelemetryMessage = {
       type: "telemetry",
-      endpointId: "usb-SERIAL-A",
+      linkId: "usb-SERIAL-A",
       header: ["seq", "now", "flags", "posl", "posr", "vell", "velr"],
     };
     const frame: TelemetryMessage = {
       type: "telemetry",
-      endpointId: "usb-SERIAL-A",
+      linkId: "usb-SERIAL-A",
       frame: { seq: "1", now: "2", flags: "3", posl: "4", posr: "5", vell: "6", velr: "7" },
+      seq: 12,
     };
     const asServerMessages: ServerMessage[] = [header, frame];
     expect(asServerMessages.every((m) => m.type === "telemetry")).toBe(true);
     expect(header.frame).toBeUndefined();
     expect(frame.header).toBeUndefined();
-  });
-});
-
-describe("normalizeDeviceType (moved from @robot-console/protocol, ticket 014-004)", () => {
-  it("passes through 'relay'", () => {
-    expect(normalizeDeviceType("relay")).toBe("relay");
-  });
-
-  it("passes through 'robot'", () => {
-    expect(normalizeDeviceType("robot")).toBe("robot");
-  });
-
-  it("passes through 'calibration'", () => {
-    expect(normalizeDeviceType("calibration")).toBe("calibration");
-  });
-
-  it("coerces 'unknown' to 'unknown'", () => {
-    expect(normalizeDeviceType("unknown")).toBe("unknown");
-  });
-
-  it("coerces a fabricated future value to 'unknown'", () => {
-    expect(normalizeDeviceType("some-fifth-type")).toBe("unknown");
-  });
-
-  it("coerces an empty string to 'unknown'", () => {
-    expect(normalizeDeviceType("")).toBe("unknown");
   });
 });

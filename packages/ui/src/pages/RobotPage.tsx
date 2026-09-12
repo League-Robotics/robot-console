@@ -1,6 +1,6 @@
 /**
- * RobotPage.tsx — `/d/:endpointId` for a `robot`-classified endpoint
- * (SUC-001, SUC-003, SUC-004, SUC-006, SUC-007).
+ * RobotPage.tsx — `/d/:linkId` for a `kind: "robot"` device (SUC-001,
+ * SUC-003, SUC-004, SUC-006, SUC-007).
  *
  * Sprint 4 shipped a placeholder shell here. Sprint 006 stacked
  * `EstopControl`, `SequencingIndicator`, `DriveControls`, and two other
@@ -44,58 +44,63 @@
  *   `sendCommand`) and a free-text GET/SET pair (sequenced, dispatched
  *   the same way the retired Get/Set panel did). **No panel renders a
  *   reply area of its own** -- every reply, including `HELLO`'s
- *   host-side refusal (`deviceRegistry.ts:945-951`, surfaced via ticket
- *   012-003's error-routing into this same log), lands in this one
- *   `DeviceConsole`.
+ *   host-side refusal, lands in this one `DeviceConsole`.
  * - Sprint 006's separate status-request panel and Get/Set panel, along
  *   with their separate reply areas, are retired outright (deleted, not
  *   deprecated -- both are fully superseded by `CommandStrip` + the
  *   unified console).
  *
  * **STOP/E-STOP moved into `DriveControls`'s pad, `EstopControl.tsx`
- * retired outright (out-of-process, 2026-09-10).** Sprint 006 mounted a
- * separate, always-reachable `EstopControl` here, directly under the
- * `h2` and pinned with `position: sticky` so it stayed visible
- * regardless of scrolling or what else was on screen. The stakeholder's
- * revised spec instead asks for STOP and E-STOP as two stop-sign-icon
- * buttons in the center of `DriveControls`'s 3x3 drive pad, between the
- * four directional buttons -- reachable because the drive pad itself is
- * always on screen in the left column, not because of a sticky
- * position. `EstopControl.tsx`/`.css`/`.test.tsx` are deleted; their
- * tests' intent (unsequenced `ESTOP` on press, reachable regardless of
- * pending sequenced activity, repeated presses harmless, disabled with
- * a hint when no session is open, Clear E-STOP appearing only while
- * `robotStatus.estopped` and sending `SET estop_clear 1` then `STATUS`)
- * now lives in `DriveControls.test.tsx`. The `stop-button`/
- * `estop-button`/`estop-clear-button` `data-testid`s are unchanged, so
- * every other test and any external tooling keyed on them keeps working
- * unmodified.
+ * retired outright (out-of-process, 2026-09-10).** See `DriveControls`'s
+ * own doc comment for the full rationale; the `stop-button`/
+ * `estop-button`/`estop-clear-button` `data-testid`s are unchanged.
  *
- * **`program`/`version` diagnostics (sprint 011 ticket 002).** The
- * `ID` reply's raw `program`/`version` strings (`classification.program`/
- * `.version`, sprint 011 ticket 001) are shown verbatim, near the `<h2>`
- * name heading, whenever `program` is non-null -- a robot that never
- * answered `ID` (older firmware, or the request timing out) renders
- * nothing extra. This is deliberately gated on the *data* being present,
- * never on `classification.type`: a plain `"robot"` that did answer
- * `ID` shows the same diagnostics a `"calibration"`-classified one does
- * (see `deviceType.ts`'s own doc comment -- `program`/`version` are
- * preserved on both outcomes of `refineForCalibration`). This keeps
- * this page's own transport-blindness property good company -- nothing
- * here branches on *what kind* of robot this is, only on whether a
- * diagnostic value exists to show.
+ * **`program`/`version` diagnostics (sprint 011 ticket 002).** Shown
+ * verbatim, near the `<h2>` name heading, whenever `device.program` is
+ * non-null -- a robot that never answered `ID` (older firmware, or the
+ * request timing out) renders nothing extra. Deliberately gated on the
+ * *data* being present, never on whether this is a calibration build:
+ * a plain robot that did answer `ID` shows the same diagnostics a
+ * calibration-classified one does (`deviceDisplay.ts`'s
+ * `isCalibrationProgram`) -- this keeps this page's own
+ * transport-blindness property good company, nothing here branches on
+ * *what kind* of robot this is, only on whether a diagnostic value
+ * exists to show.
  *
  * **Transport-blindness is load-bearing, not incidental**: this page
  * and every component it mounts render off `WsProvider`'s hooks/
  * actions only — never a transport-specific link type, a hardcoded
- * transport-kind string, or the endpoint's own transport field.
+ * transport-kind string, or the link's own transport field.
  * `RobotPage.transportBlind.test.ts` enforces this with a source scan
  * over this file and its children rather than leaving it to review
  * alone, because sprint 7's "same page, no rewrite" claim for a
  * relay-connected robot depends entirely on this property holding.
+ *
+ * ## Sprint 015 ticket 009: `{ device, link }`, no more probes
+ *
+ * Migrated off the retired `EndpointListEntry` (`{ endpoint }`). Every
+ * caller (`DevicePage.tsx`'s `"robot"` dispatch arm, `RelayPage.tsx`'s
+ * connected-child mount) already resolves both a `SnapshotDevice` and
+ * the specific `SnapshotLink` it is showing this page for (`useLink`/
+ * `useDeviceForLink` in `DevicePage`'s case, `findRelayChild` in
+ * `RelayPage`'s), so this page takes both directly rather than picking
+ * `device.links[0]` itself -- a device can in principle own more than
+ * one link, and the caller, not this page, already knows which one is
+ * "the" connectivity link a route or a relay's bridge is showing. Every
+ * child that used to read `device.sessionOpen`/`device.robotStatus`/
+ * `device.functions` (all fields the retired `EndpointListEntry` carried
+ * flat) now reads the equivalent snapshot fields off `link.session`
+ * directly (`session.robotStatus`/`session.functions`), and the
+ * `StatusPanel`/`CommandStrip`/`DistanceCalibrationWizard`/
+ * `RotationCalibrationWizard` panels no longer send their own one-shot
+ * `STATUS`/`GET`/`FUNCS` probe on a closed->open transition: the
+ * harvester (ticket 003) already probes `ID` once per identify and polls
+ * `STATUS` on its own, so a panel re-deriving "ask again on open" from
+ * local effect state was duplicating work the host now owns outright.
  */
 import { useState } from "react";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import { isCalibrationProgram } from "../deviceDisplay";
 import { CalibrationPage } from "../components/CalibrationPage";
 import { ChartsPanel } from "../components/ChartsPanel";
 import { CommandStrip } from "../components/CommandStrip";
@@ -109,7 +114,12 @@ import { StatusPanel } from "../components/StatusPanel";
 import "./RobotPage.css";
 
 export interface RobotPageProps {
-  endpoint: EndpointListEntry;
+  device: SnapshotDevice;
+  /** The specific link this page is showing a session for -- the
+   * routed link (`DevicePage`) or the relay's bridged child link
+   * (`RelayPage`). See this module's doc comment ("Sprint 015 ticket
+   * 009") for why the caller, not this page, resolves it. */
+  link: SnapshotLink;
 }
 
 /** OOP 2026-09-10: the robot page is split into tabs next to the
@@ -121,8 +131,8 @@ export interface RobotPageProps {
  * own header (`DeviceConsole`) rather than a page panel. */
 export type RobotTab = "main" | "drive" | "calibration" | "functions" | "configuration";
 
-export function RobotPage({ endpoint }: RobotPageProps) {
-  const hasCalibration = endpoint.classification.type === "calibration";
+export function RobotPage({ device, link }: RobotPageProps) {
+  const hasCalibration = isCalibrationProgram(device.program);
   const [selectedTab, setSelectedTab] = useState<RobotTab>("main");
   const tab: RobotTab = selectedTab === "calibration" && !hasCalibration ? "main" : selectedTab;
   const tabs: Array<{ id: RobotTab; label: string }> = [
@@ -136,7 +146,7 @@ export function RobotPage({ endpoint }: RobotPageProps) {
   return (
     <section className="robot-page" aria-label="Robot device">
       <div className="robot-page-title-row">
-        <h2>{endpoint.name ?? endpoint.endpointId}</h2>
+        <h2>{device.name}</h2>
         <div className="robot-page-tabs" role="tablist" aria-label="Robot pages">
           {tabs.map((entry) => (
             <button
@@ -154,11 +164,11 @@ export function RobotPage({ endpoint }: RobotPageProps) {
         </div>
       </div>
 
-      {endpoint.classification.program !== null && (
+      {device.program !== null && (
         <p className="robot-page-diagnostics" data-testid="robot-page-diagnostics">
-          Program: {endpoint.classification.program}
+          Program: {device.program}
           {" · "}
-          Version: {endpoint.classification.version}
+          Version: {device.version}
         </p>
       )}
 
@@ -166,50 +176,50 @@ export function RobotPage({ endpoint }: RobotPageProps) {
         <div className="robot-page-columns" data-testid="robot-tab-panel-main">
           <div className="robot-page-column robot-page-column-left">
             <div className="robot-page-panel">
-              <StatusPanel device={endpoint} />
+              <StatusPanel link={link} />
             </div>
 
             <div className="robot-page-panel">
               <h3>Drive</h3>
-              <DriveControls device={endpoint} />
+              <DriveControls link={link} />
             </div>
           </div>
 
           <div className="robot-page-column robot-page-column-right robot-page-column-console">
-            <DeviceConsole device={endpoint} />
-            <CommandStrip device={endpoint} />
+            <DeviceConsole link={link} name={device.name} />
+            <CommandStrip link={link} />
           </div>
         </div>
       )}
 
-      {tab === "drive" && <DriveTab device={endpoint} />}
+      {tab === "drive" && <DriveTab link={link} />}
 
-      {tab === "calibration" && <CalibrationPage device={endpoint} />}
+      {tab === "calibration" && <CalibrationPage link={link} name={device.name} />}
 
-      {tab === "configuration" && <ConfigurationPage device={endpoint} />}
+      {tab === "configuration" && <ConfigurationPage device={device} />}
 
       {tab === "functions" && (
         <div className="robot-page-columns" data-testid="robot-tab-panel-functions">
           <div className="robot-page-column robot-page-column-left">
             <div className="robot-page-panel">
               <h3>Functions</h3>
-              <FunctionsPanel device={endpoint} />
+              <FunctionsPanel link={link} name={device.name} />
             </div>
             {/* OOP 2026-09-10: the drive pad rides along on this tab too,
                 so a student can drive while watching functions/charts. */}
             <div className="robot-page-panel">
               <h3>Drive</h3>
-              <DriveControls device={endpoint} />
+              <DriveControls link={link} />
             </div>
           </div>
           <div className="robot-page-column robot-page-column-right">
             <div className="robot-page-panel" aria-label="Charts">
               <h3>Charts</h3>
-              <ChartsPanel endpointId={endpoint.endpointId} />
+              <ChartsPanel linkId={link.id} />
             </div>
             <div className="robot-page-panel" aria-label="Path trace">
               <h3>Path trace</h3>
-              <PathTracePanel endpointId={endpoint.endpointId} />
+              <PathTracePanel linkId={link.id} />
             </div>
           </div>
         </div>

@@ -3,16 +3,28 @@
  * directory: an explicit override, then `ROBOT_CONSOLE_STATE_DIR`, then
  * `${XDG_STATE_HOME:-~/.local/state}/robot-console`.
  *
- * Factored out of {@link resolveKnownRobotsFilePath} (knownRobots.ts) so
- * every file that lives in the state directory — `known-robots.json`,
- * `wifi-credentials.json`, and now `console.sqlite` (db.ts) — resolves
- * its directory the same way, without re-encoding the override/XDG
- * fallback logic per file. `resolveKnownRobotsFilePath`'s own behavior
- * is unchanged: it still returns exactly what it returned before this
- * refactor, for every input.
+ * Factored out of `resolveKnownRobotsFilePath` (originally
+ * `store/knownRobots.ts`) so every file that lives in the state
+ * directory — `known-robots.json`, `wifi-credentials.json`, and
+ * `console.sqlite` (db.ts) — resolves its directory the same way,
+ * without re-encoding the override/XDG fallback logic per file.
+ *
+ * {@link resolveKnownRobotsFilePath} itself moved here outright (sprint
+ * 015 ticket 003): `store/knownRobots.ts` (the old in-memory
+ * `KnownRobotsStore`, superseded by `store/importers/knownRobots.ts` +
+ * the SQLite `devices` table) is retired along with `deviceRegistry.ts`
+ * and its other satellites, but `store/wifiCredentials.ts` and
+ * `store/bootstrap.ts` still need this one function to locate
+ * `known-robots.json` on disk — moving just the function (not the
+ * retired class around it) keeps the deletion clean without inventing a
+ * new module neither ticket asked for.
  */
 import { homedir } from "node:os";
 import path from "node:path";
+
+/** Filename of the on-disk known-robots roster, joined onto whichever
+ * directory {@link resolveKnownRobotsFilePath} resolves. */
+const KNOWN_ROBOTS_FILENAME = "known-robots.json";
 
 /** Directory-resolution inputs shared by every per-file `resolve*Path`
  * helper in `store/`. */
@@ -47,4 +59,21 @@ export function resolveStateDir(
       ? xdgStateHome
       : path.join(homedir(), ".local", "state");
   return path.join(base, "robot-console");
+}
+
+/**
+ * Resolve the on-disk path for `known-robots.json`, following (in
+ * priority order): an explicit `filePath`, else {@link resolveStateDir}'s
+ * directory joined with this file's name. Moved here verbatim from
+ * `store/knownRobots.ts` (sprint 015 ticket 003, retiring that module) —
+ * see this module's own doc comment.
+ */
+export function resolveKnownRobotsFilePath(
+  options: { filePath?: string; stateDir?: string } = {},
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (options.filePath !== undefined) {
+    return options.filePath;
+  }
+  return path.join(resolveStateDir(options, env), KNOWN_ROBOTS_FILENAME);
 }

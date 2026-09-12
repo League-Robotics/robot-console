@@ -20,7 +20,7 @@
  * **Dispatch, verb by verb:**
  *  - `HELLO`/`ID`/`VER`/`STATUS` are not in `SEQUENCED_VERBS`
  *    (`@robot-console/protocol`'s `v6/session.ts:120-132`), so all four
- *    go through plain `sendCommand(endpointId, verb)` with no fields --
+ *    go through plain `sendCommand(linkId, verb)` with no fields --
  *    the same unsequenced path `EstopControl` and the old status-request
  *    panel already used. **`HELLO` is not special-cased on the client.**
  *    It is sent exactly like the other three; `deviceRegistry.ts`'s
@@ -47,15 +47,7 @@
  * library", and the vocabulary is owned by whatever firmware build is
  * on the device, not by this project. The one mechanism protocol.md
  * does promise: a bare `GET` (no name) returns one `get <name> <value>`
- * line per known field. This component fires that bare `GET` itself --
- * on mount if a session is already open, otherwise on the session's
- * first open, and again on every subsequent reopen (a false→true
- * transition of `device.sessionOpen`, tracked with a ref so a
- * reconnected session's discovered-names set does not silently go
- * stale forever). It is a one-shot probe per open transition, never a
- * retry loop -- a device that never answers just leaves the discovered
- * set empty; there is no spinner or loading state to get stuck, because
- * this component renders none.
+ * line per known field.
  *
  * `get <name> <value>` reply lines are harvested with the same "loose
  * prefix match, no invented grammar" discipline `classifyLine` and the
@@ -66,23 +58,38 @@
  * field's `<datalist>`, making it an editable combo box -- **never a
  * closed `<select>`** -- so a field the device didn't report (or
  * hasn't reported yet) can still be typed and sent via GET or SET.
- * Host `type: "error"` log entries (`origin: "host"`) are excluded from
+ * Host `type: "notice"` log entries (`origin: "host"`) are excluded from
  * harvesting; they are not device-sourced `get` replies.
+ *
+ * ## Sprint 015 ticket 009: no on-open discovery probe any more
+ *
+ * Before this ticket, this component fired its own bare `GET` on mount
+ * (if a session was already open) and again on every closed->open
+ * transition, so the discovered-names `<datalist>` populated itself
+ * without a person pressing GET first. That probe is deleted outright,
+ * not adapted: the harvester (ticket 003) does not send a `GET` of its
+ * own on identify (only `ID` once, plus the `STATUS` poll), so there is
+ * no snapshot-side equivalent to read discovered field names from --
+ * this component now only harvests names from `get <name> <value>` lines
+ * already in the link's log (from an earlier manual GET/SET, in this
+ * session or carried over from before a reconnect), never fires one on
+ * its own. A student who wants the combo box populated presses GET (with
+ * an empty name) once, same as always; nothing here retries on their
+ * behalf any more.
  *
  * **FUNCS (added out-of-process, 2026-09-09).** A `FUNCS` button sits
  * after `STATUS`, sending the bare verb with no fields via the same
  * plain `sendCommand` path as `HELLO`/`ID`/`VER`/`STATUS` -- `FUNCS` is
- * not in `SEQUENCED_VERBS` either. The host resets
- * `EndpointListEntry.functions` to `[]` on send and appends one entry
- * per `funcs <name> [signature]` reply line (see `wsMessages.ts`'s
- * `RobotFunction`); this button only fires the request. Rendering the
- * resulting list is `FunctionsPanel`'s job, not this component's --
- * consistent with this component never rendering a reply area of its
- * own.
+ * not in `SEQUENCED_VERBS` either. The host appends one entry per
+ * `funcs <name> [signature]` reply line to `link.session.functions`
+ * (see `wsMessages.ts`'s `RobotFunction`); this button only fires the
+ * request. Rendering the resulting list is `FunctionsPanel`'s job, not
+ * this component's -- consistent with this component never rendering a
+ * reply area of its own.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
-import { useEndpointLog, useWsActions } from "../ws/WsProvider";
+import { useMemo, useState } from "react";
+import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import { useLinkLog, useSendable, useWsActions } from "../ws/WsProvider";
 import "./CommandStrip.css";
 
 /** Matches a `get <name> ...` reply line and captures `<name>`.
@@ -93,37 +100,26 @@ import "./CommandStrip.css";
 const GET_REPLY_PATTERN = /^get\s+(\S+)/i;
 
 export interface CommandStripProps {
-  device: EndpointListEntry;
+  link: SnapshotLink;
 }
 
-export function CommandStrip({ device }: CommandStripProps) {
-  const endpointId = device.endpointId;
-  const linkOpen = device.sessionOpen;
+export function CommandStrip({ link }: CommandStripProps) {
+  const linkId = link.id;
+  const sendable = useSendable();
+  const linkOpen = link.session !== undefined && sendable;
   const { sendCommand } = useWsActions();
-  const log = useEndpointLog(endpointId);
+  const log = useLinkLog(linkId);
 
   const [nameDraft, setNameDraft] = useState("");
   const [valueDraft, setValueDraft] = useState("");
 
-  // Fires a bare GET on mount (if already open) and again on every
-  // false->true transition of `linkOpen` -- see the doc comment above.
-  // The ref, not state, tracks "was open last render" so this effect
-  // never re-fires just because the log or draft fields changed.
-  const wasOpenRef = useRef(false);
-  useEffect(() => {
-    const wasOpen = wasOpenRef.current;
-    wasOpenRef.current = linkOpen;
-    if (linkOpen && !wasOpen) {
-      sendCommand(endpointId, "GET");
-    }
-  }, [linkOpen, endpointId, sendCommand]);
-
-  // Discovered field names, derived from the endpoint's log rather than
+  // Discovered field names, derived from the link's log rather than
   // held as separately-mutated state -- recomputing from `log` on every
   // change keeps this in sync with `DeviceConsole`'s clear-log action
   // too (a cleared log naturally clears discovery, since there is
   // nothing left to derive names from) instead of needing its own reset
-  // path.
+  // path. No on-mount/on-reopen probe fires this any more -- see this
+  // module's doc comment ("Sprint 015 ticket 009").
   const discoveredNames = useMemo(() => {
     const names = new Set<string>();
     for (const entry of log) {
@@ -139,7 +135,7 @@ export function CommandStrip({ device }: CommandStripProps) {
     return Array.from(names).sort();
   }, [log]);
 
-  const nameListId = `command-strip-name-options-${endpointId}`;
+  const nameListId = `command-strip-name-options-${linkId}`;
 
   function handleGet(): void {
     if (!linkOpen) {
@@ -147,9 +143,9 @@ export function CommandStrip({ device }: CommandStripProps) {
     }
     const name = nameDraft.trim();
     if (name.length > 0) {
-      sendCommand(endpointId, "GET", [name]);
+      sendCommand(linkId, "GET", [name]);
     } else {
-      sendCommand(endpointId, "GET");
+      sendCommand(linkId, "GET");
     }
   }
 
@@ -162,7 +158,7 @@ export function CommandStrip({ device }: CommandStripProps) {
     if (name.length === 0 || value.length === 0) {
       return;
     }
-    sendCommand(endpointId, "SET", [name, value]);
+    sendCommand(linkId, "SET", [name, value]);
   }
 
   return (
@@ -179,7 +175,7 @@ export function CommandStrip({ device }: CommandStripProps) {
           className="command-strip-button"
           data-testid="command-strip-hello"
           disabled={!linkOpen}
-          onClick={() => sendCommand(endpointId, "HELLO")}
+          onClick={() => sendCommand(linkId, "HELLO")}
         >
           HELLO
         </button>
@@ -188,7 +184,7 @@ export function CommandStrip({ device }: CommandStripProps) {
           className="command-strip-button"
           data-testid="command-strip-id"
           disabled={!linkOpen}
-          onClick={() => sendCommand(endpointId, "ID")}
+          onClick={() => sendCommand(linkId, "ID")}
         >
           ID
         </button>
@@ -197,7 +193,7 @@ export function CommandStrip({ device }: CommandStripProps) {
           className="command-strip-button"
           data-testid="command-strip-ver"
           disabled={!linkOpen}
-          onClick={() => sendCommand(endpointId, "VER")}
+          onClick={() => sendCommand(linkId, "VER")}
         >
           VER
         </button>
@@ -206,7 +202,7 @@ export function CommandStrip({ device }: CommandStripProps) {
           className="command-strip-button"
           data-testid="command-strip-status"
           disabled={!linkOpen}
-          onClick={() => sendCommand(endpointId, "STATUS")}
+          onClick={() => sendCommand(linkId, "STATUS")}
         >
           STATUS
         </button>
@@ -215,7 +211,7 @@ export function CommandStrip({ device }: CommandStripProps) {
           className="command-strip-button"
           data-testid="command-strip-funcs"
           disabled={!linkOpen}
-          onClick={() => sendCommand(endpointId, "FUNCS")}
+          onClick={() => sendCommand(linkId, "FUNCS")}
         >
           FUNCS
         </button>

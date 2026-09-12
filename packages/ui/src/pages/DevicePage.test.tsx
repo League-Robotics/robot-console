@@ -1,22 +1,42 @@
 // @vitest-environment jsdom
 /**
- * DevicePage.test.tsx — router-level tests for `/d/:endpointId`
- * (ticket 007, SUC-001's alternate flow).
+ * DevicePage.test.tsx — router-level tests for `/d/:linkId` (sprint 015
+ * ticket 008; SUC-001's alternate flow, SUC-008), rewritten against the
+ * `Snapshot` contract.
  *
  * Covers the `hasSnapshot` loading-vs-not-found distinction (a deep
- * link before the first `endpoints` snapshot must not flash "not
- * connected" for a device that may well be attached) and the
- * no-auto-redirect rule for an endpoint that disappears while its page
- * is open.
+ * link before the first snapshot must not flash "not connected" for a
+ * device that may well be attached), the no-auto-redirect rule for a
+ * link that disappears while its page is open, the per-`device.kind`
+ * dispatch (no device at all -> `UnknownDevicePage`; `"relay"` ->
+ * `RelayPage`; `"robot"` -> `RobotPage`), and this ticket's own
+ * acceptance criterion that nothing here ever sends `session-open` on
+ * mount or on any state transition -- the WiFi auto-open effect
+ * (`:95-108` in the sprint-014-era file) is deleted, not adapted; the
+ * reconciler (ticket 002's `planUserOpen`) owns that decision entirely
+ * now.
+ *
+ * `RobotPage.tsx` is mocked here with a thin stub regardless of its own
+ * migration state (sprint 015 ticket 009): this file's job is
+ * `DevicePage`'s own dispatch logic, not `RobotPage`'s internals
+ * (covered by ticket 009's own suite, `RobotPage.test.tsx`).
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Snapshot, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { AppRoutes } from "../router";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 import { withRouter } from "../testing/renderWithRouter";
+
+vi.mock("./RobotPage", () => ({
+  RobotPage: ({ device }: { device: SnapshotDevice }) => (
+    <section aria-label="Robot device" data-testid="robot-page-stub">
+      {device.name}
+    </section>
+  ),
+}));
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -44,16 +64,50 @@ afterEach(() => {
   }
 });
 
-function endpoint(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+function link(id: string, overrides: Partial<SnapshotLink> = {}): SnapshotLink {
   return {
-    endpointId: "usb-SERIAL-A",
+    id,
     transport: "usb",
-    resourceKey: "usb-SERIAL-A",
-    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
-    name: "zeguz",
+    label: `USB · /dev/tty.usbmodem-${id}`,
+    state: "connected",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: false, close: true, flash: true, provisionWifi: true },
+    ...overrides,
+  };
+}
+
+function device(id: number, overrides: Partial<Omit<SnapshotDevice, "links">> & { links?: SnapshotLink[] } = {}): SnapshotDevice {
+  const { links, ...rest } = overrides;
+  return {
+    id,
+    name: `name-${id}`,
+    kind: "robot",
     role: null,
-    sessionOpen: false,
-    usb: { serialNumber: "SERIAL-A-FULL", displaySerial: "0002", port: "/dev/cu.usbmodemA" },
+    program: null,
+    version: null,
+    owned: true,
+    radio: { channel: 1, group: 1, source: "derived" },
+    lastSeen: 0,
+    lastChecked: null,
+    links: links ?? [link(`usb-${id}`)],
+    ...rest,
+  };
+}
+
+function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
+  return {
+    type: "snapshot",
+    seq: 1,
+    at: 0,
+    devices: [],
+    unassigned: [],
+    relays: [],
+    firmware: { relay: { configured: false }, robot: { configured: false } },
+    wifi: { ssid: null, source: null },
+    tasks: [],
     ...overrides,
   };
 }
@@ -71,26 +125,6 @@ function mountAt(initialPath: string): { el: HTMLDivElement; socket: () => FakeS
   return { el, socket: () => socket! };
 }
 
-/** A WiFi-reachable robot's endpoint (sprint 10 ticket 005 fix-up),
- * mirroring `FrontPage.test.tsx`'s own wifi fixture shape:
- * `endpointId: "wifi-<name>"`, `transport: "wifi"`, a `wifi: { host,
- * port }` block, no `usb` block. Defaults to not-yet-open and
- * identified, matching the common "just navigated here" case this
- * ticket fixes. */
-function wifiEndpoint(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
-  return {
-    endpointId: "wifi-gopiv",
-    transport: "wifi",
-    resourceKey: "wifi-gopiv",
-    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
-    name: "gopiv",
-    role: null,
-    sessionOpen: false,
-    wifi: { host: "192.168.1.42", port: 8765 },
-    ...overrides,
-  };
-}
-
 describe("DevicePage deep-linking", () => {
   it("shows a loading state, not 'not connected', before the first snapshot arrives", () => {
     const { el, socket } = mountAt("/d/usb-SERIAL-A");
@@ -102,226 +136,141 @@ describe("DevicePage deep-linking", () => {
     expect(el.textContent).not.toContain("isn't connected");
   });
 
-  it("shows a distinct 'not connected' state once the snapshot arrives without this endpoint", () => {
+  it("shows a distinct 'not connected' state once the snapshot arrives without this link", () => {
     // The way back to "/" is no longer rendered by DevicePage itself --
-    // ticket 012-004's AppHeader is the single source of that control
-    // now, covered by AppHeader.test.tsx.
+    // AppHeader is the single source of that control, covered by
+    // AppHeader.test.tsx.
     const { el, socket } = mountAt("/d/usb-MISSING");
     act(() => {
       socket().emitOpen();
     });
     act(() => {
-      socket().emitMessage({ type: "endpoints", endpoints: [endpoint()] });
+      socket().emitMessage(snapshot({ devices: [device(1)] }));
     });
 
     expect(el.textContent).not.toContain("Looking for this device");
     expect(el.textContent).toContain("isn't connected");
   });
 
-  it("renders the matched endpoint once the snapshot includes it", () => {
-    const { el, socket } = mountAt("/d/usb-SERIAL-A");
+  it("renders the matched link's owning device once the snapshot includes it", () => {
+    const { el, socket } = mountAt("/d/usb-1");
     act(() => {
       socket().emitOpen();
     });
     act(() => {
-      socket().emitMessage({ type: "endpoints", endpoints: [endpoint({ name: "kivon" })] });
+      socket().emitMessage(snapshot({ devices: [device(1, { name: "kivon" })] }));
     });
 
     expect(el.textContent).toContain("kivon");
   });
 
-  it("does not redirect when the open endpoint disappears from a later snapshot", () => {
-    const { el, socket } = mountAt("/d/usb-SERIAL-A");
+  it("does not redirect when the open link disappears from a later snapshot", () => {
+    const { el, socket } = mountAt("/d/usb-1");
     act(() => {
       socket().emitOpen();
     });
     act(() => {
-      socket().emitMessage({ type: "endpoints", endpoints: [endpoint({ name: "kivon" })] });
+      socket().emitMessage(snapshot({ devices: [device(1, { name: "kivon" })] }));
     });
     expect(el.textContent).toContain("kivon");
 
     act(() => {
-      socket().emitMessage({ type: "endpoints", endpoints: [] });
+      socket().emitMessage(snapshot({ devices: [] }));
     });
 
-    expect(el.querySelector('[data-testid="location"]')?.textContent).toBe("/d/usb-SERIAL-A");
+    expect(el.querySelector('[data-testid="location"]')?.textContent).toBe("/d/usb-1");
     expect(el.textContent).toContain("isn't connected");
   });
 });
 
 describe("DevicePage per-type dispatch", () => {
-  it("dispatches a relay-classified endpoint to RelayPage", () => {
-    const { el, socket } = mountAt("/d/usb-SERIAL-A");
+  it("dispatches a relay-kind device to RelayPage", () => {
+    const { el, socket } = mountAt("/d/usb-1");
     act(() => {
       socket().emitOpen();
     });
     act(() => {
-      socket().emitMessage({
-        type: "endpoints",
-        endpoints: [
-          endpoint({
-            classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role", program: null, version: null },
-          }),
-        ],
-      });
+      socket().emitMessage(snapshot({ devices: [device(1, { kind: "relay", role: "RADIORELAY" })] }));
     });
 
     expect(el.querySelector('[aria-label="Relay device"]')).not.toBeNull();
     expect(el.querySelector('[data-testid="relay-robot-select"]')).not.toBeNull();
   });
 
-  it("dispatches a robot-classified endpoint to RobotPage", () => {
-    const { el, socket } = mountAt("/d/usb-SERIAL-A");
+  it("dispatches a robot-kind device to RobotPage", () => {
+    const { el, socket } = mountAt("/d/usb-1");
     act(() => {
       socket().emitOpen();
     });
     act(() => {
-      socket().emitMessage({
-        type: "endpoints",
-        endpoints: [
-          endpoint({
-            classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
-          }),
-        ],
-      });
+      socket().emitMessage(snapshot({ devices: [device(1, { kind: "robot", role: "NEZHA2" })] }));
     });
 
     expect(el.querySelector('[aria-label="Robot device"]')).not.toBeNull();
   });
 
-  it("dispatches an unknown-classified endpoint to UnknownDevicePage", () => {
-    const { el, socket } = mountAt("/d/usb-SERIAL-A");
+  it("dispatches a link with no owning device (unassigned) to UnknownDevicePage", () => {
+    const { el, socket } = mountAt("/d/usb-1");
     act(() => {
       socket().emitOpen();
     });
     act(() => {
-      socket().emitMessage({ type: "endpoints", endpoints: [endpoint()] });
+      socket().emitMessage(snapshot({ unassigned: [link("usb-1")] }));
     });
 
     expect(el.querySelector('[aria-label="Unknown device"]')).not.toBeNull();
   });
 
-  it("dispatches a calibration-classified endpoint to RobotPage (sprint 011 ticket 002)", () => {
-    const { el, socket } = mountAt("/d/usb-SERIAL-A");
+  it("dispatches a calibration-program robot the same as any other robot -- RobotPage stays unaware of the distinction", () => {
+    const { el, socket } = mountAt("/d/usb-1");
     act(() => {
       socket().emitOpen();
     });
     act(() => {
-      socket().emitMessage({
-        type: "endpoints",
-        endpoints: [
-          endpoint({
-            classification: {
-              type: "calibration",
-              role: "NEZHA2",
-              commonName: "robot",
-              dialect: "space",
-              evidence: "role",
-              program: "calibration-0.20260907.2",
-              version: "0.20260907.2",
-            },
-          }),
-        ],
-      });
+      socket().emitMessage(
+        snapshot({ devices: [device(1, { kind: "robot", role: "NEZHA2", program: "calibration-0.20260907.2", version: "0.20260907.2" })] }),
+      );
     });
 
     expect(el.querySelector('[aria-label="Robot device"]')).not.toBeNull();
-  });
-
-  it("dispatches an unrecognized classification.type to UnknownDevicePage via the default arm", () => {
-    // The "a fourth device type is purely additive" contract
-    // (`wsMessages.ts`'s module doc comment): a client built against
-    // today's known-type union must treat any value it doesn't
-    // recognize as unknown, not crash or render nothing.
-    // "calibration" itself is no longer a usable stand-in for this
-    // (sprint 011 ticket 001 made it a real, recognized type) -- this
-    // uses a still-hypothetical fifth value instead.
-    const { el, socket } = mountAt("/d/usb-SERIAL-A");
-    act(() => {
-      socket().emitOpen();
-    });
-    act(() => {
-      socket().emitMessage({
-        type: "endpoints",
-        endpoints: [
-          endpoint({
-            classification: {
-              type: "future-type" as unknown as EndpointListEntry["classification"]["type"],
-              role: "SOMETHING_NEW",
-              commonName: null,
-              dialect: null,
-              evidence: "role", program: null, version: null,
-            },
-          }),
-        ],
-      });
-    });
-
-    expect(el.querySelector('[aria-label="Unknown device"]')).not.toBeNull();
   });
 });
 
-describe("DevicePage opens a wifi endpoint's session on mount (sprint 10 ticket 005 fix-up)", () => {
-  it("sends exactly one session-open for a not-yet-open wifi endpoint on mount", () => {
-    const { el, socket } = mountAt("/d/wifi-gopiv");
+describe("DevicePage never sends session-open on its own (ticket 008)", () => {
+  it("sends nothing at all on mount for a not-yet-open robot device", () => {
+    const { socket } = mountAt("/d/usb-1");
     act(() => {
       socket().emitOpen();
     });
     act(() => {
-      socket().emitMessage({ type: "endpoints", endpoints: [wifiEndpoint()] });
-    });
-
-    expect(el.textContent).toContain("gopiv");
-    expect(socket().sent).toEqual([JSON.stringify({ type: "session-open", endpointId: "wifi-gopiv" })]);
-  });
-
-  it("sends no session-open for a wifi endpoint that is already open", () => {
-    const { socket } = mountAt("/d/wifi-gopiv");
-    act(() => {
-      socket().emitOpen();
-    });
-    act(() => {
-      socket().emitMessage({
-        type: "endpoints",
-        endpoints: [
-          wifiEndpoint({
-            classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
-            role: "NEZHA2",
-            sessionOpen: true,
-          }),
-        ],
-      });
-    });
-
-    // Already-open triggers RobotPage's own child panels (StatusPanel's
-    // STATUS poll, FunctionsPanel's discovery GET) to send their usual
-    // opening traffic -- unrelated to this fix. Only session-open itself
-    // is this test's concern.
-    expect(socket().sent).not.toContain(JSON.stringify({ type: "session-open", endpointId: "wifi-gopiv" }));
-  });
-
-  it("sends no session-open for a wifi endpoint with a sessionError set -- does not loop on a failed attempt", () => {
-    const { socket } = mountAt("/d/wifi-gopiv");
-    act(() => {
-      socket().emitOpen();
-    });
-    act(() => {
-      socket().emitMessage({
-        type: "endpoints",
-        endpoints: [wifiEndpoint({ sessionError: "HELLO reply timed out after 2000ms" })],
-      });
+      socket().emitMessage(snapshot({ devices: [device(1, { links: [link("usb-1", { state: "connectable" })] })] }));
     });
 
     expect(socket().sent).toEqual([]);
   });
 
-  it("sends no session-open for a not-yet-open usb endpoint -- the host already auto-opens USB on attach", () => {
-    const { socket } = mountAt("/d/usb-SERIAL-A");
+  it("sends nothing at all on mount for an unassigned (not-yet-identified) link", () => {
+    const { socket } = mountAt("/d/usb-1");
     act(() => {
       socket().emitOpen();
     });
     act(() => {
-      socket().emitMessage({ type: "endpoints", endpoints: [endpoint({ sessionOpen: false })] });
+      socket().emitMessage(snapshot({ unassigned: [link("usb-1", { state: "connectable" })] }));
+    });
+
+    expect(socket().sent).toEqual([]);
+  });
+
+  it("sends nothing when a device's link transitions from connected to closed while its page is open", () => {
+    const { socket } = mountAt("/d/usb-1");
+    act(() => {
+      socket().emitOpen();
+    });
+    act(() => {
+      socket().emitMessage(snapshot({ devices: [device(1, { links: [link("usb-1", { state: "connected" })] })] }));
+    });
+    act(() => {
+      socket().emitMessage(snapshot({ devices: [device(1, { links: [link("usb-1", { state: "closed_by_user" })] })] }));
     });
 
     expect(socket().sent).toEqual([]);

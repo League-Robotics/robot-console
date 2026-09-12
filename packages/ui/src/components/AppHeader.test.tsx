@@ -1,24 +1,20 @@
 // @vitest-environment jsdom
 /**
  * AppHeader.test.tsx — component-level tests for the route-aware app
- * header (ticket 012-004, SUC-003/SUC-004; Flash entry reworked into a
- * popup-modal trigger by out-of-process work, 2026-09-08).
+ * header, migrated to sprint 015's `Snapshot` contract (ticket 007).
  *
- * Covers the back-to-devices link across `/` and all five
- * `/d/:endpointId` states (loading, not-connected, relay, robot,
- * unknown), and the Flash trigger's presence and (for an identified
- * device) the in-dialog reflash warning that replaced the old
- * `window.confirm()` step. `FlashControls`' own release/local-hex/
- * progress behavior is exercised in `FlashControls.test.tsx`, and
- * `FlashDialog`'s own gating/dismissal/focus behavior in
- * `FlashDialog.test.tsx` -- neither is duplicated here. This file only
- * proves `AppHeader` decides *when* to offer the trigger, and passes
- * `forceShow` so it's offered for an identified device too.
+ * Covers the back-to-devices link across `/` and the `/d/:linkId`
+ * states, the `RadioAddressDialog` call site resolving its device via
+ * `useDeviceForLink` and passing the `{deviceId, name, radio}` props
+ * that component has taken since ticket 006 (ticket 007), and (ticket
+ * 008) the restored Flash/Set Wi-Fi entries: Flash offered for *any*
+ * resolvable link (owned or not, `forceShow`), Set Wi-Fi gated the same
+ * way Set Radio is (a real device, not a relay).
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
+import { afterEach, describe, expect, it } from "vitest";
+import type { Snapshot, SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
 import { AppHeader } from "./AppHeader";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
@@ -48,27 +44,55 @@ afterEach(() => {
     container.remove();
     container = null;
   }
-  vi.restoreAllMocks();
 });
 
-function endpoint(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+function device(
+  overrides: Partial<Omit<SnapshotDevice, "links">> & { links?: SnapshotDevice["links"] } = {},
+): SnapshotDevice {
+  const { links, ...rest } = overrides;
   return {
-    endpointId: "usb-SERIAL-A",
-    transport: "usb",
-    resourceKey: "usb-SERIAL-A",
-    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
+    id: 1,
     name: "zeguz",
+    kind: "robot",
     role: null,
-    sessionOpen: false,
-    usb: { serialNumber: "SERIAL-A-FULL", displaySerial: "0002", port: "/dev/cu.usbmodemA" },
-    ...overrides,
+    program: null,
+    version: null,
+    owned: true,
+    radio: { channel: 1, group: 1, source: "derived" },
+    lastSeen: 0,
+    lastChecked: null,
+    links: links ?? [
+      {
+        id: "usb-SERIAL-A",
+        transport: "usb",
+        label: "USB · /dev/cu.usbmodemA",
+        state: "connectable",
+        reason: null,
+        since: 0,
+        lastSeen: 0,
+        nextRetryAt: null,
+        capabilities: { open: true, close: false, flash: true, provisionWifi: false },
+      },
+    ],
+    ...rest,
   };
 }
 
-function mountAt(
-  initialPath: string,
-  options: { snapshot?: EndpointListEntry[] } = {},
-): { el: HTMLDivElement; socket: () => FakeSocket } {
+function snapshot(devices: SnapshotDevice[]): Snapshot {
+  return {
+    type: "snapshot",
+    seq: 1,
+    at: 0,
+    devices,
+    unassigned: [],
+    relays: [],
+    firmware: { relay: { configured: false }, robot: { configured: false } },
+    wifi: { ssid: null, source: null },
+    tasks: [],
+  };
+}
+
+function mountAt(initialPath: string, options: { devices?: SnapshotDevice[] } = {}): { el: HTMLDivElement; socket: () => FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     withRouter(
@@ -81,9 +105,9 @@ function mountAt(
   act(() => {
     socket!.emitOpen();
   });
-  if (options.snapshot) {
+  if (options.devices) {
     act(() => {
-      socket!.emitMessage({ type: "endpoints", endpoints: options.snapshot });
+      socket!.emitMessage(snapshot(options.devices!));
     });
   }
   return { el, socket: () => socket! };
@@ -91,10 +115,6 @@ function mountAt(
 
 function backLink(el: HTMLDivElement): HTMLAnchorElement | null {
   return el.querySelector("a");
-}
-
-function flashButton(el: HTMLDivElement): HTMLButtonElement | null {
-  return Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash") ?? null;
 }
 
 describe("AppHeader back-to-devices link", () => {
@@ -108,13 +128,12 @@ describe("AppHeader back-to-devices link", () => {
     const links = el.querySelectorAll("a");
     expect(links).toHaveLength(1);
     expect(links[0]?.getAttribute("href")).toBe("/");
-    // OOP 2026-09-10: a back arrow button, named for assistive tech.
     expect(links[0]?.getAttribute("aria-label")).toBe("Back to devices");
     expect(links[0]?.querySelector("svg")).not.toBeNull();
   });
 
-  it("renders exactly one back link in the not-connected state", () => {
-    const { el } = mountAt("/d/usb-MISSING", { snapshot: [endpoint()] });
+  it("renders exactly one back link when no device owns the routed link id", () => {
+    const { el } = mountAt("/d/usb-MISSING", { devices: [device()] });
     const links = el.querySelectorAll("a");
     expect(links).toHaveLength(1);
     expect(links[0]?.getAttribute("href")).toBe("/");
@@ -122,13 +141,24 @@ describe("AppHeader back-to-devices link", () => {
 
   it("renders exactly one back link on a relay device page", () => {
     const { el } = mountAt("/d/usb-RELAY-A", {
-      snapshot: [
-        endpoint({
-          endpointId: "usb-RELAY-A",
-          resourceKey: "usb-RELAY-A",
-          classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role", program: null, version: null },
-          role: "RADIORELAY",
-          sessionOpen: true,
+      devices: [
+        device({
+          id: 2,
+          kind: "relay",
+          role: "RADIOBRIDGE",
+          links: [
+            {
+              id: "usb-RELAY-A",
+              transport: "usb",
+              label: "USB · relay",
+              state: "connected",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              capabilities: { open: false, close: true, flash: true, provisionWifi: false },
+            },
+          ],
         }),
       ],
     });
@@ -136,134 +166,268 @@ describe("AppHeader back-to-devices link", () => {
     expect(links).toHaveLength(1);
     expect(links[0]?.getAttribute("href")).toBe("/");
   });
+});
 
-  it("renders exactly one back link on a robot device page", () => {
-    const { el } = mountAt("/d/usb-ROBOT-A", {
-      snapshot: [
-        endpoint({
-          endpointId: "usb-ROBOT-A",
-          resourceKey: "usb-ROBOT-A",
-          classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
+describe("AppHeader Set Radio (sprint 015 ticket 007)", () => {
+  it("shows no Set Radio trigger on / or in the loading state", () => {
+    expect(mountAt("/").el.querySelector('[data-testid="radio-address-trigger"]')).toBeNull();
+    expect(mountAt("/d/usb-SERIAL-A").el.querySelector('[data-testid="radio-address-trigger"]')).toBeNull();
+  });
+
+  it("shows no Set Radio trigger when no device owns the routed link id", () => {
+    const { el } = mountAt("/d/usb-MISSING", { devices: [device()] });
+    expect(el.querySelector('[data-testid="radio-address-trigger"]')).toBeNull();
+  });
+
+  it("shows Set Radio for a robot device page, passing the resolved deviceId/name/radio through to the dialog", () => {
+    const { el } = mountAt("/d/usb-SERIAL-A", {
+      devices: [device({ id: 42, name: "tigez", radio: { channel: 55, group: 114, source: "override" } })],
+    });
+    const trigger = el.querySelector<HTMLButtonElement>('[data-testid="radio-address-trigger"]');
+    expect(trigger).not.toBeNull();
+    act(() => {
+      trigger!.click();
+    });
+    expect(el.querySelector("h2")?.textContent).toBe("Radio address for tigez");
+    expect(el.querySelector<HTMLInputElement>('[data-testid="radio-channel"]')!.value).toBe("55");
+    expect(el.querySelector<HTMLInputElement>('[data-testid="radio-group"]')!.value).toBe("114");
+  });
+
+  it("shows no Set Radio trigger for a relay device page", () => {
+    const { el } = mountAt("/d/usb-RELAY-A", {
+      devices: [
+        device({
+          id: 2,
+          kind: "relay",
+          links: [
+            {
+              id: "usb-RELAY-A",
+              transport: "usb",
+              label: "USB · relay",
+              state: "connected",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              capabilities: { open: false, close: true, flash: true, provisionWifi: false },
+            },
+          ],
+        }),
+      ],
+    });
+    expect(el.querySelector('[data-testid="radio-address-trigger"]')).toBeNull();
+  });
+});
+
+function flashTrigger(el: HTMLDivElement): HTMLButtonElement | undefined {
+  return Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash");
+}
+
+describe("AppHeader Flash (sprint 015 ticket 008 restore)", () => {
+  it("shows no Flash trigger on / or in the loading state", () => {
+    expect(flashTrigger(mountAt("/").el)).toBeUndefined();
+    expect(flashTrigger(mountAt("/d/usb-SERIAL-A").el)).toBeUndefined();
+  });
+
+  it("shows no Flash trigger when no link at all matches the routed id", () => {
+    const { el } = mountAt("/d/usb-MISSING", { devices: [device()] });
+    expect(flashTrigger(el)).toBeUndefined();
+  });
+
+  it("offers a Flash trigger for an identified robot device (forceShow bypasses canBeFlashed)", () => {
+    const { el } = mountAt("/d/usb-SERIAL-A", {
+      devices: [
+        device({
           role: "NEZHA2",
-          sessionOpen: true,
+          links: [
+            {
+              id: "usb-SERIAL-A",
+              transport: "usb",
+              label: "USB · /dev/cu.usbmodemA",
+              state: "connected",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              capabilities: { open: false, close: true, flash: false, provisionWifi: true },
+            },
+          ],
         }),
       ],
     });
-    const links = el.querySelectorAll("a");
-    expect(links).toHaveLength(1);
-    expect(links[0]?.getAttribute("href")).toBe("/");
+    expect(flashTrigger(el)).not.toBeUndefined();
   });
 
-  it("renders exactly one back link on an unknown device page", () => {
-    const { el } = mountAt("/d/usb-SERIAL-A", { snapshot: [endpoint()] });
-    const links = el.querySelectorAll("a");
-    expect(links).toHaveLength(1);
-    expect(links[0]?.getAttribute("href")).toBe("/");
+  it("offers a Flash trigger for a relay device too -- Flash is not gated on kind", () => {
+    const { el } = mountAt("/d/usb-RELAY-A", {
+      devices: [
+        device({
+          id: 2,
+          kind: "relay",
+          links: [
+            {
+              id: "usb-RELAY-A",
+              transport: "usb",
+              label: "USB · relay",
+              state: "connected",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              capabilities: { open: false, close: true, flash: true, provisionWifi: false },
+            },
+          ],
+        }),
+      ],
+    });
+    expect(flashTrigger(el)).not.toBeUndefined();
+  });
+
+  it("shows the reflash warning for an identified device opened via the header's forceShow", () => {
+    const { el } = mountAt("/d/usb-SERIAL-A", {
+      devices: [
+        device({
+          name: "tigez",
+          role: "NEZHA2",
+          links: [
+            {
+              id: "usb-SERIAL-A",
+              transport: "usb",
+              label: "USB · /dev/cu.usbmodemA",
+              state: "connected",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              capabilities: { open: false, close: true, flash: false, provisionWifi: true },
+            },
+          ],
+        }),
+      ],
+    });
+    act(() => {
+      flashTrigger(el)!.click();
+    });
+    expect(el.textContent).toContain('Reflashing "tigez" will interrupt whatever it\'s currently running.');
   });
 });
 
-describe("AppHeader Flash trigger", () => {
-  it("shows no Flash trigger on /", () => {
-    const { el } = mountAt("/");
-    expect(flashButton(el)).toBeNull();
-  });
-
-  it("shows no Flash trigger in the loading state (no resolvable endpoint yet)", () => {
-    const { el } = mountAt("/d/usb-SERIAL-A");
-    expect(flashButton(el)).toBeNull();
-  });
-
-  it("shows no Flash trigger in the not-connected state (no matching endpoint in the snapshot)", () => {
-    const { el } = mountAt("/d/usb-MISSING", { snapshot: [endpoint()] });
-    expect(flashButton(el)).toBeNull();
-  });
-
-  it("shows an enabled Flash trigger for an unknown device and opens the dialog directly, with no reflash warning", () => {
-    const { el } = mountAt("/d/usb-SERIAL-A", { snapshot: [endpoint({ role: null })] });
-
-    const button = flashButton(el);
-    expect(button).not.toBeNull();
-    expect(button?.disabled).toBe(false);
-
-    act(() => {
-      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(el.querySelector(".flash-controls")).not.toBeNull();
-    expect(el.textContent).not.toContain("will interrupt");
-  });
-
-  it("shows an enabled Flash trigger for a relay device and opens the dialog with a reflash warning, no window.confirm", () => {
-    const confirmSpy = vi.spyOn(window, "confirm");
-    const relay = endpoint({
-      endpointId: "usb-RELAY-A",
-      resourceKey: "usb-RELAY-A",
-      classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role", program: null, version: null },
-      role: "RADIORELAY",
-      sessionOpen: true,
-    });
-    const { el } = mountAt("/d/usb-RELAY-A", { snapshot: [relay] });
-
-    const button = flashButton(el);
-    expect(button).not.toBeNull();
-    expect(button?.disabled).toBe(false);
-    expect(el.querySelector(".flash-controls")).toBeNull();
-
-    act(() => {
-      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(confirmSpy).not.toHaveBeenCalled();
-    expect(el.querySelector(".flash-controls")).not.toBeNull();
-    expect(el.textContent).toContain("will interrupt");
-  });
-
-  it("shows an enabled Flash trigger for a robot device and opens the dialog with a reflash warning, no window.confirm", () => {
-    const confirmSpy = vi.spyOn(window, "confirm");
-    const robot = endpoint({
-      endpointId: "usb-ROBOT-A",
-      resourceKey: "usb-ROBOT-A",
-      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
+describe("AppHeader Flash / Set Wi-Fi send-gating (ticket 011, carried from 009)", () => {
+  it("disables both the Flash and Set Wi-Fi triggers once the socket closes, and re-enables them once reconnected with a fresh snapshot", () => {
+    const robotDevice = device({
+      id: 42,
+      name: "tigez",
       role: "NEZHA2",
-      sessionOpen: true,
+      links: [
+        {
+          id: "usb-SERIAL-A",
+          transport: "usb",
+          label: "USB · /dev/cu.usbmodemA",
+          state: "connected",
+          reason: null,
+          since: 0,
+          lastSeen: 0,
+          nextRetryAt: null,
+          capabilities: { open: false, close: true, flash: false, provisionWifi: true },
+        },
+      ],
     });
-    const { el } = mountAt("/d/usb-ROBOT-A", { snapshot: [robot] });
+    const { el, socket } = mountAt("/d/usb-SERIAL-A", { devices: [robotDevice] });
 
-    const button = flashButton(el);
+    expect(flashTrigger(el)!.disabled).toBe(false);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="wifi-credentials-trigger"]')!.disabled).toBe(false);
+
     act(() => {
-      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      socket().close();
     });
+    expect(flashTrigger(el)!.disabled).toBe(true);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="wifi-credentials-trigger"]')!.disabled).toBe(true);
 
-    expect(confirmSpy).not.toHaveBeenCalled();
-    expect(el.querySelector(".flash-controls")).not.toBeNull();
-    expect(el.textContent).toContain("will interrupt");
+    act(() => {
+      socket().emitOpen();
+    });
+    // Reconnected but stale (no fresh snapshot yet) -- still disabled.
+    expect(flashTrigger(el)!.disabled).toBe(true);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="wifi-credentials-trigger"]')!.disabled).toBe(true);
+
+    act(() => {
+      socket().emitMessage(snapshot([robotDevice]));
+    });
+    expect(flashTrigger(el)!.disabled).toBe(false);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="wifi-credentials-trigger"]')!.disabled).toBe(false);
   });
 });
 
-describe("AppHeader Set Radio / Set Wi-Fi (OOP 2026-09-10)", () => {
-  it("shows Set Radio and Set Wi-Fi beside Flash on a robot page, and neither on a relay page", () => {
-    const robot = endpoint({
-      classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
-      role: "NEZHA2",
-      sessionOpen: true,
-    });
-    const { el } = mountAt("/d/usb-SERIAL-A", { snapshot: [robot] });
-    const labels = Array.from(el.querySelectorAll("button")).map((b) => b.textContent);
-    expect(labels).toEqual(["Set Radio", "Set Wi-Fi", "Flash"]);
+describe("AppHeader Set Wi-Fi (sprint 015 ticket 008 restore)", () => {
+  it("shows no Set Wi-Fi trigger on / or in the loading state", () => {
+    expect(mountAt("/").el.querySelector('[data-testid="wifi-credentials-trigger"]')).toBeNull();
+    expect(mountAt("/d/usb-SERIAL-A").el.querySelector('[data-testid="wifi-credentials-trigger"]')).toBeNull();
+  });
 
+  it("shows Set Wi-Fi for a robot device page, keyed by the routed link", () => {
+    const { el, socket } = mountAt("/d/usb-SERIAL-A", {
+      devices: [
+        device({
+          id: 42,
+          name: "tigez",
+          links: [
+            {
+              id: "usb-SERIAL-A",
+              transport: "usb",
+              label: "USB · /dev/cu.usbmodemA",
+              state: "connected",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+              capabilities: { open: false, close: true, flash: true, provisionWifi: true },
+            },
+          ],
+        }),
+      ],
+    });
+    const trigger = el.querySelector<HTMLButtonElement>('[data-testid="wifi-credentials-trigger"]');
+    expect(trigger).not.toBeNull();
     act(() => {
-      root!.unmount();
+      trigger!.click();
     });
-    root = null;
-    container?.remove();
-    container = null;
+    expect(el.querySelector("h2")?.textContent).toBe("Set Wi-Fi on tigez");
+    act(() => {
+      socket().emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "env", seq: 99 });
+    });
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="wifi-write"]')!.click();
+    });
+    expect(socket().sent.map((raw) => JSON.parse(raw))).toContainEqual({
+      type: "provision-wifi",
+      linkId: "usb-SERIAL-A",
+      slot: 0,
+    });
+  });
 
-    const relay = endpoint({
-      classification: { type: "relay", role: "RADIORELAY", commonName: "relay", dialect: "space", evidence: "role", program: null, version: null },
-      role: "RADIORELAY",
-      sessionOpen: true,
+  it("shows no Set Wi-Fi trigger for a relay device page", () => {
+    const { el } = mountAt("/d/usb-RELAY-A", {
+      devices: [
+        device({
+          id: 2,
+          kind: "relay",
+          links: [
+            {
+              id: "usb-RELAY-A",
+              transport: "usb",
+              label: "USB · relay",
+              state: "connected",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              capabilities: { open: false, close: true, flash: true, provisionWifi: false },
+            },
+          ],
+        }),
+      ],
     });
-    const relayMount = mountAt("/d/usb-SERIAL-A", { snapshot: [relay] });
-    expect(Array.from(relayMount.el.querySelectorAll("button")).map((b) => b.textContent)).toEqual(["Flash"]);
+    expect(el.querySelector('[data-testid="wifi-credentials-trigger"]')).toBeNull();
   });
 });

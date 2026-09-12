@@ -1,7 +1,7 @@
 ---
 id: '006'
 title: Radio address overrides in the host DB, host and UI
-status: open
+status: in-progress
 use-cases:
 - SUC-007
 depends-on:

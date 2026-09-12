@@ -100,6 +100,14 @@ snapshot shape; rearch-07 is the parity gate and depends on both.
   rearch-04 target of ~900 lines and trim `LineLink.ts` (591 lines vs a
   ~250-line estimate) if it does not fit.
 
+- Carried from sprint 014 ticket 010: `importKnownRobots` seeds `devices`
+  rows keyed by a synthetic name-derived id because `known-robots.json`
+  never stored the chip id. After real USB identification the same robot
+  exists twice (placeholder row + real chip-id row, e.g. vevov/vitut in
+  the 2026-09-11 bench dump). The rearch-05 reconciler must merge the
+  placeholder into the real row by name on first identification and
+  carry `owned = 1` across.
+
 ### Out of Scope
 
 - Relay leases, the idle state, and the sweeper — sprint 016

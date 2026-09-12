@@ -84,6 +84,14 @@ onto any board during this ticket.
       and the four old link classes are absent from both source and the
       built `dist/` output.
 
+### Carried from ticket 009 (SUC-010 completeness)
+
+- [ ] `useSendable()` gating (socket open AND snapshot fresh) is applied to
+      every remaining send-capable control: `RelayPage` Connect/Switch,
+      `ConfigurationPage` provision/apply buttons, `FrontPage` quick-connect
+      and Flash triggers, and `AppHeader`'s Flash / Set Wi-Fi dialog
+      triggers — with a FakeSocket-close test per page.
+
 ## Implementation Plan
 
 **Approach**: Automated suite first (fast feedback), then the bench

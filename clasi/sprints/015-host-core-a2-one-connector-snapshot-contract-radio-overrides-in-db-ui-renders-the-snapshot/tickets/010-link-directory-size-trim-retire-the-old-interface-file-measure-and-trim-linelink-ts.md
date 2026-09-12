@@ -1,7 +1,8 @@
 ---
 id: '010'
-title: "link/ directory size trim: retire the old interface file, measure and trim LineLink.ts"
-status: open
+title: 'link/ directory size trim: retire the old interface file, measure and trim
+  LineLink.ts'
+status: in-progress
 use-cases: []
 depends-on:
 - '003'

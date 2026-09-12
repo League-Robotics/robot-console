@@ -1,0 +1,115 @@
+/* Ticket 017-007: moved here from `pages/FrontPage.css`'s former
+ * `.device-relay-*` block and `pages/RelayPage.css`'s former
+ * `.relay-connect-bar`/`.relay-*-status`/`.relay-page-alert` block --
+ * both pages' connect controls now share this one stylesheet, imported
+ * once by `RelayConnectControls.tsx`, instead of each page separately
+ * defining the classes its own copy of the markup used. */
+
+/* "card" variant (FrontPage's relay quick-connect card). */
+
+.device-relay-connect {
+  border-top: 1px solid var(--rc-border);
+  padding-top: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.device-relay-connected {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+/* Sprint 13 ticket 003: relayBridge's "connecting" state -- styled like
+ * this file's own `.relay-autoconnecting-status` (muted, italic) since
+ * this is a normal in-progress state, not an error. */
+.device-relay-connecting {
+  margin: 0;
+  color: var(--rc-text-muted);
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
+/* Sprint 13 ticket 003: relayBridge's "failed" state -- styled like
+ * this file's own `.relay-page-alert` so the same failure reads the
+ * same way on both surfaces. */
+.device-relay-failed {
+  margin: 0;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--rc-danger, #c0392b);
+  border-radius: 0.4rem;
+  color: var(--rc-danger, #c0392b);
+  font-size: 0.85rem;
+}
+
+.device-relay-connect-row {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.device-relay-connect-button,
+.device-relay-disconnect-button {
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.35rem 0.9rem;
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.device-relay-connect-button:not(:disabled):hover {
+  border-color: var(--rc-accent);
+}
+
+.device-relay-connect-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* "page" variant (RelayPage's own connect bar). */
+
+/* Sprint 8 ticket 005 (SUC-005), rendering driven by `relayBridge` since
+ * sprint 13 ticket 004: transient status while a Connect attempt is
+ * outstanding. Styled like `RelayPage.css`'s `.relay-page-hint` (muted,
+ * not alarming) since this is a normal in-progress state, not an error. */
+.relay-autoconnecting-status {
+  margin: 0;
+  color: var(--rc-text-muted);
+  font-size: 0.9rem;
+  font-style: italic;
+}
+
+.relay-page-alert {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--rc-danger, #c0392b);
+  border-radius: 0.4rem;
+  color: var(--rc-danger, #c0392b);
+  font-size: 0.9rem;
+}
+
+.relay-connected-status {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+/* Sprint 015 ticket 008: the relay's own "nothing bridging right now"
+ * state -- `relays[].lease` is `null` ("idle") or `"sweep"` ("idle ·
+ * sweeping"), shown only while no `bridging` is in flight. Styled like
+ * `RelayPage.css`'s `.relay-page-hint` (muted, not alarming) -- an idle
+ * relay is the ordinary resting state, not a problem. */
+.relay-idle-status {
+  margin: 0;
+  color: var(--rc-text-muted);
+  font-size: 0.9rem;
+}
+
+.relay-connect-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 1rem;
+}

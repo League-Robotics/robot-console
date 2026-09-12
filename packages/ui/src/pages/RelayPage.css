@@ -21,49 +21,11 @@
   font-size: 0.9rem;
 }
 
-/* Sprint 8 ticket 005 (SUC-005), rendering driven by `relayBridge` since
- * sprint 13 ticket 004: transient status while a Connect attempt is
- * outstanding -- see RelayPage.tsx's own doc comment ("In-flight/failed
- * bridging visibility"). Styled like `.relay-page-hint` (muted, not
- * alarming) since this is a normal in-progress state, not an error. */
-.relay-autoconnecting-status {
-  margin: 0;
-  color: var(--rc-text-muted);
-  font-size: 0.9rem;
-  font-style: italic;
-}
-
-.relay-page-alert {
-  margin: 0;
-  padding: 0.5rem 0.75rem;
-  border: 1px solid var(--rc-danger, #c0392b);
-  border-radius: 0.4rem;
-  color: var(--rc-danger, #c0392b);
-  font-size: 0.9rem;
-}
-
-.relay-connected-status {
-  margin: 0;
-  font-size: 0.95rem;
-}
-
-/* Sprint 015 ticket 008: the relay's own "nothing bridging right now"
- * state -- `relays[].lease` is `null` ("idle") or `"sweep"` ("idle ·
- * sweeping"), shown only while no `bridging` is in flight. Styled like
- * `.relay-page-hint` (muted, not alarming) -- an idle relay is the
- * ordinary resting state, not a problem. */
-.relay-idle-status {
-  margin: 0;
-  color: var(--rc-text-muted);
-  font-size: 0.9rem;
-}
-
-.relay-connect-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 1rem;
-}
+/* Ticket 017-007: `.relay-autoconnecting-status`/`.relay-page-alert`/
+ * `.relay-connected-status`/`.relay-idle-status`/`.relay-connect-bar`
+ * moved to `components/RelayConnectControls.css` (imported by
+ * `RelayConnectControls.tsx`, which now owns this page's connect-bar
+ * and status-text markup, shared with `FrontPage.tsx`'s relay card). */
 
 .relay-robot-picker {
   display: flex;

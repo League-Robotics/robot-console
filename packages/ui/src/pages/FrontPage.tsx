@@ -27,8 +27,9 @@
  * Per-link status text ("Linked" / "Connecting" / "Unreachable: …" /
  * "Retrying in Ns" / "Not seen since …") is now derived from
  * `SnapshotLink.state`/`reason`/`lastSeen`/`nextRetryAt` by
- * `linkStatusText` below, rather than from a flat `sessionOpen`/
- * `sessionError` pair.
+ * `deviceDisplay.ts`'s shared `linkStateText` (ticket 017-007: moved
+ * there from this module's own former local copy), rather than from a
+ * flat `sessionOpen`/`sessionError` pair.
  *
  * The remembered-robot roster (`Snapshot.rememberedRobots` in the old
  * contract) is gone as its own side list: a device the host still
@@ -59,11 +60,14 @@
  * `UnassignedCard` (the direct successor of "role === null" under the
  * new contract -- see that component's own doc comment).
  *
- * **Sweep takeover rendering (sprint 016 ticket 004)**: `RelayQuickConnect`
- * now also renders "idle · sweeping `<name>`" (or plain "idle") while no
+ * **Sweep takeover rendering (sprint 016 ticket 004)**: the relay card's
+ * own connect controls (`components/RelayConnectControls.tsx`, ticket
+ * 017-007 -- extracted from this module's own former `RelayQuickConnect`,
+ * now shared with `RelayPage.tsx` rather than each keeping an identical
+ * copy) render "idle · sweeping `<name>`" (or plain "idle") while no
  * child is bridged and no `bridging` is in flight, mirroring
  * `RelayPage.tsx`'s own identical label -- both read
- * `deviceDisplay.ts`'s shared `findRelayChild` (now guarded against a
+ * `deviceDisplay.ts`'s shared `findRelayChild` (guarded against a
  * sweep-only sighting being mistaken for a live child) and
  * `findSweepingCandidateName` (a client-side inference from
  * `SnapshotDevice.lastChecked`, since no wire field names "which
@@ -76,7 +80,6 @@
  * `<name>`)" label (`connectionLabel`, unchanged) -- architecture.md
  * §7.3's "Radio via `<relay>`" row.
  */
-import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import type { SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
 import type { ConnectionStatus, PendingRadioMigration } from "../ws/WsProvider";
@@ -89,8 +92,9 @@ import {
   useUnassigned,
   useWsActions,
 } from "../ws/WsProvider";
-import { findRelayChild, findSweepingCandidateName, isCalibrationProgram, lastCheckedText, sweepRateSuffix } from "../deviceDisplay";
+import { isCalibrationProgram, lastCheckedText, linkStateText, nameDisplay } from "../deviceDisplay";
 import { FlashDialog } from "../components/FlashDialog";
+import { RelayConnectControls } from "../components/RelayConnectControls";
 import "./FrontPage.css";
 
 export function FrontPage() {
@@ -102,10 +106,10 @@ export function FrontPage() {
   const { send, resolveRadioMigration } = useWsActions();
   // Ticket 011 (carried from 009's send-gating sweep): read here (the
   // hook-bearing page) and threaded down as a plain prop -- `DevicesList`/
-  // `RelayQuickConnect` deliberately take no `WsProvider`-dependent hooks
-  // of their own (existing tests mount `DevicesList` standalone, with no
-  // provider in the tree), matching how `onRelayConnect`/`robotOptions`
-  // etc. already reach them.
+  // `RelayConnectControls` deliberately take no `WsProvider`-dependent
+  // hooks of their own (existing tests mount `DevicesList` standalone,
+  // with no provider in the tree), matching how `onRelayConnect`/
+  // `robotOptions` etc. already reach them.
   const sendable = useSendable();
 
   const present = devices.filter((device) => device.links.length > 0);
@@ -270,36 +274,6 @@ function connectionLabel(link: SnapshotLink): string {
   return link.via ? `${link.label} (via relay ${link.via.relayName})` : link.label;
 }
 
-/** Per-link status text -- "Linked" / "Connecting" / "Unreachable: …" /
- * "Retrying in Ns" / "Not seen since …" / "Not linked", derived from
- * `state`/`reason`/`lastSeen`/`nextRetryAt` (`sprint.md`'s own wording
- * for this ticket). */
-export function linkStatusText(link: SnapshotLink, now: number = Date.now()): string {
-  switch (link.state) {
-    case "connected":
-      return "Linked";
-    case "connecting":
-      return "Connecting";
-    case "failed":
-      if (link.nextRetryAt !== null) {
-        const seconds = Math.max(0, Math.round((link.nextRetryAt - now) / 1000));
-        return `Retrying in ${seconds}s`;
-      }
-      return link.reason ? `Unreachable: ${link.reason}` : "Unreachable";
-    case "unresponsive":
-      return link.reason ? `Unreachable: ${link.reason}` : "Unresponsive";
-    case "stale":
-      return link.lastSeen !== null ? `Not seen since ${new Date(link.lastSeen).toLocaleString()}` : "Not linked";
-    case "discovered":
-    case "connectable":
-    case "closed_by_user":
-      return "Not linked";
-    default: {
-      const exhaustive: never = link.state;
-      return String(exhaustive);
-    }
-  }
-}
 
 /** An arrow glyph for the open buttons -- inline SVG so it needs no
  * icon font and inherits `currentColor`. */
@@ -326,7 +300,7 @@ function ArrowIcon({ direction }: { direction: "forward" | "back" }) {
  * primary link on the right; every other link gets its own small arrow
  * in the Connections list), each a real `Link`. A relay device
  * additionally carries the robot picker + Connect/Switch/Disconnect
- * (`RelayQuickConnect`). */
+ * (`RelayConnectControls`, ticket 017-007 -- shared with `RelayPage.tsx`). */
 function DeviceCard({
   device,
   devices,
@@ -354,7 +328,7 @@ function DeviceCard({
       <div className="device-card-main">
         <div className="device-card-body">
           <div className="device-card-header">
-            <h3 className="device-name">{device.name}</h3>
+            <h3 className="device-name">{nameDisplay(device).text}</h3>
             {isCalibration && (
               <span className="device-calibration-badge" data-testid="calibration-badge">
                 {device.version ? `Calibration robot · ${device.version}` : "Calibration robot"}
@@ -375,7 +349,7 @@ function DeviceCard({
               <li key={link.id} className="device-connection" data-testid={`device-link-${link.id}`}>
                 <span className="device-connection-label">{connectionLabel(link)}</span>
                 <span className={link.state === "connected" ? "device-connection-state device-connection-open" : "device-connection-state"}>
-                  {linkStatusText(link)}
+                  {linkStateText(link)}
                 </span>
                 {lastCheckedText(device, link) && (
                   <span className="device-connection-last-checked" data-testid={`device-link-lastchecked-${link.id}`}>
@@ -411,7 +385,8 @@ function DeviceCard({
       </div>
 
       {isRelay && (
-        <RelayQuickConnect
+        <RelayConnectControls
+          variant="card"
           relay={device}
           devices={devices}
           relays={relays}
@@ -453,7 +428,7 @@ function UnassignedCard({ link }: { link: SnapshotLink }) {
             </div>
           </dl>
           <p className="device-connection-state" data-testid={`unassigned-status-${link.id}`}>
-            {linkStatusText(link)}
+            {linkStateText(link)}
           </p>
           <FlashDialog link={link} name={link.label} />
         </div>
@@ -466,111 +441,6 @@ function UnassignedCard({ link }: { link: SnapshotLink }) {
         >
           <ArrowIcon direction="forward" />
         </Link>
-      </div>
-    </div>
-  );
-}
-
-/** A relay card's own robot picker + Connect/Switch/Disconnect. Sends
- * exactly `{ type: "session-open", relayLinkId, name }` -- no `radio`
- * override (host-resolved, ticket 006) and no no-pick `autoRobot`
- * request (dropped from the wire contract entirely, see this module's
- * own doc comment). Uncontrolled selection state lives here, per card. */
-function RelayQuickConnect({
-  relay,
-  devices,
-  relays,
-  robotOptions,
-  onConnect,
-  onDisconnect,
-  sendable,
-}: {
-  relay: SnapshotDevice;
-  devices: SnapshotDevice[];
-  relays: SnapshotRelay[];
-  robotOptions: string[];
-  onConnect: (relayLinkId: string, name: string) => void;
-  onDisconnect: (linkId: string) => void;
-  /** Ticket 011 (carried from 009's send-gating sweep): gates the
-   * Connect/Switch button exactly like `RelayPage.tsx`'s own
-   * Connect/Switch does -- taken as a plain prop (see `FrontPage`'s own
-   * doc comment) rather than calling `useSendable()` here directly, so
-   * this component stays usable without a `WsProvider` in the tree. */
-  sendable: boolean;
-}) {
-  const relayLinkId = relay.links[0]?.id;
-  const relayInfo = relayLinkId ? relays.find((r) => r.linkId === relayLinkId) : undefined;
-  const bridging = relayInfo?.bridging;
-  const lease = relayInfo?.lease ?? null;
-  const child = relayLinkId ? findRelayChild(devices, relayLinkId) : undefined;
-  // Sprint 016 ticket 004: "idle · sweeping <name>" while the sweep
-  // lease is held and no child is bridged -- see `deviceDisplay.ts`'s
-  // own `findSweepingCandidateName` doc comment for why this is
-  // inferred client-side rather than carried as a new wire field.
-  const sweepingName = relayLinkId && lease === "sweep" ? findSweepingCandidateName(devices, relayLinkId, Date.now()) : undefined;
-
-  const [selectedName, setSelectedName] = useState<string>(child?.device.name ?? "");
-  useEffect(() => {
-    if (child) {
-      setSelectedName(child.device.name);
-    }
-  }, [child?.device.name]);
-
-  return (
-    <div className="device-relay-connect" data-testid={`relay-quick-connect-${relay.id}`}>
-      {child && child.link.state === "connected" && (
-        <p className="device-relay-connected">
-          Connected to {child.device.name}
-          {child.link.via ? ` on channel ${child.link.via.channel}, group ${child.link.via.group}` : ""}
-        </p>
-      )}
-      {child && child.link.state !== "connected" && (
-        <p className="device-relay-failed" data-testid={`relay-quick-lost-${relay.id}`}>
-          Connection to {child.device.name} lost{child.link.reason ? `: ${child.link.reason}` : ""}
-        </p>
-      )}
-      {!child && bridging?.state === "connecting" && (
-        <p className="device-relay-connecting" data-testid={`relay-quick-connecting-${relay.id}`}>
-          {bridging.robotName ? `Connecting to ${bridging.robotName}…` : "Connecting…"}
-        </p>
-      )}
-      {!child && bridging?.state === "failed" && (
-        <p className="device-relay-failed" data-testid={`relay-quick-failed-${relay.id}`}>
-          {bridging.error ?? `Could not reach ${bridging.robotName ?? "the robot"}`}
-        </p>
-      )}
-      {!child && !bridging && (
-        <p className="device-relay-idle" role="status" data-testid={`relay-quick-idle-${relay.id}`}>
-          {lease === "sweep" ? `idle · sweeping${sweepingName ? ` ${sweepingName}` : ""}${sweepRateSuffix(relayInfo)}` : "idle"}
-        </p>
-      )}
-      <div className="device-relay-connect-row">
-        <select
-          data-testid={`relay-quick-connect-select-${relay.id}`}
-          value={selectedName}
-          disabled={robotOptions.length === 0}
-          onChange={(event) => setSelectedName(event.target.value)}
-        >
-          <option value="">{robotOptions.length === 0 ? "No robots known yet" : "Choose a robot…"}</option>
-          {robotOptions.map((name) => (
-            <option key={name} value={name}>
-              {name}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          className="device-relay-connect-button"
-          disabled={selectedName === "" || relayLinkId === undefined || !sendable}
-          onClick={() => sendable && onConnect(relayLinkId!, selectedName)}
-        >
-          {child ? "Switch" : "Connect"}
-        </button>
-        {child && (
-          <button type="button" className="device-relay-disconnect-button" onClick={() => onDisconnect(child.link.id)}>
-            Disconnect
-          </button>
-        )}
       </div>
     </div>
   );
@@ -599,7 +469,7 @@ function NotSeenRecentlySection({
           <li key={device.id}>
             <div className="remembered-robot-card" data-testid={`not-seen-device-${device.id}`}>
               <div className="remembered-robot-header">
-                <h3 className="remembered-robot-name">{device.name}</h3>
+                <h3 className="remembered-robot-name">{nameDisplay(device).text}</h3>
               </div>
               <p className="remembered-robot-note">Last seen {new Date(device.lastSeen).toLocaleString()}</p>
               <button

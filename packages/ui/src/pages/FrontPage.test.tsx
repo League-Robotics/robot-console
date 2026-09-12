@@ -21,7 +21,7 @@ import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Snapshot, SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
-import { DevicesList, FrontPage, RadioMigrationOffers, linkStatusText } from "./FrontPage";
+import { DevicesList, FrontPage, RadioMigrationOffers } from "./FrontPage";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 import { withRouter } from "../testing/renderWithRouter";
@@ -101,38 +101,10 @@ function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   };
 }
 
-describe("linkStatusText", () => {
-  const now = 1_000_000;
-
-  it("renders Linked/Connecting for the live states", () => {
-    expect(linkStatusText(link("a", { state: "connected" }), now)).toBe("Linked");
-    expect(linkStatusText(link("a", { state: "connecting" }), now)).toBe("Connecting");
-  });
-
-  it("renders Retrying in Ns when failed with a pending retry", () => {
-    expect(linkStatusText(link("a", { state: "failed", nextRetryAt: now + 5000, reason: "timeout" }), now)).toBe("Retrying in 5s");
-  });
-
-  it("renders Unreachable: <reason> when failed with no pending retry", () => {
-    expect(linkStatusText(link("a", { state: "failed", reason: "no reply" }), now)).toBe("Unreachable: no reply");
-  });
-
-  it("renders Unresponsive (with reason) for the unresponsive state", () => {
-    expect(linkStatusText(link("a", { state: "unresponsive", reason: "HELLO timed out" }), now)).toBe("Unreachable: HELLO timed out");
-    expect(linkStatusText(link("a", { state: "unresponsive" }), now)).toBe("Unresponsive");
-  });
-
-  it("renders Not seen since <date> for a stale link with a lastSeen", () => {
-    const lastSeen = Date.UTC(2026, 0, 1, 12, 0, 0);
-    expect(linkStatusText(link("a", { state: "stale", lastSeen }), now)).toContain("Not seen since");
-  });
-
-  it("renders Not linked for discovered/connectable/closed_by_user", () => {
-    expect(linkStatusText(link("a", { state: "discovered" }), now)).toBe("Not linked");
-    expect(linkStatusText(link("a", { state: "connectable" }), now)).toBe("Not linked");
-    expect(linkStatusText(link("a", { state: "closed_by_user" }), now)).toBe("Not linked");
-  });
-});
+// `linkStatusText`'s own cases (renamed `linkStateText`) moved to
+// `deviceDisplay.test.ts` (ticket 017-007 -- moved there along with the
+// function itself, out of this module's former local copy). Not
+// re-tested here.
 
 describe("DevicesList", () => {
   it("renders a device card with name, role, and its one connection", () => {

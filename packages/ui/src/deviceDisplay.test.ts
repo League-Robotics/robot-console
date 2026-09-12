@@ -18,6 +18,7 @@ import {
   firmwareDisabledReason,
   isCalibrationProgram,
   lastCheckedText,
+  linkStateText,
   nameDisplay,
   roleDisplay,
   sweepRateSuffix,
@@ -76,6 +77,44 @@ describe("nameDisplay / roleDisplay", () => {
   it("roleDisplay returns the announced role, or a calm placeholder when none has been announced", () => {
     expect(roleDisplay(device({ role: "NEZHA2" }))).toBe("NEZHA2");
     expect(roleDisplay(device({ role: null }))).toBe("No role announced");
+  });
+});
+
+/**
+ * `linkStateText` (ticket 017-007): moved here from `FrontPage.tsx`'s
+ * own former local `linkStatusText` -- these cases moved with it,
+ * rather than being kept twice.
+ */
+describe("linkStateText", () => {
+  const now = 1_000_000;
+
+  it("renders Linked/Connecting for the live states", () => {
+    expect(linkStateText(link({ state: "connected" }), now)).toBe("Linked");
+    expect(linkStateText(link({ state: "connecting" }), now)).toBe("Connecting");
+  });
+
+  it("renders Retrying in Ns when failed with a pending retry", () => {
+    expect(linkStateText(link({ state: "failed", nextRetryAt: now + 5000, reason: "timeout" }), now)).toBe("Retrying in 5s");
+  });
+
+  it("renders Unreachable: <reason> when failed with no pending retry", () => {
+    expect(linkStateText(link({ state: "failed", reason: "no reply" }), now)).toBe("Unreachable: no reply");
+  });
+
+  it("renders Unresponsive (with reason) for the unresponsive state", () => {
+    expect(linkStateText(link({ state: "unresponsive", reason: "HELLO timed out" }), now)).toBe("Unreachable: HELLO timed out");
+    expect(linkStateText(link({ state: "unresponsive" }), now)).toBe("Unresponsive");
+  });
+
+  it("renders Not seen since <date> for a stale link with a lastSeen", () => {
+    const lastSeen = Date.UTC(2026, 0, 1, 12, 0, 0);
+    expect(linkStateText(link({ state: "stale", lastSeen }), now)).toContain("Not seen since");
+  });
+
+  it("renders Not linked for discovered/connectable/closed_by_user", () => {
+    expect(linkStateText(link({ state: "discovered" }), now)).toBe("Not linked");
+    expect(linkStateText(link({ state: "connectable" }), now)).toBe("Not linked");
+    expect(linkStateText(link({ state: "closed_by_user" }), now)).toBe("Not linked");
   });
 });
 

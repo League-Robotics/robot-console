@@ -25,8 +25,10 @@
  * device-level equivalent any more. `roleDisplay`'s old
  * `sessionError`-driven "Unresponsive" case moves the same way: link
  * reachability (`state`/`reason`) is now a per-`SnapshotLink` concept,
- * rendered by `FrontPage.tsx`'s own `linkStatusText`, not folded into a
- * device's role text.
+ * rendered by `linkStateText` below (ticket 017-007: moved here from
+ * `FrontPage.tsx`'s own former local `linkStatusText`, the single
+ * shared copy every per-link status rendering site now reads), not
+ * folded into a device's role text.
  */
 import type { FirmwareAvailability, FirmwareKind, FlashPhase, SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
 
@@ -248,6 +250,40 @@ export function sweepRateSuffix(relay: SnapshotRelay | undefined): string {
     return "";
   }
   return ` (${relay.sweep.rate})`;
+}
+
+/** Per-link status text -- "Linked" / "Connecting" / "Unreachable: …" /
+ * "Retrying in Ns" / "Not seen since …" / "Not linked", derived from
+ * `state`/`reason`/`lastSeen`/`nextRetryAt` (`sprint.md`'s own wording).
+ * Ticket 017-007: moved here from `FrontPage.tsx`'s own former
+ * `linkStatusText` (the single shared copy every per-link status
+ * rendering site now reads, rather than each re-deriving it from
+ * `link.state` itself). */
+export function linkStateText(link: SnapshotLink, now: number = Date.now()): string {
+  switch (link.state) {
+    case "connected":
+      return "Linked";
+    case "connecting":
+      return "Connecting";
+    case "failed":
+      if (link.nextRetryAt !== null) {
+        const seconds = Math.max(0, Math.round((link.nextRetryAt - now) / 1000));
+        return `Retrying in ${seconds}s`;
+      }
+      return link.reason ? `Unreachable: ${link.reason}` : "Unreachable";
+    case "unresponsive":
+      return link.reason ? `Unreachable: ${link.reason}` : "Unresponsive";
+    case "stale":
+      return link.lastSeen !== null ? `Not seen since ${new Date(link.lastSeen).toLocaleString()}` : "Not linked";
+    case "discovered":
+    case "connectable":
+    case "closed_by_user":
+      return "Not linked";
+    default: {
+      const exhaustive: never = link.state;
+      return String(exhaustive);
+    }
+  }
 }
 
 /** "Last checked `<time>`" text for a `via`-linked (radio/mbrelay) link

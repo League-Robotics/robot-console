@@ -2,45 +2,76 @@
  * deviceDisplay.test.ts — unit tests for the presentational/gating
  * helpers in `deviceDisplay.ts`.
  *
- * `canBeFlashed` (ticket 012-001): a truth table across all four
- * `(role, sessionError)` combinations, pinning the fix for the bug
- * where a silent, unflashed board (`role: null`, `sessionError:
- * undefined`) got no flash controls because the old flash-gating
- * predicate required `sessionError` to be set.
+ * `canBeFlashed` (sprint 015 ticket 007): now a direct read of
+ * `SnapshotLink.capabilities.flash`, the host-computed capability
+ * (`projection.ts`: true for any `usb` link) that replaces the old
+ * UI-side `role === null` guess -- see `deviceDisplay.ts`'s own doc
+ * comment for why flashability moved from device to link.
  */
 import { describe, expect, it } from "vitest";
-import type { EndpointListEntry, FirmwareAvailability } from "@robot-console/host/src/wsMessages.js";
-import { canBeFlashed, firmwareDiagnosticDetail, firmwareDisabledReason } from "./deviceDisplay";
+import type { FirmwareAvailability, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import { canBeFlashed, firmwareDiagnosticDetail, firmwareDisabledReason, isCalibrationProgram, nameDisplay, roleDisplay } from "./deviceDisplay";
 
-function device(overrides: Partial<EndpointListEntry> = {}): EndpointListEntry {
+function link(overrides: Partial<SnapshotLink> = {}): SnapshotLink {
   return {
-    endpointId: "usb-SERIAL-A",
+    id: "usb-SERIAL-A",
     transport: "usb",
-    resourceKey: "usb-SERIAL-A",
-    classification: { type: "unknown", role: null, commonName: null, dialect: null, evidence: "none", program: null, version: null },
+    label: "USB · /dev/cu.usbmodemA",
+    state: "connectable",
+    reason: null,
+    since: 0,
+    lastSeen: 0,
+    nextRetryAt: null,
+    capabilities: { open: true, close: false, flash: true, provisionWifi: false },
+    ...overrides,
+  };
+}
+
+function device(overrides: Partial<Omit<SnapshotDevice, "links">> = {}): SnapshotDevice {
+  return {
+    id: 1,
     name: "zeguz",
+    kind: "robot",
     role: null,
-    sessionOpen: false,
-    usb: { serialNumber: "SERIAL-A-FULL", displaySerial: "0002", port: "/dev/cu.usbmodemA" },
+    program: null,
+    version: null,
+    owned: true,
+    radio: { channel: 1, group: 1, source: "derived" },
+    lastSeen: 0,
+    lastChecked: null,
+    links: [link()],
     ...overrides,
   };
 }
 
 describe("canBeFlashed", () => {
-  it("is true for role: null, sessionError: undefined -- the silent, unflashed board case (the reported bug)", () => {
-    expect(canBeFlashed(device({ role: null }))).toBe(true);
+  it("is true for a usb link with capabilities.flash true, regardless of the owning device's role", () => {
+    expect(canBeFlashed(link({ capabilities: { open: true, close: false, flash: true, provisionWifi: false } }))).toBe(true);
   });
 
-  it("is true for role: null, sessionError set -- the failed-identify case", () => {
-    expect(canBeFlashed(device({ role: null, sessionError: "HELLO reply timed out after 2000ms" }))).toBe(true);
+  it("is false for a link with capabilities.flash false (e.g. a non-usb transport)", () => {
+    expect(canBeFlashed(link({ transport: "wifi", capabilities: { open: true, close: false, flash: false, provisionWifi: false } }))).toBe(
+      false,
+    );
+  });
+});
+
+describe("nameDisplay / roleDisplay", () => {
+  it("nameDisplay always returns the device's resolved name, unflagged", () => {
+    expect(nameDisplay(device({ name: "tigez" }))).toEqual({ text: "tigez", flagged: false });
   });
 
-  it("is false for an identified device with role set, sessionError: undefined", () => {
-    expect(canBeFlashed(device({ role: "RADIORELAY" }))).toBe(false);
+  it("roleDisplay returns the announced role, or a calm placeholder when none has been announced", () => {
+    expect(roleDisplay(device({ role: "NEZHA2" }))).toBe("NEZHA2");
+    expect(roleDisplay(device({ role: null }))).toBe("No role announced");
   });
+});
 
-  it("is false for role set even if sessionError is (unusually) also set", () => {
-    expect(canBeFlashed(device({ role: "NEZHA2", sessionError: "stray error" }))).toBe(false);
+describe("isCalibrationProgram", () => {
+  it("is true only for a program name prefixed calibration-", () => {
+    expect(isCalibrationProgram("calibration-0.20260907.2")).toBe(true);
+    expect(isCalibrationProgram("diffdrive")).toBe(false);
+    expect(isCalibrationProgram(null)).toBe(false);
   });
 });
 

@@ -2,8 +2,8 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { EndpointListEntry } from "@robot-console/host/src/wsMessages.js";
-import { ConfigurationPage, MASKED_PASSWORD, configurationCode } from "./ConfigurationPage";
+import type { SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
+import { ConfigurationPage, MASKED_PASSWORD, configurationCode, radioSourceLabel } from "./ConfigurationPage";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 
@@ -37,16 +37,33 @@ afterEach(() => {
   }
 });
 
-function robot(): EndpointListEntry {
+function robot(overrides: Partial<Omit<SnapshotDevice, "links">> = {}): SnapshotDevice {
   return {
-    endpointId: "usb-ROBOT-A",
-    transport: "usb",
-    resourceKey: "usb-ROBOT-A",
-    classification: { type: "robot", role: "NEZHA2", commonName: "robot", dialect: "space", evidence: "role", program: null, version: null },
+    id: 1198504156,
     name: "tigez",
+    kind: "robot",
     role: "NEZHA2",
-    sessionOpen: true,
-    usb: { serialNumber: "ROBOT-A-FULL", displaySerial: "0004", port: "/dev/cu.usbmodemC" },
+    program: null,
+    version: null,
+    owned: true,
+    radio: { channel: 41, group: 3, source: "derived" },
+    lastSeen: 0,
+    lastChecked: null,
+    links: [
+      {
+        id: "usb-ROBOT-A",
+        transport: "usb",
+        label: "USB · /dev/cu.usbmodemC",
+        state: "connected",
+        reason: null,
+        since: 0,
+        lastSeen: 0,
+        nextRetryAt: null,
+        capabilities: { open: false, close: true, flash: true, provisionWifi: true },
+        session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+      },
+    ],
+    ...overrides,
   };
 }
 
@@ -156,7 +173,18 @@ describe("ConfigurationPage", () => {
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.click();
     });
-    expect(sent(socket).at(-1)).toEqual({ type: "provision-wifi", endpointId: "usb-ROBOT-A", slot: 0 });
+    expect(sent(socket).at(-1)).toEqual({ type: "provision-wifi", linkId: "usb-ROBOT-A", slot: 0 });
+  });
+
+  it("seeds the radio draft from device.radio and shows its source", () => {
+    const el = mount(
+      <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
+        <ConfigurationPage device={robot({ radio: { channel: 55, group: 114, source: "override" } })} />
+      </WsProvider>,
+    );
+    expect(el.querySelector<HTMLInputElement>('[data-testid="configuration-radio-channel"]')!.value).toBe("55");
+    expect(el.querySelector<HTMLInputElement>('[data-testid="configuration-radio-group"]')!.value).toBe("114");
+    expect(el.querySelector('[data-testid="configuration-radio-source"]')?.textContent).toBe(radioSourceLabel("override"));
   });
 
   it("edits to the calibration values persist to the same per-robot state the Calibration tab uses and show up in the code", () => {

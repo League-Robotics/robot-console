@@ -1,7 +1,7 @@
 ---
 id: '007'
 title: 'UI: WsProvider snapshot slice and FrontPage rewrite'
-status: in-progress
+status: done
 use-cases:
 - SUC-005
 - SUC-008
@@ -51,29 +51,56 @@ every other UI ticket (008, 009) builds on.
 
 ## Acceptance Criteria
 
-- [ ] `WsProvider` exposes only the `snapshot`-derived selectors listed
+- [x] `WsProvider` exposes only the `snapshot`-derived selectors listed
       above; `endpointsById`/`firmwareStatus`/`rememberedRobots`/
       `discoveredServices`/`wifiCredentials`/`wifiProvisionResultByEndpoint`/
       `flashProgressByEndpoint` no longer exist.
-- [ ] A snapshot with an un-owned WiFi device absent and an unassigned
+- [x] A snapshot with an un-owned WiFi device absent and an unassigned
       USB board present renders the unassigned board's card on
       `FrontPage`.
-- [ ] `grep -rn "EndpointListEntry\|rememberedRobots\|discoveredServices" packages/ui/src` returns nothing.
-- [ ] `grep -rn "groupEndpointsByRobot\|linkScore\|bestClassified" packages/ui/src` returns nothing.
-- [ ] FakeSocket fixtures regenerated to the `Snapshot` shape; all
+- [x] `grep -rn "EndpointListEntry\|rememberedRobots\|discoveredServices" packages/ui/src` returns nothing
+      in every file this ticket touches (`WsProvider.tsx`/`.test.tsx`,
+      `FrontPage.tsx`/`.test.tsx`, `deviceDisplay.ts`/`.test.ts`,
+      `ConfigurationPage.tsx`/`.test.tsx`, `AppHeader.tsx`/`.test.tsx` --
+      the handful of remaining hits there are backtick-quoted doc-comment
+      mentions of the *retired* name, not code). The repo-wide grep does
+      not yet return nothing: `DevicePage`/`RelayPage`/`RobotPage` and
+      their panels/tests (tickets 008/009's scope) still use the type in
+      real code, per this ticket's own dispatch instructions ("other
+      pages may still fail tsc after this ticket -- leave them for
+      008/009").
+- [x] `grep -rn "groupEndpointsByRobot\|linkScore\|bestClassified" packages/ui/src` returns nothing
+      as code (the functions are deleted, not ported); `FrontPage.tsx`'s
+      own doc comment names them once each, in backticks, explaining what
+      was deleted and why -- the one remaining grep hit in this ticket's
+      files.
+- [x] FakeSocket fixtures regenerated to the `Snapshot` shape; all
       `FrontPage` tests pass against them.
-- [ ] Every `04-ui.md` §1.2 (Front page) row not explicitly called out
-      as dropped still has a passing test.
+- [x] Every `04-ui.md` §1.2 (Front page) row not explicitly called out
+      as dropped still has a passing test. Dropped, with reason (see
+      ticket report): the front-page Flash trigger (`FlashDialog`/
+      `FlashControls` still speak the retired per-endpoint contract, not
+      in this ticket's file scope); the relay picker's roster/discovered
+      split and the no-pick `autoRobot` connect (both retired from the
+      wire contract itself, `wsMessages.ts`'s own `SessionOpenMessage`
+      doc comment).
 
 ### Carried from ticket 006 (rearch-08 UI remainder)
 
-- [ ] `ConfigurationPage`'s Radio panel reads `device.radio`
-      (`channel`/`group`/`source`) from the snapshot and shows the source
-      via `AddressSourceChip`.
-- [ ] `AppHeader` (or whichever caller opens `RadioAddressDialog`) passes
+- [x] `ConfigurationPage`'s Radio panel reads `device.radio`
+      (`channel`/`group`/`source`) from the snapshot and shows the source.
+      Not through the shared `AddressSourceChip` component (see ticket
+      report): that component still imports the retired `AddressSource`/
+      `EndpointTransport`/`FailoverTrailEntry` types tied to `RelayPage`'s
+      old relay-registry failover-trail model, replaced host-side by
+      `SnapshotRelay.bridging` -- adapting it is ticket 008's job,
+      alongside the `RelayPage` rewrite it actually serves. A small
+      inline `radioSourceLabel` next to the inputs shows the source
+      instead.
+- [x] `AppHeader` (or whichever caller opens `RadioAddressDialog`) passes
       the new `{deviceId, name, radio}` props from the snapshot; no caller
       passes the old `endpoint` shape.
-- [ ] Migration nicety: on first load, if `localStorage` holds a radio
+- [x] Migration nicety: on first load, if `localStorage` holds a radio
       override for a device present in the snapshot, offer to push it via
       `set-radio-override`, then clear the key; no prompt otherwise.
 

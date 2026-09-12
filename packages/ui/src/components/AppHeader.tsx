@@ -70,19 +70,41 @@
  * `forceShow`); see its own doc comment. An `unknown` device (not yet
  * identified) opens the dialog directly with no warning line, matching
  * the flow `UnknownDevicePage` already has today.
+ *
+ * **Sprint 015 ticket 007: `RadioAddressDialog` call site migrated to
+ * `SnapshotDevice`.** `useEndpoint`/`EndpointListEntry` are retired;
+ * this component now resolves the routed link's *owning device* via
+ * `useDeviceForLink` (matching by `linkId` against every device's
+ * `links[]`, so it keeps working whichever id shape the `/d/:endpointId`
+ * route param ends up carrying once ticket 008 renames the route
+ * itself to `linkId` -- the lookup is driven by link-id membership, not
+ * by the param's name) and passes `RadioAddressDialog` the
+ * `{deviceId, name, radio}` props it has taken since ticket 006.
+ *
+ * **Flash and Set Wi-Fi header entries temporarily removed.**
+ * `FlashDialog`/`WifiCredentialsDialog` still expect the retired
+ * `EndpointListEntry` shape and are not in this ticket's file scope
+ * (their migration is ticket 008/009's, alongside `UnknownDevicePage`/
+ * `RelayPage`, which share those dialogs). Passing them a
+ * `SnapshotDevice` instead does not just fail to type-check -- it
+ * crashes at render (`FlashDialog`'s `canBeFlashed(endpoint)` now reads
+ * `endpoint.capabilities.flash`, a field that only exists on a
+ * `SnapshotLink`, not a `SnapshotDevice` -- ticket 007's own
+ * `deviceDisplay.ts` change), so rendering them here against the new
+ * contract would be worse than not rendering them at all. Both entries
+ * are dropped from the header for this ticket only -- see this
+ * ticket's report for the `04-ui.md` §1.1 row this affects.
  */
 import { Link, useMatch } from "react-router";
-import { useEndpoint } from "../ws/WsProvider";
-import { FlashDialog } from "./FlashDialog";
+import { useDeviceForLink } from "../ws/WsProvider";
 import { RadioAddressDialog } from "./RadioAddressDialog";
-import { WifiCredentialsDialog } from "./WifiCredentialsDialog";
 import "./AppHeader.css";
 
 export function AppHeader() {
   const homeMatch = useMatch("/");
   const deviceMatch = useMatch("/d/:endpointId");
-  const endpointId = deviceMatch?.params.endpointId;
-  const endpoint = useEndpoint(endpointId ?? "");
+  const linkId = deviceMatch?.params.endpointId;
+  const device = useDeviceForLink(linkId);
 
   return (
     <header className="app-header">
@@ -96,22 +118,14 @@ export function AppHeader() {
             </svg>
           </Link>
         )}
-        {endpoint && (
+        {device && (
           <div className="app-header-actions">
-            {/* OOP 2026-09-10: Set Radio / Set Wi-Fi beside Flash for any
-                robot (not a relay) -- see RadioAddressDialog and
-                WifiCredentialsDialog. */}
-            {endpoint.classification.type !== "relay" && endpoint.name !== null && (
-              <RadioAddressDialog endpoint={endpoint} triggerClassName="app-header-flash-toggle" />
+            {/* Set Radio for any robot (not a relay) -- see
+                RadioAddressDialog. Set Wi-Fi and Flash are temporarily
+                removed here; see this module's own doc comment. */}
+            {device.kind !== "relay" && (
+              <RadioAddressDialog deviceId={device.id} name={device.name} radio={device.radio} triggerClassName="app-header-flash-toggle" />
             )}
-            {endpoint.classification.type !== "relay" && (
-              <WifiCredentialsDialog endpoint={endpoint} triggerClassName="app-header-flash-toggle" />
-            )}
-            <FlashDialog
-              endpoint={endpoint}
-              forceShow
-              triggerClassName="app-header-flash-toggle"
-            />
           </div>
         )}
       </div>

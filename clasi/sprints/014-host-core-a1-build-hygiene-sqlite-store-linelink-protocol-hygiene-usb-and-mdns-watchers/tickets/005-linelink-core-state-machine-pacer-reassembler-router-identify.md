@@ -1,9 +1,11 @@
 ---
 id: '005'
 title: 'LineLink core: state machine, pacer, reassembler, router, identify'
-status: open
-use-cases: [SUC-001]
-depends-on: ['004']
+status: in-progress
+use-cases:
+- SUC-001
+depends-on:
+- '004'
 github-issue: ''
 issue: rearch-04-linelink-core-replaces-four-link-classes.md
 completes_issue: false

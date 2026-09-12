@@ -1,7 +1,7 @@
 ---
 id: '016'
 title: Relay ownership, radio sweep, and network transports
-status: executing
+status: done
 branch: sprint/016-relay-ownership-radio-sweep-and-network-transports
 use-cases: []
 issues:

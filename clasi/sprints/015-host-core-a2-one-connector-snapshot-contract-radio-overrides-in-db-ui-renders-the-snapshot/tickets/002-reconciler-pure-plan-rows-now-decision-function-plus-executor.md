@@ -1,7 +1,7 @@
 ---
 id: '002'
 title: 'Reconciler: pure plan(rows, now) decision function plus executor'
-status: in-progress
+status: done
 use-cases:
 - SUC-002
 - SUC-009
@@ -49,20 +49,41 @@ open session on a link that isn't theirs to close).
 
 ## Acceptance Criteria
 
-- [ ] `plan()` is a pure function: same `(rows, now)` input always
+- [x] `plan()` is a pure function: same `(rows, now)` input always
       produces the same `Job[]` output, with no store or network access.
-- [ ] Table-driven tests cover every rule above as a distinct case:
+      (`packages/host/src/connect/reconciler.ts`'s `plan()` takes only
+      `(rows: ReconcilerRows, now: number)`, reads nothing else, and
+      calls no store/network API — verified by
+      `reconciler.test.ts`'s own "is a pure function" case.)
+- [x] Table-driven tests cover every rule above as a distinct case:
       owned WiFi link with nothing connected → connect job; un-owned
       WiFi link → no job; USB and WiFi both connectable for one device →
       USB-only job; `closed_by_user` → no job ever; `failed` before
       `next_retry_at` → no job, at/after → job; relay child switch → one
-      job with close+open, not two.
-- [ ] The executor calls `connectAndIdentify` at most once per job and
+      job with close+open, not two. (`reconciler.test.ts`'s `plan()` and
+      `planUserOpen()` describe blocks; the relay-switch case is
+      `planUserOpen` per this ticket's own Description — see that
+      module's doc comment, "Automatic connect is usb/wifi/mbserial
+      only", for why rule 5 lives there rather than in `plan()` itself.)
+- [x] The executor calls `connectAndIdentify` at most once per job and
       never re-issues a job already in flight for the same link.
-- [ ] A user-forwarded `session-open`/`session-close` goes through the
+      (`startReconciler`'s `inFlight` set, `reconciler.ts`; covered by
+      `reconciler.test.ts`'s "in-flight dedupe" describe block, which
+      stubs a stale rows read to isolate this guard from the store-state
+      gate.)
+- [x] A user-forwarded `session-open`/`session-close` goes through the
       same `plan()`-equivalent precedence checks as an automatic job
       (e.g., does not reopen a link another session already owns).
-- [ ] `grep -rn "autoConnectWifiRobot\|autoSwitchRadioToWifi\|syncWifiEndpoints\|retryWifiAutoConnects" packages/host/src` returns nothing once ticket 003 deletes the old registry (this ticket only needs the new code to not reintroduce the pattern).
+      (`planUserOpen`/`planUserClose`, `reconciler.ts`; the executor's
+      `requestOpen`/`requestClose` are the narrow entry point ticket 005
+      will wire the server's forwarded command to.)
+- [x] `grep -rn "autoConnectWifiRobot\|autoSwitchRadioToWifi\|syncWifiEndpoints\|retryWifiAutoConnects" packages/host/src` returns nothing once ticket 003 deletes the old registry (this ticket only needs the new code to not reintroduce the pattern).
+      Verified: the grep still matches `deviceRegistry.ts` itself (not
+      touched by this ticket, per scope) and this ticket's own module
+      doc comment (which names the four functions only to say what they
+      are being replaced by); it does not match any new decision logic
+      in `reconciler.ts`. Ticket 003 deleting `deviceRegistry.ts` clears
+      the remaining match.
 
 ## Implementation Plan
 

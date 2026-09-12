@@ -192,6 +192,68 @@ export interface StoreSnapshot {
   tasks: Record<string, unknown>[];
 }
 
+/** One `devices` row, as {@link Store.reconcilerRows} needs it — just
+ * enough for `connect/reconciler.ts`'s `plan()` to apply the `owned`
+ * gate (architecture.md §4: "the reconciler never connects to
+ * [a wifi/mbserial link whose device is not owned]"). */
+export interface ReconcilerDeviceRow {
+  readonly id: number;
+  readonly kind: DeviceKind;
+  readonly owned: boolean;
+}
+
+/** One `links` row, as {@link Store.reconcilerRows} needs it — typed and
+ * camelCased (unlike {@link StoreSnapshot}, a low-level passthrough),
+ * since the reconciler's `plan()` reasons over these fields by name.
+ * `address` is parsed JSON, matching `connect/connector.ts`'s own
+ * `LinkRow.address` contract (either shape is accepted downstream). */
+export interface ReconcilerLinkRow {
+  readonly id: string;
+  readonly deviceId: number | null;
+  readonly transport: Transport;
+  readonly address: unknown;
+  readonly state: LinkState;
+  readonly nextRetryAt: number | null;
+  readonly failCount: number;
+  readonly userClosed: boolean;
+}
+
+/** One open `sessions` row — just the link it belongs to. `sessions`
+ * holds exactly one row per currently-open link (this module's own doc
+ * comment), so membership in this list is the reconciler's "is a
+ * session open for this link" signal — more durable than `links.state
+ * === 'connected'` alone, since a session stays open (`unresponsive`)
+ * even after its link goes silent. */
+export interface ReconcilerSessionRow {
+  readonly linkId: string;
+}
+
+/** One `relay_leases` row. Exclusivity here is held only for the
+ * duration of a connect *attempt* (`connect/connector.ts`'s own doc
+ * comment, "acquire-then-always-release, not held for the session"),
+ * so `owner` of the shape `session:<linkId>` names the link currently
+ * *attempting* (or, before that lease is released, freshly holding) the
+ * physical relay port — the reconciler combines this with
+ * {@link ReconcilerSessionRow} to find a relay's current child across
+ * its whole lifecycle: connecting (lease held, no session row yet),
+ * connected (session row; lease already released), or gone (neither). */
+export interface ReconcilerRelayLeaseRow {
+  readonly relayLinkId: string;
+  readonly owner: string;
+}
+
+/** The read model `connect/reconciler.ts`'s `plan()`/`planUserOpen`/
+ * `planUserClose` need — devices, links, open sessions, and relay
+ * leases, camelCased and typed (unlike {@link StoreSnapshot}, which
+ * exists for the debug dump, not policy decisions). See
+ * {@link Store.reconcilerRows}. */
+export interface ReconcilerRows {
+  readonly devices: readonly ReconcilerDeviceRow[];
+  readonly links: readonly ReconcilerLinkRow[];
+  readonly sessions: readonly ReconcilerSessionRow[];
+  readonly relayLeases: readonly ReconcilerRelayLeaseRow[];
+}
+
 function toJson(value: unknown): string | null {
   return value === undefined || value === null ? null : JSON.stringify(value);
 }
@@ -634,6 +696,52 @@ export class Store {
       services: all("services"),
       sessions: all("sessions"),
       tasks: all("tasks"),
+    };
+  }
+
+  /** The typed, camelCased read model `connect/reconciler.ts`'s `plan()`
+   * and its user-command counterparts need — see {@link ReconcilerRows}.
+   * A plain read, no transaction: the reconciler always re-derives jobs
+   * from a fresh read rather than caching, so a snapshot slightly
+   * behind a just-queued (but not yet flushed) change event is fine —
+   * the next change-feed tick reads again. */
+  reconcilerRows(): ReconcilerRows {
+    const devices = this.db.prepare("SELECT id, kind, owned FROM devices").all() as Array<{
+      id: number;
+      kind: DeviceKind;
+      owned: number;
+    }>;
+    const links = this.db
+      .prepare("SELECT id, device_id, transport, address, state, next_retry_at, fail_count, user_closed FROM links")
+      .all() as Array<{
+      id: string;
+      device_id: number | null;
+      transport: Transport;
+      address: string;
+      state: LinkState;
+      next_retry_at: number | null;
+      fail_count: number;
+      user_closed: number;
+    }>;
+    const sessions = this.db.prepare("SELECT link_id FROM sessions").all() as Array<{ link_id: string }>;
+    const relayLeases = this.db.prepare("SELECT relay_link_id, owner FROM relay_leases").all() as Array<{
+      relay_link_id: string;
+      owner: string;
+    }>;
+    return {
+      devices: devices.map((d) => ({ id: d.id, kind: d.kind, owned: d.owned !== 0 })),
+      links: links.map((l) => ({
+        id: l.id,
+        deviceId: l.device_id,
+        transport: l.transport,
+        address: JSON.parse(l.address) as unknown,
+        state: l.state,
+        nextRetryAt: l.next_retry_at,
+        failCount: l.fail_count,
+        userClosed: l.user_closed !== 0,
+      })),
+      sessions: sessions.map((s) => ({ linkId: s.link_id })),
+      relayLeases: relayLeases.map((r) => ({ relayLinkId: r.relay_link_id, owner: r.owner })),
     };
   }
 

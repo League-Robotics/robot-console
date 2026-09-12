@@ -403,6 +403,63 @@ describe("Store: snapshotRows", () => {
   });
 });
 
+describe("Store: reconcilerRows", () => {
+  it("returns typed, camelCased devices/links/sessions/relayLeases", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+      store.setOwned(1198504156, true, 2);
+      store.upsertLink({ id: "link-1", transport: "wifi", address: { host: "10.0.0.5", port: 4000 }, deviceId: 1198504156, at: 3 });
+      store.setLinkState({ id: "link-1", state: "failed", at: 4, reason: "boom", failCount: 2, nextRetryAt: 100 });
+      store.openSession("link-1", 5);
+      store.upsertLink({ id: "relay-1", transport: "usb", address: { path: "/dev/relay" }, at: 5 });
+      store.acquireRelayLease("relay-1", "session:radio-child", 6);
+
+      const rows = store.reconcilerRows();
+
+      expect(rows.devices).toEqual([{ id: 1198504156, kind: "robot", owned: true }]);
+      expect(rows.links.find((l) => l.id === "link-1")).toEqual({
+        id: "link-1",
+        deviceId: 1198504156,
+        transport: "wifi",
+        address: { host: "10.0.0.5", port: 4000 },
+        state: "failed",
+        nextRetryAt: 100,
+        failCount: 2,
+        userClosed: false,
+      });
+      expect(rows.sessions).toEqual([{ linkId: "link-1" }]);
+      expect(rows.relayLeases).toEqual([{ relayLinkId: "relay-1", owner: "session:radio-child" }]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("reports userClosed and a null deviceId/nextRetryAt as their own values, not coerced", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertLink({ id: "link-2", transport: "usb", address: { path: "/dev/x" }, at: 1 });
+      store.setLinkState({ id: "link-2", state: "closed_by_user", at: 2, userClosed: true });
+
+      const rows = store.reconcilerRows();
+      expect(rows.links).toEqual([
+        {
+          id: "link-2",
+          deviceId: null,
+          transport: "usb",
+          address: { path: "/dev/x" },
+          state: "closed_by_user",
+          nextRetryAt: null,
+          failCount: 0,
+          userClosed: true,
+        },
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe("Store: change feed", () => {
   it("emits exactly one coalesced event per transaction burst", async () => {
     const { store } = freshStore();

@@ -42,7 +42,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { nameToRadioAddress } from "@robot-console/protocol";
 import type { SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
-import { useConnectionStatus, useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
+import {
+  useConnectionStatus,
+  useSendable,
+  useWifiCredentials,
+  useWifiProvisionResult,
+  useWsActions,
+} from "../ws/WsProvider";
 import type { RadioAddress } from "../pages/RelayPage";
 import { AddressSourceChip } from "./AddressSourceChip";
 import {
@@ -98,6 +104,12 @@ export interface ConfigurationPageProps {
 export function ConfigurationPage({ device }: ConfigurationPageProps) {
   const robotName = device.name;
   const { send } = useWsActions();
+  // Ticket 011 (carried from 009's send-gating sweep): Save (via
+  // `saveWifi`) and Write to robot both send over the wire, so both
+  // gate on `useSendable()` the same way every other send-capable
+  // control in the app now does -- see `WsProvider.tsx`'s own doc
+  // comment on `useSendable`.
+  const sendable = useSendable();
   const stored = useWifiCredentials();
   // The link currently used for session-scoped actions (Write to robot)
   // -- the first link with an open session, if any. A device can have
@@ -189,6 +201,9 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
 
   const [savedNote, setSavedNote] = useState<string | null>(null);
   function saveAll(): void {
+    if (!sendable) {
+      return;
+    }
     const radioOk = saveRadio();
     const wifiOk = saveWifi();
     writeCalibrationState(robotName, calibration);
@@ -395,15 +410,27 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
             </p>
           )}
           <div className="configuration-actions">
-            <button type="button" className="calibration-code-copy" data-testid="configuration-save" onClick={saveAll}>
+            <button
+              type="button"
+              className="calibration-code-copy"
+              data-testid="configuration-save"
+              disabled={!sendable}
+              onClick={saveAll}
+            >
               Save
             </button>
             <button
               type="button"
               data-testid="configuration-write"
-              disabled={!openLink || !stored?.ssid}
-              title={openLink ? "Write the saved Wi-Fi network to the robot's credential slot 0" : "Open a link to the robot first"}
-              onClick={() => openLink && send({ type: "provision-wifi", linkId: openLink.id, slot: 0 })}
+              disabled={!openLink || !stored?.ssid || !sendable}
+              title={
+                !sendable
+                  ? "Disconnected from the host"
+                  : openLink
+                    ? "Write the saved Wi-Fi network to the robot's credential slot 0"
+                    : "Open a link to the robot first"
+              }
+              onClick={() => openLink && sendable && send({ type: "provision-wifi", linkId: openLink.id, slot: 0 })}
             >
               Write to robot
             </button>

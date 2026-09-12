@@ -224,6 +224,32 @@ describe("RelayPage: not connected", () => {
 
     expect(socket().sent).toEqual([JSON.stringify({ type: "session-open", relayLinkId: RELAY_LINK_ID, name: "vevav" })]);
   });
+
+  // Ticket 011 (carried from 009's send-gating sweep): Connect disables
+  // when the socket closes, even with a robot already picked -- see
+  // `useSendable`'s own doc comment (a relay link never has a `session`
+  // of its own, so this button had no session-based gate to begin with).
+  it("Connect disables once the socket closes, and stays disabled until a fresh snapshot confirms reconnect", () => {
+    const { el, socket } = mountRelayPage(relayDevice());
+    pushSnapshot(socket, { devices: [relayDevice(), device(5, { name: "vevav" })] });
+
+    const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-robot-select"]')!;
+    act(() => {
+      select.value = "vevav";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="relay-connect"]')!.disabled).toBe(false);
+
+    act(() => {
+      socket().close();
+    });
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="relay-connect"]')!.disabled).toBe(true);
+
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="relay-connect"]')!.click();
+    });
+    expect(socket().sent).toEqual([]);
+  });
 });
 
 describe("RelayPage: connected", () => {

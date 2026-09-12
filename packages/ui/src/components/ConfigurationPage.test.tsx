@@ -176,6 +176,33 @@ describe("ConfigurationPage", () => {
     expect(sent(socket).at(-1)).toEqual({ type: "provision-wifi", linkId: "usb-ROBOT-A", slot: 0 });
   });
 
+  // Ticket 011 (carried from 009's send-gating sweep): both Save and
+  // Write to robot gate on `useSendable()`, since Save also sends
+  // (`saveWifi`) whenever a Wi-Fi network is stored.
+  it("Save and Write to robot both disable once the socket closes, and no message is sent while disabled", () => {
+    const { el, socket } = mountPage();
+    act(() => {
+      socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "stored", password: "hunter2" });
+    });
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="configuration-save"]')!.disabled).toBe(false);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.disabled).toBe(false);
+
+    act(() => {
+      socket.close();
+    });
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="configuration-save"]')!.disabled).toBe(true);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.disabled).toBe(true);
+
+    const sentBeforeClicks = sent(socket).length;
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="configuration-save"]')!.click();
+    });
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.click();
+    });
+    expect(sent(socket).length).toBe(sentBeforeClicks);
+  });
+
   it("seeds the radio draft from device.radio and shows its source via the shared AddressSourceChip", () => {
     const el = mount(
       <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>

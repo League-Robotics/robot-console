@@ -99,7 +99,7 @@ import {
   type SyntheticEvent,
 } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { useFlashProgress } from "../ws/WsProvider";
+import { useFlashProgress, useSendable } from "../ws/WsProvider";
 import { canBeFlashed } from "../deviceDisplay";
 import { FlashControls } from "./FlashControls";
 import "./FlashDialog.css";
@@ -150,6 +150,12 @@ export function FlashDialog({
 }: FlashDialogProps) {
   const progress = useFlashProgress(link.id);
   const inProgress = progress !== undefined;
+  // Ticket 011 (carried from 009's send-gating sweep): the trigger
+  // gates on `useSendable()` here, in the one shared component every
+  // Flash trigger (`FrontPage`'s unassigned-board card, `AppHeader`,
+  // `UnknownDevicePage`) mounts -- covers all three call sites without
+  // each one repeating the check.
+  const sendable = useSendable();
 
   const [open, setOpen] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -270,7 +276,9 @@ export function FlashDialog({
         className={triggerClassName}
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => setOpen(true)}
+        disabled={!sendable}
+        title={sendable ? undefined : "Disconnected from the host"}
+        onClick={() => sendable && setOpen(true)}
       >
         {triggerLabel}
       </button>

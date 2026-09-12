@@ -123,7 +123,7 @@ import type {
   FlashLocalReadyMessage,
   SnapshotLink,
 } from "@robot-console/host/src/wsMessages.js";
-import { useFirmwareStatus, useFlashProgress, useWsActions, type FlashProgressState } from "../ws/WsProvider";
+import { useFirmwareStatus, useFlashProgress, useSendable, useWsActions, type FlashProgressState } from "../ws/WsProvider";
 import { FIRMWARE_LABEL, PHASE_LABEL, firmwareDiagnosticDetail, firmwareDisabledReason } from "../deviceDisplay";
 import "./FlashControls.css";
 
@@ -183,6 +183,12 @@ export function FlashControls({ link }: FlashControlsProps) {
   const progress = useFlashProgress(link.id);
   const { send, sendBinary, onFlashResult, onFlashLocalReady } = useWsActions();
   const navigate = useNavigate();
+  // Ticket 011 (carried from 009's send-gating sweep): the dialog's
+  // trigger (`FlashDialog.tsx`) already gates opening on `useSendable()`,
+  // but a connection can still drop while the dialog is already open --
+  // these buttons gate independently so a stale-open dialog doesn't
+  // leave a live-looking send control active.
+  const sendable = useSendable();
 
   const [flashError, setFlashError] = useState<string | null>(null);
   const [reidentifyTimedOut, setReidentifyTimedOut] = useState(false);
@@ -226,11 +232,14 @@ export function FlashControls({ link }: FlashControlsProps) {
 
   const flashRelease = useCallback(
     (firmware: FirmwareKind) => {
+      if (!sendable) {
+        return;
+      }
       setFlashError(null);
       setReidentifyTimedOut(false);
       send({ type: "flash-start", linkId: link.id, source: { kind: "release", firmware } });
     },
-    [link.id, send],
+    [link.id, send, sendable],
   );
 
   const handleFileSelected = useCallback(
@@ -239,7 +248,7 @@ export function FlashControls({ link }: FlashControlsProps) {
       // Reset immediately so selecting the same file again still fires
       // `onChange`.
       event.target.value = "";
-      if (!file) {
+      if (!file || !sendable) {
         return;
       }
       setFlashError(null);
@@ -255,11 +264,11 @@ export function FlashControls({ link }: FlashControlsProps) {
         send({ type: "flash-local-begin", fileName: file.name, byteLength: file.size, sha256 });
       })();
     },
-    [send],
+    [send, sendable],
   );
 
   const flashLocalFile = useCallback(() => {
-    if (localHex.phase !== "uploaded") {
+    if (localHex.phase !== "uploaded" || !sendable) {
       return;
     }
     setFlashError(null);
@@ -270,7 +279,7 @@ export function FlashControls({ link }: FlashControlsProps) {
       source: { kind: "local-hex", uploadId: localHex.uploadId, fileName: localHex.fileName, sha256: localHex.sha256 },
     });
     setLocalHex({ phase: "idle" });
-  }, [link.id, localHex, send]);
+  }, [link.id, localHex, send, sendable]);
 
   const relayReason = firmwareDisabledReason(firmwareStatus.relay);
   const robotReason = firmwareDisabledReason(firmwareStatus.robot);
@@ -291,7 +300,7 @@ export function FlashControls({ link }: FlashControlsProps) {
               <button
                 type="button"
                 className="device-button"
-                disabled={relayReason !== null}
+                disabled={relayReason !== null || !sendable}
                 onClick={() => flashRelease("relay")}
               >
                 Flash relay firmware
@@ -308,7 +317,7 @@ export function FlashControls({ link }: FlashControlsProps) {
               <button
                 type="button"
                 className="device-button"
-                disabled={robotReason !== null}
+                disabled={robotReason !== null || !sendable}
                 onClick={() => flashRelease("robot")}
               >
                 Flash robot firmware
@@ -335,7 +344,7 @@ export function FlashControls({ link }: FlashControlsProps) {
               accept=".hex"
               data-testid="local-hex-file-input"
               onChange={handleFileSelected}
-              disabled={localHexBusy}
+              disabled={localHexBusy || !sendable}
             />
             {localHex.phase === "oversize" && (
               <p className="device-note device-note-error" role="alert">
@@ -354,6 +363,7 @@ export function FlashControls({ link }: FlashControlsProps) {
                 <button
                   type="button"
                   className="device-button device-button-primary"
+                  disabled={!sendable}
                   onClick={flashLocalFile}
                 >
                   Flash this file

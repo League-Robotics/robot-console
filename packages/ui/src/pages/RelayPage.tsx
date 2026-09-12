@@ -83,7 +83,7 @@ import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMes
 import { AddressSourceChip } from "../components/AddressSourceChip";
 import { DeviceConsole } from "../components/DeviceConsole";
 import { RobotPage } from "./RobotPage";
-import { useDevices, useRelays, useWsActions } from "../ws/WsProvider";
+import { useDevices, useRelays, useSendable, useWsActions } from "../ws/WsProvider";
 import "./RelayPage.css";
 
 export interface RelayPageProps {
@@ -119,6 +119,7 @@ function findRelayChild(
 export function RelayPage({ device }: RelayPageProps) {
   const devices = useDevices();
   const relays = useRelays();
+  const sendable = useSendable();
   const { send } = useWsActions();
 
   const relayLink = device.links[0];
@@ -146,8 +147,14 @@ export function RelayPage({ device }: RelayPageProps) {
     .map((candidate) => candidate.name)
     .sort((a, b) => a.localeCompare(b));
 
+  // Ticket 011 (carried from 009's send-gating sweep): `useSendable()`
+  // (socket open, snapshot not stale) gates Connect/Switch the same way
+  // every other send-capable control in the app now does -- the relay
+  // link's own `session`-independent state (it never has a `session`
+  // itself) meant this button was the one place send-gating had not
+  // yet reached.
   function handleConnect(): void {
-    if (!relayLinkId || !selectedName) {
+    if (!relayLinkId || !selectedName || !sendable) {
       return;
     }
     // Exactly one message -- see this module's own doc comment. The
@@ -164,7 +171,7 @@ export function RelayPage({ device }: RelayPageProps) {
     send({ type: "session-close", linkId: child.link.id });
   }
 
-  const connectDisabled = selectedName === "" || relayLinkId === undefined;
+  const connectDisabled = selectedName === "" || relayLinkId === undefined || !sendable;
   const relayName = device.name;
 
   return (

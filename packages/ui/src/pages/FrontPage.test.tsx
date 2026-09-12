@@ -295,6 +295,36 @@ describe("unassigned USB boards (acceptance: un-owned WiFi absent, unassigned pr
     expect(flashTrigger).toBeUndefined();
   });
 
+  // Ticket 011 (carried from 009's send-gating sweep): the Flash trigger
+  // gates on `useSendable()` inside the shared `FlashDialog` component
+  // (see that module's own doc comment) -- exercised here through
+  // `FrontPage`'s unassigned-board card, one of its three call sites.
+  it("disables the Flash trigger on an unassigned board's card once the socket closes", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <DevicesList
+            status="open"
+            devices={[]}
+            unassigned={[link("usb-unknown-1", { state: "discovered", label: "USB · /dev/tty.usbmodem-unknown" })]}
+          />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    const card = el.querySelector('[data-testid="unassigned-card-usb-unknown-1"]')!;
+    const flashTrigger = Array.from(card.querySelectorAll("button")).find((b) => b.textContent === "Flash")!;
+    expect(flashTrigger.disabled).toBe(false);
+
+    act(() => {
+      socket!.close();
+    });
+    expect(flashTrigger.disabled).toBe(true);
+  });
+
   it("renders the unassigned board's card end-to-end through WsProvider + FrontPage, with no un-owned wifi device present", () => {
     let socket: FakeSocket | null = null;
     const el = mount(
@@ -533,6 +563,44 @@ describe("relay quick-connect", () => {
       connect!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(socket!.sent).toEqual([JSON.stringify({ type: "session-open", relayLinkId: "usb-relay-1", name: "vevav" })]);
+  });
+
+  // Ticket 011 (carried from 009's send-gating sweep): the quick-connect
+  // Connect/Switch button gates on `useSendable()` the same way
+  // `RelayPage.tsx`'s own Connect/Switch does.
+  it("Connect disables once the socket closes, and no message is sent while disabled", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage(snapshot({ devices: [relayDevice(), device(5, { name: "vevav", kind: "robot" })] }));
+    });
+
+    const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-quick-connect-select-3"]');
+    act(() => {
+      select!.value = "vevav";
+      select!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const connect = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Connect")!;
+    expect(connect.disabled).toBe(false);
+
+    act(() => {
+      socket!.close();
+    });
+    expect(connect.disabled).toBe(true);
+
+    act(() => {
+      connect.click();
+    });
+    expect(socket!.sent).toEqual([]);
   });
 
   it("FrontPage's robotOptions never include the relay device itself, only kind: robot devices", () => {

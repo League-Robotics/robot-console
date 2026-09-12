@@ -312,6 +312,52 @@ describe("AppHeader Flash (sprint 015 ticket 008 restore)", () => {
   });
 });
 
+describe("AppHeader Flash / Set Wi-Fi send-gating (ticket 011, carried from 009)", () => {
+  it("disables both the Flash and Set Wi-Fi triggers once the socket closes, and re-enables them once reconnected with a fresh snapshot", () => {
+    const robotDevice = device({
+      id: 42,
+      name: "tigez",
+      role: "NEZHA2",
+      links: [
+        {
+          id: "usb-SERIAL-A",
+          transport: "usb",
+          label: "USB · /dev/cu.usbmodemA",
+          state: "connected",
+          reason: null,
+          since: 0,
+          lastSeen: 0,
+          nextRetryAt: null,
+          capabilities: { open: false, close: true, flash: false, provisionWifi: true },
+        },
+      ],
+    });
+    const { el, socket } = mountAt("/d/usb-SERIAL-A", { devices: [robotDevice] });
+
+    expect(flashTrigger(el)!.disabled).toBe(false);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="wifi-credentials-trigger"]')!.disabled).toBe(false);
+
+    act(() => {
+      socket().close();
+    });
+    expect(flashTrigger(el)!.disabled).toBe(true);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="wifi-credentials-trigger"]')!.disabled).toBe(true);
+
+    act(() => {
+      socket().emitOpen();
+    });
+    // Reconnected but stale (no fresh snapshot yet) -- still disabled.
+    expect(flashTrigger(el)!.disabled).toBe(true);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="wifi-credentials-trigger"]')!.disabled).toBe(true);
+
+    act(() => {
+      socket().emitMessage(snapshot([robotDevice]));
+    });
+    expect(flashTrigger(el)!.disabled).toBe(false);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="wifi-credentials-trigger"]')!.disabled).toBe(false);
+  });
+});
+
 describe("AppHeader Set Wi-Fi (sprint 015 ticket 008 restore)", () => {
   it("shows no Set Wi-Fi trigger on / or in the loading state", () => {
     expect(mountAt("/").el.querySelector('[data-testid="wifi-credentials-trigger"]')).toBeNull();

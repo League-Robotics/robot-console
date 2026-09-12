@@ -26,7 +26,7 @@
  * dialog's own title text (a link has no name of its own).
  */
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
+import { useSendable, useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
 import "./FlashDialog.css";
 import "./CredentialsDialog.css";
 
@@ -66,6 +66,12 @@ export interface WifiCredentialsDialogProps {
 
 export function WifiCredentialsDialog({ linkId, linkOpen, name, triggerClassName = "device-button" }: WifiCredentialsDialogProps) {
   const { send } = useWsActions();
+  // Ticket 011 (carried from 009's send-gating sweep): both the trigger
+  // (opening the dialog at all) and the submit button gate on
+  // `useSendable()` -- `linkOpen` alone (the caller's `link.session !==
+  // undefined`) survives a host disconnect in the last-known snapshot,
+  // same gap `useSendable`'s own doc comment describes.
+  const sendable = useSendable();
   const stored = useWifiCredentials();
   const result = useWifiProvisionResult(linkId);
   const [open, setOpen] = useState(false);
@@ -120,6 +126,9 @@ export function WifiCredentialsDialog({ linkId, linkOpen, name, triggerClassName
 
   function handleSubmit(event: FormEvent): void {
     event.preventDefault();
+    if (!sendable) {
+      return;
+    }
     const trimmedSsid = ssid.trim();
     const problem = validateWifiInput(trimmedSsid, password, stored?.hasPassword === true && stored.ssid === trimmedSsid);
     if (problem) {
@@ -143,7 +152,9 @@ export function WifiCredentialsDialog({ linkId, linkOpen, name, triggerClassName
         className={triggerClassName}
         aria-haspopup="dialog"
         data-testid="wifi-credentials-trigger"
-        onClick={() => setOpen(true)}
+        disabled={!sendable}
+        title={sendable ? undefined : "Disconnected from the host"}
+        onClick={() => sendable && setOpen(true)}
       >
         Set Wi-Fi
       </button>
@@ -222,8 +233,8 @@ export function WifiCredentialsDialog({ linkId, linkOpen, name, triggerClassName
                   type="submit"
                   className="credentials-primary"
                   data-testid="wifi-write"
-                  disabled={!linkOpen || writing}
-                  title={linkOpen ? undefined : "Open a link to the robot first"}
+                  disabled={!linkOpen || writing || !sendable}
+                  title={!sendable ? "Disconnected from the host" : linkOpen ? undefined : "Open a link to the robot first"}
                 >
                   {writing ? "Writing…" : "Save and write to robot"}
                 </button>

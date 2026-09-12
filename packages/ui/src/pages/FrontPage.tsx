@@ -63,7 +63,15 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import type { SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
 import type { ConnectionStatus, PendingRadioMigration } from "../ws/WsProvider";
-import { useConnectionStatus, useDevices, useRadioMigrationOffers, useRelays, useUnassigned, useWsActions } from "../ws/WsProvider";
+import {
+  useConnectionStatus,
+  useDevices,
+  useRadioMigrationOffers,
+  useRelays,
+  useSendable,
+  useUnassigned,
+  useWsActions,
+} from "../ws/WsProvider";
 import { isCalibrationProgram } from "../deviceDisplay";
 import { FlashDialog } from "../components/FlashDialog";
 import "./FrontPage.css";
@@ -75,6 +83,13 @@ export function FrontPage() {
   const relays = useRelays();
   const radioMigrationOffers = useRadioMigrationOffers();
   const { send, resolveRadioMigration } = useWsActions();
+  // Ticket 011 (carried from 009's send-gating sweep): read here (the
+  // hook-bearing page) and threaded down as a plain prop -- `DevicesList`/
+  // `RelayQuickConnect` deliberately take no `WsProvider`-dependent hooks
+  // of their own (existing tests mount `DevicesList` standalone, with no
+  // provider in the tree), matching how `onRelayConnect`/`robotOptions`
+  // etc. already reach them.
+  const sendable = useSendable();
 
   const present = devices.filter((device) => device.links.length > 0);
   const notSeenRecently = devices.filter((device) => device.links.length === 0);
@@ -93,6 +108,7 @@ export function FrontPage() {
         relays={relays}
         notSeenRecently={notSeenRecently}
         robotOptions={robotOptions}
+        sendable={sendable}
         onForgetDevice={(deviceId) => send({ type: "forget-device", deviceId })}
         onRelayConnect={(relayLinkId, name) => send({ type: "session-open", relayLinkId, name })}
         onRelayDisconnect={(linkId) => send({ type: "session-close", linkId })}
@@ -158,6 +174,12 @@ export interface DevicesListProps {
   onRelayConnect?: (relayLinkId: string, name: string) => void;
   /** A relay card's Disconnect press for its currently-bridged link. */
   onRelayDisconnect?: (linkId: string) => void;
+  /** Whether a send is currently meaningful (`useSendable()`, threaded
+   * down as a plain prop -- see `FrontPage`'s own doc comment). Gates
+   * the relay quick-connect Connect/Switch button. Defaults to `true`
+   * so call sites (and this component's own tests) that don't care
+   * about disconnection state are unaffected. */
+  sendable?: boolean;
 }
 
 export function DevicesList({
@@ -170,6 +192,7 @@ export function DevicesList({
   robotOptions = [],
   onRelayConnect = () => {},
   onRelayDisconnect = () => {},
+  sendable = true,
 }: DevicesListProps) {
   const empty = devices.length === 0 && unassigned.length === 0;
   return (
@@ -194,6 +217,7 @@ export function DevicesList({
                 robotOptions={robotOptions}
                 onRelayConnect={onRelayConnect}
                 onRelayDisconnect={onRelayDisconnect}
+                sendable={sendable}
               />
             </li>
           ))}
@@ -293,6 +317,7 @@ function DeviceCard({
   robotOptions,
   onRelayConnect,
   onRelayDisconnect,
+  sendable,
 }: {
   device: SnapshotDevice;
   devices: SnapshotDevice[];
@@ -300,6 +325,7 @@ function DeviceCard({
   robotOptions: string[];
   onRelayConnect: (relayLinkId: string, name: string) => void;
   onRelayDisconnect: (linkId: string) => void;
+  sendable: boolean;
 }) {
   const primary = primaryLinkFor(device);
   const linked = device.links.some((link) => link.state === "connected");
@@ -370,6 +396,7 @@ function DeviceCard({
           robotOptions={robotOptions}
           onConnect={onRelayConnect}
           onDisconnect={onRelayDisconnect}
+          sendable={sendable}
         />
       )}
     </div>
@@ -451,6 +478,7 @@ function RelayQuickConnect({
   robotOptions,
   onConnect,
   onDisconnect,
+  sendable,
 }: {
   relay: SnapshotDevice;
   devices: SnapshotDevice[];
@@ -458,6 +486,12 @@ function RelayQuickConnect({
   robotOptions: string[];
   onConnect: (relayLinkId: string, name: string) => void;
   onDisconnect: (linkId: string) => void;
+  /** Ticket 011 (carried from 009's send-gating sweep): gates the
+   * Connect/Switch button exactly like `RelayPage.tsx`'s own
+   * Connect/Switch does -- taken as a plain prop (see `FrontPage`'s own
+   * doc comment) rather than calling `useSendable()` here directly, so
+   * this component stays usable without a `WsProvider` in the tree. */
+  sendable: boolean;
 }) {
   const relayLinkId = relay.links[0]?.id;
   const bridging = relayLinkId ? relays.find((r) => r.linkId === relayLinkId)?.bridging : undefined;
@@ -510,8 +544,8 @@ function RelayQuickConnect({
         <button
           type="button"
           className="device-relay-connect-button"
-          disabled={selectedName === "" || relayLinkId === undefined}
-          onClick={() => onConnect(relayLinkId!, selectedName)}
+          disabled={selectedName === "" || relayLinkId === undefined || !sendable}
+          onClick={() => sendable && onConnect(relayLinkId!, selectedName)}
         >
           {child ? "Switch" : "Connect"}
         </button>

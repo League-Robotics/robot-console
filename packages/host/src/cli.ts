@@ -113,7 +113,7 @@ function hasDumpStoreFlag(argv: readonly string[]): boolean {
 /** `--watch-store` from argv (ticket 014-009, team-lead addition for
  * ticket 010's bench pass): run both watchers headless against the real
  * store/enumerator/SWD-namer/mDNS backend, log each change event, and
- * never start the server or the old `deviceRegistry`. */
+ * never start the server. */
 function hasWatchStoreFlag(argv: readonly string[]): boolean {
   return argv.includes("--watch-store");
 }
@@ -143,11 +143,11 @@ function runDumpStore(env: NodeJS.ProcessEnv, deps: Required<Pick<CliDeps, "dump
  * for exactly this purpose. Every coalesced `store.onChange` batch is
  * logged as one JSON line to stdout.
  *
- * TODO(rearch-05): this is a sprint-014 debugging affordance, a stand-in
- * for the reconciler that does not exist until sprint 015 -- it starts
- * the same two watchers ticket 007/008 already ship, not a new startup
- * path of its own. Does not start `server.ts`'s Express/ws server or
- * the old `deviceRegistry.ts` path.
+ * This remains a sprint-014 debugging affordance: it starts the same two
+ * watchers ticket 007/008 already ship, not the reconciler (sprint 015
+ * ticket 002/003) -- a watcher-only run never schedules a connect on its
+ * own, since that is the reconciler's job now, not either watcher's.
+ * Does not start `server.ts`'s Express/ws server.
  *
  * Stops cleanly on `SIGINT`/`SIGTERM`: both watchers' `stop()`, the
  * change-feed unsubscribe, and `store.close()`, in that order. The

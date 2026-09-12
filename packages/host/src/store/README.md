@@ -35,9 +35,18 @@ that way as the codebase grows).
 - `db.ts` / `migrations/` — opens/migrates `console.sqlite` (ticket 002).
 - `index.ts` — typed operations, the change feed (ticket 003, this one).
 - `importers/` — one-time JSON → SQLite importers for the two legacy
-  files (`knownRobots.ts`, `wifiCredentials.ts`), also ticket 003.
-- `knownRobots.ts` / `wifiCredentials.ts` — the pre-existing JSON
-  stores. Left unchanged and still in active use this sprint; the
-  importers above read their file format but do not replace them yet.
+  file formats (`known-robots.json`, `wifi-credentials.json`), also
+  ticket 003.
+- `wifiCredentials.ts` — the pre-existing JSON store, still in active
+  use (WiFi credentials are not a `devices`/`links` concept). Its old
+  sibling `knownRobots.ts` (the in-memory `KnownRobotsStore` class) is
+  retired as of sprint 015 ticket 003 — `devices` rows, seeded once by
+  `importers/knownRobots.ts`, are the roster now; `resolveKnownRobotsFilePath`
+  (still needed to locate `known-robots.json` on disk for that one-time
+  import) moved to `stateDir.ts`.
+- `bootstrap.ts` — `openStoreWithImports`, the one production call site
+  for both importers above (ticket 014-010; sprint 015 ticket 003 notes
+  it is not yet wired into `server.ts`'s own startup — that is ticket
+  005).
 
 See `docs/design/architecture.md` §4 for the schema and its rationale.

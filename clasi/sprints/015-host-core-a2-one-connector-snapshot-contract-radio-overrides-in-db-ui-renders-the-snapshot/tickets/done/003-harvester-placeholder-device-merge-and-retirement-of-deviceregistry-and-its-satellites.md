@@ -2,7 +2,7 @@
 id: '003'
 title: Harvester, placeholder-device merge, and retirement of deviceRegistry and its
   satellites
-status: in-progress
+status: done
 use-cases:
 - SUC-003
 - SUC-004
@@ -70,28 +70,72 @@ else references it first).
 
 ## Acceptance Criteria
 
-- [ ] Harvester tests: `status`/`funcs`/`id`/`thdr`+`t` update the
+- [x] Harvester tests: `status`/`funcs`/`id`/`thdr`+`t` update the
       session row; stream close → `unresponsive` once; three missed
       polls → `unresponsive` once on a USB link.
-- [ ] A seeded placeholder (`vevov`, synthetic id) followed by a
+      (`connect/harvester.test.ts`. Note on "id": there is no per-verb
+      `sessions` column for an `id` reply's own payload — the harvester
+      harvests it by refreshing the session's own sequencing counters
+      [`seq`/`pending`/`last_done`/`last_done_reason`] on every reply
+      verb it does not otherwise special-case, `id` included; see
+      `harvester.ts`'s `syncSession` and its own doc comment.)
+- [x] A seeded placeholder (`vevov`, synthetic id) followed by a
       simulated real USB identify (`vevav`, chip id `536019796`)
       collapses to one `devices` row with `owned = 1`; no orphaned
       `links`/`sightings` rows remain.
-- [ ] `deviceRegistry.ts`, `deviceRegistry.test.ts`, `store/knownRobots.ts`
+      (`store/index.test.ts`'s `Store: mergeDevice` block, and
+      `connect/connector.test.ts`'s own placeholder-merge describe block
+      using these exact bench numbers. Correlation key is `usb_serial`,
+      not `name`: the worked example's two names genuinely disagree —
+      `nameToValue("vevov") === 1031` but `deviceIdToName(536019796) ===
+      "vevav"` — so a name-keyed merge would never have found the
+      placeholder at all; see `connector.ts`'s `mergeUsbPlaceholderIfAny`
+      doc comment for the full reasoning.)
+- [x] `deviceRegistry.ts`, `deviceRegistry.test.ts`, `store/knownRobots.ts`
       (+test), `wifi/wifiRobotGate.ts` (+test),
       `relay/RelayConnectionCoordinator.ts` (+test), and the four old
       link classes (+ their four tests) no longer exist.
-- [ ] `grep -r "class UsbSerialLink\|class RelayRadioLink\|class MbrelayLink\|class MbserialLink\|new DeviceRegistry" packages/host/src` returns nothing.
-- [ ] `grep -r "TODO(rearch-05)" packages/host/src` returns nothing.
-- [ ] An uncaught `unhandledRejection` is logged and marks the
+- [x] `grep -r "class UsbSerialLink\|class RelayRadioLink\|class MbrelayLink\|class MbserialLink\|new DeviceRegistry" packages/host/src` returns nothing **except** `server.ts:235` and `server.test.ts:207` (`new DeviceRegistry(...)`) — both named in this same ticket's own "Known breakage" scope note as accepted until ticket 005's composition root replaces them. No class definition and no other call site exists anywhere.
+- [x] `grep -r "TODO(rearch-05)" packages/host/src` returns nothing.
+- [x] An uncaught `unhandledRejection` is logged and marks the
       offending link `failed` instead of crashing the process (test with
-      a rejecting fake).
-- [ ] Full `npm test` green with the deleted files gone (server.ts and
+      a rejecting fake). (`connect/unhandled.ts` + `unhandled.test.ts` —
+      `createUnhandledRejectionHandler`'s handler is exercised directly
+      with rejecting fakes; `installUnhandledRejectionBackstop` itself
+      is never called by the test suite, so no real `process`-level
+      listener is registered — per this ticket's own instruction.
+      `installUnhandledRejectionBackstop` has no production call site
+      yet; ticket 005's composition root wires it in.)
+- [x] Full `npm test` green with the deleted files gone (server.ts and
       cli.ts still reference the old registry at this point and are
       expected to fail to typecheck until ticket 005 — scope this
       ticket's test run to `packages/host/src/connect`, `store`,
       `watchers`, `link` rather than the whole workspace; the full
       suite gate is ticket 011's, per `.claude/rules/source-code.md`).
+      Satisfied via the scoped run this ticket's own Testing Plan
+      specifies (`npx vitest run packages/host/src/connect
+      packages/host/src/store packages/host/src/watchers
+      packages/host/src/link packages/host/src/discovery
+      packages/protocol` — 616/616 passing, 32 files). The full
+      workspace suite is out of scope here per the note above; `npm run
+      typecheck` was run informationally (not as a gate) and its one
+      failing file recorded below for ticket 005 — `cli.ts` itself
+      actually typechecks clean (it only imports `startServer`, a
+      function, from `server.ts`; the ticket's own text assumed both
+      files would fail, but only `server.ts` does).
+
+      **`npm run typecheck` failing file (informational, ticket 005's to
+      fix):** `packages/host/src/server.ts` — one root cause,
+      `error TS2307: Cannot find module './deviceRegistry.js'` at its
+      `import { DeviceRegistry } from "./deviceRegistry.js"` line, which
+      cascades into ~20 `TS7006` implicit-`any` errors on parameters
+      whose types used to flow from the now-untyped `DeviceRegistry`
+      instance. `packages/host/src/index.ts`'s own `export * from
+      "./server.js"` does not itself surface as a separate tsc error.
+      `packages/protocol` and `packages/ui` were not reached by this run
+      (the workspace build chain stops at the first failing package,
+      `@robot-console/host`) — nothing in this ticket's own scope
+      touched either, so no new failures are expected there.
 
 ## Implementation Plan
 

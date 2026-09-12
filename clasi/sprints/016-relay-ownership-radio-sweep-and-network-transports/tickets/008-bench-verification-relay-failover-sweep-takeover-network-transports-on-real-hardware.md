@@ -1,7 +1,8 @@
 ---
-id: "008"
-title: "Bench verification: relay failover, sweep takeover, network transports on real hardware"
-status: open
+id: 008
+title: 'Bench verification: relay failover, sweep takeover, network transports on
+  real hardware'
+status: in-progress
 use-cases:
 - SUC-001
 - SUC-002
@@ -11,11 +12,11 @@ use-cases:
 - SUC-006
 - SUC-007
 depends-on:
-- "004"
-- "006"
-- "007"
-github-issue: ""
-issue: ""
+- '004'
+- '006'
+- '007'
+github-issue: ''
+issue: ''
 completes_issue: true
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->

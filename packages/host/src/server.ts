@@ -396,12 +396,15 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
 
   const localHexUpload = options.localHexUpload ?? new LocalHexUploadManager();
   const wifiCredentials = options.wifiCredentials ?? new WifiCredentialsStore();
-  const firmwareConfig = options.firmwareConfig ?? getFirmwareConfig();
+  // Sprint 017 ticket 001: getFirmwareConfig reads `settings` via
+  // `store`, not `env`/a `.env` file -- `store` is already in scope
+  // above.
+  const firmwareConfig = options.firmwareConfig ?? getFirmwareConfig(store);
   const availabilityCache =
     options.availabilityCache ??
     new FirmwareAvailabilityCache(
       firmwareConfig,
-      options.firmwareConfig === undefined ? { loadConfig: () => getFirmwareConfig() } : {},
+      options.firmwareConfig === undefined ? { loadConfig: () => getFirmwareConfig(store) } : {},
     );
 
   const enumerateDaplinkDevicesFn = options.enumerateDaplinkDevices ?? defaultEnumerateDaplinkDevices;

@@ -5,7 +5,7 @@
  * as the state dir, exactly the way `db.test.ts` already does, so no
  * real `~/.local/state/robot-console` is ever touched.
  */
-import { copyFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +22,14 @@ describe("openStoreWithImports", () => {
   beforeEach(() => {
     dir = mkdtempSync(path.join(tmpdir(), "robot-console-bootstrap-test-"));
     copyFileSync(FIXTURE_PATH, path.join(dir, "known-robots.json"));
+    // An empty state-dir `.env` short-circuits `importFirmwareConfig`'s
+    // repo-root fallback (store/importers/firmwareConfig.ts's own doc
+    // comment: "state dir, falling back to repo root") -- these tests
+    // don't pass an explicit `env`, so without this file present the
+    // importer would otherwise walk up from its own module directory
+    // and read *this real repo's own real `.env`*, which every test in
+    // this project must never touch.
+    writeFileSync(path.join(dir, ".env"), "");
   });
 
   afterEach(() => {
@@ -57,6 +65,10 @@ describe("openStoreWithImports", () => {
 
   it("does not fail when known-robots.json/wifi-credentials.json are absent", () => {
     const emptyDir = mkdtempSync(path.join(tmpdir(), "robot-console-bootstrap-empty-test-"));
+    // See the shared `beforeEach` above for why this empty `.env` must
+    // exist: it keeps `importFirmwareConfig` from falling back to this
+    // real repo's own real `.env`.
+    writeFileSync(path.join(emptyDir, ".env"), "");
     try {
       const store = openStoreWithImports({ stateDir: emptyDir });
       try {

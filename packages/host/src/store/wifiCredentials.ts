@@ -13,11 +13,33 @@
  * goes to the file, created `0600`, since it holds a password. The
  * password is never sent to a browser: {@link WifiCredentialsStore.describe}
  * reports only whether one is held.
+ *
+ * `defaultDotenvPath`'s module-relative `.env` guess below is the same
+ * shape `config.ts`'s own (now-removed) `defaultDotenvPath()` used to be, before
+ * sprint 017 ticket 001 removed it in favor of a bootstrap-time
+ * importer for *firmware* sources specifically (`store/importers/
+ * firmwareConfig.ts`) — that ticket's scope is firmware config only, so
+ * this WiFi-credentials fallback keeps its pre-existing (imperfect
+ * under a packaged/registry install, same as firmware's used to be)
+ * behavior unchanged rather than silently regressing it.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseEnvFile } from "../config.js";
 import { resolveKnownRobotsFilePath } from "./stateDir.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+/** `packages/host/src/store/wifiCredentials.ts` -> `<repo root>/.env`,
+ * the file `dotconfig load` assembles. See this module's own doc
+ * comment for why this keeps the old module-relative guess rather than
+ * reusing `store/importers/firmwareConfig.ts`'s checkout-detecting
+ * resolution -- out of this ticket's (firmware-only) scope. */
+function defaultDotenvPath(): string {
+  return path.resolve(__dirname, "../../../../.env");
+}
 
 export interface WifiCredentials {
   ssid: string;
@@ -62,7 +84,7 @@ export class WifiCredentialsStore {
     options: { filePath?: string; stateDir?: string; env?: NodeJS.ProcessEnv; envFile?: () => Record<string, string> } = {},
   ) {
     this.env = options.env ?? process.env;
-    this.envFile = options.envFile ?? (() => parseEnvFile());
+    this.envFile = options.envFile ?? (() => parseEnvFile(defaultDotenvPath()));
     this.filePath = resolveWifiCredentialsFilePath(options, this.env);
   }
 

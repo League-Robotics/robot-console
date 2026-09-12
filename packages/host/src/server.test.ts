@@ -222,13 +222,6 @@ async function startTestServer(overrides: Partial<StartServerOptions> = {}): Pro
     port: 0,
     createWebSocketServer: () => wss,
     firmwareConfig: { relay: undefined, robot: undefined },
-    availabilityCache: {
-      current: () => ({ relay: { configured: false }, robot: { configured: false } }),
-      onChange: () => () => {},
-      start: () => {},
-      stop: () => {},
-      pollOnce: async () => ({ relay: { configured: false }, robot: { configured: false } }),
-    } as unknown as StartServerOptions["availabilityCache"],
     ...overrides,
   });
   return { server, store, runtime, wss, dir };
@@ -783,13 +776,6 @@ describe("server.ts: close() with the real ws.WebSocketServer (bench 015-011 dea
       runtime,
       port: 0,
       firmwareConfig: { relay: undefined, robot: undefined },
-      availabilityCache: {
-        current: () => ({ relay: { configured: false }, robot: { configured: false } }),
-        onChange: () => () => {},
-        start: () => {},
-        stop: () => {},
-        pollOnce: async () => ({ relay: { configured: false }, robot: { configured: false } }),
-      } as unknown as StartServerOptions["availabilityCache"],
     });
 
     const client = new RealWebSocket(server.url.replace(/^http/, "ws"));

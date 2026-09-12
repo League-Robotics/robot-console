@@ -980,6 +980,22 @@ export class Store {
     return row?.value;
   }
 
+  /** The stored `etag` for one firmware `kind`'s most recent successful
+   * poll, or `undefined` if no `firmware` row exists yet (never polled)
+   * or the row has no `etag` recorded. Sprint 017 ticket 002:
+   * `watchers/firmwareWatcher.ts` reads this before every poll to send
+   * as `If-None-Match` -- deliberately not part of
+   * {@link ProjectionFirmwareRow}/`projectionRows()` (an HTTP-caching
+   * implementation detail the UI never needs), so this is its own
+   * narrow typed read, per "nothing outside `store/` issues SQL"
+   * (architecture.md §3 rule 3). */
+  getFirmwareEtag(kind: "relay" | "robot"): string | undefined {
+    const row = this.db.prepare("SELECT etag FROM firmware WHERE kind = ?").get(kind) as
+      | { etag: string | null }
+      | undefined;
+    return row?.etag ?? undefined;
+  }
+
   setSetting(key: string, value: string): void {
     this.withChange(
       "settings",

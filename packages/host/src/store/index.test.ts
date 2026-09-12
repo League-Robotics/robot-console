@@ -547,6 +547,20 @@ describe("Store: firmware / settings / heartbeat", () => {
     }
   });
 
+  it("getFirmwareEtag reads the stored etag, undefined when never polled or absent", () => {
+    const { store } = freshStore();
+    try {
+      expect(store.getFirmwareEtag("robot")).toBeUndefined();
+      store.setFirmware({ kind: "robot", repo: "org/repo", tag: "v1", available: true, etag: '"abc123"', checkedAt: 100 });
+      expect(store.getFirmwareEtag("robot")).toBe('"abc123"');
+      expect(store.getFirmwareEtag("relay")).toBeUndefined();
+      store.setFirmware({ kind: "robot", repo: "org/repo", tag: "v2", available: true, checkedAt: 200 });
+      expect(store.getFirmwareEtag("robot")).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
+
   it("getSetting/setSetting round-trip and upsert", () => {
     const { store } = freshStore();
     try {

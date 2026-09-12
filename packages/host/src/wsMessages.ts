@@ -255,7 +255,8 @@ export interface SendCommandMessage {
   fields?: WireField[];
 }
 
-/** Per-firmware availability, as `releases.ts`'s `FirmwareAvailabilityCache`
+/** Per-firmware availability, as `watchers/firmwareWatcher.ts` (sprint
+ * 017 ticket 002, replacing the retired `FirmwareAvailabilityCache`)
  * reports it. `configured: false` means `config.ts` found no
  * `<repo-url>:<tag>` env value for this {@link FirmwareKind} -- the
  * button stays disabled with no network check ever attempted.

@@ -85,7 +85,6 @@ import { buildSnapshotFromRows } from "./projection.js";
 import { isValidRadioOverride, resolveDeviceRadio, type DeviceRadioOverride } from "./radioOverride.js";
 import type { RegistryLocation } from "./mbrelayRegistry.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
-import { FirmwareAvailabilityCache, type FirmwareStatusMap } from "./releases.js";
 import { resolveRelease as defaultResolveRelease, fetchAndVerifyHex as defaultFetchAndVerifyHex } from "./releases.js";
 import { LocalHexUploadManager } from "./localHexUpload.js";
 import { flash as defaultFlash, type FlashOutcome } from "./flash.js";
@@ -171,12 +170,15 @@ export interface StartServerOptions {
    * `packages/ui/dist`. If it does not exist, the server still starts —
    * it serves a plain status page instead of failing. */
   staticDir?: string;
-  /** Injectable firmware-source configuration; defaults to a real call
-   * to {@link getFirmwareConfig}. */
+  /** Injectable firmware-source configuration, used only to resolve a
+   * `flash-start` whose source is `kind: "release"` (module doc
+   * comment's "Flash orchestration" section). Defaults to a real call
+   * to {@link getFirmwareConfig}. Sprint 017 ticket 002: this module no
+   * longer polls firmware availability itself — that is
+   * `watchers/firmwareWatcher.ts`'s job now (composed in `runtime.ts`),
+   * writing `firmware` rows this server broadcasts through its existing
+   * `store.onChange` subscription with no firmware-specific glue here. */
   firmwareConfig?: FirmwareConfigMap;
-  /** Injectable {@link FirmwareAvailabilityCache}; defaults to one
-   * constructed from {@link StartServerOptions.firmwareConfig}. */
-  availabilityCache?: FirmwareAvailabilityCache;
   /** OOP 2026-09-10: injectable WiFi credential store (tests). */
   wifiCredentials?: WifiCredentialsStore;
   /** Injectable {@link LocalHexUploadManager}; defaults to a fresh
@@ -400,12 +402,6 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   // `store`, not `env`/a `.env` file -- `store` is already in scope
   // above.
   const firmwareConfig = options.firmwareConfig ?? getFirmwareConfig(store);
-  const availabilityCache =
-    options.availabilityCache ??
-    new FirmwareAvailabilityCache(
-      firmwareConfig,
-      options.firmwareConfig === undefined ? { loadConfig: () => getFirmwareConfig(store) } : {},
-    );
 
   const enumerateDaplinkDevicesFn = options.enumerateDaplinkDevices ?? defaultEnumerateDaplinkDevices;
   const resolveReleaseFn = options.resolveRelease ?? defaultResolveRelease;
@@ -534,35 +530,6 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   });
   const unsubscribeNotice = runtime.telemetry.onNotice((linkId, message) => {
     sendNotice(linkId, "info", message);
-  });
-  // `FirmwareAvailabilityCache` is a self-contained in-memory poller
-  // with no `Store` of its own -- `projection.ts`'s `buildSnapshot`
-  // reads `store.projectionRows().firmware` (the `firmware` table), not
-  // this cache directly, so every poll result is written through
-  // `store.setFirmware` here. That write's own change-feed event is what
-  // triggers the next `snapshot` broadcast (`unsubscribeStoreChange`
-  // below) -- no separate broadcast call needed from this subscription.
-  function writeFirmwareStatusToStore(status: FirmwareStatusMap): void {
-    const checkedAt = Date.now();
-    for (const kind of ["relay", "robot"] as const) {
-      const availability = status[kind];
-      store.setFirmware(
-        availability.configured
-          ? {
-              kind,
-              repo: availability.repoUrl,
-              tag: availability.tag,
-              available: availability.available,
-              reason: availability.reason ?? null,
-              message: availability.message ?? null,
-              checkedAt,
-            }
-          : { kind, repo: null, tag: null, available: null, reason: null, message: null, checkedAt },
-      );
-    }
-  }
-  const unsubscribeAvailability = availabilityCache.onChange((status) => {
-    writeFirmwareStatusToStore(status);
   });
 
   // -----------------------------------------------------------------
@@ -1031,21 +998,12 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     });
   });
 
-  availabilityCache.start();
-  // `onChange` above only fires when a poll's result differs from the
-  // cache's own prior status -- write the very first poll's result
-  // through unconditionally so a freshly-started host doesn't wait for
-  // a *second* differing poll to ever populate `store.firmware` at all.
-  void availabilityCache.pollOnce().then(writeFirmwareStatusToStore);
-
   try {
     await listen(httpServer, port, host);
   } catch (error) {
     unsubscribeStoreChange();
     unsubscribeTelemetry();
     unsubscribeNotice();
-    unsubscribeAvailability();
-    availabilityCache.stop();
     wss.close(() => {});
     throw error;
   }
@@ -1061,8 +1019,6 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       unsubscribeStoreChange();
       unsubscribeTelemetry();
       unsubscribeNotice();
-      unsubscribeAvailability();
-      availabilityCache.stop();
       // Stop accepting new connections/commands immediately (bounding
       // how long the drain below can run for), but do not yet sever
       // already-open clients -- they can still observe a final

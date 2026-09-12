@@ -1,7 +1,7 @@
 ---
 id: '001'
 title: 'Connector: connectAndIdentify for every transport'
-status: in-progress
+status: done
 use-cases:
 - SUC-001
 - SUC-003
@@ -56,20 +56,20 @@ against the shared fake `ByteStream` harness from sprint 014
 
 ## Acceptance Criteria
 
-- [ ] `connectAndIdentify` exists as one function covering all five
+- [x] `connectAndIdentify` exists as one function covering all five
       transports (`usb`, `wifi`, `radio`, `mbrelay`, `mbserial`),
       parameterized only by the `links` row's `transport`/`address`.
-- [ ] Success path: writes `devices` (with `owned=1` for USB), `sessions`,
+- [x] Success path: writes `devices` (with `owned=1` for USB), `sessions`,
       and `links.state = connected`.
-- [ ] Failure path: writes `failed` with `next_retry_at`/`fail_count` set
+- [x] Failure path: writes `failed` with `next_retry_at`/`fail_count` set
       and releases the owner/lease.
-- [ ] Cancellation mid-`HELLO` releases the owner/lease and leaves no
+- [x] Cancellation mid-`HELLO` releases the owner/lease and leaves no
       listeners on the fake stream.
-- [ ] A closed stream during identify yields `failed`, never a thrown
+- [x] A closed stream during identify yields `failed`, never a thrown
       or unhandled rejection.
-- [ ] Relay/mbrelay links run the `RelayCommandPlane` preamble before
+- [x] Relay/mbrelay links run the `RelayCommandPlane` preamble before
       HELLO; USB/WiFi/mbserial links do not.
-- [ ] No SQL is issued directly — only typed `Store` operations.
+- [x] No SQL is issued directly — only typed `Store` operations.
 
 ## Implementation Plan
 

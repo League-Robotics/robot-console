@@ -37,14 +37,16 @@
  *
  * ## The stubbed connector call (`TODO(rearch-05)`)
  *
- * `connectWithRetry`/`identifyWithBootWindowRetry` below are a
- * deliberate, called-out stand-in for "the reconciler decided to
- * connect" — the reconciler itself (rearch-05) does not exist until
- * sprint 015. This is not the final design: sprint 015's connector
- * replaces both functions and the watcher goes back to writing
- * `discovered` rows only. See `sprint.md`'s Design Rationale, "watchers
- * stub the connector call directly instead of waiting for the
- * reconciler."
+ * `connectWithRetry` below (composed with the boot-window resend
+ * schedule now shared via `../link/bootWindowIdentify.js` — ticket
+ * 015-001 extracted it out of this module so `connect/connector.ts`
+ * does not reimplement it) is a deliberate, called-out stand-in for
+ * "the reconciler decided to connect" — the reconciler itself
+ * (rearch-05) does not exist until sprint 015. This is not the final
+ * design: sprint 015's connector replaces this function and the watcher
+ * goes back to writing `discovered` rows only. See `sprint.md`'s Design
+ * Rationale, "watchers stub the connector call directly instead of
+ * waiting for the reconciler."
  *
  * ## Injectable seams
  *
@@ -66,20 +68,19 @@ import { readSwdName as defaultReadSwdName, type CortexMFactory, type SwdNameRes
 import { LineLink, type ByteStream, type LineLinkOptions } from "../link/LineLink.js";
 import { serialStream } from "../link/adapters/serialStream.js";
 import { realScheduler, type Scheduler } from "../link/pacing.js";
+import {
+  DEFAULT_IDENTIFY_BUDGET_MS,
+  DEFAULT_IDENTIFY_SCHEDULE_MS,
+  identifyWithBootWindowRetry,
+} from "../link/bootWindowIdentify.js";
 import { Store, type DeviceKind } from "../store/index.js";
-import { classifyBanner, deviceIdToName, type ParsedBanner } from "@robot-console/protocol";
+import { classifyBanner, deviceIdToName } from "@robot-console/protocol";
 
 const DEFAULT_POLL_INTERVAL_MS = 1000;
 /** Bound on `readSwdName` — that function never rejects on its own
  * (see its own doc comment), but nothing bounds how long a stuck
  * HID/SWD attach can take without this. */
 const DEFAULT_NAME_TIMEOUT_MS = 2000;
-/** `HELLO` resend offsets, in ms from the moment `LineLink.connect()`
- * resolves — covers the macOS boot window (issue rearch-02, review
- * `01-host-device-model.md` §2.1/`02-host-transport.md` §5 item 4). */
-const DEFAULT_IDENTIFY_SCHEDULE_MS: readonly number[] = [0, 750, 1500, 2500];
-/** Total budget for the whole boot-window identify sequence. */
-const DEFAULT_IDENTIFY_BUDGET_MS = 4000;
 /** Cap on connect-retry backoff (architecture.md §4 notes: "backoff 1,
  * 2, 4, … ≤ 30 s"). */
 const MAX_CONNECT_BACKOFF_MS = 30_000;
@@ -237,55 +238,6 @@ export function startUsbWatcher(
     }
   }
 
-  /** Resend the `HELLO` line without re-invoking `LineLink.identify()`
-   * itself: a second `identify()` call while the first is still pending
-   * would share that same wait rather than send anything new (see
-   * `LineLink.identify()`'s own doc comment), so the resend goes
-   * through `link.session.connect()` (the only sanctioned way to format
-   * `HELLO` — safe to call again here since nothing is in flight on
-   * this session yet, per `Session.connect()`'s own doc comment) plus
-   * `link.sendLine()`. Whichever `HELLO` a banner reply actually answers,
-   * `LineLink`'s already-pending banner wait (armed by the one
-   * `identify()` call in {@link identifyWithBootWindowRetry}) catches it.
-   */
-  function resendHello(link: LineLink): void {
-    const line = link.session.connect();
-    link.sendLine(line);
-  }
-
-  /**
-   * Send `HELLO` (via the one sanctioned {@link LineLink.identify} call)
-   * and, in parallel, resend it at `identifySchedule`'s later offsets
-   * until a banner arrives or `identify()`'s own internal budget
-   * (`identifyBudgetMs`, passed as the link's `identifyTimeoutMs`)
-   * expires — covering the boot window per this module's own doc
-   * comment.
-   */
-  async function identifyWithBootWindowRetry(link: LineLink): Promise<ParsedBanner | null> {
-    let settled = false;
-    const identifyPromise = link.identify().then((banner) => {
-      settled = true;
-      return banner;
-    });
-
-    void (async () => {
-      let previousOffset = identifySchedule[0] ?? 0;
-      for (const offset of identifySchedule.slice(1)) {
-        const gap = offset - previousOffset;
-        previousOffset = offset;
-        if (gap > 0) {
-          await scheduler.delay(gap);
-        }
-        if (settled || !link.isOpen) {
-          return;
-        }
-        resendHello(link);
-      }
-    })();
-
-    return identifyPromise;
-  }
-
   /** Open a fresh {@link ByteStream}/`LineLink` and connect, retrying
    * with backoff on a transport-level failure (a fresh pair each
    * attempt — a `LineLink` may only be connected once). Recorded as
@@ -385,7 +337,7 @@ export function startUsbWatcher(
       return;
     }
 
-    const banner = await identifyWithBootWindowRetry(link);
+    const banner = await identifyWithBootWindowRetry(link, identifySchedule, scheduler);
     if (signal.aborted) {
       void link.close();
       return;

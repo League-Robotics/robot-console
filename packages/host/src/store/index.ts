@@ -377,6 +377,31 @@ export class Store {
     );
   }
 
+  /** Deletes every `services` row of `type` whose `last_seen` is older
+   * than `now - ttlMs` (ticket 014-008: `mdnsWatcher.ts`'s aging pass,
+   * `_mbflash._tcp`'s own TTL in particular, since that type writes only
+   * a `services` row and has no `links` row for {@link ageLinks} to age).
+   * Returns the number of rows deleted. One `changes` row (and one
+   * queued {@link ChangeEvent}, keyed `instance:type` to match
+   * {@link upsertService}'s own key shape) per row deleted, all in the
+   * same transaction — mirrors {@link ageLinks}'s own batch-change
+   * shape. */
+  pruneServices(type: string, ttlMs: number, now: number): number {
+    const cutoff = now - ttlMs;
+    return this.withChangeBatch("services", () => {
+      const stale = this.db
+        .prepare(`SELECT instance FROM services WHERE type = ? AND (last_seen IS NULL OR last_seen < ?)`)
+        .all(type, cutoff) as Array<{ instance: string }>;
+      const stmt = this.db.prepare("DELETE FROM services WHERE instance = ? AND type = ?");
+      const keys: (string | null)[] = [];
+      for (const row of stale) {
+        stmt.run(row.instance, type);
+        keys.push(`${row.instance}:${type}`);
+      }
+      return keys;
+    });
+  }
+
   // ---- sightings -----------------------------------------------------
 
   /** Appends a probe result and returns its `sightings.id`. */

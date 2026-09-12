@@ -1,14 +1,14 @@
 ---
-id: '009'
+id: 009
 title: 'UI: RobotPage panels stop probing on open, disconnected-from-host banner,
   fixture regen'
-status: open
+status: in-progress
 use-cases:
 - SUC-004
 - SUC-008
 - SUC-010
 depends-on:
-- '008'
+- 008
 github-issue: ''
 issue: rearch-07-ui-renders-snapshot-drops-client-policy.md
 completes_issue: true

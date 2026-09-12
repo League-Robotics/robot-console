@@ -1,8 +1,9 @@
 ---
 id: '006'
 title: 'Connector: merge known-robots placeholder on first non-USB identification'
-status: open
-use-cases: [SUC-006]
+status: in-progress
+use-cases:
+- SUC-006
 depends-on: []
 github-issue: ''
 issue: placeholder-merge-for-non-usb-transports.md

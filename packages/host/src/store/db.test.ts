@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_BUSY_TIMEOUT_MS, openStoreDb, resolveDbFilePath } from "./db.js";
+import { DEFAULT_BUSY_TIMEOUT_MS, openReadOnlyStoreDb, openStoreDb, resolveDbFilePath } from "./db.js";
 
 /** Every table architecture.md §4 defines, in the order it defines
  * them. */
@@ -165,5 +165,76 @@ describe("store/db: openStoreDb", () => {
     db = openStoreDb({ filePath: dbFile });
     const row = db.prepare("SELECT name FROM devices WHERE id = 1").get() as { name: string } | undefined;
     expect(row?.name).toBe("abcde");
+  });
+});
+
+describe("store/db: openReadOnlyStoreDb", () => {
+  let dir: string;
+  let dbFile: string;
+  let db: DatabaseSync | undefined;
+  let readOnlyDb: DatabaseSync | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), "robot-console-store-readonly-test-"));
+    dbFile = path.join(dir, "console.sqlite");
+  });
+
+  afterEach(() => {
+    readOnlyDb?.close();
+    readOnlyDb = undefined;
+    db?.close();
+    db = undefined;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("returns undefined for a console.sqlite that does not exist yet -- never creates it", () => {
+    readOnlyDb = openReadOnlyStoreDb({ filePath: dbFile });
+    expect(readOnlyDb).toBeUndefined();
+    // Confirm "never creates it" isn't just an unchecked assumption.
+    expect(existsSync(dbFile)).toBe(false);
+  });
+
+  it("opens an existing database with the configured busy_timeout", () => {
+    db = openStoreDb({ filePath: dbFile });
+    db.close();
+    db = undefined;
+
+    readOnlyDb = openReadOnlyStoreDb({ filePath: dbFile, busyTimeoutMs: 4321 });
+    expect(readOnlyDb).toBeDefined();
+    const busyTimeout = (readOnlyDb!.prepare("PRAGMA busy_timeout").get() as { timeout: number }).timeout;
+    expect(busyTimeout).toBe(4321);
+  });
+
+  it("ships no write path: an INSERT against the read-only connection throws", () => {
+    db = openStoreDb({ filePath: dbFile });
+    db.close();
+    db = undefined;
+
+    readOnlyDb = openReadOnlyStoreDb({ filePath: dbFile });
+    expect(() =>
+      readOnlyDb!.exec(
+        "INSERT INTO devices (id, name, kind, owned, first_seen, last_seen) VALUES (1, 'abcde', 'robot', 1, 100, 100)",
+      ),
+    ).toThrow();
+  });
+
+  it("reads successfully while a second connection holds an open write transaction (WAL, no block/error)", () => {
+    db = openStoreDb({ filePath: dbFile });
+    // Hold a write transaction open on the primary (writable) connection
+    // without committing it yet -- exactly the "host process currently
+    // running, mid-write" scenario SUC-006's acceptance criteria and
+    // this ticket's own testing section call out.
+    db.exec("BEGIN IMMEDIATE");
+    db.exec(
+      "INSERT INTO devices (id, name, kind, owned, first_seen, last_seen) VALUES (1, 'abcde', 'robot', 1, 100, 100)",
+    );
+
+    readOnlyDb = openReadOnlyStoreDb({ filePath: dbFile });
+    expect(readOnlyDb).toBeDefined();
+    // Must not throw and must not hang -- a synchronous call returning
+    // at all (within the test's own timeout) demonstrates no block.
+    expect(() => readOnlyDb!.prepare("SELECT * FROM devices").all()).not.toThrow();
+
+    db.exec("COMMIT");
   });
 });

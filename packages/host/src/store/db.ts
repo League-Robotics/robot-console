@@ -28,8 +28,22 @@
  * `user_version` to `index + 1` on success. Re-opening an
  * already-migrated file is a no-op — `user_version` already equals
  * `MIGRATIONS.length`, so the loop's range is empty.
+ *
+ * ## Read-only connections (ticket 014-009)
+ *
+ * {@link openReadOnlyStoreDb} opens a second, short-lived connection
+ * with `node:sqlite`'s `readOnly: true` — the debug-dump CLI's own
+ * connection-opening logic, reused rather than duplicated (see
+ * `debug/dumpStore.ts`, which wraps the returned connection in a
+ * `Store` and calls only `snapshotRows()`, never a write method). It
+ * never creates the file — a missing `console.sqlite` returns
+ * `undefined` rather than the write-triggering `mkdirSync`/`new
+ * DatabaseSync(path)` (no `readOnly`) sequence {@link openStoreDb} uses.
+ * WAL mode allows this to run safely alongside a running host (a
+ * second reader never blocks, and never is blocked by, a writer holding
+ * an open transaction) — see `db.test.ts`'s concurrent-read case.
  */
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { resolveStateDir, type StateDirOptions } from "./stateDir.js";
@@ -99,6 +113,29 @@ export function openStoreDb(options: StoreDbOptions = {}): DatabaseSync {
 
   migrate(db);
 
+  return db;
+}
+
+/**
+ * Open a short-lived, read-only connection to `console.sqlite` — never
+ * creates the file (a missing file returns `undefined`, not a freshly
+ * created empty database) and never migrates it. Only `PRAGMA
+ * busy_timeout` is set; `PRAGMA journal_mode` is left alone since a
+ * read-only connection has nothing to assert it against (the file's
+ * journal mode, if any, was already set by whatever writer created it).
+ *
+ * Callers own the returned connection's lifetime and must `close()` it
+ * (the debug-dump CLI wraps it in a {@link Store} and calls that
+ * class's own `close()`, which does so).
+ */
+export function openReadOnlyStoreDb(options: StoreDbOptions = {}): DatabaseSync | undefined {
+  const filePath = resolveDbFilePath(options, options.env ?? process.env);
+  if (!existsSync(filePath)) {
+    return undefined;
+  }
+
+  const db = new DatabaseSync(filePath, { readOnly: true });
+  db.exec(`PRAGMA busy_timeout = ${options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS}`);
   return db;
 }
 

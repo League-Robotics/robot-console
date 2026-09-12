@@ -95,6 +95,31 @@ npm run --workspace @robot-console/ui vite:build
 npx robot-console
 ```
 
+## Debugging the store (sprint 014, throwaway)
+
+Two `robot-console` flags let an engineer inspect the host's SQLite
+store (`console.sqlite`) without the browser UI:
+
+```sh
+# Print devices/links/services/sessions/tasks as JSON and exit.
+# Safe to run alongside an already-running host -- opens a short-lived,
+# read-only connection (WAL mode allows a concurrent reader).
+npx robot-console --dump-store
+
+# Run the USB and mDNS watchers headless against the real store, real
+# enumerator, and real mDNS backend, logging every store change as one
+# JSON line to stdout. Does not start the Express/ws server. Ctrl-C
+# (SIGINT) or SIGTERM stops both watchers and closes the store cleanly.
+npx robot-console --watch-store
+```
+
+Both flags are **sprint-014-only debugging affordances** — the exit
+criterion "watcher rows visible in a debug dump" without any UI change.
+Sprint 015's `rearch-06` replaces `--dump-store` with a real `snapshot`
+projection and server endpoint; neither flag is meant to survive past
+that sprint. See `clasi/sprints/014-.../sprint.md`'s Design Rationale
+and `packages/host/src/debug/dumpStore.ts`.
+
 ## Layout
 
 ```

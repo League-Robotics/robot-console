@@ -183,8 +183,15 @@ const ROBOTLINK_SERVICE_TYPE = "robotlink";
  * socket as a side effect, so this is only ever called from
  * {@link MdnsDiscovery.start} when no backend was injected -- never at
  * module load time, never from a test that supplies its own fake.
+ *
+ * Exported (ticket 014-009) so `cli.ts`'s `--watch-store` runner can
+ * hand `mdnsWatcher.ts`'s `startMdnsWatcher` a real backend the same
+ * way -- `startMdnsWatcher` takes `backend` as a required dependency
+ * with no default of its own (unlike `usbWatcher.ts`'s seams, which
+ * already default to real implementations), so this is the one real
+ * constructor to reuse rather than duplicate.
  */
-function createBonjourBackend(): MdnsBackend {
+export function createBonjourBackend(): MdnsBackend {
   const bonjour = new Bonjour();
   return {
     find(options: MdnsFindOptions): MdnsBrowser {

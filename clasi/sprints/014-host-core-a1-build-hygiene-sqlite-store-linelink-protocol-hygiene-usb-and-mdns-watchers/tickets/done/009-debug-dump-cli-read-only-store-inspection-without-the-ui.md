@@ -1,7 +1,7 @@
 ---
 id: 009
 title: 'Debug-dump CLI: read-only store inspection without the UI'
-status: in-progress
+status: done
 use-cases:
 - SUC-006
 depends-on:
@@ -33,15 +33,15 @@ there being rows worth checking during the bench pass (ticket 010).
 
 ## Acceptance Criteria
 
-- [ ] Running the dump against a `console.sqlite` with rows produces
+- [x] Running the dump against a `console.sqlite` with rows produces
       valid JSON covering `devices`, `links`, `services`, `sessions`,
       `tasks`.
-- [ ] The dump works whether or not the host process is currently
+- [x] The dump works whether or not the host process is currently
       running (a second read-only WAL connection does not block or
       corrupt the primary connection).
-- [ ] The tool ships no write path — a test or code-review check
+- [x] The tool ships no write path — a test or code-review check
       confirms it opens the connection read-only.
-- [ ] Usage is documented (README or `--help` text).
+- [x] Usage is documented (README or `--help` text).
 
 ## Testing
 
@@ -73,3 +73,35 @@ connection variant.
 **Documentation updates**: README section documenting the flag/script,
 explicitly noting it is a sprint-014-only debugging affordance
 superseded by the real snapshot endpoint in sprint 015.
+
+## Implementation Notes
+
+- `store/db.ts` gained `openReadOnlyStoreDb` (never creates the file;
+  returns `undefined` for a missing one; sets `busy_timeout` only, no
+  `journal_mode` assertion). `debug/dumpStore.ts` wraps its result in a
+  `Store` and calls only `snapshotRows()` — no raw SQL outside
+  `store/`, verified by the existing `noRawSqlOutsideStore.test.ts`
+  guard.
+- Read-only enforcement is proven both ways: `store/db.test.ts` asserts
+  a raw `INSERT` against the read-only connection throws, and
+  `debug/dumpStore.test.ts` asserts a `Store` built on that same
+  connection throws from `upsertDevice` (the real call path any writer
+  would use).
+- Concurrent-read safety is proven in `store/db.test.ts`: a second
+  connection opens and reads successfully while the primary connection
+  holds an uncommitted `BEGIN IMMEDIATE` transaction.
+- Team-lead addition, in scope for this ticket (ticket 010's bench pass
+  needs it): `cli.ts` also wires `--watch-store`, running both watchers
+  headless against the real store/enumerator/SWD-namer/mDNS backend
+  (`discovery/mdnsDiscovery.ts`'s `createBonjourBackend`, now exported
+  for reuse), logging each coalesced `store.onChange` batch as one JSON
+  line, and stopping cleanly on `SIGINT`/`SIGTERM`. `cli.ts` gained an
+  injectable `CliDeps` seam (matching `UsbWatcherDeps`/`MdnsWatcherDeps`'s
+  own convention) so `cli.test.ts` can unit-test both flags' wiring with
+  fakes only — no real store, watchers, ports, or browser in tests.
+- Not run against real hardware this pass: the attached USB serial
+  ports (`/dev/cu.usbmodem*`) were already held by another `node`
+  process (a stakeholder's `npm run dev`, per `lsof`), so `--watch-store`
+  was verified only via `cli.test.ts`'s fakes, not a live bench run.
+  Ticket 010's bench pass should exercise it live once the ports are
+  free.

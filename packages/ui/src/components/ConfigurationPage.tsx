@@ -38,6 +38,20 @@
  * component directly (`<AddressSourceChip radio={device.radio} />`),
  * matching `RelayPage.tsx`'s own connected-child chip, rather than
  * duplicating its wording locally.
+ *
+ * ## Ticket 017-008: calibration table, Wi-Fi fields, and radio
+ * validation shared with the Calibration tab and the two dialogs
+ *
+ * The calibration merge/derived-value math moved to `lib/calibration.ts`
+ * and the "current calibration" table to `components/CalibrationTable.tsx`
+ * (shared with `CalibrationPage`); the Wi-Fi ssid/password fields and
+ * their validation moved to `components/WifiCredentialsForm.tsx` (shared
+ * with `WifiCredentialsDialog`); the radio channel/group range check
+ * moved to `lib/radioAddress.ts` (shared with `RadioAddressDialog`) --
+ * see each module's own doc comment. This page still owns its own save
+ * flow (Save updates the in-memory draft feeding the code panel; Write
+ * to robot provisions Wi-Fi) -- only the fields/math/validation
+ * themselves are shared, per `04-ui.md` §4.
  */
 import { useEffect, useMemo, useState } from "react";
 import { nameToRadioAddress } from "@robot-console/protocol";
@@ -50,17 +64,22 @@ import {
   useWsActions,
 } from "../ws/WsProvider";
 import type { RadioAddress } from "../pages/RelayPage";
-import { AddressSourceChip } from "./AddressSourceChip";
 import {
+  applyCalibrationPatch,
   calibrationCode,
   deriveCalibration,
-  parsePositiveNumber,
   readCalibrationState,
   writeCalibrationState,
+  type CalibrationPatch,
   type CalibrationState,
-} from "./CalibrationPage";
-import { validateWifiInput } from "./WifiCredentialsDialog";
+} from "../lib/calibration";
+import { useCopied } from "../lib/clipboard";
+import { validateRadioOverrideInput } from "../lib/radioAddress";
+import { AddressSourceChip } from "./AddressSourceChip";
+import { CalibrationTable } from "./CalibrationTable";
+import { WifiCredentialsForm, validateWifiInput } from "./WifiCredentialsForm";
 import "./CalibrationPage.css";
+import "./CalibrationTable.css";
 import "./ConfigurationPage.css";
 
 export const MASKED_PASSWORD = "••••••••";
@@ -127,16 +146,8 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
     writeCalibrationState(robotName, calibration);
   }, [robotName, calibration]);
   const derived = useMemo(() => deriveCalibration(calibration), [calibration]);
-  function patchCalibration(patch: { [K in keyof CalibrationState]?: CalibrationState[K] | undefined }): void {
-    setCalibration((previous) => {
-      const merged: Record<string, unknown> = { ...previous, ...patch };
-      for (const key of Object.keys(merged)) {
-        if (merged[key] === undefined) {
-          delete merged[key];
-        }
-      }
-      return merged as CalibrationState;
-    });
+  function patchCalibration(patch: CalibrationPatch): void {
+    setCalibration((previous) => applyCalibrationPatch(previous, patch));
   }
 
   // Radio address. Ticket 007: seeded from the snapshot's own
@@ -151,12 +162,9 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
   function saveRadio(): boolean {
     const channel = Number(radioDraft.channel);
     const group = Number(radioDraft.group);
-    if (!Number.isInteger(channel) || channel < 0 || channel > 83) {
-      setRadioError("Channel must be a whole number from 0 to 83.");
-      return false;
-    }
-    if (!Number.isInteger(group) || group < 0 || group > 255) {
-      setRadioError("Group must be a whole number from 0 to 255.");
+    const problem = validateRadioOverrideInput(channel, group);
+    if (problem) {
+      setRadioError(problem);
       return false;
     }
     setRadioError(null);
@@ -222,124 +230,27 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
       }),
     [robotName, radio, stored, calibration],
   );
-  const [copied, setCopied] = useState(false);
-  function copy(): void {
-    try {
-      void navigator.clipboard?.writeText(code);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Clipboard unavailable -- the text is selectable either way.
-    }
-  }
+  const { copied, copy } = useCopied();
 
   return (
     <div className="robot-page-columns configuration-page" data-testid="robot-tab-panel-configuration">
       <div className="robot-page-column robot-page-column-left">
         <div className="robot-page-panel" aria-label="Calibration values">
           <h3>Calibration</h3>
-          <table className="calibration-table" data-testid="configuration-calibration">
-            <tbody>
-              <tr>
-                <th scope="row">
-                  <label htmlFor="configuration-wheel-diameter">Wheel diameter</label>
-                </th>
-                <td>
-                  <input
-                    id="configuration-wheel-diameter"
-                    type="number"
-                    inputMode="decimal"
-                    step="0.01"
-                    min="1"
-                    placeholder="not calibrated"
-                    value={calibration.wheelDiameterMm ?? ""}
-                    onChange={(event) => {
-                      const value = parsePositiveNumber(event.target.value);
-                      patchCalibration({ wheelDiameterMm: value, wheelDiameterSource: value === undefined ? undefined : "entered" });
-                    }}
-                  />{" "}
-                  mm
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">
-                  <label htmlFor="configuration-track-width">Measured track width</label>
-                </th>
-                <td>
-                  <input
-                    id="configuration-track-width"
-                    type="number"
-                    inputMode="decimal"
-                    step="0.01"
-                    min="1"
-                    placeholder="optional"
-                    value={calibration.measuredTrackWidthCm ?? ""}
-                    onChange={(event) => patchCalibration({ measuredTrackWidthCm: parsePositiveNumber(event.target.value) })}
-                  />{" "}
-                  cm
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">Effective track width</th>
-                <td data-testid="configuration-effective-track">
-                  {derived.effectiveTrackWidthCm !== undefined ? `${derived.effectiveTrackWidthCm} cm` : "run the rotation calibration"}
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">Rotational slip</th>
-                <td data-testid="configuration-slip">{derived.rotationalSlip ?? "—"}</td>
-              </tr>
-            </tbody>
-          </table>
+          <CalibrationTable variant="configuration" state={calibration} derived={derived} onPatch={patchCalibration} />
         </div>
 
         <div className="robot-page-panel" aria-label="Wi-Fi values">
           <h3>Wi-Fi</h3>
-          <table className="calibration-table" data-testid="configuration-wifi">
-            <tbody>
-              <tr>
-                <th scope="row">
-                  <label htmlFor="configuration-wifi-ssid">Network name</label>
-                </th>
-                <td>
-                  <input
-                    id="configuration-wifi-ssid"
-                    data-testid="configuration-wifi-ssid"
-                    value={wifiDraft.ssid}
-                    autoComplete="off"
-                    onChange={(event) => setWifiDraft((draft) => ({ ...draft, ssid: event.target.value }))}
-                  />
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">
-                  <label htmlFor="configuration-wifi-password">Password</label>
-                </th>
-                <td>
-                  <input
-                    id="configuration-wifi-password"
-                    data-testid="configuration-wifi-password"
-                    type="text"
-                    value={wifiDraft.password}
-                    autoComplete="off"
-                    onChange={(event) => setWifiDraft((draft) => ({ ...draft, password: event.target.value }))}
-                  />
-                </td>
-              </tr>
-            </tbody>
-          </table>
-          {wifiError && (
-            <p className="credentials-error" role="alert" data-testid="configuration-wifi-error">
-              {wifiError}
-            </p>
-          )}
-          <p className="credentials-note">
-            {stored?.source === "stored"
-              ? "Saved on this computer."
-              : stored?.source === "env"
-                ? "From this computer's configuration."
-                : "No network saved on this computer yet."}
-          </p>
+          <WifiCredentialsForm
+            variant="tab"
+            ssid={wifiDraft.ssid}
+            password={wifiDraft.password}
+            onSsidChange={(value) => setWifiDraft((draft) => ({ ...draft, ssid: value }))}
+            onPasswordChange={(value) => setWifiDraft((draft) => ({ ...draft, password: value }))}
+            stored={stored}
+            error={wifiError}
+          />
         </div>
 
         <div className="robot-page-panel" aria-label="Radio values">
@@ -455,7 +366,12 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
                 {code}
               </pre>
               <div className="configuration-actions">
-                <button type="button" className="calibration-code-copy" data-testid="configuration-code-copy" onClick={copy}>
+                <button
+                  type="button"
+                  className="calibration-code-copy"
+                  data-testid="configuration-code-copy"
+                  onClick={() => copy(code)}
+                >
                   {copied ? "Copied" : "Copy"}
                 </button>
               </div>

@@ -1,47 +1,8 @@
-.calibration-table {
-  border-collapse: collapse;
-  width: 100%;
-  font-size: 0.9rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 0.4rem;
-  overflow: hidden;
-  background: var(--rc-surface);
-}
-
-.calibration-table th,
-.calibration-table td {
-  padding: 0.4rem 0.7rem;
-  border-top: 1px solid var(--rc-border);
-  text-align: left;
-  vertical-align: baseline;
-}
-
-.calibration-table tr:first-child th,
-.calibration-table tr:first-child td {
-  border-top: none;
-}
-
-.calibration-table th {
-  font-weight: 500;
-  color: var(--rc-text-muted);
-  width: 12rem;
-  white-space: nowrap;
-}
-
-.calibration-table input {
-  width: 7rem;
-  font: inherit;
-  padding: 0.2rem 0.4rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 0.3rem;
-  background: var(--rc-surface);
-  color: var(--rc-text);
-}
-
-.calibration-source {
-  color: var(--rc-text-muted);
-  font-size: 0.8rem;
-}
+/* `.calibration-table`/`.calibration-source` moved to
+ * `CalibrationTable.css` (ticket 017-008) -- the shared table component
+ * and `ConfigurationPage.tsx`'s own Wi-Fi/Radio tables (which reuse the
+ * same class for an unrelated two-column layout) both import it
+ * directly now instead of through this page's stylesheet. */
 
 .calibration-reset,
 .calibration-code-copy {

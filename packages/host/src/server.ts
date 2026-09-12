@@ -82,7 +82,7 @@ import type { Reconciler } from "./connect/reconciler.js";
 import type { ConnectedSession } from "./connect/connector.js";
 import type { HarvesterTelemetryEvent } from "./connect/harvester.js";
 import { buildSnapshotFromRows } from "./projection.js";
-import { isValidRadioOverride } from "./radioOverride.js";
+import { isValidRadioOverride, resolveDeviceRadio, type DeviceRadioOverride } from "./radioOverride.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
 import { FirmwareAvailabilityCache, type FirmwareStatusMap } from "./releases.js";
 import { resolveRelease as defaultResolveRelease, fetchAndVerifyHex as defaultFetchAndVerifyHex } from "./releases.js";
@@ -696,16 +696,47 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       await runtime.reconciler.requestOpen(message.linkId);
       return;
     }
-    // {relayLinkId, name}: routing one of a relay's several robots via
-    // an on-demand radio link needs the radio-address resolution
-    // ticket 006 adds and the on-demand link creation ticket 008 adds --
-    // neither exists yet as of this ticket. Report clearly rather than
-    // silently no-op.
-    sendNotice(
-      undefined,
-      "warn",
-      `bridging to "${message.name}" via relay ${message.relayLinkId} is not supported yet`,
-    );
+    // {relayLinkId, name}: route one of a relay's several robots (ticket
+    // 008; SUC-009). Resolve the named robot's radio address
+    // (`radioOverride.ts`'s `override -> registry -> derived` order,
+    // consulting this device's own stored override if one already
+    // exists), ensure a `links` row for that radio child exists (a
+    // deterministic id/address per (relayLinkId, name) pair, so a repeat
+    // bridge to the same robot over the same relay reuses the same row
+    // rather than accumulating one per attempt), then hand the child's
+    // linkId to the reconciler exactly like a `{linkId}` open --
+    // `planUserOpen` (ticket 002) is what turns this into a
+    // close-old-child + open-new-child pair executed as one job, never a
+    // client-sequenced session-close then session-open.
+    //
+    // `registry` (mbrelay's live name registry location) is not yet
+    // discovered anywhere in this runtime -- no watcher publishes one as
+    // of this ticket -- so this always resolves through `override ->
+    // derived`, never `registry`, until a future ticket wires that
+    // discovery in; `resolveDeviceRadio` degrades to the name-derived
+    // default safely either way (see its own doc comment).
+    //
+    // Found by name, not by recomputing a numeric device id from it:
+    // `devices.id` is the chip's own `FICR.DEVICEID[1]`, and many
+    // different ids can decode to the same five-letter name
+    // (`wsMessages.ts`'s own doc comment: "~79% collision probability
+    // over a 100-robot fleet") -- `@robot-console/protocol`'s
+    // `nameToValue` is the *derived-address* helper `nameToRadioAddress`
+    // uses internally, not a name -> device-id inverse, so it must never
+    // be used to look up "the" device row for a name.
+    const existingDevice = store.projectionRows().devices.find((candidate) => candidate.name === message.name);
+    const override: DeviceRadioOverride = existingDevice
+      ? { radioChannel: existingDevice.radioChannel, radioGroup: existingDevice.radioGroup, radioSource: existingDevice.radioSource }
+      : { radioChannel: null, radioGroup: null, radioSource: null };
+    const resolved = await resolveDeviceRadio(message.name, override);
+    const childLinkId = `radio-${message.name}-via-${message.relayLinkId}`;
+    store.upsertLink({
+      id: childLinkId,
+      transport: "radio",
+      address: { relayLinkId: message.relayLinkId, channel: resolved.channel, group: resolved.group },
+      at: Date.now(),
+    });
+    await runtime.reconciler.requestOpen(childLinkId);
   });
 
   handlers.set("session-close", async (_ws, message) => {

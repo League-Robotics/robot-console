@@ -25,6 +25,7 @@ import {
   type WebSocketLike,
   type WebSocketServerLike,
 } from "./server.js";
+import { nameToRadioAddress } from "@robot-console/protocol";
 import { openStoreDb } from "./store/db.js";
 import { Store } from "./store/index.js";
 import type { ConnectedSession } from "./connect/connector.js";
@@ -372,18 +373,63 @@ describe("server.ts: session-open/session-close dispatch", () => {
     expect(h.runtime.requestClose).toHaveBeenCalledWith("usb-1");
   });
 
-  it("reports a notice, rather than crashing, for a {relayLinkId, name} session-open (not yet supported)", async () => {
+  it("creates a radio link for the named robot (name-derived address) and forwards its id to reconciler.requestOpen, as one job -- never a separate close", async () => {
     const h = await harness();
     const ws = fakeWebSocket();
     h.wss.triggerConnection(ws);
-    await flush(); // let the startup firmware-availability poll's own broadcast (if any) land first
-    ws.sent.length = 0;
+    await flush();
 
     ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", relayLinkId: "usb-RELAY", name: "vevov" })), false);
     await flush();
 
-    const notice = ws.sent.find((m) => m.type === "notice");
-    expect(notice).toMatchObject({ type: "notice", level: "warn" });
+    const derived = nameToRadioAddress("vevov");
+    const childLinkId = "radio-vevov-via-usb-RELAY";
+    expect(h.runtime.requestOpen).toHaveBeenCalledWith(childLinkId);
+    expect(h.runtime.requestOpen).toHaveBeenCalledTimes(1);
+    expect(h.runtime.requestClose).not.toHaveBeenCalled();
+
+    const link = h.store.snapshotRows().links.find((l) => l.id === childLinkId);
+    expect(link).toMatchObject({ transport: "radio" });
+    expect(JSON.parse(link!.address as string)).toEqual({
+      relayLinkId: "usb-RELAY",
+      channel: derived.channel,
+      group: derived.group,
+    });
+  });
+
+  it("uses the device's own stored radio override, when one exists, instead of the name-derived default", async () => {
+    const h = await harness();
+    h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+    h.store.setRadioOverride(1198504156, 41, 3);
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", relayLinkId: "usb-RELAY", name: "vevov" })), false);
+    await flush();
+
+    const childLinkId = "radio-vevov-via-usb-RELAY";
+    expect(h.runtime.requestOpen).toHaveBeenCalledWith(childLinkId);
+    const link = h.store.snapshotRows().links.find((l) => l.id === childLinkId);
+    expect(JSON.parse(link!.address as string)).toEqual({ relayLinkId: "usb-RELAY", channel: 41, group: 3 });
+  });
+
+  it("reuses the same radio link row on a repeat bridge to the same name over the same relay, rather than accumulating a new row per attempt", async () => {
+    const h = await harness();
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", relayLinkId: "usb-RELAY", name: "vevov" })), false);
+    await flush();
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", relayLinkId: "usb-RELAY", name: "vevov" })), false);
+    await flush();
+
+    const radioLinks = h.store.snapshotRows().links.filter((l) => l.transport === "radio");
+    expect(radioLinks).toHaveLength(1);
+    expect(h.runtime.requestOpen).toHaveBeenCalledTimes(2);
   });
 });
 

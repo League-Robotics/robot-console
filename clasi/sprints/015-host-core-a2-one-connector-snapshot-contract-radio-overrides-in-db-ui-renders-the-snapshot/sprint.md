@@ -95,6 +95,11 @@ snapshot shape; rearch-07 is the parity gate and depends on both.
 - UI rendering the snapshot, disconnected banner, deletion of every
   client-side connection policy (rearch-07).
 
+- Carried from sprint 014 ticket 006: after the four old link classes are
+  deleted, measure `packages/host/src/link/` (incl. tests) against the
+  rearch-04 target of ~900 lines and trim `LineLink.ts` (591 lines vs a
+  ~250-line estimate) if it does not fit.
+
 ### Out of Scope
 
 - Relay leases, the idle state, and the sweeper — sprint 016

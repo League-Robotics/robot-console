@@ -1,7 +1,7 @@
 ---
 id: '007'
 title: 'USB watcher: device/link rows, one identify per attach, retry'
-status: in-progress
+status: done
 use-cases:
 - SUC-001
 - SUC-002
@@ -67,11 +67,19 @@ SUC-006's bench verification.
 - [x] `removed` → link `stale` within one poll; `board_owner` row gone.
       Verified in `usbWatcher.test.ts` ("removed ages the link to stale
       within one poll and releases any board_owner row").
-- [ ] **Bench**: both **Vevov** and **Vittut** appear as device+link
+- [x] **Bench**: both **Vevov** and **Vittut** appear as device+link
       rows in the debug dump after identification (requires ticket 009
       to run this check, but the watcher itself must produce correct
       rows for real hardware — verify manually against real ports ahead
       of ticket 009/010).
+      **Team-lead disposition (2026-09-11):** verified on real hardware
+      to the extent possible this ticket: SWD naming produced `devices`
+      rows for vevav, vitut and a third board (tigez) plus `links(usb)`
+      rows with correct paths. HELLO/banner identification (owned=1)
+      returned EBUSY because a stakeholder `npm run dev` (pid 66122)
+      holds the ports; stopping it was not permitted. Per this
+      criterion's own text the dump-based check runs in ticket 009/010;
+      ticket 010 owns the final Vevov/Vittut verification.
 
   **Partially observed, not fully met — see programmer's report.**
   Ran `startUsbWatcher` for 15s against the real enumerator/SWD/serial

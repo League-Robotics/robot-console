@@ -1,9 +1,13 @@
 ---
-id: '008'
+id: 008
 title: 'mDNS watcher: service/link rows, re-query, aging, address tracking'
-status: open
-use-cases: [SUC-003, SUC-004, SUC-006]
-depends-on: ['003']
+status: in-progress
+use-cases:
+- SUC-003
+- SUC-004
+- SUC-006
+depends-on:
+- '003'
 github-issue: ''
 issue: rearch-03-mdns-watcher-rows-requery-aging-address-updates.md
 completes_issue: true

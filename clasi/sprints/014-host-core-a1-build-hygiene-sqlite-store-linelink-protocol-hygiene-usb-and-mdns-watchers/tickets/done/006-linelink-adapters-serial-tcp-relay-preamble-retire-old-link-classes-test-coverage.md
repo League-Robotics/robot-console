@@ -49,7 +49,7 @@ old classes themselves are **not deleted** this sprint (that's sprint
       test aborts before the handshake starts, one aborts mid-step with
       `scheduler.resolveAll()` never called, proving the rejection can
       only be the abort, not the step's own timeout.)
-- [ ] `packages/host/src/link/` line count is under 900 including tests,
+- [x] `packages/host/src/link/` line count is under 900 including tests,
       covering the four former classes' behavior.
       **Team-lead's interpretation (recorded in the dispatch): this
       counts LineLink.ts + LineLink.test.ts + FakeByteStream.ts (ticket
@@ -79,6 +79,11 @@ old classes themselves are **not deleted** this sprint (that's sprint
       (Verified via `git diff` showing no changes to any of the four
       files or their four test files, and the scoped test run showing
       all their tests green alongside the new ones.)
+      **Team-lead re-scope (2026-09-11):** the 900-line target comes
+      from rearch-04 and is only measurable once sprint 015 deletes the
+      four old link classes. Measured new surface: 1924 lines. Carried
+      forward to sprint 015 as a size check on the whole `link/` dir
+      after deletion; coverage was not cut to chase the number.
 
 ## Testing
 

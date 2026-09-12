@@ -1,9 +1,10 @@
 ---
 id: '002'
 title: 'SQLite store: schema, migrations, and db.ts'
-status: open
+status: in-progress
 use-cases: []
-depends-on: ['001']
+depends-on:
+- '001'
 github-issue: ''
 issue: rearch-01-sqlite-store-schema-migrations-change-feed.md
 completes_issue: false

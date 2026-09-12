@@ -83,6 +83,7 @@ import type { ConnectedSession } from "./connect/connector.js";
 import type { HarvesterTelemetryEvent } from "./connect/harvester.js";
 import { buildSnapshotFromRows } from "./projection.js";
 import { isValidRadioOverride, resolveDeviceRadio, type DeviceRadioOverride } from "./radioOverride.js";
+import type { RegistryLocation } from "./mbrelayRegistry.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
 import { FirmwareAvailabilityCache, type FirmwareStatusMap } from "./releases.js";
 import { resolveRelease as defaultResolveRelease, fetchAndVerifyHex as defaultFetchAndVerifyHex } from "./releases.js";
@@ -337,6 +338,38 @@ function parseChannelGroupAddress(address: unknown): { channel: number; group: n
   }
   const rec = address as Record<string, unknown>;
   return typeof rec.channel === "number" && typeof rec.group === "number" ? { channel: rec.channel, group: rec.group } : undefined;
+}
+
+/** Parses `{host, registryPort}` off an already-JSON-parsed mbrelay
+ * `ProjectionLinkRow.address` -- the location `resolveDeviceRadio`'s own
+ * `registry` option (`radioOverride.ts`) needs to reach mbrelay's name
+ * registry over HTTP (`mbrelayRegistry.ts`'s `RegistryLocation`). Only an
+ * `_mbrelay._tcp` pool's own link row ever carries a `registryPort`
+ * (`watchers/mdnsWatcher.ts`'s `handleMbrelay`) -- a local `usb` relay's
+ * address never does, so this returns `undefined` for one, exactly as it
+ * would for a malformed/missing shape. Never throws.
+ */
+function parseRegistryLocation(address: unknown): RegistryLocation | undefined {
+  if (typeof address !== "object" || address === null) {
+    return undefined;
+  }
+  const rec = address as Record<string, unknown>;
+  return typeof rec.host === "string" && typeof rec.registryPort === "number"
+    ? { host: rec.host, port: rec.registryPort }
+    : undefined;
+}
+
+/** The registry location for `relayLinkId`'s own mbrelay pool, if any --
+ * looked up fresh from the store on every `session-open {relayLinkId,
+ * name}` bridge (sprint 016 ticket 006) rather than cached, since a
+ * discovered pool's `registryPort` can change across `mdnsWatcher.ts`'s
+ * own re-query/address-change handling. `undefined` when `relayLinkId`
+ * names a local usb relay (no registry concept for one) or is not found
+ * at all -- `resolveDeviceRadio` degrades to `override -> derived`
+ * safely either way (see its own doc comment). */
+function resolveRegistryLocationForRelay(store: Store, relayLinkId: string): RegistryLocation | undefined {
+  const relayLink = store.projectionRows().links.find((candidate) => candidate.id === relayLinkId);
+  return relayLink ? parseRegistryLocation(relayLink.address) : undefined;
 }
 
 function errorMessage(error: unknown): string {
@@ -725,12 +758,16 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     // close-old-child + open-new-child pair executed as one job, never a
     // client-sequenced session-close then session-open.
     //
-    // `registry` (mbrelay's live name registry location) is not yet
-    // discovered anywhere in this runtime -- no watcher publishes one as
-    // of this ticket -- so this always resolves through `override ->
-    // derived`, never `registry`, until a future ticket wires that
-    // discovery in; `resolveDeviceRadio` degrades to the name-derived
-    // default safely either way (see its own doc comment).
+    // Sprint 016 ticket 006: `registry` (mbrelay's live name registry
+    // location) is threaded in here from `relayLinkId`'s own discovered
+    // pool row, if any (`resolveRegistryLocationForRelay`, reading the
+    // `registryPort` `watchers/mdnsWatcher.ts`'s `handleMbrelay` already
+    // records off the pool's TXT record) -- closing the "resolver never
+    // wired to a registry location" gap `radioOverride.ts`'s own doc
+    // comment used to describe. A local usb relay (no TXT record, no
+    // registry concept) resolves `registry` to `undefined` here, so this
+    // still degrades to `override -> derived` exactly as before for that
+    // case -- see `resolveDeviceRadio`'s own doc comment.
     //
     // Found by name, not by recomputing a numeric device id from it:
     // `devices.id` is the chip's own `FICR.DEVICEID[1]`, and many
@@ -758,7 +795,9 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     // own override -> derived resolution.
     const existingLink = store.projectionRows().links.find((candidate) => candidate.id === childLinkId);
     const sightedAddress = existingLink ? parseChannelGroupAddress(existingLink.address) : undefined;
-    const { channel, group } = sightedAddress ?? (await resolveDeviceRadio(message.name, override));
+    const registry = resolveRegistryLocationForRelay(store, message.relayLinkId);
+    const { channel, group } =
+      sightedAddress ?? (await resolveDeviceRadio(message.name, override, registry !== undefined ? { registry } : {}));
     store.upsertLink({
       id: childLinkId,
       transport: "radio",

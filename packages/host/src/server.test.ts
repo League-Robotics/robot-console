@@ -26,7 +26,7 @@ import {
   type WebSocketLike,
   type WebSocketServerLike,
 } from "./server.js";
-import { nameToRadioAddress } from "@robot-console/protocol";
+import { deviceIdToName, nameToRadioAddress } from "@robot-console/protocol";
 import { openStoreDb } from "./store/db.js";
 import { Store } from "./store/index.js";
 import type { ConnectedSession } from "./connect/connector.js";
@@ -185,6 +185,23 @@ function freshStore(): { store: Store; dir: string } {
  * and for any microtask chain the resulting broadcast schedules. */
 function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+}
+
+/** Polls `predicate` on a real (short) interval until it is true, or
+ * throws once `timeoutMs` elapses. Needed wherever a dispatched handler's
+ * own async work involves a REAL network round trip (sprint 016 ticket
+ * 006's registry test, below, against a real loopback HTTP server) --
+ * unlike every other test in this file, that work does not settle within
+ * `flush()`'s own two `setImmediate` hops (those only drain microtasks/
+ * one macrotask, not a real socket connect + response). */
+async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) {
+      throw new Error("waitFor: condition was not met within the timeout");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 interface Harness {
@@ -464,6 +481,136 @@ describe("server.ts: session-open/session-close dispatch", () => {
       relayLinkId: "usb-RELAY",
       channel: sightedChannel,
       group: sightedGroup,
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // Sprint 016 ticket 006: registry-aware radio address resolution.
+  // `resolveRegistryLocationForRelay` reads `relayLinkId`'s own discovered
+  // mbrelay pool row (`links.address.{host,registryPort}`, written by
+  // `watchers/mdnsWatcher.ts`'s `handleMbrelay`) and threads it into
+  // `resolveDeviceRadio`'s `registry` option -- closing the gap
+  // `radioOverride.ts`'s own doc comment used to describe ("not yet wired
+  // into any production call site"). A real loopback HTTP server (port 0,
+  // closed in `afterEach` via this file's own harness teardown) stands in
+  // for mbrelay's name registry -- no fake `fetch`/`resolveRegistry`
+  // injection needed since `mbrelayRegistry.ts`'s real `resolveRobotAddress`
+  // already accepts any reachable host/port.
+  // -------------------------------------------------------------------
+  describe("sprint 016 ticket 006: registry-aware radio address resolution", () => {
+    function startFakeRegistry(channel: number, group: number, source: "registry" | "derived" = "registry") {
+      const registryServer = createServer((_req, res) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ channel, group, source }));
+      });
+      const portPromise = new Promise<number>((resolve) => {
+        registryServer.listen(0, "127.0.0.1", () => {
+          const address = registryServer.address();
+          resolve(typeof address === "object" && address !== null ? address.port : 0);
+        });
+      });
+      return { registryServer, portPromise };
+    }
+
+    // Each test below uses its own robot name, distinct from every other
+    // test in this file (including this describe block's own siblings):
+    // `mbrelayRegistry.ts`'s real `resolveRobotAddress` caches per-name in
+    // a *module-level* `DEFAULT_CACHE` shared by every real caller (its
+    // own doc comment, "Short TTL cache") -- server.ts's real
+    // `resolveDeviceRadio` call site never overrides it with a fresh
+    // `Map`, so two tests resolving the same name within the ~2s TTL
+    // window would otherwise leak one test's resolution into another's.
+
+    it("resolves through mbrelay's own name registry, via relayLinkId's discovered registryPort, when no override exists", async () => {
+      const { registryServer, portPromise } = startFakeRegistry(61, 90, "registry");
+      const registryPort = await portPromise;
+
+      try {
+        const h = await harness();
+        // A discovered mbrelay pool's own link row -- registryPort comes
+        // from its TXT record (watchers/mdnsWatcher.ts's handleMbrelay);
+        // the physical port (9) here is never dialed by this test (this
+        // handler only upserts the child link's row and forwards its id
+        // to the fake runtime's requestOpen -- it never itself bridges).
+        h.store.upsertLink({
+          id: "usb-RELAY",
+          transport: "mbrelay",
+          address: { host: "127.0.0.1", port: 9, registryPort },
+          at: 1,
+        });
+        const ws = fakeWebSocket();
+        h.wss.triggerConnection(ws);
+        await flush();
+
+        ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", relayLinkId: "usb-RELAY", name: "gopiv" })), false);
+        // A real HTTP round trip to the fake registry above -- flush()'s
+        // two setImmediate hops are not enough to settle it (see waitFor's
+        // own doc comment).
+        await waitFor(() => h.runtime.requestOpen.mock.calls.length > 0);
+        await flush();
+
+        const childLinkId = "radio-gopiv-via-usb-RELAY";
+        expect(h.runtime.requestOpen).toHaveBeenCalledWith(childLinkId);
+        const link = h.store.snapshotRows().links.find((l) => l.id === childLinkId);
+        expect(JSON.parse(link!.address as string)).toEqual({ relayLinkId: "usb-RELAY", channel: 61, group: 90 });
+      } finally {
+        await new Promise<void>((resolve) => registryServer.close(() => resolve()));
+      }
+    });
+
+    it("a stored override still wins outright even when the relay's own registry is reachable and would answer differently", async () => {
+      const { registryServer, portPromise } = startFakeRegistry(61, 90, "registry");
+      const registryPort = await portPromise;
+
+      try {
+        const h = await harness();
+        const overrideDeviceId = 777;
+        const overrideDeviceName = deviceIdToName(overrideDeviceId);
+        h.store.upsertDevice({ id: overrideDeviceId, name: overrideDeviceName, kind: "robot", at: 1 });
+        h.store.setRadioOverride(overrideDeviceId, 41, 3);
+        h.store.upsertLink({
+          id: "usb-RELAY",
+          transport: "mbrelay",
+          address: { host: "127.0.0.1", port: 9, registryPort },
+          at: 1,
+        });
+        const ws = fakeWebSocket();
+        h.wss.triggerConnection(ws);
+        await flush();
+
+        ws.emit(
+          "message",
+          Buffer.from(JSON.stringify({ type: "session-open", relayLinkId: "usb-RELAY", name: overrideDeviceName })),
+          false,
+        );
+        await flush();
+
+        const childLinkId = `radio-${overrideDeviceName}-via-usb-RELAY`;
+        const link = h.store.snapshotRows().links.find((l) => l.id === childLinkId);
+        // The override (41, 3), not the registry's (61, 90).
+        expect(JSON.parse(link!.address as string)).toEqual({ relayLinkId: "usb-RELAY", channel: 41, group: 3 });
+      } finally {
+        await new Promise<void>((resolve) => registryServer.close(() => resolve()));
+      }
+    });
+
+    it("a local usb relay (no registryPort in its address) still resolves through override -> derived, unaffected by this ticket's registry wiring", async () => {
+      const h = await harness();
+      // usb-RELAY here carries a plain usb address (no registryPort at
+      // all) -- resolveRegistryLocationForRelay must degrade to
+      // `undefined` rather than throwing on the missing field.
+      h.store.upsertLink({ id: "usb-RELAY", transport: "usb", address: { path: "/dev/cu.relay" }, at: 1 });
+      const ws = fakeWebSocket();
+      h.wss.triggerConnection(ws);
+      await flush();
+
+      ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", relayLinkId: "usb-RELAY", name: "tigez" })), false);
+      await flush();
+
+      const derived = nameToRadioAddress("tigez");
+      const childLinkId = "radio-tigez-via-usb-RELAY";
+      const link = h.store.snapshotRows().links.find((l) => l.id === childLinkId);
+      expect(JSON.parse(link!.address as string)).toEqual({ relayLinkId: "usb-RELAY", channel: derived.channel, group: derived.group });
     });
   });
 });

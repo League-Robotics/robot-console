@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { deviceIdToName, nameToRadioAddress } from "@robot-console/protocol";
 import { openStoreDb } from "../store/db.js";
 import { Store } from "../store/index.js";
@@ -384,6 +384,73 @@ describe("createRelaySweepPassRunner().runOnePass", () => {
     expect(radioSightings.map((s) => s.deviceId)).toEqual([answeringId]);
 
     store.close();
+  });
+
+  // -------------------------------------------------------------------
+  // Sprint 016 ticket 006: registry-aware radio address resolution
+  // considered this call site too, but this module's own candidate
+  // resolution (`resolveDefaultFailoverAddress`, `connect/relayBridger.ts`)
+  // is registry-free *by construction* -- it substitutes
+  // `noRegistryResolve` for `radioOverride.ts`'s injectable
+  // `resolveRegistry` seam, so no `registry` argument this module could
+  // ever supply would reach `mbrelayRegistry.ts`'s real HTTP call.
+  // Threading a live registry location into this call site is therefore
+  // not just unnecessary but impossible without first relaxing
+  // `resolveDefaultFailoverAddress`'s own hardcoded no-registry contract
+  // -- which would break ticket 003's own acceptance criterion ("the
+  // sweeper still must never issue a registry GET during a probe pass",
+  // rearch-10) and `connect/relayBridger.test.ts`'s own already-passing
+  // "registry-free by construction" suite for the *same* function. These
+  // two tests are this ticket's own regression guard for that finding at
+  // this specific call site (`connect/relayBridger.test.ts` already pins
+  // it for `resolveDefaultFailoverAddress` itself).
+  // -------------------------------------------------------------------
+  it("never issues a registry GET during a probe pass, across multiple candidates (sprint 016 ticket 006 regression guard)", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY";
+    seedRelay(store, 900001, relayLinkId, 1);
+    const firstName = seedOwnedRobot(store, 100001, 1);
+    const secondName = seedOwnedRobot(store, 100002, 1);
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    try {
+      const stream = new SweepRelayByteStream([firstName, secondName], new Set([firstName, secondName]), () => Date.now());
+      const runner = makeRunner(store, () => stream);
+
+      await runner.runOnePass(relayLinkId, new AbortController());
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+      store.close();
+    }
+  });
+
+  it("a stored radio override for a sweep candidate wins outright -- the sweep tunes to it, never to a registry (sprint 016 ticket 006)", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY";
+    seedRelay(store, 900001, relayLinkId, 1);
+    const overriddenId = 100001;
+    const overriddenName = seedOwnedRobot(store, overriddenId, 1);
+    const derived = nameToRadioAddress(overriddenName);
+    const overrideChannel = derived.channel === 25 ? 27 : 25;
+    const overrideGroup = derived.group === 1 ? 2 : 1;
+    store.setRadioOverride(overriddenId, overrideChannel, overrideGroup);
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    try {
+      const stream = new SweepRelayByteStream([overriddenName], new Set(), () => Date.now());
+      const runner = makeRunner(store, () => stream);
+
+      await runner.runOnePass(relayLinkId, new AbortController());
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      const link = store.snapshotRows().links.find((l) => l.id === radioChildLinkId(overriddenName, relayLinkId));
+      expect(JSON.parse(link!.address as string)).toEqual({ relayLinkId, channel: overrideChannel, group: overrideGroup });
+    } finally {
+      fetchSpy.mockRestore();
+      store.close();
+    }
   });
 
   it("never leases nor opens the transport when the relay is not idle/connectable (acquireRelayLease refuses)", async () => {

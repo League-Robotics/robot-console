@@ -347,6 +347,24 @@ describe("startMdnsWatcher", () => {
     }
   });
 
+  it("an mbserial advertisement for a name that is not owned produces a services row and an unassigned link (sprint 016 ticket 006 regression guard: uniqueOwnedDeviceIdByName is shared with handleWifi)", () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const handle = start(store, backend);
+    try {
+      backend.serial.emitUp(mbserialService("jjjjj", "jjjjj.local", 4795));
+
+      const rows = store.snapshotRows();
+      expect(rows.services.some((s) => s.instance === "jjjjj")).toBe(true);
+      const link = rows.links.find((l) => l.id === "mbserial-jjjjj");
+      expect(link).toBeDefined();
+      expect(link?.device_id).toBeNull();
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
   it("attaches a wifi link to a devices row only when exactly one owned device shares its name", () => {
     const store = freshStore();
     const backend = fakeBackend();

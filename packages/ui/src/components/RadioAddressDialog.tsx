@@ -41,11 +41,23 @@
  * unchanged pending that migration and does not yet pass `radio` (or a
  * numeric `deviceId` -- see that file's own TODO-shaped gap, tracked
  * outside this ticket).
+ *
+ * ## Ticket 017-008: validation shared with `ConfigurationPage` via
+ * `lib/radioAddress.ts`
+ *
+ * The `0-83`/`0-255` client-side range check moved to
+ * `lib/radioAddress.ts`'s `validateRadioOverrideInput`, shared with
+ * `ConfigurationPage.tsx`'s own Radio panel (`04-ui.md` §4) -- see that
+ * module's own doc comment for why it mirrors the host's
+ * `isValidRadioOverride` range rather than `@robot-console/protocol`'s
+ * narrower, derived-address-space `validateRadioAddress`. The host's
+ * `set-radio-override` handler remains the actual authority either way.
  */
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { nameToRadioAddress } from "@robot-console/protocol";
 import type { RadioSourceWire } from "@robot-console/host/src/wsMessages.js";
 import { useWsActions } from "../ws/WsProvider";
+import { validateRadioOverrideInput } from "../lib/radioAddress";
 import { Modal } from "./Modal";
 import "./FlashDialog.css";
 import "./CredentialsDialog.css";
@@ -87,12 +99,9 @@ export function RadioAddressDialog({ deviceId, name, radio, triggerClassName = "
     event.preventDefault();
     const ch = Number(channel);
     const gr = Number(group);
-    if (!Number.isInteger(ch) || ch < 0 || ch > 83) {
-      setError("Channel must be a whole number from 0 to 83.");
-      return;
-    }
-    if (!Number.isInteger(gr) || gr < 0 || gr > 255) {
-      setError("Group must be a whole number from 0 to 255.");
+    const problem = validateRadioOverrideInput(ch, gr);
+    if (problem) {
+      setError(problem);
       return;
     }
     send({ type: "set-radio-override", deviceId, channel: ch, group: gr });

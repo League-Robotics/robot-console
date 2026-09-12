@@ -1,7 +1,7 @@
 ---
 id: '004'
 title: Snapshot/Notice wire contract and buildSnapshot projection
-status: open
+status: in-progress
 use-cases:
 - SUC-005
 depends-on:

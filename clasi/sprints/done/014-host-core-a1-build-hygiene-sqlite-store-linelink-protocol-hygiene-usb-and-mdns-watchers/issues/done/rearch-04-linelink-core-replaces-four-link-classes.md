@@ -1,9 +1,9 @@
 ---
-status: in-progress
+status: done
 sprint: '014'
 tickets:
-- 014-005
-- 014-006
+- '005'
+- '006'
 ---
 
 # One LineLink core with serial, TCP, and relay-preamble adapters replaces the four link classes

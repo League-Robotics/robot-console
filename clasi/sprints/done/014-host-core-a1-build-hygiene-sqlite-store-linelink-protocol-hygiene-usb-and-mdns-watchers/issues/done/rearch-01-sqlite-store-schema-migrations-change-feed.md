@@ -1,9 +1,9 @@
 ---
-status: in-progress
+status: done
 sprint: '014'
 tickets:
-- 014-002
-- 014-003
+- '002'
+- '003'
 ---
 
 # Host store: SQLite schema, typed operations, JSON importers, and the in-process change feed

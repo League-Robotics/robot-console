@@ -1,6 +1,9 @@
 ---
-status: pending
+status: in-progress
 sprint: '015'
+tickets:
+- 015-004
+- 015-005
 ---
 
 # New `snapshot` wire contract from a DB projection; server.ts becomes a thin broadcast and command layer

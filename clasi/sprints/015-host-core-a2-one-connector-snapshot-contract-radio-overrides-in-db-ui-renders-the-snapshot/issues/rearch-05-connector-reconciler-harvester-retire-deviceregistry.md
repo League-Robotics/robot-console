@@ -1,6 +1,10 @@
 ---
-status: pending
+status: in-progress
 sprint: '015'
+tickets:
+- 015-001
+- 015-002
+- 015-003
 ---
 
 # One connector, one reconciler, one harvester; retire deviceRegistry.ts, knownRobots.ts, wifiRobotGate.ts

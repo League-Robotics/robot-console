@@ -1,6 +1,10 @@
 ---
-status: pending
+status: in-progress
 sprint: '015'
+tickets:
+- 015-007
+- 015-008
+- 015-009
 ---
 
 # UI renders the host snapshot; remove every client-side connection decision; keep every screen feature

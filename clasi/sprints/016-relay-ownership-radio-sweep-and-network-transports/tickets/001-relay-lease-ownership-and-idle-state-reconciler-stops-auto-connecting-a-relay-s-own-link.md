@@ -2,7 +2,7 @@
 id: '001'
 title: 'Relay lease ownership and idle state: reconciler stops auto-connecting a relay''s
   own link'
-status: open
+status: in-progress
 use-cases:
 - SUC-001
 depends-on: []

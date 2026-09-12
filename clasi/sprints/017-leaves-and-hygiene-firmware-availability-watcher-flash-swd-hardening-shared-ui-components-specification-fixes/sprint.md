@@ -2,9 +2,17 @@
 id: '017'
 title: 'Leaves and hygiene: firmware availability watcher, flash/SWD hardening, shared
   UI components, specification fixes'
-status: ticketing
+status: executing
 branch: sprint/017-leaves-and-hygiene-firmware-availability-watcher-flash-swd-hardening-shared-ui-components-specification-fixes
-use-cases: [SUC-001, SUC-002, SUC-003, SUC-004, SUC-005, SUC-006, SUC-007, SUC-008]
+use-cases:
+- SUC-001
+- SUC-002
+- SUC-003
+- SUC-004
+- SUC-005
+- SUC-006
+- SUC-007
+- SUC-008
 issues:
 - rearch-13-firmware-availability-watcher-etag-backoff.md
 - rearch-14-flash-swd-timeouts-platform-msd-fallback.md

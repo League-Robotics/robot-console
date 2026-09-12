@@ -1,8 +1,9 @@
 ---
 id: '001'
 title: 'Firmware config: settings importer for env/.env firmware sources'
-status: open
-use-cases: [SUC-001]
+status: in-progress
+use-cases:
+- SUC-001
 depends-on: []
 github-issue: ''
 issue: firmware-config-env-becomes-settings-importer.md

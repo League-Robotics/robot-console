@@ -79,6 +79,11 @@ function fakeBackend() {
   const robotlinkTcp = fakeBrowser();
   const robotlinkUdp = fakeBrowser();
   const findCalls: MdnsFindOptions[] = [];
+  /** Bench defect 1's own seam: raw PTR-answer listeners, keyed by
+   * nothing (every listener hears every fqdn, exactly like the real
+   * `createBonjourBackend().onAnnounce` -- filtering by fqdn is
+   * `mdnsWatcher.ts`'s own job, not the backend's). */
+  const announceListeners = new Set<(fqdn: string, receivedAt: number) => void>();
   const backend: MdnsBackend & {
     relay: typeof relay;
     serial: typeof serial;
@@ -86,6 +91,7 @@ function fakeBackend() {
     robotlinkTcp: typeof robotlinkTcp;
     robotlinkUdp: typeof robotlinkUdp;
     findCalls: MdnsFindOptions[];
+    emitAnnounce: (fqdn: string, receivedAt?: number) => void;
   } = {
     relay,
     serial,
@@ -99,6 +105,17 @@ function fakeBackend() {
       if (options.type === "mbserial") return serial;
       if (options.type === "mbflash") return flash;
       return options.protocol === "udp" ? robotlinkUdp : robotlinkTcp;
+    },
+    onAnnounce(listener: (fqdn: string, receivedAt: number) => void): () => void {
+      announceListeners.add(listener);
+      return () => {
+        announceListeners.delete(listener);
+      };
+    },
+    emitAnnounce(fqdn: string, receivedAt = Date.now()) {
+      for (const listener of announceListeners) {
+        listener(fqdn, receivedAt);
+      }
     },
     destroy: vi.fn(),
   };
@@ -279,6 +296,68 @@ describe("startMdnsWatcher", () => {
         const after = store.snapshotRows();
         expect(after.links.filter((l) => l.state === "stale")).toHaveLength(4);
         expect(after.services).toHaveLength(0);
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    },
+  );
+
+  it(
+    "a continuously-present service survives past its TTL when the backend keeps reporting announce packets for it (bench defect 1: presence refresh)",
+    () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const handle = start(store, backend);
+      try {
+        const service = wifiService("kkkkk", "kkkkk.local", 7654);
+        backend.robotlinkTcp.emitUp(service);
+        const linkId = "wifi-kkkkk";
+        expect(store.snapshotRows().links.find((l) => l.id === linkId)?.state).toBe("discovered");
+
+        // Every re-query tick, the backend reports a fresh PTR answer for
+        // the same, unchanged instance -- exactly what a continuously
+        // advertised, idle service looks like on the wire (no up/down,
+        // no SRV/TXT change, just periodic re-query answers). Enough
+        // iterations to run well past DEFAULT_WIFI_TTL_MS, matching the
+        // companion "no further traffic" test below.
+        const iterations = Math.ceil((DEFAULT_WIFI_TTL_MS + DEFAULT_REQUERY_INTERVAL_MS) / DEFAULT_REQUERY_INTERVAL_MS) + 1;
+        for (let i = 0; i < iterations; i++) {
+          vi.advanceTimersByTime(DEFAULT_REQUERY_INTERVAL_MS);
+          backend.emitAnnounce(service.fqdn!);
+        }
+
+        expect(store.snapshotRows().links.find((l) => l.id === linkId)?.state).not.toBe("stale");
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    },
+  );
+
+  it(
+    "the same continuously-present service goes stale anyway once announce packets stop arriving too (regression guard: presence refresh is not a permanent exemption)",
+    () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const handle = start(store, backend);
+      try {
+        const service = wifiService("lllll", "lllll.local", 7654);
+        backend.robotlinkTcp.emitUp(service);
+        const linkId = "wifi-lllll";
+
+        // Announce packets keep it alive for a while...
+        vi.advanceTimersByTime(DEFAULT_REQUERY_INTERVAL_MS);
+        backend.emitAnnounce(service.fqdn!);
+        expect(store.snapshotRows().links.find((l) => l.id === linkId)?.state).not.toBe("stale");
+
+        // ...but once they stop (the robot actually left, or the relay
+        // pool actually went away), the link still ages to stale after
+        // its TTL, same as the "no further traffic" case above -- this
+        // fix only refreshes presence that is real, never a permanent
+        // once-seen-always-alive exemption.
+        vi.advanceTimersByTime(DEFAULT_WIFI_TTL_MS + DEFAULT_REQUERY_INTERVAL_MS);
+        expect(store.snapshotRows().links.find((l) => l.id === linkId)?.state).toBe("stale");
       } finally {
         handle.stop();
         store.close();

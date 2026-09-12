@@ -98,6 +98,30 @@
  * authoritative here — this module ages everything off `last_seen`/TTL
  * instead, so `down` is a no-op below.
  *
+ * ## Presence refresh for a continuously-advertised, idle instance
+ * (bench defect 1, 2026-09-12)
+ *
+ * A service that is still present but never changes and never goes
+ * away (the common case — a robot sitting idle on the network) fires
+ * neither a fresh `up` (bonjour-service only emits that for an instance
+ * it has not seen before) nor `onServiceChange` (nothing changed). Left
+ * alone, its `last_seen` would only ever have been set once, at first
+ * sight, and every such link/service would age to `stale` after one TTL
+ * regardless of how continuously it is actually still being answered on
+ * the wire — exactly the bench failure this fix addresses (`torture`,
+ * every idle `wifi-*` link). `backend.onAnnounce` (an existing seam —
+ * `discovery/mdnsDiscovery.ts` already defined and uses it for its own,
+ * now-superseded, WiFi-only liveness bookkeeping) reports every raw PTR
+ * answer heard on the wire, keyed by fqdn — a periodic re-query
+ * (`browser.update()`, above) reliably provokes one from anything still
+ * actually present. This module remembers, per fqdn, a small closure
+ * that replays the last `up`/`onServiceChange`'s own `services`/`links`
+ * touch (`knownByFqdn`, in `startMdnsWatcher` below); `onAnnounce`
+ * invokes it, refreshing `last_seen` without pretending anything
+ * changed. A backend without `onAnnounce` (or a fqdn this watcher never
+ * remembered) simply never touches anything this way — everything ages
+ * off `up`/`onServiceChange` alone, exactly as before this fix.
+ *
  * ## Injectable seams
  *
  * `deps.backend` is a required {@link MdnsBackend} (this ticket does not
@@ -229,6 +253,25 @@ export function startMdnsWatcher(
   const mbserialTtlMs = opts.mbserialTtlMs ?? DEFAULT_MBSERIAL_TTL_MS;
   const mbrelayTtlMs = opts.mbrelayTtlMs ?? DEFAULT_MBRELAY_TTL_MS;
   const mbflashTtlMs = opts.mbflashTtlMs ?? DEFAULT_MBFLASH_TTL_MS;
+
+  /** Bench defect 1 (2026-09-12): fqdn -> replay closure that redoes the
+   * last-known `services`/`links` touch for that instance. Populated by
+   * every `up`/`onServiceChange`; invoked by `backend.onAnnounce` below
+   * so a bare PTR answer for an already-known, otherwise-unchanged
+   * instance still counts as "seen" and refreshes `last_seen` -- this is
+   * what keeps a continuously-advertised, idle link from aging to
+   * `stale` (module doc comment's own aging section): `bonjour-service`
+   * never fires a fresh `up` for an instance it already knows (same
+   * principle the "Address changes without down/up" section already
+   * describes, applied here to "no change at all"). Keyed by fqdn,
+   * falling back to the service's own name for a backend/service that
+   * never sets one -- mirrors `discovery/mdnsDiscovery.ts`'s own
+   * `wifiLiveness` key convention exactly. `MdnsBackend.onAnnounce` is
+   * not a new seam -- that module already defined and uses it for its
+   * own (superseded, per this module's doc comment) WiFi-only aging;
+   * this is simply the first time `mdnsWatcher.ts` itself subscribes to
+   * it, for every browsed type, not only WiFi. */
+  const knownByFqdn = new Map<string, () => void>();
 
   function upsertServiceRow(find: MdnsFindOptions, service: MdnsService): void {
     store.upsertService({
@@ -435,9 +478,20 @@ export function startMdnsWatcher(
    * browser so the caller can `update()`/`stop()` it later. */
   function subscribe(find: MdnsFindOptions, onObservation: (service: MdnsService) => void): MdnsBrowser {
     const browser = backend.find(find);
+    /** Remembers `service` under its own fqdn (module doc comment,
+     * `knownByFqdn`) so a later bare announce can replay the same touch
+     * without waiting for a fresh `up`/`onServiceChange`. */
+    function remember(service: MdnsService): void {
+      const key = service.fqdn ?? service.name;
+      knownByFqdn.set(key, () => {
+        upsertServiceRow(find, service);
+        onObservation(service);
+      });
+    }
     browser.on("up", (service) => {
       upsertServiceRow(find, service);
       onObservation(service);
+      remember(service);
     });
     browser.on("down", () => {
       // Intentionally not authoritative -- architecture.md §6.2: aging
@@ -449,6 +503,7 @@ export function startMdnsWatcher(
     browser.onServiceChange?.((service) => {
       upsertServiceRow(find, service);
       onObservation(service);
+      remember(service);
     });
     return browser;
   }
@@ -470,6 +525,20 @@ export function startMdnsWatcher(
     robotlinkTcpBrowser,
     robotlinkUdpBrowser,
   ];
+
+  /** Bench defect 1: replay the remembered touch for whatever fqdn this
+   * PTR answer named, refreshing `last_seen` without treating it as a
+   * fresh `up` (module doc comment). A fqdn this watcher never
+   * remembered (not one of the five browsed types, or announced before
+   * this watcher's first `up` for it) is simply not in the map --
+   * `Map.get` returns `undefined`, nothing happens, same as `onAnnounce`
+   * being entirely absent. Optional on {@link MdnsBackend} (same
+   * convention as `forget`/`update`/`onServiceChange`): a backend
+   * without it just never calls this, and every browsed link ages off
+   * `up`/`onServiceChange` alone, exactly as before this bench fix. */
+  const unsubscribeAnnounce = backend.onAnnounce?.((fqdn) => {
+    knownByFqdn.get(fqdn)?.();
+  });
 
   function ageAndPruneOnce(): void {
     const at = now();
@@ -505,6 +574,8 @@ export function startMdnsWatcher(
       for (const browser of browsers) {
         browser.stop();
       }
+      unsubscribeAnnounce?.();
+      knownByFqdn.clear();
     },
   };
 }

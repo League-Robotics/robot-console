@@ -1,9 +1,24 @@
 ---
 id: '010'
 title: 'Bench verification: full suite (macOS + Linux), WiFi leg, and USB/radio driving'
-status: open
-use-cases: [SUC-002, SUC-003, SUC-004, SUC-005, SUC-006, SUC-007]
-depends-on: ['001', '002', '003', '004', '005', '006', '007', '008', '009']
+status: in-progress
+use-cases:
+- SUC-002
+- SUC-003
+- SUC-004
+- SUC-005
+- SUC-006
+- SUC-007
+depends-on:
+- '001'
+- '002'
+- '003'
+- '004'
+- '005'
+- '006'
+- '007'
+- 008
+- 009
 github-issue: ''
 issue: ''
 completes_issue: true

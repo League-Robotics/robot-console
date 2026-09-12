@@ -1,7 +1,7 @@
 ---
-id: '008'
+id: 008
 title: 'UI: DevicePage and RelayPage on the snapshot, one-message relay switch'
-status: open
+status: in-progress
 use-cases:
 - SUC-008
 - SUC-009

@@ -1002,9 +1002,22 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       // interrupt the write. `wss.close()` only stops new upgrade
       // requests when (as here) it wraps an externally-owned
       // `httpServer` -- that server is closed separately, below.
-      await new Promise<void>((resolve, reject) => {
-        wss.close((err) => (err ? reject(err) : resolve()));
-      });
+      //
+      // Bench finding (015-011): this call is deliberately fire-and-
+      // forget, not awaited. `ws`'s own `WebSocketServer.prototype.close`
+      // (real `ws`, not this file's `fakeWebSocketServer` test double)
+      // only fires its callback once `this.clients.size === 0` -- for an
+      // externally-owned `httpServer` (this file's own case) it does
+      // *not* forcibly drop existing clients itself, it just waits for
+      // them to already be gone. Awaiting that callback here, before the
+      // `client.terminate()` loop below ever runs, deadlocks forever the
+      // moment any real client is still connected (a live browser tab,
+      // never `fakeWebSocketServer`'s always-immediate mock -- which is
+      // why every existing test missed this). The new-upgrade-listener
+      // removal this call performs happens synchronously inside `close()`
+      // itself, before it ever touches `clients.size`, so nothing
+      // downstream actually depends on its callback firing.
+      wss.close(() => {});
       await Promise.allSettled([...inFlightFlashes]);
       for (const client of clients) {
         client.terminate();

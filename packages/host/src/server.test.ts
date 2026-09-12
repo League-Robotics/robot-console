@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
+import { WebSocket as RealWebSocket } from "ws";
 import {
   startServer,
   DEFAULT_BUFFERED_AMOUNT_THRESHOLD_BYTES,
@@ -575,6 +576,62 @@ describe("server.ts: flash-start", () => {
 // ---------------------------------------------------------------------
 // AC4: signal-triggered shutdown mid-flash
 // ---------------------------------------------------------------------
+
+describe("server.ts: close() with the real ws.WebSocketServer (bench 015-011 deadlock regression)", () => {
+  // Every other test in this file drives `fakeWebSocketServer()`, whose
+  // `close(cb)` always calls `cb()` immediately -- nothing here
+  // exercises the real `ws` library's own `WebSocketServer.close()`,
+  // which (per its own source) does *not* invoke its callback until
+  // `this.clients.size === 0` whenever a client is still connected at
+  // close time. A real, unclosed browser tab hit exactly that: this
+  // module's old `close()` awaited `wss.close()`'s callback *before* the
+  // `client.terminate()` loop that would have brought `clients.size` to
+  // 0 -- a deadlock invisible to the fake above, reproduced live on the
+  // bench (SIGTERM never completed with a Chromium tab attached), and
+  // fixed by making `wss.close()` fire-and-forget. This test uses the
+  // real `ws.WebSocketServer` (via `startServer`'s own default
+  // `createWebSocketServer`, not `startTestServer`'s override) and a
+  // real, still-open `ws` client that never voluntarily closes, so a
+  // regression here reproduces the exact hang rather than passing
+  // vacuously against a mock.
+  it("resolves close() within a bounded time with a real client still connected and never closing on its own", async () => {
+    const { store, dir } = freshStore();
+    const runtime = fakeRuntime();
+    const server = await startServer({
+      store,
+      runtime,
+      port: 0,
+      firmwareConfig: { relay: undefined, robot: undefined },
+      availabilityCache: {
+        current: () => ({ relay: { configured: false }, robot: { configured: false } }),
+        onChange: () => () => {},
+        start: () => {},
+        stop: () => {},
+        pollOnce: async () => ({ relay: { configured: false }, robot: { configured: false } }),
+      } as unknown as StartServerOptions["availabilityCache"],
+    });
+
+    const client = new RealWebSocket(server.url.replace(/^http/, "ws"));
+    await new Promise<void>((resolve, reject) => {
+      client.once("open", () => resolve());
+      client.once("error", reject);
+    });
+
+    let outcome: "closed" | "timeout" = "timeout";
+    await Promise.race([
+      server.close().then(() => {
+        outcome = "closed";
+      }),
+      new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+    ]);
+
+    expect(outcome).toBe("closed");
+
+    client.terminate();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
 
 describe("server.ts: close() waits for an in-flight flash", () => {
   it("does not resolve close() until the in-flight flash-start task has finished, and it does finish (never aborted mid-write)", async () => {

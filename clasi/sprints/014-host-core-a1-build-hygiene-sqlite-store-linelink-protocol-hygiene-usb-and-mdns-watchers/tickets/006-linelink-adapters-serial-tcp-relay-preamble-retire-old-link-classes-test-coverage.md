@@ -2,7 +2,7 @@
 id: '006'
 title: 'LineLink adapters: serial, TCP, relay preamble; retire old link classes''
   test coverage'
-status: in-progress
+status: done
 use-cases:
 - SUC-001
 depends-on:
@@ -36,18 +36,49 @@ old classes themselves are **not deleted** this sprint (that's sprint
 
 ## Acceptance Criteria
 
-- [ ] Adapter tests: serial's `toCalloutPath` applied only on darwin
+- [x] Adapter tests: serial's `toCalloutPath` applied only on darwin
       (the Linux case this sprint's build-hygiene ticket already fixed
       for the old classes now also covered here); TCP sets `NODELAY`,
       honours the connect timeout, and `destroy()`s on close.
-- [ ] Relay preamble aborts within one step when its `AbortSignal` fires.
+      (`adapters/serialStream.test.ts`, `adapters/tcpStream.test.ts` —
+      the latter includes both a fake-socket suite for NODELAY/destroy/
+      abort assertions and one real-loopback `net.createServer(0)`
+      round-trip test, closed in `afterEach`.)
+- [x] Relay preamble aborts within one step when its `AbortSignal` fires.
+      (`RelayCommandPlane.test.ts`'s "AbortSignal" describe block: one
+      test aborts before the handshake starts, one aborts mid-step with
+      `scheduler.resolveAll()` never called, proving the rejection can
+      only be the abort, not the step's own timeout.)
 - [ ] `packages/host/src/link/` line count is under 900 including tests,
       covering the four former classes' behavior.
-- [ ] `RelayCommandPlane` exports `sync`/`setChannelGroup`/`go` as
+      **Team-lead's interpretation (recorded in the dispatch): this
+      counts LineLink.ts + LineLink.test.ts + FakeByteStream.ts (ticket
+      005) + adapters/* + their tests + new RelayCommandPlane.test.ts
+      lines (ticket 006) — not the whole `link/` directory (the four
+      old classes deliberately coexist until sprint 015).** Measured:
+      LineLink.ts 591 + LineLink.test.ts 384 + FakeByteStream.ts 150
+      (ticket 005) + serialStream.ts 185 + serialStream.test.ts 166 +
+      tcpStream.ts 181 + tcpStream.test.ts 185 (ticket 006) + 82 new
+      lines added to RelayCommandPlane.test.ts (ticket 006) = **1924
+      lines total, 1024 over the 900 budget**. Ticket 005's own three
+      files already total 1125 lines on their own, before any of this
+      ticket's adapter/test code exists — the budget was already
+      unreachable before ticket 006 started, not something this
+      ticket's own additions pushed over the line. Per the dispatch's
+      explicit instruction ("if it still cannot fit, report the number
+      honestly and check the box with a note rather than deleting
+      coverage"): no coverage was cut to chase this number, and this
+      box is left unchecked with the measured count reported here for
+      the team-lead's own call on whether to accept, split the budget
+      per-ticket, or revisit it at sprint close.
+- [x] `RelayCommandPlane` exports `sync`/`setChannelGroup`/`go` as
       individually callable steps.
-- [ ] The old `UsbSerialLink`/`RelayRadioLink`/`MbrelayLink`/
+- [x] The old `UsbSerialLink`/`RelayRadioLink`/`MbrelayLink`/
       `MbserialLink` and their tests are untouched and still pass —
       confirming coexistence, not replacement, this sprint.
+      (Verified via `git diff` showing no changes to any of the four
+      files or their four test files, and the scoped test run showing
+      all their tests green alongside the new ones.)
 
 ## Testing
 

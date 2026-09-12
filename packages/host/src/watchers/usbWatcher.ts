@@ -454,7 +454,16 @@ export function startUsbWatcher(
 
   async function pollOnce(): Promise<void> {
     const next = await listDevices();
-    const { added, removed, updated } = diffDaplinkDevices(currentDevices, next);
+    // Opt into the `updated` bucket (ticket 014-010): this watcher is
+    // the consumer `diffDaplinkDevices`'s `updated` behaviour was built
+    // for (ticket 014-007) -- refresh address, keep everything else
+    // unchanged, never re-run SWD naming/identify. The legacy
+    // remove+add default stays in place for `DeviceWatcher`
+    // (`deviceRegistry.ts`'s older attach/detach path relies on seeing
+    // `removed` to abandon stale in-flight work).
+    const { added, removed, updated } = diffDaplinkDevices(currentDevices, next, {
+      reportUpdatedInPlace: true,
+    });
     currentDevices = next;
 
     for (const device of removed) {

@@ -318,18 +318,31 @@ describe("diffDaplinkDevices", () => {
     expect(removed).toEqual([]);
   });
 
-  it("reports an update (not a remove+add pair) when a board's availability changes in place -- ticket 014-007", () => {
+  it("reports a same-serial content change as a remove+add pair by default (legacy behaviour) -- ticket 014-010", () => {
     const partial = device({ serialNumber: SERIAL_BOARD_A, availability: "serial-only" });
     const full = device({ serialNumber: SERIAL_BOARD_A, availability: "full" });
     const { added, removed, updated } = diffDaplinkDevices([partial], [full]);
+    expect(added).toEqual([full]);
+    expect(removed).toEqual([partial]);
+    expect(updated).toEqual([]);
+  });
+
+  it("reports an update (not a remove+add pair) when a board's availability changes in place and reportUpdatedInPlace is set -- ticket 014-007/010", () => {
+    const partial = device({ serialNumber: SERIAL_BOARD_A, availability: "serial-only" });
+    const full = device({ serialNumber: SERIAL_BOARD_A, availability: "full" });
+    const { added, removed, updated } = diffDaplinkDevices([partial], [full], {
+      reportUpdatedInPlace: true,
+    });
     expect(added).toEqual([]);
     expect(removed).toEqual([]);
     expect(updated).toEqual([full]);
   });
 
-  it("reports no update, add, or remove when the snapshot is identical (updated bucket)", () => {
+  it("reports no update, add, or remove when the snapshot is identical (updated bucket, reportUpdatedInPlace set)", () => {
     const a = device({ serialNumber: SERIAL_BOARD_A });
-    const { added, removed, updated } = diffDaplinkDevices([a], [{ ...a }]);
+    const { added, removed, updated } = diffDaplinkDevices([a], [{ ...a }], {
+      reportUpdatedInPlace: true,
+    });
     expect(added).toEqual([]);
     expect(removed).toEqual([]);
     expect(updated).toEqual([]);
@@ -375,7 +388,7 @@ describe("DeviceWatcher", () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
-  it("notifies listeners on an updated-only diff (no added/removed) -- ticket 014-007", async () => {
+  it("reports a same-serial content change as remove+add by default (legacy behaviour) -- ticket 014-010", async () => {
     const partial = device({ serialNumber: SERIAL_BOARD_A, availability: "serial-only" });
     const full = device({ serialNumber: SERIAL_BOARD_A, availability: "full" });
     const listDevices = vi
@@ -383,6 +396,27 @@ describe("DeviceWatcher", () => {
       .mockResolvedValueOnce([partial])
       .mockResolvedValueOnce([full]);
     const watcher = new DeviceWatcher({ listDevices });
+    await watcher.pollOnce();
+    const listener = vi.fn();
+    watcher.onChange(listener);
+
+    const event = await watcher.pollOnce();
+
+    expect(event.added).toEqual([full]);
+    expect(event.removed).toEqual([partial]);
+    expect(event.updated).toEqual([]);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledWith(event);
+  });
+
+  it("notifies listeners on an updated-only diff (no added/removed) when reportUpdatedInPlace is set -- ticket 014-007/010", async () => {
+    const partial = device({ serialNumber: SERIAL_BOARD_A, availability: "serial-only" });
+    const full = device({ serialNumber: SERIAL_BOARD_A, availability: "full" });
+    const listDevices = vi
+      .fn<() => Promise<DaplinkDevice[]>>()
+      .mockResolvedValueOnce([partial])
+      .mockResolvedValueOnce([full]);
+    const watcher = new DeviceWatcher({ listDevices, reportUpdatedInPlace: true });
     await watcher.pollOnce();
     const listener = vi.fn();
     watcher.onChange(listener);

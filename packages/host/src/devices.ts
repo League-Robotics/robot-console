@@ -336,24 +336,47 @@ export interface DeviceDiff {
   updated: DaplinkDevice[];
 }
 
+/** Options controlling how {@link diffDaplinkDevices} (and
+ * {@link DeviceWatcher}) report a same-serial content change. */
+export interface DiffDaplinkDevicesOptions {
+  /**
+   * When `true`, a device whose serial number persists across the diff
+   * but whose content changed (e.g. its HID interface appeared after
+   * its serial port was already present -- the common case: a board's
+   * two USB personas rarely finish enumerating in the same poll) is
+   * reported in {@link DeviceDiff.updated}, not as a remove-then-add
+   * pair (ticket 014-007 / review `01-host-device-model.md` S2.1: the
+   * old remove+add modeling caused two SWD reads, two port opens --
+   * two resets on macOS -- and two `HELLO`s per attach).
+   *
+   * Defaults to `false` -- the legacy remove+add behaviour -- because
+   * `deviceRegistry.ts`'s older watcher-driven attach/detach path
+   * ({@link DeviceChangeEvent}'s `removed`/`added` handling) relies on
+   * seeing a `removed` entry to abandon in-flight work against a
+   * now-stale state object (its "orphaned state during a flash" guard,
+   * ticket 014-010). That path does not (yet) look at `updated` at
+   * all, so silently switching the default out from under it drops the
+   * guard on the floor. `usbWatcher.ts` (ticket 014-007/008), which
+   * *does* understand `updated` ("refresh address, keep everything
+   * else unchanged" -- never re-running SWD naming or identify for
+   * it), opts in explicitly.
+   */
+  reportUpdatedInPlace?: boolean;
+}
+
 /**
  * Pure diff between two {@link DaplinkDevice} snapshots, keyed by
- * `serialNumber`. A device whose serial number persists but whose
- * content changed (e.g. its HID interface appeared after its serial
- * port was already present -- the common case: a board's two USB
- * personas rarely finish enumerating in the same poll) is reported as
- * `updated`, not a remove-then-add pair (ticket 014-007 / review
- * `01-host-device-model.md` S2.1: the old remove+add modeling caused
- * two SWD reads, two port opens -- two resets on macOS -- and two
- * `HELLO`s per attach). Consumers (`usbWatcher.ts`) treat `updated` as
- * "refresh address, keep everything else (device identity, any open
- * session) unchanged" -- never re-running SWD naming or identify for
- * it.
+ * `serialNumber`. By default a device whose serial number persists but
+ * whose content changed is reported as a remove-then-add pair (see
+ * {@link DiffDaplinkDevicesOptions.reportUpdatedInPlace} for why, and
+ * how to opt into the `updated` bucket instead).
  */
 export function diffDaplinkDevices(
   previous: readonly DaplinkDevice[],
   next: readonly DaplinkDevice[],
+  options?: DiffDaplinkDevicesOptions,
 ): DeviceDiff {
+  const reportUpdatedInPlace = options?.reportUpdatedInPlace ?? false;
   const previousBySerial = new Map(previous.map((d) => [d.serialNumber, d] as const));
   const nextBySerial = new Map(next.map((d) => [d.serialNumber, d] as const));
 
@@ -366,7 +389,12 @@ export function diffDaplinkDevices(
     if (!previousDevice) {
       added.push(device);
     } else if (JSON.stringify(previousDevice) !== JSON.stringify(device)) {
-      updated.push(device);
+      if (reportUpdatedInPlace) {
+        updated.push(device);
+      } else {
+        removed.push(previousDevice);
+        added.push(device);
+      }
     }
   }
   for (const [serialNumber, device] of previousBySerial) {
@@ -397,6 +425,11 @@ export interface DeviceWatcherOptions {
    * Defaults to 1000. Irrelevant if callers drive
    * {@link DeviceWatcher.pollOnce} themselves. */
   pollIntervalMs?: number;
+  /** Forwarded to {@link diffDaplinkDevices} on every poll -- see
+   * {@link DiffDaplinkDevicesOptions.reportUpdatedInPlace} for the
+   * default and why `deviceRegistry.ts`'s consumers should leave this
+   * unset. */
+  reportUpdatedInPlace?: boolean;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 1000;
@@ -417,6 +450,7 @@ const DEFAULT_POLL_INTERVAL_MS = 1000;
 export class DeviceWatcher {
   private readonly listDevices: DaplinkDeviceLister;
   private readonly pollIntervalMs: number;
+  private readonly reportUpdatedInPlace: boolean;
   private timer: ReturnType<typeof setInterval> | undefined;
   private readonly listeners = new Set<DeviceChangeListener>();
   private currentDevices: DaplinkDevice[] = [];
@@ -424,6 +458,7 @@ export class DeviceWatcher {
   constructor(options: DeviceWatcherOptions = {}) {
     this.listDevices = options.listDevices ?? enumerateDaplinkDevices;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    this.reportUpdatedInPlace = options.reportUpdatedInPlace ?? false;
   }
 
   /** Devices as of the most recent poll (`[]` before the first poll). */
@@ -447,7 +482,9 @@ export class DeviceWatcher {
    */
   async pollOnce(): Promise<DeviceChangeEvent> {
     const next = await this.listDevices();
-    const { added, removed, updated } = diffDaplinkDevices(this.currentDevices, next);
+    const { added, removed, updated } = diffDaplinkDevices(this.currentDevices, next, {
+      reportUpdatedInPlace: this.reportUpdatedInPlace,
+    });
     this.currentDevices = next;
     const event: DeviceChangeEvent = { added, removed, updated, current: next };
     if (added.length > 0 || removed.length > 0 || updated.length > 0) {

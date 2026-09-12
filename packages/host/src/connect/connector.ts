@@ -19,7 +19,10 @@
  * defined and stubbed with a no-op default so this module's own
  * signature never had to change), and `mergeUsbPlaceholderIfAny` (below,
  * near the failure-recording helpers) — see that function's own doc
- * comment for the merge itself.
+ * comment for the merge itself. Sprint 017 ticket 006 adds a sibling,
+ * `mergeNamePlaceholderIfAny`, generalizing the merge to any transport's
+ * first identification (not only `usb`) — see its own doc comment,
+ * directly below `mergeUsbPlaceholderIfAny`.
  *
  * ## `LinkRow.address` shapes, by transport
  *
@@ -620,6 +623,45 @@ function mergeUsbPlaceholderIfAny(store: Store, usbSerial: string | undefined, d
   }
 }
 
+/**
+ * Generalizes the merge above to any transport's first identification
+ * (sprint 017 ticket 006; SUC-006; issue
+ * `placeholder-merge-for-non-usb-transports.md`). `mergeUsbPlaceholderIfAny`
+ * only ever fires for a `usb` identify -- it is the join key of choice
+ * *when available* (a hardware serial survives a legacy naming
+ * disagreement, per its own doc comment's `vevov`/`vevav` case) but a
+ * robot first identified over `mbserial`/`wifi` has no USB serial to
+ * correlate against at all, so a `known-robots.json`-seeded placeholder
+ * for that robot (synthetic id, no `usb_serial`) and its real row never
+ * collapse -- seen on the bench for `gopiv` (placeholder 1461 vs. real
+ * 2175407711, sprint 016 ticket 008).
+ *
+ * Falls back to a `name` match, restricted to placeholder-shaped
+ * candidates: `kind === 'robot'` (a synthetic negative-id `kind='relay'`
+ * row -- ticket 017-005's mDNS hash-fallback rows -- must never be
+ * mistaken for a robot placeholder here, even on a name collision) and
+ * `usb_serial IS NULL` (a row that already carries a `usb_serial` has
+ * either already been correlated by the check above, or is a
+ * known-robots placeholder whose USB serial is only a display hint --
+ * see the existing regression test where a `usb_serial`-bearing
+ * placeholder sharing the new device's name is deliberately left
+ * untouched). Fires only when *exactly one* such row shares `name`;
+ * two or more (an ambiguous case -- e.g. a stale double-import) is left
+ * alone rather than guessed at, same as a name mismatch (the
+ * `vevov`/`vevav` case) -- `forget-device` remains the manual escape
+ * hatch either way.
+ */
+function mergeNamePlaceholderIfAny(store: Store, name: string, deviceId: number, at: number): void {
+  const candidates = store
+    .snapshotRows()
+    .devices.filter(
+      (row) => row.kind === "robot" && row.name === name && row.usb_serial == null && Number(row.id) !== deviceId,
+    );
+  if (candidates.length === 1) {
+    store.mergeDevice(Number(candidates[0]!.id), deviceId, at);
+  }
+}
+
 // ---------------------------------------------------------------------
 // createConnector
 // ---------------------------------------------------------------------
@@ -741,6 +783,9 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
         at: now(),
       });
       mergeUsbPlaceholderIfAny(store, usbSerial, deviceId, now());
+      if (kind === "robot") {
+        mergeNamePlaceholderIfAny(store, name, deviceId, now());
+      }
       if (link.transport === "usb" && classification.type === "robot") {
         store.setOwned(deviceId, true, now());
       }

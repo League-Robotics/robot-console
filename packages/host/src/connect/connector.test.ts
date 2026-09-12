@@ -398,6 +398,140 @@ describe("connectAndIdentify -- known-robots placeholder-device merge (SUC-003/S
 });
 
 // ---------------------------------------------------------------------
+// Sprint 017 ticket 006: generalizes the merge above to any transport's
+// first identification (SUC-006; issue
+// `placeholder-merge-for-non-usb-transports.md`). A robot first
+// identified over `mbserial`/`wifi` has no USB serial to correlate
+// against at all -- the bench-observed `gopiv` case (placeholder
+// 1461, `nameToValue("gopiv")`, vs. real chip id 2175407711, sprint 016
+// ticket 008) never merged before this ticket.
+// ---------------------------------------------------------------------
+
+describe("connectAndIdentify -- generalized known-robots placeholder merge, any transport (ticket 017-006, SUC-006)", () => {
+  /** `device NEZHA2 robot gopiv 2175407711` -- `deviceIdToName(2175407711)
+   * === "gopiv"`, the real bench chip id from sprint 016 ticket 008. The
+   * banner's own literal `name` token is never read by the connector
+   * (it always recomputes `name` from `deviceIdToName(banner.serial)` --
+   * see connector.ts line ~731), so this is for readability only. */
+  const GOPIV_BANNER = "device NEZHA2 robot gopiv 2175407711";
+  const GOPIV_REAL_ID = 2175407711;
+  /** `nameToValue("gopiv")` -- the synthetic placeholder id
+   * `importKnownRobots` would have minted, matching the bench evidence's
+   * own "placeholder 1461 vs. real 2175407711". */
+  const GOPIV_PLACEHOLDER_ID = 1461;
+
+  /** Seeds a known-robots-style placeholder: synthetic id, `owned = 1`,
+   * no `usb_serial` -- exactly the shape this ticket's merge targets. */
+  function seedGopivPlaceholder(store: Store): void {
+    store.upsertDevice({ id: GOPIV_PLACEHOLDER_ID, name: "gopiv", kind: "robot", at: 100 });
+    store.setOwned(GOPIV_PLACEHOLDER_ID, true, 100);
+  }
+
+  it.each([
+    ["usb", () => usbLink()] as const,
+    ["mbserial", () => mbserialLink()] as const,
+    ["wifi", () => wifiLink()] as const,
+  ])("%s: merges the no-usb_serial placeholder sharing the identified robot's name", async (_transport, buildLink) => {
+    const store = freshStore();
+    seedGopivPlaceholder(store);
+
+    const stream = new BannerByteStream(GOPIV_BANNER);
+    const connector = createConnector(store, baseDeps(stream));
+    const link = buildLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    const session = await promise;
+
+    expect(session.deviceId).toBe(GOPIV_REAL_ID);
+    const rows = store.snapshotRows();
+    // One row, not two -- no orphaned placeholder, no orphaned links.
+    expect(rows.devices).toHaveLength(1);
+    expect(rows.devices[0]).toMatchObject({ id: GOPIV_REAL_ID, name: "gopiv", owned: 1 });
+    expect(rows.links.find((l) => l.id === link.id)?.device_id).toBe(GOPIV_REAL_ID);
+    store.close();
+  });
+
+  it("a name mismatch (vevov/vevav-style) is a no-op -- both rows remain", async () => {
+    const store = freshStore();
+    seedGopivPlaceholder(store);
+
+    // Identifies as "vevov" (ROBOT_SERIAL), not "gopiv" -- names differ,
+    // so no merge, even though this placeholder is otherwise mergeable
+    // (no usb_serial, kind='robot').
+    const stream = new BannerByteStream(ROBOT_BANNER);
+    const connector = createConnector(store, baseDeps(stream));
+    const link = wifiLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await promise;
+
+    expect(store.snapshotRows().devices).toHaveLength(2);
+    store.close();
+  });
+
+  it("two placeholders sharing the identified robot's name (ambiguous) is a no-op -- no automatic merge", async () => {
+    const store = freshStore();
+    seedGopivPlaceholder(store);
+    // A second row also named "gopiv", no usb_serial, kind='robot' --
+    // `deviceIdToName(4586) === "gopiv"` too (any id congruent to 1461
+    // mod 3125 decodes to the same name), so this is a second
+    // legitimately-placeholder-shaped row sharing the name. Two
+    // candidates -- this ticket's own conservative rule (documented next
+    // to `mergeNamePlaceholderIfAny`) is to merge neither.
+    store.upsertDevice({ id: 4586, name: "gopiv", kind: "robot", at: 100 });
+
+    const stream = new BannerByteStream(GOPIV_BANNER);
+    const connector = createConnector(store, baseDeps(stream));
+    const link = wifiLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await promise;
+
+    // All three rows survive: neither placeholder was touched, and the
+    // real identify wrote its own row.
+    expect(store.snapshotRows().devices).toHaveLength(3);
+    store.close();
+  });
+
+  it("a kind='relay' row sharing a name with the identified robot's banner is never treated as a candidate", async () => {
+    const store = freshStore();
+    // A synthetic negative-id relay row (ticket 017-005's mDNS
+    // hash-fallback shape: `id < 0 && kind === 'relay'` bypasses
+    // upsertDevice's own name/id check) that happens to share the name
+    // "gopiv" with the robot about to identify. Must never be picked up
+    // by the placeholder-candidate query, which is scoped to
+    // `kind === 'robot'` per this ticket's own last acceptance criterion.
+    store.upsertDevice({ id: -1, name: "gopiv", kind: "relay", at: 100 });
+
+    const stream = new BannerByteStream(GOPIV_BANNER);
+    const connector = createConnector(store, baseDeps(stream));
+    const link = wifiLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await promise;
+
+    // Both rows survive -- the relay row was never a mergeable candidate.
+    const rows = store.snapshotRows();
+    expect(rows.devices).toHaveLength(2);
+    expect(rows.devices.find((d) => d.id === -1)).toMatchObject({ kind: "relay", name: "gopiv" });
+    expect(rows.devices.find((d) => d.id === GOPIV_REAL_ID)).toMatchObject({ kind: "robot", name: "gopiv" });
+    store.close();
+  });
+});
+
+// ---------------------------------------------------------------------
 // AC: failure path writes failed with next_retry_at/fail_count and
 // releases the owner/lease.
 // ---------------------------------------------------------------------

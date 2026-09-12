@@ -217,7 +217,8 @@ data-model edge-case fixes in different existing modules (`mdnsWatcher.ts`,
 | `flash.ts` / `swdName.ts` (modified) | Perform one bounded DAPLink/SWD operation and fail with a typed class if it doesn't finish in time. | Inside: `withTimeout` wrapper, typed `timeout` failure, `listVolumeNames(platform)`, MSD settle/poll timing, `flashViaDapLink`/`resetViaDapLink` naming. Outside: who owns the board, session lifecycle. | SUC-003, SUC-004 |
 | `connect/flasher.ts` (new) | Owns board-owner exclusivity and session handoff around one flash operation. | Inside: acquire `board_owner='flash'`, close an open session first, invoke `flash.ts`, write `links.flash` phases, release. Outside: the DAPLink calls themselves, re-identification (left to the USB watcher's normal add/update event). | SUC-003 |
 | `watchers/mdnsWatcher.ts` (modified) | Gives every mDNS-discovered relay a stable device row, whatever its advertised name looks like. | Inside: synthetic-id fallback (stable hash of `mbrelay:<instance>` into the negative id range) alongside the existing fast path for grammar-matching names. Outside: projection/UI rendering of `relays[]` (unchanged). | SUC-005 |
-| `connect/connector.ts` (modified) | Collapses a known-robots placeholder into the real device row on first identification over any transport. | Inside: name-matched single-placeholder merge via the existing `Store.mergeDevice`, no-op on name mismatch. Outside: `mergeDevice`'s own mechanics (already built, sprint 015). | SUC-006 |
+| `store/index.ts` (modified, added 2026-09-12 — see Revision) | Scopes `upsertDevice`'s name/id consistency check so a non-grammar relay name can be stored at all. | Inside: the `deviceIdToName(id) === name` assertion itself, narrowed to skip rows where `id < 0 && kind === 'relay'`. Outside: every other row shape (all `kind='robot'` rows, grammar-named `kind='relay'` rows) — unchanged, still asserted exactly as before. | SUC-005 |
+| `connect/connector.ts` (modified) | Collapses a known-robots placeholder into the real device row on first identification over any transport. | Inside: name-matched single-placeholder merge via the existing `Store.mergeDevice`, no-op on name mismatch; the candidate query is scoped to `kind='robot'` so it can never pick a synthetic relay row (see Revision). Outside: `mergeDevice`'s own mechanics (already built, sprint 015). | SUC-006 |
 | `ui/components/*`, `ui/hooks/useHeldDrive.ts`, `ui/lib/{calibration,lineClass,clipboard}.ts` (new/consolidated) | Each duplicated UI behavior gets exactly one definition, consumed by the pages that need it. | Inside: `RelayConnectControls`, `RobotSelect`, `useHeldDrive`+`clearEstop`, `CalibrationTable`+`lib/calibration.ts`, `WifiCredentialsForm`, `Modal`, `deviceDisplay.ts`'s `linkStateText`, `lib/lineClass.ts`, `lib/clipboard.ts`. Outside: page-level layout and page-specific state — pages still decide *what* to show. | SUC-007 |
 | `docs/design/specification.md`, `docs/design/overview.md` (docs only) | Every claim in the spec naming a file, verb, or service type is true of the shipped code. | Inside: text edits pointing §4 at `architecture.md`, verb count, transport facts. Outside: no code. | SUC-008 |
 
@@ -261,9 +262,11 @@ firmware source config. Flash/SWD calls gain timeouts and a real owner
 handoff module; MSD fallback becomes platform-aware. Two data-model edge
 cases (non-grammar relay names, non-USB first identification) get their
 missing-row bugs fixed in the existing watcher/connector modules that
-already own that logic. Three UI pages' duplicated widgets collapse to
-one definition each. `specification.md`/`overview.md` catch up to the
-code.
+already own that logic — the relay-naming fix also requires narrowing
+`Store.upsertDevice`'s name/id consistency check for negative-id relay
+rows (2026-09-12 revision; see Design Rationale and Revision below).
+Three UI pages' duplicated widgets collapse to one definition each.
+`specification.md`/`overview.md` catch up to the code.
 
 **Why:** Each of these is a "silently wrong" behavior the 2026-09-11 code
 review catalogued: a classroom-scale failure mode (firmware rate
@@ -306,6 +309,47 @@ a real chip id or a synthetic one") is inferable only by sign, not by a
 labeled column — acceptable since the only current consumer that cares
 (the projection, when deciding whether a relay can be flashed/named over
 SWD) already keys off `kind='relay'` and transport, not off id sign.
+
+**Decision: scope `Store.upsertDevice`'s name/id invariant to exclude
+negative-id relay rows, not add a `devices.id_source` column.** Context
+(2026-09-12 revision, thrown as a ticket-005 exception): the decision
+above never checked its chosen id scheme against `Store.upsertDevice`
+(`store/index.ts:424-428`), which unconditionally asserts
+`deviceIdToName(id) === name` and throws `DeviceNameMismatchError`
+otherwise — a deliberate invariant from ticket 014-003
+(`docs/reviews/2026-09-11/05-protocol.md` §2 item 6), which exists to
+catch a real name/id corruption bug. `deviceIdToName` always produces a
+well-formed five-letter grammar name for *any* integer, so no id choice
+can ever make it equal a non-grammar name like `torture`: as specified,
+the negative-hash fallback throws on every single non-grammar relay name
+it exists to fix. Alternatives: (a) scope the existing check to skip rows
+where `id < 0 && kind === 'relay'`, documenting the id-range convention
+that a negative id is never a real chip id (`FICR.DEVICEID[1]` is an
+unsigned 32-bit value, so every genuine chip id is non-negative — a
+negative id is unambiguously synthetic) — the negative range is already
+reserved for exactly this fallback (Design Rationale above) and used
+nowhere else; (b) add a nullable `devices.id_source` column
+(`chip | name | mdns`) via a new migration `0002`, and apply the
+consistency check only when `id_source in ('chip', 'name')`. Why (a):
+(b) is a real schema/migration change this sprint's sizing paragraph and
+Step 4 explicitly state does not happen ("no data-model change... same-
+shape `INTEGER PRIMARY KEY` value picked by a different formula, not a
+schema change") — introducing one here would also require an ERD per
+Step 4's own rule and would touch every `upsertDevice` caller's
+understanding of the row shape, not just this one fallback. (a) is a
+narrower, purely additive scoping of one existing check, expressed
+entirely in terms of a convention (negative id ⇒ synthetic) the codebase
+already relies on informally. Consequences: the invariant still holds
+for every `kind='robot'` row (chip id or `nameToValue` placeholder alike)
+and every grammar-named `kind='relay'` row (the existing `nameToValue`
+fast path, unchanged) — it is relaxed *only* for the exact new row shape
+this ticket introduces. This narrows, not removes, the protection the
+2026-09-11 review's finding put in place: a robot row (the class that
+finding's own corruption bug involved) can never bypass the check. A
+name-based merge elsewhere in the codebase must still never treat one of
+these negative-id relay rows as a robot placeholder — ticket 006's
+placeholder-match query is scoped to `kind='robot'` for exactly this
+reason (see that ticket and the Modules table row above).
 
 **Decision: `connect/flasher.ts` as a new small module, not inlined
 ownership logic in `flash.ts`.** Context: the code review explicitly
@@ -360,7 +404,56 @@ existing row shape changes; nothing requires a one-time backfill.
    probability (mbrelay instance names are operator-assigned and expected
    unique per physical device) and deferred rather than adding collision
    detection now; flagged for the stakeholder to confirm that's
-   acceptable.
+   acceptable. **Update (2026-09-12 revision):** before this revision the
+   question was theoretical — the fallback threw on every non-grammar
+   name, so no row with a hash-derived negative id ever reached the
+   store. Scoping `Store.upsertDevice`'s invariant to skip negative-id
+   relay rows (Design Rationale above) is what makes the fallback work at
+   all, and it is also what makes a collision's consequence concrete: two
+   colliding names now silently overwrite each other's `devices.name` via
+   the existing `ON CONFLICT ... SET name = excluded.name` upsert, with
+   no error raised (the check that would have caught a mismatch is
+   exactly the one this revision narrows). This does not change the
+   probability assessment above, only confirms what "merge into one row"
+   concretely means now that the path is live. Still deferred, not
+   blocking; still flagged for stakeholder confirmation, now with the
+   sharper framing.
+
+## Revision
+
+**Date:** 2026-09-12
+**Cause:** Ticket 005 exception (thrown by programmer, surface
+`internal`): the sprint's own Design Rationale chose a negative-hash
+synthetic relay id for a non-grammar mDNS name, but never reconciled
+that choice with `Store.upsertDevice`'s unconditional
+`deviceIdToName(id) === name` assertion (ticket 014-003,
+`docs/reviews/2026-09-11/05-protocol.md` §2 item 6). Since
+`deviceIdToName` always yields a well-formed five-letter name for any
+integer, no id choice can satisfy the invariant for a name like
+`torture` — the fallback as specified threw on every case it was meant
+to fix.
+**Decision:** Scope `Store.upsertDevice`'s name/id consistency check to
+skip rows where `id < 0 && kind === 'relay'`, rather than adding a
+`devices.id_source` column. Documents the convention that a negative id
+is never a real chip id (`FICR.DEVICEID[1]` is unsigned 32-bit) and is
+therefore unambiguously synthetic. `store/index.ts` is added to the Step
+3 Modules table for SUC-005. See the new Design Rationale entry above for
+the full alternatives analysis, and the updated Open Question 4 for the
+collision-risk consequence this makes concrete rather than theoretical.
+**Consequences:** No schema change and no ERD needed — the sizing
+paragraph's "no data-model change" statement still holds. The invariant
+still fully applies to every `kind='robot'` row and every grammar-named
+`kind='relay'` row; it is narrowed only for the new hash-fallback shape.
+Ticket 006's placeholder-merge query must exclude `kind='relay'` rows so
+it can never mistake a synthetic relay row for a robot placeholder — a
+bullet was added to that ticket's acceptance criteria to make this
+explicit and testable, rather than relying on the structural argument
+alone (a robot's identified name is always five-letter-grammar-shaped,
+so it cannot collide with a non-grammar relay name today, but the query
+should not depend on that fact holding forever).
+**Ticket 005 disposition:** Reopened by the team-lead via
+`reopen_ticket`; its Description/Acceptance Criteria/Implementation Plan
+are rewritten below to include the `store/index.ts` change.
 
 ## Use Cases
 

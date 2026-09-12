@@ -41,6 +41,14 @@ differ (the vevov/vevav case), do nothing.
       plus the name-mismatch no-op.
 - [ ] The UI's `forget-device` remains the manual escape hatch for
       stale placeholders (unchanged — verify no regression).
+- [ ] The placeholder-candidate query is scoped to `kind === 'robot'`:
+      a synthetic `kind='relay'` device row (ticket 005's negative-id
+      mDNS fallback, or the existing grammar-named `nameToValue` relay
+      row) is never treated as a mergeable placeholder, even if its name
+      happened to match an identified robot's banner name. Add a test:
+      a `kind='relay'` row sharing a name with an identified robot's
+      banner → no merge (both rows remain), alongside the existing
+      name-mismatch no-op case.
 
 ## Implementation Plan
 
@@ -48,14 +56,19 @@ differ (the vevov/vevav case), do nothing.
 (currently keyed on USB serial) to also accept a name-based match when
 no USB serial is available, gated to firing only when there is exactly
 one candidate placeholder — ambiguous matches (more than one
-placeholder with that name) are left alone rather than guessed at.
+placeholder with that name) are left alone rather than guessed at. The
+name-based candidate query must filter to `kind === 'robot'` explicitly
+(not only "no `usb_serial`") — ticket 005 (2026-09-12 revision) confirms
+`devices` can now hold `kind='relay'` rows with no `usb_serial` and a
+synthetic id, which must never be mistaken for a robot placeholder here.
 
 **Files to modify**:
 - `packages/host/src/connect/connector.ts` — generalize the merge
   trigger to run on any transport's first identification, not only
-  USB.
+  USB; scope the name-based candidate query to `kind === 'robot'`.
 - `packages/host/src/connect/connector.test.ts` — table tests for
-  usb/mbserial/wifi merge paths and the name-mismatch no-op.
+  usb/mbserial/wifi merge paths, the name-mismatch no-op, and the
+  relay-row-must-not-merge case.
 
 **Testing plan** (scoped vitest run: `connect/connector.test.ts`):
 - Seeded placeholder `gopiv` (synthetic id, `owned=1`, no
@@ -69,6 +82,10 @@ placeholder with that name) are left alone rather than guessed at.
 - Two placeholders sharing a name (ambiguous case) → no automatic
   merge (documented as intentionally conservative; `forget-device`
   remains the manual path).
+- A `kind='relay'` device row (synthetic id, no `usb_serial`) sharing a
+  name with an identified robot's banner → no merge, both rows remain
+  (guards against ticket 005's negative-id relay rows being picked up
+  here).
 
 **Documentation updates**: None; `Store.mergeDevice`'s existing
 behavior and `architecture.md`'s data model are unchanged.

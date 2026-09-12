@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '017'
 ---
 
 # specification.md: correct the statements the code review found stale, and point §4 at architecture.md

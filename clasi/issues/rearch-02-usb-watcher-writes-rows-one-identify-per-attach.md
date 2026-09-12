@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '014'
 ---
 
 # USB watcher: write device and link rows; identify a board once per attach, with retry

@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '015'
 ---
 
 # One connector, one reconciler, one harvester; retire deviceRegistry.ts, knownRobots.ts, wifiRobotGate.ts

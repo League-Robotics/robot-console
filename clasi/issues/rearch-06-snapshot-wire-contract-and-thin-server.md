@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '015'
 ---
 
 # New `snapshot` wire contract from a DB projection; server.ts becomes a thin broadcast and command layer

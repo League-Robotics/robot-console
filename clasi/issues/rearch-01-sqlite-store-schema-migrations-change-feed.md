@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '014'
 ---
 
 # Host store: SQLite schema, typed operations, JSON importers, and the in-process change feed

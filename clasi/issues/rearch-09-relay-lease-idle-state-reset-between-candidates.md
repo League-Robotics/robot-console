@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '016'
 ---
 
 # Relay ownership: leases and an idle state, no console auto-open, reset between failover candidates, no registry write-on-read

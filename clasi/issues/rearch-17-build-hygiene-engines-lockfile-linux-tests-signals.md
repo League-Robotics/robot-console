@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '014'
 ---
 
 # Build hygiene: Node floor, lockfile drift, Linux-safe tests, dependency risks

@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '016'
 ---
 
 # Relay firmware: a non-persisting tune (or one-shot probe) so a sweep does not wear the flash

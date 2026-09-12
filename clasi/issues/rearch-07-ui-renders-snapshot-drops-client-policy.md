@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '015'
 ---
 
 # UI renders the host snapshot; remove every client-side connection decision; keep every screen feature

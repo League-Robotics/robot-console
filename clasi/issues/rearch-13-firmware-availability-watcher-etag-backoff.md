@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '017'
 ---
 
 # Firmware availability as a watcher task: ETag, optional token, backoff, and a useful no-asset message

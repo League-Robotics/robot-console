@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '017'
 ---
 
 # Flash and SWD naming: timeouts on every DAPLink/HID call, platform-aware MSD fallback, board-owner exclusivity

@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '016'
 ---
 
 # Relay sweeper: probe remembered robots over radio from an idle relay and record sightings

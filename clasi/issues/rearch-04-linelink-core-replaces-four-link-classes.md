@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '014'
 ---
 
 # One LineLink core with serial, TCP, and relay-preamble adapters replaces the four link classes

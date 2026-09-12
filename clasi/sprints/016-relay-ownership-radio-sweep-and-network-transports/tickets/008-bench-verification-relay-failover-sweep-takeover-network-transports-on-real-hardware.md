@@ -75,17 +75,15 @@ agents.
 - [ ] A robot connects and drives over USB, WiFi, and radio through a
       relay, each independently verified on real hardware — the sprint
       015 carry-over item, resolved (not re-deferred) this time.
-      Radio-via-relay: **CONFIRMED** (see Bench evidence Part 4c). USB
-      and WiFi: still not cleanly demonstrated — USB connect/command/
-      close all worked at the protocol level, but the one physical
-      board on the bench produced a different, visibly-corrupted
-      identity on every one of three separate identify attempts (Part
-      4b) — a real-hardware serial-integrity problem, not a host
-      regression (see root cause below). WiFi: no `_robotlink`
-      advertiser was present this bench window at all (Part 4b, same
-      finding as sprint 015). "Drives" was never attempted for any
-      transport, per this ticket's own explicit prohibition on
-      drive/move/motor verbs.
+      Radio-via-relay: **CONFIRMED, again and more cleanly** (Second
+      pass Part 4 and Part 5): a sighted-robot bridge via `vevav` (as
+      part of the UC-016 takeover) and a fresh bridge through `torture`,
+      both live, both with uncorrupted telemetry. USB and WiFi: still
+      not demonstrated, and the USB leg is now **worse** than the
+      previous pass, not merely unresolved — see root cause below
+      (Second pass Part 6). "Drives" was never
+      attempted for any transport, per this ticket's own explicit
+      prohibition on drive/move/motor verbs.
 - [x] A radio override set via the UI is honored by a live relay bridge
       — the other sprint 015 carry-over item, resolved this time.
       **CONFIRMED**: `set-radio-override` flipped `tigez.radio.source`
@@ -93,21 +91,54 @@ agents.
       those override values succeeded (session opened, live telemetry);
       `clear: true` flipped it back to `derived`. See Bench evidence
       Part 4c/4d.
-- [ ] UC-015's full flow (idle → sweep → sightings → `Radio via <relay>`
+- [x] UC-015's full flow (idle → sweep → sightings → `Radio via <relay>`
       row → "last checked") is confirmed on real hardware.
-      **BLOCKED — hardware unavailable.** No idle `usb`-transport relay
-      link exists on this bench: `vevav`/`vitut` are unplugged (per the
-      team-lead's own bench-state note, confirmed via `lsof` finding
-      nothing on the one attached USB port besides the robot board) and
-      `torture`/`gopiv` are network transports, not `usb`-transport
-      relay links — `relaySweeper.ts` only ever sweeps a `usb`-transport,
-      `kind='relay'`, `connectable` link (`isEligibleIdleRelayLink`).
-      `relays: []` in every snapshot taken this session (Bench evidence
-      Part 4a/4e). See "What the stakeholder must do next".
-- [ ] UC-016's takeover-within-one-probe flow is confirmed on real
+      **CONFIRMED** now that `vevav`/`vitut` are back on the bench (see
+      Second pass Part 2/3): both identified as `usb`-transport,
+      `kind=relay`, `connectable`/`relay-identified-idle` links;
+      `relays[]` showed `lease: "sweep"` on both throughout the run,
+      `sweep.rate: "slow"` on both (neither relay's own `?` reply
+      advertised `caps: CGT` this session — a real capability
+      difference on this bench hardware, not a defect: `"fast"` is only
+      ever set when a relay itself advertises `CGT`, per
+      `relaySweeper.ts`). The raw `sightings` table accumulated 26+ rows
+      over the ~5-minute session for every remembered robot
+      (`vevov`/`gopiv`/`tovez`/`tigez`) via both relay links. A sighted
+      robot got exactly the row the UC promises: `tigez`'s radio link
+      via `vevav` flipped `discovered` → `connectable` on sighting id 7
+      (`ok=1`, `at=1789229607356`), and the device-level snapshot
+      confirmed `tigez.lastChecked: 1789229607646` (matching the
+      sighting's own timestamp) alongside the link's own
+      `via.relayName: "vevav"` — the "Radio via vevav ... last checked"
+      row the UI renders from exactly these fields. See Second pass
+      Part 3.
+- [x] UC-016's takeover-within-one-probe flow is confirmed on real
       hardware, with an observed handback time ≤ 1.5 s.
-      **BLOCKED — same root cause as UC-015 above**: no idle usb relay
-      to sweep, so there is nothing to take over.
+      **CONFIRMED.** While `vevav`'s relay link showed `lease: "sweep"`
+      (actively sweeping `tigez`'s own already-sighted channel/group,
+      55/114), sent `session-open {relayLinkId: <vevav usb link>, name:
+      "tigez"}` at wall-clock `16:14:43.695Z`; the snapshot showing
+      `lease: "session"` arrived at `16:14:43.752Z` — **55 ms**, well
+      under the 1.5 s bound. A benign `STATUS` command round-tripped
+      cleanly through the resulting live bridge; `session-close` was
+      sent at `16:16:26.966Z`, the link read `closed_by_user` 43 ms
+      later, and `lease` returned to `"sweep"` at `16:16:28.878Z` — a
+      **~1.9 s** quiet period, matching the UC's "resumes after a quiet
+      period." Cross-checked directly against the raw `sightings` table
+      (stronger evidence than a log grep, since this host's own log is
+      silent by design): **zero** sighting rows were recorded against
+      `vevav`'s own link between the last pre-takeover probe and ~2.5 s
+      after `session-close` — the sweep genuinely stood down for the
+      entire live-session window and only resumed (a fresh probe) after
+      the quiet period, exactly as the UC requires. One honest side
+      finding, same class as Part 4c/4d's naming mismatch from the
+      first pass: the device that answered on the taken-over bridge
+      decoded (via its own banner) to a *third* distinct id
+      (`1198504156`, name `"vevov"`) — neither `tigez` (2815, the name
+      requested) nor `vevav` (1031, the already-known device) — a bench
+      robot-labeling/tuning mismatch on the physical units themselves,
+      not a defect in the takeover mechanism, which did exactly what it
+      was asked (see Second pass Part 4).
 - [x] The Linux per-candidate reset fix is confirmed against real
       hardware (or explicitly reasoned about if Linux cannot reach the
       USB/serial devices directly — record which).
@@ -118,20 +149,29 @@ agents.
       only be exercised by its own fake-hardware automated suite
       (`relayBridger.test.ts`, `relaySweeper.test.ts`) inside the
       container, which this ticket's Part 2 Linux run confirmed green.
-- [ ] `torture` (mbrelay) and `gopiv` (mbserial) are each directly
+- [x] `torture` (mbrelay) and `gopiv` (mbserial) are each directly
       connectable and a bridge through `torture` reaches a robot.
-      `gopiv`: **CONFIRMED** directly connectable (the reconciler
-      auto-connected it via ticket 006's own carried mdnsWatcher fixup,
-      live telemetry flowing — Bench evidence Part 4b). A bridge through
-      `torture` reaching a robot: **CONFIRMED** (Part 4c). `torture`
-      itself directly connectable (i.e. appearing as its own relay
-      `devices` row / a `relays[]` entry): **BLOCKED** — see Bench
-      evidence Part 4c and "What the stakeholder must do next" for the
-      exact root cause (its real mDNS name, "torture", is not a
-      well-formed 5-letter micro:bit name, so ticket 016-005's own
-      synthetic-relay-id fallback cannot mint it a `devices` row at
-      all). Left unchecked since the AC is a conjunction and this half
-      of it is not met.
+      `gopiv`: **CONFIRMED** directly connectable again this pass — the
+      reconciler auto-connected `mbserial-gopiv` with no manual
+      `session-open` at all, live telemetry advancing from the very
+      first snapshot taken this session. A bridge through `torture`
+      reaching a robot: **CONFIRMED, more cleanly than the first pass**
+      — `session-open {relayLinkId: "mbrelay-torture", name: "tigez"}`
+      produced a live `connected` session whose telemetry (`DBG:wifi
+      state=1 ...`) was byte-for-byte identical to `tigez`'s own direct
+      `mbserial-tigez` telemetry at the same moments — this time
+      unambiguously the robot actually requested, not a naming mismatch
+      as in the first pass's `gopiv`-via-`torture` finding. A benign
+      `STATUS` command round-tripped and `session-close` succeeded
+      cleanly. Checking this box per this pass's own instruction ("check
+      the box only if the bridge works, noting the device-row follow-up
+      next to it"): **`torture` still cannot mint its own `devices` row
+      / `relays[]` entry** — same root cause as the first pass (its real
+      mDNS name isn't a well-formed 5-letter micro:bit name), now filed
+      as `clasi/issues/relay-names-outside-five-letter-grammar-get-no-device-row.md`
+      (confirmed to already exist on disk from the first pass's
+      recommendation) rather than left as a bare note. See Second pass
+      Part 5.
 - [x] `npm test` is green on macOS (native) and Linux (Docker).
       macOS (node v22.23.1): 79 test files, 1486 tests, all passed, tree
       clean. Linux (Docker `node:22-bookworm`, node v22.23.2, fresh
@@ -462,6 +502,174 @@ own explicit instruction.
 **4f.** Host process stopped cleanly (`kill`); `lsof` confirmed the
 USB port released immediately after.
 
+### Second pass
+
+Bench state at session start: both relays back on the hub
+(`vevav`/`vitut`), `tovez` connected over USB
+(`/dev/cu.usbmodem2121102`), several WiFi robots powered. `lsof`
+confirmed nothing already holding any of the three attached
+`/dev/cu.usbmodem*` ports. A fresh `dns-sd -B` browse (5 s each,
+`_mbrelay._tcp`, `_mbserial._tcp`, `_robotlink._tcp`, `_robotlink._udp`)
+found: `_mbrelay._tcp torture`; `_mbserial._tcp tigez` and `gopiv`
+(`tigez` now advertises mbserial too, not just USB); **zero**
+`_robotlink.*` instances of either protocol — the WiFi/`_robotlink`
+leg is still entirely absent from this bench, matching sprint 015 and
+the first pass exactly.
+
+**Part 1 — build.** `npm run build` (protocol → host → ui typecheck):
+clean, no errors.
+
+**Part 2 — fresh state dir, host start.** A new scratchpad temp dir
+seeded with a read-only copy of the real
+`~/.local/state/robot-console/known-robots.json`. Host started:
+`ROBOT_CONSOLE_STATE_DIR=<dir> node bin/robot-console.js --port 4797 >
+<dir>/host.log 2>&1 &`. No crash this time (the first pass's 4a
+`try`/`catch` fix holds on real hardware against the same real
+`torture` fixture). Waited 30 s, then the reused scratchpad `wsclient.mjs`
+logged snapshots for 20 s to capture the first full picture.
+
+**Part 3 — UC-015, full flow, hardware present this time.** With
+`vevav`/`vitut` plugged back in, both identified within the 30 s
+window as `usb`-transport, `kind: relay`, `state: connectable`, `reason:
+"relay-identified-idle"` — exactly the shape `isEligibleIdleRelayLink`
+requires. The very first snapshot already showed `relays: [{linkId:
+<vevav-usb>, lease: "sweep", sweep: {rate: "slow"}}, {linkId:
+<vitut-usb>, lease: "sweep", sweep: {rate: "slow"}}]` — both relays
+"idle · sweeping" immediately. `sweep.rate` was `"slow"` on both for
+the entire session (relaySweeper.ts only sets `"fast"` when a relay's
+own `?` reply advertises `caps: CGT`; neither bench relay advertised it
+this session — a real hardware/firmware capability fact, not a defect).
+
+Queried the raw `sightings` table directly (`sqlite3 -readonly
+console.sqlite`, safe with the host running, read-only) rather than
+relying on the compact snapshot view: 26 rows accumulated over the
+session for every remembered robot (`vevov`, `gopiv`, `tovez`, `tigez`)
+via both relay links, e.g.:
+
+```
+7|2815|tigez|radio|usb-...202e78ea8f7143163f...|1789229607356|1|
+8|2815|tigez|radio|usb-...208939f0a5fd47f738...|1789229607646|0|no ID reply within the probe window
+```
+
+Row 7 (`ok=1`) is the successful sighting the UC promises. Confirmed
+its effect end to end via a targeted raw-JSON check (a throwaway
+one-shot ws script, since the compact client drops `lastChecked`):
+`tigez`'s device object read `"lastChecked": 1789229607646` (matching
+sighting id 8's own `at`, the most recent for that device across
+either relay) and its link via `vevav` read `"state": "connectable"`
+(promoted from `"discovered"`), `"via": {"relayLinkId": <vevav-usb>,
+"relayName": "vevav", "channel": 55, "group": 114, "addressSource":
+"derived"}` — precisely the fields the UI's "Radio via vevav ... last
+checked" row is built from. `gopiv` and `vevov` both showed the same
+promoted-link pattern via both relays.
+
+**Part 4 — UC-016, takeover.** With `vevav` showing `lease: "sweep"`
+and already having sighted `tigez` (Part 3), sent `session-open
+{relayLinkId: <vevav-usb>, name: "tigez"}` at wall-clock
+`2026-09-12T16:14:43.695Z` (script-side `Date.now()` at send). Snapshot
+timestamps (logged with `new Date().toISOString()` on receipt):
+
+| event | wall clock | elapsed since send |
+|---|---|---|
+| `session-open` sent | 16:14:43.695Z | — |
+| `lease: "session"` observed | 16:14:43.752Z | **55 ms** |
+| `send-command STATUS` sent | 16:16:25.466Z | (separate run) |
+| `session-close` sent | 16:16:26.966Z | — |
+| link reads `closed_by_user` | 16:16:27.009Z | 43 ms after close |
+| `lease` back to `"sweep"` | 16:16:28.878Z | **~1.9 s** after close |
+
+55 ms is well inside the ≤ 1.5 s bound. The benign `STATUS` command's
+`tx` was confirmed on the wire via the `notice` stream. After
+`session-close`, cross-checked the raw `sightings` table again: the
+last pre-takeover probe against `vevav`'s own link was at `at =
+1789229679904`; the next probe against that same link was at `at =
+1789229789500` — converting the wall-clock `session-close`
+(`1789229786966` ms epoch) and `lease`-resumed (`1789229788878` ms
+epoch) instants into the same clock confirms that new probe landed
+**~2.5 s after `session-close`**, i.e. strictly after the quiet period
+— zero sweep probes against the taken-over relay's own link exist for
+the entire ~103 s the session was open, and the very first new probe
+after close came only once the quiet period had elapsed. This is
+stronger, more precise evidence than a `host.log` grep would have been
+(this host's own log carries no per-event text, by design — see Part 2
+of the first pass) and it fully satisfies "the sweep aborted with no
+further sweep writes... and resumes after a quiet period."
+
+One honest side finding, same category as the first pass's Part 4c/4d
+naming mismatch: the identity that answered on this taken-over bridge
+decoded, via the on-wire `IDid` banner, to device id `1198504156` name
+`"vevov"` — a *third* distinct id, neither `tigez` (2815, the name
+requested) nor `vevav` (1031, the already-known device of that name).
+The relay was correctly tuned to exactly `tigez`'s own derived
+channel/group (55/114); something physically on that channel/group
+answered cleanly (no corruption) with a banner that happens to decode
+to `"vevov"`. Read as a bench robot-labeling/tuning mismatch on the
+physical units themselves (consistent with the first pass's finding
+for the very same channel/group), not a defect in the takeover
+mechanism — the mechanism did exactly what it was asked and completed
+well inside its time bound.
+
+**Part 5 — torture/gopiv, re-verified.** `gopiv`: reconfirmed directly
+connectable — `mbserial-gopiv` was already `state: "connected"` in the
+very first snapshot, auto-connected by the reconciler with no manual
+`session-open`, `robot_status.receivedAt` continuously advancing.
+
+Bridge through `torture`: `session-open {relayLinkId: "mbrelay-torture",
+name: "tigez"}` succeeded — `state: "connected"` within ~2 s, live
+`robot_status` advancing. This time, unlike the first pass, the
+identity was unambiguous: the `DBG:wifi state=1 ip=- peer=-:0 ...`
+telemetry line arriving on `radio-tigez-via-mbrelay-torture` was
+byte-for-byte identical, at matching moments, to the same content
+arriving on `tigez`'s own direct `mbserial-tigez` link — confirming the
+bridge reached the actual robot requested, not a mismatched neighbor.
+A benign `STATUS` command round-tripped (`tx` confirmed, `robotStatus`
+advanced) and `session-close` succeeded cleanly
+(`closed_by_user` → `unresponsive`/`"link closed"` as the link settled,
+expected once the bridge is torn down).
+
+`torture` itself still cannot mint a `devices` row / `relays[]` entry:
+`mbrelay-torture`'s own link stayed `device_id: null`, `state:
+"discovered"` throughout (confirmed via `--dump-store`) — identical
+root cause to the first pass's Part 4a (`nameToValue("torture")`
+rejects the name; the `try`/`catch` fallback leaves it unassigned by
+design, not a crash). This is filed as
+`clasi/issues/relay-names-outside-five-letter-grammar-get-no-device-row.md`
+(confirmed present on disk, created from the first pass's own
+recommendation) rather than merely noted this time.
+
+**Part 6 — USB leg, worse than the first pass.** The one physical board
+on `/dev/cu.usbmodem2121102` identified once during the 30 s startup
+window as `tovez` (chip id `2314287040`, role `NEZHA2`) with the same
+kind of corrupted telemetry the first pass found (`robot_status` fields
+missing leading characters, e.g. `"eady"`/`"ctive"`/`"cnnR"` for
+`ready`/`active`/`connR`). After ~24 s the link itself went
+`state: "unresponsive", reason: "no reply to 3 STATUS polls -- link
+presumed dead"`. Attempting a benign `send-command STATUS` against it
+then failed outright with `"LineLink.sendUnsequenced() called while not
+connected (state: \"closed\")"` — the underlying serial connection had
+already torn itself down, not merely gone quiet. `session-close`
+succeeded (state → `closed_by_user`). A fresh `session-open` on the
+same link was then attempted per this pass's own instruction (open,
+command, close): it failed to complete an identify at all —
+`state: "failed", reason: "connector: link ... produced no banner
+within the identify budget"` — no banner, not even a corrupted one.
+This is a regression *in the hardware*, not the host, across the two
+bench passes (corrupted-but-responsive → fully silent): every other
+transport this exact session — `mbserial-tigez`, `mbserial-gopiv`, the
+live radio bridges via `vevav` and `torture` — was clean and
+consistent throughout, isolating the fault to this one physical
+port/board/cable. USB port `/dev/cu.usbmodem212202` (formerly
+`.../2121302`, `vitut`'s port) also re-enumerated under a new path
+during the session — ordinary USB/micro:bit bus behavior, not
+something pursued further since it did not block any check.
+
+**Part 7.** Host process stopped cleanly (`kill` on the PID this pass
+started; the two long-running `--watch-store` processes already on
+this machine from other sessions were left untouched, per this
+ticket's own instruction not to signal processes not started here).
+`lsof`/`ls /dev/cu.usbmodem*` confirmed the ports this pass used were
+released.
+
 ## What the stakeholder must do next
 
 Every box above that stayed unchecked needs one of these — hardware
@@ -470,56 +678,48 @@ make, or (item 3) physically driving a robot, which is out of this
 ticket's own safety scope:
 
 1. **`torture` can never get a `devices` row under the current
-   synthetic-id scheme (blocks AC 6's "torture... directly connectable"
-   half, and blocks UC-015/016 too, since a `devices`-less relay link
-   still doesn't qualify — the sweep loop needs `usb` transport
-   specifically, unrelated to this, but the UI's own relay card/`relays[]`
-   entry needs the device row).** `nameToValue` only accepts the
-   standard 5-letter micro:bit name shape; `torture` (this bench's own,
-   real, presumably permanent mbrelay pool name) does not fit it and
-   never will. This needs an architecture decision — e.g. a distinct,
-   arbitrary-name-safe synthetic id scheme for `mbrelay`-fallback device
-   rows (separate from the 5-letter-name-only scheme every other
-   `deviceIdToName`/`nameToValue` call site in this codebase relies on)
-   — not a bench-ticket patch. Recommend routing this to the
-   sprint-planner as a follow-up ticket against `rearch-05`
-   (`clasi/issues/rearch-05-*.md` if it exists, or a fresh issue): ticket
-   016-005's own SUC-005 acceptance criterion ("an mbrelay pool this
-   host has never identified over USB gets a device row of its own")
-   is unsatisfiable for any relay whose real mDNS name isn't a
-   well-formed 5-letter micro:bit name — confirmed on this exact,
-   real, in-service bench fixture.
+   synthetic-id scheme.** Confirmed again, unchanged, on the second
+   pass. Already filed as
+   `clasi/issues/relay-names-outside-five-letter-grammar-get-no-device-row.md`
+   — route it to the sprint-planner as a follow-up ticket; no further
+   bench evidence is needed, the root cause and reproduction are fully
+   documented there and in this ticket's Part 4a/Part 5.
 2. **`gopiv`'s own SUC-003-style placeholder split (mbserial transport,
-   not USB).** `known-robots.json`'s imported `gopiv` placeholder (id
-   `1461`, `owned: true`) and the real board's own mbserial identify
-   (id `2175407711`, `owned: false`) are two separate `devices` rows for
-   the same physical robot — `mergeUsbPlaceholderIfAny` only merges on
-   the `usb` transport's own descriptor serial number, with no
-   equivalent for `mbserial`/`mbflash`. Same underlying "id problem"
-   `store/importers/knownRobots.ts` already documents, already found
-   once for `vevov`/`vevav` (sprint 014/015), now found a second time
-   for a second transport. Decide, as sprint 015 ticket 011's own
-   disposition asked for `vevov`: is the imported placeholder simply
-   stale (forget it via the UI, nothing to fix in code), or does the
-   placeholder-merge design need to grow a non-USB merge path too (an
-   architecture decision, not a bench-ticket patch)?
-3. **The one physical USB board's identity instability (4b).** Get a
-   fresh, stable USB cable/connector for `/dev/cu.usbmodem2121102` (or
-   swap the board) and re-run the USB identify a few times to confirm
-   whether the corruption clears — if it does, this was purely a
-   cabling issue this session happened to hit; if it persists, the
-   board itself may need attention. This blocks AC 1's USB leg (a clean,
-   reproducible identity is a precondition for calling USB "connects,
-   verified" the way the WiFi/radio legs now are).
-4. **WiFi leg of AC 1.** Get a robot actually advertising `_robotlink`
-   on the bench network (`dns-sd -B _robotlink._tcp` showed zero
-   instances this entire session, same finding as sprint 015) — no
-   WiFi robot link can exist to open until one is.
-5. **UC-015/UC-016 (AC 3/4).** Plug `vevav` or `vitut` back in (an idle
-   `usb`-transport relay is the sweep loop's only eligibility
-   criterion) and keep a remembered robot in radio range; stop any
-   other `npm run dev`/host process first, per this ticket's own
-   precondition.
-6. **"Drives" (AC 1).** Physically drive a robot over USB, WiFi, and
+   not USB).** Unchanged from the first pass — still two separate
+   `devices` rows for the same physical robot (imported placeholder id
+   `1461` vs. real mbserial identify id `2175407711`). Decide, as
+   sprint 015 ticket 011's own disposition asked for `vevov`: is the
+   imported placeholder simply stale (forget it via the UI, nothing to
+   fix in code), or does the placeholder-merge design need to grow a
+   non-USB merge path too (an architecture decision, not a bench-ticket
+   patch)?
+3. **The one physical USB board's identity instability — now worse.**
+   First pass: three identify attempts on `/dev/cu.usbmodem2121102`
+   each produced a different, visibly-corrupted-but-*responsive*
+   identity. Second pass, same physical port, different session: one
+   clean-looking identify (`tovez`) with the same style of corrupted
+   telemetry, then the link went fully unresponsive within ~24 s, and a
+   fresh `session-open` afterward produced **no banner at all** within
+   the identify budget — worse than corruption, a total loss of
+   response on this one port. Every other transport in the same session
+   (both mbserial links, both live radio bridges) stayed clean
+   throughout, so the fault is isolated to this one physical
+   port/board/cable, not the host. Get a fresh, stable USB
+   cable/connector for `/dev/cu.usbmodem2121102` (or swap the board)
+   and re-run the identify a few times — if a clean, stable identity
+   still doesn't appear, this board/port needs hardware attention
+   before AC 1's USB leg can ever be closed out on this bench.
+4. **WiFi leg of AC 1.** Still unresolved, re-confirmed on the second
+   pass: a fresh `dns-sd -B` browse for both `_robotlink._tcp` and
+   `_robotlink._udp` returned zero instances (same finding as sprint
+   015 and the first pass, despite several WiFi robots reportedly
+   powered this session — they are apparently reachable only via
+   `mbserial`, not `_robotlink`, on this bench). Get a robot actually
+   advertising `_robotlink` on the bench network — no WiFi-transport
+   robot link can exist to open until one is.
+5. **"Drives" (AC 1).** Physically drive a robot over USB, WiFi, and
    radio — this agent never sent a drive/move/motor verb, per this
    ticket's own explicit prohibition.
+
+UC-015 and UC-016 (former items 5) are now fully resolved — no further
+stakeholder action needed for those; see Second pass Part 3/4 above.

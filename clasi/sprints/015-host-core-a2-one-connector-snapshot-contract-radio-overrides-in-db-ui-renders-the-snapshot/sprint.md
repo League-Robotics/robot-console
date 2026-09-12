@@ -2,7 +2,7 @@
 id: '015'
 title: 'Host core A2: one connector, snapshot contract, radio overrides in DB, UI
   renders the snapshot'
-status: ticketing
+status: executing
 branch: sprint/015-host-core-a2-one-connector-snapshot-contract-radio-overrides-in-db-ui-renders-the-snapshot
 use-cases: []
 issues:

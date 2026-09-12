@@ -1,7 +1,7 @@
 ---
 id: '001'
 title: 'Connector: connectAndIdentify for every transport'
-status: open
+status: in-progress
 use-cases:
 - SUC-001
 - SUC-003

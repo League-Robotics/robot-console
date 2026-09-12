@@ -1,7 +1,7 @@
 ---
 id: '005'
 title: mbrelay pool device modeling and bridging over TCP
-status: open
+status: in-progress
 use-cases:
 - SUC-005
 depends-on:

@@ -329,15 +329,26 @@ export async function enumerateDaplinkDevices(options?: {
 export interface DeviceDiff {
   added: DaplinkDevice[];
   removed: DaplinkDevice[];
+  /** A serial number present in both snapshots whose content changed
+   * (e.g. its HID interface joined a serial-only entry, or vice versa)
+   * -- see this function's own doc comment for why this is its own
+   * bucket rather than a remove-then-add pair. */
+  updated: DaplinkDevice[];
 }
 
 /**
  * Pure diff between two {@link DaplinkDevice} snapshots, keyed by
  * `serialNumber`. A device whose serial number persists but whose
  * content changed (e.g. its HID interface appeared after its serial
- * port was already present) is modeled as a remove-then-add pair, so
- * callers never need to special-case a partial update separately from
- * a genuine attach/detach.
+ * port was already present -- the common case: a board's two USB
+ * personas rarely finish enumerating in the same poll) is reported as
+ * `updated`, not a remove-then-add pair (ticket 014-007 / review
+ * `01-host-device-model.md` S2.1: the old remove+add modeling caused
+ * two SWD reads, two port opens -- two resets on macOS -- and two
+ * `HELLO`s per attach). Consumers (`usbWatcher.ts`) treat `updated` as
+ * "refresh address, keep everything else (device identity, any open
+ * session) unchanged" -- never re-running SWD naming or identify for
+ * it.
  */
 export function diffDaplinkDevices(
   previous: readonly DaplinkDevice[],
@@ -348,14 +359,14 @@ export function diffDaplinkDevices(
 
   const added: DaplinkDevice[] = [];
   const removed: DaplinkDevice[] = [];
+  const updated: DaplinkDevice[] = [];
 
   for (const [serialNumber, device] of nextBySerial) {
     const previousDevice = previousBySerial.get(serialNumber);
     if (!previousDevice) {
       added.push(device);
     } else if (JSON.stringify(previousDevice) !== JSON.stringify(device)) {
-      removed.push(previousDevice);
-      added.push(device);
+      updated.push(device);
     }
   }
   for (const [serialNumber, device] of previousBySerial) {
@@ -364,13 +375,14 @@ export function diffDaplinkDevices(
     }
   }
 
-  return { added, removed };
+  return { added, removed, updated };
 }
 
 /** Snapshot + diff delivered to {@link DeviceChangeListener}s. */
 export interface DeviceChangeEvent {
   added: readonly DaplinkDevice[];
   removed: readonly DaplinkDevice[];
+  updated: readonly DaplinkDevice[];
   current: readonly DaplinkDevice[];
 }
 
@@ -435,10 +447,10 @@ export class DeviceWatcher {
    */
   async pollOnce(): Promise<DeviceChangeEvent> {
     const next = await this.listDevices();
-    const { added, removed } = diffDaplinkDevices(this.currentDevices, next);
+    const { added, removed, updated } = diffDaplinkDevices(this.currentDevices, next);
     this.currentDevices = next;
-    const event: DeviceChangeEvent = { added, removed, current: next };
-    if (added.length > 0 || removed.length > 0) {
+    const event: DeviceChangeEvent = { added, removed, updated, current: next };
+    if (added.length > 0 || removed.length > 0 || updated.length > 0) {
       for (const listener of this.listeners) {
         listener(event);
       }

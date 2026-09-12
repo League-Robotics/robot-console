@@ -318,12 +318,21 @@ describe("diffDaplinkDevices", () => {
     expect(removed).toEqual([]);
   });
 
-  it("reports a remove+add pair when a board's availability changes in place", () => {
+  it("reports an update (not a remove+add pair) when a board's availability changes in place -- ticket 014-007", () => {
     const partial = device({ serialNumber: SERIAL_BOARD_A, availability: "serial-only" });
     const full = device({ serialNumber: SERIAL_BOARD_A, availability: "full" });
-    const { added, removed } = diffDaplinkDevices([partial], [full]);
-    expect(removed).toEqual([partial]);
-    expect(added).toEqual([full]);
+    const { added, removed, updated } = diffDaplinkDevices([partial], [full]);
+    expect(added).toEqual([]);
+    expect(removed).toEqual([]);
+    expect(updated).toEqual([full]);
+  });
+
+  it("reports no update, add, or remove when the snapshot is identical (updated bucket)", () => {
+    const a = device({ serialNumber: SERIAL_BOARD_A });
+    const { added, removed, updated } = diffDaplinkDevices([a], [{ ...a }]);
+    expect(added).toEqual([]);
+    expect(removed).toEqual([]);
+    expect(updated).toEqual([]);
   });
 });
 
@@ -364,6 +373,27 @@ describe("DeviceWatcher", () => {
     await watcher.pollOnce();
 
     expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("notifies listeners on an updated-only diff (no added/removed) -- ticket 014-007", async () => {
+    const partial = device({ serialNumber: SERIAL_BOARD_A, availability: "serial-only" });
+    const full = device({ serialNumber: SERIAL_BOARD_A, availability: "full" });
+    const listDevices = vi
+      .fn<() => Promise<DaplinkDevice[]>>()
+      .mockResolvedValueOnce([partial])
+      .mockResolvedValueOnce([full]);
+    const watcher = new DeviceWatcher({ listDevices });
+    await watcher.pollOnce();
+    const listener = vi.fn();
+    watcher.onChange(listener);
+
+    const event = await watcher.pollOnce();
+
+    expect(event.added).toEqual([]);
+    expect(event.removed).toEqual([]);
+    expect(event.updated).toEqual([full]);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledWith(event);
   });
 
   it("stops notifying an unsubscribed listener", async () => {

@@ -40,19 +40,31 @@ export class WritePacer {
     private readonly scheduler: Scheduler = realScheduler,
   ) {}
 
-  /** Enqueue `write` to run once every previously-scheduled write (and
-   * its trailing pace delay) has completed. A throwing `write` does not
-   * wedge later writes — the failure is swallowed here (there is no
-   * caller to report it to; this is fire-and-forget queuing) and the
-   * chain continues. */
-  schedule(write: () => void): void {
+  /**
+   * Enqueue `write` to run once every previously-scheduled write (and
+   * its trailing pace delay) has completed. `write` may be synchronous
+   * (the four old link classes' usage: a bare callback with no return
+   * value) or return a `Promise` that settles once an async write
+   * (e.g. a callback-style socket/port write wrapped in a `Promise`)
+   * completes — either shape is paced identically.
+   *
+   * A throwing/rejecting `write` does not wedge later writes: the
+   * chain always continues. Without an `onError` callback the failure
+   * is swallowed exactly as before (the four old link classes' own
+   * `paceWrite` passes none, matching `pacing.ts`'s historical
+   * "there is no caller to report it to" posture). A caller that DOES
+   * want to know (`LineLink`, ticket 014-005 — review
+   * `02-host-transport.md` §5.8/§6: "write failures are invisible ...
+   * have `schedule()` accept an async write and report failures via a
+   * callback instead of swallowing") passes `onError`, invoked with the
+   * failure instead of it vanishing silently.
+   */
+  schedule(write: () => void | Promise<void>, onError?: (err: Error) => void): void {
     this.chain = this.chain
-      .then(() => {
-        write();
-      })
+      .then(() => write())
       .then(() => this.scheduler.delay(this.paceMs))
-      .catch(() => {
-        // Swallow: one bad write must not stall every later paced write.
+      .catch((err: unknown) => {
+        onError?.(err instanceof Error ? err : new Error(String(err)));
       });
   }
 }

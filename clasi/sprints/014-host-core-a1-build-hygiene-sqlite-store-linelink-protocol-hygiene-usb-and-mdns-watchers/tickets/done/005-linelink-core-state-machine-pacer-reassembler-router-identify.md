@@ -1,7 +1,7 @@
 ---
 id: '005'
 title: 'LineLink core: state machine, pacer, reassembler, router, identify'
-status: in-progress
+status: done
 use-cases:
 - SUC-001
 depends-on:
@@ -33,19 +33,19 @@ Design Rationale, "LineLink ships as a new, parallel module").
 
 ## Acceptance Criteria
 
-- [ ] One fake `ByteStream` harness drives the core suite: connect /
+- [x] One fake `ByteStream` harness drives the core suite: connect /
       second connect refused / identify banner / identify null on
       timeout / identify null on closed link (no rejection) / lines
       during identify still routed / ack-nack resend ordering / close
       idempotent / `onClose` fires on stream close without error /
       write error surfaces via `onError`.
-- [ ] `identify()` never rejects: returns `null` on closed/timeout;
+- [x] `identify()` never rejects: returns `null` on closed/timeout;
       re-entrant calls share one wait.
-- [ ] `connect({timeoutMs, signal})` is bounded for every transport.
-- [ ] `WritePacer.schedule` accepts an async write and reports failures
+- [x] `connect({timeoutMs, signal})` is bounded for every transport.
+- [x] `WritePacer.schedule` accepts an async write and reports failures
       via a callback → `onError`.
-- [ ] `lineStream` has a max-buffer guard.
-- [ ] Uses protocol's `receive()` facade (ticket 004) for decode/classify
+- [x] `lineStream` has a max-buffer guard.
+- [x] Uses protocol's `receive()` facade (ticket 004) for decode/classify
       instead of re-implementing the ordering.
 
 ## Testing

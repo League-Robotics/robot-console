@@ -1,7 +1,7 @@
 ---
 id: '006'
 title: mbserial verification and registry-aware radio address resolution
-status: open
+status: in-progress
 use-cases:
 - SUC-006
 depends-on:

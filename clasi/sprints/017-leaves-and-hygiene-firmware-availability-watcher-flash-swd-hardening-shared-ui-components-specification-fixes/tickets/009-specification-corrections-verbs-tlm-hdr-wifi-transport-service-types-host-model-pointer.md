@@ -1,9 +1,10 @@
 ---
-id: '009'
+id: 009
 title: 'Specification corrections: verbs, TLM HDR, WiFi transport, service types,
   host-model pointer'
-status: open
-use-cases: [SUC-008]
+status: in-progress
+use-cases:
+- SUC-008
 depends-on: []
 github-issue: ''
 issue: rearch-18-specification-stale-statements.md

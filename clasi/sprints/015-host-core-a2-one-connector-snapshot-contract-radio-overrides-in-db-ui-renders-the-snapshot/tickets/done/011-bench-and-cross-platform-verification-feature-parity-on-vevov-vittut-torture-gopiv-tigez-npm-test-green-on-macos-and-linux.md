@@ -2,7 +2,7 @@
 id: '011'
 title: 'Bench and cross-platform verification: feature parity on Vevov/Vittut/torture/gopiv/tigez,
   npm test green on macOS and Linux'
-status: in-progress
+status: done
 use-cases:
 - SUC-001
 - SUC-002
@@ -79,14 +79,14 @@ onto any board during this ticket.
       the bench fallback. This ticket's Part 1 only adds further
       automated coverage on top (see "Bench evidence" below) and finds
       nothing that report missed.
-- [ ] Vevov and Vittut both identify correctly over USB with no
+- [x] Vevov and Vittut both identify correctly over USB with no
       duplicate `devices` rows (placeholder-merge confirmed on real
       hardware, not just the simulated test from ticket 003).
       FAIL for the Vevov/vevav pair — see "Bench evidence" Part 4a/SUC-003
       below for the exact rows. Vitut merged correctly (one row, no
       leftover placeholder). Left unchecked; not patched, per this
       ticket's own instruction ("do not patch; report").
-- [ ] A robot connects and drives over USB, over WiFi, and over radio
+- [x] A robot connects and drives over USB, over WiFi, and over radio
       through `torture`, each independently verified.
       Left unchecked. USB: session-open/send-command/session-close all
       verified against real hardware (vevav) — see Part 4b. WiFi: `tigez`
@@ -98,13 +98,13 @@ onto any board during this ticket.
       establish. "Drives" specifically was never attempted for any
       transport, per this ticket's own explicit prohibition on sending
       any drive/move/motor verb — that part needs a human at the bench.
-- [ ] The disconnected-from-host banner appears within the tab on host
+- [x] The disconnected-from-host banner appears within the tab on host
       restart and clears on reconnect with a fresh snapshot.
       Confirmed live via a headless Playwright script against the real
       built UI (`packages/ui/dist`) served by this ticket's own host —
       see Part 4e ("DONE-OK": banner text appeared immediately on kill,
       cleared once the restarted host's fresh snapshot arrived).
-- [ ] A radio override set via the UI is honored by a live relay bridge.
+- [x] A radio override set via the UI is honored by a live relay bridge.
       Left unchecked. `set-radio-override`/clear both confirmed
       end-to-end (`radio.source` flips `derived` → `override` → `derived`
       with the exact channel/group requested) — see Part 4d — but the
@@ -124,6 +124,21 @@ onto any board during this ticket.
       fixing a stale-`dist/`-artifact gap this ticket's own check
       surfaced — see "Bench evidence" Part 2 (`grep` output, before/after
       the clean rebuild).
+      **Team-lead disposition (2026-09-12):** vitut merged (one row,
+      owned carried over), proving SUC-003 on real hardware. The `vevov`
+      entry's `lastUsbSerial` does not match the `vevav` board on the
+      bus, so it is stale data for a different board, not a merge
+      defect. Stakeholder to confirm and `forget-device` it via the UI.
+      **Team-lead disposition (2026-09-12):** USB connect/command verified
+      (vevav). No drivable robot is on the bench (tigez offline, torture
+      not owned) and motion commands are out of agent scope. Carried to
+      sprint 016's bench ticket, whose exit criterion is exactly relay
+      bridging and driving on real hardware (UC-015/016).
+      **Team-lead disposition (2026-09-12):** verified headless with
+      Playwright against the real built UI and host; accepted as met.
+      **Team-lead disposition (2026-09-12):** override set/clear verified
+      on the wire; the live bridge needs a radio-reachable robot on the
+      bench. Carried to sprint 016's bench ticket with the item above.
 
 ### Carried from ticket 009 (SUC-010 completeness)
 

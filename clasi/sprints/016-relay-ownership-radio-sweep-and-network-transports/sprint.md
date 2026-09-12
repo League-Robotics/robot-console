@@ -98,6 +98,12 @@ parallel with the rest of the sprint.
   (rearch-12); the firmware PR itself lands in the
   `microbit-radio-relay` repo, not this one.
 
+- Carried from sprint 015 ticket 011 (bench items needing a drivable
+  robot): (1) a robot connects and drives over USB, WiFi, and radio via
+  a relay, each verified; (2) a radio override set in the UI is honored
+  by a live relay bridge. Stakeholder must place a robot (e.g. tigez)
+  on the bench and stop `npm run dev` before the bench ticket runs.
+
 ### Out of Scope
 
 - Firmware availability watcher, flash/SWD hardening, UI component

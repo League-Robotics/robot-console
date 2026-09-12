@@ -1,6 +1,8 @@
 ---
-status: pending
+status: in-progress
 sprint: '017'
+tickets:
+- 017-005
 ---
 
 # Relays whose mDNS name is not a valid five-letter micro:bit name never get a `devices` row

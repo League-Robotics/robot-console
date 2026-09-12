@@ -1,6 +1,8 @@
 ---
-status: pending
+status: in-progress
 sprint: '017'
+tickets:
+- 017-009
 ---
 
 # specification.md: correct the statements the code review found stale, and point §4 at architecture.md

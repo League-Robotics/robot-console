@@ -1,6 +1,8 @@
 ---
-status: pending
+status: in-progress
 sprint: '017'
+tickets:
+- 017-001
 ---
 
 # Firmware config: import `.env` firmware sources into `settings` instead of resolving `.env` relative to the module

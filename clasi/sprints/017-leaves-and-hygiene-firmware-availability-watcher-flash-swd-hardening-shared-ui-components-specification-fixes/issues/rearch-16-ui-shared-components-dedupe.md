@@ -1,6 +1,9 @@
 ---
-status: pending
+status: in-progress
 sprint: '017'
+tickets:
+- 017-007
+- 017-008
 ---
 
 # UI: extract the shared components that three pages currently copy

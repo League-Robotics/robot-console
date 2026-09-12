@@ -1,6 +1,8 @@
 ---
-status: pending
+status: in-progress
 sprint: '017'
+tickets:
+- 017-002
 ---
 
 # Firmware availability as a watcher task: ETag, optional token, backoff, and a useful no-asset message

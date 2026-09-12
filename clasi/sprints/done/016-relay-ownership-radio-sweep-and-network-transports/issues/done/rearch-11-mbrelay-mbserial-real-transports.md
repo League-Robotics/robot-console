@@ -1,9 +1,9 @@
 ---
-status: in-progress
+status: done
 sprint: '016'
 tickets:
-- 016-005
-- 016-006
+- '005'
+- '006'
 ---
 
 # Make the remote mbrelay and mbserial transports real: discovered as links, connectable through the one connector

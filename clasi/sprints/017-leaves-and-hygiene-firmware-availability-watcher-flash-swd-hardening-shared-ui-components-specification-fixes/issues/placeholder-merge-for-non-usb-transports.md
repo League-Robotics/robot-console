@@ -1,6 +1,8 @@
 ---
-status: pending
+status: in-progress
 sprint: '017'
+tickets:
+- 017-006
 ---
 
 # Known-robots placeholder rows only merge on USB identification; mbserial/WiFi identifies leave a duplicate

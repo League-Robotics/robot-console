@@ -1,7 +1,7 @@
 ---
 id: '003'
 title: 'Relay sweeper: probe remembered robots over radio, sightings, rate limiting'
-status: open
+status: in-progress
 use-cases:
 - SUC-003
 depends-on:

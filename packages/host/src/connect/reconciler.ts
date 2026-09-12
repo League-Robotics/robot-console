@@ -202,6 +202,19 @@ export function plan(rows: ReconcilerRows, now: number): Job[] {
   }
 
   for (const device of rows.devices) {
+    // Ticket 016-001: once a device's kind is known to be `relay`, its own
+    // usb link is never an automatic-pass candidate again -- architecture.md
+    // §7.2 ("no auto-opened console session on a relay any more"). A
+    // freshly-enumerated, not-yet-identified board has no way to be
+    // `kind === 'relay'` yet (`watchers/usbWatcher.ts`'s SWD-naming step
+    // seeds it `kind: 'robot'` as a provisional guess, before this device's
+    // first real identify ever runs), so this guard never blocks that
+    // one-time first identify -- only every *subsequent* automatic pass
+    // once `connect/connector.ts`'s own identify has corrected `kind` to
+    // `'relay'`.
+    if (device.kind === "relay") {
+      continue;
+    }
     const links = linksByDevice.get(device.id) ?? [];
     if (deviceHasActiveLink(links, openSessionLinkIds)) {
       continue;
@@ -413,6 +426,33 @@ export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler 
   const sessions = new Map<string, ConnectedSession>();
   let stopped = false;
 
+  /** Ticket 016-001: the one place a relay's one-time identify returns to
+   * idle -- see this module's own doc comment on why the executor (not
+   * `connect/connector.ts`) owns this step: `connector.ts`'s
+   * `connectAndIdentify` contract stays "identify, open a session, mark
+   * connected" for every transport alike (unchanged, still covered by
+   * `connector.test.ts`'s own relay-identify case); it is this executor's
+   * `runConnect` that notices the resolved session's own
+   * `classification.type === 'relay'` and immediately closes what
+   * `connector.ts` just opened, leaving no `sessions` row and the link
+   * back in `connectable` rather than `connected`. `relay_leases` is
+   * never involved here (a relay's *own* usb link uses `board_owner`
+   * exclusivity, already released by `connector.ts`'s own `finally`
+   * before this ever runs) -- only a `radio`/`mbrelay` *child* link
+   * touches `relay_leases`, untouched by this ticket. The link state
+   * this settles on is `connectable` (with a reason), not a new state
+   * name -- architecture.md §5's machine already treats `connectable` as
+   * "idle, eligible" and this ticket's own `device.kind === 'relay'`
+   * guard above is what keeps `plan()` from ever treating that
+   * `connectable` relay link as an automatic-connect candidate again, so
+   * no new state was needed to satisfy "never re-identified over a
+   * data-plane port" (Step 7 open question 2). */
+  async function returnRelayToIdle(session: ConnectedSession): Promise<void> {
+    await session.link.close();
+    store.closeSession(session.linkId);
+    store.setLinkState({ id: session.linkId, state: "connectable", at: now(), reason: "relay-identified-idle" });
+  }
+
   function runConnect(linkId: string): Promise<void> {
     if (inFlight.has(linkId)) {
       return Promise.resolve();
@@ -428,7 +468,11 @@ export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler 
       .connectAndIdentify(toConnectorLinkRow(raw), controller.signal)
       .then(
         (session) => {
+          if (session.classification.type === "relay") {
+            return returnRelayToIdle(session);
+          }
           sessions.set(linkId, session);
+          return undefined;
         },
         () => {
           // The connector already records `links.state = 'failed'` with

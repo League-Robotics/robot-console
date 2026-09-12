@@ -46,6 +46,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { nameToRadioAddress } from "@robot-console/protocol";
 import type { RadioSourceWire } from "@robot-console/host/src/wsMessages.js";
 import { useWsActions } from "../ws/WsProvider";
+import { Modal } from "./Modal";
 import "./FlashDialog.css";
 import "./CredentialsDialog.css";
 
@@ -82,18 +83,6 @@ export function RadioAddressDialog({ deviceId, name, radio, triggerClassName = "
     setError(null);
   }, [open, name, radio]);
 
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog || !open) {
-      return;
-    }
-    if (typeof dialog.showModal === "function") {
-      dialog.showModal();
-    } else {
-      dialog.setAttribute("open", "");
-    }
-  }, [open]);
-
   function handleSubmit(event: FormEvent): void {
     event.preventDefault();
     const ch = Number(channel);
@@ -124,61 +113,60 @@ export function RadioAddressDialog({ deviceId, name, radio, triggerClassName = "
       >
         Set Radio
       </button>
-      {open && (
-        <dialog
-          ref={dialogRef}
-          className="flash-dialog"
-          aria-label="Set radio address"
-          data-testid="radio-address-dialog"
-          onClose={() => setOpen(false)}
-          onCancel={(event) => {
-            event.preventDefault();
-            setOpen(false);
-          }}
-        >
-          <div className="flash-dialog-panel credentials-panel">
-            <div className="flash-dialog-header">
-              <h2>Radio address for {name}</h2>
-              <button type="button" className="flash-dialog-close" onClick={() => setOpen(false)} aria-label="Close">
-                ×
+      <Modal
+        open={open}
+        dialogRef={dialogRef}
+        className="flash-dialog"
+        ariaLabel="Set radio address"
+        testId="radio-address-dialog"
+        onClose={() => setOpen(false)}
+        onCancel={(event) => {
+          event.preventDefault();
+          setOpen(false);
+        }}
+      >
+        <div className="flash-dialog-panel credentials-panel">
+          <div className="flash-dialog-header">
+            <h2>Radio address for {name}</h2>
+            <button type="button" className="flash-dialog-close" onClick={() => setOpen(false)} aria-label="Close">
+              ×
+            </button>
+          </div>
+          <form className="credentials-form" onSubmit={handleSubmit}>
+            <label>
+              <span>Channel</span>
+              <input data-testid="radio-channel" inputMode="numeric" value={channel} onChange={(event) => setChannel(event.target.value)} />
+            </label>
+            <label>
+              <span>Group</span>
+              <input data-testid="radio-group" inputMode="numeric" value={group} onChange={(event) => setGroup(event.target.value)} />
+            </label>
+            <p className="credentials-note">
+              This is the address the console uses for {name} when connecting through a relay. The robot's own
+              radio address is fixed when it is flashed (the name-derived default is {derived.channel}/{derived.group};
+              the shared template image uses 55/114), so set this to match the build on the robot.
+            </p>
+            {error && (
+              <p className="credentials-error" role="alert" data-testid="radio-error">
+                {error}
+              </p>
+            )}
+            {saved && (
+              <p className="credentials-result credentials-result-ok" role="status" data-testid="radio-saved">
+                Saved. The next relay connection to {name} will use channel {channel}, group {group}.
+              </p>
+            )}
+            <div className="credentials-actions">
+              <button type="submit" className="credentials-primary" data-testid="radio-save">
+                Save
+              </button>
+              <button type="button" onClick={() => setOpen(false)}>
+                Close
               </button>
             </div>
-            <form className="credentials-form" onSubmit={handleSubmit}>
-              <label>
-                <span>Channel</span>
-                <input data-testid="radio-channel" inputMode="numeric" value={channel} onChange={(event) => setChannel(event.target.value)} />
-              </label>
-              <label>
-                <span>Group</span>
-                <input data-testid="radio-group" inputMode="numeric" value={group} onChange={(event) => setGroup(event.target.value)} />
-              </label>
-              <p className="credentials-note">
-                This is the address the console uses for {name} when connecting through a relay. The robot's own
-                radio address is fixed when it is flashed (the name-derived default is {derived.channel}/{derived.group};
-                the shared template image uses 55/114), so set this to match the build on the robot.
-              </p>
-              {error && (
-                <p className="credentials-error" role="alert" data-testid="radio-error">
-                  {error}
-                </p>
-              )}
-              {saved && (
-                <p className="credentials-result credentials-result-ok" role="status" data-testid="radio-saved">
-                  Saved. The next relay connection to {name} will use channel {channel}, group {group}.
-                </p>
-              )}
-              <div className="credentials-actions">
-                <button type="submit" className="credentials-primary" data-testid="radio-save">
-                  Save
-                </button>
-                <button type="button" onClick={() => setOpen(false)}>
-                  Close
-                </button>
-              </div>
-            </form>
-          </div>
-        </dialog>
-      )}
+          </form>
+        </div>
+      </Modal>
     </>
   );
 }

@@ -102,6 +102,7 @@ import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useFlashProgress, useSendable } from "../ws/WsProvider";
 import { canBeFlashed } from "../deviceDisplay";
 import { FlashControls } from "./FlashControls";
+import { Modal } from "./Modal";
 import "./FlashDialog.css";
 
 export interface FlashDialogProps {
@@ -171,22 +172,6 @@ export function FlashDialog({
   useEffect(() => {
     setOpen(false);
   }, [link.id]);
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) {
-      return;
-    }
-    if (open) {
-      if (typeof dialog.showModal === "function") {
-        dialog.showModal();
-      } else {
-        // jsdom fallback -- see this module's doc comment.
-        dialog.setAttribute("open", "");
-      }
-      dialog.focus();
-    }
-  }, [open]);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -282,33 +267,33 @@ export function FlashDialog({
       >
         {triggerLabel}
       </button>
-      {open && (
-        <dialog
-          ref={dialogRef}
-          className="flash-dialog"
-          aria-label={`Flash ${deviceLabel}`}
-          tabIndex={-1}
-          onCancel={handleCancel}
-          onClose={handleDialogClose}
-          onClick={handleBackdropClick}
-          onKeyDown={handleKeyDown}
-        >
-          <div className="flash-dialog-panel">
-            <div className="flash-dialog-header">
-              <h2>Flash {deviceLabel}</h2>
-              <button type="button" className="flash-dialog-close" onClick={close}>
-                Close
-              </button>
-            </div>
-            {showReflashWarning && (
-              <p className="device-flash-hint flash-dialog-warning" role="note">
-                Reflashing "{deviceLabel}" will interrupt whatever it's currently running.
-              </p>
-            )}
-            <FlashControls link={link} />
+      <Modal
+        open={open}
+        dialogRef={dialogRef}
+        className="flash-dialog"
+        ariaLabel={`Flash ${deviceLabel}`}
+        tabIndex={-1}
+        focusOnOpen
+        onCancel={handleCancel}
+        onClose={handleDialogClose}
+        onClick={handleBackdropClick}
+        onKeyDown={handleKeyDown}
+      >
+        <div className="flash-dialog-panel">
+          <div className="flash-dialog-header">
+            <h2>Flash {deviceLabel}</h2>
+            <button type="button" className="flash-dialog-close" onClick={close}>
+              Close
+            </button>
           </div>
-        </dialog>
-      )}
+          {showReflashWarning && (
+            <p className="device-flash-hint flash-dialog-warning" role="note">
+              Reflashing "{deviceLabel}" will interrupt whatever it's currently running.
+            </p>
+          )}
+          <FlashControls link={link} />
+        </div>
+      </Modal>
     </>
   );
 }

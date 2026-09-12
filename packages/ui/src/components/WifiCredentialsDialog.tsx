@@ -27,6 +27,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useSendable, useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
+import { Modal } from "./Modal";
 import "./FlashDialog.css";
 import "./CredentialsDialog.css";
 
@@ -98,20 +99,6 @@ export function WifiCredentialsDialog({ linkId, linkOpen, name, triggerClassName
   }, [open, stored?.ssid]);
 
   useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) {
-      return;
-    }
-    if (open) {
-      if (typeof dialog.showModal === "function") {
-        dialog.showModal();
-      } else {
-        dialog.setAttribute("open", "");
-      }
-    }
-  }, [open]);
-
-  useEffect(() => {
     if (result) {
       setWriting(false);
     }
@@ -158,94 +145,93 @@ export function WifiCredentialsDialog({ linkId, linkOpen, name, triggerClassName
       >
         Set Wi-Fi
       </button>
-      {open && (
-        <dialog
-          ref={dialogRef}
-          className="flash-dialog"
-          aria-label="Set Wi-Fi credentials"
-          data-testid="wifi-credentials-dialog"
-          onClose={close}
-          onCancel={(event) => {
-            event.preventDefault();
-            close();
-          }}
-        >
-          <div className="flash-dialog-panel credentials-panel">
-            <div className="flash-dialog-header">
-              <h2>Set Wi-Fi on {name}</h2>
-              <button type="button" className="flash-dialog-close" onClick={close} aria-label="Close">
-                ×
+      <Modal
+        open={open}
+        dialogRef={dialogRef}
+        className="flash-dialog"
+        ariaLabel="Set Wi-Fi credentials"
+        testId="wifi-credentials-dialog"
+        onClose={close}
+        onCancel={(event) => {
+          event.preventDefault();
+          close();
+        }}
+      >
+        <div className="flash-dialog-panel credentials-panel">
+          <div className="flash-dialog-header">
+            <h2>Set Wi-Fi on {name}</h2>
+            <button type="button" className="flash-dialog-close" onClick={close} aria-label="Close">
+              ×
+            </button>
+          </div>
+          <form className="credentials-form" onSubmit={handleSubmit}>
+            <label>
+              <span>Network name</span>
+              <input
+                data-testid="wifi-ssid"
+                value={ssid}
+                maxLength={WIFI_SSID_MAX}
+                autoComplete="off"
+                onChange={(event) => setSsid(event.target.value)}
+              />
+            </label>
+            <label>
+              <span>Password</span>
+              <span className="credentials-password-row">
+                <input
+                  data-testid="wifi-password"
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  maxLength={WIFI_PASSWORD_MAX}
+                  autoComplete="off"
+                  placeholder={hasStored ? "saved — leave blank to keep" : ""}
+                  onChange={(event) => setPassword(event.target.value)}
+                />
+                <button type="button" className="credentials-show" onClick={() => setShowPassword((value) => !value)}>
+                  {showPassword ? "Hide" : "Show"}
+                </button>
+              </span>
+            </label>
+            <p className="credentials-note">
+              {stored?.source === "stored"
+                ? "Saved on this computer. "
+                : stored?.source === "env"
+                  ? "From this computer's configuration. "
+                  : "No network saved on this computer yet. "}
+              Written to the robot's credential slot 0 over the open link; the robot uses it after its
+              next power cycle.
+            </p>
+            {error && (
+              <p className="credentials-error" role="alert" data-testid="wifi-error">
+                {error}
+              </p>
+            )}
+            {result && (
+              <p
+                className={result.ok ? "credentials-result credentials-result-ok" : "credentials-result credentials-error"}
+                role="status"
+                data-testid="wifi-result"
+              >
+                {result.message}
+              </p>
+            )}
+            <div className="credentials-actions">
+              <button
+                type="submit"
+                className="credentials-primary"
+                data-testid="wifi-write"
+                disabled={!linkOpen || writing || !sendable}
+                title={!sendable ? "Disconnected from the host" : linkOpen ? undefined : "Open a link to the robot first"}
+              >
+                {writing ? "Writing…" : "Save and write to robot"}
+              </button>
+              <button type="button" onClick={close}>
+                Close
               </button>
             </div>
-            <form className="credentials-form" onSubmit={handleSubmit}>
-              <label>
-                <span>Network name</span>
-                <input
-                  data-testid="wifi-ssid"
-                  value={ssid}
-                  maxLength={WIFI_SSID_MAX}
-                  autoComplete="off"
-                  onChange={(event) => setSsid(event.target.value)}
-                />
-              </label>
-              <label>
-                <span>Password</span>
-                <span className="credentials-password-row">
-                  <input
-                    data-testid="wifi-password"
-                    type={showPassword ? "text" : "password"}
-                    value={password}
-                    maxLength={WIFI_PASSWORD_MAX}
-                    autoComplete="off"
-                    placeholder={hasStored ? "saved — leave blank to keep" : ""}
-                    onChange={(event) => setPassword(event.target.value)}
-                  />
-                  <button type="button" className="credentials-show" onClick={() => setShowPassword((value) => !value)}>
-                    {showPassword ? "Hide" : "Show"}
-                  </button>
-                </span>
-              </label>
-              <p className="credentials-note">
-                {stored?.source === "stored"
-                  ? "Saved on this computer. "
-                  : stored?.source === "env"
-                    ? "From this computer's configuration. "
-                    : "No network saved on this computer yet. "}
-                Written to the robot's credential slot 0 over the open link; the robot uses it after its
-                next power cycle.
-              </p>
-              {error && (
-                <p className="credentials-error" role="alert" data-testid="wifi-error">
-                  {error}
-                </p>
-              )}
-              {result && (
-                <p
-                  className={result.ok ? "credentials-result credentials-result-ok" : "credentials-result credentials-error"}
-                  role="status"
-                  data-testid="wifi-result"
-                >
-                  {result.message}
-                </p>
-              )}
-              <div className="credentials-actions">
-                <button
-                  type="submit"
-                  className="credentials-primary"
-                  data-testid="wifi-write"
-                  disabled={!linkOpen || writing || !sendable}
-                  title={!sendable ? "Disconnected from the host" : linkOpen ? undefined : "Open a link to the robot first"}
-                >
-                  {writing ? "Writing…" : "Save and write to robot"}
-                </button>
-                <button type="button" onClick={close}>
-                  Close
-                </button>
-              </div>
-            </form>
-          </div>
-        </dialog>
-      )}
+          </form>
+        </div>
+      </Modal>
     </>
   );
 }

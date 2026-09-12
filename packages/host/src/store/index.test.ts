@@ -450,6 +450,34 @@ describe("Store: mergeDevice", () => {
     }
   });
 
+  it("carries usb_serial from the placeholder when the real row has none, but never clobbers a usb_serial the real row already has (bench defect 2)", () => {
+    const { store } = freshStore();
+    try {
+      // First pairing: the real row has no usb_serial of its own yet --
+      // the placeholder's own (a known-robots.json import's own
+      // "last seen via USB" hint, per connector.ts's own doc comment)
+      // survives the merge instead of being dropped.
+      store.upsertDevice({ id: 1031, name: "vevov", kind: "robot", usbSerial: "0012345678", at: 100 });
+      store.upsertDevice({ id: 536019796, name: "vevav", kind: "robot", at: 200 });
+      store.mergeDevice(1031, 536019796, 200);
+      expect(store.snapshotRows().devices[0]).toMatchObject({ id: 536019796, usb_serial: "0012345678" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("never clobbers the real row's own already-set usb_serial with the placeholder's", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1031, name: "vevov", kind: "robot", usbSerial: "old-serial", at: 100 });
+      store.upsertDevice({ id: 536019796, name: "vevav", kind: "robot", usbSerial: "real-serial", at: 200 });
+      store.mergeDevice(1031, 536019796, 200);
+      expect(store.snapshotRows().devices[0]).toMatchObject({ id: 536019796, usb_serial: "real-serial" });
+    } finally {
+      store.close();
+    }
+  });
+
   it("is a no-op (rolls back, changes nothing) when either id has no devices row, or the ids are equal", () => {
     const { store } = freshStore();
     try {

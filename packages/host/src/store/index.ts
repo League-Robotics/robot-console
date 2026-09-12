@@ -543,9 +543,14 @@ export class Store {
    * device identifies (over USB, correlated by `usb_serial` — see
    * `connect/connector.ts`'s own caller), its rows must collapse into
    * one. `owned` is OR'd, `first_seen` takes the earlier of the two,
-   * and `radio_channel`/`radio_group`/`radio_source` are filled from
-   * `fromId` only where `intoId` does not already have them — the real
-   * row's own already-set values are never clobbered.
+   * `radio_channel`/`radio_group`/`radio_source` are filled from
+   * `fromId` only where `intoId` does not already have them, and
+   * `usb_serial` keeps `intoId`'s own value if it has one, else falls
+   * back to `fromId`'s (bench defect 2, 2026-09-12: a known-robots
+   * placeholder's `usb_serial` is "last seen via USB" telemetry worth
+   * keeping if the real row has none of its own yet) — the real row's
+   * own already-set values are never clobbered, for any of these
+   * columns.
    *
    * `node:sqlite` enforces `links.device_id REFERENCES devices(id)`
    * (this module's own doc comment, "Foreign keys are enforced"), so
@@ -568,12 +573,13 @@ export class Store {
         radio_channel: number | null;
         radio_group: number | null;
         radio_source: RadioSource;
+        usb_serial: string | null;
       };
       const fromRow = this.db
-        .prepare("SELECT owned, first_seen, radio_channel, radio_group, radio_source FROM devices WHERE id = ?")
+        .prepare("SELECT owned, first_seen, radio_channel, radio_group, radio_source, usb_serial FROM devices WHERE id = ?")
         .get(fromId) as MergeableDeviceRow | undefined;
       const intoRow = this.db
-        .prepare("SELECT owned, first_seen, radio_channel, radio_group, radio_source FROM devices WHERE id = ?")
+        .prepare("SELECT owned, first_seen, radio_channel, radio_group, radio_source, usb_serial FROM devices WHERE id = ?")
         .get(intoId) as MergeableDeviceRow | undefined;
       if (!fromRow || !intoRow) {
         this.db.exec("ROLLBACK");
@@ -585,13 +591,14 @@ export class Store {
       const radioChannel = intoRow.radio_channel ?? fromRow.radio_channel;
       const radioGroup = intoRow.radio_group ?? fromRow.radio_group;
       const radioSource = intoRow.radio_source ?? fromRow.radio_source;
+      const usbSerial = intoRow.usb_serial ?? fromRow.usb_serial;
 
       this.db
         .prepare(
-          `UPDATE devices SET owned = ?, first_seen = ?, radio_channel = ?, radio_group = ?, radio_source = ?, last_seen = ?
+          `UPDATE devices SET owned = ?, first_seen = ?, radio_channel = ?, radio_group = ?, radio_source = ?, usb_serial = ?, last_seen = ?
            WHERE id = ?`,
         )
-        .run(owned, firstSeen, radioChannel, radioGroup, radioSource, at, intoId);
+        .run(owned, firstSeen, radioChannel, radioGroup, radioSource, usbSerial, at, intoId);
 
       const linkRows = this.db.prepare("SELECT id FROM links WHERE device_id = ?").all(fromId) as Array<{ id: string }>;
       this.db.prepare("UPDATE links SET device_id = ? WHERE device_id = ?").run(intoId, fromId);

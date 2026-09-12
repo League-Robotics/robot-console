@@ -115,6 +115,7 @@
 import {
   classifyBanner,
   deviceIdToName,
+  nameToValue,
   type DeviceClassification,
   type ParsedBanner,
 } from "@robot-console/protocol";
@@ -632,33 +633,58 @@ function mergeUsbPlaceholderIfAny(store: Store, usbSerial: string | undefined, d
  * disagreement, per its own doc comment's `vevov`/`vevav` case) but a
  * robot first identified over `mbserial`/`wifi` has no USB serial to
  * correlate against at all, so a `known-robots.json`-seeded placeholder
- * for that robot (synthetic id, no `usb_serial`) and its real row never
+ * for that robot (synthetic id, no true chip id) and its real row never
  * collapse -- seen on the bench for `gopiv` (placeholder 1461 vs. real
  * 2175407711, sprint 016 ticket 008).
  *
- * Falls back to a `name` match, restricted to placeholder-shaped
- * candidates: `kind === 'robot'` (a synthetic negative-id `kind='relay'`
- * row -- ticket 017-005's mDNS hash-fallback rows -- must never be
- * mistaken for a robot placeholder here, even on a name collision) and
- * `usb_serial IS NULL` (a row that already carries a `usb_serial` has
- * either already been correlated by the check above, or is a
- * known-robots placeholder whose USB serial is only a display hint --
- * see the existing regression test where a `usb_serial`-bearing
- * placeholder sharing the new device's name is deliberately left
- * untouched). Fires only when *exactly one* such row shares `name`;
- * two or more (an ambiguous case -- e.g. a stale double-import) is left
- * alone rather than guessed at, same as a name mismatch (the
- * `vevov`/`vevav` case) -- `forget-device` remains the manual escape
- * hatch either way.
+ * ### Bench defect 2 (2026-09-12): the original `usb_serial IS NULL`
+ * filter never matched a real imported placeholder
+ *
+ * The first cut of this function (above, sprint 017 ticket 006) matched
+ * placeholder candidates by `usb_serial IS NULL`, reasoning that a row
+ * already carrying a `usb_serial` must have already been correlated.
+ * That reasoning was wrong: `store/importers/knownRobots.ts` writes the
+ * JSON's own `lastUsbSerial` into every imported placeholder's
+ * `usb_serial` column unconditionally (`KnownRobotRecord.lastUsbSerial`
+ * is a required field, not optional) -- so a placeholder imported from a
+ * real `known-robots.json` almost always *does* carry a `usb_serial`,
+ * and the old filter excluded exactly the rows it was meant to find.
+ * Confirmed live: `gopiv` 1461 (imported, `owned=1`, `usb_serial` set)
+ * never merged with the real row 2175407711 identified over
+ * `mbserial`/`wifi`; same for `tovez` (2665/2314287040) and `vevov`
+ * (1031/1198504156).
+ *
+ * The fix drops the `usb_serial` test entirely and instead defines a
+ * placeholder by **how it was constructed**: `store/importers/
+ * knownRobots.ts` always seeds a robot placeholder's id as exactly
+ * `nameToValue(name)` (the same convention `watchers/mdnsWatcher.ts`'s
+ * `createRelayDeviceIfAbsent` uses for a relay pool row -- see that
+ * function's own doc comment). A row's `usb_serial` is "last seen via
+ * USB" telemetry, not an identity claim, so it plays no part in this
+ * decision either way. Since `nameToValue` is a pure function of `name`
+ * with exactly one output, and `devices.id` is the table's own primary
+ * key, **at most one row can ever have `id === nameToValue(name)`** --
+ * the "two placeholders sharing one name" ambiguity the original filter
+ * had to account for cannot arise under this definition, so there is no
+ * `candidates.length` check to make; a plain `find` suffices. The
+ * *real* ambiguous case this module still declines to guess at is
+ * different: two `kind='robot'` rows sharing `name` where *neither* has
+ * `id === nameToValue(name)` (e.g. two independently-identified real
+ * chips that happen to decode to the same five-letter name -- the
+ * `architecture.md` §4 collision case) -- neither is a placeholder by
+ * this definition, so this function simply never touches either, same
+ * "leave it alone, `forget-device` is the manual escape hatch" outcome
+ * as before.
  */
 function mergeNamePlaceholderIfAny(store: Store, name: string, deviceId: number, at: number): void {
-  const candidates = store
+  const placeholderId = nameToValue(name);
+  const placeholder = store
     .snapshotRows()
-    .devices.filter(
-      (row) => row.kind === "robot" && row.name === name && row.usb_serial == null && Number(row.id) !== deviceId,
+    .devices.find(
+      (row) => row.kind === "robot" && Number(row.id) === placeholderId && Number(row.id) !== deviceId,
     );
-  if (candidates.length === 1) {
-    store.mergeDevice(Number(candidates[0]!.id), deviceId, at);
+  if (placeholder) {
+    store.mergeDevice(Number(placeholder.id), deviceId, at);
   }
 }
 

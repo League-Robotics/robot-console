@@ -20,6 +20,7 @@ issues:
 - bench-relay-and-mbserial-card-text-is-wrong.md
 - bench-wifi-connect-hangs-on-local-hostname.md
 - bench-relay-port-contention-sweeper-vs-session.md
+- bench-wifi-robot-discovery-waits-for-announcement.md
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
@@ -604,6 +605,7 @@ Before tickets can be created, all of the following must be true:
 | 008 | mbserial busy detection and retry on backoff | 007 |
 | 009 | mbrelay bridge fix against the real torture pool, from an isolated reproduction | 003 |
 | 010 | UI truthfulness: shared link-status text, correct Linked criteria, relay/mbserial card state | 004, 006, 008, 009 |
-| 011 | Full-bench gate: harness green across every reachable path | 004, 005, 006, 007, 008, 009, 010 |
+| 012 | Relays and WiFi robots are reachable without races: sweeper yields the port to any open; host finds WiFi robots without waiting for an announcement | 010 |
+| 011 | Full-bench gate: harness green across every reachable path | 004, 005, 006, 007, 008, 009, 010, 012 |
 
 Tickets execute serially in the order listed.

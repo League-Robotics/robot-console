@@ -1,6 +1,8 @@
 ---
-status: pending
+status: in-progress
 sprint: 018
+tickets:
+- 018-012
 ---
 
 # Opening a relay's own USB link while the sweeper holds its port fails with "Cannot lock port"

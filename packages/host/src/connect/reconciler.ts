@@ -618,6 +618,70 @@ export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler 
     }
   }
 
+  /** Ticket 017-010 bench defect 5 ("send-command finds reconciler-
+   * opened sessions"): a `sessions` row is durable proof of an open link
+   * only *within* one executor's own lifetime — {@link
+   * deviceHasActiveLink}'s own doc comment already says as much ("a
+   * session survives its link going unresponsive", the more durable of
+   * the two signals it checks). It is not proof across a process
+   * restart: no `ConnectedSession`/`LineLink` can be reconstituted from
+   * the database, so this executor's own {@link sessions} Map is always
+   * empty right here — before the first {@link tick} — while
+   * `console.sqlite`'s `sessions` table can still carry rows an *earlier*
+   * process opened and never explicitly closed (killed, or crashed).
+   *
+   * Left alone, that mismatch is exactly the 2026-09-12 bench defect:
+   * `mbserial-vevov` sat `unresponsive` (the harvester's missed-poll
+   * watchdog writes `links.state` only — see `harvester.ts`'s own `fail`
+   * — it does not, and should not, touch `sessions`, since a session
+   * surviving `unresponsive` *within* a live process is exactly the
+   * point) with its old `sessions` row still in place from the process
+   * before this one. `plan`'s "device already has an active link" gate
+   * and `planUserOpen`'s "already open" refusal both read that row and
+   * treat the device as connected forever, refusing every future
+   * auto-reconnect and every explicit user Connect — while `server.ts`'s
+   * `requireSession` (reading *this* executor's own empty {@link
+   * sessions} Map, correctly) threw `link "mbserial-vevov" has no open
+   * session` on every `send-command`/`line`/`provision-wifi`. The UI
+   * panels that gate on `link.session !== undefined`
+   * (`CommandStrip.tsx`, `DeviceConsole.tsx`) kept showing the link as
+   * usable — including its last-known, now-frozen `STATUS` reply — since
+   * that field only reflects the row's mere presence, never which
+   * process actually holds the connection; this is also why the "no open
+   * session" notice repeated on every click, not once — nothing ever
+   * told the UI to stop trying.
+   *
+   * Run once, here, before the first {@link tick}: every `sessions` row
+   * inherited from before this executor started (all of them, at this
+   * point — {@link sessions} cannot yet hold anything of its own) is
+   * closed, and its link returned to `connectable` — not
+   * `closed_by_user`, since nothing here is a user's own request to stop
+   * — so the very next `tick()` picks it back up as an ordinary
+   * auto-connect candidate, exactly as if it had never connected before
+   * this process started. This is what makes `sessions` one registry
+   * again: present in the store if and only if present in *this*
+   * executor's own Map, from boot onward — every later mutation
+   * (`runConnect`/`runClose`) already keeps the two in lockstep, so nothing
+   * but this startup gap needed closing.
+   *
+   * (Two processes deliberately sharing one state dir at the same time
+   * is not a configuration this project supports — architecture.md's own
+   * "one host owns the store" — so this does not attempt to distinguish
+   * "stale, left by a dead process" from "some other live process's own
+   * session" any further than that.) */
+  function clearInheritedSessions(): void {
+    for (const session of store.reconcilerRows().sessions) {
+      store.closeSession(session.linkId);
+      store.setLinkState({
+        id: session.linkId,
+        state: "connectable",
+        at: now(),
+        reason: "stale-session-cleared-at-startup",
+      });
+    }
+  }
+
+  clearInheritedSessions();
   const unsubscribe = store.onChange(() => tick());
   const timer: ReturnType<typeof setInterval> = setInterval(tick, tickIntervalMs);
   timer.unref?.();

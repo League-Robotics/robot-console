@@ -574,6 +574,64 @@ describe("startReconciler -- executor integration (real connector, fake ByteStre
   });
 
   it(
+    "bench defect 5 (2026-09-12): a sessions row inherited from a prior process (link left unresponsive, no live in-memory session) is cleared at startup, and the link auto-reconnects for real instead of being refused forever",
+    async () => {
+      // Simulates exactly the live bench finding: `mbserial-vevov` had a
+      // real session at some point (a *previous* process's own
+      // `runConnect`), the harvester's missed-poll watchdog later wrote
+      // `links.state = 'unresponsive'` (harvester.ts's own `fail` --
+      // deliberately never touches `sessions`), and then that process
+      // exited (or was killed) without ever calling `session-close` --
+      // leaving `sessions` row and `links.state` exactly as seeded below,
+      // with no `ConnectedSession` anywhere to back it. A *fresh*
+      // `startReconciler` call (this executor's own `sessions` Map is
+      // always empty at construction) must not trust that leftover row.
+      store.upsertDevice({ id: ROBOT_SERIAL, name: deviceIdToName(ROBOT_SERIAL), kind: "robot", at: 1 });
+      store.setOwned(ROBOT_SERIAL, true, 1);
+      store.upsertLink({ id: "wifi-1", transport: "wifi", address: { host: "10.0.0.5", port: 4000 }, deviceId: ROBOT_SERIAL, at: 1 });
+      store.openSession("wifi-1", 1); // the prior process's own now-orphaned session row
+      store.setLinkState({ id: "wifi-1", state: "unresponsive", at: 1, reason: "no reply to 3 STATUS polls -- link presumed dead" });
+
+      // Sanity: before this fix, this is precisely the shape that made
+      // `planUserOpen`/`describeUserOpenRefusal` refuse forever and
+      // `server.ts`'s `requireSession` throw "has no open session" on
+      // every command -- see reconciler.ts's own `plan`/`planUserOpen`.
+      expect(describeUserOpenRefusal(store.reconcilerRows(), "wifi-1")).toBe("already open");
+
+      const stream = new BannerByteStream(ROBOT_BANNER);
+      const connector = createConnector(store, {
+        createTcpStream: () => stream,
+        scheduler: immediateScheduler,
+        now: () => NOW,
+      });
+
+      const reconciler = startReconciler(store, { connector, now: () => NOW, tickIntervalMs: 1_000_000 });
+      try {
+        // The stale row is gone, and the link is back to `connectable`,
+        // synchronously -- before this executor's own first tick() ever
+        // dispatches a job.
+        expect(store.snapshotRows().sessions.find((s) => s.link_id === "wifi-1")).toBeUndefined();
+
+        await flush(); // let the now-eligible auto-connect reach stream.open()
+        stream.resolveOpen();
+        await flush();
+        await flush();
+
+        // A real, live session this executor itself opened -- the one
+        // registry `server.ts`'s `requireSession` reads is now the truth.
+        const linkRowAfter = store.snapshotRows().links.find((l) => l.id === "wifi-1");
+        expect(linkRowAfter?.state).toBe("connected");
+        expect(store.snapshotRows().sessions.find((s) => s.link_id === "wifi-1")).toBeDefined();
+        const session = reconciler.sessions.get("wifi-1");
+        expect(session?.linkId).toBe("wifi-1");
+        expect(session?.link).toBeDefined();
+      } finally {
+        reconciler.stop();
+      }
+    },
+  );
+
+  it(
     "merges a known-robots placeholder into the real device row via the automatic auto-connect path too, not only a user-initiated session-open (bench defect 2, 2026-09-12)",
     async () => {
       // `connect/connector.ts`'s `mergeNamePlaceholderIfAny` runs inside

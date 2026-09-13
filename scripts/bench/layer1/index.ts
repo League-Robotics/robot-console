@@ -36,7 +36,15 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { resolveIPv4, normalizeHostname } from "./dnsResolve.js";
-import { describeHolders, evaluateExclusivity, findHolders, realLsofRunner, type ExclusivityResource } from "./exclusivity.js";
+import {
+  describeHolders,
+  evaluateExclusivity,
+  findHolders,
+  findRunningHostProcesses,
+  holdersFromRunningHosts,
+  realLsofRunner,
+  type ExclusivityResource,
+} from "./exclusivity.js";
 import {
   browseServices,
   parseRegistryPort,
@@ -71,17 +79,34 @@ interface CliOptions {
    * bench run. Never on by default -- resetting a physical board is a
    * stronger action than anything else this harness does unprompted. */
   hidResetSilentRelays: boolean;
+  /** 018-005 Step 0b opt-in: when a running robot-console host process
+   * is detected (`exclusivity.ts`'s own `findRunningHostProcesses`),
+   * default behavior treats every usb-relay/network resource as held by
+   * it (refuse outright, or `skipped` under `--skip-held`) since its
+   * own sweeper/reconciler opens those intermittently. This flag
+   * disables that extra caution -- every such resource is attempted
+   * normally, and a failure whose reason matches port-lock/`ERR busy`
+   * (`exclusivity.ts`'s own `CONTENTION_REASON_PATTERN`) is labeled
+   * `contention`, not `defect`/`environment`, by `report/generate.ts`.
+   * A real `lsof`-detected holder (an actual, momentarily-open FD) still
+   * refuses/skips exactly as before -- this flag only disables the
+   * "running host might open it any second" inference, not the direct
+   * `lsof` check. */
+  allowSharedBench: boolean;
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
   let skipHeld = false;
   let outPath = path.join(process.cwd(), "bench-layer1-report.json");
   let hidResetSilentRelays = false;
+  let allowSharedBench = false;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--skip-held") {
       skipHeld = true;
     } else if (argv[i] === "--hid-reset-silent-relays") {
       hidResetSilentRelays = true;
+    } else if (argv[i] === "--allow-shared-bench") {
+      allowSharedBench = true;
     } else if (argv[i] === "--out") {
       const next = argv[i + 1];
       if (next === undefined) {
@@ -91,7 +116,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
       i += 1;
     }
   }
-  return { skipHeld, outPath, hidResetSilentRelays };
+  return { skipHeld, outPath, hidResetSilentRelays, allowSharedBench };
 }
 
 function tcpResourceKey(ip: string, port: number): string {
@@ -214,18 +239,49 @@ async function main(): Promise<void> {
     ...wifiEndpoints.map(({ endpoint }) => ({ kind: "tcp" as const, host: endpoint.ip ?? endpoint.host, port: endpoint.port })),
   ];
 
-  const holders = await findHolders([...serialResources, ...tcpResources], realLsofRunner);
+  const allExclusivityResources = [...serialResources, ...tcpResources];
+  const lsofHolders = await findHolders(allExclusivityResources, realLsofRunner);
+
+  // 018-005 Step 0b: a running robot-console host process (this
+  // harness's own bench evidence: the stakeholder's `scripts/dev.mjs`,
+  // pid 82496) opens a usb relay's port or a farm bridge/WiFi robot's
+  // TCP connection intermittently -- a single `lsof` snapshot above
+  // proves nothing about such a resource being free right now. Detected
+  // and treated as holding every usb-relay/network resource unless the
+  // stakeholder explicitly opts into running against it anyway
+  // (`--allow-shared-bench`). `ownChildPids` is empty here -- Layer 1
+  // never starts a host process of its own (only Layer 2/3 do).
+  const runningHosts = await findRunningHostProcesses();
+  const runningHostReasonByResource = new Map<string, string>();
+  let holders = lsofHolders;
+  if (runningHosts.length > 0) {
+    console.log(
+      `[bench:layer1] detected a running robot-console host process: pid ${runningHosts[0]!.pid} (${runningHosts[0]!.command})`,
+    );
+    if (!options.allowSharedBench) {
+      const reason = `host process ${runningHosts[0]!.pid} (${runningHosts[0]!.command}) is running and may open this intermittently`;
+      for (const resource of allExclusivityResources) {
+        runningHostReasonByResource.set(resource.kind === "serial" ? resource.path : `${resource.host}:${resource.port}`, reason);
+      }
+      holders = [...lsofHolders, ...holdersFromRunningHosts(allExclusivityResources, runningHosts)];
+    } else {
+      console.log("[bench:layer1] --allow-shared-bench: attempting every resource anyway; port-lock/ERR busy failures are labeled 'contention' in the report.");
+    }
+  }
+
   const outcome = evaluateExclusivity(holders, options.skipHeld);
 
   if (outcome.refuse) {
     console.error("[bench:layer1] REFUSING to run -- another process already holds a resource this run needs:");
     console.error(describeHolders(outcome.holders));
-    console.error("Pass --skip-held to probe everything else and mark these resources 'skipped' instead.");
+    console.error("Pass --skip-held to probe everything else and mark these resources 'skipped' instead (or --allow-shared-bench to attempt them anyway).");
     process.exitCode = 1;
     return;
   }
 
-  const skippedReasonByResource = new Map(outcome.skipped.map((s) => [s.resource, s.reason]));
+  const skippedReasonByResource = new Map(
+    outcome.skipped.map((s) => [s.resource, runningHostReasonByResource.get(s.resource) ?? s.reason]),
+  );
   if (skippedReasonByResource.size > 0) {
     console.log(`[bench:layer1] --skip-held: ${skippedReasonByResource.size} resource(s) held, skipping just those:`);
     for (const [resource, reason] of skippedReasonByResource) {
@@ -359,9 +415,16 @@ async function main(): Promise<void> {
     // skipped (never probed), regardless of --skip-held -- this is
     // strictly more conservative than the main check's refuse mode, not
     // less.
-    const holdersHere = await findHolders([{ kind: "tcp", host: ip, port: WIFI_ROBOTLINK_PORT }], realLsofRunner);
-    if (holdersHere.length > 0) {
-      console.log(`[bench:layer1] wifi-by-name: ${name} -> skipping, held by ${describeHolders(holdersHere)}`);
+    const wifiByNameResource: ExclusivityResource = { kind: "tcp", host: ip, port: WIFI_ROBOTLINK_PORT };
+    const holdersHere = await findHolders([wifiByNameResource], realLsofRunner);
+    // 018-005 Step 0b: same running-host caution as the main exclusivity
+    // check above -- a WiFi robot found only here (not via mDNS
+    // announcement) is still a WiFi robot the running host's own
+    // watcher may dial intermittently.
+    const runningHostHoldersHere =
+      runningHosts.length > 0 && !options.allowSharedBench ? holdersFromRunningHosts([wifiByNameResource], runningHosts) : [];
+    if (holdersHere.length > 0 || runningHostHoldersHere.length > 0) {
+      console.log(`[bench:layer1] wifi-by-name: ${name} -> skipping, held by ${describeHolders([...holdersHere, ...runningHostHoldersHere])}`);
       continue;
     }
     console.log(`[bench:layer1] wifi-by-name: probing ${name} at ${hostname} (${ip})...`);

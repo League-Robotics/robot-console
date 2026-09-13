@@ -4,7 +4,7 @@
 # the Markdown report, in that order.
 #
 # Usage:
-#   scripts/bench/run.sh [--skip-held] [--audit-db <path>] --report <file.md>
+#   scripts/bench/run.sh [--skip-held] [--allow-shared-bench] [--audit-db <path>] --report <file.md>
 #
 # --skip-held        forwarded to Layer 1 and Layer 2's own exclusivity
 #                     checks (README.md's "Requires exclusive access to
@@ -16,6 +16,14 @@
 #                     non-zero) the moment either finds a held resource
 #                     it needs -- this script does not second-guess that
 #                     refusal, it simply stops (`set -e`).
+# --allow-shared-bench  forwarded to Layer 1 (018-005 Step 0b): disables
+#                     the extra caution `layer1/exclusivity.ts` applies
+#                     when a running robot-console host process is
+#                     detected (treating every usb-relay/network
+#                     resource as held by it) -- every such resource is
+#                     attempted anyway, and a resulting port-lock/`ERR
+#                     busy` failure is labeled `contention`, not
+#                     `defect`/`environment`, in the report.
 # --audit-db <path>   forwarded to Layer 2: audits a read-only COPY of
 #                     the real `console.sqlite` at <path> (never opened
 #                     in place -- see `layer2/auditDb.ts`'s own doc
@@ -35,6 +43,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
 SKIP_HELD=""
+ALLOW_SHARED_BENCH=""
 AUDIT_DB=""
 REPORT_PATH=""
 
@@ -42,6 +51,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-held)
       SKIP_HELD="--skip-held"
+      shift
+      ;;
+    --allow-shared-bench)
+      ALLOW_SHARED_BENCH="--allow-shared-bench"
       shift
       ;;
     --audit-db)
@@ -97,7 +110,7 @@ npm run vite:build -w @robot-console/ui
 
 echo "[bench:run] Layer 1: raw device probes..."
 # shellcheck disable=SC2086
-npx tsx scripts/bench/layer1/index.ts $SKIP_HELD --out "$LAYER1_JSON"
+npx tsx scripts/bench/layer1/index.ts $SKIP_HELD $ALLOW_SHARED_BENCH --out "$LAYER1_JSON"
 
 echo "[bench:run] Layer 2: host-over-WebSocket checks + truthfulness assertions..."
 AUDIT_ARGS=()

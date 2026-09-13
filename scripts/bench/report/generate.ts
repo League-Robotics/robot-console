@@ -23,6 +23,14 @@
  *   (held by another process at that layer's own run time) — distinct
  *   from `defect`/`environment`, since nothing was actually proven
  *   either way.
+ * - **`contention`** (018-005 Step 0b): what would otherwise be a
+ *   `defect`/`environment` row, but whose own reason text matches a
+ *   port-lock/`ERR busy` shape (`layer1/exclusivity.ts`'s own
+ *   `CONTENTION_REASON_PATTERN`) — a row attempted anyway under
+ *   `--allow-shared-bench` against a resource a running host process
+ *   may also be using intermittently. Not a confirmed host/UI bug or a
+ *   confirmed environment fact, so it gets its own label rather than
+ *   either.
  * - **`pass`**: every layer that ran for this path passed.
  *
  * Only the four transports Layer 2/3 recognize (`usb`, `mbserial`,
@@ -36,12 +44,19 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { CONTENTION_REASON_PATTERN } from "../layer1/exclusivity.js";
 import type { Layer1Report, ProbeStatus } from "../layer1/types.js";
 import type { Layer2Report, Layer2Status } from "../layer2/types.js";
 import type { Layer3Report, Layer3Status } from "../layer3/types.js";
 
 export type RowStatus = ProbeStatus | Layer2Status | Layer3Status | "n/a";
-export type RowLabel = "pass" | "defect" | "environment" | "skipped";
+/** `contention` (018-005 Step 0b): a `defect`/`environment` row whose own
+ * failure `reason` matches {@link CONTENTION_REASON_PATTERN} (port-lock /
+ * `ERR busy`) — a row attempted under `--allow-shared-bench` against a
+ * resource a running host process may also be using, not a confirmed
+ * host/UI bug or a confirmed environment fact. See {@link labelRow}'s
+ * own doc comment for exactly when this overrides the base label. */
+export type RowLabel = "pass" | "defect" | "environment" | "skipped" | "contention";
 
 export interface ReportRow {
   device: string;
@@ -77,29 +92,43 @@ export function isMainTablePath(path: string): boolean {
  * *earlier* layer's own outcome (a Layer 1 `fail` is `environment`
  * regardless of what any later, never-attempted layer's field happens
  * to hold).
+ *
+ * `reason` (018-005 Step 0b, optional -- every existing call site that
+ * omits it keeps this function's exact prior behavior): when the base
+ * label computed below is `defect` or `environment`, and `reason`
+ * matches {@link CONTENTION_REASON_PATTERN} (a port-lock/`ERR busy`
+ * shape -- exactly what a resource attempted under `--allow-shared-
+ * bench` against a running host process fails with), this returns
+ * `contention` instead -- see this module's own doc comment.
  */
-export function labelRow(l1: RowStatus, l2: RowStatus, l3: RowStatus): RowLabel {
-  if (l1 === "skipped") {
-    return "skipped";
+export function labelRow(l1: RowStatus, l2: RowStatus, l3: RowStatus, reason = ""): RowLabel {
+  const base = ((): "pass" | "defect" | "environment" | "skipped" => {
+    if (l1 === "skipped") {
+      return "skipped";
+    }
+    if (l1 === "fail") {
+      return "environment";
+    }
+    // l1 === "pass" from here on.
+    if (l2 === "skipped") {
+      return "skipped";
+    }
+    if (l2 === "fail") {
+      return "defect";
+    }
+    // l2 is "pass" or "n/a" (never attempted/reported) from here on.
+    if (l3 === "skipped") {
+      return "skipped";
+    }
+    if (l3 === "fail") {
+      return "defect";
+    }
+    return "pass";
+  })();
+  if ((base === "defect" || base === "environment") && CONTENTION_REASON_PATTERN.test(reason)) {
+    return "contention";
   }
-  if (l1 === "fail") {
-    return "environment";
-  }
-  // l1 === "pass" from here on.
-  if (l2 === "skipped") {
-    return "skipped";
-  }
-  if (l2 === "fail") {
-    return "defect";
-  }
-  // l2 is "pass" or "n/a" (never attempted/reported) from here on.
-  if (l3 === "skipped") {
-    return "skipped";
-  }
-  if (l3 === "fail") {
-    return "defect";
-  }
-  return "pass";
+  return base;
 }
 
 /** Every device x path row from Layer 1 that belongs in the main table
@@ -203,18 +232,21 @@ export function generateMarkdown(layer1: Layer1Report, layer2?: Layer2Report, la
   lines.push("| device | path | L1 | L2 | L3 | label | reason | screenshots |");
   lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const row of rows) {
-    const label = labelRow(row.l1, row.l2, row.l3);
+    const label = labelRow(row.l1, row.l2, row.l3, row.reason);
     lines.push(
       `| ${row.device} | ${row.path} | ${statusCell(row.l1)} | ${statusCell(row.l2)} | ${statusCell(row.l3)} | ${label} | ${escapeCell(row.reason)} | ${screenshotLinks(row, layer3, reportDir)} |`,
     );
   }
   lines.push("");
 
-  const passCount = rows.filter((r) => labelRow(r.l1, r.l2, r.l3) === "pass").length;
-  const defectCount = rows.filter((r) => labelRow(r.l1, r.l2, r.l3) === "defect").length;
-  const environmentCount = rows.filter((r) => labelRow(r.l1, r.l2, r.l3) === "environment").length;
-  const skippedCount = rows.filter((r) => labelRow(r.l1, r.l2, r.l3) === "skipped").length;
-  lines.push(`${rows.length} row(s): ${passCount} pass, ${defectCount} defect, ${environmentCount} environment, ${skippedCount} skipped.`);
+  const passCount = rows.filter((r) => labelRow(r.l1, r.l2, r.l3, r.reason) === "pass").length;
+  const defectCount = rows.filter((r) => labelRow(r.l1, r.l2, r.l3, r.reason) === "defect").length;
+  const environmentCount = rows.filter((r) => labelRow(r.l1, r.l2, r.l3, r.reason) === "environment").length;
+  const skippedCount = rows.filter((r) => labelRow(r.l1, r.l2, r.l3, r.reason) === "skipped").length;
+  const contentionCount = rows.filter((r) => labelRow(r.l1, r.l2, r.l3, r.reason) === "contention").length;
+  lines.push(
+    `${rows.length} row(s): ${passCount} pass, ${defectCount} defect, ${environmentCount} environment, ${skippedCount} skipped, ${contentionCount} contention.`,
+  );
   lines.push("");
 
   lines.push("## Truthfulness assertions (live snapshot)");

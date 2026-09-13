@@ -4,10 +4,11 @@ import { parseArgs, classifyUsbDevice } from "./index.js";
 import type { TranscriptLine } from "./types.js";
 
 describe("parseArgs", () => {
-  it("defaults to no --skip-held, no --hid-reset-silent-relays, and an out path under cwd", () => {
+  it("defaults to no --skip-held, no --hid-reset-silent-relays, no --allow-shared-bench, and an out path under cwd", () => {
     const result = parseArgs([]);
     expect(result.skipHeld).toBe(false);
     expect(result.hidResetSilentRelays).toBe(false);
+    expect(result.allowSharedBench).toBe(false);
     expect(result.outPath).toBe(path.join(process.cwd(), "bench-layer1-report.json"));
   });
 
@@ -19,16 +20,26 @@ describe("parseArgs", () => {
     expect(parseArgs(["--hid-reset-silent-relays"]).hidResetSilentRelays).toBe(true);
   });
 
+  it("recognizes --allow-shared-bench (018-005 Step 0b opt-in)", () => {
+    expect(parseArgs(["--allow-shared-bench"]).allowSharedBench).toBe(true);
+  });
+
   it("recognizes --out with its path argument", () => {
     expect(parseArgs(["--out", "/tmp/report.json"]).outPath).toBe("/tmp/report.json");
   });
 
   it("recognizes all flags together, in any order", () => {
-    expect(parseArgs(["--skip-held", "--out", "/tmp/a.json"])).toEqual({ skipHeld: true, outPath: "/tmp/a.json", hidResetSilentRelays: false });
-    expect(parseArgs(["--out", "/tmp/b.json", "--skip-held", "--hid-reset-silent-relays"])).toEqual({
+    expect(parseArgs(["--skip-held", "--out", "/tmp/a.json"])).toEqual({
+      skipHeld: true,
+      outPath: "/tmp/a.json",
+      hidResetSilentRelays: false,
+      allowSharedBench: false,
+    });
+    expect(parseArgs(["--out", "/tmp/b.json", "--skip-held", "--hid-reset-silent-relays", "--allow-shared-bench"])).toEqual({
       skipHeld: true,
       outPath: "/tmp/b.json",
       hidResetSilentRelays: true,
+      allowSharedBench: true,
     });
   });
 

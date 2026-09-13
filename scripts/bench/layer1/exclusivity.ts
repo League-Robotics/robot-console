@@ -224,3 +224,148 @@ export function evaluateExclusivity(holders: readonly Holder[], skipHeld: boolea
 export function describeHolders(holders: readonly Holder[]): string {
   return holders.map((h) => `${h.resource} held by pid ${h.pid} (${h.command})`).join("\n");
 }
+
+// ---------------------------------------------------------------------
+// Running host process detection — ticket 018-005 Step 0b
+// ---------------------------------------------------------------------
+//
+// `lsof` proves a resource is held *right now*, but this project's own
+// host process (a student's `npm run dev`, or `robot-console` installed
+// globally) does not hold a usb relay's port or a farm bridge/WiFi
+// robot's TCP connection continuously — `watchers/relaySweeper.ts`'s own
+// sweep and `watchers/mdnsWatcher.ts`'s own reconnect/backoff cycle open
+// and close these intermittently (sprint 018's own bench finding: 88
+// sightings of the stakeholder's `scripts/dev.mjs` opening a relay's
+// serial port in a 10-minute window). A single `lsof` snapshot can catch
+// the host mid-close and report a resource free the instant before it
+// reopens it — this harness's own relay sweeper (`packages/host/src/
+// watchers/relaySweeper.ts`, started by Layer 2/3's own harness host
+// instances) does exactly the same thing to itself, which is why Layer
+// 2/3 start their own host with the sweeper disabled (`--no-sweep` /
+// `ROBOT_CONSOLE_DISABLE_SWEEP=1`, `packages/host/src/cli.ts`).
+//
+// Detecting a *running host process at all* (rather than trying to
+// catch it mid-open via `lsof` alone) is the only reliable signal.
+
+/** One running process whose command line matches this project's own
+ * host entry points. */
+export interface RunningHostProcess {
+  pid: number;
+  command: string;
+}
+
+/** This project's own host entry points, exactly as ticket 018-005
+ * names them — a plain `tsx`/dev-server invocation
+ * (`scripts/dev.mjs`), the packaged CLI a student's `npx robot-console`
+ * actually runs (`bin/robot-console.js`), and the compiled entry point
+ * underneath it (`packages/host/dist/cli.js`, also what Layer 2/3's own
+ * harness host instances run — see `ownChildPids` below for how those
+ * are told apart from a genuinely separate, shared session). */
+const HOST_PROCESS_PATTERNS: readonly RegExp[] = [/scripts\/dev\.mjs/, /bin\/robot-console\.js/, /packages\/host\/dist\/cli\.js/];
+
+/** Injectable `ps` runner, mirroring {@link LsofRunner}'s own seam. */
+export type PsRunner = (args: string[]) => Promise<string>;
+
+/** The real `ps` runner: `ps -axo pid=,command=` lists every process on
+ * the machine (not just this user's controlling terminal), one
+ * `<pid> <command>` pair per line, with no header (the trailing `=` on
+ * each `-o` field suppresses it). */
+export function realPsRunner(args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile("ps", args, { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(stdout);
+    });
+  });
+}
+
+/** Parse `ps -axo pid=,command=` output into every process matching
+ * {@link HOST_PROCESS_PATTERNS}, excluding `selfPid` and anything in
+ * `ownChildPids` — this harness's own Layer 2/3 host instances run the
+ * exact same `packages/host/dist/cli.js` entry point this function
+ * looks for, so without this exclusion every Layer 2/3 run would
+ * "detect" itself as a shared-bench collision. Pure — directly testable
+ * against captured `ps` output, no process spawned. */
+export function parseRunningHostProcesses(
+  stdout: string,
+  selfPid: number,
+  ownChildPids: ReadonlySet<number>,
+): RunningHostProcess[] {
+  const processes: RunningHostProcess[] = [];
+  for (const rawLine of stdout.split("\n")) {
+    const line = rawLine.trim();
+    if (line.length === 0) {
+      continue;
+    }
+    const match = /^(\d+)\s+(.*)$/.exec(line);
+    if (!match) {
+      continue;
+    }
+    const pid = Number(match[1]);
+    const command = match[2]!;
+    if (!Number.isFinite(pid) || pid === selfPid || ownChildPids.has(pid)) {
+      continue;
+    }
+    if (HOST_PROCESS_PATTERNS.some((pattern) => pattern.test(command))) {
+      processes.push({ pid, command });
+    }
+  }
+  return processes;
+}
+
+/** Find every currently-running process matching this project's own
+ * host entry points, other than `selfPid` and `ownChildPids`. */
+export async function findRunningHostProcesses(
+  runPs: PsRunner = realPsRunner,
+  selfPid: number = process.pid,
+  ownChildPids: ReadonlySet<number> = new Set(),
+): Promise<RunningHostProcess[]> {
+  const stdout = await runPs(["-axo", "pid=,command="]);
+  return parseRunningHostProcesses(stdout, selfPid, ownChildPids);
+}
+
+/**
+ * Every resource in `resources`, attributed as held by the first
+ * detected running host process — called only when {@link
+ * findRunningHostProcesses} found at least one. This module has no way
+ * to tell a usb relay's serial path from a plain usb robot's before
+ * either is actually probed (both are identical DAPLink hardware; kind
+ * comes only from a banner/SWD read, which happens well after the
+ * exclusivity check) — so, conservatively, **every** `serial` resource
+ * is included here, not only ones a caller later classifies as `relay`.
+ * A false "skipped" on a plain usb robot path is merely inconclusive
+ * (the report already has a `skipped` label for exactly that); silently
+ * probing a relay a live host's sweeper might open concurrently risks
+ * the misleading fail this harness exists to catch. Every `tcp` resource
+ * (farm mbserial/mbrelay bridges, WiFi robots) is unconditionally
+ * included too — ticket 018-005's own wording, "ALL farm bridges and
+ * WiFi robots it may reach".
+ */
+export function holdersFromRunningHosts(
+  resources: readonly ExclusivityResource[],
+  runningHosts: readonly RunningHostProcess[],
+): Holder[] {
+  if (runningHosts.length === 0) {
+    return [];
+  }
+  const primary = runningHosts[0]!;
+  return resources.map((resource) => ({
+    resource: resource.kind === "serial" ? resource.path : `${resource.host}:${resource.port}`,
+    pid: primary.pid,
+    command: primary.command,
+  }));
+}
+
+/** A failure reason naming a port already locked/busy by another process
+ * — the shape a resource "held" (or intermittently held) by a running
+ * host actually fails with when probed anyway (`--allow-shared-bench`).
+ * Shared with `report/generate.ts`, which relabels a `defect`/
+ * `environment` row `contention` when its own reason text matches this
+ * (ticket 018-005 Step 0b's own acceptance criterion) — duplicated
+ * there rather than imported, since `report/generate.ts` reasons over
+ * already-serialized JSON reports, not this module's own live process
+ * checks. */
+export const CONTENTION_REASON_PATTERN = /port.?lock|cannot lock port|err\s*busy|resource temporarily unavailable/i;

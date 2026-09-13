@@ -333,3 +333,36 @@ describe("startRuntime -- stop()", () => {
     expect(f.fakeStore.close).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("startRuntime -- disableSweep (018-005 Step 0b)", () => {
+  it("never calls startRelaySweeper when disableSweep: true -- no scan tick, no relay lease, ever", () => {
+    const f = fakeDeps();
+    startRuntime({ ...f.options, disableSweep: true });
+
+    expect(f.startRelaySweeperMock).not.toHaveBeenCalled();
+    // The shared revocation seam is still constructed -- the bridger
+    // still needs it even with the sweeper disabled.
+    expect(f.createRelayLeaseRevocationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("stop() still resolves cleanly with the sweeper disabled (its stub stop() is a no-op, never the real relaySweeperStopMock)", async () => {
+    const f = fakeDeps();
+    const runtime = startRuntime({ ...f.options, disableSweep: true });
+    f.calls.length = 0;
+
+    await expect(runtime.stop()).resolves.toBeUndefined();
+
+    expect(f.relaySweeperStopMock).not.toHaveBeenCalled();
+    expect(f.calls).toEqual(["uninstallUnhandledRejectionBackstop", "reconciler.stop", "usbWatcher.stop", "mdnsWatcher.stop", "firmwareWatcher.stop", "store.close"]);
+  });
+
+  it("starts the sweeper exactly as before when disableSweep is omitted/false -- the default is unchanged", () => {
+    const f = fakeDeps();
+    startRuntime(f.options);
+    expect(f.startRelaySweeperMock).toHaveBeenCalledTimes(1);
+
+    const f2 = fakeDeps();
+    startRuntime({ ...f2.options, disableSweep: false });
+    expect(f2.startRelaySweeperMock).toHaveBeenCalledTimes(1);
+  });
+});

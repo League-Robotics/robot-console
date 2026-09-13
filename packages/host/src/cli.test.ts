@@ -203,6 +203,66 @@ describe("cli: main -- production startup composes runtime then server", () => {
     logSpy.mockRestore();
   });
 
+  it("018-005: --no-sweep passes disableSweep: true to startRuntime", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await main(["--no-sweep"], {} as NodeJS.ProcessEnv, deps);
+
+    expect(startRuntimeMock).toHaveBeenCalledWith(expect.objectContaining({ disableSweep: true }));
+
+    logSpy.mockRestore();
+  });
+
+  it("018-005: ROBOT_CONSOLE_DISABLE_SWEEP (any non-empty value) passes disableSweep: true the same way --no-sweep does", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await main([], { ROBOT_CONSOLE_DISABLE_SWEEP: "1" } as unknown as NodeJS.ProcessEnv, deps);
+
+    expect(startRuntimeMock).toHaveBeenCalledWith(expect.objectContaining({ disableSweep: true }));
+
+    logSpy.mockRestore();
+  });
+
+  it("018-005: without --no-sweep/ROBOT_CONSOLE_DISABLE_SWEEP, disableSweep is false", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await main([], {} as NodeJS.ProcessEnv, deps);
+
+    expect(startRuntimeMock).toHaveBeenCalledWith(expect.objectContaining({ disableSweep: false }));
+
+    logSpy.mockRestore();
+  });
+
   it("logs a warning, but does not throw, when opening the browser fails", async () => {
     const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
     const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });

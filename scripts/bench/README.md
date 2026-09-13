@@ -69,6 +69,29 @@ harness never refuses in this mode, but every resource it found held is
 marked `status: "skipped"` on its device/path row, with `reason: "held
 by pid <pid> (<command>)"`.
 
+**018-005 Step 0b: a running robot-console host process is treated as
+holding every usb-relay/network resource too**, not only what a single
+`lsof` snapshot happens to catch open at that instant. `exclusivity.ts`
+also runs `ps` looking for `scripts/dev.mjs`, `bin/robot-console.js`, or
+`packages/host/dist/cli.js` (other than this harness's own children —
+Layer 2/3 start real host instances of their own, which match the same
+patterns and are excluded). A relay's own sweeper/reconciler opens its
+usb port, a farm bridge, or a WiFi robot's connection intermittently —
+live bench evidence found the stakeholder's `scripts/dev.mjs` doing this
+88 times in a 10-minute window — so a `lsof` check that happens to land
+between two such opens is not proof the resource is actually free.
+Default behavior when a running host process is detected: refuse,
+naming the process, exactly like any other holder. `--skip-held` marks
+every usb-relay/network resource `skipped: "host process <pid> (<cmd>)
+is running and may open this intermittently"` instead. Pass
+`--allow-shared-bench` to disable this extra caution and attempt every
+such resource anyway (a real `lsof`-detected holder still refuses/skips
+exactly as before — this flag only disables the "running host might
+open it any second" inference); the report generator then labels any
+resulting failure whose reason matches a port-lock/`ERR busy` shape
+`contention` rather than `defect`/`environment`, since it was expected,
+not a confirmed bug.
+
 This harness **never kills or signals** a holding process, no matter
 which mode it runs in.
 
@@ -81,9 +104,14 @@ npm run bench:layer1 -- --out /tmp/bench-layer1.json
 # Skip whatever's held (e.g. a stakeholder's `npm run dev` mid-session),
 # probe everything else, and mark held resources "skipped".
 npm run bench:layer1 -- --skip-held --out /tmp/bench-layer1.json
+
+# Attempt usb-relay/network resources even though a running host process
+# was detected -- a port-lock/ERR busy failure is labeled "contention",
+# not "defect"/"environment", in the report.
+npm run bench:layer1 -- --skip-held --allow-shared-bench --out /tmp/bench-layer1.json
 ```
 
-Or directly: `npx tsx scripts/bench/layer1/index.ts [--skip-held] [--out <path>]`.
+Or directly: `npx tsx scripts/bench/layer1/index.ts [--skip-held] [--allow-shared-bench] [--out <path>]`.
 `--out` defaults to `./bench-layer1-report.json` in the current
 directory.
 
@@ -153,7 +181,7 @@ confused with a real wire line).
 
 | File | Job |
 | --- | --- |
-| `layer1/exclusivity.ts` | The `lsof`-based holder check (shared by future layers too). |
+| `layer1/exclusivity.ts` | The `lsof`-based holder check (shared by future layers too), plus 018-005's `ps`-based running-host-process detection and `--allow-shared-bench`/`contention` support. |
 | `layer1/dnsResolve.ts` | Resolve a `.local` host to IPv4 with a bound, recording how long it took — the harness's own regression guard for the `.local` hostname hang this sprint's other tickets fix in the host. |
 | `layer1/mdnsBrowse.ts` | Browse `_mbserial._tcp`, `_mbrelay._tcp`, `_robotlink._tcp`/`_udp`. The first three settle within a few seconds; `_robotlink` gets up to 65s more (only if nothing has appeared yet) since these robots only ever answer with an unsolicited periodic announcement, not a live query reply — see that file's own doc comment for the live-verified root cause. |
 | `layer1/usbProbe.ts` | Enumerate DAPLink boards directly (`serialport`), open, `HELLO`/`ID` (or `?` for a relay). No SWD naming — identity comes from the banner alone (see that file's own doc comment for why). A `HELLO` timeout triggers one UART break-reset + retry (a relay parked in its data plane after a host `!GO` forwards `HELLO` over radio instead of answering it) before the path is finally reported `fail`. |
@@ -213,7 +241,14 @@ mbserial projection (architecture.md §4's "`devices.owned` is the WiFi
 gate" rule); the real file itself is never opened for writing. The host
 is started with `--no-open` (added to `packages/host/src/cli.ts` by
 this ticket) so it never tries to launch a desktop browser on a
-headless bench run.
+headless bench run, and with `--no-sweep` (018-005 Step 0b — `--no-sweep`
+/ `ROBOT_CONSOLE_DISABLE_SWEEP=1`, `runtime.ts`'s own `disableSweep`
+option) so this harness host never runs its own relay sweeper: with it
+running, this same host instance would race Layer 1's own raw probes
+(or another harness host instance) against the identical physical
+relay — the exact contention this ticket's own `--allow-shared-bench`
+detection exists to catch when a *stakeholder's* host does it. This
+harness must not do it to itself.
 
 ### Module map (Layer 2)
 

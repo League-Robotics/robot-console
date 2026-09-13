@@ -170,11 +170,19 @@ async function main(): Promise<void> {
   const binPath = path.join(REPO_ROOT, "bin", "robot-console.js");
   const baseUrl = `http://127.0.0.1:${options.port}/`;
   const wsUrl = `ws://127.0.0.1:${options.port}/`;
-  console.log(`[bench:layer3] starting host: node ${binPath} --port ${options.port} --no-open (ROBOT_CONSOLE_STATE_DIR=${options.stateDir})`);
-  const child: ChildProcessByStdio<null, Readable, Readable> = spawn(process.execPath, [binPath, "--port", String(options.port), "--no-open"], {
-    env: { ...process.env, ROBOT_CONSOLE_STATE_DIR: options.stateDir },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  // 018-005 Step 0b: `--no-sweep` -- same reasoning as `layer2/index.ts`'s
+  // own host spawn: this harness host must never run its own relay
+  // sweeper, or it races Layer 1's own raw probes (or another harness
+  // host instance) against the identical physical relay.
+  console.log(`[bench:layer3] starting host: node ${binPath} --port ${options.port} --no-open --no-sweep (ROBOT_CONSOLE_STATE_DIR=${options.stateDir})`);
+  const child: ChildProcessByStdio<null, Readable, Readable> = spawn(
+    process.execPath,
+    [binPath, "--port", String(options.port), "--no-open", "--no-sweep"],
+    {
+      env: { ...process.env, ROBOT_CONSOLE_STATE_DIR: options.stateDir },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
   let hostOutput = "";
   child.stdout.on("data", (chunk: Buffer) => (hostOutput += chunk.toString()));
   child.stderr.on("data", (chunk: Buffer) => (hostOutput += chunk.toString()));

@@ -234,11 +234,24 @@ async function main(): Promise<void> {
   // exact command by hand while building this ticket.
   const binPath = path.join(REPO_ROOT, "bin", "robot-console.js");
   const url = `ws://127.0.0.1:${options.port}/`;
-  console.log(`[bench:layer2] starting host: node ${binPath} --port ${options.port} --no-open (ROBOT_CONSOLE_STATE_DIR=${options.stateDir})`);
-  const child: ChildProcessByStdio<null, Readable, Readable> = spawn(process.execPath, [binPath, "--port", String(options.port), "--no-open"], {
-    env: { ...process.env, ROBOT_CONSOLE_STATE_DIR: options.stateDir },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  // 018-005 Step 0b: `--no-sweep` -- this harness host must never run
+  // its own relay sweeper. `watchers/relaySweeper.ts` opens an idle usb
+  // relay's port on its own schedule; with it running, this host
+  // instance would race Layer 1's own raw probes (or another harness
+  // host instance) against the identical physical relay, the exact
+  // "sweeper/reconciler opens it intermittently" contention this
+  // ticket's own exclusivity hardening (`layer1/exclusivity.ts`) exists
+  // to detect when a *stakeholder's* host does it -- this harness must
+  // not do it to itself.
+  console.log(`[bench:layer2] starting host: node ${binPath} --port ${options.port} --no-open --no-sweep (ROBOT_CONSOLE_STATE_DIR=${options.stateDir})`);
+  const child: ChildProcessByStdio<null, Readable, Readable> = spawn(
+    process.execPath,
+    [binPath, "--port", String(options.port), "--no-open", "--no-sweep"],
+    {
+      env: { ...process.env, ROBOT_CONSOLE_STATE_DIR: options.stateDir },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
   let hostOutput = "";
   child.stdout.on("data", (chunk: Buffer) => {
     hostOutput += chunk.toString();
@@ -356,7 +369,7 @@ async function main(): Promise<void> {
       startedAt: startedAt.toISOString(),
       finishedAt: finishedAt.toISOString(),
       host: { os: `${os.platform()} ${os.release()}`, node: process.version },
-      hostUnderTest: { command: `node ${binPath} --port ${options.port} --no-open`, port: options.port, stateDir: options.stateDir },
+      hostUnderTest: { command: `node ${binPath} --port ${options.port} --no-open --no-sweep`, port: options.port, stateDir: options.stateDir },
       settle: { settled: settle.settled, elapsedMs: settle.elapsedMs, neverAppeared },
       devices: [...deviceEntries.values()].sort((a, b) => a.name.localeCompare(b.name)),
       assertions,

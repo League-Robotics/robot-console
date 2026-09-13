@@ -129,6 +129,27 @@ function hasNoOpenFlag(argv: readonly string[], env: NodeJS.ProcessEnv): boolean
   return raw !== undefined && raw.length > 0;
 }
 
+/** `--no-sweep` from argv, or `ROBOT_CONSOLE_DISABLE_SWEEP` (any
+ * non-empty value) from env: never start the relay sweeper
+ * (`runtime.ts`'s own `StartRuntimeOptions.disableSweep`).
+ *
+ * Added for sprint 018 ticket 005 Step 0b: the bench harness starts its
+ * own real host instance (Layer 2/3) against a scratch state dir, on
+ * the same physical bench Layer 1's raw probes (or another harness host
+ * instance) are also touching -- with the sweeper running, that host
+ * instance's own `watchers/relaySweeper.ts` opens usb relay ports on its
+ * own schedule, racing the harness's own run the exact way a
+ * stakeholder's separately-running `npm run dev` was found to
+ * (`scripts/bench/layer1/exclusivity.ts`'s own running-host detection).
+ * Mirrors {@link hasNoOpenFlag}'s exact shape. */
+function hasNoSweepFlag(argv: readonly string[], env: NodeJS.ProcessEnv): boolean {
+  if (argv.includes("--no-sweep")) {
+    return true;
+  }
+  const raw = env.ROBOT_CONSOLE_DISABLE_SWEEP;
+  return raw !== undefined && raw.length > 0;
+}
+
 /** `--dump-store` from argv (ticket 014-009 / SUC-006): print the store
  * as JSON and exit, never starting the runtime/server or opening a
  * browser. */
@@ -225,7 +246,10 @@ export async function main(
   // Ticket 005: production startup now actually opens the store and
   // starts both watchers (until this ticket, only the retired
   // `--watch-store` flag did) -- see the module doc comment.
-  const runtime = startRuntimeFn({ storeOptions: { env }, ...deps.runtimeOptions });
+  // 018-005 Step 0b: `--no-sweep`/`ROBOT_CONSOLE_DISABLE_SWEEP` sets
+  // `disableSweep` by default; an explicit `deps.runtimeOptions.disableSweep`
+  // (a test's own override) still wins, since it spreads last.
+  const runtime = startRuntimeFn({ storeOptions: { env }, disableSweep: hasNoSweepFlag(argv, env), ...deps.runtimeOptions });
 
   // Sprint 017 ticket 001: `getFirmwareConfig` reads `settings` via the
   // store, not `env`/a `.env` file directly, so it must be called after

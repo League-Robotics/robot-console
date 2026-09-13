@@ -53,6 +53,33 @@ describe("labelRow (environment vs. defect vs. pass vs. skipped)", () => {
   });
 });
 
+describe("labelRow -- contention (018-005 Step 0b)", () => {
+  it("relabels a would-be 'environment' row as 'contention' when the reason matches a port-lock/ERR busy shape", () => {
+    expect(labelRow("fail", "n/a", "n/a", "cannot lock port -- Resource temporarily unavailable")).toBe("contention");
+    expect(labelRow("fail", "n/a", "n/a", "ERR busy")).toBe("contention");
+  });
+
+  it("relabels a would-be 'defect' row as 'contention' the same way", () => {
+    expect(labelRow("pass", "fail", "n/a", "ERR busy")).toBe("contention");
+    expect(labelRow("pass", "pass", "fail", "cannot lock port")).toBe("contention");
+  });
+
+  it("leaves a non-contention failure reason as 'defect'/'environment'", () => {
+    expect(labelRow("fail", "n/a", "n/a", "no banner within the identify budget")).toBe("environment");
+    expect(labelRow("pass", "fail", "n/a", "no banner within the identify budget")).toBe("defect");
+  });
+
+  it("never relabels 'pass'/'skipped' even if the (irrelevant) reason text happens to match", () => {
+    expect(labelRow("pass", "pass", "pass", "ERR busy")).toBe("pass");
+    expect(labelRow("skipped", "n/a", "n/a", "ERR busy")).toBe("skipped");
+  });
+
+  it("defaults reason to '' when omitted -- every existing call site keeps its exact prior behavior", () => {
+    expect(labelRow("fail", "n/a", "n/a")).toBe("environment");
+    expect(labelRow("pass", "fail", "n/a")).toBe("defect");
+  });
+});
+
 function l1Report(devices: Layer1Report["devices"]): Layer1Report {
   return { startedAt: "t0", finishedAt: "t1", host: { os: "darwin", node: "v22" }, holders: [], devices };
 }
@@ -153,16 +180,20 @@ describe("generateMarkdown", () => {
     const markdown = generateMarkdown(layer1, layer2);
     expect(markdown).toContain("| device | path | L1 | L2 | L3 | label | reason | screenshots |");
     expect(markdown).toContain("| gopiv | mbserial | pass | pass | n/a | pass |");
-    expect(markdown).toContain("1 row(s): 1 pass, 0 defect, 0 environment, 0 skipped.");
+    expect(markdown).toContain("1 row(s): 1 pass, 0 defect, 0 environment, 0 skipped, 0 contention.");
   });
 
   it("includes the environment-vs-defect labeling rule's outcome in the row itself", () => {
+    // 018-005: this reason text deliberately does NOT match
+    // CONTENTION_REASON_PATTERN (see the dedicated "labelRow -- contention"
+    // suite above for that case) -- this test's own point is the plain
+    // defect-labeling rule, unaffected by the newer contention carve-out.
     const layer1 = l1Report([{ name: "vitut", kind: "robot", paths: [{ path: "usb", endpoint: { serialPath: "/dev/cu.usbmodemZZZ" }, status: "pass", reason: "banner ok", transcript: [] }] }]);
     const layer2 = l2Report([
-      { name: "vitut", kind: "robot", paths: [{ path: "usb", layer1: { status: "pass", reason: "banner ok" }, layer2: { status: "fail", reason: "Cannot lock port", timings: {}, replies: {}, notices: [] } }] },
+      { name: "vitut", kind: "robot", paths: [{ path: "usb", layer1: { status: "pass", reason: "banner ok" }, layer2: { status: "fail", reason: "unexpected reply", timings: {}, replies: {}, notices: [] } }] },
     ]);
     const markdown = generateMarkdown(layer1, layer2);
-    expect(markdown).toContain("| vitut | usb | pass | fail | n/a | defect | Cannot lock port |");
+    expect(markdown).toContain("| vitut | usb | pass | fail | n/a | defect | unexpected reply |");
   });
 
   it("renders a Layer-1-only-fail row as environment", () => {

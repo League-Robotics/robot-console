@@ -74,6 +74,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { EventEmitter } from "node:events";
 import { deviceIdToName, nameToValue } from "@robot-console/protocol";
 import { openStoreDb, type StoreDbOptions } from "./db.js";
+import { clearDeadProcessState } from "./repair/clearDeadProcessState.js";
 import { mergeDuplicateDeviceRows } from "./repair/mergeDuplicateDeviceRows.js";
 import { repairDeviceKindFromRole } from "./repair/repairDeviceKindFromRole.js";
 import { repairRadioLinkDeviceAssociation } from "./repair/repairRadioLinkDeviceAssociation.js";
@@ -1495,6 +1496,53 @@ export class Store {
     };
   }
 
+  /** Rows `repair/clearDeadProcessState.ts` (018-010) needs to find every
+   * table entry whose validity depends on being written by the
+   * currently-running process — see that module's own doc comment for
+   * the bench evidence and exact rule. A dedicated grouped read (like
+   * {@link reconcilerRows}'s own shape) rather than reusing
+   * `reconcilerRows()` itself: that method is scoped to what
+   * `connect/reconciler.ts`'s `plan()` needs (a different, unrelated
+   * caller), and does not expose `board_owner` at all. `boardOwners`/
+   * `relayLeases` keep their `owner` column (the repair releases each
+   * row by its own current owner, whatever value that is — every value
+   * either table can hold names an activity only the running process
+   * performs, so there is no "is this one actually dead" check to make
+   * beyond "the process that wrote it cannot possibly be this one,
+   * since it just started"). `liveLinks` is only the two `links.state`
+   * values `connect/reconciler.ts`'s own `deviceHasActiveLink`/
+   * `isAutoConnectEligible` treat as "already has a connection" —
+   * `connecting` (a connect attempt with no session yet) and `connected`
+   * (a transport that reported success) — since a stale row in either
+   * state left by a dead process permanently blocks that function from
+   * ever reconnecting the device (it believes a connection already
+   * exists), not merely a display bug. */
+  deadProcessStateRows(): {
+    readonly boardOwners: readonly { usbSerial: string; owner: string }[];
+    readonly relayLeases: readonly { relayLinkId: string; owner: string }[];
+    readonly openSessions: readonly { linkId: string }[];
+    readonly liveLinks: readonly { id: string }[];
+  } {
+    const boardOwners = this.db.prepare("SELECT usb_serial, owner FROM board_owner").all() as Array<{
+      usb_serial: string;
+      owner: string;
+    }>;
+    const relayLeases = this.db.prepare("SELECT relay_link_id, owner FROM relay_leases").all() as Array<{
+      relay_link_id: string;
+      owner: string;
+    }>;
+    const openSessions = this.db.prepare("SELECT link_id FROM sessions").all() as Array<{ link_id: string }>;
+    const liveLinks = this.db.prepare("SELECT id FROM links WHERE state IN ('connecting', 'connected')").all() as Array<{
+      id: string;
+    }>;
+    return {
+      boardOwners: boardOwners.map((r) => ({ usbSerial: r.usb_serial, owner: r.owner })),
+      relayLeases: relayLeases.map((r) => ({ relayLinkId: r.relay_link_id, owner: r.owner })),
+      openSessions: openSessions.map((r) => ({ linkId: r.link_id })),
+      liveLinks: liveLinks.map((r) => ({ id: r.id })),
+    };
+  }
+
   /** The `settings.key` a stored WiFi network is imported/saved under —
    * see {@link ProjectionRows.wifiCredentials}'s own doc comment for why
    * this is a duplicated literal, not an import. */
@@ -1776,22 +1824,26 @@ export class Store {
 }
 
 /** Opens (creating/migrating as needed — see `db.ts`) the console's
- * store and wraps it as a {@link Store}. Runs three one-time repairs,
- * right here — after migrations have applied but before this function
- * returns to any caller that goes on to start watchers/importers, so
- * every production caller (`store/bootstrap.ts`'s `openStoreWithImports`,
- * this module's own tests) gets a repaired store with no extra wiring:
- * the duplicate device-row repair (018-006, {@link
- * mergeDuplicateDeviceRows}), the device-kind-from-role repair (018-010,
- * {@link repairDeviceKindFromRole}), and the radio/mbrelay link
+ * store and wraps it as a {@link Store}. Runs four one-time-per-open
+ * repairs, right here — after migrations have applied but before this
+ * function returns to any caller that goes on to start
+ * watchers/importers, so every production caller (`store/bootstrap.ts`'s
+ * `openStoreWithImports`, this module's own tests) gets a repaired store
+ * with no extra wiring: the dead-process-state reset (018-010, {@link
+ * clearDeadProcessState} — run first, since a process-restart reset
+ * logically precedes any data-correctness repair, though the two are
+ * otherwise independent), the duplicate device-row repair (018-006,
+ * {@link mergeDuplicateDeviceRows}), the device-kind-from-role repair
+ * (018-010, {@link repairDeviceKindFromRole}), and the radio/mbrelay link
  * device-association repair (018-010, {@link
  * repairRadioLinkDeviceAssociation}). `debug/dumpStore.ts` deliberately
  * does not call `openStore` at all (it opens a read-only connection
  * directly) and so never runs any of them — a read-only inspector must
- * never write, and all three, on an already-affected database, always
+ * never write, and all four, on an already-affected database, always
  * do. */
 export function openStore(options: StoreDbOptions = {}): Store {
   const store = new Store(openStoreDb(options));
+  clearDeadProcessState(store, Date.now());
   mergeDuplicateDeviceRows(store, Date.now());
   repairDeviceKindFromRole(store);
   repairRadioLinkDeviceAssociation(store);

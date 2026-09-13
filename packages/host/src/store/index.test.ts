@@ -283,6 +283,55 @@ describe("Store: setRadioOverride / clearRadioOverride", () => {
   });
 });
 
+describe("openStore: clears dead-process-owned state on open (018-010)", () => {
+  it("a leftover sweep lease / board owner / open session / connecting link none render as live once reopened via openStore()", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "robot-console-dead-process-state-test-"));
+    const filePath = path.join(dir, "console.sqlite");
+    try {
+      // Seed directly (bypassing openStore's own reset) so the on-disk
+      // file already carries exactly the shape a real console.sqlite
+      // copied from a still-running process would have -- the same
+      // seeding style `openStore: runs the one-time duplicate
+      // device-row repair` uses below for its own repair.
+      const seedStore = new Store(openStoreDb({ filePath }));
+      seedStore.upsertLink({ id: "mbrelay-vitut", transport: "mbrelay", address: { host: "vitut.local", port: 8760 }, at: 100 });
+      seedStore.acquireRelayLease("mbrelay-vitut", "sweep", 100);
+      seedStore.acquireBoardOwner("SERIAL-A", "sweep", 100);
+      seedStore.upsertLink({ id: "usb-SERIAL-B", transport: "usb", address: { path: "/dev/b" }, at: 100 });
+      seedStore.openSession("usb-SERIAL-B", 100);
+      seedStore.upsertLink({ id: "usb-SERIAL-C", transport: "usb", address: { path: "/dev/c" }, at: 100 });
+      seedStore.setLinkState({ id: "usb-SERIAL-C", state: "connecting", at: 100 });
+      seedStore.close();
+
+      // openStore() (not `new Store(openStoreDb(...))`) is the one
+      // production entry point (`store/bootstrap.ts`'s
+      // `openStoreWithImports`) -- this asserts the reset actually runs
+      // there, not only when called directly in the repair module's
+      // own unit tests.
+      const store = openStore({ filePath });
+      try {
+        // Not live: a fresh acquire by "this" process succeeds for both
+        // the relay lease and the board owner -- the old owner is gone.
+        expect(store.acquireRelayLease("mbrelay-vitut", "sweep", 500)).toBe(true);
+        expect(store.acquireBoardOwner("SERIAL-A", "naming", 500)).toBe(true);
+
+        // No open session left rendering as live.
+        expect(store.snapshotRows().sessions).toHaveLength(0);
+
+        // The connecting link was reset to connectable, not left
+        // looking like an active connection.
+        const links = store.snapshotRows().links;
+        expect(links.find((l) => l.id === "usb-SERIAL-C")).toMatchObject({ state: "connectable" });
+        expect(links.find((l) => l.id === "usb-SERIAL-B")).toMatchObject({ state: "discovered" });
+      } finally {
+        store.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("openStore: runs the one-time duplicate device-row repair (018-006)", () => {
   it("merges a placeholder/real device pair on open, before returning the store", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "robot-console-open-repair-test-"));

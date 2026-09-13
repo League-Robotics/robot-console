@@ -112,13 +112,40 @@
  * `stale`) while its session row is still technically present -- exactly
  * the situation that let `DriveControls` etc. render enabled against an
  * unreachable robot before this sprint's A-F fix.
+ *
+ * ## Ticket 018-010, second pass (team-lead bench review, 2026-09-13):
+ * relay text, spacing, Flash gating
+ *
+ * Three more defects, all evidenced against the same `torture`/`gopiv`
+ * screenshots this ticket's own front-page fixes came from:
+ *
+ * - A relay's own connectivity link (`device.kind === "relay"`) no
+ *   longer runs through the session-based robot branch at all --
+ *   `torture` used to read "No open session on this link" plus a
+ *   Connect button, neither meaningful for a relay (see
+ *   {@link relayConnectionStatusText}'s own doc comment). A robot link
+ *   with no session now reads plain "Not connected" instead of the
+ *   rejected "No open session on this link" wording, and a surviving-
+ *   session failure reason is always cleaned through
+ *   `plainFailureReason` first (see {@link connectionStatusText}).
+ * - `AppHeader.css` gains actual layout for `.app-header-connection`'s
+ *   children -- label, state, and the Connect button/switch-link ran
+ *   together with no visible separation in a real browser (a plain
+ *   inline-flow `<span>`/`<span>`/`<button>` sequence with no CSS at
+ *   all), even though the component-test DOM always had them as
+ *   separate elements.
+ * - `FlashDialog`'s `forceShow` is now conditioned on `link.transport
+ *   === "usb"` -- see the call site's own comment for why every other
+ *   transport can never actually flash (`server.ts`'s `runFlashTask`
+ *   itself refuses anything but a directly-attached USB link).
  */
 import { Link, useMatch } from "react-router";
-import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { connectionLabel, isLinkUsable, linkStateText } from "../deviceDisplay";
-import { useDeviceForLink, useHostConnection, useLink, useSendable, useWsActions } from "../ws/WsProvider";
+import type { SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
+import { connectionLabel, currentRelayChild, isLinkUsable, linkStateText, plainFailureReason } from "../deviceDisplay";
+import { useDeviceForLink, useDevices, useHostConnection, useLink, useRelays, useSendable, useWsActions } from "../ws/WsProvider";
 import { FlashDialog } from "./FlashDialog";
 import { RadioAddressDialog } from "./RadioAddressDialog";
+import { relayStatusText } from "./RelayConnectControls";
 import { WifiCredentialsDialog } from "./WifiCredentialsDialog";
 import "./AppHeader.css";
 
@@ -139,28 +166,84 @@ export function disconnectedBannerText(status: "connecting" | "open" | "closed",
 }
 
 /**
- * The header's connection-state text for a routed link that is NOT
- * usable -- two distinct cases (ticket 017-011, generalized by the
- * extended-scope item C):
+ * The header's connection-state text for a routed **robot** link
+ * (`device.kind !== "relay"`, or no device at all -- an unassigned
+ * link) that is NOT usable -- two distinct cases (ticket 017-011,
+ * generalized by the extended-scope item C; reworded by 018-010's
+ * second pass, defect 2):
  *
  *  - `link.session === undefined`: no session has ever been opened on
- *    this link (or it was explicitly closed) -- the ticket's own
- *    literal text, "No open session on this link".
+ *    this link (or it was explicitly closed) -- plain "Not connected".
+ *    (Before this pass this read the more technical "No open session on
+ *    this link"; the stakeholder rejected that wording outright as
+ *    useless -- a student reading this has no session concept to check
+ *    against, only "is it connected or not".)
  *  - `link.session !== undefined` but `link.state !== "connected"`: a
  *    session row is still present, but the link itself dropped
  *    (`unresponsive`/`failed`/`stale`/...) while the student may still
- *    be on this page -- "Not connected over `<label>`: `<reason>`" (the
- *    reason clause omitted when the link carries none).
+ *    be on this page -- "Not connected over `<label>`: `<plain
+ *    reason>`" (the reason clause omitted when the link carries none).
+ *    The reason is routed through {@link plainFailureReason} (018-010:
+ *    "no raw reasons") rather than shown as `link.reason` verbatim --
+ *    before this pass a raw harvester reason (e.g. "no reply to 3
+ *    STATUS polls -- link presumed dead") leaked straight through.
  *
  * Callers must check {@link isLinkUsable} first; this function's
  * behavior for a usable link is unspecified (it is never called for
  * one -- `AppHeader` renders `linkStateText` instead in that case).
+ * `kind` (default `"robot"`) is passed straight through to {@link
+ * plainFailureReason} so an unassigned link's failure text still gets
+ * transport-appropriate wording; a relay link never reaches this
+ * function at all (see {@link relayConnectionStatusText}).
  */
-export function connectionStatusText(link: SnapshotLink): string {
+export function connectionStatusText(link: SnapshotLink, kind: SnapshotDevice["kind"] = "robot"): string {
   if (link.session === undefined) {
-    return "No open session on this link";
+    return "Not connected";
   }
-  return link.reason ? `Not connected over ${connectionLabel(link)}: ${link.reason}` : `Not connected over ${connectionLabel(link)}`;
+  return link.reason
+    ? `Not connected over ${connectionLabel(link)}: ${plainFailureReason(link.reason, link.transport, kind)}`
+    : `Not connected over ${connectionLabel(link)}`;
+}
+
+/**
+ * The header's connection-state text for a routed link whose owning
+ * device is a **relay** (`device.kind === "relay"`) -- ticket 018-010,
+ * defect 2. Before this pass, a relay's own connectivity link ran
+ * through the exact same session-based branch as a robot's: bench
+ * evidence showed `torture` (an mbrelay/TCP relay) rendering "No open
+ * session on this link" plus a Connect button, both meaningless here --
+ * `RelayPage.tsx`'s own doc comment already notes "the relay link's own
+ * session-independent state (it never has a session itself)", so that
+ * branch's `link.session === undefined` check was, for a relay, always
+ * true and never informative, and a relay is connected by picking a
+ * robot on the page (`RelayConnectControls`), never by this header's own
+ * Connect button.
+ *
+ * Reuses the two shared text modules that already exist for exactly
+ * this, rather than inventing a third: while the relay's own
+ * connectivity link is itself up (`connected`/`connecting` -- the relay
+ * is reachable), {@link relayStatusText} (the one shared module
+ * `RelayConnectControls`/`RelayPage`/the front-page relay card all read)
+ * names its bridging state -- idle, "Connecting to `<robot>`…",
+ * "Connected to `<robot>` ...", or "Connection to `<robot>` lost:
+ * `<reason>`". Otherwise (the relay's own link has never connected, or
+ * has dropped -- `discovered`/`connectable`/`failed`/`unresponsive`/
+ * `stale`/`closed_by_user`) {@link linkStateText} (already `kind`-aware:
+ * relay-shaped no-answer advice, `stripInternalIds`-cleaned reasons)
+ * names why the relay itself cannot currently be reached. Neither ever
+ * mentions "session".
+ */
+export function relayConnectionStatusText(
+  link: SnapshotLink,
+  relayInfo: SnapshotRelay | undefined,
+  devices: readonly SnapshotDevice[],
+  child: { device: SnapshotDevice; link: SnapshotLink } | undefined,
+  now: number = Date.now(),
+): string {
+  if (link.state === "connected" || link.state === "connecting") {
+    return relayStatusText({ relayInfo, devices, relayLinkId: link.id }, child).text;
+  }
+  return linkStateText(link, now, "relay");
 }
 
 /** The first sibling link on `device` (other than `link` itself) that is
@@ -184,6 +267,17 @@ export function AppHeader() {
   const sendable = useSendable();
   const usable = link ? isLinkUsable(link) : false;
   const sibling = link ? usableSiblingLink(device, link) : undefined;
+  // Ticket 018-010, defect 2: a relay's own connectivity link needs its
+  // own status derivation (`relayConnectionStatusText`), not the
+  // session-based robot one -- see that function's own doc comment.
+  // `useDevices`/`useRelays` are called unconditionally (React's own
+  // rule -- every hook must run every render, regardless of route) even
+  // though their result is only read for a relay's own link.
+  const isRelayLink = device?.kind === "relay";
+  const devices = useDevices();
+  const relays = useRelays();
+  const relayInfo = isRelayLink && link ? relays.find((r) => r.linkId === link.id) : undefined;
+  const relayChild = isRelayLink && link ? currentRelayChild(devices, link.id) : undefined;
 
   return (
     <header className="app-header">
@@ -220,21 +314,46 @@ export function AppHeader() {
                 triggerClassName="app-header-flash-toggle"
               />
             )}
-            <FlashDialog link={link} name={name} forceShow triggerClassName="app-header-flash-toggle" />
+            {/* Ticket 018-010, defect 4: `forceShow` only for a `usb`
+                link -- `projection.ts`'s own `capabilities.flash: link.
+                transport === "usb"` (mirrored server-side by
+                `server.ts`'s `runFlashTask`, which fails outright for
+                any other transport: "flashing requires a directly
+                attached USB link") is the one ground truth for whether
+                flashing can ever work here. Unconditional `forceShow`
+                bypassed `canBeFlashed` (`link.capabilities.flash`)
+                entirely, offering a Flash trigger on `torture` (an
+                mbrelay/TCP relay) and on any WiFi robot link that could
+                never do anything but fail. For a `usb` link this is
+                unchanged from before -- `canBeFlashed` is already true
+                there regardless of identification, so `forceShow`
+                changes nothing; for every other transport it now falls
+                through to `canBeFlashed`'s own (correctly false) gate,
+                same as every other `FlashDialog` call site. */}
+            <FlashDialog link={link} name={name} forceShow={link.transport === "usb"} triggerClassName="app-header-flash-toggle" />
           </div>
         )}
       </div>
       {link && (
         <div className="app-header-connection" data-testid="app-header-connection">
           <span className="app-header-connection-label">{connectionLabel(link)}</span>
-          {usable ? (
+          {isRelayLink ? (
+            // Ticket 018-010, defect 2: a relay is connected by picking
+            // a robot on its own page (`RelayConnectControls`), never
+            // by this header -- no Connect button, no sibling-switch
+            // link, and no session-based text; see
+            // `relayConnectionStatusText`'s own doc comment.
+            <span className="app-header-connection-state" data-testid="app-header-connection-state">
+              {relayConnectionStatusText(link, relayInfo, devices, relayChild)}
+            </span>
+          ) : usable ? (
             <span className="app-header-connection-state" data-testid="app-header-connection-state">
               {linkStateText(link, undefined, device?.kind)}
             </span>
           ) : (
             <>
               <span className="app-header-connection-state app-header-not-usable" data-testid="app-header-not-usable">
-                {connectionStatusText(link)}
+                {connectionStatusText(link, device?.kind)}
               </span>
               <button
                 type="button"

@@ -70,3 +70,41 @@
 .app-header-flash-toggle:hover {
   border-color: var(--rc-accent);
 }
+
+/* Ticket 018-010 (second pass): label/state/Connect/switch-link ran
+ * together with no visible gap in a real browser -- this container had
+ * no layout rules of its own at all before this pass (only its
+ * children's own classes existed), so plain inline-flow put every child
+ * right up against the next with nothing but their own text between
+ * them (e.g. "WiFi · gopiv.local:7654Linked"). `flex-wrap` keeps this
+ * readable at phone width, where the label/state/button/link would
+ * otherwise be forced onto one overflowing line. */
+.app-header-connection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.9rem;
+}
+
+.app-header-connection-label {
+  font-weight: 600;
+}
+
+.app-header-connect {
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.3rem 0.8rem;
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.app-header-connect:hover {
+  border-color: var(--rc-accent);
+}
+
+.app-header-switch-link {
+  color: var(--rc-accent);
+}

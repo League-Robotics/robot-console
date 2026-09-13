@@ -135,6 +135,88 @@ patch each component's text independently):
       `radio-tigez-via-mbrelay-torture.device_id` is now tigez's own id
       (was gopiv's).
 
+      **Third pass, 2026-09-13**: team-lead review of the second pass's
+      own screenshots found four more defects, all fixed this pass: (1)
+      `relay_leases`/`board_owner`/`sessions` rows and a `links.state` of
+      `connecting`/`connected` all describe something only the *running*
+      process can be doing, but survive a crash/restart as plain SQLite
+      rows -- confirmed live, not hypothetically: the seed copy used for
+      this pass's own evidence run still carried a `relay_leases`
+      `{owner: "sweep"}` row on `vitut`'s own connectivity link from the
+      stakeholder's still-running `npm run dev` (pid 12415), which a
+      pre-fix host would have rendered as "idle · sweeping (slow)"
+      exactly as the bug report described. New `Store.
+      deadProcessStateRows()` (`packages/host/src/store/index.ts`) plus
+      `store/repair/clearDeadProcessState.ts`, wired into `openStore()`
+      (run first, before the three existing repairs) release every
+      `board_owner`/`relay_leases` row by its own current owner, close
+      every open `sessions` row, and reset any `connecting`/`connected`
+      link to `connectable` -- the last of these also fixes a real
+      reconciler defect, not just display: `connect/reconciler.ts`'s own
+      `deviceHasActiveLink` treats both states as "already connected",
+      so a stale one blocked reconnection forever, not merely
+      mislabeled. `fastSweepByRelayLinkId` (the sweep-rate capability
+      flag) is deliberately left untouched -- it is a hardware fact, not
+      a liveness claim; see `clearDeadProcessState.ts`'s own doc comment.
+      (2) `AppHeader`'s relay-link branch no longer runs through the
+      session-based robot text at all -- `torture` used to read "No
+      open session on this link" plus a Connect button, both
+      meaningless for a relay; a robot link with no session now reads
+      plain "Not connected" (the stakeholder's own rejection of the old
+      wording), and a surviving-session failure reason is always routed
+      through `plainFailureReason` (no raw reasons). New
+      `relayConnectionStatusText`/updated `connectionStatusText` in
+      `AppHeader.tsx`. (3) `AppHeader.css` gained actual layout for
+      `.app-header-connection` (flex, gap) -- label/state/button/link had
+      no separating CSS at all before this pass. (4) `FlashDialog`'s
+      `forceShow` on the header is now `link.transport === "usb"` only --
+      `server.ts`'s own `runFlashTask` refuses any other transport
+      outright ("flashing requires a directly attached USB link"), so
+      unconditional `forceShow` was offering a trigger that could never
+      work on `torture` (mbrelay/TCP) or any WiFi robot link.
+
+      Tests: `packages/host/src/store/repair/clearDeadProcessState.test.ts`
+      (new, 8 cases) plus a new `openStore` wiring test in
+      `packages/host/src/store/index.test.ts`; new/updated cases in
+      `packages/ui/src/components/AppHeader.test.tsx` (relay text, Flash
+      gating by transport, reworded "Not connected"/cleaned-reason
+      cases). Full required scope (`packages/ui
+      packages/host/src/projection.test.ts packages/host/src/store
+      packages/host/src/connect packages/host/src/watchers scripts/bench`)
+      1266 passed; `npm run typecheck`, `npm run vite:build -w
+      @robot-console/ui`, `npm run build` all clean.
+
+      Evidence: a fresh copy of the stakeholder's own live
+      `console.sqlite` (+ `-wal`/`-shm`, taken while pid 12415 was still
+      running) under `scratchpad/018-010-stakeholder-db-3/`, opened via
+      `node bin/robot-console.js --port 18734 --no-open --no-sweep` with
+      `ROBOT_CONSOLE_STATE_DIR` pointed at that copy, confirmed via
+      `lsof -p <pid>` to hold only the copy's `.sqlite`/`-wal`/`-shm`
+      before any screenshot. Direct `sqlite3` reads of the copy before
+      start confirmed the real leftover state (a `sweep` relay lease on
+      vitut's own link, 5 open `sessions` rows, 3 links `connected`) from
+      the still-running stakeholder process; after 30s+ of the new
+      host's own uptime the lease/board-owner tables were empty, 4 of 5
+      sessions closed (the fifth, `wifi-vevov`, became a genuine new
+      session this process itself opened -- WiFi has no single-client
+      exclusivity, so this is expected, not contention), and the
+      previously-`connected`/`connecting` links read `connectable` with
+      `state_reason: "process-restarted"` until the reconciler acted on
+      them. Screenshots (visually inspected, quoted in the programmer's
+      own return for this pass): `scratchpad/front-page-full-3.png`,
+      `scratchpad/relay-page-torture-3.png` (vitut/torture cards read
+      plain "idle", not "idle · sweeping (slow)"), `scratchpad/
+      relay-page-vitut-3.png`, `scratchpad/robot-page-gopiv-3.png`,
+      `scratchpad/robot-page-vevov-mbserial-3.png` (a robot page with no
+      session, per this ticket's own acceptance-evidence requirement).
+      Real bench-network contention (mbserial `gopiv`/`tigez` against
+      the stakeholder's still-running dev server) rendered as plain text
+      ("Couldn't connect: another app is connected to this bridge ·
+      retrying in Ns"), as expected. Still blocked, unchanged from the
+      second pass, on the full `scripts/bench/run.sh` harness run itself
+      (same pid-12415 contention) -- this pass's own evidence is again
+      the throwaway-copy truthfulness check, not the harness.
+
 ## Implementation Plan
 
 **Approach**: introduce the shared text module first, with unit tests

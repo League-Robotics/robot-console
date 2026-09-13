@@ -1,7 +1,7 @@
 ---
 id: '010'
 title: 'Bench verification: full suite (macOS + Linux), WiFi leg, and USB/radio driving'
-status: in-progress
+status: done
 use-cases:
 - SUC-002
 - SUC-003

@@ -293,13 +293,56 @@ export function connectionLabel(link: SnapshotLink): string {
   return link.via ? `${link.label} (via relay ${link.via.relayName})` : link.label;
 }
 
-/** Per-link status text -- "Linked" / "Connecting" / "Unreachable: …" /
- * "Retrying in Ns" / "Not seen since …" / "Not linked", derived from
- * `state`/`reason`/`lastSeen`/`nextRetryAt` (`sprint.md`'s own wording).
- * Ticket 017-007: moved here from `FrontPage.tsx`'s own former
- * `linkStatusText` (the single shared copy every per-link status
- * rendering site now reads, rather than each re-deriving it from
- * `link.state` itself). */
+/**
+ * Turn a raw `link.reason` (a `LineLink`/harvester/connector error
+ * message, engineer-facing) into a short, plain-word phrase a student
+ * can read. Only three shapes are known well enough to name explicitly;
+ * anything else is shown verbatim rather than swallowed, so an
+ * unanticipated reason is still visible (just not translated) rather
+ * than silently genericized.
+ *
+ * - A connect timeout (`LineLink.connect()`'s own `"... timed out after
+ *   Nms"`, or any other "timed out" message -- `identify()`'s no-banner
+ *   case reads the same way) reads as "no answer (timed out)".
+ * - A banner/serial identity mismatch (`connector.ts`'s item-E checks,
+ *   both ending "... check the USB cable") is already a specific,
+ *   actionable instruction -- kept verbatim rather than genericized.
+ * - A harvester missed-poll reason (`"no reply to N STATUS polls --
+ *   link presumed dead"`) reads as "stopped answering".
+ */
+function plainFailureReason(reason: string): string {
+  if (reason.includes("check the USB cable")) {
+    return reason;
+  }
+  if (/STATUS poll/i.test(reason)) {
+    return "stopped answering";
+  }
+  if (/timed out/i.test(reason)) {
+    return "no answer (timed out)";
+  }
+  return reason;
+}
+
+/** Per-link status text -- "Linked" / "Connecting" / "Couldn't connect:
+ * …" (optionally "… · retrying in Ns") / "Not seen since …" / "Not
+ * linked", derived from `state`/`reason`/`lastSeen`/`nextRetryAt`
+ * (`sprint.md`'s own wording). Ticket 017-007: moved here from
+ * `FrontPage.tsx`'s own former `linkStatusText` (the single shared copy
+ * every per-link status rendering site now reads, rather than each
+ * re-deriving it from `link.state` itself).
+ *
+ * **Bench defect (team-lead walk 017-012, 2026-09-13)**: `gopiv`'s WiFi
+ * row read "Retrying in 0s" forever -- `state: "failed"` with a
+ * `nextRetryAt` that had already passed (the reconciler's `plan()`
+ * never schedules a second retry once the device has another connected
+ * link), so the old unconditional "Retrying in Ns" both lied about an
+ * active retry and hid `reason` entirely. Now: `failed`/`unresponsive`
+ * always lead with "Couldn't connect" plus a plain-word `reason` (via
+ * {@link plainFailureReason}) when one is recorded, and the "· retrying
+ * in Ns" suffix is appended only while `nextRetryAt` is still in the
+ * future -- never "0s" or a negative count (a past/absent
+ * `nextRetryAt` just omits the suffix, telling the truth: no retry is
+ * pending). */
 export function linkStateText(link: SnapshotLink, now: number = Date.now()): string {
   switch (link.state) {
     case "connected":
@@ -307,13 +350,14 @@ export function linkStateText(link: SnapshotLink, now: number = Date.now()): str
     case "connecting":
       return "Connecting";
     case "failed":
-      if (link.nextRetryAt !== null) {
-        const seconds = Math.max(0, Math.round((link.nextRetryAt - now) / 1000));
-        return `Retrying in ${seconds}s`;
+    case "unresponsive": {
+      const base = link.reason ? `Couldn't connect: ${plainFailureReason(link.reason)}` : "Couldn't connect";
+      if (link.nextRetryAt !== null && link.nextRetryAt > now) {
+        const seconds = Math.max(1, Math.ceil((link.nextRetryAt - now) / 1000));
+        return `${base} · retrying in ${seconds}s`;
       }
-      return link.reason ? `Unreachable: ${link.reason}` : "Unreachable";
-    case "unresponsive":
-      return link.reason ? `Unreachable: ${link.reason}` : "Unresponsive";
+      return base;
+    }
     case "stale":
       return link.lastSeen !== null ? `Not seen since ${new Date(link.lastSeen).toLocaleString()}` : "Not linked";
     case "discovered":

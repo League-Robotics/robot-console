@@ -336,7 +336,12 @@ function buildLabel(link: ProjectionLinkRow): string {
     case "radio":
       return `Radio · ${channelGroup(link.address)}`;
     case "mbrelay":
-      return `mbrelay · ${channelGroup(link.address)}`;
+      // The relay's own connectivity link to its host (mdnsWatcher.ts's
+      // `handleMbrelay`: address is `{ host, port, registryPort }`, the
+      // same shape as `wifi`/`mbserial` -- never a `{ channel, group }`
+      // radio address, so `channelGroup` here always produced junk
+      // ("mbrelay · ch?/grp?", bench defect, team-lead walk 017-012).
+      return `mbrelay · ${hostPort(link.address)}`;
     default: {
       const exhaustive: never = link.transport;
       return String(exhaustive);

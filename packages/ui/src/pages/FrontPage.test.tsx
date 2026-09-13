@@ -230,7 +230,7 @@ describe("multi-link device (host already groups links under one device)", () =>
     expect(rows).toHaveLength(2);
     const wifiRow = el.querySelector('[data-testid="device-link-wifi-vevov"]');
     expect(wifiRow?.textContent).toContain("WiFi · vevov.local:7654");
-    expect(wifiRow?.textContent).toContain("Unreachable: could not reach vevov.local:7654");
+    expect(wifiRow?.textContent).toContain("Couldn't connect: could not reach vevov.local:7654");
 
     // No arrow anywhere except the card's own, into the usable link.
     expect(el.querySelectorAll('[data-testid^="device-link-open-"]')).toHaveLength(0);
@@ -347,7 +347,7 @@ describe("extended scope (team-lead, 2026-09-13), item B: a card with no usable 
       ),
     );
     const row = el.querySelector('[data-testid="device-link-usb-zapuz"]');
-    expect(row?.textContent).toContain("Unreachable: no reply to 3 STATUS polls -- link presumed dead");
+    expect(row?.textContent).toContain("Couldn't connect: stopped answering");
     expect(el.querySelector('[data-testid="device-link-reason-usb-zapuz"]')?.textContent).toBe(
       "no reply to 3 STATUS polls -- link presumed dead",
     );
@@ -394,6 +394,34 @@ describe("extended scope (team-lead, 2026-09-13), item B: a card with no usable 
       ),
     );
     expect(el.querySelector('[data-testid="device-open-2"]')?.getAttribute("href")).toBe("/d/mbrelay-torture");
+  });
+
+  // Bench defect (team-lead walk 017-012, 2026-09-13): the `torture`
+  // relay card showed a row-level Connect button on its own mbrelay
+  // link -- opening a relay pool's own link is not a student action,
+  // the relay card already gets its robot-picker Connect via
+  // `RelayConnectControls`. The button must stay suppressed for every
+  // state in `CONNECT_BUTTON_STATES`, not just the `connected` case the
+  // pre-existing open-arrow test above happens to use.
+  it("never shows a row-level Connect button on a relay card's own link, in any connectable state", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          sendable={true}
+          devices={[
+            device(2, {
+              name: "torture",
+              kind: "relay",
+              links: [link("mbrelay-torture", { transport: "mbrelay", label: "mbrelay · torture.local:8760", state: "connectable" })],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
+    expect(el.querySelector('[data-testid="device-link-connect-mbrelay-torture"]')).toBeNull();
+    expect(el.querySelector('[data-testid="device-link-mbrelay-torture"]')?.textContent).toContain("mbrelay · torture.local:8760");
   });
 });
 

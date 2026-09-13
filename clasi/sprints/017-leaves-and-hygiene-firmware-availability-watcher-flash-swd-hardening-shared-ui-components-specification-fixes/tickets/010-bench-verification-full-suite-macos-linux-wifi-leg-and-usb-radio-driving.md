@@ -871,3 +871,83 @@ on this host build, live.
 New host left running: pid 71860, port 4797, state dir
 `.../scratchpad/017-012-bench-state`, log at
 `.../017-012-bench-state/host.log`.
+
+## Defect: "Retrying in 0s" hides failure reason (2026-09-13)
+
+Team-lead's own walk (Chromium + live store, host pid 71860, port 4797,
+state dir `.../scratchpad/017-012-bench-state`, screenshot
+`.../scratchpad/team-lead-walk-012/front.png`) found two more issues on
+top of everything already recorded above:
+
+1. `gopiv`'s `WiFi · gopiv.local:7654` row read **"Retrying in 0s"**
+   indefinitely -- store had `state: failed`, `state_reason:
+   "LineLink.connect() timed out after 5000ms"`, `fail_count: 1`, and a
+   `next_retry_at` 240+ seconds in the past that was never
+   incremented, because the reconciler's `plan()` only ever opens one
+   link per device and `gopiv` already had a connected `mbserial` link
+   -- no retry was ever going to happen, but the row claimed one was
+   imminent and hid the actual reason entirely.
+2. The `torture` relay card showed a row-level Connect button on its
+   own `mbrelay · ch?/grp?` link -- opening a relay pool's own link is
+   not a student action (the relay card already has its robot-picker
+   Connect), and the `ch?/grp?` label was junk: `buildLabel`'s
+   `mbrelay` case called `channelGroup` on an address shaped `{ host,
+   port, registryPort }` (mdnsWatcher.ts's `handleMbrelay`), which has
+   no `channel`/`group` fields at all.
+
+**Fix** (`packages/ui/src/deviceDisplay.ts`'s `linkStateText`,
+`packages/ui/src/pages/FrontPage.tsx`'s `DeviceConnectionRow`,
+`packages/host/src/projection.ts`'s `buildLabel`):
+
+- `failed`/`unresponsive` link state text now reads "Couldn't connect:
+  `<plain-word reason>`" -- a small `plainFailureReason` mapping turns
+  a connect timeout into "no answer (timed out)", a missed-STATUS-poll
+  reason into "stopped answering", keeps a banner/serial
+  identity-mismatch reason verbatim (already an actionable cable
+  instruction), and falls back to the raw reason for anything else.
+- The "· retrying in Ns" suffix is now appended only while
+  `nextRetryAt` is genuinely still in the future (never "0s" or a
+  negative count); when shown, `DeviceConnectionRow` now arms a
+  self-clearing `setInterval` so the row's own countdown actually ticks
+  down once a second instead of freezing at its first render.
+- `DeviceConnectionRow`'s row-level Connect button is now suppressed
+  for `device.kind === "relay"` outright, regardless of link state.
+- `buildLabel`'s `mbrelay` case now reads `hostPort(link.address)`,
+  the same host:port shape `wifi`/`mbserial` already use, instead of
+  `channelGroup`.
+
+**Tests**: `packages/ui/src/deviceDisplay.test.ts` (`linkStateText`) --
+past-`nextRetryAt` shows the plain reason with no "Retrying"/"retrying"
+substring at all; future-`nextRetryAt` shows the plain reason plus a
+"· retrying in Ns" suffix; a sub-second future `nextRetryAt` still
+rounds up to "1s", never "0s"; the three `plainFailureReason` mappings
+each get their own case. `packages/ui/src/pages/FrontPage.test.tsx` --
+the existing multi-link and STATUS-poll tests updated for the new
+copy; a new test asserts no `device-link-connect-*` button renders on
+a relay card's own link in any `CONNECT_BUTTON_STATES` state, and that
+its label shows host:port. `packages/host/src/projection.test.ts` --
+asserts the `torture` fixture's link label is `"mbrelay ·
+torture.local:8760"`, not `"mbrelay · ch?/grp?"`.
+
+**Live re-verification** (fresh host, pid 87704, port 4797, state dir
+`.../scratchpad/017-013-bench-state`, seeded read-only from
+`~/.local/state/robot-console/known-robots.json`): `team-lead-
+walk2.mjs` into `.../scratchpad/walk-013` -- `PROBLEMS 0`, every
+Linked robot (`vevov`/`gopiv`/`tigez`) answered `ID` for real, and the
+`torture` card's own link now reads `mbrelay · torture.local:8760`
+with no row-level Connect button (only its existing robot-picker
+Connect below). The fresh store no longer carried the original
+failed/stale-retry `wifi-gopiv` row (a brand-new SQLite file has no
+history to replay), so to prove the exact reported shape end-to-end
+the bug's own row was reconstructed directly in the running store
+(`state='failed'`, `state_reason='LineLink.connect() timed out after
+5000ms'`, `next_retry_at` 240s in the past, `fail_count=1`) and
+`front-shot.mjs` re-run against the live host:
+
+```
+gopiv card: gopiv Linked ROLE NEZHA2 mbserial · loki.local:40293 Linked WiFi · gopiv.local:7654 Couldn't connect: no answer (timed out) Connect
+```
+
+No "Retrying in 0s" anywhere, the reason is now visible in plain
+words, and the screenshot (`.../scratchpad/walk-013/front.png`)
+confirms both the gopiv row and the clean `torture` card visually.

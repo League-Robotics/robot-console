@@ -131,17 +131,56 @@ describe("linkStateText", () => {
     expect(linkStateText(link({ state: "connecting" }), now)).toBe("Connecting");
   });
 
-  it("renders Retrying in Ns when failed with a pending retry", () => {
-    expect(linkStateText(link({ state: "failed", nextRetryAt: now + 5000, reason: "timeout" }), now)).toBe("Retrying in 5s");
+  // Ticket 017-010 defect (team-lead walk 017-012, 2026-09-13): `gopiv`'s
+  // WiFi row read "Retrying in 0s" forever -- a `failed` link whose
+  // `nextRetryAt` had already passed (the reconciler never schedules a
+  // second retry once the device has another connected link), which both
+  // lied about an active retry and hid `reason` from the student
+  // entirely. `failed`/`unresponsive` now always lead with "Couldn't
+  // connect: <plain reason>", and the "· retrying in Ns" suffix appears
+  // only while `nextRetryAt` is genuinely still in the future.
+  it("failed with a past nextRetryAt shows the plain reason and no retry countdown at all (the gopiv bug)", () => {
+    const text = linkStateText(
+      link({ state: "failed", reason: "LineLink.connect() timed out after 5000ms", nextRetryAt: now - 240_000 }),
+      now,
+    );
+    expect(text).toBe("Couldn't connect: no answer (timed out)");
+    expect(text).not.toContain("Retrying");
+    expect(text).not.toContain("retrying");
   });
 
-  it("renders Unreachable: <reason> when failed with no pending retry", () => {
-    expect(linkStateText(link({ state: "failed", reason: "no reply" }), now)).toBe("Unreachable: no reply");
+  it("failed with a future nextRetryAt shows the plain reason plus a retrying-in-Ns suffix", () => {
+    const text = linkStateText(
+      link({ state: "failed", reason: "LineLink.connect() timed out after 5000ms", nextRetryAt: now + 5000 }),
+      now,
+    );
+    expect(text).toBe("Couldn't connect: no answer (timed out) · retrying in 5s");
   });
 
-  it("renders Unresponsive (with reason) for the unresponsive state", () => {
-    expect(linkStateText(link({ state: "unresponsive", reason: "HELLO timed out" }), now)).toBe("Unreachable: HELLO timed out");
-    expect(linkStateText(link({ state: "unresponsive" }), now)).toBe("Unresponsive");
+  it("never shows a 0s or negative countdown -- a nextRetryAt within the current second still rounds up to at least 1s", () => {
+    const text = linkStateText(link({ state: "failed", reason: "boom", nextRetryAt: now + 400 }), now);
+    expect(text).toContain("retrying in 1s");
+    expect(text).not.toContain("0s");
+  });
+
+  it("renders Couldn't connect: <reason> when failed with no pending retry", () => {
+    expect(linkStateText(link({ state: "failed", reason: "no reply" }), now)).toBe("Couldn't connect: no reply");
+  });
+
+  it("renders Couldn't connect (with plain-word reason) for the unresponsive state", () => {
+    expect(linkStateText(link({ state: "unresponsive", reason: "HELLO timed out" }), now)).toBe("Couldn't connect: no answer (timed out)");
+    expect(linkStateText(link({ state: "unresponsive" }), now)).toBe("Couldn't connect");
+  });
+
+  it("maps a missed-STATUS-poll reason to 'stopped answering'", () => {
+    expect(linkStateText(link({ state: "unresponsive", reason: "no reply to 3 STATUS polls -- link presumed dead" }), now)).toBe(
+      "Couldn't connect: stopped answering",
+    );
+  });
+
+  it("keeps a banner/serial identity-mismatch reason verbatim (it's already an actionable cable instruction)", () => {
+    const reason = "banner identity gopiv disagrees with SWD name zeguz -- serial data corrupted, check the USB cable";
+    expect(linkStateText(link({ state: "failed", reason }), now)).toBe(`Couldn't connect: ${reason}`);
   });
 
   it("renders Not seen since <date> for a stale link with a lastSeen", () => {

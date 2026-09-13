@@ -271,6 +271,13 @@ describe("buildSnapshotFromRows: relays[] for a network (mbrelay) relay", () => 
     // own doc comment -- but the field must still be present and
     // concrete (never absent, never a thrown error).
     expect(device?.radio).toEqual({ channel: 0, group: 0, source: "derived" });
+    // Bench defect (team-lead walk 017-012, 2026-09-13): this link's own
+    // label read "mbrelay · ch?/grp?" -- `buildLabel`'s mbrelay case
+    // called `channelGroup` on an address shaped `{ host, port,
+    // registryPort }` (mdnsWatcher.ts's `handleMbrelay`), which has no
+    // `channel`/`group` fields at all. It must read the same host:port
+    // shape `wifi`/`mbserial` already do.
+    expect(device?.links[0]?.label).toBe("mbrelay · torture.local:8760");
   });
 });
 

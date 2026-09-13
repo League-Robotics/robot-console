@@ -24,8 +24,8 @@
  * `nameError`/flagged-name rendering is gone for the same reason:
  * `SnapshotDevice.name` is always a resolved string.
  *
- * Per-link status text ("Linked" / "Connecting" / "Unreachable: …" /
- * "Retrying in Ns" / "Not seen since …") is now derived from
+ * Per-link status text ("Linked" / "Connecting" / "Couldn't connect: …"
+ * / "Not seen since …") is now derived from
  * `SnapshotLink.state`/`reason`/`lastSeen`/`nextRetryAt` by
  * `deviceDisplay.ts`'s shared `linkStateText` (ticket 017-007: moved
  * there from this module's own former local copy), rather than from a
@@ -80,6 +80,7 @@
  * `<name>`)" label (`connectionLabel`, unchanged) -- architecture.md
  * §7.3's "Radio via `<relay>`" row.
  */
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import type { SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
 import type { ConnectionStatus, LinkNotice, PendingRadioMigration } from "../ws/WsProvider";
@@ -500,7 +501,27 @@ function DeviceCard({
  * underneath its own state line, via `WsProvider.tsx`'s existing
  * link-scoped notice stream (`useLinkNotices`) -- no redesign, the
  * notice disappears again once the link is next reported `connected`
- * (`WsProvider.tsx`'s own `applySnapshot`). */
+ * (`WsProvider.tsx`'s own `applySnapshot`).
+ *
+ * **Bench defect (team-lead walk 017-012, 2026-09-13)**: the `torture`
+ * relay card showed a row-level Connect button on the relay's own
+ * connectivity link. Opening a relay pool's own link is not a student
+ * action -- a relay card already gets its robot-picker Connect via
+ * `RelayConnectControls` below -- so the Connect button here is
+ * suppressed for `device.kind === "relay"` regardless of the link's
+ * own state.
+ *
+ * **Retry countdown ticks (team-lead walk 017-012, 2026-09-13)**: when
+ * `linkStateText` does show a "· retrying in Ns" suffix (a genuinely
+ * future `nextRetryAt`), it must visibly count down rather than freeze
+ * at whatever number the row first rendered with -- a frozen countdown
+ * is exactly the "Retrying in 0s" staleness this same bench walk fixed
+ * for the past-`nextRetryAt` case, just one render later. `now` is this
+ * row's own local re-render clock (not `Date.now()` read fresh on every
+ * render, since nothing else re-renders this row once a second on its
+ * own): a `setInterval` armed only while `link.nextRetryAt` is set, and
+ * self-clearing once that moment has passed, so a link with no pending
+ * retry (the common case) never starts a timer at all. */
 function DeviceConnectionRow({
   device,
   link,
@@ -516,11 +537,27 @@ function DeviceConnectionRow({
   onLinkConnect: (linkId: string) => void;
   notice: LinkNotice | undefined;
 }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const target = link.nextRetryAt;
+    if (target === null) {
+      return undefined;
+    }
+    const id = setInterval(() => {
+      const tick = Date.now();
+      setNow(tick);
+      if (tick >= target) {
+        clearInterval(id);
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [link.nextRetryAt]);
+
   return (
     <li className="device-connection" data-testid={`device-link-${link.id}`}>
       <span className="device-connection-label">{connectionLabel(link)}</span>
       <span className={link.state === "connected" ? "device-connection-state device-connection-open" : "device-connection-state"}>
-        {linkStateText(link)}
+        {linkStateText(link, now)}
       </span>
       {!primary && link.reason && (
         <span className="device-connection-reason" data-testid={`device-link-reason-${link.id}`}>
@@ -547,7 +584,7 @@ function DeviceConnectionRow({
           <ArrowIcon direction="forward" />
         </Link>
       )}
-      {CONNECT_BUTTON_STATES.has(link.state) && (
+      {device.kind !== "relay" && CONNECT_BUTTON_STATES.has(link.state) && (
         <button
           type="button"
           className="device-connection-connect-button"

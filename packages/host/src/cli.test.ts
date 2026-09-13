@@ -10,6 +10,19 @@
  * watchers, ports, browser, or process exit is ever touched here.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// Stakeholder instruction (018-010): `main()`'s default browser opener
+// must launch Google Chrome, not whatever the OS default happens to be
+// (Safari, on the macOS benches this project runs on). Mocked here so
+// the "default opener" tests below can assert on the real, non-injected
+// `openBrowser` default (`openInChrome` in `cli.ts`) without touching a
+// real browser.
+const openMock = vi.fn().mockResolvedValue(undefined);
+vi.mock("open", () => ({
+  default: (...args: unknown[]) => openMock(...args),
+  apps: { chrome: "google chrome" },
+}));
+
 import { main, type CliDeps } from "./cli.js";
 import type { StartRuntimeOptions } from "./runtime.js";
 import type { StoreSnapshot } from "./store/index.js";
@@ -279,6 +292,51 @@ describe("cli: main -- production startup composes runtime then server", () => {
 
     await expect(main([], {} as NodeJS.ProcessEnv, deps)).resolves.toBeUndefined();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("no display"));
+
+    logSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it("default opener (no deps.openBrowser override) passes the Chrome app option to `open`", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    openMock.mockClear();
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // openBrowser deliberately omitted -- this exercises the real
+      // default (`openInChrome`), not a test fake.
+    };
+
+    await main([], {} as NodeJS.ProcessEnv, deps);
+
+    expect(openMock).toHaveBeenCalledWith("http://127.0.0.1:4795", { app: { name: "google chrome" } });
+
+    logSpy.mockRestore();
+  });
+
+  it("default opener falls back to the plain default browser, and warns once, when Chrome is not found", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    openMock.mockClear();
+    openMock.mockRejectedValueOnce(new Error("Chrome not installed")).mockResolvedValueOnce(undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await main([], {} as NodeJS.ProcessEnv, deps);
+
+    expect(openMock).toHaveBeenNthCalledWith(1, "http://127.0.0.1:4795", { app: { name: "google chrome" } });
+    expect(openMock).toHaveBeenNthCalledWith(2, "http://127.0.0.1:4795");
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Chrome not installed"));
 
     logSpy.mockRestore();
     warnSpy.mockRestore();

@@ -43,11 +43,31 @@
  * touched in tests.
  */
 
-import open from "open";
+import open, { apps } from "open";
 import { startServer, type RunningServer, type StartServerOptions } from "./server.js";
 import { startRuntime, type Runtime, type StartRuntimeOptions } from "./runtime.js";
 import { getFirmwareConfig } from "./config.js";
 import { dumpStore, formatStoreDump } from "./debug/dumpStore.js";
+
+/** Default {@link CliDeps.openBrowser}: the stakeholder does not want
+ * `main()` popping up whatever the OS default browser happens to be
+ * (Safari, on the macOS benches this project runs on) -- it should open
+ * Google Chrome specifically. Falls back to the plain OS-default
+ * `open(url)` (and warns once) if Chrome itself is not installed, so a
+ * missing Chrome degrades to the old behavior rather than failing
+ * startup outright. */
+async function openInChrome(url: string): Promise<void> {
+  try {
+    await open(url, { app: { name: apps.chrome } });
+  } catch (error) {
+    console.warn(
+      `robot-console: Google Chrome not found (${
+        error instanceof Error ? error.message : String(error)
+      }) -- opening the default browser instead.`,
+    );
+    await open(url);
+  }
+}
 
 /** Injectable seams for {@link main}. Every field defaults to the real
  * implementation; `cli.test.ts` substitutes fakes for whichever fields
@@ -68,10 +88,11 @@ export interface CliDeps {
   runtimeOptions?: StartRuntimeOptions;
   startServer?: (options: StartServerOptions) => Promise<RunningServer>;
   getFirmwareConfig?: typeof getFirmwareConfig;
-  /** Opens a browser to `url`. Defaults to the `open` package. Rejects
-   * the same way a real browser-launch failure would, so {@link main}'s
-   * own try/catch around it is exercised the same way in tests as in
-   * production. */
+  /** Opens a browser to `url`. Defaults to {@link openInChrome} (Chrome,
+   * falling back to the OS default browser if Chrome is not installed).
+   * Rejects the same way a real browser-launch failure would, so
+   * {@link main}'s own try/catch around it is exercised the same way in
+   * tests as in production. */
   openBrowser?: (url: string) => Promise<void>;
   /** Terminates the process. Defaults to `process.exit`. Injectable so
    * `cli.test.ts` can observe a clean `SIGINT`/`SIGTERM` shutdown
@@ -238,7 +259,7 @@ export async function main(
   const startRuntimeFn = deps.startRuntime ?? startRuntime;
   const startServerFn = deps.startServer ?? startServer;
   const getFirmwareConfigFn = deps.getFirmwareConfig ?? getFirmwareConfig;
-  const openBrowser = deps.openBrowser ?? open;
+  const openBrowser = deps.openBrowser ?? openInChrome;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
   const port = parsePortFlag(argv) ?? parsePortEnv(env);

@@ -29,13 +29,14 @@ import {
 } from "./server.js";
 import { deviceIdToName, nameToRadioAddress } from "@robot-console/protocol";
 import { openStoreDb } from "./store/db.js";
-import { Store } from "./store/index.js";
+import { MBFLASH_SERVICE_TYPE, Store } from "./store/index.js";
 import { MAX_UPLOAD_BYTE_LENGTH } from "./localHexUpload.js";
 import { UPLOAD_ID_BYTE_LENGTH } from "./wsMessages.js";
 import type { ConnectedSession } from "./connect/connector.js";
 import type { HarvesterTelemetryEvent } from "./connect/harvester.js";
 import type { Snapshot, ServerMessage, FirmwareSourceRef } from "./wsMessages.js";
 import type { FlashOutcome } from "./flash.js";
+import type { MbflashOutcome } from "./connect/mbflashClient.js";
 import type { DaplinkDevice } from "./devices.js";
 
 // ---------------------------------------------------------------------
@@ -944,6 +945,189 @@ describe("server.ts: flash-start", () => {
     expect(h.store.acquireBoardOwner("SERIAL123", "someone-else", Date.now())).toBe(true);
     const result = ws.sent.find((m) => m.type === "flash-result");
     expect(result).toMatchObject({ type: "flash-result", status: "ok" });
+  });
+});
+
+// ---------------------------------------------------------------------
+// flash-start: network flash over _mbflash._tcp (ticket 018-014)
+// ---------------------------------------------------------------------
+
+describe("server.ts: flash-start routes a mbserial/wifi link with a current _mbflash._tcp service to the network flasher", () => {
+  /** Drives the same flash-local-begin -> binary-frame handshake every
+   * USB flash-start test above already uses, returning the resulting
+   * `uploadId`/`sha256` for a `flash-start` `source`. */
+  async function uploadLocalHex(ws: ReturnType<typeof fakeWebSocket>, bytes: string): Promise<{ uploadId: string; sha256: string }> {
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    ws.emit(
+      "message",
+      Buffer.from(JSON.stringify({ type: "flash-local-begin", fileName: "a.hex", byteLength: bytes.length, sha256 })),
+      false,
+    );
+    await flush();
+    const ready = ws.sent.find((m) => m.type === "flash-local-ready") as { uploadId: string } | undefined;
+    const uploadId = ready!.uploadId;
+    ws.emit("message", Buffer.concat([Buffer.from(uploadId, "ascii"), Buffer.from(bytes)]), true);
+    await flush();
+    return { uploadId, sha256 };
+  }
+
+  it("closes the session, dials the service's host/port, reports writing/resetting/reidentifying, reopens on success", async () => {
+    const flashOverMbflashMock = vi.fn(async (_target: unknown, _hexBytes: Buffer, onProgress: (line: string) => void) => {
+      onProgress("LOG writing page 1");
+      return { status: "ok" } satisfies MbflashOutcome;
+    });
+    const h = await harness({ flashOverMbflash: flashOverMbflashMock });
+
+    const name = deviceIdToName(1198504156);
+    h.store.upsertDevice({ id: 1198504156, name, kind: "robot", at: 1 });
+    h.store.setOwned(1198504156, true, 1);
+    h.store.upsertLink({ id: "mbserial-gopiv", transport: "mbserial", address: { host: "gopiv.local", port: 4000 }, deviceId: 1198504156, at: 1 });
+    h.store.upsertService({ instance: name, type: MBFLASH_SERVICE_TYPE, host: "gopiv.local", port: 34567, txt: { role: "NEZHA2" }, at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const { uploadId, sha256 } = await uploadLocalHex(ws, "hello");
+    const source: FirmwareSourceRef = { kind: "local-hex", uploadId, fileName: "a.hex", sha256 };
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId: "mbserial-gopiv", source })), false);
+    await flush();
+    await flush();
+
+    expect(h.runtime.requestClose).toHaveBeenCalledWith("mbserial-gopiv");
+    expect(flashOverMbflashMock).toHaveBeenCalledTimes(1);
+    const [target, hexBytes] = flashOverMbflashMock.mock.calls[0] as [{ host: string; port: number }, Buffer, unknown];
+    // The service's own host/port (34567), never the mbserial link's own
+    // session address (4000) -- the flash service is a distinct TCP
+    // endpoint from the mbserial bridge port.
+    expect(target).toEqual({ host: "gopiv.local", port: 34567 });
+    expect(hexBytes.toString("utf-8")).toBe("hello");
+
+    expect(h.runtime.requestOpen).toHaveBeenCalledWith("mbserial-gopiv");
+
+    const phases = ws.sent.filter((m) => m.type === "flash-progress").map((m) => (m as { phase: string }).phase);
+    expect(phases).toContain("writing");
+    expect(phases).toContain("resetting");
+    expect(phases).toContain("reidentifying");
+    // reidentifying must be the last progress phase reported, before the
+    // terminal flash-result.
+    expect(phases[phases.length - 1]).toBe("reidentifying");
+
+    const result = ws.sent.find((m) => m.type === "flash-result");
+    expect(result).toMatchObject({ type: "flash-result", linkId: "mbserial-gopiv", status: "ok" });
+  });
+
+  it("a wifi link with a current _mbflash._tcp service routes the same way (not only mbserial)", async () => {
+    const flashOverMbflashMock = vi.fn(async () => ({ status: "ok" }) satisfies MbflashOutcome);
+    const h = await harness({ flashOverMbflash: flashOverMbflashMock });
+
+    const name = deviceIdToName(1198504156);
+    h.store.upsertDevice({ id: 1198504156, name, kind: "robot", at: 1 });
+    h.store.setOwned(1198504156, true, 1);
+    h.store.upsertLink({ id: "wifi-vevov", transport: "wifi", address: { host: "vevov.local", port: 81 }, deviceId: 1198504156, at: 1 });
+    h.store.upsertService({ instance: name, type: MBFLASH_SERVICE_TYPE, host: "vevov.local", port: 9100, txt: null, at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const { uploadId, sha256 } = await uploadLocalHex(ws, "hello");
+    const source: FirmwareSourceRef = { kind: "local-hex", uploadId, fileName: "a.hex", sha256 };
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId: "wifi-vevov", source })), false);
+    await flush();
+    await flush();
+
+    expect(flashOverMbflashMock).toHaveBeenCalledTimes(1);
+    const result = ws.sent.find((m) => m.type === "flash-result");
+    expect(result).toMatchObject({ type: "flash-result", status: "ok" });
+  });
+
+  it("reports a plain flash-result error, never calls flashOverMbflash, when the device has no current _mbflash._tcp service", async () => {
+    const flashOverMbflashMock = vi.fn();
+    const h = await harness({ flashOverMbflash: flashOverMbflashMock });
+
+    const name = deviceIdToName(1198504156);
+    h.store.upsertDevice({ id: 1198504156, name, kind: "robot", at: 1 });
+    h.store.setOwned(1198504156, true, 1);
+    h.store.upsertLink({ id: "mbserial-gopiv", transport: "mbserial", address: { host: "gopiv.local", port: 4000 }, deviceId: 1198504156, at: 1 });
+    // Deliberately no upsertService call -- nothing currently advertises
+    // _mbflash._tcp for this device.
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const source: FirmwareSourceRef = { kind: "release", firmware: "robot" };
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId: "mbserial-gopiv", source })), false);
+    await flush();
+
+    expect(flashOverMbflashMock).not.toHaveBeenCalled();
+    expect(h.runtime.requestClose).not.toHaveBeenCalled();
+    const result = ws.sent.find((m) => m.type === "flash-result");
+    expect(result).toMatchObject({ type: "flash-result", status: "error" });
+    expect((result as { message: string }).message).toMatch(/_mbflash\._tcp/);
+  });
+
+  it("reports a plain flash-result error for an unsupported transport (radio/mbrelay), even with a service row present", async () => {
+    const flashOverMbflashMock = vi.fn();
+    const h = await harness({ flashOverMbflash: flashOverMbflashMock });
+
+    const name = deviceIdToName(1198504156);
+    h.store.upsertDevice({ id: 1198504156, name, kind: "robot", at: 1 });
+    h.store.setOwned(1198504156, true, 1);
+    h.store.upsertLink({ id: "radio-1", transport: "radio", address: { relayLinkId: "relay-1", channel: 1, group: 1 }, deviceId: 1198504156, at: 1 });
+    h.store.upsertService({ instance: name, type: MBFLASH_SERVICE_TYPE, host: "gopiv.local", port: 34567, txt: null, at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const source: FirmwareSourceRef = { kind: "release", firmware: "robot" };
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId: "radio-1", source })), false);
+    await flush();
+
+    expect(flashOverMbflashMock).not.toHaveBeenCalled();
+    const result = ws.sent.find((m) => m.type === "flash-result");
+    expect(result).toMatchObject({ type: "flash-result", status: "error" });
+  });
+
+  it("a network flash failure (e.g. ERR busy) is reported plainly and never triggers a reopen", async () => {
+    const flashOverMbflashMock = vi.fn(
+      async () => ({ status: "error", reason: "busy", error: "mbflash reported \"ERR busy\"" }) satisfies MbflashOutcome,
+    );
+    const h = await harness({ flashOverMbflash: flashOverMbflashMock });
+
+    const name = deviceIdToName(1198504156);
+    h.store.upsertDevice({ id: 1198504156, name, kind: "robot", at: 1 });
+    h.store.setOwned(1198504156, true, 1);
+    h.store.upsertLink({ id: "mbserial-gopiv", transport: "mbserial", address: { host: "gopiv.local", port: 4000 }, deviceId: 1198504156, at: 1 });
+    h.store.upsertService({ instance: name, type: MBFLASH_SERVICE_TYPE, host: "gopiv.local", port: 34567, txt: null, at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const { uploadId, sha256 } = await uploadLocalHex(ws, "hello");
+    const source: FirmwareSourceRef = { kind: "local-hex", uploadId, fileName: "a.hex", sha256 };
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId: "mbserial-gopiv", source })), false);
+    await flush();
+    await flush();
+
+    expect(h.runtime.requestClose).toHaveBeenCalledWith("mbserial-gopiv");
+    expect(h.runtime.requestOpen).not.toHaveBeenCalled();
+    const result = ws.sent.find((m) => m.type === "flash-result");
+    expect(result).toMatchObject({ type: "flash-result", status: "error" });
+    expect((result as { message: string }).message).toContain("ERR busy");
   });
 });
 

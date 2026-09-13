@@ -356,6 +356,17 @@ export interface ProjectionDeviceRow {
   readonly radioSource: RadioSource;
   readonly owned: boolean;
   readonly lastSeen: number;
+  /** `devices.usb_serial` -- the KL27 interface-chip serial, "display
+   * hint only" per the schema's own column comment, reused (ticket
+   * 018-014) as the other half of {@link findCurrentMbflashService}'s
+   * match rule: a device's `_mbflash._tcp` service is trusted by
+   * instance name alone unless TXT `uid` is present *and* this field is
+   * present, in which case both must agree. Optional on this interface
+   * (not just nullable) purely so the many existing
+   * `projection.test.ts`/`store/index.test.ts` fixture literals that
+   * predate this ticket need not all be updated to keep type-checking —
+   * `Store.projectionRows()` itself always populates it concretely. */
+  readonly usbSerial?: string | null;
 }
 
 /** One `links` row, as {@link Store.projectionRows} needs it — every
@@ -438,6 +449,63 @@ export interface RadioSightingRow {
   readonly at: number;
 }
 
+/** One `services` row, as {@link Store.projectionRows} needs it —
+ * `txt` is left as `unknown` (parsed JSON; shape depends entirely on
+ * whatever the advertiser put in its TXT record), matching every other
+ * JSON column's convention in this file's read models
+ * ({@link ProjectionLinkRow.address}, etc). Ticket 018-014: this is what
+ * lets `projection.ts`'s `capabilities.flash` and `server.ts`'s
+ * `runFlashTask` both find a device's current `_mbflash._tcp`
+ * advertisement without either one running raw SQL of its own. */
+export interface ProjectionServiceRow {
+  readonly instance: string;
+  readonly type: string;
+  readonly host: string | null;
+  readonly port: number | null;
+  readonly txt: unknown;
+}
+
+/** `services.type` value for `_mbflash._tcp` rows — must equal
+ * `watchers/mdnsWatcher.ts`'s own `serviceRowType({type: "mbflash",
+ * protocol: "tcp"})` (`"mbflash.tcp"`). Duplicated here as a literal
+ * rather than imported: `mdnsWatcher.ts` already depends on this module
+ * (not the other way around) — same dependency-direction reasoning as
+ * {@link ProjectionRows.wifiCredentials}'s own
+ * `WIFI_CREDENTIALS_SETTING_KEY` doc comment. */
+export const MBFLASH_SERVICE_TYPE = "mbflash.tcp";
+
+/**
+ * The `services` row for `device`'s current `_mbflash._tcp`
+ * advertisement, or `undefined` if none is currently present (aged out
+ * by {@link Store.pruneServices}, or never observed at all) — ticket
+ * 018-014's own matching rule: instance name equal to `device.name`,
+ * and (only when *both* sides have a value to compare) TXT `uid` equal
+ * to `device.usbSerial`. A device with no stored `usbSerial`, or a
+ * service whose TXT carries no `uid` at all, matches on the name alone
+ * — this is deliberately not "both must be present", since plenty of
+ * devices (e.g. a `known-robots.json` import never yet seen over USB on
+ * this host) never get a `usbSerial` at all. Pure and store-free —
+ * unit-testable directly against fixture rows.
+ */
+export function findCurrentMbflashService(
+  services: readonly ProjectionServiceRow[],
+  device: { readonly name: string; readonly usbSerial?: string | null },
+): ProjectionServiceRow | undefined {
+  return services.find((service) => {
+    if (service.type !== MBFLASH_SERVICE_TYPE || service.instance !== device.name) {
+      return false;
+    }
+    const txt = service.txt;
+    const uid = txt !== null && typeof txt === "object" ? (txt as Record<string, unknown>).uid : undefined;
+    if (device.usbSerial != null && typeof uid === "string" && uid !== device.usbSerial) {
+      // Both sides carry a value and they disagree -- not this device's
+      // service, even though the instance name happened to match.
+      return false;
+    }
+    return true;
+  });
+}
+
 /** The read model `projection.ts`'s `buildSnapshot` (sprint 015 ticket
  * 004) needs — devices, links, sessions, relay leases, firmware, tasks,
  * each device's most recent sighting time, and the stored WiFi
@@ -480,6 +548,13 @@ export interface ProjectionRows {
    * would point a dependency from `store/index.ts` at a `watchers/*`
    * module, which itself depends on `store/index.ts` (a cycle). */
   readonly fastSweepByRelayLinkId: ReadonlyMap<string, boolean>;
+  /** Every raw `services` row (ticket 018-014) — `projection.ts`'s
+   * `capabilities.flash` and `server.ts`'s `runFlashTask` both filter
+   * this down to `_mbflash._tcp` rows via {@link findCurrentMbflashService}
+   * rather than this module exposing a narrower, type-specific list;
+   * mirrors {@link StoreSnapshot.services}'s own "every row, callers
+   * narrow" shape, just camelCased and `txt`-parsed for a typed reader. */
+  readonly services: readonly ProjectionServiceRow[];
 }
 
 function toJson(value: unknown): string | null {
@@ -1595,7 +1670,7 @@ export class Store {
   projectionRows(): ProjectionRows {
     const deviceRows = this.db
       .prepare(
-        "SELECT id, name, kind, role, program, version, radio_channel, radio_group, radio_source, owned, last_seen FROM devices",
+        "SELECT id, name, kind, role, program, version, usb_serial, radio_channel, radio_group, radio_source, owned, last_seen FROM devices",
       )
       .all() as Array<{
       id: number;
@@ -1604,6 +1679,7 @@ export class Store {
       role: string | null;
       program: string | null;
       version: string | null;
+      usb_serial: string | null;
       radio_channel: number | null;
       radio_group: number | null;
       radio_source: RadioSource;
@@ -1669,6 +1745,17 @@ export class Store {
       .prepare("SELECT device_id, MAX(at) AS at FROM sightings WHERE device_id IS NOT NULL GROUP BY device_id")
       .all() as Array<{ device_id: number; at: number }>;
 
+    // Ticket 018-014: every raw `services` row -- see
+    // `ProjectionRows.services`'s own doc comment for why this exposes
+    // all types rather than pre-filtering to `_mbflash._tcp` here.
+    const serviceRows = this.db.prepare("SELECT instance, type, host, port, txt FROM services").all() as Array<{
+      instance: string;
+      type: string;
+      host: string | null;
+      port: number | null;
+      txt: string | null;
+    }>;
+
     const wifiSetting = this.getSetting(Store.WIFI_CREDENTIALS_SETTING_KEY);
     let wifiCredentials: { ssid: string; password: string } | null = null;
     if (wifiSetting !== undefined) {
@@ -1697,6 +1784,7 @@ export class Store {
         role: d.role,
         program: d.program,
         version: d.version,
+        usbSerial: d.usb_serial,
         radioChannel: d.radio_channel,
         radioGroup: d.radio_group,
         radioSource: d.radio_source,
@@ -1739,6 +1827,13 @@ export class Store {
       lastChecked: lastCheckedRows.map((r) => ({ deviceId: r.device_id, at: r.at })),
       wifiCredentials,
       fastSweepByRelayLinkId,
+      services: serviceRows.map((s) => ({
+        instance: s.instance,
+        type: s.type,
+        host: s.host,
+        port: s.port,
+        txt: s.txt !== null ? (JSON.parse(s.txt) as unknown) : null,
+      })),
     };
   }
 

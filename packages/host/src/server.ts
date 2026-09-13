@@ -58,15 +58,25 @@
  * already use) rather than caching one from either watcher, since
  * neither retains a live handle past one poll cycle.
  *
- * Once a flash succeeds, this module does **not** manually orchestrate a
- * post-flash reidentify (the old registry's own `reidentifyAfterFlash`)
- * — the freshly-rebooted board re-enumerates over USB exactly like any
- * other attach, so `watchers/usbWatcher.ts` and `connect/reconciler.ts`'s
- * existing automatic-connect pass pick it back up on their own next
- * poll/tick, with no special-casing here. `flash-result`'s optional
- * `role`/`name`/`reidentify` fields (`wsMessages.ts`) are accordingly
- * never populated by this implementation — the next `snapshot` broadcast
- * carries the same information once the board reconnects.
+ * Once a **USB** flash succeeds, this module does **not** manually
+ * orchestrate a post-flash reidentify (the old registry's own
+ * `reidentifyAfterFlash`) — the freshly-rebooted board re-enumerates
+ * over USB exactly like any other attach, so `watchers/usbWatcher.ts`
+ * and `connect/reconciler.ts`'s existing automatic-connect pass pick it
+ * back up on their own next poll/tick, with no special-casing here.
+ * `flash-result`'s optional `role`/`name`/`reidentify` fields
+ * (`wsMessages.ts`) are accordingly never populated by this
+ * implementation — the next `snapshot` broadcast carries the same
+ * information once the board reconnects.
+ *
+ * Ticket 018-014's **network** flash path (`runNetworkFlashTask`,
+ * `connect/mbflashClient.ts`) is the one exception to the paragraph
+ * above: a farm robot's TCP link never "re-enumerates" the way a USB
+ * attach does, so this module closes the link's own session before
+ * flashing and explicitly asks `runtime.reconciler.requestOpen` to
+ * reopen it afterward (reported as the `reidentifying` `flash-progress`
+ * phase) — best-effort, since the flash itself has already succeeded by
+ * that point regardless of whether this particular reopen lands.
  *
  * Sprint 017 ticket 003: `board_owner = 'flash'` exclusivity and the
  * session-close-first handoff around the actual `flash.ts#flash()` call
@@ -85,7 +95,7 @@ import express from "express";
 import { WebSocket, WebSocketServer } from "ws";
 import { isSequencedVerb } from "@robot-console/protocol";
 import { WifiCredentialsStore } from "./store/wifiCredentials.js";
-import type { Store } from "./store/index.js";
+import { findCurrentMbflashService, type ProjectionDeviceRow, type ProjectionServiceRow, type Store } from "./store/index.js";
 import type { Reconciler } from "./connect/reconciler.js";
 import type { ConnectedSession } from "./connect/connector.js";
 import type { HarvesterTelemetryEvent } from "./connect/harvester.js";
@@ -97,7 +107,12 @@ import { resolveRelease as defaultResolveRelease, fetchAndVerifyHex as defaultFe
 import { LocalHexUploadManager, MAX_UPLOAD_BYTE_LENGTH } from "./localHexUpload.js";
 import { flash as defaultFlash, type FlashOutcome } from "./flash.js";
 import { createFlasher } from "./connect/flasher.js";
-import { enumerateDaplinkDevices as defaultEnumerateDaplinkDevices, type DaplinkDeviceLister } from "./devices.js";
+import { flashOverMbflash as defaultFlashOverMbflash, type MbflashOutcome } from "./connect/mbflashClient.js";
+import {
+  enumerateDaplinkDevices as defaultEnumerateDaplinkDevices,
+  type DaplinkDevice,
+  type DaplinkDeviceLister,
+} from "./devices.js";
 import {
   parseClientMessage,
   UPLOAD_ID_BYTE_LENGTH,
@@ -223,6 +238,13 @@ export interface StartServerOptions {
    * demand, e.g. to exercise ticket 005's signal-handling acceptance
    * criterion without ever touching real SWD/HID hardware. */
   flash?: typeof defaultFlash;
+  /** Injectable network-flash orchestration for a `mbserial`/`wifi`
+   * link whose device has a current `_mbflash._tcp` service (ticket
+   * 018-014). Defaults to the real {@link flashOverMbflash}
+   * (`connect/mbflashClient.ts`) — tests substitute a fake, same
+   * reasoning as {@link flash} above, without ever dialing a real farm
+   * host. */
+  flashOverMbflash?: typeof defaultFlashOverMbflash;
   /** Injectable `WebSocketServer` construction — defaults to a real
    * `new WebSocketServer({server: httpServer, maxPayload})`. See
    * {@link WebSocketServerLike}. */
@@ -430,6 +452,13 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   // (still the injectable seam `server.test.ts` uses) is what the
   // flasher actually calls once it has acquired the owner.
   const flasher = createFlasher(store, { reconciler: runtime.reconciler, flash: flashFn });
+  // Ticket 018-014: the network-flash counterpart for a mbserial/wifi
+  // link whose device has a current `_mbflash._tcp` service -- no
+  // `board_owner`/`connect/flasher.ts` involved (that module's
+  // exclusivity is specifically for local USB/HID contention; the
+  // farm's own single-client bridge is what actually arbitrates a
+  // network flash, reported back as `ERR busy` -- see `runNetworkFlashTask`).
+  const flashOverMbflashFn = options.flashOverMbflash ?? defaultFlashOverMbflash;
 
   const app = buildApp(staticDir);
   const httpServer = createServer(app);
@@ -576,7 +605,18 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     broadcast({ type: "flash-progress", linkId, source, phase, seq: nextSeq() });
   }
 
-  function finishFlash(linkId: string, source: FirmwareSourceRef, outcome: FlashOutcome): void {
+  /** Structural subset of {@link FlashOutcome} (the USB path,
+   * `flash.ts`) and {@link MbflashOutcome} (the network path,
+   * `connect/mbflashClient.ts`) -- ticket 018-014: both now feed the
+   * same `finishFlash` broadcast, and neither's own extra fields
+   * (`method`, `reason`) are ever part of the wire contract anyway (see
+   * this module's own doc comment, "Flash orchestration has no
+   * `DeviceRegistry`..."), so `finishFlash`/`failFlash` only need this
+   * narrower shape, which both outcome types already satisfy
+   * structurally. */
+  type FlashResultLike = { status: "ok" } | { status: "error"; error: string };
+
+  function finishFlash(linkId: string, source: FirmwareSourceRef, outcome: FlashResultLike): void {
     flashStateByLink.delete(linkId);
     broadcast(
       outcome.status === "ok"
@@ -590,31 +630,123 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     broadcast({ type: "flash-result", linkId, source, status: "error", message, seq: nextSeq() });
   }
 
+  /** Ticket 018-014: the network-flash counterpart to `flasher.flash`
+   * (the USB path's own board_owner-guarded call). Closes any session
+   * this host itself has open on `linkId` first -- the farm host's own
+   * single-client mbserial bridge is what actually arbitrates
+   * concurrent access (reported back as `ERR busy`, not fought over
+   * here) -- runs the flash, and (only on success) walks the link
+   * through `resetting`/`reidentifying` and asks the reconciler to
+   * reopen it, best-effort: the flash itself already succeeded
+   * regardless of whether this particular reopen attempt lands, and a
+   * later mDNS/reconciler pass would pick the freshly-rebooted board
+   * back up on its own either way. */
+  async function runNetworkFlashTask(
+    linkId: string,
+    source: FirmwareSourceRef,
+    device: ProjectionDeviceRow,
+    service: ProjectionServiceRow,
+    hexText: string,
+  ): Promise<FlashResultLike> {
+    await runtime.reconciler.requestClose(linkId);
+
+    // `service.host`/`service.port` are `string | null`/`number | null`
+    // on `ProjectionServiceRow` in general, but `runFlashTask` (this
+    // function's only caller) already refused to call this function at
+    // all when either was `null` -- see its own `findCurrentMbflashService`
+    // check just above where `networkTarget` is assigned.
+    const outcome = await flashOverMbflashFn(
+      { host: service.host as string, port: service.port as number },
+      Buffer.from(hexText, "utf-8"),
+      () => setFlashPhase(linkId, source, "writing"),
+    );
+    if (outcome.status !== "ok") {
+      return outcome;
+    }
+
+    setFlashPhase(linkId, source, "resetting");
+    setFlashPhase(linkId, source, "reidentifying");
+    try {
+      await runtime.reconciler.requestOpen(linkId);
+    } catch (error) {
+      // Best-effort -- see this function's own doc comment. The flash
+      // itself already succeeded; a failed reopen is not reported as a
+      // flash failure, only surfaced as a notice so the stakeholder
+      // knows to reconnect "${device.name}" by hand if it doesn't come
+      // back on its own.
+      sendNotice(linkId, "info", `flashed "${device.name}" successfully, but reopening its session afterward failed: ${errorMessage(error)}`);
+    }
+    return { status: "ok" };
+  }
+
   /** The body of one `flash-start` task -- see the module doc comment's
    * "Flash orchestration" section. Never throws/rejects: every failure
    * is reported as a `flash-result` `status: "error"`, matching the
    * retired `deviceRegistry.ts#runFlash`'s own "failure is a value"
    * contract. `startServer.close()` awaits every such task (via
    * {@link inFlightFlashes}) before returning, so a flash in progress at
-   * shutdown finishes (and closes its DAPLink/HID handle via
-   * `flash.ts`'s own `finally`) before the process exits. */
+   * shutdown finishes (and closes its DAPLink/HID handle, or the
+   * `mbflashClient.ts` TCP socket, via each path's own `finally`) before
+   * the process exits.
+   *
+   * Ticket 018-014: routes by transport once the target link resolves.
+   * A `usb` link keeps the exact pre-existing path (`flasher.flash`,
+   * board_owner-guarded); a `mbserial`/`wifi` link whose device has a
+   * current `_mbflash._tcp` service (`findCurrentMbflashService`) routes
+   * to {@link runNetworkFlashTask} instead. Any other transport (or a
+   * mbserial/wifi device with no current flash service) fails plainly,
+   * same as the old USB-only check did. Either way, the hex
+   * fetch/verify step below (release vs. local-hex) is shared verbatim
+   * — this ticket adds a second *destination* for the same bytes, not a
+   * second way to obtain them. */
   async function runFlashTask(linkId: string, source: FirmwareSourceRef): Promise<void> {
     setFlashPhase(linkId, source, source.kind === "release" ? "fetching" : "verifying");
     try {
-      const linkRow = store.projectionRows().links.find((candidate) => candidate.id === linkId);
-      if (!linkRow || linkRow.transport !== "usb") {
-        failFlash(linkId, source, `flashing requires a directly attached USB link (link "${linkId}" is ${linkRow ? linkRow.transport : "unknown"})`);
+      const rows = store.projectionRows();
+      const linkRow = rows.links.find((candidate) => candidate.id === linkId);
+      if (!linkRow) {
+        failFlash(linkId, source, `link "${linkId}" no longer exists`);
         return;
       }
-      const usbSerial = usbSerialFromLinkId(linkId);
-      if (usbSerial === undefined) {
-        failFlash(linkId, source, `link "${linkId}" does not follow the "usb-<serial>" id convention`);
-        return;
-      }
-      const devices = await enumerateDaplinkDevicesFn();
-      const device = devices.find((candidate) => candidate.serialNumber === usbSerial);
-      if (!device) {
-        failFlash(linkId, source, `no USB device is currently enumerated for link "${linkId}" -- is it still plugged in?`);
+
+      let usbTarget: { usbSerial: string; device: DaplinkDevice } | undefined;
+      let networkTarget: { device: ProjectionDeviceRow; service: ProjectionServiceRow } | undefined;
+
+      if (linkRow.transport === "usb") {
+        const usbSerial = usbSerialFromLinkId(linkId);
+        if (usbSerial === undefined) {
+          failFlash(linkId, source, `link "${linkId}" does not follow the "usb-<serial>" id convention`);
+          return;
+        }
+        const devices = await enumerateDaplinkDevicesFn();
+        const device = devices.find((candidate) => candidate.serialNumber === usbSerial);
+        if (!device) {
+          failFlash(linkId, source, `no USB device is currently enumerated for link "${linkId}" -- is it still plugged in?`);
+          return;
+        }
+        usbTarget = { usbSerial, device };
+      } else if (linkRow.transport === "mbserial" || linkRow.transport === "wifi") {
+        const deviceRow = linkRow.deviceId !== null ? rows.devices.find((candidate) => candidate.id === linkRow.deviceId) : undefined;
+        if (!deviceRow) {
+          failFlash(linkId, source, `link "${linkId}" has no identified device to flash`);
+          return;
+        }
+        const service = findCurrentMbflashService(rows.services, deviceRow);
+        if (!service || service.host === null || service.port === null) {
+          failFlash(
+            linkId,
+            source,
+            `no _mbflash._tcp service is currently advertised for "${deviceRow.name}" -- this robot cannot be flashed over the network right now`,
+          );
+          return;
+        }
+        networkTarget = { device: deviceRow, service };
+      } else {
+        failFlash(
+          linkId,
+          source,
+          `flashing requires a directly attached USB link or a network-flashable mbserial/wifi link (link "${linkId}" is ${linkRow.transport})`,
+        );
         return;
       }
 
@@ -651,7 +783,16 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
         hexText = uploaded.toString("utf-8");
       }
 
-      const outcome = await flasher.flash(linkId, usbSerial, device, hexText, (phase) => setFlashPhase(linkId, source, phase));
+      if (usbTarget) {
+        const outcome = await flasher.flash(linkId, usbTarget.usbSerial, usbTarget.device, hexText, (phase) => setFlashPhase(linkId, source, phase));
+        finishFlash(linkId, source, outcome);
+        return;
+      }
+
+      // `networkTarget` is always set here: the transport check above
+      // returns early unless exactly one of `usbTarget`/`networkTarget`
+      // was assigned.
+      const outcome = await runNetworkFlashTask(linkId, source, networkTarget!.device, networkTarget!.service, hexText);
       finishFlash(linkId, source, outcome);
     } catch (error) {
       failFlash(linkId, source, errorMessage(error));

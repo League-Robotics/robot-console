@@ -1381,6 +1381,7 @@ describe("Store: projectionRows", () => {
           role: "NEZHA2",
           program: null,
           version: null,
+          usbSerial: null,
           radioChannel: 41,
           radioGroup: 3,
           radioSource: "override",

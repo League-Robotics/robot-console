@@ -67,14 +67,16 @@
  * `RadioAddressDialog`/`WifiCredentialsDialog` on `kind !== "relay"`).
  */
 import { nameToRadioAddress } from "@robot-console/protocol";
-import type {
-  ProjectionDeviceRow,
-  ProjectionFirmwareRow,
-  ProjectionLinkRow,
-  ProjectionRows,
-  ProjectionSessionRow,
-  Store,
-  Transport,
+import {
+  findCurrentMbflashService,
+  type ProjectionDeviceRow,
+  type ProjectionFirmwareRow,
+  type ProjectionLinkRow,
+  type ProjectionRows,
+  type ProjectionServiceRow,
+  type ProjectionSessionRow,
+  type Store,
+  type Transport,
 } from "./store/index.js";
 import type {
   FirmwareAvailability,
@@ -105,7 +107,7 @@ export function buildSnapshotFromRows(rows: ProjectionRows, seq: number, at: num
   const linkById = new Map(rows.links.map((l) => [l.id, l] as const));
   const sessionByLink = new Map(rows.sessions.map((s) => [s.linkId, s] as const));
   const lastCheckedByDevice = new Map(rows.lastChecked.map((r) => [r.deviceId, r.at] as const));
-  const ctx: LinkContext = { deviceById, linkById, sessionByLink };
+  const ctx: LinkContext = { deviceById, linkById, sessionByLink, services: rows.services };
 
   const linksByDevice = new Map<number, ProjectionLinkRow[]>();
   const unassignedLinks: ProjectionLinkRow[] = [];
@@ -230,6 +232,10 @@ interface LinkContext {
   readonly deviceById: ReadonlyMap<number, ProjectionDeviceRow>;
   readonly linkById: ReadonlyMap<string, ProjectionLinkRow>;
   readonly sessionByLink: ReadonlyMap<string, ProjectionSessionRow>;
+  /** Ticket 018-014: every raw `services` row, so {@link buildLink} can
+   * derive `capabilities.flash` for a `mbserial`/`wifi` link via
+   * {@link findCurrentMbflashService} without a second store read. */
+  readonly services: readonly ProjectionServiceRow[];
 }
 
 function buildLink(link: ProjectionLinkRow, ctx: LinkContext): SnapshotLink {
@@ -250,7 +256,16 @@ function buildLink(link: ProjectionLinkRow, ctx: LinkContext): SnapshotLink {
     capabilities: {
       open: !hasSession && !isConnecting && (!requiresOwned(link.transport) || (device?.owned ?? false)),
       close: hasSession || isConnecting,
-      flash: link.transport === "usb",
+      // Ticket 018-014: a usb link can always be flashed (unchanged);
+      // a mbserial/wifi link can be flashed too, but only once its
+      // device currently advertises `_mbflash._tcp` (a farm robot's
+      // mbdeploy daemon) -- radio/mbrelay links never get this (the
+      // flash service is dialed directly, never through a relay).
+      flash:
+        link.transport === "usb" ||
+        ((link.transport === "mbserial" || link.transport === "wifi") &&
+          device !== undefined &&
+          findCurrentMbflashService(ctx.services, device) !== undefined),
       provisionWifi: hasSession,
     },
   };

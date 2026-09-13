@@ -252,11 +252,13 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
   const { sendCommand } = useWsActions();
   const log = useLinkLog(linkId);
   const functions = link.session?.functions ?? undefined;
-  // Stakeholder (2026-09-13): the button is always there. `FUNCS` only
-  // blocks it when the robot has answered and does NOT list `cala`;
-  // an unanswered FUNCS (the common case -- nothing auto-sends it)
-  // must not hold the run hostage.
-  const available = functions === undefined ? true : functions.some((fn) => fn.name === "cala");
+  // Stakeholder (2026-09-13, and reaffirmed the same day root-causing
+  // "only CalX" on a robot that genuinely has `cala`): `FUNCS` must
+  // never hide or block a calibration run. A Wi-Fi burst can drop a
+  // line from the middle of the reply while the ack still arrives, so
+  // an absent name proves nothing -- the button stays enabled either
+  // way, and a known-missing name only earns a non-blocking hint below.
+  const functionKnownMissing = functions !== undefined && !functions.some((fn) => fn.name === "cala");
 
   // OOP 2026-09-10: the run's window is anchored on the log entry *id*
   // minted at Go, not an array index. `useLinkLog` is a bounded ring
@@ -282,7 +284,7 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
   const run =
     derived?.kind === "running" && latched && latched.startId === runStartId ? latched.run : derived;
 
-  const goDisabled = !linkOpen || !available || disabled || run?.kind === "running";
+  const goDisabled = !linkOpen || disabled || run?.kind === "running";
 
   const onRunRef = useRef(onRun);
   onRunRef.current = onRun;
@@ -311,19 +313,20 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
         </p>
       )}
 
-      {functions !== undefined && !available && (
+      {functionKnownMissing && (
         <p className="rotation-calibration-hint" data-testid="rotation-calibration-unavailable" role="status">
-          This robot doesn't support calibration yet.
+          The robot's function list didn't include cala (lines can drop over Wi-Fi) — you can still try; the robot
+          will say err if it's missing.
         </p>
       )}
 
-      {available && disabled && (
+      {disabled && (
         <p className="rotation-calibration-hint" data-testid="rotation-calibration-blocked" role="status">
           {disabledReason ?? "Not available yet."}
         </p>
       )}
 
-      {available && !disabled && run === undefined && (
+      {!disabled && run === undefined && (
         <ol className="rotation-calibration-setup" data-testid="rotation-calibration-setup">
           <li>Lay two strips of black tape crossing at right angles on the floor.</li>
           <li>Place the robot at the centre of the cross, then press Go.</li>

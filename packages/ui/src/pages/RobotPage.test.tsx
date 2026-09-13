@@ -196,27 +196,25 @@ describe("RobotPage", () => {
     expect(el.querySelector(".robot-page-column-right [aria-label=\"Current calibration\"]")).not.toBeNull();
   });
 
-  it("ticket 018-013: a plain, non-calibration robot also gets a working Calibration tab (no firmware panel there any more)", () => {
+  it("stakeholder correction 2026-09-13: a plain, non-calibration robot's Calibration tab shows the Calibration firmware block (flash button, program/version text)", () => {
     const { el } = mountRobotPage(robotDevice({ program: null, version: null }));
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
     });
     expect(el.querySelector('[data-testid="robot-tab-panel-calibration"]')).not.toBeNull();
-    // The "Calibration firmware" panel moved to the Configuration tab
-    // this ticket -- the Calibration tab itself no longer renders it.
-    expect(el.querySelector('[data-testid="calibration-firmware-not-running"]')).toBeNull();
-    expect(Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash calibration firmware")).toBeUndefined();
+    expect(el.querySelector('[data-testid="calibration-firmware-not-running"]')?.textContent).toBe("Program: unknown");
+    const flashButton = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash calibration firmware");
+    expect(flashButton).not.toBeUndefined();
   });
 
-  it("ticket 018-013: the Configuration tab shows the Calibration firmware block (flash button, program/version text)", () => {
+  it("stakeholder correction 2026-09-13: the Configuration tab no longer shows the Calibration firmware block", () => {
     const { el } = mountRobotPage(robotDevice({ program: null, version: null }));
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-configuration"]')!.click();
     });
     expect(el.querySelector('[data-testid="robot-tab-panel-configuration"]')).not.toBeNull();
-    expect(el.querySelector('[data-testid="configuration-firmware-not-running"]')?.textContent).toBe("Program: unknown");
-    const flashButton = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash calibration firmware");
-    expect(flashButton).not.toBeUndefined();
+    expect(el.querySelector('[data-testid="calibration-firmware-not-running"]')).toBeNull();
+    expect(Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash calibration firmware")).toBeUndefined();
   });
 
   it("renders exactly one console and a command strip in the right column", () => {

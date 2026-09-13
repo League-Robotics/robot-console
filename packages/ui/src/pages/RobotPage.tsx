@@ -59,13 +59,16 @@
  * on `isCalibrationProgram(device.program)` -- a robot not currently
  * running the calibration build had no way to reach the tab that runs
  * `calx`/`cala`. This page mounts the tab unconditionally, passing
- * `device` through so its wizards/console can read `program`/`version`.
- * **The Flash/verify panel itself moved to the Configuration tab**
- * (ticket 018-013, correcting `f1b0e8d`'s own placement, which had
- * mislabeled the whole feature as ticket "018-010" -- an unrelated,
- * concurrently in-progress ticket) -- `ConfigurationPage` now also takes
- * `link` (not just `device`) for exactly that panel; see its own doc
- * comment.
+ * `device` through so its firmware panel/wizards can read
+ * `program`/`version`/`links`. **The Flash/verify panel lives here**
+ * (`CalibrationPage` now also takes `device`, not just `link`, for
+ * exactly that panel -- stakeholder correction, 2026-09-13: "If we have
+ * a Calibrate tab, then we don't need calibration under the
+ * Configuration tab. You can just put it under Calibrate." A same-day
+ * earlier pass had briefly moved it to the Configuration tab under
+ * ticket "018-010"'s mislabeled placement; see `CalibrationPage.tsx`'s
+ * own doc comment for the full history and the root-caused Wi-Fi
+ * FUNCS-drop bug this correction also fixes.)
  *
  * **`program`/`version` diagnostics (sprint 011 ticket 002).** Shown
  * verbatim, near the `<h2>` name heading, whenever `device.program` is
@@ -138,15 +141,15 @@ export interface RobotPageProps {
 /** OOP 2026-09-10: the robot page is split into tabs next to the
  * robot's name (stakeholder direction): Main (status, drive, console),
  * Drive (`DriveTab`: the pad alone, plus cursor keys and a gamepad),
- * Calibration (`CalibrationPage`: run whatever `cal*` functions `FUNCS`
- * reports, and the wizards/code block/console feeding one calibration
- * state -- always offered, ticket 018-013, not gated on the robot
- * currently running a calibration build), Functions & charts (functions
- * and the drive pad on one side, charts and the path trace on the
- * other), and Configuration (`ConfigurationPage`: per-robot settings plus,
- * as of ticket 018-013, the Flash-calibration-firmware/verify panel and
- * the calx/cala run buttons, with the robot's full serial log under the
- * code block -- see that page's own doc comment). Sequencing state moved
+ * Calibration (`CalibrationPage`: the Flash-calibration-firmware/verify
+ * panel, the always-on Calibrate X/Calibrate A wizards plus any other
+ * `cal*` function `FUNCS` reports, and the code block feeding one
+ * calibration state -- always offered, ticket 018-013, not gated on the
+ * robot currently running a calibration build), Functions & charts
+ * (functions and the drive pad on one side, charts and the path trace on
+ * the other), and Configuration (`ConfigurationPage`: per-robot settings,
+ * with the robot's full serial log under the code block -- see that
+ * page's own doc comment). Sequencing state moved
  * into the console's own header (`DeviceConsole`) rather than a page
  * panel. */
 export type RobotTab = "main" | "drive" | "calibration" | "functions" | "configuration" | "diagnostics";
@@ -213,7 +216,7 @@ export function RobotPage({ device, link }: RobotPageProps) {
 
       {tab === "drive" && <DriveTab link={link} />}
 
-      {tab === "calibration" && <CalibrationPage link={link} name={device.name} />}
+      {tab === "calibration" && <CalibrationPage link={link} name={device.name} device={device} />}
 
       {tab === "configuration" && <ConfigurationPage device={device} link={link} />}
 

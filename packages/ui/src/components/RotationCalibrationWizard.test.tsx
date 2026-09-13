@@ -163,13 +163,14 @@ describe("RotationCalibrationWizard availability", () => {
     expect(go.disabled).toBe(false);
   });
 
-  it("shows the non-alarming unavailable message and keeps Go disabled when FUNCS answers without cala", () => {
+  it("stakeholder correction 2026-09-13: a FUNCS reply missing cala shows a non-blocking hint and leaves Go enabled -- this is the exact 'robot has cala but FUNCS dropped the line over Wi-Fi' failure mode the correction fixes", () => {
     const { el } = mountWizard(linkWithFunctions([{ name: "calx" }, { name: "abort" }]));
     const hint = el.querySelector('[data-testid="rotation-calibration-unavailable"]');
     expect(hint).not.toBeNull();
-    expect(hint!.textContent).toContain("doesn't support calibration yet");
+    expect(hint!.textContent).toContain("didn't include cala");
+    expect(hint!.textContent).toContain("you can still try");
     expect(el.querySelector('[data-testid="rotation-calibration-idle"]')).toBeNull();
-    expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(true);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(false);
     expect(el.querySelector('[role="progressbar"]')).toBeNull();
   });
 

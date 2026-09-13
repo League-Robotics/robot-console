@@ -53,89 +53,34 @@
  * to robot provisions Wi-Fi) -- only the fields/math/validation
  * themselves are shared, per `04-ui.md` §4.
  *
- * ## Ticket 018-013: flash calibration firmware, run calx/cala, the
- * robot's own serial log -- moved here from the Calibration tab
+ * ## Ticket 018-013, corrected 2026-09-13: the firmware flash/run pieces
+ * live on the Calibration tab, not here
  *
  * Commit `f1b0e8d` put a calibration-firmware panel, `cal*` run buttons,
- * and a filtered console on the **Calibration** tab, mis-labelled in its
- * own commit message and doc comments as ticket "018-010" -- 010 was UI
- * truthfulness (link-status text), an unrelated ticket that happened to
- * still be in progress at the same time. This ticket (018-013) owns the
- * feature itself and relocates it here, to the **Configuration** tab,
- * per the stakeholder's explicit placement ("put this as a flash button
- * under the calibration section in the Configuration tab").
- *
- * Additions over the ticket-017-008 shape above:
- *
- *  1. **This page now also takes `link`** (`RobotPage.tsx` threads the
- *     routed link through, the same one `CalibrationPage` already
- *     receives) -- needed to target the right USB link for flashing, run
- *     `calx`/`cala`, and mount the console.
- *  2. **A "Calibration firmware" block** under the "Calibration" panel:
- *     current program/version, whether it's the calibration build
- *     (`isCalibrationProgram`), and a **Flash calibration firmware**
- *     button that sends `flash-start {kind:"release", firmware:"robot"}`
- *     directly for this robot's own USB link -- the calibration program
- *     IS the configured `robot` firmware release, an established fact
- *     (see the ticket), not a separate artifact to pick from a dialog.
- *     Deliberately **not** `FlashDialog`/`FlashControls` (which offer a
- *     relay/robot button pair plus a local-hex uploader inside a modal,
- *     and navigate to "/" on success) -- this is a single-purpose control
- *     that stays on this page and reports its own outcome inline, though
- *     it reuses the same `useFlashProgress`/`flash-result` plumbing and
- *     `PHASE_LABEL`/`FIRMWARE_LABEL` those components use. Flashing
- *     targets the routed `link` when it can itself be flashed
- *     (`canBeFlashed`, a per-link capability read, never a hardcoded
- *     transport string), else the device's own other USB-capable link;
- *     with none, the block says plainly "Plug the robot in over USB to
- *     flash." and shows no button.
- *  3. **Post-flash verification, from the snapshot, never assumed**: once
- *     a `flash-result` for the flashed link arrives, the block reports
- *     "Calibration firmware `<version>` confirmed" only if the *current*
- *     `device.program` (the fresh post-flash/re-identify snapshot -- see
- *     `FlashControls.tsx`'s own doc comment on reidentify-before-result
- *     sequencing) is actually a calibration build; otherwise it names the
- *     program actually reported, or the flash's own error/timeout text.
- *     No optimistic "flashed successfully" line not backed by that
- *     snapshot read.
- *  4. **Two run controls**, "Calibrate X (distance)" and "Calibrate A
- *     (rotation)", mounting the existing `DistanceCalibrationWizard`/
- *     `RotationCalibrationWizard` unchanged (same `RUN calx`/`RUN cala`
- *     dispatch, same `CalibrationReport` parsers) so a run's result folds
- *     into this page's own `calibration` state exactly the way
- *     `CalibrationPage.tsx`'s identical wiring does -- one source of
- *     truth, no second parser for `CALX:`/`CALA:` lines. `FUNCS` is
- *     requested once on mount if this session has no function list yet,
- *     the same deliberate exception to sprint 015 ticket 009's
- *     "panels don't self-probe" rule `CalibrationPage.tsx` already makes
- *     (this page needs to know before the wizards can decide their own
- *     gating).
- *  5. **The full, unfiltered `DeviceConsole`** mounted in the right
- *     column under "Code for your program" -- the same console the Main
- *     tab mounts (`link`/`name`), not a calibration-filtered one (that
- *     stays `CalibrationConsole`'s own job, only ever on the Calibration
- *     tab).
- *
- * `CalibrationPage.tsx` no longer renders its own "Calibration firmware"
- * panel (removed this ticket) -- there is exactly one place to flash
- * calibration firmware now. Its distance/rotation wizards are unchanged
- * and still run their own independent sessions there.
+ * and a filtered console on the Calibration tab, mis-labelled as ticket
+ * "018-010". A same-day follow-up pass moved that feature here, to the
+ * Configuration tab, reading its own placement text ("put this as a
+ * flash button under the calibration section in the Configuration tab")
+ * literally. The stakeholder's own same-day correction reverses that:
+ * "If we have a Calibrate tab, then we don't need calibration under the
+ * Configuration tab. You can just put it under Calibrate. Also, we still
+ * need flash." So this page no longer renders a "Calibration firmware"
+ * block or calx/cala run buttons, and no longer requests `FUNCS` -- all
+ * of that (see `CalibrationPage.tsx`'s own doc comment) lives on the
+ * Calibration tab now, including the flash button. This page still
+ * takes `link` -- not for flashing/running any more, only to mount the
+ * unfiltered `DeviceConsole` in the right column, unchanged from ticket
+ * 018-013's own addition. Otherwise this page keeps only what
+ * ticket-017-008 already gave it: the Calibration *values* table (shared
+ * per-robot state, editable here too), Wi-Fi, Radio, the footer actions,
+ * and the generated code block.
  */
 import { useEffect, useMemo, useState } from "react";
 import { nameToRadioAddress } from "@robot-console/protocol";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import {
-  useConnectionStatus,
-  useFirmwareStatus,
-  useFlashProgress,
-  useSendable,
-  useWifiCredentials,
-  useWifiProvisionResult,
-  useWsActions,
-} from "../ws/WsProvider";
+import { useConnectionStatus, useSendable, useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
 import type { RadioAddress } from "../pages/RelayPage";
 import {
-  CALIBRATION_IMAGE_BASELINE_DIAMETER_MM,
   applyCalibrationPatch,
   calibrationCode,
   deriveCalibration,
@@ -146,24 +91,11 @@ import {
 } from "../lib/calibration";
 import { useCopied } from "../lib/clipboard";
 import { validateRadioOverrideInput } from "../lib/radioAddress";
-import { FIRMWARE_LABEL, PHASE_LABEL, canBeFlashed, firmwareDisabledReason, isCalibrationProgram, isLinkUsable } from "../deviceDisplay";
+import { isLinkUsable } from "../deviceDisplay";
 import { AddressSourceChip } from "./AddressSourceChip";
 import { CalibrationTable } from "./CalibrationTable";
 import { DeviceConsole } from "./DeviceConsole";
-import {
-  DistanceCalibrationWizard,
-  deriveBaselineDiameterMm,
-  deriveWheelDiameterMm,
-  type DistanceCalibrationRun,
-} from "./DistanceCalibrationWizard";
-import {
-  RotationCalibrationWizard,
-  reportedTrackWidthCm,
-  robotReportedSlip,
-  type RotationCalibrationRun,
-} from "./RotationCalibrationWizard";
 import { WifiCredentialsForm, validateWifiInput } from "./WifiCredentialsForm";
-import "./CalibrationPage.css";
 import "./CalibrationTable.css";
 import "./ConfigurationPage.css";
 
@@ -204,15 +136,16 @@ export function configurationCode(input: ConfigurationCodeInput): string {
 export interface ConfigurationPageProps {
   device: SnapshotDevice;
   /** The specific link this page is showing a session for -- the routed
-   * link `RobotPage.tsx` already resolves for every other tab (ticket
-   * 018-013: this page now targets it directly for flashing/running
-   * calibration rather than only reading `device.links` for Wi-Fi). */
+   * link `RobotPage.tsx` already resolves for every other tab. Used here
+   * only to mount the unfiltered `DeviceConsole` in the right column
+   * (ticket 018-013); flashing and running calx/cala moved to the
+   * Calibration tab (stakeholder correction, 2026-09-13). */
   link: SnapshotLink;
 }
 
 export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
   const robotName = device.name;
-  const { send, sendCommand, onFlashResult } = useWsActions();
+  const { send } = useWsActions();
   // Ticket 011 (carried from 009's send-gating sweep): Save (via
   // `saveWifi`) and Write to robot both send over the wire, so both
   // gate on `useSendable()` the same way every other send-capable
@@ -239,95 +172,6 @@ export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
   function patchCalibration(patch: CalibrationPatch): void {
     setCalibration((previous) => applyCalibrationPatch(previous, patch));
   }
-
-  // Ticket 018-013: which link actually gets flashed -- the routed link
-  // itself when it can be (`canBeFlashed` reads `link.capabilities.flash`,
-  // true only for a `usb` link; never a hardcoded transport string here),
-  // else the device's own other USB-capable link, if any.
-  const flashLink = canBeFlashed(link) ? link : device.links.find((candidate) => canBeFlashed(candidate));
-  const firmwareStatus = useFirmwareStatus();
-  const robotFirmwareReason = firmwareDisabledReason(firmwareStatus.robot);
-  const flashProgress = useFlashProgress(flashLink?.id ?? "");
-  const [flashOutcome, setFlashOutcome] = useState<
-    { status: "ok" | "error"; message?: string | undefined; reidentify?: "timeout" | undefined } | undefined
-  >(undefined);
-
-  useEffect(() => {
-    if (!flashLink) {
-      return undefined;
-    }
-    const linkId = flashLink.id;
-    return onFlashResult((message) => {
-      if (message.linkId !== linkId) {
-        return;
-      }
-      setFlashOutcome({ status: message.status, message: message.message, reidentify: message.reidentify });
-    });
-  }, [flashLink, onFlashResult]);
-
-  function flashCalibrationFirmware(): void {
-    if (!flashLink || !sendable || robotFirmwareReason !== null || flashProgress) {
-      return;
-    }
-    setFlashOutcome(undefined);
-    send({ type: "flash-start", linkId: flashLink.id, source: { kind: "release", firmware: "robot" } });
-  }
-
-  // Ticket 018-013: the calx/cala run controls below need to know
-  // whether the robot's own FUNCS reply lists them before they can
-  // decide their own gating -- the same deliberate exception to sprint
-  // 015 ticket 009's "panels don't self-probe" rule `CalibrationPage.tsx`
-  // already makes, requested once on mount if nothing has asked yet this
-  // session.
-  const functions = link.session?.functions ?? undefined;
-  const functionsUnknown = functions === undefined;
-  const linkOpen = isLinkUsable(link) && sendable;
-  useEffect(() => {
-    if (functionsUnknown && linkOpen) {
-      sendCommand(link.id, "FUNCS");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires again only when "do we have a list yet" flips, or the link/openness identity changes
-  }, [link.id, linkOpen, functionsUnknown]);
-
-  // Ticket 018-013: fold a calx/cala run's result into this page's own
-  // `calibration` state -- identical wiring to `CalibrationPage.tsx`'s
-  // `handleDistanceRun`/`handleRotationRun`, so both tabs read/write the
-  // same per-robot state through one shared merge (`applyCalibrationPatch`)
-  // rather than each tab owning a second copy of this logic.
-  function handleDistanceRun(run: DistanceCalibrationRun | undefined): void {
-    if (run?.kind !== "succeeded") {
-      return;
-    }
-    const diameter = deriveWheelDiameterMm(run.events, run.snippet);
-    if (diameter === undefined) {
-      return;
-    }
-    patchCalibration({ wheelDiameterMm: diameter, wheelDiameterSource: "distance-calibration" });
-    const baseline = deriveBaselineDiameterMm(run.events);
-    if (baseline !== undefined && calibration.reportedWithDiameterMm === undefined) {
-      patchCalibration({ reportedWithDiameterMm: baseline });
-    }
-  }
-
-  function handleRotationRun(run: RotationCalibrationRun | undefined): void {
-    if (run?.kind === "succeeded") {
-      const reported = reportedTrackWidthCm(run);
-      if (reported !== undefined) {
-        patchCalibration({ reportedTrackWidthCm: reported, reportedWithDiameterMm: CALIBRATION_IMAGE_BASELINE_DIAMETER_MM });
-      }
-      const slip = robotReportedSlip(run);
-      if (slip !== undefined) {
-        patchCalibration({ robotReportedSlip: slip });
-      }
-      return;
-    }
-    if (run?.kind === "failed") {
-      // A failed re-verification must not leave a width or slip standing.
-      patchCalibration({ reportedTrackWidthCm: undefined, robotReportedSlip: undefined });
-    }
-  }
-
-  const rotationBlocked = calibration.wheelDiameterMm === undefined;
 
   // Radio address. Ticket 007: seeded from the snapshot's own
   // `device.radio` (override -> registry -> derived, always concrete --
@@ -417,88 +261,6 @@ export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
         <div className="robot-page-panel" aria-label="Calibration values">
           <h3>Calibration</h3>
           <CalibrationTable variant="configuration" state={calibration} derived={derived} onPatch={patchCalibration} />
-
-          <div className="calibration-firmware-panel" aria-label="Calibration firmware">
-            <h4>Calibration firmware</h4>
-            {isCalibrationProgram(device.program) ? (
-              <p data-testid="configuration-firmware-running">
-                Calibration firmware {device.version ?? "unknown"} is running.
-              </p>
-            ) : (
-              <p data-testid="configuration-firmware-not-running">Program: {device.program ?? "unknown"}</p>
-            )}
-
-            {!flashLink ? (
-              <p className="calibration-firmware-usb-hint" data-testid="configuration-firmware-usb-required" role="status">
-                Plug the robot in over USB to flash.
-              </p>
-            ) : flashProgress ? (
-              <p className="device-flash-progress" role="status" data-testid="configuration-flash-progress">
-                Flashing {FIRMWARE_LABEL.robot}: {PHASE_LABEL[flashProgress.phase]}…
-              </p>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  className="device-button"
-                  data-testid="configuration-flash-calibration"
-                  disabled={!sendable || robotFirmwareReason !== null}
-                  title={robotFirmwareReason ?? undefined}
-                  onClick={flashCalibrationFirmware}
-                >
-                  Flash calibration firmware
-                </button>
-                {robotFirmwareReason && <p className="device-flash-hint">{robotFirmwareReason}</p>}
-              </>
-            )}
-
-            {flashOutcome &&
-              !flashProgress &&
-              (flashOutcome.status === "error" ? (
-                <p className="device-note device-note-error" role="alert" data-testid="configuration-flash-result">
-                  {flashOutcome.message ?? "Flash failed."}
-                </p>
-              ) : flashOutcome.reidentify === "timeout" ? (
-                <p className="device-note" role="status" data-testid="configuration-flash-result">
-                  Flashed. Waiting for the board to come back…
-                </p>
-              ) : isCalibrationProgram(device.program) ? (
-                <p className="credentials-result credentials-result-ok" role="status" data-testid="configuration-flash-result">
-                  Calibration firmware {device.version ?? "unknown"} confirmed.
-                </p>
-              ) : (
-                <p className="device-note device-note-error" role="alert" data-testid="configuration-flash-result">
-                  Flashed, but the robot reports program {device.program ?? "unknown"} — not the calibration build.
-                </p>
-              ))}
-          </div>
-
-          <div className="configuration-calibration-run" aria-label="Run calibration">
-            <h4>Run calibration</h4>
-            {!linkOpen && (
-              <p className="calibration-functions-hint" data-testid="configuration-run-calibration-disconnected" role="status">
-                Not connected — open a link to this robot to run calibration.
-              </p>
-            )}
-            {linkOpen && functionsUnknown && (
-              <p className="calibration-functions-hint" data-testid="configuration-functions-checking" role="status">
-                Checking which calibration functions this robot supports…
-              </p>
-            )}
-            <div aria-label="Distance calibration">
-              <h5>Calibrate X (distance)</h5>
-              <DistanceCalibrationWizard link={link} onRun={handleDistanceRun} />
-            </div>
-            <div aria-label="Rotation calibration">
-              <h5>Calibrate A (rotation)</h5>
-              <RotationCalibrationWizard
-                link={link}
-                onRun={handleRotationRun}
-                disabled={rotationBlocked}
-                disabledReason="Run the distance calibration first — the rotation run needs the wheel diameter."
-              />
-            </div>
-          </div>
         </div>
 
         <div className="robot-page-panel" aria-label="Wi-Fi values">

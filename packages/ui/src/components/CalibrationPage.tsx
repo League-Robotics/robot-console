@@ -1,6 +1,7 @@
 /**
  * CalibrationPage.tsx — the robot page's Calibration tab (OOP
- * 2026-09-10, stakeholder direction; expanded ticket 018-013).
+ * 2026-09-10, stakeholder direction; expanded ticket 018-013; corrected
+ * 018-013, stakeholder 2026-09-13).
  *
  * One calibration *state* per robot (persisted per robot name in
  * localStorage), one block of code to paste, and the wizards/run
@@ -12,58 +13,50 @@
  * module's own doc comment for the wheel-diameter/track-width/
  * effective-width/slip relationship this page's wizards feed.
  *
- * ## Ticket 018-013: always offered, dynamic run buttons + a filtered
- * console -- the flash panel moved to the Configuration tab
+ * ## Ticket 018-013, corrected 2026-09-13: firmware flash lives here too,
+ * FUNCS never hides a run
  *
- * `f1b0e8d` added this tab's original flash/run/console shape under a
- * commit message and doc comments that mis-cited it as ticket "018-010"
- * (an unrelated, concurrently in-progress ticket, UI truthfulness for
- * link-status text) -- this section, and the feature itself, actually
- * belong to ticket 018-013. Three changes remain over the OOP 2026-09-10
- * shape (a fourth, the "Calibration firmware" panel, moved out entirely
- * -- see below):
+ * `f1b0e8d` put this tab's original flash/run/console shape here under a
+ * commit message that mis-cited it as ticket "018-010"; a same-day
+ * follow-up pass then moved the flash panel to the Configuration tab.
+ * The stakeholder's own correction reverses that move: "If we have a
+ * Calibrate tab, then we don't need calibration under the Configuration
+ * tab. You can just put it under Calibrate." The root cause of a
+ * concrete failure this same pass diagnosed -- a robot with `cala`
+ * genuinely registered on the firmware reading as CalX-only -- was a
+ * dropped Wi-Fi burst line in `FUNCS`'s own reply, ack included, list
+ * incomplete; the fix generalizes to a rule this tab now holds
+ * everywhere: **`FUNCS` must never hide or block a calibration run.**
  *
- *  1. **This tab is now always offered for a robot** (`RobotPage.tsx` no
- *     longer gates it on `isCalibrationProgram(device.program)`) -- a
- *     robot not yet running the calibration build can still reach this
- *     tab to run `calx`/`cala` once it does. Flashing itself -- and the
- *     "what's actually running" text -- moved to `ConfigurationPage.tsx`
- *     (ticket 018-013, per the stakeholder's explicit placement: "put
- *     this as a flash button under the calibration section in the
- *     Configuration tab"); see that module's own doc comment.
- *  2. **Run controls are derived from `FUNCS`, not hardcoded to exactly
- *     two.** `calx`/`cala` still render as the existing
- *     `DistanceCalibrationWizard`/`RotationCalibrationWizard` (unchanged
- *     internally -- this page does not re-dispatch their own `RUN`s),
- *     but only while the session's function list is still unknown
- *     (`functions === undefined`, so each wizard's own "checking..."
- *     hint still shows) or the robot's own `FUNCS` reply actually lists
- *     that name -- once the list is known and a given name is absent,
- *     no button, no "unavailable" message, nothing (silence, not a
- *     hardcoded assumption of a third verb). Any other `cal*` name
- *     `FUNCS` lists gets a small generic run control
- *     (`GenericCalibrationRun` below) this page did not have before.
- *     `FUNCS` is requested once, on mount, if the session has no
- *     function list yet -- a deliberate exception to sprint 015 ticket
- *     009's "panels don't self-probe" rule, since this tab specifically
- *     needs the list before it can decide which buttons to draw, unlike
- *     the wizards it embeds (which always rendered regardless of
- *     whether anything had ever asked).
- *  3. **`CalibrationConsole`** (`./CalibrationConsole.tsx`) sits directly
- *     under the code block -- a second, filtered view of this same
- *     link's log (not a second connection), showing only the
- *     calibration program's own traffic. The right column's full,
- *     unfiltered `DeviceConsole` is unchanged and still present for
- *     anyone who wants the raw wire.
- *  4. **New parsed state**: `RotationCalibrationWizard.tsx`'s own
- *     `robotReportedSlip` (the firmware's own `CALA:derived slip=...`
- *     line) now also updates `CalibrationState.robotReportedSlip`,
- *     shown alongside this page's own computed `rotationalSlip` in
- *     `CalibrationTable.tsx` -- see that module's own doc comment for
- *     why the two numbers are never merged.
+ *  1. **`CalibrationFirmwarePanel`** (`./CalibrationFirmwarePanel.tsx`)
+ *     mounts at the top of the left column -- the flash/verify block,
+ *     unchanged in behavior, just relocated back here and reading
+ *     `device` directly rather than through `ConfigurationPage`.
+ *  2. **Both wizards always render**, no `FUNCS`-derived hide/show. A
+ *     robot whose `FUNCS` reply is silent on `cala` (dropped over Wi-Fi,
+ *     or never asked) still gets a Calibrate A button -- disabling or
+ *     hiding it on absent evidence is exactly the failure mode that
+ *     produced "only CalX" on a robot that has `cala` right there in its
+ *     firmware. Each wizard shows its own non-blocking hint instead (see
+ *     `DistanceCalibrationWizard.tsx`/`RotationCalibrationWizard.tsx`).
+ *     `FUNCS` is still requested once, on mount, if the session has no
+ *     function list yet -- not to gate the two wizards any more, but so
+ *     any *other* `cal*` name it lists still gets its own
+ *     `GenericCalibrationRun` control below them.
+ *  3. **No filtered console on this tab.** `CalibrationConsole.tsx` (a
+ *     second, calibration-only view of the same link's log) is retired
+ *     outright -- the right column's full, unfiltered `DeviceConsole`
+ *     already shows every line, calibration traffic included, and a
+ *     second filtered view of the same log added confusion (which
+ *     console has the line?) without adding information.
+ *  4. **`robotReportedSlip`** (`RotationCalibrationWizard.tsx`'s own
+ *     `CALA:derived slip=...` reader) still updates
+ *     `CalibrationState.robotReportedSlip`, shown alongside this page's
+ *     own computed `rotationalSlip` in `CalibrationTable.tsx` -- see that
+ *     module's own doc comment for why the two numbers are never merged.
  */
 import { useEffect, useMemo, useState } from "react";
-import type { RobotFunction, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import type { RobotFunction, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import {
   CALIBRATION_IMAGE_BASELINE_DIAMETER_MM,
   applyCalibrationPatch,
@@ -77,7 +70,7 @@ import {
 import { useCopied } from "../lib/clipboard";
 import { isLinkUsable } from "../deviceDisplay";
 import { useSendable, useWsActions } from "../ws/WsProvider";
-import { CalibrationConsole } from "./CalibrationConsole";
+import { CalibrationFirmwarePanel } from "./CalibrationFirmwarePanel";
 import { CalibrationTable } from "./CalibrationTable";
 import { DeviceConsole } from "./DeviceConsole";
 import {
@@ -101,6 +94,10 @@ export interface CalibrationPageProps {
    * both `link` and `name` rather than this page re-deriving them from
    * a retired flat endpoint shape. */
   name: string;
+  /** The owning device snapshot -- stakeholder correction 2026-09-13:
+   * `CalibrationFirmwarePanel` needs `device.program`/`device.version`/
+   * `device.links` for the flash/verify block now mounted here. */
+  device: SnapshotDevice;
 }
 
 /** `calx`/`cala` get their stakeholder-specified labels verbatim; any
@@ -155,7 +152,7 @@ function GenericCalibrationRun({ link, name }: GenericCalibrationRunProps) {
   );
 }
 
-export function CalibrationPage({ link, name }: CalibrationPageProps) {
+export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
   const robotName = name;
   const [state, setState] = useState<CalibrationState>(() => readCalibrationState(robotName));
   useEffect(() => {
@@ -183,11 +180,15 @@ export function CalibrationPage({ link, name }: CalibrationPageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires again only when "do we have a list yet" flips, or the link/openness identity changes
   }, [link.id, linkOpen, functionsUnknown]);
 
+  // Stakeholder correction (2026-09-13): `FUNCS` must never hide or
+  // block a calibration run -- both wizards below always render,
+  // regardless of what this list does or doesn't contain (a dropped
+  // Wi-Fi burst line can make a genuinely-registered `cala` vanish from
+  // the ack'd reply). This list only ever adds a control now, never
+  // removes one: any *other* `cal*` name it reports gets its own
+  // `GenericCalibrationRun` below the two dedicated wizards.
   const calFunctionNames = useMemo(() => (functions ?? []).map((fn) => fn.name).filter((n) => n.startsWith("cal")), [functions]);
   const extraCalFunctionNames = calFunctionNames.filter((n) => n !== "calx" && n !== "cala");
-  const showDistanceWizard = functionsUnknown || calFunctionNames.includes("calx");
-  const showRotationWizard = functionsUnknown || calFunctionNames.includes("cala");
-  const noCalFunctions = !functionsUnknown && calFunctionNames.length === 0;
 
   function update(patch: CalibrationPatch): void {
     setState((previous) => applyCalibrationPatch(previous, patch));
@@ -232,36 +233,22 @@ export function CalibrationPage({ link, name }: CalibrationPageProps) {
   return (
     <div className="robot-page-columns calibration-page" data-testid="robot-tab-panel-calibration">
       <div className="robot-page-column robot-page-column-left">
-        {functionsUnknown && (
-          <p className="calibration-functions-hint" data-testid="calibration-functions-checking" role="status">
-            Checking which calibration functions this robot supports…
-          </p>
-        )}
+        <CalibrationFirmwarePanel device={device} link={link} />
 
-        {noCalFunctions && (
-          <p className="calibration-functions-hint" data-testid="calibration-no-functions" role="status">
-            This robot's firmware doesn't report any calibration functions.
-          </p>
-        )}
+        <div className="robot-page-panel" aria-label="Distance calibration">
+          <h3>{calibrationFunctionLabel("calx")}</h3>
+          <DistanceCalibrationWizard link={link} onRun={handleDistanceRun} />
+        </div>
 
-        {showDistanceWizard && (
-          <div className="robot-page-panel" aria-label="Distance calibration">
-            <h3>{calibrationFunctionLabel("calx")}</h3>
-            <DistanceCalibrationWizard link={link} onRun={handleDistanceRun} />
-          </div>
-        )}
-
-        {showRotationWizard && (
-          <div className="robot-page-panel" aria-label="Rotation calibration">
-            <h3>{calibrationFunctionLabel("cala")}</h3>
-            <RotationCalibrationWizard
-              link={link}
-              onRun={handleRotationRun}
-              disabled={rotationBlocked}
-              disabledReason="Run the distance calibration first — the rotation run needs the wheel diameter."
-            />
-          </div>
-        )}
+        <div className="robot-page-panel" aria-label="Rotation calibration">
+          <h3>{calibrationFunctionLabel("cala")}</h3>
+          <RotationCalibrationWizard
+            link={link}
+            onRun={handleRotationRun}
+            disabled={rotationBlocked}
+            disabledReason="Run the distance calibration first — the rotation run needs the wheel diameter."
+          />
+        </div>
 
         {extraCalFunctionNames.map((fnName) => (
           <GenericCalibrationRun key={fnName} link={link} name={fnName} />
@@ -288,10 +275,6 @@ export function CalibrationPage({ link, name }: CalibrationPageProps) {
               </button>
             </>
           )}
-        </div>
-
-        <div className="robot-page-panel calibration-console-panel">
-          <CalibrationConsole link={link} />
         </div>
       </div>
 

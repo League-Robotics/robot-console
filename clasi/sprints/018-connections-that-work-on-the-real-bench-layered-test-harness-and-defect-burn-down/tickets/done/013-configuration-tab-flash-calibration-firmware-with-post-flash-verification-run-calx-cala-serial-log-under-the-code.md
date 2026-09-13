@@ -52,59 +52,77 @@ Established facts (do not re-derive):
   `useFlashProgress` hook/phase plumbing (see the Calibration-tab panel
   added in `f1b0e8d` for the pattern to move, not re-invent).
 
-## Acceptance Criteria
+## Acceptance Criteria (corrected 2026-09-13 — see Correction Notes below)
 
-- [x] `ConfigurationPage.tsx` receives the routed `link` (from
-      `RobotPage.tsx`), in addition to `device`, so it can target the
-      correct USB link for flashing.
-- [x] Under the Configuration tab's "Calibration" panel: a "Calibration
-      firmware" block shows the current program/version and whether it
-      is the calibration build (via `isCalibrationProgram`), with a
-      **Flash calibration firmware** button that sends
+The stakeholder's own same-day correction moves every flash/run control
+back onto the **Calibration** tab: "If we have a Calibrate tab, then we
+don't need calibration under the Configuration tab. You can just put it
+under Calibrate. Also, we still need flash." The criteria below
+supersede the original list (kept, struck through in spirit, by the
+Correction Notes section) and reflect the corrected placement.
+
+- [x] A new `CalibrationFirmwarePanel.tsx` component (`{ device, link }`)
+      holds the "Calibration firmware" block — current program/version,
+      whether it is the calibration build (`isCalibrationProgram`), and
+      a **Flash calibration firmware** button that sends
       `flash-start {kind:"release", firmware:"robot"}` for the robot's
-      `usb` link (the routed link if it is USB, else the device's
-      current USB link). With no current USB link, the block says
-      plainly "Plug the robot in over USB to flash." — no button shown
-      as if it might work. Flash phases surface inline via the existing
-      `useFlashProgress` plumbing (the same phase states already wired
-      for other flash buttons).
-- [x] After a flash completes, the block reports — from the fresh
+      flashable link (the routed link if it can itself be flashed, else
+      the device's other flashable link). With no flashable link, it
+      says "Plug the robot in over USB, or put it on a farm host, to
+      flash." — worded for both USB and the concurrent 018-014 farm-host
+      flash path, no button shown as if it might work. Flash phases
+      surface inline via the existing `useFlashProgress` plumbing.
+- [x] After a flash completes, the panel reports — from the fresh
       post-flash device snapshot, never assumed — whether `device.program`
       is now a calibration build ("Calibration firmware `<version>`
       confirmed") or not (shows the program actually reported, or the
-      flash error if the flash itself failed). No optimistic "flashed
-      successfully" text that isn't backed by the post-flash snapshot.
-- [x] Two buttons on the Configuration tab: "Calibrate X (distance)"
-      (sends `RUN calx`) and "Calibrate A (rotation)" (sends
-      `RUN cala`). Each is gated on (a) an open answering session for
-      the device, and (b) `FUNCS` listing the corresponding function
-      name — `FUNCS` is requested once on mount if not already known.
-      A disabled button carries a plain-language reason (e.g. "Not
-      connected", "Firmware doesn't support calx").
-- [x] Results from running `calx`/`cala` flow through the existing
+      flash error if the flash itself failed).
+- [x] `CalibrationPage.tsx` mounts `CalibrationFirmwarePanel` at the top
+      of its left column (`RobotPage.tsx` passes `device` through to it
+      again), followed by the existing "Calibrate X (distance)" and
+      "Calibrate A (rotation)" wizards.
+- [x] **`FUNCS` must never hide or block a calibration run**: both
+      wizards always render and are never disabled on an absent `FUNCS`
+      entry — root cause fixed this pass: a Wi-Fi burst can drop a line
+      from the middle of `FUNCS`'s own reply (ack included) while the
+      firmware genuinely has the function registered, so absence proves
+      nothing. A known-missing name now only shows a non-blocking hint
+      ("The robot's function list didn't include `<name>` (lines can
+      drop over Wi-Fi) — you can still try; the robot will say err if
+      it's missing.") on both `DistanceCalibrationWizard.tsx` and
+      `RotationCalibrationWizard.tsx`; the "Not connected" hint and the
+      rotation wizard's own wheel-diameter gate are unchanged.
+- [x] `CalibrationPage.tsx`'s prior `FUNCS`-derived
+      show/hide-the-wizard gating (`showDistanceWizard`/
+      `showRotationWizard`/`noCalFunctions`/the "Checking which
+      calibration functions…" hint) is removed outright — the two
+      wizards are unconditional; any *other* `cal*` name `FUNCS` lists
+      still gets its own `GenericCalibrationRun` control, unchanged.
+- [x] The filtered `CalibrationConsole` panel is retired outright
+      (`CalibrationConsole.tsx`/`.css`/its test deleted) — the right
+      column's full, unfiltered `DeviceConsole` is the only console on
+      this tab now, same as it always was in the right column.
+- [x] `ConfigurationPage.tsx` no longer renders a "Calibration firmware"
+      block or calx/cala run buttons, and no longer requests `FUNCS` —
+      it keeps only the Calibration values table, Wi-Fi, Radio, the
+      footer actions, the generated code, and (unchanged from this
+      ticket's original pass) the unfiltered `DeviceConsole` under the
+      code, for which it still takes `link`.
+- [x] Results from running `calx`/`cala` still flow through the existing
       wizard parsers (`DistanceCalibrationWizard.tsx` /
       `RotationCalibrationWizard.tsx` → `lib/calibration.ts`) into the
-      same `CalibrationState` that the Configuration tab's
-      "Calibration" table already displays (wheel diameter, wheel
-      track, measured track width, effective track width, rotational
-      slip). No second/duplicate parser for `CALX:`/`CALA:` lines.
-- [x] Right column of the Configuration tab, under "Code for your
-      program": mounts the full robot serial log via the existing
-      `DeviceConsole` component — the same unfiltered console the Main
-      tab mounts — not a filtered/calibration-only console.
-- [x] The Calibration tab no longer duplicates the firmware-flash panel
-      added in `f1b0e8d` — there is exactly one place in the UI to
-      flash calibration firmware (the Configuration tab). The
-      Calibration tab's distance/rotation wizards continue to work
-      unchanged (they still run their own sessions independently of the
-      Configuration-tab buttons above).
-- [x] Unit tests for each behavior above: `ConfigurationPage` receiving
-      and using `link`; the flash button send/verify cycle (mocked
-      socket); the calx/cala buttons' gating (session + FUNCS) and
-      dispatch; the right-column `DeviceConsole` mount; the Calibration
-      tab no longer rendering a firmware/flash panel. Existing
-      `ConfigurationPage`/`RobotPage`/`CalibrationPage` tests updated as
-      needed for the moved panel and the new `link` prop.
+      same `CalibrationState` `CalibrationTable.tsx` displays on both
+      tabs. No second/duplicate parser for `CALX:`/`CALA:` lines.
+- [x] Unit tests for each behavior above, moved/added across
+      `CalibrationFirmwarePanel.test.tsx` (new, standalone component
+      coverage), `CalibrationPage.test.tsx` (mounted coverage of the
+      relocated firmware panel, the always-render wizard behavior, and
+      the retired `CalibrationConsole` describe block deleted),
+      `ConfigurationPage.test.tsx` (firmware/run describe blocks
+      removed), `DistanceCalibrationWizard.test.tsx`/
+      `RotationCalibrationWizard.test.tsx` (the non-blocking-hint
+      behavior), and `RobotPage.test.tsx` (the Calibration/Configuration
+      tab expectations inverted).
 
 ## Completion Notes (2026-09-13)
 
@@ -168,6 +186,95 @@ full serial-log `DeviceConsole` under "Code for your program" on the
 right. No console/page errors. The host I started was killed
 afterward; no other process was touched; no real robot was driven or
 flashed.
+
+## Correction Notes (2026-09-13)
+
+Stakeholder feedback, verbatim: "If we have a Calibrate tab, then we
+don't need calibration under the Configuration tab. You can just put it
+under Calibrate. Also, we still need flash. I don't know how you got
+CalX on Vevov, but it's supposed to have both CalX and CalA. Why does it
+only have one?"
+
+**Root cause of "only CalX" (established, not re-derived)**: vevov's
+`FUNCS` reply over Wi-Fi listed `trace, counters, wire, mdnsrx, square,
+circle, calx` and stopped — the firmware (`nezha-robot-template`,
+`test/calibratea.ts:353`) does register `cala`, but the last burst line
+was dropped in transit (the same known Wi-Fi burst-drop issue this
+ticket's own doc comments already discuss for `CALX:apply`/`CALA:apply`)
+while the ack still arrived, so the list looked complete, and
+`CalibrationPage.tsx`'s own `showRotationWizard` gate hid the rotation
+wizard because `cala` wasn't in that incomplete list. This pass fixes
+the general case, not just this one robot: **`FUNCS` must never hide or
+block a calibration run** anywhere in the UI.
+
+**What moved**: `CalibrationFirmwarePanel.tsx` (new component, extracted
+verbatim from `ConfigurationPage.tsx`'s block, testids renamed
+`calibration-firmware-*`/`calibration-flash-*`) now mounts at the top of
+`CalibrationPage.tsx`'s left column; `RobotPage.tsx` passes `device`
+back to `CalibrationPage` for it. `ConfigurationPage.tsx` lost the
+firmware block, the run buttons, and the FUNCS-on-mount request
+entirely — it keeps only the Calibration values table, Wi-Fi, Radio, the
+footer, the code block, and (unchanged) the unfiltered `DeviceConsole`
+under the code, for which it still takes `link`.
+
+**What changed in the wizards**: `DistanceCalibrationWizard.tsx`/
+`RotationCalibrationWizard.tsx`'s `goDisabled` no longer includes a
+FUNCS-derived `available` term at all — only link-openness/run-in-
+flight (and, for rotation, the wheel-diameter `disabled` prop) can
+disable Go now. A `FUNCS`-known-missing name renders a non-blocking
+hint ("...lines can drop over Wi-Fi) — you can still try; the robot will
+say err if it's missing.") instead of the old blocking "doesn't support
+calibration yet" message. `CalibrationPage.tsx`'s own
+`showDistanceWizard`/`showRotationWizard`/`noCalFunctions` gating (and
+its "Checking which calibration functions…" hint) is deleted — both
+wizards render unconditionally; `FUNCS` is still requested once on
+mount only so any *other* `cal*` name still gets a `GenericCalibrationRun`.
+
+**What was retired**: `CalibrationConsole.tsx`/`.css`/its test (the
+filtered console below the code block) — the right column's existing
+unfiltered `DeviceConsole` already shows every line, and a second
+filtered view of the same log added confusion without adding
+information.
+
+**Coordination**: ticket 018-014 (concurrent, host-side) makes
+`link.capabilities.flash` true for a farm-hosted robot too via the
+mbflash TCP service; `CalibrationFirmwarePanel` needed no change for
+that beyond wording its no-link hint for both paths ("Plug the robot in
+over USB, or put it on a farm host, to flash.") — the button stays keyed
+on `canBeFlashed`, never a hardcoded transport check. No
+`packages/host/**` or `deviceDisplay.ts` files were touched.
+
+**Tests**: `npx vitest run packages/ui` — 41 files, 655 passed (0
+failed): new `CalibrationFirmwarePanel.test.tsx` (11 cases, standalone
+component mount); `CalibrationPage.test.tsx` (firmware-panel cases
+re-added with a `device` fixture, the FUNCS-derived gating tests
+replaced with "both wizards still render" cases, the `CalibrationConsole`
+describe block deleted); `ConfigurationPage.test.tsx` (firmware/run
+describe blocks removed, the FUNCS-on-mount expectation dropped from the
+Wi-Fi test); `DistanceCalibrationWizard.test.tsx`/
+`RotationCalibrationWizard.test.tsx` (the "unavailable" case now asserts
+the non-blocking hint text and an enabled button); `RobotPage.test.tsx`
+(the two tab expectations inverted back). `npm run typecheck`,
+`npm run vite:build -w @robot-console/ui`, and `npm run build` all clean.
+
+**Evidence**: a fresh host on a throwaway copy of the stakeholder's own
+`~/.local/state/robot-console/console.sqlite` (+`-wal`/`-shm`,
+`ROBOT_CONSOLE_STATE_DIR` pointed at a scratchpad directory, built via
+`node bin/robot-console.js --no-open --no-sweep`, port 18913), verified
+via `lsof -p <pid>` before screenshotting that it held only the scratch
+copy's files, never the live ones. Headless Chrome (playwright-core,
+system Chrome) opened `/d/mbserial-gopiv`: the Calibration tab
+(`calibration-tab-2.png`) shows "Calibration firmware" ("Program:
+unknown", a Flash button since no snapshot has marked robot firmware
+configured yet in this scratch run), "Calibrate X (distance)" and
+"Calibrate A (rotation)" both present with "Not connected" hints (no
+open session in this snapshot), the code block, and the full
+`DeviceConsole`; the Configuration tab (`configuration-tab-2.png`) shows
+only the Calibration values table, Wi-Fi, Radio, the footer, the code,
+and the same `DeviceConsole` — no firmware block, no run buttons. No
+console/page errors on either tab. The host I started was stopped
+afterward via its own background-task id; no other process was touched;
+no real robot was driven or flashed.
 
 ## Testing
 

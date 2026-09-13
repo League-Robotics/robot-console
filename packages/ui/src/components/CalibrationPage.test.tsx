@@ -2,26 +2,33 @@
 /**
  * CalibrationPage.test.tsx — the Calibration tab's state machine
  * (OOP 2026-09-10; migrated to the `Snapshot` contract, sprint 015
- * ticket 009; expanded ticket 018-013). The pure calibration-math
- * helpers this page used to re-export (`correctTrackWidth`,
- * `deriveCalibration`, `calibrationCode`) live in, and are tested by,
- * `lib/calibration.test.ts` (ticket 017-008) -- this file keeps only
- * the mounted, FakeSocket-driven behavior.
+ * ticket 009; expanded ticket 018-013; corrected 018-013, stakeholder
+ * 2026-09-13). The pure calibration-math helpers this page used to
+ * re-export (`correctTrackWidth`, `deriveCalibration`, `calibrationCode`)
+ * live in, and are tested by, `lib/calibration.test.ts` (ticket 017-008)
+ * -- this file keeps only the mounted, FakeSocket-driven behavior.
  *
  * Ticket 018-013 adds: run controls derived from `FUNCS` (including a
  * generic control for a `cal*` name neither wizard owns), the
  * FUNCS-on-open request, and `CalibrationTable`'s new robot-reported
- * track-width/slip rows fed from a rotation run. The "Calibration
- * firmware" panel (flash button, USB-only gating, running-program text)
- * this ticket's own earlier pass (`f1b0e8d`, mis-labelled "018-010") put
- * on this tab has moved to `ConfigurationPage.test.tsx` -- this page no
- * longer takes a `device` prop at all, since nothing here reads it once
- * that panel is gone.
+ * track-width/slip rows fed from a rotation run.
+ *
+ * Corrected 018-013 (stakeholder, 2026-09-13, "put it under Calibrate"):
+ * the "Calibration firmware" panel (flash button, USB-only gating,
+ * running-program text) -- which a same-day earlier pass had moved to
+ * `ConfigurationPage.test.tsx` -- moves back here, so this page takes a
+ * `device` prop again. The FUNCS-derived wizard gating (`showDistance
+ * Wizard`/`showRotationWizard`/`noCalFunctions`) is removed outright:
+ * both wizards always render now (see this page's own doc comment for
+ * the root-cause bug this fixes), so those tests are replaced with ones
+ * asserting the wizards render regardless and each shows its own
+ * non-blocking hint. The filtered `CalibrationConsole` panel is retired
+ * (see this page's own doc comment); its describe block is deleted.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { RobotFunction, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import type { RobotFunction, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { CalibrationPage } from "./CalibrationPage";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
@@ -75,10 +82,28 @@ function link(functions: RobotFunction[] | null = [{ name: "calx" }, { name: "ca
   };
 }
 
+function device(theLink: SnapshotLink, overrides: Partial<Omit<SnapshotDevice, "links">> = {}): SnapshotDevice {
+  return {
+    id: 1,
+    name: NAME,
+    kind: "robot",
+    role: "NEZHA2",
+    program: null,
+    version: null,
+    owned: true,
+    radio: { channel: 1, group: 1, source: "derived" },
+    lastSeen: 0,
+    lastChecked: null,
+    links: [theLink],
+    ...overrides,
+  };
+}
+
 function mountPage(
   opts: {
     functions?: RobotFunction[] | null;
     linkOverrides?: Partial<SnapshotLink>;
+    deviceOverrides?: Partial<Omit<SnapshotDevice, "links">>;
   } = {},
 ): { el: HTMLDivElement; socket: FakeSocket } {
   let socket: FakeSocket | null = null;
@@ -87,9 +112,10 @@ function mountPage(
   // deliberately used by the "requests FUNCS" tests below) -- both are
   // distinct inputs this helper must keep apart.
   const theLink = link(opts.functions !== undefined ? opts.functions : [{ name: "calx" }, { name: "cala" }], opts.linkOverrides);
+  const theDevice = device(theLink, opts.deviceOverrides);
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <CalibrationPage link={theLink} name={NAME} />
+      <CalibrationPage link={theLink} name={NAME} device={theDevice} />
     </WsProvider>,
   );
   act(() => {
@@ -101,12 +127,6 @@ function mountPage(
 function rx(socket: FakeSocket, line: string): void {
   act(() => {
     socket.emitMessage({ type: "line", linkId: LINK_ID, direction: "rx", line });
-  });
-}
-
-function tx(socket: FakeSocket, line: string): void {
-  act(() => {
-    socket.emitMessage({ type: "line", linkId: LINK_ID, direction: "tx", line });
   });
 }
 
@@ -197,12 +217,10 @@ describe("CalibrationPage", () => {
     expect(second.el.querySelector('[data-testid="calibration-code-empty"]')).not.toBeNull();
   });
 
-  describe("ticket 018-013: run controls derived from FUNCS", () => {
-    it("requests FUNCS once when the tab opens with no function list yet, and shows a checking hint", () => {
-      const { el, socket } = mountPage({ functions: null });
+  describe("ticket 018-013: run controls derived from FUNCS (corrected 2026-09-13: FUNCS only ever adds a control, never hides one)", () => {
+    it("requests FUNCS once when the tab opens with no function list yet", () => {
+      const { socket } = mountPage({ functions: null });
       expect(socket.sent).toEqual([JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "FUNCS" })]);
-      expect(el.querySelector('[data-testid="calibration-functions-checking"]')).not.toBeNull();
-      expect(el.querySelector('[data-testid="calibration-no-functions"]')).toBeNull();
     });
 
     it("does not request FUNCS when a function list is already known", () => {
@@ -210,18 +228,29 @@ describe("CalibrationPage", () => {
       expect(socket.sent).toEqual([]);
     });
 
-    it("says so plainly when the robot's FUNCS lists no calibration functions, and mounts neither wizard", () => {
-      const { el } = mountPage({ functions: [{ name: "line" }, { name: "sense" }] });
-      const hint = el.querySelector('[data-testid="calibration-no-functions"]');
-      expect(hint?.textContent).toBe("This robot's firmware doesn't report any calibration functions.");
-      expect(el.querySelector('.robot-page-column-left [aria-label="Distance calibration"]')).toBeNull();
-      expect(el.querySelector('.robot-page-column-left [aria-label="Rotation calibration"]')).toBeNull();
-    });
-
-    it("mounts only the wizard for a function FUNCS actually lists", () => {
+    it("stakeholder correction 2026-09-13: both wizards still render, Calibrate A included, even when FUNCS lists only calx -- the root-caused Wi-Fi burst-drop bug means an absent name proves nothing", () => {
       const { el } = mountPage({ functions: [{ name: "calx" }] });
       expect(el.querySelector('.robot-page-column-left [aria-label="Distance calibration"]')).not.toBeNull();
-      expect(el.querySelector('.robot-page-column-left [aria-label="Rotation calibration"]')).toBeNull();
+      expect(el.querySelector('.robot-page-column-left [aria-label="Rotation calibration"]')).not.toBeNull();
+      // Calibrate A is still blocked pending a wheel diameter (an
+      // unrelated, legitimate gate this page itself applies) -- typing
+      // one clears that gate, leaving only the FUNCS-derived hint below,
+      // never a disabled button caused by the missing `cala` listing.
+      type(el, "calibration-wheel-diameter", "90.28");
+      expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(false);
+      expect(el.querySelector('[data-testid="rotation-calibration-unavailable"]')?.textContent).toContain(
+        "didn't include cala",
+      );
+    });
+
+    it("both wizards still render, with their own hints, even when FUNCS lists no calibration functions at all", () => {
+      const { el } = mountPage({ functions: [{ name: "line" }, { name: "sense" }] });
+      expect(el.querySelector('.robot-page-column-left [aria-label="Distance calibration"]')).not.toBeNull();
+      expect(el.querySelector('.robot-page-column-left [aria-label="Rotation calibration"]')).not.toBeNull();
+      expect(el.querySelector<HTMLButtonElement>('[data-testid="distance-calibration-go"]')!.disabled).toBe(false);
+      // Rotation is blocked pending a wheel diameter until the distance
+      // wizard succeeds -- unrelated to FUNCS -- but shows its own hint.
+      expect(el.querySelector('[data-testid="rotation-calibration-blocked"]')).not.toBeNull();
     });
 
     it("renders a generic run control for a cal* function neither wizard owns, labelled from its name, and running it sends a bare RUN", () => {
@@ -283,41 +312,93 @@ describe("CalibrationPage", () => {
     });
   });
 
-  describe("ticket 018-013: CalibrationConsole (the filtered console below the code block)", () => {
-    it("shows CAL*: report lines and hides unrelated console-only traffic", () => {
-      const { el, socket } = mountPage();
-      rx(socket, "CALX:diameter=90.68 mm");
-      rx(socket, "status a=1");
-      rx(socket, "get name value");
-
-      const lines = Array.from(el.querySelectorAll('[data-testid="calibration-console-line"]')).map((n) => n.textContent);
-      expect(lines).toEqual(["«CALX:diameter=90.68 mm"]);
+  describe("ticket 018-013, corrected 2026-09-13: Calibration firmware flash/verify block (moved here from the Configuration tab)", () => {
+    it("shows the current program and a Flash trigger for a USB-flashable link", () => {
+      const { el } = mountPage({ deviceOverrides: { program: null, version: null } });
+      expect(el.querySelector('[data-testid="calibration-firmware-not-running"]')?.textContent).toBe("Program: unknown");
+      expect(el.querySelector('[data-testid="calibration-flash-firmware"]')).not.toBeNull();
+      expect(el.querySelector('[data-testid="calibration-firmware-usb-required"]')).toBeNull();
     });
 
-    it("shows the RUN tx line for a cal* function and its immediately-following ack/err reply, but not an unrelated ack", () => {
-      const { el, socket } = mountPage({ functions: [{ name: "calb" }] });
-      tx(socket, "run calb #3");
-      rx(socket, "ack 3 1 none");
-      tx(socket, "get name #4");
-      rx(socket, "ack 4 1 none");
-
-      const lines = Array.from(el.querySelectorAll('[data-testid="calibration-console-line"]')).map((n) => n.textContent);
-      expect(lines).toEqual(["»run calb #3", "«ack 3 1 none"]);
+    it("says the running calibration build's version when the current program is one", () => {
+      const { el } = mountPage({ deviceOverrides: { program: "calibration-0.20260913.1", version: "0.20260913.1" } });
+      expect(el.querySelector('[data-testid="calibration-firmware-running"]')?.textContent).toBe(
+        "Calibration firmware 0.20260913.1 is running.",
+      );
     });
 
-    it("Clear empties the calibration console without touching the full DeviceConsole's own log for the same link", () => {
+    it("over a non-flashable link with no other flashable link on the device, says to plug in over USB or use a farm host, and shows no Flash trigger", () => {
+      const { el } = mountPage({
+        linkOverrides: { transport: "radio", capabilities: { open: false, close: true, flash: false, provisionWifi: false } },
+      });
+      expect(el.querySelector('[data-testid="calibration-firmware-usb-required"]')?.textContent).toBe(
+        "Plug the robot in over USB, or put it on a farm host, to flash.",
+      );
+      expect(el.querySelector('[data-testid="calibration-flash-firmware"]')).toBeNull();
+    });
+
+    it("clicking Flash sends flash-start for the robot release firmware on the flashable link, once firmware is configured/available", () => {
       const { el, socket } = mountPage();
-      rx(socket, "CALX:diameter=90.68 mm");
-      expect(el.querySelectorAll('[data-testid="calibration-console-line"]').length).toBe(1);
+      act(() => {
+        socket.emitMessage({
+          type: "snapshot",
+          seq: 1,
+          at: 0,
+          devices: [],
+          unassigned: [],
+          relays: [],
+          firmware: { relay: { configured: false }, robot: { configured: true, repoUrl: "https://x", tag: "latest", available: true } },
+          wifi: { ssid: null, source: null },
+          tasks: [],
+        });
+      });
+      act(() => {
+        el.querySelector<HTMLButtonElement>('[data-testid="calibration-flash-firmware"]')!.click();
+      });
+      expect(socket.sent).toContainEqual(
+        JSON.stringify({ type: "flash-start", linkId: LINK_ID, source: { kind: "release", firmware: "robot" } }),
+      );
+    });
 
-      click(el, '[data-testid="calibration-console-clear"]');
-      expect(el.querySelectorAll('[data-testid="calibration-console-line"]').length).toBe(0);
-      // The full, unfiltered console (right column) still has the line --
-      // Clear here must not call the shared `clearLinkLog`.
-      expect(el.querySelectorAll('[data-testid="console-line-rx"]').length).toBe(1);
+    it("shows inline phase progress while a flash is in flight, then the confirmed outcome once the fresh program is a calibration build", () => {
+      const { el, socket } = mountPage({ deviceOverrides: { program: "calibration-0.20260913.1", version: "0.20260913.1" } });
+      act(() => {
+        socket.emitMessage({ type: "flash-progress", linkId: LINK_ID, source: { kind: "release", firmware: "robot" }, phase: "writing", seq: 1 });
+      });
+      expect(el.querySelector('[data-testid="calibration-flash-progress"]')?.textContent).toContain("writing");
+      expect(el.querySelector('[data-testid="calibration-flash-firmware"]')).toBeNull();
 
-      rx(socket, "CALX:apply diffDrive.setWheelCalibration(0.7912)");
-      expect(el.querySelectorAll('[data-testid="calibration-console-line"]').length).toBe(1);
+      act(() => {
+        socket.emitMessage({ type: "flash-result", linkId: LINK_ID, source: { kind: "release", firmware: "robot" }, status: "ok", seq: 2 });
+      });
+      expect(el.querySelector('[data-testid="calibration-flash-result"]')?.textContent).toBe(
+        "Calibration firmware 0.20260913.1 confirmed.",
+      );
+    });
+
+    it("reports the actual (non-calibration) program when a flash succeeds but the fresh snapshot isn't a calibration build -- never assumes success", () => {
+      const { el, socket } = mountPage({ deviceOverrides: { program: "some-other-build", version: "9" } });
+      act(() => {
+        socket.emitMessage({ type: "flash-result", linkId: LINK_ID, source: { kind: "release", firmware: "robot" }, status: "ok", seq: 1 });
+      });
+      expect(el.querySelector('[data-testid="calibration-flash-result"]')?.textContent).toBe(
+        "Flashed, but the robot reports program some-other-build — not the calibration build.",
+      );
+    });
+
+    it("surfaces a flash-result error's message instead of any confirmation text", () => {
+      const { el, socket } = mountPage();
+      act(() => {
+        socket.emitMessage({
+          type: "flash-result",
+          linkId: LINK_ID,
+          source: { kind: "release", firmware: "robot" },
+          status: "error",
+          message: "sha256 mismatch on downloaded hex",
+          seq: 1,
+        });
+      });
+      expect(el.querySelector('[data-testid="calibration-flash-result"]')?.textContent).toBe("sha256 mismatch on downloaded hex");
     });
   });
 });

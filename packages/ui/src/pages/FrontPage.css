@@ -27,7 +27,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
-  align-items: flex-start;
+  align-items: stretch;
 }
 
 .devices-list > li {
@@ -369,8 +369,10 @@
 .device-chip-face {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.35rem 0.7rem 0.35rem 0.55rem;
+  justify-content: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  padding: 0;
   border-radius: 999px;
   border: 1px solid var(--rc-border);
   background: var(--rc-surface);
@@ -469,4 +471,15 @@ a.device-chip-face {
   font-size: 0.95rem;
   font-weight: 600;
   color: var(--rc-text-muted);
+}
+
+.device-chip-popover-title {
+  margin: 0 0 0.35rem;
+  font-weight: 600;
+}
+
+/* Stakeholder (2026-09-13): cards in a row share one height. */
+.devices-list > li > .device-card {
+  min-height: 7.5rem;
+  box-sizing: border-box;
 }

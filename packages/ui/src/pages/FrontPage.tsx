@@ -620,13 +620,11 @@ function LinkChip(props: {
 }) {
   const { device, link } = props;
   const state = chipState(link);
+  // Stakeholder (2026-09-13): "reduce this down to just the icons and
+  // not the name" -- the chip is the icon alone; the short name ("Radio
+  // via vevav") is the popover's title and the accessible label.
   const short = link.via ? `${transportShortName(link.transport)} via ${link.via.relayName}` : transportShortName(link.transport);
-  const face = (
-    <>
-      <TransportIcon transport={link.transport} />
-      <span className="device-chip-text">{short}</span>
-    </>
-  );
+  const face = <TransportIcon transport={link.transport} size={20} />;
   return (
     <li className="device-chip" data-state={state} data-testid={`device-chip-${link.id}`}>
       {isLinkUsable(link) ? (
@@ -639,6 +637,7 @@ function LinkChip(props: {
         </button>
       )}
       <div className="device-chip-popover" role="tooltip">
+        <p className="device-chip-popover-title">{short}</p>
         <DeviceConnectionRow {...props} />
       </div>
     </li>

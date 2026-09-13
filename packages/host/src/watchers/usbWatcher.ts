@@ -14,9 +14,14 @@
  *   serial, read its SWD name with a timeout (`swdName.ts`'s
  *   `readSwdName`, which never rejects on its own but is not itself
  *   bounded — this module adds the timeout), upsert `devices` (if
- *   named) and `links(usb, discovered)`, release the owner. A named
- *   device also merges any `known-robots.json` placeholder sharing its
- *   name (`store/placeholderMerge.ts`'s `mergeNamePlaceholderIfAny`,
+ *   named) and `links(usb, discovered)`, release the owner. This upsert
+ *   never asserts or overwrites `kind` (018-004: a chip id read cannot
+ *   itself tell a robot from a relay apart — see `store/index.ts`'s own
+ *   "kind is never guessed" doc comment); a device already known to be
+ *   a relay is also skipped for the placeholder merge below. A named
+ *   device that is not already known as a relay also merges any
+ *   `known-robots.json` placeholder sharing its name
+ *   (`store/placeholderMerge.ts`'s `mergeNamePlaceholderIfAny`,
  *   bench defect 010, 2026-09-13 — SWD naming is trustworthy identity
  *   the instant it succeeds, so this must not wait on a later banner
  *   identify that a flaky cable may never produce cleanly). Sprint 015
@@ -227,10 +232,21 @@ export function startUsbWatcher(
 
       if (swdResult.status === "named") {
         namedDeviceId = swdResult.deviceId;
+        // 018-004: a chip id read over the debug interface cannot itself
+        // tell a robot from a relay apart (both expose the same SWD/DAP
+        // interface) -- `kind` is deliberately omitted here so this
+        // upsert never asserts or overwrites it. A pre-existing row (a
+        // relay already identified by a banner, e.g. `mdnsWatcher.ts`'s
+        // own relay discovery) keeps its own `kind` unchanged; only a
+        // genuinely brand-new row gets the store's own required-column
+        // default. See `store/index.ts`'s own "kind is never guessed"
+        // doc comment for the full mechanism this replaces (the previous
+        // unconditional `kind: "robot"` here silently downgraded a known
+        // relay, `vevav`, the instant it was next seen over USB).
+        const existingKind = store.getDeviceKind(swdResult.deviceId);
         store.upsertDevice({
           id: swdResult.deviceId,
           name: swdResult.name,
-          kind: "robot",
           usbSerial: device.serialNumber,
           at: now(),
         });
@@ -245,7 +261,15 @@ export function startUsbWatcher(
         // (the exact `tovez` bench case) would otherwise stay a
         // duplicate row forever. See `store/placeholderMerge.ts`'s own
         // doc comment for the shared helper and why it lives there.
-        mergeNamePlaceholderIfAny(store, swdResult.name, swdResult.deviceId, now());
+        //
+        // 018-004: never run this merge for a device already known to be
+        // a relay -- `known-robots.json` never seeds a relay placeholder
+        // in the first place, so this is defensive, but a relay's own
+        // name must never become eligible for a robot-placeholder merge
+        // on the strength of a name match alone.
+        if (existingKind !== "relay") {
+          mergeNamePlaceholderIfAny(store, swdResult.name, swdResult.deviceId, now());
+        }
       }
       store.upsertLink({
         id: linkId,

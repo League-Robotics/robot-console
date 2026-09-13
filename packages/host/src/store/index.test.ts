@@ -85,6 +85,66 @@ describe("Store: upsertDevice", () => {
       store.close();
     }
   });
+
+  // 018-004: `kind` is optional -- omitting it means "I don't know yet"
+  // (see this module's own "kind is never guessed" doc comment). The
+  // bug this closes: `watchers/usbWatcher.ts`'s SWD-naming step used to
+  // pass `kind: "robot"` unconditionally, silently downgrading an
+  // already-known relay the next time it was seen over USB.
+  it("omitting kind on conflict keeps the row's existing kind unchanged (never overwrites a known relay)", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "relay", role: "RADIOBRIDGE", at: 100 });
+      store.upsertDevice({ id: 1198504156, name: "vevov", usbSerial: "abc123", at: 200 });
+      const row = store.snapshotRows().devices[0];
+      expect(row).toMatchObject({ kind: "relay", role: "RADIOBRIDGE", usb_serial: "abc123", last_seen: 200 });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("omitting kind on a brand-new row still gets the schema's own required-column default ('robot'), not an assertion the caller made", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", usbSerial: "abc123", at: 100 });
+      const row = store.snapshotRows().devices[0];
+      expect(row).toMatchObject({ id: 1198504156, name: "vevov", kind: "robot" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("an explicit kind on conflict still overwrites, exactly as before (the connector's own identify, mDNS relay discovery, known-robots import)", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", at: 100 });
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "relay", role: "RADIOBRIDGE", at: 200 });
+      expect(store.snapshotRows().devices[0]).toMatchObject({ kind: "relay", role: "RADIOBRIDGE" });
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("Store: getDeviceKind", () => {
+  it("returns the stored kind for an existing row", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "relay", at: 1 });
+      expect(store.getDeviceKind(1198504156)).toBe("relay");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("returns undefined when no row exists yet", () => {
+    const { store } = freshStore();
+    try {
+      expect(store.getDeviceKind(1198504156)).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------

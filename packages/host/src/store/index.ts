@@ -50,6 +50,25 @@
  * hash-derived fallback for a non-grammar mDNS relay name) rather than a
  * mis-radixed serial. Every other row shape still enforces the check
  * exactly as before.
+ *
+ * ## `kind` is never guessed (018-004)
+ *
+ * `upsertDevice`'s `kind` is optional; omitting it means "I don't know
+ * yet" — the write never asserts or overwrites an existing row's `kind`
+ * in that case (a brand-new row still gets the schema's own required-
+ * column default, `"robot"`, since `devices.kind` is `NOT NULL`, but
+ * that default is the *store's*, not the caller's assertion). Only a
+ * caller that has just positively identified the device — a banner
+ * reply (`connect/connector.ts`), mDNS relay discovery
+ * (`watchers/mdnsWatcher.ts`), or a seeded `known-robots.json` entry
+ * (`store/importers/knownRobots.ts`) — passes an explicit `kind`, which
+ * still always overwrites. This closes the bench-evidenced bug where
+ * `watchers/usbWatcher.ts`'s SWD-naming step (a chip id read, which
+ * cannot itself distinguish a robot from a relay) unconditionally wrote
+ * `kind: "robot"` on every successful read, silently downgrading an
+ * already-known relay the moment it was next seen over USB. See
+ * {@link UpsertDeviceInput.kind}'s and {@link Store.upsertDevice}'s own
+ * doc comments for the exact mechanism.
  */
 import type { DatabaseSync } from "node:sqlite";
 import { EventEmitter } from "node:events";
@@ -97,7 +116,23 @@ export type LinkState =
 export interface UpsertDeviceInput {
   id: number;
   name: string;
-  kind: DeviceKind;
+  /** Omit to never assert a kind at all -- 018-004: `devices.kind` is
+   * `NOT NULL` (the schema forces *some* value on a brand-new row), but
+   * a caller that does not yet know whether this board is a robot or a
+   * relay (`watchers/usbWatcher.ts`'s SWD-naming step, which reads a
+   * chip id directly over the debug interface -- a signal that exists
+   * identically on both) must never *guess*. Omitting `kind` here means:
+   * on conflict (a row already exists), the existing `kind` is kept
+   * unchanged, whatever it is; on a brand-new row, the schema's own
+   * required-column default (`"robot"`) is used, exactly like every
+   * other unset optional column, but that default is the *store's*, not
+   * an assertion the caller made. Only a caller that has just positively
+   * identified the device (`connect/connector.ts`'s banner-based
+   * identify, `watchers/mdnsWatcher.ts`'s relay discovery,
+   * `store/importers/knownRobots.ts`'s seeded roster) should ever pass
+   * an explicit `kind` — see {@link Store.upsertDevice}'s own doc
+   * comment for the exact conflict-resolution rule this drives. */
+  kind?: DeviceKind;
   role?: string | null;
   program?: string | null;
   version?: string | null;
@@ -407,6 +442,13 @@ function toInt(value: boolean | undefined): number | null {
   return value === undefined ? null : value ? 1 : 0;
 }
 
+/** {@link Store.upsertDevice}'s fallback for a brand-new row when the
+ * caller omitted `kind` -- `devices.kind` is `NOT NULL`, so *something*
+ * must be written, but this is the schema's own required-column
+ * default, never a classification the caller asserted (018-004; see
+ * {@link UpsertDeviceInput.kind}'s own doc comment). */
+const DEFAULT_INSERT_KIND: DeviceKind = "robot";
+
 /**
  * The one object every watcher/reconciler/dump-CLI writes and reads the
  * console's SQLite state through. Owns the change-feed `EventEmitter`
@@ -453,6 +495,24 @@ export class Store {
       "devices",
       () => String(input.id),
       () => {
+        // 018-004: `devices.kind` is `NOT NULL`, so a brand-new row must
+        // get *some* value even when `input.kind` was omitted --
+        // `DEFAULT_INSERT_KIND`, the schema-forced fallback (never an
+        // assertion the caller made; see {@link UpsertDeviceInput.kind}'s
+        // own doc comment). On conflict (a row already exists), `kind` is
+        // `COALESCE(?, devices.kind)` against the *raw*, possibly-`null`
+        // `input.kind` -- never `excluded.kind` (which would already
+        // have been coerced to `DEFAULT_INSERT_KIND` and so could never
+        // tell "explicitly asked for robot" apart from "didn't say") --
+        // so an omitted `kind` always keeps whatever the row already has
+        // (a relay stays a relay), while every existing caller that
+        // *does* pass an explicit `kind` (`connect/connector.ts`'s
+        // banner-based identify, `watchers/mdnsWatcher.ts`'s relay
+        // discovery, `store/importers/knownRobots.ts`'s seeded roster)
+        // still overwrites it exactly as before -- this is the one and
+        // only behavior change this ticket makes to this method.
+        const insertKind = input.kind ?? DEFAULT_INSERT_KIND;
+        const conflictKind = input.kind ?? null;
         this.db
           .prepare(
             `INSERT INTO devices
@@ -460,7 +520,7 @@ export class Store {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                name = excluded.name,
-               kind = excluded.kind,
+               kind = COALESCE(?, devices.kind),
                role = COALESCE(excluded.role, devices.role),
                program = COALESCE(excluded.program, devices.program),
                version = COALESCE(excluded.version, devices.version),
@@ -473,7 +533,7 @@ export class Store {
           .run(
             input.id,
             input.name,
-            input.kind,
+            insertKind,
             input.role ?? null,
             input.program ?? null,
             input.version ?? null,
@@ -483,9 +543,22 @@ export class Store {
             input.radioSource ?? null,
             input.at,
             input.at,
+            conflictKind,
           );
       },
     );
+  }
+
+  /** The stored `kind` for `id`, or `undefined` if no `devices` row
+   * exists yet -- 018-004: `watchers/usbWatcher.ts`'s SWD-naming step
+   * reads this *before* upserting, so it can skip the name-placeholder
+   * merge for a device already known to be a relay (see that module's
+   * own doc comment) without pulling a full {@link snapshotRows} dump
+   * just to look up one column. A plain read, no transaction, same
+   * "always re-derive" reasoning as {@link reconcilerRows}. */
+  getDeviceKind(id: number): DeviceKind | undefined {
+    const row = this.db.prepare("SELECT kind FROM devices WHERE id = ?").get(id) as { kind: DeviceKind } | undefined;
+    return row?.kind;
   }
 
   /** Sets `devices.owned` — the WiFi gate (architecture.md §4). A no-op

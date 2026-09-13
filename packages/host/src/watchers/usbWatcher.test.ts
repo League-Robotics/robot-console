@@ -106,6 +106,69 @@ describe("startUsbWatcher", () => {
     }
   });
 
+  // 018-004: `usbWatcher.ts`'s SWD-naming upsert used to hardcode
+  // `kind: "robot"` on every successful read, silently downgrading a
+  // known relay (`vevav`, real bench evidence) the next time it was seen
+  // over USB -- a chip id read cannot itself tell a robot from a relay
+  // apart. These three cases are this ticket's own acceptance criteria.
+  it("018-004: a device row seeded kind: 'relay' survives a fresh SWD read with kind unchanged", async () => {
+    const store = freshStore();
+    store.upsertDevice({ id: VEVOV_ID, name: "vevov", kind: "relay", role: "RADIOBRIDGE", at: 0 });
+
+    const listDevices = vi.fn(async () => [serialOnlyDevice(SERIAL_A, "/dev/cu.usbmodemA")]);
+    const deps: UsbWatcherDeps = { listDevices, readSwdName: async () => NAMED_VEVOV };
+    const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+    try {
+      await waitFor(() => store.snapshotRows().links[0]?.state === "connectable");
+
+      const rows = store.snapshotRows();
+      expect(rows.devices).toHaveLength(1);
+      expect(rows.devices[0]).toMatchObject({ id: VEVOV_ID, name: "vevov", kind: "relay", role: "RADIOBRIDGE" });
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it("018-004: a brand-new device's SWD upsert never asserts kind itself -- only the store's own required-column default applies", async () => {
+    const store = freshStore();
+    const upsertSpy = vi.spyOn(store, "upsertDevice");
+    const listDevices = vi.fn(async () => [serialOnlyDevice(SERIAL_A, "/dev/cu.usbmodemA")]);
+    const deps: UsbWatcherDeps = { listDevices, readSwdName: async () => NAMED_VEVOV };
+    const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+    try {
+      await waitFor(() => store.snapshotRows().links[0]?.state === "connectable");
+
+      expect(upsertSpy).toHaveBeenCalledTimes(1);
+      expect(upsertSpy.mock.calls[0]?.[0]).not.toHaveProperty("kind");
+      // The row still exists (the schema's own NOT NULL default applies),
+      // but that default is the store's, not an assertion this watcher made.
+      const rows = store.snapshotRows();
+      expect(rows.devices[0]).toMatchObject({ id: VEVOV_ID, kind: "robot" });
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it("018-004: a relay's usb link is never scheduled for auto-connect after a fresh SWD read (016-001's relay-idle rule keeps holding)", async () => {
+    const store = freshStore();
+    store.upsertDevice({ id: VEVOV_ID, name: "vevov", kind: "relay", role: "RADIOBRIDGE", at: 0 });
+
+    const listDevices = vi.fn(async () => [serialOnlyDevice(SERIAL_A, "/dev/cu.usbmodemA")]);
+    const deps: UsbWatcherDeps = { listDevices, readSwdName: async () => NAMED_VEVOV };
+    const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+    try {
+      await waitFor(() => store.snapshotRows().links[0]?.state === "connectable");
+
+      const jobs = plan(store.reconcilerRows(), Date.now());
+      expect(jobs).toEqual([]);
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
   // Bench defect 010 (2026-09-13, team-lead evidence): "the same robot
   // appears twice" -- `tovez` id 2665 (`owned: 1`, `usb_serial:
   // "SERIAL-A"`, the known-robots.json import placeholder) stayed a

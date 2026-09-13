@@ -1,7 +1,7 @@
 ---
 id: '004'
 title: SWD naming never overwrites a known relay's kind
-status: open
+status: in-progress
 use-cases:
 - SUC-002
 depends-on:
@@ -36,14 +36,14 @@ honor it for `kind`.
 
 ## Acceptance Criteria
 
-- [ ] `usbWatcher.ts`'s SWD read no longer writes `kind: "robot"`
+- [x] `usbWatcher.ts`'s SWD read no longer writes `kind: "robot"`
       unconditionally; it omits `kind` on first-seen boards and never
       overwrites an existing `kind` on a subsequent read.
-- [ ] Only the connector's identify step (banner/ID reply) sets or
+- [x] Only the connector's identify step (banner/ID reply) sets or
       changes a device's `kind`.
-- [ ] Unit test: a device row seeded with `kind: "relay"` survives a
+- [x] Unit test: a device row seeded with `kind: "relay"` survives a
       fresh `usbWatcher` SWD read with `kind` unchanged.
-- [ ] Unit test: a brand-new device (no prior row) gets a row with no
+- [x] Unit test: a brand-new device (no prior row) gets a row with no
       `kind` asserted by the watcher alone.
 - [ ] **Harness command and evidence**: `scripts/bench/run.sh --report
       /tmp/bench-report.md` run against the real bench with a
@@ -53,6 +53,63 @@ honor it for `kind`.
       USB path passing Layer 2 (the "no relay has `kind: robot`"
       card-truthfulness assertion from ticket 002) and Layer 3 (the card
       renders it as a relay, Connect reaches Linked, `ID` answers).
+      **Partially met, not checked off** — see "Evidence gathered" note
+      below: the seeded-DB reproduction and the `no-relay-as-robot`
+      truthfulness assertion both directly confirm the fix on live
+      hardware, but a full Layer 2+Layer 3 *pass* for `vitut`/usb could
+      not be captured this session because the stakeholder's own
+      `npm run dev` (pid 82496) intermittently locks the same physical
+      USB serial ports this harness needs exclusive access to (see
+      `dev-server-holds-usb-ports` project memory) — a pre-existing
+      environment condition, not a regression from this ticket's fix.
+      Re-running `scripts/bench/run.sh` once that dev server is paused
+      should produce a clean pass row.
+
+### Evidence gathered (2026-09-13)
+
+- **Root cause confirmed**: `usbWatcher.ts` (~line 230, pre-fix) called
+  `store.upsertDevice({ …, kind: "robot", … })` unconditionally on every
+  successful SWD chip-ID read; `upsertDevice`'s `ON CONFLICT` clause
+  unconditionally overwrote `kind`. A chip-ID read cannot itself
+  distinguish a robot from a relay (both expose the same SWD/DAP
+  interface), so this silently downgraded any already-known relay the
+  next time its board was seen over USB.
+- **Seeded reproduction** (copies only — the real state dir was never
+  opened for writing): copied the stakeholder's real
+  `~/.local/state/robot-console/console.sqlite` (+`-wal`/`-shm`) into
+  scratch. `vevav` (id `536019796`) was confirmed `kind: "robot"`,
+  `role: "RADIOBRIDGE"` — the exact live bug. Starting this branch's
+  host against that copy (vevav attached at `/dev/cu.usbmodem2121402`)
+  left `vevav`'s `kind` at `"robot"` (never corrected — its identify
+  never got a banner; it appears parked in the data plane, consistent
+  with `fail_count` climbing 195→196 across the run). Forcing `kind` to
+  `"relay"` directly in the scratch copy (simulating "already correctly
+  identified") and restarting the host produced a fresh SWD read (the
+  link transitioned to `connectable`) with `kind` still `"relay"`
+  afterward — direct proof the fix holds: the old code would have
+  reasserted `"robot"` here.
+- **Harness runs**: `scripts/bench/run.sh --skip-held --audit-db
+  <scratch copy of the real db> --report bench-report-004.md`, several
+  times. Every single run's `no-relay-as-robot` truthfulness assertion
+  for `vitut` passed (`kind ("relay") is consistent with role
+  ("RADIOBRIDGE")`), and Layer 1 independently classified `vitut` as
+  `relay` via its own banner read every time — the store-level fix held
+  under repeated live SWD reads throughout. The harness's own relay
+  probe verb fix (018-004 Step 0) was also directly observed engaging
+  correctly live: one intermediate run reached `vitut`'s usb link
+  `"connected"` and then correctly sent `?` (not `ID`), reporting
+  `no "line" rx matching "# channel:" (relay status reply)` when the
+  physical relay didn't answer within the bound — proving the verb
+  selection and expected-reply logic are correct; only the live
+  hardware round trip itself was intermittently blocked by USB port
+  contention with pid 82496.
+- Initially implemented the relay probe verb as a second `HELLO`; live
+  bench evidence showed a relay does not reliably repeat its full
+  banner once already `connected` (the connector's own identify already
+  consumed the first one), so the harness fix was corrected mid-session
+  to send `?` and match `# channel: ...` instead — matching
+  `layer1/usbProbe.ts`'s own already-proven "banner via HELLO, confirm
+  via `?`" sequence for this exact hardware.
 
 ## Implementation Plan
 

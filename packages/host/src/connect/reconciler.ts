@@ -206,13 +206,19 @@ export function plan(rows: ReconcilerRows, now: number): Job[] {
     // Ticket 016-001: once a device's kind is known to be `relay`, its own
     // usb link is never an automatic-pass candidate again -- architecture.md
     // §7.2 ("no auto-opened console session on a relay any more"). A
-    // freshly-enumerated, not-yet-identified board has no way to be
-    // `kind === 'relay'` yet (`watchers/usbWatcher.ts`'s SWD-naming step
-    // seeds it `kind: 'robot'` as a provisional guess, before this device's
-    // first real identify ever runs), so this guard never blocks that
-    // one-time first identify -- only every *subsequent* automatic pass
-    // once `connect/connector.ts`'s own identify has corrected `kind` to
-    // `'relay'`.
+    // freshly-enumerated, not-yet-identified board is never `kind ===
+    // 'relay'` yet either way (018-004: `watchers/usbWatcher.ts`'s
+    // SWD-naming step now omits `kind` entirely rather than seeding a
+    // provisional `'robot'` guess -- a chip id read cannot itself tell a
+    // robot from a relay apart -- so a brand-new row instead gets the
+    // store's own required-column default, still never `'relay'`), so
+    // this guard never blocks that one-time first identify -- only every
+    // *subsequent* automatic pass once `connect/connector.ts`'s own
+    // identify has corrected `kind` to `'relay'` (or a device already
+    // known as a relay from an earlier identify/mDNS discovery, whose
+    // `kind` this guard now correctly keeps blocking forever, since
+    // `usbWatcher.ts`'s own SWD reads can no longer clobber it back to
+    // `'robot'` on a later USB replug -- the exact bug this ticket fixes).
     if (device.kind === "relay") {
       continue;
     }

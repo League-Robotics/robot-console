@@ -1,9 +1,9 @@
 ---
-status: in-progress
+status: done
 sprint: '017'
 tickets:
-- 017-003
-- 017-004
+- '003'
+- '004'
 ---
 
 # Flash and SWD naming: timeouts on every DAPLink/HID call, platform-aware MSD fallback, board-owner exclusivity

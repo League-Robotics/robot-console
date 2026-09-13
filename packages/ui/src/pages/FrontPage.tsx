@@ -337,10 +337,11 @@ function ArrowIcon({ direction }: { direction: "forward" | "back" }) {
 
 /** One device's card. Nothing in the informational region navigates:
  * the only way into a link's page is an open-arrow button (the card's
- * primary link on the right; every other link gets its own small arrow
- * in the Connections list), each a real `Link`. A relay device
- * additionally carries the robot picker + Connect/Switch/Disconnect
- * (`RelayConnectControls`, ticket 017-007 -- shared with `RelayPage.tsx`).
+ * primary link on the right; every other *usable* link gets its own
+ * small arrow in the Connections list), each a real `Link`. A relay
+ * device additionally carries the robot picker + Connect/Switch/
+ * Disconnect (`RelayConnectControls`, ticket 017-007 -- shared with
+ * `RelayPage.tsx`).
  *
  * **Extended scope (team-lead, 2026-09-13), item B**: when
  * `primaryLinkFor` finds no usable link for a non-relay device, this
@@ -352,7 +353,22 @@ function ArrowIcon({ direction }: { direction: "forward" | "back" }) {
  * plus a Connect button for any link whose state is one a session could
  * plausibly be opened from ({@link CONNECT_BUTTON_STATES}) -- gated by
  * `sendable` (this card's own `useSendable()`, threaded down as a plain
- * prop like every other send-capable control on this page). */
+ * prop like every other send-capable control on this page).
+ *
+ * **Ticket 017-010 fix (team-lead bench walk, 2026-09-13)**: the
+ * per-link arrow's condition was `primary && link !== primary`, which
+ * rendered an arrow into *any* non-primary link regardless of that
+ * link's own usability -- e.g. a `gopiv` WiFi row showing `Not linked`
+ * still got an arrow, because the card's mbserial link was primary and
+ * the WiFi link merely wasn't it. The arrow now requires
+ * `isLinkUsable(link)` directly, not just "isn't the primary". Likewise
+ * the per-link Connect button was gated `!primary && CONNECT_BUTTON_
+ * STATES.has(link.state)`, which hid Connect on a connectable link the
+ * moment *any other* link on the card became primary -- exactly the
+ * gopiv row, which had a usable mbserial primary and so was denied a
+ * Connect button on its own separately-connectable WiFi link. Connect
+ * is now offered on every link whose own state qualifies, independent
+ * of whether some other link on the card is primary. */
 function DeviceCard({
   device,
   devices,
@@ -415,7 +431,7 @@ function DeviceCard({
                     {lastCheckedText(device, link)}
                   </span>
                 )}
-                {primary && link !== primary && (
+                {isLinkUsable(link) && link !== primary && (
                   <Link
                     to={`/d/${link.id}`}
                     className="device-connection-open-button"
@@ -425,7 +441,7 @@ function DeviceCard({
                     <ArrowIcon direction="forward" />
                   </Link>
                 )}
-                {!primary && CONNECT_BUTTON_STATES.has(link.state) && (
+                {CONNECT_BUTTON_STATES.has(link.state) && (
                   <button
                     type="button"
                     className="device-connection-connect-button"

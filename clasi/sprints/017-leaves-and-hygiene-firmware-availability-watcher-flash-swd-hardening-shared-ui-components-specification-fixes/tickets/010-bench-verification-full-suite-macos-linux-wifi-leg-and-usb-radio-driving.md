@@ -599,3 +599,89 @@ the WiFi leg both remain blocked on physical/network conditions outside
 this pass's fix authority. This pass did not touch USB cables, RF
 range, or the classroom AP -- it fixed what the UI *shows and enables*
 given whatever the real link state honestly is.
+
+### After arrow fix (2026-09-13 addendum, ticket 017-010 programmer pass)
+
+A second live defect surfaced from the team-lead's own Chromium walk
+against this same running host, after the item-B fix above: a device
+card with a usable primary link still rendered a per-link open arrow
+(`data-testid="device-link-open-<id>"`) on a *different* link whose own
+state was not usable -- live example, `gopiv`'s `WiFi ·
+gopiv.local:7654 · Not linked` row had an arrow into `/d/wifi-gopiv`,
+and that same row showed no Connect button (the stakeholder: "How is it
+letting me go into it if it's not connected?"). Root cause:
+`FrontPage.tsx`'s per-link arrow condition was `primary && link !==
+primary` -- "isn't the primary" was standing in for "is usable", which
+only happened to hold when a card had no primary at all (item B's
+case). The per-link Connect button had the mirror-image bug: gated
+`!primary && CONNECT_BUTTON_STATES.has(link.state)`, so a connectable
+link lost its Connect button the moment any *other* link on the same
+card became primary -- exactly `gopiv`'s WiFi row.
+
+**Fix**: the arrow condition is now `isLinkUsable(link) && link !==
+primary`; the Connect button condition dropped the `!primary` gate
+entirely, keeping only `CONNECT_BUTTON_STATES.has(link.state)` (still
+`disabled={!sendable}`, still sends `{type: "session-open", linkId}`
+via `onLinkConnect`). Relay cards untouched.
+
+**Tests**: `FrontPage.test.tsx`'s multi-link-device case (previously
+asserting the buggy arrow-into-a-non-usable-link behavior as if it were
+correct) rewritten to assert the fixed behavior -- no arrow into the
+non-usable `wifi-vevov` row, only a `device-link-connect-wifi-vevov`
+button that sends `session-open` for that link's own id, alongside the
+already-correct card arrow into the usable `usb-vevov` primary. A new
+case covers two usable links on one card: the card arrow to the
+primary plus exactly one row arrow to the second usable link. `npx
+vitest run packages/ui` -- 40 files, 547 tests, all passing.
+`npm run typecheck` and `npm run build -w @robot-console/ui` (both
+`tsc --noEmit` and `vite build`) clean.
+
+**Browser walk (after arrow fix)**: same live host (PID 24881, port
+4797, `packages/ui/dist` rebuilt via `vite build` then reloaded --
+host process itself left untouched), `team-lead-walk2.mjs` re-run
+against it:
+
+```
+ARROWS [
+ {
+  "tid": "device-open--102049995",
+  "href": "/d/mbrelay-torture",
+  "card": "torture",
+  "row": "(card arrow)"
+ },
+ {
+  "tid": "device-open-1198504156",
+  "href": "/d/mbserial-vevov",
+  "card": "vevov",
+  "row": "(card arrow)"
+ },
+ {
+  "tid": "device-open-2175407711",
+  "href": "/d/mbserial-gopiv",
+  "card": "gopiv",
+  "row": "(card arrow)"
+ },
+ {
+  "tid": "device-open-3527777815",
+  "href": "/d/mbserial-tigez",
+  "card": "tigez",
+  "row": "(card arrow)"
+ }
+]
+PAGE {"card":"torture","row":"(card arrow)","href":"/d/mbrelay-torture","header":"robot-console Flash mbrelay · ch?/grp?No open session on this linkConnect","enabledSendControls":0,"linked":false,"reply":"n/a","violation":false}
+PAGE {"card":"vevov","row":"(card arrow)","href":"/d/mbserial-vevov","header":"robot-console Set Radio Set Wi-Fi Flash mbserial · hodr.local:36237Linked","enabledSendControls":5,"linked":true,"reply":"id diffdrive calibration-0.20260913.1 1.20260912.8 vevov","violation":false}
+PAGE {"card":"gopiv","row":"(card arrow)","href":"/d/mbserial-gopiv","header":"robot-console Set Radio Set Wi-Fi Flash mbserial · loki.local:40293Linked","enabledSendControls":5,"linked":true,"reply":"id diffdrive calibration-0.20260913.1 1.20260912.8 gopiv","violation":false}
+PAGE {"card":"tigez","row":"(card arrow)","href":"/d/mbserial-tigez","header":"robot-console Set Radio Set Wi-Fi Flash mbserial · magni.local:43837Linked","enabledSendControls":5,"linked":true,"reply":"id diffdrive unbaked 1.20260912.8 tigez","violation":false}
+PROBLEMS 0 CONSOLE_ERRORS []
+```
+
+Every card's only arrows are its own card arrow into its usable
+primary link (`torture`'s relay-carveout arrow included) -- zero
+`ARROWS` entries for any per-link row, in particular none for `gopiv`'s
+`Not linked` WiFi row (it now shows a Connect button only, not exercised
+here per instruction -- the robot's WiFi has not actually joined the
+classroom AP, so clicking it would just fail). `PROBLEMS 0`. The three
+usable robot pages (`vevov`/`gopiv`/`tigez`) each replied with a real
+`id diffdrive ...` line to a typed `ID` (never a motion verb);
+`torture`'s own relay page correctly showed no open session and no
+send controls, so no `ID` was sent there. No console errors.

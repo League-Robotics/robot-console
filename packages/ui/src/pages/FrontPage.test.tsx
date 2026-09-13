@@ -208,8 +208,20 @@ describe("multi-link device (host already groups links under one device)", () =>
     });
   }
 
-  it("lists every link, with the primary (open-session) link's open arrow on the card and a small row arrow for the rest", () => {
-    const el = mount(withRouter(<DevicesList status="open" devices={[multiLinkDevice()]} unassigned={[]} />));
+  // Ticket 017-010 (team-lead bench walk, 2026-09-13): this used to
+  // assert an open arrow *into the non-usable wifi link* -- exactly the
+  // bench complaint ("How is it letting me go into it if it's not
+  // connected?"). A per-link arrow now requires `isLinkUsable(link)`
+  // itself, not merely "isn't the primary", so the non-usable wifi row
+  // gets no arrow -- only a Connect button, since `failed` is in
+  // `CONNECT_BUTTON_STATES`.
+  it("gives only the usable (primary) link a card open arrow; the non-usable link gets a row Connect button, no arrow", () => {
+    const opens: string[] = [];
+    const el = mount(
+      withRouter(
+        <DevicesList status="open" devices={[multiLinkDevice()]} unassigned={[]} sendable={true} onLinkConnect={(linkId) => opens.push(linkId)} />,
+      ),
+    );
 
     expect(el.querySelectorAll("h3.device-name")).toHaveLength(1);
     expect(el.querySelector('[data-testid="device-open-1"]')?.getAttribute("href")).toBe("/d/usb-vevov");
@@ -219,12 +231,69 @@ describe("multi-link device (host already groups links under one device)", () =>
     const wifiRow = el.querySelector('[data-testid="device-link-wifi-vevov"]');
     expect(wifiRow?.textContent).toContain("WiFi · vevov.local:7654");
     expect(wifiRow?.textContent).toContain("Unreachable: could not reach vevov.local:7654");
-    expect(el.querySelector('[data-testid="device-link-open-wifi-vevov"]')?.getAttribute("href")).toBe("/d/wifi-vevov");
-    // The primary link gets no extra row arrow -- the card's own open
-    // arrow already leads there.
+
+    // No arrow anywhere except the card's own, into the usable link.
+    expect(el.querySelectorAll('[data-testid^="device-link-open-"]')).toHaveLength(0);
+    expect(el.querySelector('[data-testid="device-link-open-wifi-vevov"]')).toBeNull();
     expect(el.querySelector('[data-testid="device-link-open-usb-vevov"]')).toBeNull();
     expect(el.querySelector('[data-testid="device-link-usb-vevov"]')?.textContent).toContain("Linked");
     expect(el.querySelectorAll("a a")).toHaveLength(0);
+
+    // The non-usable wifi link is still `failed`, one of
+    // `CONNECT_BUTTON_STATES`, so it gets a Connect button that sends
+    // session-open for its own link id -- regardless of the card
+    // already having a usable primary link on usb-vevov.
+    const connect = el.querySelector<HTMLButtonElement>('[data-testid="device-link-connect-wifi-vevov"]');
+    expect(connect).not.toBeNull();
+    expect(connect!.disabled).toBe(false);
+    act(() => {
+      connect!.click();
+    });
+    expect(opens).toEqual(["wifi-vevov"]);
+
+    // The usable primary link itself gets no Connect button: "connected"
+    // is not in CONNECT_BUTTON_STATES.
+    expect(el.querySelector('[data-testid="device-link-connect-usb-vevov"]')).toBeNull();
+  });
+
+  it("gives every usable link its own row arrow when a card has two usable links, plus the card's own arrow to the primary", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              name: "vevov",
+              links: [
+                link("usb-vevov", {
+                  state: "connected",
+                  session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+                }),
+                link("wifi-vevov", {
+                  transport: "wifi",
+                  label: "WiFi · vevov.local:7654",
+                  state: "connected",
+                  session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+                }),
+              ],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
+
+    // Primary is the first usable link (usb-vevov) -- the card's own
+    // arrow leads there, and it gets no extra row arrow.
+    expect(el.querySelector('[data-testid="device-open-1"]')?.getAttribute("href")).toBe("/d/usb-vevov");
+    expect(el.querySelector('[data-testid="device-link-open-usb-vevov"]')).toBeNull();
+
+    // The second usable link is not the primary, so it gets its own
+    // small row arrow.
+    expect(el.querySelector('[data-testid="device-link-open-wifi-vevov"]')?.getAttribute("href")).toBe("/d/wifi-vevov");
+
+    // Exactly one card arrow + one row arrow across the whole card.
+    expect(el.querySelectorAll('[data-testid^="device-link-open-"], [data-testid^="device-open-"]')).toHaveLength(2);
   });
 });
 

@@ -41,6 +41,51 @@
  * above) — flagged here for whoever wires the relay sweeper (a future
  * ticket) to confirm against real hardware.
  *
+ * ## 018-008: falling through past an ineligible higher-priority link
+ *
+ * Bench defect 5 (sprint.md; issue
+ * `bench-mbserial-single-client-and-retry.md`): a `failed` `mbserial`
+ * link on an owned robot was observed never retrying at all, even past
+ * its own `next_retry_at`. The cause was not the backoff math (already
+ * correct — `connector.ts`'s `recordFailure`, unchanged by this ticket)
+ * but {@link plan}'s own per-device candidate selection: before this
+ * ticket, it picked the single *first-existing* link in
+ * {@link AUTO_CONNECT_TRANSPORTS} preference order and tested
+ * eligibility only on that one link, never falling through to a
+ * lower-priority transport if the top one turned out ineligible. A
+ * robot reachable both by `wifi` and `mbserial` (every farm bridge this
+ * ticket hardens rides exactly this shape — `gopiv`/`tigez`/`vevov` each
+ * have both a `wifi` and an `mbserial` link) whose `wifi` link sat in
+ * some non-actionable state (`discovered`, `unresponsive`, `stale` —
+ * anything short of `connectable` or a backoff-elapsed `failed`) starved
+ * its own `mbserial` link forever: `wifi` was always `preferred` by
+ * order, was never itself eligible, and nothing ever fell through to
+ * try `mbserial` instead, no matter how long `mbserial`'s own backoff
+ * had elapsed.
+ *
+ * **The rule this ticket implements** (deciding against the
+ * alternative of letting a device open a *second*, simultaneous
+ * network link alongside one it already has connected):
+ *
+ * - A device with **no connected link** (the existing
+ *   {@link deviceHasActiveLink} gate, unchanged) walks
+ *   {@link AUTO_CONNECT_TRANSPORTS} in order and retries the first link
+ *   that is actually eligible right now (`connectable`, or `failed`
+ *   with its backoff elapsed) — falling through past a higher-priority
+ *   link that exists but is not currently actionable, rather than
+ *   giving up the moment the top-preference transport turns out not to
+ *   be ready.
+ * - A device that **already has a connected link** never opens a
+ *   second one automatically — {@link deviceHasActiveLink} still skips
+ *   the whole device before any per-transport selection runs, exactly
+ *   as before this ticket.
+ *
+ * This keeps architecture.md §8 rule 1's "preferred link order" intact
+ * for the common case (two equally-eligible links still resolve to the
+ * higher-priority one — `connector.test.ts`'s/`reconciler.test.ts`'s own
+ * "usb and wifi both connectable" case is unchanged) while fixing the
+ * specific starvation this ticket's bench evidence found.
+ *
  * ## Finding a relay's current child without relying on `relay_leases`
  * alone
  *
@@ -227,18 +272,21 @@ export function plan(rows: ReconcilerRows, now: number): Job[] {
       continue;
     }
 
-    let preferred: ReconcilerLinkRow | undefined;
+    // 018-008: walk the preference order for the first link that is
+    // actually *eligible* right now, not merely the first one that
+    // *exists* -- see this module's own doc comment, "018-008: falling
+    // through past an ineligible higher-priority link", for the bug this
+    // fixes and the rule this implements.
+    let candidate: ReconcilerLinkRow | undefined;
     for (const transport of AUTO_CONNECT_TRANSPORTS) {
-      preferred = links.find((link) => link.transport === transport);
-      if (preferred) {
+      const link = links.find((candidateLink) => candidateLink.transport === transport);
+      if (link && isAutoConnectEligible(link, device, now)) {
+        candidate = link;
         break;
       }
     }
-    if (!preferred) {
-      continue;
-    }
-    if (isAutoConnectEligible(preferred, device, now)) {
-      jobs.push({ kind: "connect", linkId: preferred.id });
+    if (candidate) {
+      jobs.push({ kind: "connect", linkId: candidate.id });
     }
   }
 

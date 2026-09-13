@@ -812,6 +812,129 @@ describe("connectAndIdentify -- failure path", () => {
   });
 
   // -------------------------------------------------------------------
+  // 018-008: mbserial/WiFi bridge contention -- `ERR busy` (or a bare
+  // close/reset with no banner and no busy text at all) recognized as
+  // "another app is connected to this bridge", never the generic
+  // "produced no banner" this ticket's own bench evidence found
+  // (`mbserial-gopiv` "failed ... produced no banner", fail_count 1, no
+  // retry -- evidenced live while another host process was still
+  // connected).
+  // -------------------------------------------------------------------
+
+  /** A `FakeByteStream` that answers `HELLO` with a raw `ERR busy` line
+   * instead of a banner -- the farm bridge's own reply text (raw
+   * evidence: "a second client to loki gets ERR busy then a reset"). */
+  class BusyByteStream extends FakeByteStream {
+    override write(bytes: string, callback: (err?: Error | null) => void): void {
+      super.write(bytes, callback);
+      if (bytes.startsWith("HELLO")) {
+        this.emitData("ERR busy\n");
+      }
+    }
+  }
+
+  it("mbserial: ERR busy then a reset records contention, never 'no banner' (fixture transcript ending in ERR busy)", async () => {
+    const store = freshStore();
+    const stream = new BusyByteStream();
+    const connector = createConnector(store, baseDeps(stream), { identifyBudgetMs: 50 });
+    const link = mbserialLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await flush();
+    // The bridge resets the connection right after `ERR busy` -- the
+    // live-bench shape this ticket's own bench facts describe.
+    stream.emitClose();
+
+    await expect(promise).rejects.toThrow(/another app is connected to this bridge/);
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("failed");
+    expect(linkRow?.state_reason).toBe("another app is connected to this bridge");
+    store.close();
+  });
+
+  it("wifi: the same ERR busy + reset shape is recognized as contention too (a WiFi robot's own single listener can be held the same way)", async () => {
+    const store = freshStore();
+    const stream = new BusyByteStream();
+    const connector = createConnector(store, baseDeps(stream), { identifyBudgetMs: 50 });
+    const link = wifiLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await flush();
+    stream.emitClose();
+
+    await expect(promise).rejects.toThrow(/another app is connected to this bridge/);
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state_reason).toBe("another app is connected to this bridge");
+    store.close();
+  });
+
+  it("mbserial: a close/reset immediately after connect with no banner and no ERR busy text at all still records contention", async () => {
+    const store = freshStore();
+    const stream = new FakeByteStream(); // never answers HELLO, never prints ERR busy
+    const connector = createConnector(store, baseDeps(stream), { identifyBudgetMs: 50 });
+    const link = mbserialLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await flush();
+    stream.emitClose();
+
+    await expect(promise).rejects.toThrow(/another app is connected to this bridge/);
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state_reason).toBe("another app is connected to this bridge");
+    store.close();
+  });
+
+  it("mbserial: a genuine no-banner timeout with the connection still open (no close, no busy line) stays 'no banner', not contention -- tigez via magni's own live-bench shape", async () => {
+    const store = freshStore();
+    const stream = new FakeByteStream(); // never answers HELLO, never closes
+    const connector = createConnector(store, baseDeps(stream), { identifyBudgetMs: 20 });
+    const link = mbserialLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    // The identify budget's own internal timer fires on its own -- the
+    // stream never closes, mirroring tigez via magni: ~3000ms of silence
+    // with the TCP connection still open the entire time, confirmed live
+    // by this ticket's own dispatch (pid 82496 held no connection to
+    // magni's bridge port at all -- an environment fact, not contention).
+    // `expect(...).rejects` itself awaits `promise`, however long that
+    // takes -- no separate timer wait racing it (which would otherwise
+    // let the rejection settle before anything is listening for it).
+    await expect(promise).rejects.toThrow(/produced no banner/i);
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state_reason).not.toMatch(/another app is connected/);
+    store.close();
+  });
+
+  it("usb identify-time closes stay 'no banner' -- usb is out of scope for contention detection (regression guard)", async () => {
+    const store = freshStore();
+    const stream = new FakeByteStream();
+    const connector = createConnector(store, baseDeps(stream), { identifyBudgetMs: 50 });
+    const link = usbLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await flush();
+    stream.emitClose();
+
+    await expect(promise).rejects.toThrow(/produced no banner/i);
+    store.close();
+  });
+
+  // -------------------------------------------------------------------
   // Item E (team-lead, 2026-09-13): bench defect -- a bad USB
   // cable/connector produced a corrupted serial banner that got upserted
   // as a brand-new device with owned=true and no cross-check at all

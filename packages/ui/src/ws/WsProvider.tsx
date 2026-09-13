@@ -1014,6 +1014,23 @@ function useStore(): Store {
   return store;
 }
 
+/** Whether a `WsProvider` ancestor is mounted, without the hard throw
+ * every other hook in this module uses via {@link useStore} -- ticket
+ * 018-015's `FlashDialog` gate: `FrontPage.tsx`'s `DeviceCard` mounts
+ * `FlashDialog` (which does call `useFlashProgress`/`useSendable`,
+ * hence `useStore`, unconditionally) for any device with a current usb
+ * link, and most `DeviceCard`-focused tests deliberately mount
+ * `DevicesList` standalone with no `WsProvider` in the tree (this
+ * file's own doc comment on `sendable`/`linkNotices`, "matching how
+ * `onRelayConnect` etc. already reach them"). Gating the new
+ * `FlashDialog` mount on this lets those tests go on doing that: no
+ * usable Flash trigger without a real host connection would make sense
+ * anyway, and the real app (`main.tsx`) always has a `WsProvider`
+ * ancestor, so this is never false there. */
+export function useHasWsStore(): boolean {
+  return useContext(StoreContext) !== undefined;
+}
+
 export function useConnectionStatus(): ConnectionStatus {
   const store = useStore();
   return useSyncExternalStore(store.subscribe, () => store.status);

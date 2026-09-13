@@ -106,6 +106,16 @@ function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
 // function itself, out of this module's former local copy). Not
 // re-tested here.
 
+/** The lightning Flash trigger inside a card (ticket 018-015) -- an
+ * icon-only button now, so it's found by its accessible name ("Flash
+ * <name>") rather than by visible text, unlike `FlashDialog`'s default
+ * text trigger (`AppHeader.test.tsx`'s own `flashTrigger` helper, which
+ * still matches on `textContent === "Flash"` for its own, un-iconified,
+ * call site). */
+function findFlashTrigger(container: Element): HTMLButtonElement | undefined {
+  return Array.from(container.querySelectorAll("button")).find((b) => b.getAttribute("aria-label")?.startsWith("Flash")) ?? undefined;
+}
+
 describe("DevicesList", () => {
   it("renders a device card with name, role, and its one connection", () => {
     const el = mount(
@@ -520,6 +530,122 @@ describe("extended scope (team-lead, 2026-09-13), item B: a card with no usable 
   });
 });
 
+describe("front-page lightning Flash button (ticket 018-015)", () => {
+  it("shows a lightning Flash trigger, with an accessible 'Flash <name>' label, on a device card with a current usb link", () => {
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
+          <DevicesList status="open" devices={[device(1, { name: "zeguz" })]} unassigned={[]} />
+        </WsProvider>,
+      ),
+    );
+    const card = el.querySelector('[data-testid="device-card-1"]')!;
+    const flashTrigger = findFlashTrigger(card);
+    expect(flashTrigger).toBeDefined();
+    expect(flashTrigger!.getAttribute("aria-label")).toBe("Flash zeguz");
+    // Icon-only -- no visible "Flash" text.
+    expect(flashTrigger!.textContent).toBe("");
+  });
+
+  it("shows no lightning Flash trigger when the device has no usb link at all", () => {
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
+          <DevicesList
+            status="open"
+            devices={[device(1, { name: "zeguz", links: [link("radio-1", { transport: "radio", state: "connected" })] })]}
+            unassigned={[]}
+          />
+        </WsProvider>,
+      ),
+    );
+    const card = el.querySelector('[data-testid="device-card-1"]')!;
+    expect(findFlashTrigger(card)).toBeUndefined();
+  });
+
+  it("shows no lightning Flash trigger when the device's only usb link has gone stale", () => {
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
+          <DevicesList status="open" devices={[device(1, { name: "zeguz", links: [link("usb-1", { state: "stale" })] })]} unassigned={[]} />
+        </WsProvider>,
+      ),
+    );
+    const card = el.querySelector('[data-testid="device-card-1"]')!;
+    expect(findFlashTrigger(card)).toBeUndefined();
+  });
+
+  it("does not shift the open arrow, and reserves no empty flash slot, on a card with no usb link", () => {
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
+          <DevicesList
+            status="open"
+            devices={[
+              device(1, {
+                name: "zeguz",
+                links: [
+                  link("wifi-1", {
+                    transport: "wifi",
+                    state: "connected",
+                    session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+                  }),
+                ],
+              }),
+            ]}
+            unassigned={[]}
+          />
+        </WsProvider>,
+      ),
+    );
+    const card = el.querySelector('[data-testid="device-card-1"]')!;
+    expect(card.querySelector('[data-testid="device-open-1"]')).not.toBeNull();
+    expect(findFlashTrigger(card)).toBeUndefined();
+  });
+
+  it("clicking the lightning trigger opens the flash modal offering relay firmware, robot/calibration firmware, and a local .hex upload", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <DevicesList status="open" devices={[device(1, { name: "zeguz" })]} unassigned={[]} />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    const card = el.querySelector('[data-testid="device-card-1"]')!;
+    const flashTrigger = findFlashTrigger(card)!;
+    act(() => {
+      flashTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const text = el.textContent ?? "";
+    expect(text).toContain("Flash zeguz");
+    expect(text).toContain("Flash relay firmware");
+    expect(text).toContain("Flash robot firmware");
+    expect(text).toContain("Flash a hex file from disk");
+  });
+
+  it("gives the unassigned-board card's Flash trigger the same lightning-icon treatment as a device card's", () => {
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
+          <DevicesList
+            status="open"
+            devices={[]}
+            unassigned={[link("usb-unknown-1", { state: "discovered", label: "USB · /dev/tty.usbmodem-unknown" })]}
+          />
+        </WsProvider>,
+      ),
+    );
+    const card = el.querySelector('[data-testid="unassigned-card-usb-unknown-1"]')!;
+    const flashTrigger = findFlashTrigger(card);
+    expect(flashTrigger).toBeDefined();
+    expect(flashTrigger!.getAttribute("aria-label")).toBe("Flash USB · /dev/tty.usbmodem-unknown");
+  });
+});
+
 describe("bench defect 010 addendum (2026-09-13): a refused/failed Connect shows the host's notice on the row", () => {
   // `DevicesList` on its own has no `linkNotices` to read (it takes no
   // `WsProvider`-dependent hook of its own -- `DeviceConnectionRow`'s own
@@ -636,7 +762,7 @@ describe("unassigned USB boards (acceptance: un-owned WiFi absent, unassigned pr
     expect(el.querySelector('[data-testid="unassigned-open-usb-unknown-1"]')?.getAttribute("href")).toBe("/d/usb-unknown-1");
   });
 
-  it("restores the Flash trigger on an unassigned board's card (sprint 015 ticket 008)", () => {
+  it("restores the Flash trigger on an unassigned board's card (sprint 015 ticket 008), now a lightning icon (ticket 018-015)", () => {
     const el = mount(
       withRouter(
         <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
@@ -649,8 +775,12 @@ describe("unassigned USB boards (acceptance: un-owned WiFi absent, unassigned pr
       ),
     );
     const card = el.querySelector('[data-testid="unassigned-card-usb-unknown-1"]')!;
-    const flashTrigger = Array.from(card.querySelectorAll("button")).find((b) => b.textContent === "Flash");
+    const flashTrigger = findFlashTrigger(card);
     expect(flashTrigger).toBeDefined();
+    // Ticket 018-015: the trigger is icon-only now -- no visible "Flash"
+    // text -- so its accessible name is what a screen reader (and this
+    // test) has to go on.
+    expect(flashTrigger!.textContent).toBe("");
   });
 
   it("offers no Flash trigger for an unassigned board whose link capabilities say flash is unavailable", () => {
@@ -672,8 +802,7 @@ describe("unassigned USB boards (acceptance: un-owned WiFi absent, unassigned pr
       ),
     );
     const card = el.querySelector('[data-testid="unassigned-card-usb-unknown-1"]')!;
-    const flashTrigger = Array.from(card.querySelectorAll("button")).find((b) => b.textContent === "Flash");
-    expect(flashTrigger).toBeUndefined();
+    expect(findFlashTrigger(card)).toBeUndefined();
   });
 
   // Ticket 011 (carried from 009's send-gating sweep): the Flash trigger
@@ -697,7 +826,7 @@ describe("unassigned USB boards (acceptance: un-owned WiFi absent, unassigned pr
       socket!.emitOpen();
     });
     const card = el.querySelector('[data-testid="unassigned-card-usb-unknown-1"]')!;
-    const flashTrigger = Array.from(card.querySelectorAll("button")).find((b) => b.textContent === "Flash")!;
+    const flashTrigger = findFlashTrigger(card)!;
     expect(flashTrigger.disabled).toBe(false);
 
     act(() => {

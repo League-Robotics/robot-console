@@ -87,6 +87,7 @@ import type { ConnectionStatus, LinkNotice, PendingRadioMigration } from "../ws/
 import {
   useConnectionStatus,
   useDevices,
+  useHasWsStore,
   useLinkNotices,
   useRadioMigrationOffers,
   useRelays,
@@ -378,6 +379,35 @@ const CONNECT_BUTTON_STATES = new Set<SnapshotLink["state"]>([
 ]);
 
 
+/** A device's current (non-stale) usb link, if it has one -- the gate
+ * for the front-page lightning Flash trigger (ticket 018-015). A usb
+ * link's `capabilities.flash` is unconditionally true
+ * (`projection.ts`'s own comment, "a usb link can always be flashed
+ * (unchanged)"), so finding one here is sufficient to know
+ * `FlashDialog`'s own `canBeFlashed` gate will pass -- no need to
+ * duplicate that check here. */
+function currentUsbLink(device: SnapshotDevice): SnapshotLink | undefined {
+  return device.links.find((link) => link.transport === "usb" && link.state !== "stale");
+}
+
+/** A lightning-bolt glyph for the Flash trigger buttons -- inline SVG,
+ * `currentColor` stroke, matching `ArrowIcon`'s/`TransportIcon.tsx`'s
+ * own pattern so it needs no icon font. */
+function LightningIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+      <polygon
+        points="13 2 4 14 11 14 9 22 20 10 13 10 13 2"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 /** An arrow glyph for the open buttons -- inline SVG so it needs no
  * icon font and inherits `currentColor`. */
 function ArrowIcon({ direction }: { direction: "forward" | "back" }) {
@@ -463,6 +493,17 @@ function DeviceCard({
   const linked = device.links.some((link) => isLinkAnswering(link));
   const isRelay = device.kind === "relay";
   const isCalibration = isCalibrationProgram(device.program);
+  // Ticket 018-015: "Make the flash button pop up when the device is
+  // on USB ... the flash button shows below the open arrow; arrow in
+  // the upper corner, flash button lower right." Gated on the device's
+  // own current usb link (`currentUsbLink`), independent of `primary`
+  // -- a device can be flashable over usb while its primary/open arrow
+  // leads over a different transport (or not exist at all). Also
+  // gated on `useHasWsStore()` -- see that hook's own doc comment --
+  // so a `DeviceCard`-focused test with no `WsProvider` in the tree
+  // keeps working exactly as before.
+  const usbLink = currentUsbLink(device);
+  const hasWsStore = useHasWsStore();
 
   return (
     <div className="device-card" data-testid={`device-card-${device.id}`}>
@@ -505,16 +546,28 @@ function DeviceCard({
           </ul>
         </div>
 
-        {primary && (
-          <Link
-            to={`/d/${primary.id}`}
-            className="device-open-button"
-            aria-label={`Open ${device.name}`}
-            title={`Open ${device.name}`}
-            data-testid={`device-open-${device.id}`}
-          >
-            <ArrowIcon direction="forward" />
-          </Link>
+        {(primary || (usbLink && hasWsStore)) && (
+          <div className="device-card-side">
+            {primary && (
+              <Link
+                to={`/d/${primary.id}`}
+                className="device-open-button"
+                aria-label={`Open ${device.name}`}
+                title={`Open ${device.name}`}
+                data-testid={`device-open-${device.id}`}
+              >
+                <ArrowIcon direction="forward" />
+              </Link>
+            )}
+            {usbLink && hasWsStore && (
+              <FlashDialog
+                link={usbLink}
+                name={device.name}
+                triggerIcon={<LightningIcon />}
+                triggerClassName="device-flash-button"
+              />
+            )}
+          </div>
         )}
       </div>
 
@@ -746,7 +799,7 @@ function UnassignedCard({ link }: { link: SnapshotLink }) {
           <p className="device-connection-state" data-testid={`unassigned-status-${link.id}`}>
             {linkStateText(link)}
           </p>
-          <FlashDialog link={link} name={link.label} />
+          <FlashDialog link={link} name={link.label} triggerIcon={<LightningIcon />} triggerClassName="device-flash-button" />
         </div>
         <Link
           to={`/d/${link.id}`}

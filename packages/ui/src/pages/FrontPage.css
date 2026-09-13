@@ -113,6 +113,56 @@
   outline-offset: 2px;
 }
 
+/* Ticket 018-015: the open arrow and the lightning Flash trigger share
+   this column -- arrow at the top, Flash at the bottom
+   (`justify-content: space-between`), so a card with only one of the
+   two (or the arrow alone, the common case with no usb link) keeps that
+   one control in its original upper-right position instead of shifting
+   toward the middle: with a single flex item, `space-between` packs it
+   at the start, same as the old bare `.device-open-button` placement. */
+.device-card-side {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.device-flash-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  align-self: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid var(--rc-border);
+  border-radius: 999px;
+  background: var(--rc-surface);
+  color: var(--rc-accent);
+  cursor: pointer;
+  transition: border-color 0.1s ease, background 0.1s ease;
+}
+
+.device-flash-button:hover,
+.device-flash-button:focus-visible {
+  border-color: var(--rc-accent);
+  background: var(--rc-accent);
+  color: var(--rc-accent-contrast);
+}
+
+.device-flash-button:focus-visible {
+  outline: 2px solid var(--rc-accent);
+  outline-offset: 2px;
+}
+
+.device-flash-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 /* Ticket 017-007: the relay quick-connect card's own `.device-relay-*`
  * rules moved to `components/RelayConnectControls.css` (imported by
  * `RelayConnectControls.tsx`, which now owns this card's markup). */

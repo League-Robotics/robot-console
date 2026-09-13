@@ -2,7 +2,7 @@
 id: '017'
 title: 'Leaves and hygiene: firmware availability watcher, flash/SWD hardening, shared
   UI components, specification fixes'
-status: executing
+status: done
 branch: sprint/017-leaves-and-hygiene-firmware-availability-watcher-flash-swd-hardening-shared-ui-components-specification-fixes
 use-cases:
 - SUC-001

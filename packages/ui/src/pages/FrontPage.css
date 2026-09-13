@@ -436,3 +436,22 @@ a.device-chip-face {
   align-items: flex-start;
   gap: 0.3rem;
 }
+
+/* Stakeholder (2026-09-13): the home page lists things in groups --
+   Robots, Radio bridges, Not seen recently. */
+.devices-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.devices-group + .devices-group {
+  margin-top: 1.25rem;
+}
+
+.devices-group-heading {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--rc-text-muted);
+}

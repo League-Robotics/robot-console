@@ -296,6 +296,15 @@ describe("multi-link device (host already groups links under one device)", () =>
     expect(el.querySelector('[data-testid="device-role-1"]')?.textContent).toBe("Role unknown");
   });
 
+  it("stakeholder 2026-09-13: the home page groups robots first, then radio bridges", () => {
+    const relay = device(7, { name: "vitut", kind: "relay", role: "RADIOBRIDGE", links: [link("usb-vitut", { state: "connectable", transport: "usb" })] });
+    const el = mount(withRouter(<DevicesList status="open" devices={[relay, multiLinkDevice()]} unassigned={[]} />));
+    const groups = Array.from(el.querySelectorAll(".devices-group")).map((g) => g.getAttribute("data-testid"));
+    expect(groups).toEqual(["devices-group-robots", "devices-group-bridges"]);
+    expect(el.querySelector('[data-testid="devices-group-robots"] [data-testid="device-card-1"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="devices-group-bridges"] [data-testid="device-card-7"]')).not.toBeNull();
+  });
+
   it("gives only the usable (primary) link a card open arrow; the non-usable link gets a row Connect button, no arrow", () => {
     const opens: string[] = [];
     const el = mount(

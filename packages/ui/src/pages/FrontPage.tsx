@@ -271,6 +271,23 @@ export function DevicesList({
   linkNotices = EMPTY_LINK_NOTICES,
 }: DevicesListProps) {
   const empty = devices.length === 0 && unassigned.length === 0;
+  const robots = devices.filter((device) => device.kind !== "relay");
+  const bridges = devices.filter((device) => device.kind === "relay");
+  const renderCard = (device: SnapshotDevice) => (
+    <li key={device.id}>
+      <DeviceCard
+        device={device}
+        devices={devices}
+        relays={relays}
+        robotOptions={robotOptions}
+        onRelayConnect={onRelayConnect}
+        onRelayDisconnect={onRelayDisconnect}
+        onLinkConnect={onLinkConnect}
+        sendable={sendable}
+        linkNotices={linkNotices}
+      />
+    </li>
+  );
   return (
     <section className="front-page" aria-label="Devices">
       {status !== "open" && (
@@ -283,28 +300,31 @@ export function DevicesList({
       {empty ? (
         <p className="devices-empty">No devices detected yet. Plug a micro:bit into a USB port.</p>
       ) : (
-        <ul className="devices-list">
-          {devices.map((device) => (
-            <li key={device.id}>
-              <DeviceCard
-                device={device}
-                devices={devices}
-                relays={relays}
-                robotOptions={robotOptions}
-                onRelayConnect={onRelayConnect}
-                onRelayDisconnect={onRelayDisconnect}
-                onLinkConnect={onLinkConnect}
-                sendable={sendable}
-                linkNotices={linkNotices}
-              />
-            </li>
-          ))}
-          {unassigned.map((link) => (
-            <li key={link.id}>
-              <UnassignedCard link={link} />
-            </li>
-          ))}
-        </ul>
+        <>
+          {/* Stakeholder (2026-09-13): the home page lists things in
+              groups -- robots of any sort (however connected, plus
+              unidentified boards), then radio bridges, then not seen
+              recently. */}
+          {(robots.length > 0 || unassigned.length > 0) && (
+            <section className="devices-group" aria-label="Robots" data-testid="devices-group-robots">
+              <h2 className="devices-group-heading">Robots</h2>
+              <ul className="devices-list">
+                {robots.map(renderCard)}
+                {unassigned.map((link) => (
+                  <li key={link.id}>
+                    <UnassignedCard link={link} />
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+          {bridges.length > 0 && (
+            <section className="devices-group" aria-label="Radio bridges" data-testid="devices-group-bridges">
+              <h2 className="devices-group-heading">Radio bridges</h2>
+              <ul className="devices-list">{bridges.map(renderCard)}</ul>
+            </section>
+          )}
+        </>
       )}
       {notSeenRecently.length > 0 && (
         <NotSeenRecentlySection devices={notSeenRecently} onForget={onForgetDevice} />

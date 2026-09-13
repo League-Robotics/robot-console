@@ -154,11 +154,13 @@ function emitLine(socket: FakeSocket, line: string): void {
 }
 
 describe("RotationCalibrationWizard availability", () => {
-  it("shows an idle 'checking' message and disables Go before any FUNCS reply", () => {
+  it("stakeholder 2026-09-13: before any FUNCS reply the Calibrate A button is present and enabled (an unanswered FUNCS never blocks the run)", () => {
     const { el } = mountWizard(linkWithFunctions(undefined));
-    expect(el.querySelector('[data-testid="rotation-calibration-idle"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="rotation-calibration-idle"]')).toBeNull();
     expect(el.querySelector('[data-testid="rotation-calibration-unavailable"]')).toBeNull();
-    expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(true);
+    const go = el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!;
+    expect(go.textContent).toBe("Calibrate A");
+    expect(go.disabled).toBe(false);
   });
 
   it("shows the non-alarming unavailable message and keeps Go disabled when FUNCS answers without cala", () => {

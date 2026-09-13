@@ -252,7 +252,11 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
   const { sendCommand } = useWsActions();
   const log = useLinkLog(linkId);
   const functions = link.session?.functions ?? undefined;
-  const available = functions?.some((fn) => fn.name === "cala") ?? false;
+  // Stakeholder (2026-09-13): the button is always there. `FUNCS` only
+  // blocks it when the robot has answered and does NOT list `cala`;
+  // an unanswered FUNCS (the common case -- nothing auto-sends it)
+  // must not hold the run hostage.
+  const available = functions === undefined ? true : functions.some((fn) => fn.name === "cala");
 
   // OOP 2026-09-10: the run's window is anchored on the log entry *id*
   // minted at Go, not an array index. `useLinkLog` is a bounded ring
@@ -301,9 +305,9 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
 
   return (
     <section className="rotation-calibration-wizard" aria-label="Rotation calibration">
-      {functions === undefined && (
+      {!linkOpen && (
         <p className="rotation-calibration-hint" data-testid="rotation-calibration-idle" role="status">
-          Checking whether this robot supports calibration…
+          Not connected — open a link to this robot first.
         </p>
       )}
 
@@ -333,7 +337,7 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
         disabled={goDisabled}
         onClick={handleGo}
       >
-        Go
+        Calibrate A
       </button>
 
       {(run?.kind === "running" || run?.kind === "succeeded") && (

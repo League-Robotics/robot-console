@@ -182,7 +182,11 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
   const { sendCommand } = useWsActions();
   const log = useLinkLog(linkId);
   const functions = link.session?.functions ?? undefined;
-  const available = functions?.some((fn) => fn.name === "calx") ?? false;
+  // Stakeholder (2026-09-13): the button is always there. `FUNCS` only
+  // blocks it when the robot has answered and does NOT list `calx`;
+  // an unanswered FUNCS (the common case -- nothing auto-sends it)
+  // must not hold the run hostage.
+  const available = functions === undefined ? true : functions.some((fn) => fn.name === "calx");
 
   // OOP 2026-09-10: the run's window is anchored on the log entry *id*
   // minted at Go, not an array index. `useLinkLog` is a bounded ring
@@ -232,9 +236,9 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
 
   return (
     <section className="distance-calibration-wizard" aria-label="Distance calibration">
-      {functions === undefined && (
+      {!linkOpen && (
         <p className="distance-calibration-hint" data-testid="distance-calibration-idle" role="status">
-          Checking whether this robot supports calibration…
+          Not connected — open a link to this robot first.
         </p>
       )}
 
@@ -258,7 +262,7 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
         disabled={goDisabled}
         onClick={handleGo}
       >
-        Go
+        Calibrate X
       </button>
 
       {run?.kind === "running" && (

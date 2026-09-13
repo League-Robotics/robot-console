@@ -72,8 +72,9 @@
 
 .console-log {
   flex: 1;
-  min-height: 16rem;
-  max-height: 32rem;
+  /* Stakeholder (2026-09-13): the console never grows past the screen. */
+  min-height: 12rem;
+  max-height: calc(100vh - 22rem);
   overflow-y: auto;
   border: 1px solid var(--rc-border);
   background: var(--rc-surface);

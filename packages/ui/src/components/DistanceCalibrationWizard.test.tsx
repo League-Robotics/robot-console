@@ -111,11 +111,13 @@ function emitLine(socket: FakeSocket, line: string): void {
 }
 
 describe("DistanceCalibrationWizard availability", () => {
-  it("shows an idle 'checking' message and disables Go before any FUNCS reply", () => {
+  it("stakeholder 2026-09-13: before any FUNCS reply the Calibrate X button is present and enabled (an unanswered FUNCS never blocks the run)", () => {
     const { el } = mountWizard(linkWithFunctions(undefined));
-    expect(el.querySelector('[data-testid="distance-calibration-idle"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="distance-calibration-idle"]')).toBeNull();
     expect(el.querySelector('[data-testid="distance-calibration-unavailable"]')).toBeNull();
-    expect(el.querySelector<HTMLButtonElement>('[data-testid="distance-calibration-go"]')!.disabled).toBe(true);
+    const go = el.querySelector<HTMLButtonElement>('[data-testid="distance-calibration-go"]')!;
+    expect(go.textContent).toBe("Calibrate X");
+    expect(go.disabled).toBe(false);
   });
 
   it("shows the non-alarming unavailable message and keeps Go disabled when FUNCS answers without calx", () => {

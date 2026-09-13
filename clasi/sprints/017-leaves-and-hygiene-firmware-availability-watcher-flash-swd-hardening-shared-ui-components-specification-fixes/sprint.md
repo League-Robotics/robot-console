@@ -13,6 +13,7 @@ use-cases:
 - SUC-006
 - SUC-007
 - SUC-008
+- SUC-009
 issues:
 - rearch-13-firmware-availability-watcher-etag-backoff.md
 - rearch-14-flash-swd-timeouts-platform-msd-fallback.md
@@ -21,6 +22,7 @@ issues:
 - firmware-config-env-becomes-settings-importer.md
 - relay-names-outside-five-letter-grammar-get-no-device-row.md
 - placeholder-merge-for-non-usb-transports.md
+- robot-page-shows-active-connection.md
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
@@ -455,6 +457,46 @@ should not depend on that fact holding forever).
 `reopen_ticket`; its Description/Acceptance Criteria/Implementation Plan
 are rewritten below to include the `store/index.ts` change.
 
+**Revision (2026-09-12): SUC-009 — connection visibility in
+`AppHeader`.** New issue linked mid-sprint
+(`robot-page-shows-active-connection.md`, 2026-09-12 bench: a student
+cannot tell which connection the robot page is using, and the page must
+never present a connection it cannot use). UI-only addition, no change
+to the module boundaries Step 3 already describes: `AppHeader.tsx`
+(mounted once outside `RobotPage`'s route element, per its own doc
+comment) is extended to render the routed link's `connectionLabel(link)`
++ `linkStateText(link)` under the device name and, when `link.session`
+is undefined, a "No open session on this link" notice with a Connect
+action (`session-open`, gated by `useSendable`, mirroring
+`DeviceConsole.tsx`'s existing pattern) and, if a sibling link on the
+same device has an open session, a plain navigation link to it — no
+client-side auto-connect or switch policy, matching this sprint's
+existing rule that the client never re-implements host connection
+decisions. `connectionLabel` moves out of `FrontPage.tsx` (today a
+page-local function) into `deviceDisplay.ts`, alongside `linkStateText`
+(already moved there by ticket 017-007), so both pages read one shared
+definition — consistent with SUC-007's UI-dedupe goal, not a new
+duplication. `RobotPage.tsx` and everything it mounts are untouched: the
+transport text lives entirely in the header, preserving the
+transport-blindness property `RobotPage.transportBlind.test.ts` enforces
+on the page body. No new module, no new cross-module dependency, no
+data-model change — compact-scoped, single-module-family (UI) addition;
+scoped self-review below covers cohesion and boundary only, not the full
+five-category review.
+
+**Self-review (scoped, compact addition):** `AppHeader.tsx`'s added
+responsibility ("show the routed link's identity, state, and
+recovery/switch affordance") is a one-sentence, no-"and"-free extension
+of its existing "route-aware app header" purpose (it already renders
+per-link actions such as `FlashDialog`/`RadioAddressDialog`); it does
+not introduce a dependency `AppHeader.tsx` didn't already have
+(`useLink`, `useDeviceForLink`, `useSendable`, `useWsActions().send` are
+all pre-existing imports/hooks). `deviceDisplay.ts` gains one function
+(`connectionLabel`, relocated) with the same boundary its existing
+`linkStateText` already has (presentational, no side effects, no store
+access) — no silent cross-module dependency is introduced. Verdict:
+passed.
+
 ## Use Cases
 
 Substantial sprint; full use cases below, each parented to the closest
@@ -662,6 +704,41 @@ Parent: None — documentation correction, no behavior change
   - [ ] Spot-check against `docs/reviews/2026-09-11/05-protocol.md` §2's
         table passes.
 
+### SUC-009: A student always sees which connection the robot page is using and its state
+Parent: UC-018
+
+- **Actor**: Student
+- **Preconditions**: A device page (`/d/:linkId`) is open for a routed
+  link, whether or not the owning device has more than one link.
+- **Main Flow**:
+  1. `AppHeader` resolves the routed link (`useLink`) and renders, under
+     the device name, `connectionLabel(link)` (the host-built label,
+     relay-qualified when `via` is present) followed by
+     `linkStateText(link)`.
+  2. If `link.session` is undefined, the header instead shows "No open
+     session on this link" plus a Connect button, gated by
+     `useSendable`, that sends `{ type: "session-open", linkId: link.id }`.
+  3. If the owning device has another link with an open session, the
+     header additionally offers a "Use `<label>` instead" link to
+     `/d/<thatLinkId>` — plain navigation, no client-side connect/switch
+     policy.
+  4. The text updates live as the link's snapshot state changes (state
+     transition, session open/close).
+- **Postconditions**: A student can always tell, from the header alone,
+  which physical connection they are on, whether it currently has an
+  open session, and how to get one (connect or switch) — the page never
+  silently presents a connection it cannot use.
+- **Acceptance Criteria**:
+  - [ ] Opening a USB, mbserial, or via-relay link with an open session
+        shows its `connectionLabel` + `linkStateText` under the name.
+  - [ ] Opening a link with no open session shows "No open session on
+        this link" and a Connect button that sends `session-open`.
+  - [ ] When a sibling link on the same device has an open session, a
+        "Use `<label>` instead" link to `/d/<thatLinkId>` appears;
+        otherwise it does not.
+  - [ ] State text updates live on a snapshot change, with no page
+        reload.
+
 ## GitHub Issues
 
 (GitHub issues linked to this sprint's tickets. Format: `owner/repo#N`.)
@@ -690,6 +767,7 @@ Before tickets can be created, all of the following must be true:
 | 008 | UI shared components II: calibration table, WiFi credentials form, radio validation consolidation | 007 | rearch-16-ui-shared-components-dedupe.md | Yes |
 | 009 | Specification corrections: verbs, TLM HDR, WiFi transport, service types, host-model pointer | — | rearch-18-specification-stale-statements.md | Yes |
 | 010 | Bench verification: full suite (macOS + Linux), WiFi leg, and USB/radio driving | 001, 002, 003, 004, 005, 006, 007, 008, 009 | (none — carried scope item) | — |
+| 011 | Robot page: header shows active connection label + state, with connect/switch when no open session | — | robot-page-shows-active-connection.md | Yes |
 
 Tickets execute serially in the order listed. 001→002 and 003→004 and
 007→008 are true dependency chains (settings before watcher, timeout
@@ -698,3 +776,12 @@ use them); 005, 006, and 009 have no dependency on this sprint's other
 tickets and could run in any order relative to them, but are listed in
 the order above for a single serial executor. 010 is the sprint's
 closing gate and depends on every other ticket.
+
+Ticket 011 was added mid-sprint (issue
+`robot-page-shows-active-connection.md`, linked 2026-09-12, after 010
+had already started) and has no `depends-on` — it touches only
+`AppHeader.tsx`/`deviceDisplay.ts`/`FrontPage.tsx`, disjoint from every
+other ticket's files. It is **not** added to 010's `depends-on` (010 is
+already in progress); instead, 011's own ticket file notes that the
+stakeholder's ticket-010 drive check should be re-run once 011 lands, as
+a sprint-close confirmation rather than a new dependency edge.

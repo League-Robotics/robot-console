@@ -2,7 +2,7 @@
 id: '002'
 title: 'Bench harness Layer 2: host-over-WebSocket session checks and card-truthfulness
   assertions'
-status: in-progress
+status: done
 use-cases:
 - SUC-001
 depends-on:

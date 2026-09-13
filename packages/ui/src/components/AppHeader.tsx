@@ -89,9 +89,34 @@
  * reconnecting, open-but-stale immediately after a reconnect) rather
  * than one generic word, so a student mid-reconnect sees that progress
  * is happening, not just that something is wrong.
+ *
+ * ## Ticket 017-011: connection label + state, Connect/switch when not usable
+ *
+ * `connectionLabel` moves here (and to `FrontPage.tsx`) from a private
+ * function this file used to duplicate -- both now read the one copy in
+ * `deviceDisplay.ts`. Below the back-link row, whenever `link` resolves,
+ * this header shows `connectionLabel(link)` and either its live state
+ * text (`linkStateText`) when the link is usable, or a plain explanation
+ * plus a Connect button and (when a sibling link on the same device is
+ * usable) a "Use `<label>` instead" route link, when it is not -- see
+ * `connectionStatusText`'s own doc comment for the exact two not-usable
+ * cases distinguished. Both the Connect button (a `session-open` a
+ * student explicitly presses) and the switch link (plain routing) are
+ * the only two host-approved ways forward this ticket adds -- no new
+ * client-side connection policy.
+ *
+ * **Extended scope (team-lead, 2026-09-13)**: the original ticket's own
+ * "session undefined" gate is generalized to `isLinkUsable` (this
+ * sprint's shared usable-link predicate) so this header also catches the
+ * bench-reported case of a link that dropped (`unresponsive`/`failed`/
+ * `stale`) while its session row is still technically present -- exactly
+ * the situation that let `DriveControls` etc. render enabled against an
+ * unreachable robot before this sprint's A-F fix.
  */
 import { Link, useMatch } from "react-router";
-import { useDeviceForLink, useHostConnection, useLink } from "../ws/WsProvider";
+import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import { connectionLabel, isLinkUsable, linkStateText } from "../deviceDisplay";
+import { useDeviceForLink, useHostConnection, useLink, useSendable, useWsActions } from "../ws/WsProvider";
 import { FlashDialog } from "./FlashDialog";
 import { RadioAddressDialog } from "./RadioAddressDialog";
 import { WifiCredentialsDialog } from "./WifiCredentialsDialog";
@@ -113,6 +138,39 @@ export function disconnectedBannerText(status: "connecting" | "open" | "closed",
   return null;
 }
 
+/**
+ * The header's connection-state text for a routed link that is NOT
+ * usable -- two distinct cases (ticket 017-011, generalized by the
+ * extended-scope item C):
+ *
+ *  - `link.session === undefined`: no session has ever been opened on
+ *    this link (or it was explicitly closed) -- the ticket's own
+ *    literal text, "No open session on this link".
+ *  - `link.session !== undefined` but `link.state !== "connected"`: a
+ *    session row is still present, but the link itself dropped
+ *    (`unresponsive`/`failed`/`stale`/...) while the student may still
+ *    be on this page -- "Not connected over `<label>`: `<reason>`" (the
+ *    reason clause omitted when the link carries none).
+ *
+ * Callers must check {@link isLinkUsable} first; this function's
+ * behavior for a usable link is unspecified (it is never called for
+ * one -- `AppHeader` renders `linkStateText` instead in that case).
+ */
+export function connectionStatusText(link: SnapshotLink): string {
+  if (link.session === undefined) {
+    return "No open session on this link";
+  }
+  return link.reason ? `Not connected over ${connectionLabel(link)}: ${link.reason}` : `Not connected over ${connectionLabel(link)}`;
+}
+
+/** The first sibling link on `device` (other than `link` itself) that is
+ * currently usable -- the header's "Use `<label>` instead" target.
+ * `undefined` when `device` is absent (an unassigned link has no owning
+ * device) or none of its other links are usable right now. */
+function usableSiblingLink(device: SnapshotDevice | undefined, link: SnapshotLink): SnapshotLink | undefined {
+  return device?.links.find((candidate) => candidate.id !== link.id && isLinkUsable(candidate));
+}
+
 export function AppHeader() {
   const homeMatch = useMatch("/");
   const deviceMatch = useMatch("/d/:linkId");
@@ -122,6 +180,10 @@ export function AppHeader() {
   const name = device?.name ?? link?.label ?? "";
   const { status, stale } = useHostConnection();
   const bannerText = disconnectedBannerText(status, stale);
+  const { send } = useWsActions();
+  const sendable = useSendable();
+  const usable = link ? isLinkUsable(link) : false;
+  const sibling = link ? usableSiblingLink(device, link) : undefined;
 
   return (
     <header className="app-header">
@@ -153,7 +215,7 @@ export function AppHeader() {
             {device && device.kind !== "relay" && (
               <WifiCredentialsDialog
                 linkId={link.id}
-                linkOpen={link.session !== undefined}
+                linkOpen={isLinkUsable(link)}
                 name={device.name}
                 triggerClassName="app-header-flash-toggle"
               />
@@ -162,6 +224,36 @@ export function AppHeader() {
           </div>
         )}
       </div>
+      {link && (
+        <div className="app-header-connection" data-testid="app-header-connection">
+          <span className="app-header-connection-label">{connectionLabel(link)}</span>
+          {usable ? (
+            <span className="app-header-connection-state" data-testid="app-header-connection-state">
+              {linkStateText(link)}
+            </span>
+          ) : (
+            <>
+              <span className="app-header-connection-state app-header-not-usable" data-testid="app-header-not-usable">
+                {connectionStatusText(link)}
+              </span>
+              <button
+                type="button"
+                className="app-header-connect"
+                data-testid="app-header-connect"
+                disabled={!sendable}
+                onClick={() => send({ type: "session-open", linkId: link.id })}
+              >
+                Connect
+              </button>
+              {sibling && (
+                <Link to={`/d/${sibling.id}`} className="app-header-switch-link" data-testid="app-header-switch-link">
+                  Use {connectionLabel(sibling)} instead
+                </Link>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </header>
   );
 }

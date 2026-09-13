@@ -397,6 +397,106 @@ describe("extended scope (team-lead, 2026-09-13), item B: a card with no usable 
   });
 });
 
+describe("bench defect 010 addendum (2026-09-13): a refused/failed Connect shows the host's notice on the row", () => {
+  // `DevicesList` on its own has no `linkNotices` to read (it takes no
+  // `WsProvider`-dependent hook of its own -- `DeviceConnectionRow`'s own
+  // doc comment) -- this exercises the whole path end-to-end through
+  // `FrontPage` + `WsProvider` + a `FakeSocket`, exactly like a real
+  // Connect click and the host's own `notice` reply.
+  it("Connect on a connectable link, refused by the host, renders that refusal on the link's own row within one snapshot tick", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage(
+        snapshot({
+          devices: [device(1, { name: "tovez", links: [link("usb-tovez", { state: "connectable" })] })],
+        }),
+      );
+    });
+
+    const connect = el.querySelector<HTMLButtonElement>('[data-testid="device-link-connect-usb-tovez"]');
+    expect(connect).not.toBeNull();
+    act(() => {
+      connect!.click();
+    });
+    expect(socket!.sent).toContainEqual(JSON.stringify({ type: "session-open", linkId: "usb-tovez" }));
+
+    // The host refuses (bench defect 010's own dead-transport case, or
+    // any other `describeUserOpenRefusal` reason) and broadcasts a
+    // link-scoped notice -- exactly `server.ts`'s existing
+    // `session-open` handler behavior, already wired before this fix;
+    // what was missing was the front page ever reading it.
+    act(() => {
+      socket!.emitMessage({
+        type: "notice",
+        level: "warn",
+        linkId: "usb-tovez",
+        text: "connect refused: already open",
+        at: 1,
+        seq: 2,
+      });
+    });
+
+    const row = el.querySelector('[data-testid="device-link-usb-tovez"]');
+    expect(row?.textContent).toContain("connect refused: already open");
+    expect(el.querySelector('[data-testid="device-link-notice-usb-tovez"]')?.textContent).toBe(
+      "connect refused: already open",
+    );
+  });
+
+  it("the notice clears once the link is next reported connected", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage(
+        snapshot({ devices: [device(1, { name: "tovez", links: [link("usb-tovez", { state: "connectable" })] })] }),
+      );
+    });
+    act(() => {
+      socket!.emitMessage({ type: "notice", level: "warn", linkId: "usb-tovez", text: "connect refused: already open", at: 1, seq: 2 });
+    });
+    expect(el.querySelector('[data-testid="device-link-notice-usb-tovez"]')).not.toBeNull();
+
+    act(() => {
+      socket!.emitMessage(
+        snapshot({
+          seq: 3,
+          devices: [
+            device(1, {
+              name: "tovez",
+              links: [
+                link("usb-tovez", {
+                  state: "connected",
+                  session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+                }),
+              ],
+            }),
+          ],
+        }),
+      );
+    });
+    expect(el.querySelector('[data-testid="device-link-notice-usb-tovez"]')).toBeNull();
+  });
+});
+
 describe("unassigned USB boards (acceptance: un-owned WiFi absent, unassigned present -> card renders)", () => {
   it("renders the unassigned board's card via DevicesList directly", () => {
     const el = mount(

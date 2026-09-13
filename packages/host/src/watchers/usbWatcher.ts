@@ -23,8 +23,10 @@
  * - **`updated`**: patch the link's `address` only. Never re-runs SWD
  *   naming — the whole point of `diffDaplinkDevices` reporting this as
  *   `updated` rather than remove+add.
- * - **`removed`**: mark the link `stale`, release any `board_owner` row,
- *   abort any in-flight attach task for that serial.
+ * - **`removed`**: mark the link `stale`, close any open `sessions` row
+ *   for it (bench defect 010 addendum, 2026-09-13 -- see `handleRemoved`'s
+ *   own doc comment), release any `board_owner` row, abort any in-flight
+ *   attach task for that serial.
  *
  * Every poll also heartbeats a `tasks` row (`architecture.md` §3 rule
  * 5), so a wedged watcher is visible without the UI.
@@ -268,7 +270,26 @@ export function startUsbWatcher(
     attachTasks.get(device.serialNumber)?.abort();
     attachTasks.delete(device.serialNumber);
 
-    store.setLinkState({ id: usbLinkId(device.serialNumber), state: "stale", at: now() });
+    const linkId = usbLinkId(device.serialNumber);
+    store.setLinkState({ id: linkId, state: "stale", at: now() });
+    // Bench defect 010 addendum (2026-09-13, "dead transport leaves
+    // session, blocks reconnect"): architecture.md §6.1's own "On
+    // remove: mark the link stale, close any session, release owners"
+    // -- the close-any-session half was missing here, so a `sessions`
+    // row (and, transitively, `connect/reconciler.ts`'s own `plan()`/
+    // `describeUserOpenRefusal` treating the device as still open)
+    // outlived a board that had already physically disappeared, until
+    // whatever eventually noticed the dead transport on its own (the
+    // harvester's slower missed-poll watchdog) got around to it.
+    // `store.closeSession` is a plain, idempotent DELETE -- safe to call
+    // whether or not a session was actually open -- and this executor
+    // holds no live `LineLink` of its own to close directly (only
+    // `connect/reconciler.ts`'s private `sessions` map does; it reaps
+    // its own local reference once the row disappears out from under it,
+    // via its own dead-transport cleanup -- see that module's doc
+    // comment). This is exactly "a store change the reconciler reacts
+    // to" (`store.onChange` already re-runs `plan()` on every write).
+    store.closeSession(linkId);
     store.releaseBoardOwner(device.serialNumber, NAMING_OWNER);
   }
 

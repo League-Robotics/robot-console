@@ -835,3 +835,127 @@ describe("startReconciler -- executor integration (real connector, fake ByteStre
     }
   });
 });
+
+// ---------------------------------------------------------------------
+// Bench defect 010 addendum (2026-09-13, "dead transport leaves session,
+// blocks reconnect"): the reconciler is the single owner of session
+// teardown -- see reconciler.ts's own `reapDeadSession`/`clearStaleSession`
+// doc comments.
+// ---------------------------------------------------------------------
+
+describe("startReconciler -- dead-transport session teardown (bench defect 010 addendum)", () => {
+  let dir: string;
+  let store: Store;
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), "robot-console-reconciler-dead-transport-test-"));
+    store = new Store(openStoreDb({ filePath: path.join(dir, "console.sqlite") }));
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a fake LineLink closing after connect: the sessions row disappears, the link becomes reconnectable, and the very next tick reconnects", async () => {
+    store.upsertDevice({ id: ROBOT_SERIAL, name: deviceIdToName(ROBOT_SERIAL), kind: "robot", at: 1 });
+    store.setOwned(ROBOT_SERIAL, true, 1);
+    store.upsertLink({ id: "wifi-1", transport: "wifi", address: { host: "10.0.0.5", port: 4000 }, deviceId: ROBOT_SERIAL, at: 1 });
+    store.setLinkState({ id: "wifi-1", state: "connectable", at: 1 });
+
+    // A fresh `BannerByteStream` is handed out on every `createTcpStream`
+    // call, so the very first connect and the auto-retriggered reconnect
+    // after the reap each get their own stream to answer HELLO on --
+    // mirrors a real replug/redial, not one stream reused across two
+    // physically distinct attempts.
+    const streams: BannerByteStream[] = [];
+    const connector = createConnector(store, {
+      createTcpStream: () => {
+        const stream = new BannerByteStream(ROBOT_BANNER);
+        streams.push(stream);
+        return stream;
+      },
+      scheduler: immediateScheduler,
+      now: () => NOW,
+    });
+
+    // backoffCapMs: 0 -- so `recordFailure`'s own `next_retry_at` lands at
+    // exactly `now()` (a fixed clock throughout this test), making the
+    // very next `plan()` pass -- already re-run by the reap's own store
+    // writes going through the same change feed -- immediately eligible,
+    // with no need to fast-forward a clock this test does not advance.
+    const reconciler = startReconciler(store, { connector, now: () => NOW, tickIntervalMs: 1_000_000, backoffCapMs: 0 });
+    try {
+      await flush();
+      streams[0]?.resolveOpen();
+      await flush();
+      await flush();
+
+      expect(store.snapshotRows().links.find((l) => l.id === "wifi-1")?.state).toBe("connected");
+      expect(store.snapshotRows().sessions.find((s) => s.link_id === "wifi-1")).toBeDefined();
+      expect(reconciler.sessions.get("wifi-1")).toBeDefined();
+
+      // Simulate the dead transport: the underlying stream closes on its
+      // own (a flaky cable, not a user close-command).
+      streams[0]?.emitClose();
+      await flush();
+      await flush();
+
+      // The invariant this fix exists for: a `sessions` row exists only
+      // while the reconciler holds a live LineLink for that link -- and
+      // the very next tick (triggered by the reap's own store writes)
+      // already reconnected it, over a second, distinct stream.
+      expect(streams).toHaveLength(2);
+      streams[1]?.resolveOpen();
+      await flush();
+      await flush();
+
+      expect(store.snapshotRows().links.find((l) => l.id === "wifi-1")?.state).toBe("connected");
+      const sessionRow = store.snapshotRows().sessions.find((s) => s.link_id === "wifi-1");
+      expect(sessionRow).toBeDefined();
+      expect(reconciler.sessions.get("wifi-1")).toBeDefined();
+    } finally {
+      reconciler.stop();
+    }
+  });
+
+  it("requestOpen on a connectable link with a leftover session row is not refused -- the stale session is cleared first", async () => {
+    // A radio link, deliberately: it is never auto-connected (rule 5,
+    // `plan()`'s own `AUTO_CONNECT_TRANSPORTS`), so nothing this
+    // executor's own startup tick or `clearInheritedSessions` does can
+    // race ahead of this test's own explicit `requestOpen` call --
+    // isolating fix item 2 (a *mid-run* leftover session, left behind
+    // well after construction, e.g. by a dead transport this executor's
+    // own `reapDeadSession` had not yet reached) from the pre-existing,
+    // construction-time-only `clearInheritedSessions` (bench defect 5).
+    store.upsertLink({ id: "usb-RELAY", transport: "usb", address: { path: "/dev/cu.relay" }, at: 1 });
+    store.upsertLink({ id: "radio-A", transport: "radio", address: { relayLinkId: "usb-RELAY", channel: 1, group: 1 }, at: 1 });
+    store.setLinkState({ id: "radio-A", state: "connectable", at: 1 });
+
+    let opens = 0;
+    const connector: Connector = {
+      connectAndIdentify: () => {
+        opens++;
+        return Promise.reject(new Error("test: no real transport"));
+      },
+    };
+
+    const reconciler = startReconciler(store, { connector, now: () => NOW, tickIntervalMs: 1_000_000 });
+    try {
+      expect(opens).toBe(0); // radio never auto-connects on its own
+
+      // The leftover session appears well after construction -- nothing
+      // to do with the startup-only `clearInheritedSessions`.
+      store.openSession("radio-A", NOW);
+      expect(describeUserOpenRefusal(store.reconcilerRows(), "radio-A")).toBe("already open");
+
+      const result = await reconciler.requestOpen("radio-A");
+
+      expect(result.refusedReason).toBeUndefined();
+      expect(opens).toBe(1);
+      expect(store.snapshotRows().sessions.find((s) => s.link_id === "radio-A")).toBeUndefined();
+    } finally {
+      reconciler.stop();
+    }
+  });
+});

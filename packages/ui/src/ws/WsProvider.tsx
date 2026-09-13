@@ -131,6 +131,15 @@ export interface LogEntry {
   origin?: "host" | "poll";
 }
 
+/** Bench defect 010 addendum (2026-09-13), fix item 3: one link-scoped
+ * host `notice` -- e.g. a refused or failed Connect's reason -- as
+ * `useLinkNotices()` hands it to `FrontPage.tsx`. */
+export interface LinkNotice {
+  text: string;
+  level: "info" | "warn" | "error";
+  at: number;
+}
+
 /** Maximum lines retained per link in the in-memory log. Renamed from
  * `MAX_LINES_PER_DEVICE` (ticket 006) -- same constant, same value, the
  * link vocabulary this ticket completes. */
@@ -400,6 +409,18 @@ interface Store {
   logsByLink: Map<string, LogEntry[]>;
   /** LRU order for `logsByLink`, oldest-touched first. */
   logOrder: string[];
+  /** Bench defect 010 addendum (2026-09-13, "dead transport leaves
+   * session, blocks reconnect", fix item 3): the most recent link-scoped
+   * `notice` for each `linkId`, so a front-page card row can show a
+   * refused/failed Connect's reason even though nothing in `logsByLink`
+   * (the device console, not shown on the front page) is ever visible
+   * there. Populated by `appendNotice`; cleared once that link is next
+   * reported `connected` in a snapshot (`applySnapshot` below) -- a
+   * stale refusal must not outlive the problem it described. Always
+   * replaced with a fresh `Map` on either write (never mutated in
+   * place), so `useLinkNotices()`'s `useSyncExternalStore` snapshot
+   * actually changes reference when it changes. */
+  linkNotices: Map<string, LinkNotice>;
   /** Live `flash-progress` overlay -- see `useFlashProgress`'s own doc
    * comment for why this is consulted ahead of, not instead of, the
    * snapshot's own `SnapshotLink.flash`. */
@@ -518,6 +539,16 @@ function appendNotice(store: Store, message: Extract<ServerMessage, { type: "not
     return false;
   }
   pushLogEntry(store, message.linkId, { direction: "rx", line: message.text, origin: "host" });
+  // A fresh `Map` (copy-on-write), not a mutate-in-place `.set()`, so
+  // `useLinkNotices()`'s `useSyncExternalStore` snapshot -- the whole map,
+  // read once by the one hook-bearing page (`FrontPage.tsx`) and threaded
+  // down as a plain prop from there, matching `sendable`/`onLinkConnect`
+  // -- actually changes reference and re-renders; mutating the existing
+  // `Map` object in place would leave `useSyncExternalStore`'s identity
+  // check with nothing to notice.
+  const next = new Map(store.linkNotices);
+  next.set(message.linkId, { text: message.text, level: message.level, at: message.at });
+  store.linkNotices = next;
   return true;
 }
 
@@ -629,6 +660,12 @@ function applySnapshot(store: Store, snapshot: Snapshot): void {
   // Telemetry reset + flash-progress overlay cleanup, over every link in
   // the new snapshot (owned or unassigned) -- mirrors ticket 006's own
   // per-entry pass.
+  // A refused/failed Connect's notice (fix item 3, bench defect 010
+  // addendum) must not outlive the problem it described -- once a link is
+  // reported `connected` again, whatever it said is moot. Copy-on-write,
+  // same reasoning as `appendNotice`'s own doc comment: only replace
+  // `linkNotices` (a new `Map`) when something in it actually changes.
+  let nextLinkNotices: Store["linkNotices"] | undefined;
   for (const [linkId, link] of nextLinksById) {
     const previousLink = store.linksById.get(linkId);
     if (previousLink?.session !== undefined && link.session === undefined) {
@@ -637,6 +674,13 @@ function applySnapshot(store: Store, snapshot: Snapshot): void {
     if (!link.flash) {
       store.flashProgressByLink.delete(linkId);
     }
+    if (link.state === "connected" && store.linkNotices.has(linkId)) {
+      nextLinkNotices ??= new Map(store.linkNotices);
+      nextLinkNotices.delete(linkId);
+    }
+  }
+  if (nextLinkNotices) {
+    store.linkNotices = nextLinkNotices;
   }
 
   store.devicesArray = rebuildArray(store.deviceIds, store.devicesArray, nextDeviceIds, nextDevicesById);
@@ -692,6 +736,7 @@ function createStore(): Store {
     tasks: [],
     logsByLink: new Map(),
     logOrder: [],
+    linkNotices: new Map(),
     flashProgressByLink: new Map(),
     flashResultHandlers: new Set(),
     flashLocalReadyHandlers: new Set(),
@@ -1098,6 +1143,22 @@ export function useLinkLog(linkId: string): LogEntry[] {
     store.subscribe,
     useCallback(() => store.logsByLink.get(linkId) ?? (EMPTY_LOG as LogEntry[]), [store, linkId]),
   );
+}
+
+/** Bench defect 010 addendum (2026-09-13), fix item 3: every link-scoped
+ * host notice currently pending, keyed by `linkId` -- e.g. a refused or
+ * failed Connect's reason -- cleared once that link is next reported
+ * `connected` (see `linkNotices`'s own doc comment). Read once here, at
+ * `FrontPage.tsx` (the hook-bearing page), and threaded down as a plain
+ * prop the same way `sendable`/`onLinkConnect` already are -- `DevicesList`/
+ * `DeviceCard` deliberately take no `WsProvider`-dependent hooks of their
+ * own (this module's own doc comment; existing tests mount `DevicesList`
+ * standalone, with no provider in the tree), so this is a single
+ * whole-map read, not a per-row hook a variable-length `.map()` could
+ * never call without violating the rules of hooks. */
+export function useLinkNotices(): ReadonlyMap<string, LinkNotice> {
+  const store = useStore();
+  return useSyncExternalStore(store.subscribe, () => store.linkNotices);
 }
 
 /** OOP 2026-09-10 (carried through ticket 007): the host's stored WiFi

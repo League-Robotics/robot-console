@@ -195,6 +195,49 @@ describe("startUsbWatcher", () => {
     }
   });
 
+  it(
+    "bench defect 010 addendum (2026-09-13): removed closes any open session, and a later added leaves the link " +
+      "connectable with no session -- ready for the reconciler's own auto-reconnect",
+    async () => {
+      const store = freshStore();
+      // Explicitly test-driven, not a raw poll counter: a 10ms poll
+      // interval racing an unconditional counter could skip straight
+      // past `stale` back to `connectable` before the test ever observes
+      // it. `present` only flips when this test says so.
+      let present = true;
+      const listDevices = vi.fn(async () => (present ? [serialOnlyDevice(SERIAL_A, "/dev/cu.usbmodemA")] : []));
+      const deps: UsbWatcherDeps = { listDevices, readSwdName: async () => NAMED_VEVOV };
+      const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+      try {
+        await waitFor(() => store.snapshotRows().links[0]?.state === "connectable");
+        const linkId = `usb-${SERIAL_A}`;
+
+        // Simulate a session that was open on this link when the cable
+        // died -- exactly what a live `connect/reconciler.ts` would have
+        // left behind (this file's own suite doesn't wire the reconciler
+        // in; that half is `connect/reconciler.test.ts`'s job).
+        store.openSession(linkId, Date.now());
+        expect(store.snapshotRows().sessions.find((s) => s.link_id === linkId)).toBeDefined();
+
+        // The next poll reports the board gone.
+        present = false;
+        await waitFor(() => store.snapshotRows().links[0]?.state === "stale");
+        expect(store.snapshotRows().sessions.find((s) => s.link_id === linkId)).toBeUndefined();
+
+        // The board reappears -- a fresh `added`, re-identified and
+        // marked `connectable` again, still with no session: exactly
+        // what `connect/reconciler.ts`'s `plan()` needs to see to
+        // schedule a fresh auto-connect.
+        present = true;
+        await waitFor(() => store.snapshotRows().links[0]?.state === "connectable");
+        expect(store.snapshotRows().sessions.find((s) => s.link_id === linkId)).toBeUndefined();
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    },
+  );
+
   it("a removal racing an in-flight SWD read (before any links row exists yet) skips marking the link connectable", async () => {
     const store = freshStore();
     let resolveSwd: ((result: SwdNameResult) => void) | undefined;

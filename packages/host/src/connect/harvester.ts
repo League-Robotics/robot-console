@@ -156,7 +156,20 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
 
       /** The one error path (module doc comment): writes `unresponsive`
        * at most once and stops polling for good -- neither `onClose` nor
-       * a later missed-poll tick can re-enter once this has run. */
+       * a later missed-poll tick can re-enter once this has run.
+       *
+       * Bench defect 010 addendum (2026-09-13, "dead transport leaves
+       * session, blocks reconnect"): also closes `link` itself. A
+       * missed-poll-detected death (the watchdog branch below) is, on
+       * its own, only ever a `links.state` write -- the transport is
+       * still nominally open, so nothing raises `LineLink.onClose`, and
+       * `connect/reconciler.ts`'s own teardown (the single owner of a
+       * `sessions` row -- see that module's doc comment) never runs. A
+       * real `onClose`-triggered `fail()` call already has an idempotent
+       * `link.close()` to make (the stream is already closed at that
+       * point), so this is a no-op there; it is exactly what closes the
+       * transport for the watchdog branch, converging both causes of
+       * death on the one `onClose` event the reconciler reacts to. */
       function fail(reason: string): void {
         if (failed) {
           return;
@@ -164,6 +177,7 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
         failed = true;
         stopPolling();
         store.setLinkState({ id: linkId, state: "unresponsive", at: now(), reason });
+        void link.close();
       }
 
       function pollStatus(): void {

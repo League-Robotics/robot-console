@@ -74,7 +74,7 @@
  * within one `tick()`/`requestOpen` call before that write has even
  * landed.
  */
-import type { ConnectedSession, Connector, LinkRow } from "./connector.js";
+import { DEFAULT_BACKOFF_CAP_MS, recordFailure, type ConnectedSession, type Connector, type LinkRow } from "./connector.js";
 import { toBridgeRequest, type RelayBridger } from "./relayBridger.js";
 import type { ReconcilerRows, Store, Transport } from "../store/index.js";
 
@@ -410,6 +410,13 @@ export interface ReconcilerDeps {
   now?: () => number;
   /** Overrides {@link DEFAULT_TICK_INTERVAL_MS} — tests only. */
   tickIntervalMs?: number;
+  /** Cap on the exponential backoff {@link recordFailure} computes when
+   * this executor's own dead-transport reaping (bench defect 010
+   * addendum, "dead transport leaves session, blocks reconnect") records
+   * a failure -- same knob as `connect/connector.ts`'s own
+   * `ConnectorOptions.backoffCapMs`. Defaults to
+   * {@link DEFAULT_BACKOFF_CAP_MS}. */
+  backoffCapMs?: number;
 }
 
 /** Read-only view of the executor's own currently-open sessions — the
@@ -477,6 +484,7 @@ function toConnectorLinkRow(link: ReconcilerRows["links"][number]): LinkRow {
 export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler {
   const now = deps.now ?? (() => Date.now());
   const tickIntervalMs = deps.tickIntervalMs ?? DEFAULT_TICK_INTERVAL_MS;
+  const backoffCapMs = deps.backoffCapMs ?? DEFAULT_BACKOFF_CAP_MS;
 
   /** linkIds with a connect attempt currently in flight -- acceptance
    * criterion 3: "never re-issues a job already in flight for the same
@@ -539,6 +547,54 @@ export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler 
     return deps.connector.connectAndIdentify(link, signal);
   }
 
+  /**
+   * Bench defect 010 addendum (2026-09-13, "dead transport leaves
+   * session, blocks reconnect"): the reconciler is the single owner of
+   * session teardown (this module's own doc comment) -- reached here via
+   * one `LineLink.onClose` subscription taken the moment `runConnect`
+   * starts tracking a session, so *every* way a live link can die (a
+   * genuine transport close, or `harvester.ts`'s own missed-poll `fail()`
+   * now also closing the link -- see that function's own doc comment)
+   * converges on this one cleanup: drop the local reference, close the
+   * store's `sessions` row, close the `LineLink` itself (idempotent --
+   * already closed in every real case this fires from, but this module
+   * makes no assumption about that), and record a `failed` state with
+   * backoff fields so {@link plan}'s `isAutoConnectEligible` has
+   * something to retry (architecture.md §5's own state diagram draws
+   * exactly this edge, `unresponsive --> failed`; `unresponsive` alone is
+   * never auto-connect-eligible, which is what let this defect linger
+   * forever once a watcher's own later `connectable` write raced past a
+   * still-open `sessions` row).
+   *
+   * `sessions.get(linkId) !== session` guards against a session this
+   * call no longer owns: `runClose`/`runSwitch` (or a fresh `runConnect`
+   * replacing this same linkId) may have already deleted or replaced the
+   * map entry before this listener ever fires -- reacting anyway would
+   * double-close or reap the wrong session.
+   */
+  function reapDeadSession(linkId: string, session: ConnectedSession, reason: Error | undefined): void {
+    if (sessions.get(linkId) !== session) {
+      return;
+    }
+    sessions.delete(linkId);
+    try {
+      store.closeSession(linkId);
+      void session.link.close();
+      recordFailure(store, linkId, reason ? reason.message : "transport closed", now(), backoffCapMs);
+    } catch {
+      // Best-effort past this point: a lingering `LineLink`'s own
+      // `onClose` can fire well after `stop()` was called (which
+      // deliberately leaves an already-open session alone -- this
+      // module's own doc comment) and the owning store closed out from
+      // under it (process shutdown; a test's own teardown order --
+      // confirmed live in `mbserialEndToEnd.test.ts`, where destroying
+      // the fake robot's socket races the harness's own `store.close()`
+      // a few lines later). Nothing further to reconcile once the store
+      // itself is gone; this must never become an uncaught exception
+      // thrown out of a raw socket "close" event handler.
+    }
+  }
+
   function runConnect(linkId: string): Promise<void> {
     if (inFlight.has(linkId)) {
       return Promise.resolve();
@@ -557,6 +613,7 @@ export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler 
             return returnRelayToIdle(session);
           }
           sessions.set(linkId, session);
+          session.link.onClose((reason) => reapDeadSession(linkId, session, reason));
           return undefined;
         },
         () => {
@@ -685,6 +742,42 @@ export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler 
     }
   }
 
+  /**
+   * Bench defect 010 addendum, fix item 2: `describeUserOpenRefusal`
+   * must not say "already open" when the stored link state is not
+   * actually `connected` (or `connecting`, already mid-attempt) --
+   * {@link clearInheritedSessions} above only ever runs once, at
+   * construction, for a session inherited from a *previous* process;
+   * this is its runtime counterpart, run on every {@link requestOpen}
+   * call, for a session left behind *during* this process's own
+   * lifetime by a dead transport `reapDeadSession` has not yet reached
+   * (or a watcher's own `removed` handling closing the store's row
+   * directly -- see `watchers/usbWatcher.ts`'s own doc comment) while
+   * this executor's local {@link sessions} map still holds a reference.
+   *
+   * `planUserOpen`/`describeUserOpenRefusal` stay pure (this module's own
+   * doc comment: no store or network access) -- this executor clears the
+   * stale row *before* ever calling either, so by the time they run, the
+   * row already reflects "nothing open here", and a user's Connect is
+   * never refused for a link that is not actually connected. */
+  function clearStaleSession(rows: ReconcilerRows, linkId: string): ReconcilerRows {
+    const link = rows.links.find((candidate) => candidate.id === linkId);
+    if (!link || link.state === "connected" || link.state === "connecting") {
+      return rows;
+    }
+    const hasSession = rows.sessions.some((candidate) => candidate.linkId === linkId);
+    if (!hasSession) {
+      return rows;
+    }
+    const local = sessions.get(linkId);
+    if (local) {
+      sessions.delete(linkId);
+      void local.link.close();
+    }
+    store.closeSession(linkId);
+    return store.reconcilerRows();
+  }
+
   clearInheritedSessions();
   const unsubscribe = store.onChange(() => tick());
   const timer: ReturnType<typeof setInterval> = setInterval(tick, tickIntervalMs);
@@ -693,7 +786,7 @@ export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler 
 
   return {
     async requestOpen(linkId: string): Promise<{ refusedReason?: string }> {
-      const rows = store.reconcilerRows();
+      const rows = clearStaleSession(store.reconcilerRows(), linkId);
       const jobs = planUserOpen(rows, linkId);
       if (jobs.length === 0) {
         const refusedReason = describeUserOpenRefusal(rows, linkId);

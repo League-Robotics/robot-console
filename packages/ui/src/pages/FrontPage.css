@@ -311,3 +311,11 @@
   color: var(--rc-accent);
   font-weight: 600;
 }
+
+/* Bench defect 010 addendum (2026-09-13), fix item 3: a refused/failed
+   Connect's notice text, shown on that link's own row -- see
+   `FrontPage.tsx`'s `DeviceConnectionRow`/`useLinkNotice`. */
+.device-connection-notice {
+  color: var(--rc-warn-text);
+  flex-basis: 100%;
+}

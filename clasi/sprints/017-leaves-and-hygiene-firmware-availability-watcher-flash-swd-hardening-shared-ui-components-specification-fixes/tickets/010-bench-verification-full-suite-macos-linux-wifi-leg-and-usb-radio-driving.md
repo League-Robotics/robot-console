@@ -685,3 +685,189 @@ usable robot pages (`vevov`/`gopiv`/`tigez`) each replied with a real
 `id diffdrive ...` line to a typed `ID` (never a motion verb);
 `torture`'s own relay page correctly showed no open session and no
 send controls, so no `ID` was sent there. No console errors.
+
+## Defect: dead transport leaves session, blocks reconnect (2026-09-13)
+
+**Reproduced** in Chromium against the live host (pid 24881, port 4797,
+state dir `.../scratchpad/017-011-bench-state`): robot `tovez` on USB
+`/dev/cu.usbmodem2121102` (flaky cable). Store: its `usb-9906…2820`
+link was `state: connectable`, `fail_count: 3`, but a `sessions` row for
+that link still existed. The front-page card showed "Not linked" +
+Connect; clicking Connect changed nothing and no message appeared on
+the card. The link never auto-reconnected.
+
+**Root cause, confirmed in code** (matches the team-lead's own
+diagnosis exactly): three writers can move a `usb` link's `state` around
+without ever touching its `sessions` row, and nothing else in the
+codebase ever closed that row once the transport actually died:
+
+- `connect/harvester.ts`'s `attach()` registers exactly one `onClose`
+  listener on the session's `LineLink` (`link.onClose(...)` → `fail()`),
+  and a missed-`STATUS`-poll watchdog that also calls `fail()`. `fail()`
+  wrote `links.state = 'unresponsive'` and stopped polling -- nothing
+  more. In the watchdog case it did not even close the transport, so a
+  missed-poll death never raised `LineLink`'s own `onClose` either.
+- `watchers/usbWatcher.ts`'s `handleRemoved` (~line 267, then 271) wrote
+  `links.state = 'stale'` on a USB unplug, released `board_owner`, and
+  aborted any in-flight attach task -- but never touched `sessions`,
+  contradicting architecture.md §6.1's own words ("On remove: mark the
+  link stale, close any session, release owners").
+- `handleAdded` (~line 192, `state = 'connectable'` at line 242) ran on
+  replug and put the link back in an auto-connect-eligible state,
+  regardless of whether a stale `sessions` row was still sitting there.
+
+None of the three ever called `store.closeSession`, and
+`connect/reconciler.ts`'s own private `sessions` Map (the only place
+holding the live `LineLink` for an open session) had no seam reacting to
+any of this either -- a dead `LineLink` was simply leaked, still polling
+a corpse. Downstream, `plan()`'s `deviceHasActiveLink` and
+`describeUserOpenRefusal`/`planUserOpen` all read the *store's*
+`sessions` table as "is this open" (architecture.md §5's own state
+diagram even draws `unresponsive --> failed` as a real transition, but
+nothing ever drove it), so a lingering row blocked both automatic
+retry and the student's own explicit Connect -- refused as "already
+open" -- forever, silently.
+
+**Fix** (`packages/host/src/connect/reconciler.ts`,
+`packages/host/src/connect/harvester.ts`,
+`packages/host/src/watchers/usbWatcher.ts`,
+`packages/ui/src/ws/WsProvider.tsx`, `packages/ui/src/pages/FrontPage.tsx`):
+
+1. **Single owner of session teardown, restored to the reconciler.**
+   `runConnect` now subscribes to the just-opened session's own
+   `LineLink.onClose` the moment it starts tracking it locally. That
+   listener (`reapDeadSession`) deletes the in-memory session, calls
+   `store.closeSession(linkId)`, closes the `LineLink` again
+   (idempotent -- a no-op in the ordinary case, a real close for a
+   missed-poll death that never closed the transport itself), and
+   records a `failed` state with `fail_count`/`next_retry_at` via
+   `connector.ts`'s own `recordFailure` (same backoff formula a failed
+   *connect attempt* already used) -- exactly the `unresponsive -->
+   failed` edge architecture.md §5 draws, and the only state
+   `isAutoConnectEligible` will actually retry. `harvester.ts`'s `fail()`
+   now also calls `void link.close()`, so the missed-poll watchdog path
+   (which never touched the transport before) raises the same `onClose`
+   a genuine disconnect does, converging both causes of death on one
+   cleanup path. `usbWatcher.ts`'s `handleRemoved` now also calls
+   `store.closeSession(linkId)` (a plain, idempotent DELETE through the
+   store's own typed method -- no raw SQL, no reaching into the
+   reconciler) so a physical unplug clears the row immediately rather
+   than waiting on the harvester's slower missed-poll ceiling. Guarded
+   against a session already reaped/replaced (`sessions.get(linkId) !==
+   session`) and against the store itself already being closed (a
+   lingering `LineLink`'s `onClose` firing after shutdown/teardown --
+   caught, best-effort, never an uncaught exception out of a raw socket
+   event handler; confirmed live via `mbserialEndToEnd.test.ts`'s own
+   teardown race before this guard was added).
+2. **`requestOpen` clears a stale session before ever asking `planUserOpen`/
+   `describeUserOpenRefusal`.** Those two stay pure (no store access,
+   still table-tested as before) -- the executor's own new
+   `clearStaleSession` runs first: if a `sessions` row exists for the
+   requested link but its stored state is not `connected`/`connecting`,
+   it drops any local reference, closes that `LineLink` if this instance
+   still held one, and calls `store.closeSession`, then re-reads fresh
+   rows before planning. A user's Connect is no longer refused as
+   "already open" for a link that is not actually connected -- this is
+   the runtime counterpart to the existing `clearInheritedSessions`
+   (construction-time only, for a session inherited from a *previous*
+   process).
+3. **Front page shows the refusal.** `WsProvider.tsx` gains
+   `linkNotices` (a `linkId -> {text, level, at}` map, copy-on-write so
+   `useLinkNotices()`'s `useSyncExternalStore` snapshot actually changes
+   reference) fed by the same `notice` broadcast `server.ts`'s
+   `session-open` handler already sent for a refusal -- previously only
+   ever written into the per-link console log, never read by the front
+   page. Cleared once that link is next reported `connected`.
+   `FrontPage.tsx`'s per-link Connections row (`DeviceConnectionRow`,
+   split out of `DeviceCard` for this) renders it via a new
+   `.device-connection-notice` span. `linkNotices` is read once at
+   `FrontPage` (the hook-bearing page) and threaded down as a plain prop,
+   matching `sendable`/`onLinkConnect` -- `DevicesList`/`DeviceCard` still
+   take no `WsProvider`-dependent hook of their own, so every existing
+   test that mounts `DevicesList` standalone is unaffected.
+
+**Tests** (all run in the foreground, all green):
+
+- `packages/host/src/connect/reconciler.test.ts` -- two new cases: a
+  fake `LineLink` closing after a real connect (`FakeByteStream.emitClose()`)
+  clears the `sessions` row, marks the link `failed` with backoff, and
+  (with `backoffCapMs: 0`) the very next change-feed tick reconnects for
+  real over a second, distinct stream; and `requestOpen` on a
+  `connectable` radio link (never auto-connected, isolating this from
+  the construction-time-only `clearInheritedSessions`) carrying a
+  leftover `sessions` row is not refused -- the stale session is cleared
+  and the connect attempt actually runs.
+- `packages/host/src/connect/harvester.test.ts` -- one new case: a
+  missed-poll-detected death now also closes the `LineLink` itself
+  (`stream.closeCallCount >= 1`, `link.isOpen === false`, the link's own
+  `onClose` fires with no error), not just the store row.
+- `packages/host/src/watchers/usbWatcher.test.ts` -- one new case:
+  `removed` closes an open `sessions` row, and a later `added` leaves
+  the link `connectable` again with no session -- ready for the
+  reconciler's own auto-reconnect.
+- `packages/ui/src/pages/FrontPage.test.tsx` -- two new cases (through
+  `WsProvider` + a `FakeSocket`, end to end): a Connect click that the
+  host refuses renders that refusal's text on the link's own row; the
+  notice clears once a later snapshot reports the link `connected`.
+- `npx vitest run packages/host/src packages/ui` -- **84 test files,
+  1288 tests, all passing**, zero unhandled errors (an initial run
+  surfaced two -- `mbserialEndToEnd.test.ts`'s own teardown racing
+  `reapDeadSession` against an already-closed store; fixed by the
+  try/catch noted in fix item 1 above, then a clean re-run).
+- `npm run typecheck` and `npm run build` (protocol + host + ui) --
+  clean. `npm run vite:build -w @robot-console/ui` -- clean (151
+  modules, `dist/` rebuilt).
+
+**Browser proof.** Host restarted so the new code loads: old process
+(pid 24881) `kill -TERM`'d; fresh state dir
+`.../scratchpad/017-012-bench-state`, seeded with a read-only copy of
+`~/.local/state/robot-console/known-robots.json`; new host started
+`ROBOT_CONSOLE_STATE_DIR=.../017-012-bench-state node bin/robot-console.js
+--port 4797` (pid 71860), given ~60s to settle.
+
+`team-lead-walk2.mjs` into `.../scratchpad/walk-012`:
+
+```
+ARROWS [
+ {"tid":"device-open--102049995","href":"/d/mbrelay-torture","card":"torture","row":"(card arrow)"},
+ {"tid":"device-open-1198504156","href":"/d/mbserial-vevov","card":"vevov","row":"(card arrow)"},
+ {"tid":"device-open-2175407711","href":"/d/mbserial-gopiv","card":"gopiv","row":"(card arrow)"},
+ {"tid":"device-open-3527777815","href":"/d/mbserial-tigez","card":"tigez","row":"(card arrow)"}
+]
+PAGE {"card":"torture","row":"(card arrow)","href":"/d/mbrelay-torture","header":"robot-console Flash mbrelay · ch?/grp?No open session on this linkConnect","enabledSendControls":0,"linked":false,"reply":"n/a","violation":false}
+PAGE {"card":"vevov","row":"(card arrow)","href":"/d/mbserial-vevov","header":"robot-console Set Radio Set Wi-Fi Flash mbserial · hodr.local:36237Linked","enabledSendControls":5,"linked":true,"reply":"id diffdrive calibration-0.20260913.1 1.20260912.8 vevov","violation":false}
+PAGE {"card":"gopiv","row":"(card arrow)","href":"/d/mbserial-gopiv","header":"robot-console Set Radio Set Wi-Fi Flash mbserial · loki.local:40293Linked","enabledSendControls":5,"linked":true,"reply":"id diffdrive calibration-0.20260913.1 1.20260912.8 gopiv","violation":false}
+PAGE {"card":"tigez","row":"(card arrow)","href":"/d/mbserial-tigez","header":"robot-console Set Radio Set Wi-Fi Flash mbserial · magni.local:43837Linked","enabledSendControls":5,"linked":true,"reply":"id diffdrive unbaked 1.20260912.8 tigez","violation":false}
+PROBLEMS 0 CONSOLE_ERRORS []
+```
+
+`PROBLEMS 0`; every Linked robot answered `ID` for real.
+
+`tovez-connect-probe.mjs` into the same dir:
+
+```
+tovez card present: 0
+```
+
+`tovez` (store id `2665`, a `known-robots.json`-imported placeholder,
+`usb_serial: "SERIAL-A"`) currently has **no `links` row at all** on
+this bench run -- it is not physically on the USB hub right now (only
+`vevov`/`gopiv`/`tigez` are live; per project memory, only
+`vevov`/`vittut` are normally left on the hub, and neither `vitut` nor
+`tovez` is plugged in this session), so it renders under "Not seen
+recently", never as a card with a Connect button. Per this ticket's own
+instruction ("you cannot touch hardware; instead cover the dead-transport
+path with the unit tests above") this is the anticipated fallback --
+recorded here rather than forced. As supplementary *live* evidence for
+fix items 2/3 (not a substitute for the mandated script, whose own
+output is the "0 buttons, nothing to click" result above): `gopiv`'s
+own `wifi` row (separately `connectable`, its `mbserial` link already
+`Linked`) does show a Connect button; clicking it dispatched a real
+connect attempt against the classroom AP, which failed for an unrelated
+reason (the WiFi endpoint), and the row visibly updated to `Retrying in
+0s` within the 12 s wait -- confirming a Connect press is never silent
+on this host build, live.
+
+New host left running: pid 71860, port 4797, state dir
+`.../scratchpad/017-012-bench-state`, log at
+`.../017-012-bench-state/host.log`.

@@ -82,10 +82,11 @@
  */
 import { Link } from "react-router";
 import type { SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
-import type { ConnectionStatus, PendingRadioMigration } from "../ws/WsProvider";
+import type { ConnectionStatus, LinkNotice, PendingRadioMigration } from "../ws/WsProvider";
 import {
   useConnectionStatus,
   useDevices,
+  useLinkNotices,
   useRadioMigrationOffers,
   useRelays,
   useSendable,
@@ -116,6 +117,11 @@ export function FrontPage() {
   // with no provider in the tree), matching how `onRelayConnect`/
   // `robotOptions` etc. already reach them.
   const sendable = useSendable();
+  // Bench defect 010 addendum (2026-09-13), fix item 3: same reasoning --
+  // read the whole map once here, threaded down as a plain prop, rather
+  // than a per-row hook `DeviceConnectionRow` (nested under `DevicesList`)
+  // could never call without a variable number of hooks per render.
+  const linkNotices = useLinkNotices();
 
   const present = devices.filter((device) => device.links.length > 0);
   const notSeenRecently = devices.filter((device) => device.links.length === 0);
@@ -139,6 +145,7 @@ export function FrontPage() {
         onRelayConnect={(relayLinkId, name) => send({ type: "session-open", relayLinkId, name })}
         onRelayDisconnect={(linkId) => send({ type: "session-close", linkId })}
         onLinkConnect={onLinkConnect}
+        linkNotices={linkNotices}
       />
     </>
   );
@@ -213,7 +220,19 @@ export interface DevicesListProps {
    * so call sites (and this component's own tests) that don't care
    * about disconnection state are unaffected. */
   sendable?: boolean;
+  /** Bench defect 010 addendum (2026-09-13), fix item 3: every pending
+   * link-scoped notice, keyed by `linkId` (`useLinkNotices()`, threaded
+   * down as a plain prop -- see `FrontPage`'s own doc comment, same
+   * reasoning as `sendable`/`onLinkConnect`). Defaults to an empty map
+   * so call sites (and this component's own tests) that don't care are
+   * unaffected. */
+  linkNotices?: ReadonlyMap<string, LinkNotice>;
 }
+
+/** Stable empty-map default for {@link DevicesListProps.linkNotices} --
+ * avoids allocating a fresh `Map` every render for every call site that
+ * does not pass one. */
+const EMPTY_LINK_NOTICES: ReadonlyMap<string, LinkNotice> = new Map();
 
 export function DevicesList({
   status,
@@ -227,6 +246,7 @@ export function DevicesList({
   onRelayDisconnect = () => {},
   onLinkConnect = () => {},
   sendable = true,
+  linkNotices = EMPTY_LINK_NOTICES,
 }: DevicesListProps) {
   const empty = devices.length === 0 && unassigned.length === 0;
   return (
@@ -253,6 +273,7 @@ export function DevicesList({
                 onRelayDisconnect={onRelayDisconnect}
                 onLinkConnect={onLinkConnect}
                 sendable={sendable}
+                linkNotices={linkNotices}
               />
             </li>
           ))}
@@ -378,6 +399,7 @@ function DeviceCard({
   onRelayDisconnect,
   onLinkConnect,
   sendable,
+  linkNotices,
 }: {
   device: SnapshotDevice;
   devices: SnapshotDevice[];
@@ -387,6 +409,7 @@ function DeviceCard({
   onRelayDisconnect: (linkId: string) => void;
   onLinkConnect: (linkId: string) => void;
   sendable: boolean;
+  linkNotices: ReadonlyMap<string, LinkNotice>;
 }) {
   const primary = primaryLinkFor(device);
   const linked = device.links.some((link) => link.state === "connected");
@@ -416,43 +439,15 @@ function DeviceCard({
 
           <ul className="device-connections" aria-label={`Connections for ${device.name}`}>
             {device.links.map((link) => (
-              <li key={link.id} className="device-connection" data-testid={`device-link-${link.id}`}>
-                <span className="device-connection-label">{connectionLabel(link)}</span>
-                <span className={link.state === "connected" ? "device-connection-state device-connection-open" : "device-connection-state"}>
-                  {linkStateText(link)}
-                </span>
-                {!primary && link.reason && (
-                  <span className="device-connection-reason" data-testid={`device-link-reason-${link.id}`}>
-                    {link.reason}
-                  </span>
-                )}
-                {lastCheckedText(device, link) && (
-                  <span className="device-connection-last-checked" data-testid={`device-link-lastchecked-${link.id}`}>
-                    {lastCheckedText(device, link)}
-                  </span>
-                )}
-                {isLinkUsable(link) && link !== primary && (
-                  <Link
-                    to={`/d/${link.id}`}
-                    className="device-connection-open-button"
-                    aria-label={`Open ${device.name} over ${connectionLabel(link)}`}
-                    data-testid={`device-link-open-${link.id}`}
-                  >
-                    <ArrowIcon direction="forward" />
-                  </Link>
-                )}
-                {CONNECT_BUTTON_STATES.has(link.state) && (
-                  <button
-                    type="button"
-                    className="device-connection-connect-button"
-                    data-testid={`device-link-connect-${link.id}`}
-                    disabled={!sendable}
-                    onClick={() => onLinkConnect(link.id)}
-                  >
-                    Connect
-                  </button>
-                )}
-              </li>
+              <DeviceConnectionRow
+                key={link.id}
+                device={device}
+                link={link}
+                primary={primary}
+                sendable={sendable}
+                onLinkConnect={onLinkConnect}
+                notice={linkNotices.get(link.id)}
+              />
             ))}
           </ul>
         </div>
@@ -483,6 +478,87 @@ function DeviceCard({
         />
       )}
     </div>
+  );
+}
+
+/** One link row inside a `DeviceCard`'s Connections list -- split out
+ * from `DeviceCard` (bench defect 010 addendum, 2026-09-13, fix item 3)
+ * for readability; it takes no `WsProvider`-dependent hook of its own
+ * (`notice` arrives as a plain prop, `linkNotices.get(link.id)`, computed
+ * by its caller) -- `DevicesList`/`DeviceCard` deliberately take none
+ * (this file's own doc comment on `sendable`/`robotOptions`), and a hook
+ * called once per row inside `device.links.map()` would in any case call
+ * a varying number of hooks per `DeviceCard` render, violating the rules
+ * of hooks.
+ *
+ * **Ticket 017-010 defect (team-lead bench walk, 2026-09-13)**: a
+ * refused or failed Connect press produced no visible change on the
+ * card at all -- `reconciler.ts`'s `requestOpen` returning a
+ * `refusedReason` only ever reached the student as a `notice` broadcast
+ * (`server.ts`), which the front page never read (only the per-link
+ * device console did). This row now shows that notice's text directly
+ * underneath its own state line, via `WsProvider.tsx`'s existing
+ * link-scoped notice stream (`useLinkNotices`) -- no redesign, the
+ * notice disappears again once the link is next reported `connected`
+ * (`WsProvider.tsx`'s own `applySnapshot`). */
+function DeviceConnectionRow({
+  device,
+  link,
+  primary,
+  sendable,
+  onLinkConnect,
+  notice,
+}: {
+  device: SnapshotDevice;
+  link: SnapshotLink;
+  primary: SnapshotLink | undefined;
+  sendable: boolean;
+  onLinkConnect: (linkId: string) => void;
+  notice: LinkNotice | undefined;
+}) {
+  return (
+    <li className="device-connection" data-testid={`device-link-${link.id}`}>
+      <span className="device-connection-label">{connectionLabel(link)}</span>
+      <span className={link.state === "connected" ? "device-connection-state device-connection-open" : "device-connection-state"}>
+        {linkStateText(link)}
+      </span>
+      {!primary && link.reason && (
+        <span className="device-connection-reason" data-testid={`device-link-reason-${link.id}`}>
+          {link.reason}
+        </span>
+      )}
+      {notice && (
+        <span className="device-connection-notice" data-testid={`device-link-notice-${link.id}`} role="status">
+          {notice.text}
+        </span>
+      )}
+      {lastCheckedText(device, link) && (
+        <span className="device-connection-last-checked" data-testid={`device-link-lastchecked-${link.id}`}>
+          {lastCheckedText(device, link)}
+        </span>
+      )}
+      {isLinkUsable(link) && link !== primary && (
+        <Link
+          to={`/d/${link.id}`}
+          className="device-connection-open-button"
+          aria-label={`Open ${device.name} over ${connectionLabel(link)}`}
+          data-testid={`device-link-open-${link.id}`}
+        >
+          <ArrowIcon direction="forward" />
+        </Link>
+      )}
+      {CONNECT_BUTTON_STATES.has(link.state) && (
+        <button
+          type="button"
+          className="device-connection-connect-button"
+          data-testid={`device-link-connect-${link.id}`}
+          disabled={!sendable}
+          onClick={() => onLinkConnect(link.id)}
+        >
+          Connect
+        </button>
+      )}
+    </li>
   );
 }
 

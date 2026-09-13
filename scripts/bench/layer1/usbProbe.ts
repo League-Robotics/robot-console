@@ -28,6 +28,24 @@
  * boundary as above; {@link toCalloutPath} is a two-line string
  * transform, not meaningfully "shared logic" worth reaching into host
  * code for).
+ *
+ * ## Break-reset retry (018-002 Layer 1 gap #2)
+ *
+ * Live-verified 2026-09-13: a relay parked in its data plane (after a
+ * host sent it `!GO`) forwards `HELLO` over radio instead of answering
+ * it itself, so a USB probe against it times out waiting for a banner
+ * — indistinguishable, from the wire alone, from a dead/misbehaving
+ * board. Rather than report that ambiguity as a plain failure, this
+ * probe performs **one** UART break-reset (`port.set({brk:true})` held
+ * for {@link DEFAULT_BREAK_MS}, then `{brk:false}}` — the same primitive
+ * `packages/host/src/link/adapters/serialStream.ts`'s `sendBreak`
+ * uses, duplicated here in miniature per this module's own
+ * host-internals boundary, not imported), waits
+ * {@link DEFAULT_POST_BREAK_WAIT_MS} for the reset to take effect, then
+ * retries `HELLO`/`?` exactly once more. The retry's outcome is
+ * recorded as its own transcript segment (`dir: "info"` markers bracket
+ * it) so a reader can see both the original timeout and what the reset
+ * did, never silently overwriting one with the other.
  */
 import { SerialPort } from "serialport";
 import { parseBanner, parseIdReply, type ParsedBanner } from "@robot-console/protocol";
@@ -103,6 +121,11 @@ export interface UsbSerialPortLike {
   once(event: "error", listener: (err: Error) => void): void;
   write(data: string, callback?: (err?: Error | null) => void): boolean;
   close(callback?: (err?: Error | null) => void): void;
+  /** UART break-reset primitive (see this module's doc comment,
+   * "Break-reset retry") — mirrors `serialport`'s own
+   * `SerialPort.set({brk})`, which the real port already implements
+   * (no wrapping needed for {@link defaultCreateSerialPort}'s cast). */
+  set(options: { brk?: boolean }, callback?: (err?: Error | null) => void): void;
 }
 
 export type CreateSerialPortFn = (path: string, baudRate: number) => UsbSerialPortLike;
@@ -116,12 +139,57 @@ function defaultCreateSerialPort(path: string, baudRate: number): UsbSerialPortL
   return new SerialPort({ path, baudRate }) as unknown as UsbSerialPortLike;
 }
 
+/** Injectable wait function for the break-reset retry's own delays —
+ * tests substitute an instant resolver so the suite never actually
+ * sleeps. Mirrors `link/pacing.ts`'s own `Scheduler.delay` shape in
+ * miniature (not imported — same host-internals boundary as the rest
+ * of this module). */
+export type DelayFn = (ms: number) => Promise<void>;
+
+function realDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** How long to hold the break condition asserted — matches
+ * `serialStream.ts`'s own `DEFAULT_BREAK_MS`, duplicated here per this
+ * module's host-internals boundary. */
+export const DEFAULT_BREAK_MS = 250;
+
+/** How long to wait after clearing the break condition before retrying
+ * `HELLO`, per the ticket's own "~1.5s" instruction — long enough for a
+ * relay's firmware to notice the reset pulse and drop back out of the
+ * data plane before the retry is sent. */
+export const DEFAULT_POST_BREAK_WAIT_MS = 1_500;
+
 export interface UsbProbeOptions {
   helloTimeoutMs?: number;
   idTimeoutMs?: number;
   openTimeoutMs?: number;
   createPort?: CreateSerialPortFn;
   platform?: NodeJS.Platform;
+  /** Break-reset retry tuning (018-002 Layer 1 gap #2) — see this
+   * module's doc comment. */
+  breakDurationMs?: number;
+  postBreakWaitMs?: number;
+  delay?: DelayFn;
+}
+
+/** Assert a UART break condition for `durationMs`, then clear it —
+ * identical primitive to `serialStream.ts`'s own `sendBreak`, duplicated
+ * here in miniature (see this module's host-internals boundary doc
+ * comment). */
+function sendBreak(port: UsbSerialPortLike, durationMs: number, delay: DelayFn): Promise<void> {
+  return new Promise((resolve, reject) => {
+    port.set({ brk: true }, (err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      delay(durationMs).then(() => {
+        port.set({ brk: false }, (err2) => (err2 ? reject(err2) : resolve()));
+      }, reject);
+    });
+  });
 }
 
 /** Whether this board's banner identifies it as a relay (probed with
@@ -144,6 +212,9 @@ export async function probeUsb(port: SerialPortListingLike, options: UsbProbeOpt
   const idTimeoutMs = options.idTimeoutMs ?? DEFAULT_ID_TIMEOUT_MS;
   const openTimeoutMs = options.openTimeoutMs ?? 5000;
   const createPort = options.createPort ?? defaultCreateSerialPort;
+  const breakDurationMs = options.breakDurationMs ?? DEFAULT_BREAK_MS;
+  const postBreakWaitMs = options.postBreakWaitMs ?? DEFAULT_POST_BREAK_WAIT_MS;
+  const delay = options.delay ?? realDelay;
   const calloutPath = toCalloutPath(port.path, options.platform);
   const endpoint: SerialProbeEndpoint = { serialPath: calloutPath };
   const startedAt = Date.now();
@@ -207,18 +278,65 @@ export async function probeUsb(port: SerialPortListingLike, options: UsbProbeOpt
     serialPort.write(`${line}\n`);
   }
 
+  /**
+   * The break-reset retry itself (see module doc comment) — only ever
+   * called once, from the initial `HELLO` timeout branch below. Its own
+   * transcript segment is bracketed by `dir: "info"` markers so it
+   * reads as clearly separate from the initial (failed) attempt.
+   */
+  async function retryAfterBreakReset(): Promise<PathResult> {
+    record("info", "no banner -- relay may be parked in the data plane; attempting one break-reset retry");
+    try {
+      await sendBreak(serialPort, breakDurationMs, delay);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      record("info", `break-reset failed: ${message}`);
+      return {
+        path: "usb",
+        endpoint,
+        status: "fail",
+        reason: `no banner -- relay may be parked in the data plane; break-reset failed: ${message}`,
+        transcript,
+      };
+    }
+    await delay(postBreakWaitMs);
+    record("info", `retrying HELLO ${postBreakWaitMs}ms after break-reset`);
+    const retryHelloWait = waitForLine((line) => parseBanner(line) !== null, helloTimeoutMs);
+    send("HELLO");
+    const retryBannerLine = await retryHelloWait;
+    if (retryBannerLine === undefined) {
+      return {
+        path: "usb",
+        endpoint,
+        status: "fail",
+        reason: `no banner -- relay may be parked in the data plane; retried HELLO after break-reset but still no banner within ${helloTimeoutMs}ms`,
+        transcript,
+      };
+    }
+    const retryBanner = parseBanner(retryBannerLine)!;
+    const recoveredKind = isRelayBanner(retryBanner) ? "relay" : "device";
+    record("info", `banner recovered after break-reset (${recoveredKind}); querying status with '?'`);
+    const retryQueryWait = waitForLine((line) => line.startsWith("#"), idTimeoutMs);
+    send("?");
+    const retryQueryReply = await retryQueryWait;
+    return {
+      path: "usb",
+      endpoint,
+      status: retryQueryReply !== undefined ? "pass" : "fail",
+      reason:
+        retryQueryReply !== undefined
+          ? `no banner initially (parked in the data plane) -- recovered after one break-reset retry: ${recoveredKind} banner + '?' reply captured (${retryBanner.raw})`
+          : `no banner initially (parked in the data plane) -- break-reset retry recovered a ${recoveredKind} banner (${retryBanner.raw}) but no reply to '?' within ${idTimeoutMs}ms`,
+      transcript,
+    };
+  }
+
   try {
     const helloWait = waitForLine((line) => parseBanner(line) !== null, helloTimeoutMs);
     send("HELLO");
     const bannerLine = await helloWait;
     if (bannerLine === undefined) {
-      return {
-        path: "usb",
-        endpoint,
-        status: "fail",
-        reason: `timeout waiting ${helloTimeoutMs}ms for a HELLO banner`,
-        transcript,
-      };
+      return await retryAfterBreakReset();
     }
     const banner = parseBanner(bannerLine)!;
 

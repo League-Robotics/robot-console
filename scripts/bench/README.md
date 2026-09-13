@@ -105,8 +105,8 @@ confused with a real wire line).
 | --- | --- |
 | `layer1/exclusivity.ts` | The `lsof`-based holder check (shared by future layers too). |
 | `layer1/dnsResolve.ts` | Resolve a `.local` host to IPv4 with a bound, recording how long it took — the harness's own regression guard for the `.local` hostname hang this sprint's other tickets fix in the host. |
-| `layer1/mdnsBrowse.ts` | Browse `_mbserial._tcp`, `_mbrelay._tcp`, `_robotlink._tcp`/`_udp` for a few seconds. |
-| `layer1/usbProbe.ts` | Enumerate DAPLink boards directly (`serialport`), open, `HELLO`/`ID` (or `?` for a relay). No SWD naming — identity comes from the banner alone (see that file's own doc comment for why). |
+| `layer1/mdnsBrowse.ts` | Browse `_mbserial._tcp`, `_mbrelay._tcp`, `_robotlink._tcp`/`_udp`. The first three settle within a few seconds; `_robotlink` gets up to 65s more (only if nothing has appeared yet) since these robots only ever answer with an unsolicited periodic announcement, not a live query reply — see that file's own doc comment for the live-verified root cause. |
+| `layer1/usbProbe.ts` | Enumerate DAPLink boards directly (`serialport`), open, `HELLO`/`ID` (or `?` for a relay). No SWD naming — identity comes from the banner alone (see that file's own doc comment for why). A `HELLO` timeout triggers one UART break-reset + retry (a relay parked in its data plane after a host `!GO` forwards `HELLO` over radio instead of answering it) before the path is finally reported `fail`. |
 | `layer1/mbserialProbe.ts` | Farm bridge `HELLO`/`ID`, distinguishing `ERR busy` from a timeout; also demonstrates single-client contention. |
 | `layer1/wifiProbe.ts` | WiFi robot `HELLO`/`ID`, tolerating the doubled banner and interleaved `DBG:` lines. |
 | `layer1/mbrelayProbe.ts` | The pool's command-plane sweep (every known name) plus the full data-plane handshake for whichever name(s) the sweep found reachable. |

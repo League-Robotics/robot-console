@@ -40,7 +40,11 @@ describe("filterDaplinkPorts", () => {
  * with no real serial port. */
 class FakeSerialPort extends EventEmitter implements UsbSerialPortLike {
   public written: string[] = [];
-  constructor(private readonly onWrite: (line: string, port: FakeSerialPort) => void) {
+  public breakEvents: boolean[] = [];
+  constructor(
+    private readonly onWrite: (line: string, port: FakeSerialPort) => void,
+    private readonly setError?: Error,
+  ) {
     super();
   }
   once(event: "open" | "error", listener: (...args: never[]) => void): this {
@@ -54,6 +58,10 @@ class FakeSerialPort extends EventEmitter implements UsbSerialPortLike {
     this.onWrite(data.trim(), this);
     return true;
   }
+  set(options: { brk?: boolean }, callback?: (err?: Error | null) => void): void {
+    this.breakEvents.push(options.brk === true);
+    process.nextTick(() => callback?.(this.setError ?? null));
+  }
   close(callback?: (err?: Error | null) => void): void {
     callback?.(null);
   }
@@ -64,6 +72,11 @@ class FakeSerialPort extends EventEmitter implements UsbSerialPortLike {
     this.emit("data", Buffer.from(`${line}\n`, "utf8"));
   }
 }
+
+/** Instant, non-sleeping stand-in for `probeUsb`'s real `delay` option —
+ * every break-reset retry test uses this so the suite never actually
+ * waits `postBreakWaitMs`. */
+const instantDelay = () => Promise.resolve();
 
 describe("probeUsb", () => {
   it("passes a robot round trip: HELLO banner then ID reply", async () => {
@@ -122,15 +135,19 @@ describe("probeUsb", () => {
     expect(result.transcript.map((l) => l.line)).toContain("?");
   });
 
-  it("fails with a timeout reason when no banner ever arrives", async () => {
+  it("fails after a break-reset retry when no banner ever arrives, even after the reset", async () => {
+    let port!: FakeSerialPort;
     const result = await probeUsb(
       { path: "/dev/tty.usbmodemDEAD" },
       {
         helloTimeoutMs: 20,
+        idTimeoutMs: 20,
+        postBreakWaitMs: 5,
+        delay: instantDelay,
         platform: "darwin",
         createPort: () => {
-          const port = new FakeSerialPort(() => {
-            // never replies
+          port = new FakeSerialPort(() => {
+            // never replies, to either the initial HELLO or the retry
           });
           port.emitOpenNextTick();
           return port;
@@ -138,7 +155,76 @@ describe("probeUsb", () => {
       },
     );
     expect(result.status).toBe("fail");
-    expect(result.reason).toContain("timeout");
+    expect(result.reason).toContain("no banner");
+    expect(result.reason).toContain("break-reset");
+    // exactly one break-reset attempt: brk true then false, no more
+    expect(port.breakEvents).toEqual([true, false]);
+    // two HELLO attempts (initial + one retry), captured as separate
+    // transcript segments bracketed by "info" markers
+    expect(result.transcript.filter((l) => l.line === "HELLO")).toHaveLength(2);
+    expect(result.transcript.some((l) => l.dir === "info" && l.line.includes("break-reset"))).toBe(true);
+  });
+
+  it("recovers via break-reset retry: relay banner arrives only after the reset", async () => {
+    let helloCount = 0;
+    let port!: FakeSerialPort;
+    const result = await probeUsb(
+      { path: "/dev/tty.usbmodem2121402" },
+      {
+        helloTimeoutMs: 20,
+        idTimeoutMs: 1000,
+        postBreakWaitMs: 5,
+        delay: instantDelay,
+        platform: "darwin",
+        createPort: () => {
+          port = new FakeSerialPort((line, p) => {
+            if (line === "HELLO") {
+              helloCount += 1;
+              // Parked in the data plane on the first HELLO -- no reply
+              // at all until after the break-reset.
+              if (helloCount > 1) {
+                p.reply("DEVICE:RADIOBRIDGE:relay:vitut:2198604104");
+              }
+            } else if (line === "?") {
+              p.reply("# channel: 47 group: 60 mode: RAW250 power: 7");
+            }
+          });
+          port.emitOpenNextTick();
+          return port;
+        },
+      },
+    );
+    expect(result.status).toBe("pass");
+    expect(result.reason).toContain("recovered after one break-reset retry");
+    expect(result.reason).toContain("relay banner");
+    expect(port.breakEvents).toEqual([true, false]);
+    expect(helloCount).toBe(2);
+    expect(result.transcript.map((l) => l.line)).toContain("?");
+  });
+
+  it("reports a break-reset failure distinctly from a plain timeout", async () => {
+    const result = await probeUsb(
+      { path: "/dev/tty.usbmodemDEAD" },
+      {
+        helloTimeoutMs: 20,
+        postBreakWaitMs: 5,
+        delay: instantDelay,
+        platform: "darwin",
+        createPort: () => {
+          const port = new FakeSerialPort(
+            () => {
+              // never replies
+            },
+            new Error("break-reset: port closed"),
+          );
+          port.emitOpenNextTick();
+          return port;
+        },
+      },
+    );
+    expect(result.status).toBe("fail");
+    expect(result.reason).toContain("break-reset failed");
+    expect(result.reason).toContain("port closed");
   });
 
   it("fails with the open error's message when the port cannot be opened", async () => {

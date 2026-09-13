@@ -37,7 +37,13 @@ import { fileURLToPath } from "node:url";
 
 import { resolveIPv4, normalizeHostname } from "./dnsResolve.js";
 import { describeHolders, evaluateExclusivity, findHolders, realLsofRunner, type ExclusivityResource } from "./exclusivity.js";
-import { browseServices, parseRegistryPort, wifiNameFromTxt, DEFAULT_BROWSE_WINDOW_MS } from "./mdnsBrowse.js";
+import {
+  browseServices,
+  parseRegistryPort,
+  wifiNameFromTxt,
+  DEFAULT_BROWSE_WINDOW_MS,
+  DEFAULT_ROBOTLINK_BROWSE_WINDOW_MS,
+} from "./mdnsBrowse.js";
 import { readKnownRobotNames } from "./knownNames.js";
 import { listDaplinkPorts, probeUsb, toCalloutPath } from "./usbProbe.js";
 import { probeMbserial, probeMbserialContention } from "./mbserialProbe.js";
@@ -107,11 +113,37 @@ function skippedResult(path: string, endpoint: PathResult["endpoint"], reason: s
   return { path, endpoint, status: "skipped", reason, transcript: [] };
 }
 
+/**
+ * Derive a USB device's report name/kind from its probe result. Pure —
+ * directly testable independent of any real port.
+ *
+ * Classification is derived **only** from an actual captured banner
+ * line (an `"rx"` transcript entry), never from `result.reason`'s own
+ * human-readable prose: 018-002's break-reset retry path deliberately
+ * says "relay may be parked in the data plane" in its *failure* reason
+ * (speculating about why no banner arrived at all), which would
+ * otherwise false-positive this device as `kind: "relay"` via a naive
+ * substring match on "relay" even though no banner — confirming
+ * nothing — was ever received. Caught live on the 2026-09-13 bench
+ * evidence run for exactly this reason before this fix.
+ */
+export function classifyUsbDevice(
+  result: Pick<PathResult, "transcript">,
+  fallbackName: string,
+): { deviceName: string; kind: DeviceEntry["kind"] } {
+  const bannerLine = result.transcript.find((l) => l.dir === "rx")?.line;
+  const deviceName = bannerLine?.match(/(?:robot|relay)\s+(\S+)\s+\d/)?.[1] ?? bannerLine?.match(/relay:(\w+):/)?.[1] ?? fallbackName;
+  const kind: DeviceEntry["kind"] = bannerLine === undefined ? "unknown" : /relay/i.test(bannerLine) ? "relay" : "robot";
+  return { deviceName, kind };
+}
+
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const startedAt = new Date();
 
-  console.log(`[bench:layer1] browsing mDNS for ${DEFAULT_BROWSE_WINDOW_MS}ms...`);
+  console.log(
+    `[bench:layer1] browsing mDNS for ${DEFAULT_BROWSE_WINDOW_MS}ms (up to ${DEFAULT_ROBOTLINK_BROWSE_WINDOW_MS}ms if no _robotlink service has appeared yet -- see mdnsBrowse.ts's doc comment)...`,
+  );
   const [daplinkPorts, discovered] = await Promise.all([listDaplinkPorts(), browseServices()]);
   const knownNames = readKnownRobotNames();
 
@@ -201,12 +233,7 @@ async function main(): Promise<void> {
     }
     console.log(`[bench:layer1] usb: probing ${port.path} (serial ${port.serialNumber ?? "?"})...`);
     const result = await probeUsb(port);
-    // Recover a friendlier device name from the banner captured in the
-    // transcript, if any -- falls back to the USB serial number (no
-    // SWD naming here, per usbProbe.ts's own module doc comment).
-    const bannerLine = result.transcript.find((l) => l.dir === "rx")?.line;
-    const deviceName = bannerLine?.match(/(?:robot|relay)\s+(\S+)\s+\d/)?.[1] ?? bannerLine?.match(/relay:(\w+):/)?.[1] ?? name;
-    const kind: DeviceEntry["kind"] = result.reason.includes("relay") ? "relay" : result.status === "pass" ? "robot" : "unknown";
+    const { deviceName, kind } = classifyUsbDevice(result, name);
     registry.addPath(deviceName, kind, result);
     console.log(`[bench:layer1] usb: ${port.path} -> ${result.status} (${result.reason})`);
   }

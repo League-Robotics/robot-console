@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * CalibrationConsole.test.tsx — direct coverage of
- * `isCalibrationConsoleEntry`'s pure filter logic (ticket 018-010, item
+ * `isCalibrationConsoleEntry`'s pure filter logic (ticket 018-013, item
  * 3), mirroring `DistanceCalibrationWizard.tsx`'s own
  * `deriveDistanceCalibrationRun` test discipline: exercise the pure
  * predicate against fixture log slices, rather than only through a

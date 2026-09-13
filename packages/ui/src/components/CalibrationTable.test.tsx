@@ -101,7 +101,7 @@ describe("CalibrationTable", () => {
     expect(el.querySelector('[data-testid="configuration-slip"]')?.textContent).toBe("—");
   });
 
-  describe("ticket 018-010: 'Wheel track' vs 'Measured track width (robot-reported)', and the robot-reported slip", () => {
+  describe("ticket 018-013: 'Wheel track' vs 'Measured track width (robot-reported)', and the robot-reported slip", () => {
     it("calibration variant: the ruler-measured input row is now labelled 'Wheel track', freeing 'Measured track width' for the robot-reported row", () => {
       const el = mount(<CalibrationTable variant="calibration" state={{}} derived={{}} onPatch={vi.fn()} />);
       const rowLabels = Array.from(el.querySelectorAll("th")).map((th) => th.textContent);

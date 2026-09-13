@@ -622,7 +622,7 @@ describe("RotationCalibrationWizard as CalibrationPage drives it (OOP 2026-09-10
     ).toBe(8.84);
   });
 
-  it("ticket 018-010: robotReportedSlip reads the firmware's own CALA:derived slip= line, distinct from reportedTrackWidthCm", () => {
+  it("ticket 018-013: robotReportedSlip reads the firmware's own CALA:derived slip= line, distinct from reportedTrackWidthCm", () => {
     const run = deriveRotationCalibrationRun([
       { direction: "rx", line: "CALA:measured b=8.84cm  (anchor was 12.08)" },
       { direction: "rx", line: "CALA:derived slip=1.301 = track 11.5 / b 8.84" },

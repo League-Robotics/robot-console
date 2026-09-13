@@ -15,7 +15,7 @@
  * picking one -- a pure extraction, not a redesign, same discipline as
  * ticket 007's `RelayConnectControls` "card"/"page" variants.
  *
- * ## Ticket 018-010: "wheel track" vs "measured track width (robot-reported)"
+ * ## Ticket 018-013: "wheel track" vs "measured track width (robot-reported)"
  *
  * The stakeholder's own vocabulary ("wheel diameter, wheel track,
  * measured track width, effective track width, and rotational slip")

@@ -40,7 +40,7 @@ export interface CalibrationState {
   /** Straight from the robot's `measured b=` line, uncorrected. */
   reportedTrackWidthCm?: number;
   reportedWithDiameterMm?: number;
-  /** The robot's own `CALA:derived slip=<n> ...` line (ticket 018-010) --
+  /** The robot's own `CALA:derived slip=<n> ...` line (ticket 018-013) --
    * the firmware's own slip computation, against its hard-coded 11.5 cm
    * anchor (see `RotationCalibrationWizard.tsx`'s own `robotReportedSlip`
    * doc comment for why this is never folded into {@link

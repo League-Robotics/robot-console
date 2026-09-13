@@ -207,7 +207,7 @@ export function reportedTrackWidthCm(run: RotationCalibrationRun): number | unde
 }
 
 /** The robot's own `CALA:derived slip=<n> = track <a> / b <b>` line
- * (ticket 018-010, item 4) -- the firmware's own slip computation,
+ * (ticket 018-013, item 4) -- the firmware's own slip computation,
  * already on the wire (it is where `deriveRotationCalibrationRun`'s own
  * `derivedSnippet` fallback reads the number from, when the `apply` line
  * itself is dropped over WiFi). Never folded into `lib/calibration.ts`'s

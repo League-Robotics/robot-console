@@ -1,5 +1,5 @@
 /**
- * CalibrationConsole.tsx — ticket 018-010 item 3: "Right below where the
+ * CalibrationConsole.tsx — ticket 018-013 item 3: "Right below where the
  * code is, put a console where we can see the output from the
  * calibration program" (stakeholder direction, `CalibrationPage.tsx`'s
  * own Calibration tab).

@@ -151,7 +151,7 @@ describe("RobotPage", () => {
     expect(el.textContent).not.toContain("Hold a direction");
   });
 
-  it("ticket 018-010: tabs sit beside the name; every robot (including a plain, non-calibration one) gets Main, Drive, Calibration, Functions & charts, Configuration and Diagnostics", () => {
+  it("ticket 018-013: tabs sit beside the name; every robot (including a plain, non-calibration one) gets Main, Drive, Calibration, Functions & charts, Configuration and Diagnostics", () => {
     const { el } = mountRobotPage();
     const row = el.querySelector(".robot-page-title-row")!;
     expect(row.querySelector("h2")?.textContent).toBe("vevav");
@@ -182,7 +182,7 @@ describe("RobotPage", () => {
     expect(el.querySelector('[data-testid="robot-tab-functions"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("ticket 018-010: the Calibration tab (offered for any robot) shows both wizards, the code block, and the current calibration", () => {
+  it("ticket 018-013: the Calibration tab (offered for any robot) shows both wizards, the code block, and the current calibration", () => {
     const { el } = mountRobotPage(robotDevice({ program: "calibration-1", version: "1" }));
     expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Calibration", "Functions & charts", "Configuration", "Diagnostics"]);
     act(() => {
@@ -196,13 +196,25 @@ describe("RobotPage", () => {
     expect(el.querySelector(".robot-page-column-right [aria-label=\"Current calibration\"]")).not.toBeNull();
   });
 
-  it("ticket 018-010: a plain, non-calibration robot also gets a working Calibration tab (flash panel says what's running)", () => {
+  it("ticket 018-013: a plain, non-calibration robot also gets a working Calibration tab (no firmware panel there any more)", () => {
     const { el } = mountRobotPage(robotDevice({ program: null, version: null }));
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
     });
     expect(el.querySelector('[data-testid="robot-tab-panel-calibration"]')).not.toBeNull();
-    expect(el.querySelector('[data-testid="calibration-firmware-not-running"]')?.textContent).toBe("Program: unknown");
+    // The "Calibration firmware" panel moved to the Configuration tab
+    // this ticket -- the Calibration tab itself no longer renders it.
+    expect(el.querySelector('[data-testid="calibration-firmware-not-running"]')).toBeNull();
+    expect(Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash calibration firmware")).toBeUndefined();
+  });
+
+  it("ticket 018-013: the Configuration tab shows the Calibration firmware block (flash button, program/version text)", () => {
+    const { el } = mountRobotPage(robotDevice({ program: null, version: null }));
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-configuration"]')!.click();
+    });
+    expect(el.querySelector('[data-testid="robot-tab-panel-configuration"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="configuration-firmware-not-running"]')?.textContent).toBe("Program: unknown");
     const flashButton = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash calibration firmware");
     expect(flashButton).not.toBeUndefined();
   });

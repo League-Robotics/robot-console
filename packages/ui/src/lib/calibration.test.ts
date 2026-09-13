@@ -83,7 +83,7 @@ describe("applyCalibrationPatch", () => {
     });
   });
 
-  it("ticket 018-010: carries robotReportedSlip like any other field, and strips it the same way on undefined", () => {
+  it("ticket 018-013: carries robotReportedSlip like any other field, and strips it the same way on undefined", () => {
     expect(applyCalibrationPatch({}, { robotReportedSlip: 1.301 })).toEqual({ robotReportedSlip: 1.301 });
     expect(applyCalibrationPatch({ robotReportedSlip: 1.301 }, { robotReportedSlip: undefined })).toEqual({});
   });

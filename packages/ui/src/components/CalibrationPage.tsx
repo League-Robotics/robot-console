@@ -1,6 +1,6 @@
 /**
  * CalibrationPage.tsx — the robot page's Calibration tab (OOP
- * 2026-09-10, stakeholder direction; expanded ticket 018-010).
+ * 2026-09-10, stakeholder direction; expanded ticket 018-013).
  *
  * One calibration *state* per robot (persisted per robot name in
  * localStorage), one block of code to paste, and the wizards/run
@@ -12,23 +12,25 @@
  * module's own doc comment for the wheel-diameter/track-width/
  * effective-width/slip relationship this page's wizards feed.
  *
- * ## Ticket 018-010: always offered, flash + dynamic run buttons + a
- * filtered console
+ * ## Ticket 018-013: always offered, dynamic run buttons + a filtered
+ * console -- the flash panel moved to the Configuration tab
  *
- * Four changes over the OOP 2026-09-10 shape:
+ * `f1b0e8d` added this tab's original flash/run/console shape under a
+ * commit message and doc comments that mis-cited it as ticket "018-010"
+ * (an unrelated, concurrently in-progress ticket, UI truthfulness for
+ * link-status text) -- this section, and the feature itself, actually
+ * belong to ticket 018-013. Three changes remain over the OOP 2026-09-10
+ * shape (a fourth, the "Calibration firmware" panel, moved out entirely
+ * -- see below):
  *
  *  1. **This tab is now always offered for a robot** (`RobotPage.tsx` no
- *     longer gates it on `isCalibrationProgram(device.program)`) -- the
- *     top "Calibration firmware" panel below says what's actually
- *     running (`device.program`/`device.version`) and offers a Flash
- *     button regardless, rather than the tab itself disappearing for a
- *     robot that hasn't been flashed with the calibration build yet.
- *     Flashing is a per-link *capability* (`deviceDisplay.ts`'s
- *     `canBeFlashed`, true only for a `usb` link, whatever its
- *     transport-blind wrapping looks like) -- over any other transport
- *     this panel says plainly that the robot must be plugged in over USB
- *     to flash, rather than silently hiding the button (the way
- *     `FlashDialog.tsx`'s own un-forced gate would).
+ *     longer gates it on `isCalibrationProgram(device.program)`) -- a
+ *     robot not yet running the calibration build can still reach this
+ *     tab to run `calx`/`cala` once it does. Flashing itself -- and the
+ *     "what's actually running" text -- moved to `ConfigurationPage.tsx`
+ *     (ticket 018-013, per the stakeholder's explicit placement: "put
+ *     this as a flash button under the calibration section in the
+ *     Configuration tab"); see that module's own doc comment.
  *  2. **Run controls are derived from `FUNCS`, not hardcoded to exactly
  *     two.** `calx`/`cala` still render as the existing
  *     `DistanceCalibrationWizard`/`RotationCalibrationWizard` (unchanged
@@ -61,7 +63,7 @@
  *     why the two numbers are never merged.
  */
 import { useEffect, useMemo, useState } from "react";
-import type { RobotFunction, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import type { RobotFunction, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import {
   CALIBRATION_IMAGE_BASELINE_DIAMETER_MM,
   applyCalibrationPatch,
@@ -73,12 +75,11 @@ import {
   type CalibrationState,
 } from "../lib/calibration";
 import { useCopied } from "../lib/clipboard";
-import { canBeFlashed, isCalibrationProgram, isLinkUsable } from "../deviceDisplay";
+import { isLinkUsable } from "../deviceDisplay";
 import { useSendable, useWsActions } from "../ws/WsProvider";
 import { CalibrationConsole } from "./CalibrationConsole";
 import { CalibrationTable } from "./CalibrationTable";
 import { DeviceConsole } from "./DeviceConsole";
-import { FlashDialog } from "./FlashDialog";
 import {
   DistanceCalibrationWizard,
   deriveBaselineDiameterMm,
@@ -94,7 +95,6 @@ import {
 import "./CalibrationPage.css";
 
 export interface CalibrationPageProps {
-  device: SnapshotDevice;
   link: SnapshotLink;
   /** The owning device's already-resolved name -- see `RobotPage.tsx`'s
    * doc comment ("Sprint 015 ticket 009") for why the caller resolves
@@ -105,7 +105,7 @@ export interface CalibrationPageProps {
 
 /** `calx`/`cala` get their stakeholder-specified labels verbatim; any
  * other `cal*` name `FUNCS` reports is labelled from its own suffix --
- * ticket 018-010's own required truth: "do not guess a third verb". */
+ * ticket 018-013's own required truth: "do not guess a third verb". */
 export function calibrationFunctionLabel(name: string): string {
   if (name === "calx") {
     return "Calibrate X (distance)";
@@ -155,7 +155,7 @@ function GenericCalibrationRun({ link, name }: GenericCalibrationRunProps) {
   );
 }
 
-export function CalibrationPage({ device, link, name }: CalibrationPageProps) {
+export function CalibrationPage({ link, name }: CalibrationPageProps) {
   const robotName = name;
   const [state, setState] = useState<CalibrationState>(() => readCalibrationState(robotName));
   useEffect(() => {
@@ -172,7 +172,7 @@ export function CalibrationPage({ device, link, name }: CalibrationPageProps) {
   const functions: RobotFunction[] | undefined = link.session?.functions ?? undefined;
   const functionsUnknown = functions === undefined;
 
-  // Ticket 018-010: this tab specifically needs the function list before
+  // Ticket 018-013: this tab specifically needs the function list before
   // it can decide which run controls to draw, so (unlike every other
   // panel `RobotPage` mounts since sprint 015 ticket 009) it asks once,
   // on open, if nothing has asked yet this session.
@@ -228,27 +228,10 @@ export function CalibrationPage({ device, link, name }: CalibrationPageProps) {
   }
 
   const rotationBlocked = state.wheelDiameterMm === undefined;
-  const hasCalibrationFirmware = isCalibrationProgram(device.program);
 
   return (
     <div className="robot-page-columns calibration-page" data-testid="robot-tab-panel-calibration">
       <div className="robot-page-column robot-page-column-left">
-        <div className="robot-page-panel calibration-firmware-panel" aria-label="Calibration firmware">
-          <h3>Calibration firmware</h3>
-          {hasCalibrationFirmware ? (
-            <p data-testid="calibration-firmware-running">Calibration firmware {device.version ?? "unknown"} is running.</p>
-          ) : (
-            <p data-testid="calibration-firmware-not-running">Program: {device.program ?? "unknown"}</p>
-          )}
-          {canBeFlashed(link) ? (
-            <FlashDialog link={link} name={robotName} triggerLabel="Flash calibration firmware" />
-          ) : (
-            <p className="calibration-firmware-usb-hint" data-testid="calibration-firmware-usb-required" role="status">
-              Plug the robot in over USB to flash the calibration firmware.
-            </p>
-          )}
-        </div>
-
         {functionsUnknown && (
           <p className="calibration-functions-hint" data-testid="calibration-functions-checking" role="status">
             Checking which calibration functions this robot supports…

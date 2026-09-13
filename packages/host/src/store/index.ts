@@ -806,18 +806,22 @@ export class Store {
    * non-unique `name`). `links.device_id REFERENCES devices(id)` with no
    * `ON DELETE CASCADE` (this module's own doc comment, "Foreign keys are
    * enforced"), so every `links`/`sightings` row pointing at `id` is
-   * re-pointed to `NULL` first — a link is a physical-port observation,
-   * not owned by any one device identity, so forgetting the device
-   * leaves the link row itself in place (an unnamed/un-owned link,
-   * exactly like one that has never identified) rather than deleting it
-   * too. A no-op if `id` has no row.
+   * handled first: the device's own `links` rows (and their `sessions`/
+   * `relay_leases`) are deleted with it, and `sightings` are re-pointed
+   * to `NULL`. A no-op if `id` has no row.
    */
   deleteDevice(id: number): void {
+    // Stakeholder (2026-09-13): forgetting zapig left its USB link row
+    // behind, which then surfaced as an "Unidentified board" card and
+    // was retried against a port that no longer exists. Forgetting a
+    // device removes its links (and anything keyed on them) too.
     this.withChange(
       "devices",
       () => String(id),
       () => {
-        this.db.prepare("UPDATE links SET device_id = NULL WHERE device_id = ?").run(id);
+        this.db.prepare("DELETE FROM sessions WHERE link_id IN (SELECT id FROM links WHERE device_id = ?)").run(id);
+        this.db.prepare("DELETE FROM relay_leases WHERE relay_link_id IN (SELECT id FROM links WHERE device_id = ?)").run(id);
+        this.db.prepare("DELETE FROM links WHERE device_id = ?").run(id);
         this.db.prepare("UPDATE sightings SET device_id = NULL WHERE device_id = ?").run(id);
         this.db.prepare("DELETE FROM devices WHERE id = ?").run(id);
       },

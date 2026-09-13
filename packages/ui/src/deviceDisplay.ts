@@ -591,6 +591,10 @@ const RAW_SYSTEM_ERROR_PATTERN = /^Error:|ENOENT|ECONNREFUSED|ECONNRESET|EACCES|
  * robot-shaped USB advice for a relay).
  */
 export function plainFailureReason(reason: string, transport: Transport, kind: SnapshotDevice["kind"] = "robot"): string {
+  if (reason === BRIDGE_CONTENTION_REASON && transport === "wifi") {
+    // A WiFi robot has one TCP slot; "bridge" is the wrong word for it.
+    return "another connection is already open to this robot over Wi-Fi";
+  }
   const cleaned = stripInternalIds(reason);
   if (cleaned === BRIDGE_CONTENTION_REASON) {
     return cleaned;

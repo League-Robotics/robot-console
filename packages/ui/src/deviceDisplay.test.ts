@@ -391,12 +391,12 @@ describe("plainFailureReason (transport-aware failure advice, ticket 018-010)", 
     expect(text).not.toContain("radio-tigez-via-mbrelay-torture");
   });
 
-  it("keeps 018-008's own bridge-contention text verbatim, regardless of transport", () => {
+  it("keeps 018-008's own bridge-contention text verbatim for bridges, and says 'robot over Wi-Fi' for a wifi link", () => {
     expect(plainFailureReason("another app is connected to this bridge", "mbserial")).toBe(
       "another app is connected to this bridge",
     );
     expect(plainFailureReason("another app is connected to this bridge", "wifi")).toBe(
-      "another app is connected to this bridge",
+      "another connection is already open to this robot over Wi-Fi",
     );
   });
 

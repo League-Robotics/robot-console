@@ -117,12 +117,13 @@ export function buildSnapshotFromRows(rows: ProjectionRows, seq: number, at: num
       } else {
         linksByDevice.set(link.deviceId, [link]);
       }
-    } else if (link.transport === "usb") {
+    } else if (link.transport === "usb" && link.state !== "stale") {
       // A usb link with no device_id yet is an unnamed/unidentified USB
       // board -- architecture.md §9's `unassigned` list. A non-usb link
       // with no device_id has no device to attach to and nothing
       // displayable of its own; it is simply dropped (see this module's
-      // own doc comment, "The owned gate").
+      // own doc comment, "The owned gate"). A `stale` one (board no
+      // longer enumerated) is dropped too -- there is no board to show.
       unassignedLinks.push(link);
     }
   }

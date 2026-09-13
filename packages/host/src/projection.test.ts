@@ -128,6 +128,18 @@ describe("buildSnapshot: golden fixture", () => {
     }
   });
 
+  it("drops a stale unassigned usb link (board no longer enumerated) from unassigned", () => {
+    const store = openStore({ filePath: ":memory:" });
+    try {
+      seedGoldenScenario(store);
+      store.setLinkState({ id: "usb-unknown-1", state: "stale", at: 200 });
+      const snapshot = buildSnapshot(store, 1, 1);
+      expect(snapshot.unassigned).toHaveLength(0);
+    } finally {
+      store.close();
+    }
+  });
+
   it("lists the unnamed USB board under unassigned, not under any device", () => {
     const store = openStore({ filePath: ":memory:" });
     try {

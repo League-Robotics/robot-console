@@ -993,20 +993,20 @@ describe("Store: mergeDevice", () => {
 });
 
 describe("Store: deleteDevice", () => {
-  it("deletes the devices row and re-points its links/sightings to device_id NULL rather than deleting them", () => {
+  it("deletes the devices row and its links (stakeholder 2026-09-13: a forgotten board must not linger as an unidentified card); sightings are re-pointed to NULL", () => {
     const { store, db } = freshStore();
     try {
       const ID = 536019796;
       store.upsertDevice({ id: ID, name: "vevav", kind: "robot", at: 100 });
       store.upsertLink({ id: "usb-vevav", transport: "usb", address: { path: "/dev/cu.vevav" }, deviceId: ID, at: 100 });
+      store.upsertLink({ id: "usb-other", transport: "usb", address: { path: "/dev/cu.other" }, at: 100 });
       const sightingId = store.recordSighting({ deviceId: ID, transport: "usb", at: 100, ok: true });
 
       store.deleteDevice(ID);
 
       const rows = store.snapshotRows();
       expect(rows.devices).toHaveLength(0);
-      expect(rows.links).toHaveLength(1);
-      expect(rows.links[0]).toMatchObject({ id: "usb-vevav", device_id: null });
+      expect(rows.links.map((link) => link.id)).toEqual(["usb-other"]);
       const sightingRow = db.prepare("SELECT device_id FROM sightings WHERE id = ?").get(sightingId);
       expect(sightingRow).toMatchObject({ device_id: null });
     } finally {

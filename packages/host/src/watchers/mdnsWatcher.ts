@@ -159,6 +159,18 @@ export const DEFAULT_MBRELAY_TTL_MS = 180_000;
  * the module doc comment) — same TTL family, applied to the `services`
  * prune pass only. */
 export const DEFAULT_MBFLASH_TTL_MS = 180_000;
+/** `links(radio)` TTL for {@link Store.ageRadioLinks} (ticket 018-005;
+ * `docs/design/architecture.md` §6.2's aging rule, extended to `radio`).
+ * Run from this same watcher's re-query/aging tick, not
+ * `watchers/relaySweeper.ts`'s own scan tick, even though that module
+ * is what actually creates/updates `links(radio)` rows
+ * (`recordCandidateOutcome`) — deliberately, so radio-link aging keeps
+ * running even when the sweeper itself is disabled
+ * (`--no-sweep`/`ROBOT_CONSOLE_DISABLE_SWEEP=1`, `runtime.ts`'s own
+ * `disableSweep`), exactly the bench harness's own Layer 2/3 host
+ * instances (018-005 Step 0b). Matches the other TTLs above (180s) —
+ * bench-tunable, not final. */
+export const DEFAULT_RADIO_TTL_MS = 180_000;
 
 /** `tasks.name` this watcher heartbeats every browse cycle. */
 const TASK_NAME = "mdnsWatcher";
@@ -221,6 +233,9 @@ export interface MdnsWatcherOptions {
   /** `_mbflash._tcp` `services`-only TTL. Defaults to
    * {@link DEFAULT_MBFLASH_TTL_MS}. */
   mbflashTtlMs?: number;
+  /** `links(radio)` TTL (018-005). Defaults to
+   * {@link DEFAULT_RADIO_TTL_MS}. */
+  radioTtlMs?: number;
 }
 
 export interface MdnsWatcherHandle {
@@ -253,6 +268,7 @@ export function startMdnsWatcher(
   const mbserialTtlMs = opts.mbserialTtlMs ?? DEFAULT_MBSERIAL_TTL_MS;
   const mbrelayTtlMs = opts.mbrelayTtlMs ?? DEFAULT_MBRELAY_TTL_MS;
   const mbflashTtlMs = opts.mbflashTtlMs ?? DEFAULT_MBFLASH_TTL_MS;
+  const radioTtlMs = opts.radioTtlMs ?? DEFAULT_RADIO_TTL_MS;
 
   /** Bench defect 1 (2026-09-12): fqdn -> replay closure that redoes the
    * last-known `services`/`links` touch for that instance. Populated by
@@ -545,6 +561,11 @@ export function startMdnsWatcher(
     store.ageLinks("wifi", wifiTtlMs, at);
     store.ageLinks("mbserial", mbserialTtlMs, at);
     store.ageLinks("mbrelay", mbrelayTtlMs, at);
+    // 018-005: radio-link aging runs from this tick (not
+    // `relaySweeper.ts`'s own scan tick) so it keeps running even with
+    // the sweeper disabled -- see `DEFAULT_RADIO_TTL_MS`'s own doc
+    // comment above for why.
+    store.ageRadioLinks(radioTtlMs, at);
     store.pruneServices(serviceRowType(RELAY_FIND), mbrelayTtlMs, at);
     store.pruneServices(serviceRowType(SERIAL_FIND), mbserialTtlMs, at);
     store.pruneServices(serviceRowType(FLASH_FIND), mbflashTtlMs, at);

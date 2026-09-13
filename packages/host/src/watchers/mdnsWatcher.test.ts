@@ -11,6 +11,7 @@ import {
   DEFAULT_MBSERIAL_TTL_MS,
   DEFAULT_MBRELAY_TTL_MS,
   DEFAULT_MBFLASH_TTL_MS,
+  DEFAULT_RADIO_TTL_MS,
   type MdnsWatcherDeps,
   type MdnsWatcherOptions,
 } from "./mdnsWatcher.js";
@@ -296,6 +297,37 @@ describe("startMdnsWatcher", () => {
         const after = store.snapshotRows();
         expect(after.links.filter((l) => l.state === "stale")).toHaveLength(4);
         expect(after.services).toHaveLength(0);
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    },
+  );
+
+  it(
+    "018-005: the same aging tick also ages radio links past their ttl (relay gone), even though this module never creates radio rows itself",
+    () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      // A radio link whose relay no longer exists -- `ageRadioLinks`'s
+      // own store-level unit tests (`store/index.test.ts`) cover the
+      // full aging rule; this test's only job is proving the wiring:
+      // this watcher's tick calls it at all, with no sweeper involved.
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 0 });
+      store.upsertLink({
+        id: "radio-gopiv-via-usb-gone",
+        transport: "radio",
+        address: { relayLinkId: "usb-gone", channel: 1, group: 1 },
+        deviceId: 1198504156,
+        at: 0,
+      });
+      const handle = start(store, backend);
+      try {
+        expect(store.snapshotRows().links.find((l) => l.id === "radio-gopiv-via-usb-gone")?.state).toBe("discovered");
+
+        vi.advanceTimersByTime(DEFAULT_REQUERY_INTERVAL_MS);
+
+        expect(store.snapshotRows().links.find((l) => l.id === "radio-gopiv-via-usb-gone")?.state).toBe("stale");
       } finally {
         handle.stop();
         store.close();
@@ -687,6 +719,7 @@ describe("mdnsWatcher TTL/interval constants block", () => {
       DEFAULT_MBSERIAL_TTL_MS,
       DEFAULT_MBRELAY_TTL_MS,
       DEFAULT_MBFLASH_TTL_MS,
+      DEFAULT_RADIO_TTL_MS,
     ]) {
       expect(value).toBeGreaterThan(0);
     }
@@ -696,5 +729,6 @@ describe("mdnsWatcher TTL/interval constants block", () => {
     expect(DEFAULT_REQUERY_INTERVAL_MS).toBeLessThan(DEFAULT_MBSERIAL_TTL_MS);
     expect(DEFAULT_REQUERY_INTERVAL_MS).toBeLessThan(DEFAULT_MBRELAY_TTL_MS);
     expect(DEFAULT_REQUERY_INTERVAL_MS).toBeLessThan(DEFAULT_MBFLASH_TTL_MS);
+    expect(DEFAULT_REQUERY_INTERVAL_MS).toBeLessThan(DEFAULT_RADIO_TTL_MS);
   });
 });

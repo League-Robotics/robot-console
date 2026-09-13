@@ -339,13 +339,30 @@ export function startUsbWatcher(
   function handleUpdated(device: DaplinkDevice): void {
     const linkId = usbLinkId(device.serialNumber);
     const existing = store.reconcilerRows().links.find((link) => link.id === linkId);
+    const existingAddress = existing?.address as { path?: string } | null | undefined;
+    const address = usbLinkAddress(device);
 
     store.upsertLink({
       id: linkId,
       transport: "usb",
-      address: usbLinkAddress(device),
+      address,
       at: now(),
     });
+
+    // 018-005: a relay that has moved USB ports (`vevav`, evidenced live
+    // on the stakeholder's real state dir) leaves stale failure text on
+    // any `radio` link riding it -- e.g. "cannot open
+    // /dev/cu.usbmodem2121202" naming a path this relay no longer dials.
+    // Clear it the instant the path actually changes, regardless of this
+    // usb link's own state (a relay's own usb link is normally
+    // `connectable`/`connected`, not `discovered` -- unlike the
+    // `discovered`-only gate just below, which is a naming concern, not
+    // an address-change one). A no-op if nothing riding this link id
+    // currently carries failure text (most usb devices are robots, never
+    // named as a `relayLinkId` by any `radio` link's own address).
+    if (existingAddress?.path !== undefined && address.path !== undefined && existingAddress.path !== address.path) {
+      store.clearRadioLinkStaleText(linkId);
+    }
 
     if (!existing || existing.state !== "discovered" || attachTasks.has(device.serialNumber)) {
       // Nothing to reconsider: no prior row, a state this handler must
@@ -355,7 +372,6 @@ export function startUsbWatcher(
       return;
     }
 
-    const address = usbLinkAddress(device);
     if (address.path === undefined) {
       // Still no serial port -- nothing new for the reconciler yet.
       return;
@@ -368,7 +384,6 @@ export function startUsbWatcher(
       return;
     }
 
-    const existingAddress = existing.address as { path?: string } | null | undefined;
     if (existingAddress?.path === undefined) {
       // Never named, and the earlier attach had no serial path to offer
       // either -- give naming one more try now that one has appeared.

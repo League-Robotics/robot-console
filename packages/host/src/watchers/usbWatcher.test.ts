@@ -423,6 +423,54 @@ describe("startUsbWatcher", () => {
     }
   });
 
+  // 018-005: a relay that moves USB ports (bench evidence: `vevav`) must
+  // not leave a `radio` link's failure text naming a path the relay no
+  // longer dials. `usbLinkId` is keyed by serial number (stable across a
+  // replug), so the relay's own `links(usb)` row id never changes -- only
+  // its `address.path` does, via this same `handleUpdated` path.
+  it("018-005: a relay's own usb path change clears stale failure text on radio links riding it", async () => {
+    const store = freshStore();
+    store.upsertDevice({ id: VEVOV_ID, name: "vevov", kind: "robot", at: 0 });
+    const relayLinkId = `usb-${SERIAL_A}`;
+    store.upsertLink({ id: relayLinkId, transport: "usb", address: { path: "/dev/cu.usbmodemA" }, deviceId: VEVOV_ID, at: 0 });
+    store.upsertLink({
+      id: "radio-gopiv-via-usb-relay",
+      transport: "radio",
+      address: { relayLinkId, channel: 47, group: 60 },
+      deviceId: VEVOV_ID,
+      at: 0,
+    });
+    store.setLinkState({ id: "radio-gopiv-via-usb-relay", state: "failed", at: 0, reason: "cannot open /dev/cu.usbmodemA", failCount: 7 });
+
+    let poll = 0;
+    const listDevices = vi.fn(async () => {
+      poll++;
+      return poll === 1
+        ? [fullDevice(SERIAL_A, "/dev/cu.usbmodemA", "IOHIDDevice@A")]
+        : [fullDevice(SERIAL_A, "/dev/cu.usbmodemB", "IOHIDDevice@A")];
+    });
+    const deps: UsbWatcherDeps = { listDevices, readSwdName: async () => NAMED_VEVOV };
+    const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+    try {
+      await waitFor(() => store.snapshotRows().links.find((l) => l.id === relayLinkId)?.state === "connectable");
+      // Let the path-changing `updated` poll happen.
+      await waitFor(
+        () => JSON.parse(store.snapshotRows().links.find((l) => l.id === relayLinkId)?.address as string).path === "/dev/cu.usbmodemB",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      const radioRow = store.snapshotRows().links.find((l) => l.id === "radio-gopiv-via-usb-relay");
+      expect(radioRow?.state_reason).toBeNull();
+      // Only the text is cleared -- state/fail_count are somebody else's
+      // concern (the aging pass, or a fresh sweep outcome).
+      expect(radioRow?.state).toBe("failed");
+      expect(radioRow?.fail_count).toBe(7);
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
   it(
     "integration: an updated-promoted link is exactly what connect/reconciler.ts's own plan() schedules a " +
       "connect job for -- the reconciler's next tick, not a Connect click, is what completes bench defect 010",

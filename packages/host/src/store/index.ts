@@ -442,6 +442,29 @@ function toInt(value: boolean | undefined): number | null {
   return value === undefined ? null : value ? 1 : 0;
 }
 
+/** Best-effort `address.relayLinkId` read off a raw (still-JSON-string)
+ * `links.address` column value — used only by {@link
+ * Store.ageRadioLinks}/{@link Store.clearRadioLinkStaleText} below, which
+ * read `links` directly rather than through {@link Store.snapshotRows}
+ * (that method's own parsed-JSON contract is for callers outside this
+ * class; these two operate inside a single `withChangeBatch` transaction
+ * over a raw `SELECT`, matching {@link Store.ageLinks}'s own style).
+ * Never throws — a malformed/missing `relayLinkId` just means this row
+ * cannot be resolved to a relay, mirroring `connect/connector.ts`'s own
+ * `parseRelayAddress` "never throws on a bad row" discipline. */
+function parseRelayLinkIdFromAddress(raw: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) {
+      return undefined;
+    }
+    const relayLinkId = (parsed as Record<string, unknown>).relayLinkId;
+    return typeof relayLinkId === "string" ? relayLinkId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** {@link Store.upsertDevice}'s fallback for a brand-new row when the
  * caller omitted `kind` -- `devices.kind` is `NOT NULL`, so *something*
  * must be written, but this is the schema's own required-column
@@ -824,6 +847,103 @@ export class Store {
       const keys: (string | null)[] = [];
       for (const row of stale) {
         stmt.run(now, row.id);
+        keys.push(row.id);
+      }
+      return keys;
+    });
+  }
+
+  /** Radio-transport counterpart to {@link ageLinks} (architecture.md
+   * §6.2's aging rule, extended to `radio` — ticket 018-005, issue
+   * `bench-stale-radio-links-and-duplicate-rows-persist.md`). Marks a
+   * `radio` link `stale` when either:
+   *
+   * - its relay link (named by its own `address.relayLinkId`) no longer
+   *   exists among current `links` rows, or is itself `stale`; or
+   * - it has had no *successful* sighting (`sightings.ok = 1`, matched
+   *   by `via_link_id = <relayLinkId>` and the same `device_id`) within
+   *   `ttlMs`.
+   *
+   * Deliberately not `last_seen`-based like {@link ageLinks}:
+   * `watchers/relaySweeper.ts`'s own `recordCandidateOutcome` bumps a
+   * radio link's `last_seen` via `upsertLink` on *every* sweep attempt,
+   * success or failure — so a name that keeps being probed and keeps
+   * failing every single pass would never age under a plain `last_seen
+   * < now - ttl` rule. This is exactly the bench-evidenced bug this
+   * ticket fixes: `radio-gopiv-via-usb-…`/`radio-vevov-via-usb-…` sat in
+   * `failed`/`discovered` for 849 minutes because nothing else ever
+   * re-touched them, and a `last_seen`-based TTL cannot tell "hasn't
+   * been probed in a while" apart from "keeps being probed and keeps
+   * failing." Never ages a link with an open `sessions` row, mirroring
+   * {@link ageLinks}'s own safety net (a bridged radio session outlives
+   * whatever its own `last_seen`/last-successful-sighting says).
+   * Returns the number of links aged. */
+  ageRadioLinks(ttlMs: number, now: number): number {
+    const cutoff = now - ttlMs;
+    return this.withChangeBatch("links", () => {
+      const allLinks = this.db.prepare(`SELECT id, transport, address, state, device_id FROM links`).all() as Array<{
+        id: string;
+        transport: string;
+        address: string;
+        state: string;
+        device_id: number | null;
+      }>;
+      const linkById = new Map(allLinks.map((l) => [l.id, l] as const));
+      const sessionLinkIds = new Set(
+        (this.db.prepare(`SELECT link_id FROM sessions`).all() as Array<{ link_id: string }>).map((r) => r.link_id),
+      );
+      const lastOkStmt = this.db.prepare(
+        `SELECT MAX(at) as maxAt FROM sightings WHERE transport = 'radio' AND via_link_id = ? AND ok = 1 AND device_id IS ?`,
+      );
+      const staleStmt = this.db.prepare(
+        "UPDATE links SET state = 'stale', state_reason = 'ttl-expired', state_since = ? WHERE id = ?",
+      );
+      const keys: (string | null)[] = [];
+      for (const link of allLinks) {
+        if (link.transport !== "radio" || link.state === "stale" || sessionLinkIds.has(link.id)) {
+          continue;
+        }
+        const relayLinkId = parseRelayLinkIdFromAddress(link.address);
+        const relay = relayLinkId !== undefined ? linkById.get(relayLinkId) : undefined;
+        const relayGoneOrStale = relayLinkId === undefined || relay === undefined || relay.state === "stale";
+        let shouldAge = relayGoneOrStale;
+        if (!shouldAge) {
+          const row = lastOkStmt.get(relayLinkId as string, link.device_id) as { maxAt: number | null } | undefined;
+          const lastOk = row?.maxAt ?? null;
+          shouldAge = lastOk === null || lastOk < cutoff;
+        }
+        if (shouldAge) {
+          staleStmt.run(now, link.id);
+          keys.push(link.id);
+        }
+      }
+      return keys;
+    });
+  }
+
+  /** Clears `state_reason` on every `radio`-transport link riding
+   * `relayLinkId` that currently carries failure text — called
+   * (`watchers/usbWatcher.ts`'s `handleUpdated`) the moment a relay's
+   * own physical USB address actually changes (ticket 018-005: a radio
+   * link's stale failure text, e.g. `"cannot open
+   * /dev/cu.usbmodem2121202"`, must not keep naming a USB path the relay
+   * no longer dials once it has moved to a new one). Leaves
+   * `state`/`state_since`/`fail_count` untouched — only the
+   * human-readable reason text is what actually goes stale here; the
+   * link's own state transitions (if any) are still exclusively {@link
+   * setLinkState}'s concern. Returns the number of links cleared. */
+  clearRadioLinkStaleText(relayLinkId: string): number {
+    return this.withChangeBatch("links", () => {
+      const rows = this.db
+        .prepare(`SELECT id, address FROM links WHERE transport = 'radio' AND state_reason IS NOT NULL`)
+        .all() as Array<{ id: string; address: string }>;
+      const stmt = this.db.prepare(`UPDATE links SET state_reason = NULL WHERE id = ?`);
+      const keys: (string | null)[] = [];
+      for (const row of rows) {
+        if (parseRelayLinkIdFromAddress(row.address) !== relayLinkId) {
+          continue;
+        }
+        stmt.run(row.id);
         keys.push(row.id);
       }
       return keys;

@@ -299,6 +299,50 @@ describe("connectAndIdentify -- success path, every transport", () => {
     store.close();
   });
 
+  // 018-005: a radio link's own `address` only ever carries
+  // `{relayLinkId, channel, group}` (never a physical usb path -- see
+  // `radioLink()`'s own fixture above); `buildStreamPlan`'s
+  // `resolveRelayPhysical(store, relay.relayLinkId, ...)` call resolves
+  // the relay's *current* `links` row fresh, every single connect
+  // attempt, rather than any value cached when the radio link's own row
+  // was created. This is the bench-evidenced fix's other half (the
+  // aging half lives in `store/index.test.ts`'s own `ageRadioLinks`
+  // suite): `vevav` moved usb ports (`/dev/cu.usbmodem2121202` ->
+  // `/dev/cu.usbmodem2121402`) and any radio link riding it must dial
+  // the new path, not the one recorded at radio-link-creation time.
+  it("radio: resolves the relay's CURRENT usb path at connect time, not a value cached when the radio link's own row was created", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY-SERIAL";
+    store.upsertLink({ id: relayLinkId, transport: "usb", address: { path: "/dev/cu.usbmodem2121202" }, at: 1 });
+
+    const link = radioLink(relayLinkId);
+    seedLink(store, link); // the radio link's own address never names a usb path at all
+
+    // The relay moves usb ports before this connect attempt --
+    // `watchers/usbWatcher.ts`'s `handleUpdated` patches this SAME
+    // `relayLinkId` row's address in place (its id is stable across a
+    // replug, keyed by usb serial, not path).
+    store.upsertLink({ id: relayLinkId, transport: "usb", address: { path: "/dev/cu.usbmodem2121402" }, at: 2 });
+
+    const stream = new RelayByteStream(ROBOT_BANNER);
+    let openedPath: string | undefined;
+    const connector = createConnector(store, {
+      ...baseDeps(stream, realScheduler),
+      createSerialStream: (path: string) => {
+        openedPath = path;
+        return stream;
+      },
+    });
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await promise;
+
+    expect(openedPath).toBe("/dev/cu.usbmodem2121402");
+    store.close();
+  });
+
   it("a device identified as a relay over usb is never marked owned", async () => {
     const store = freshStore();
     const stream = new BannerByteStream(RELAY_BANNER);

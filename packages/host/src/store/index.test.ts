@@ -396,6 +396,170 @@ describe("Store: upsertLink / setLinkState / ageLinks", () => {
   });
 });
 
+// ---------------------------------------------------------------------
+// ageRadioLinks / clearRadioLinkStaleText -- ticket 018-005
+// ---------------------------------------------------------------------
+
+describe("Store: ageRadioLinks (018-005)", () => {
+  it("ages a radio link past its ttl with no successful sighting, even though last_seen was refreshed by later FAILED attempts", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 0 });
+      store.upsertLink({ id: "usb-relay", transport: "usb", address: { path: "/dev/cu.relay" }, at: 0 });
+      store.upsertLink({ id: "radio-gopiv-via-usb-relay", transport: "radio", address: { relayLinkId: "usb-relay", channel: 47, group: 60 }, deviceId: 1198504156, at: 0 });
+
+      // A single successful sighting long ago, then only failures --
+      // last_seen (bumped by upsertLink on every attempt, ok or not)
+      // stays "fresh" right up to `now`, but there has been no SUCCESS
+      // within the ttl. A last_seen-based rule (ageLinks's own) would
+      // never catch this -- that's the exact bench-evidenced gap.
+      store.recordSighting({ deviceId: 1198504156, transport: "radio", viaLinkId: "usb-relay", at: 0, ok: true });
+      store.upsertLink({ id: "radio-gopiv-via-usb-relay", transport: "radio", address: { relayLinkId: "usb-relay", channel: 47, group: 60 }, deviceId: 1198504156, at: 900 });
+      store.recordSighting({ deviceId: 1198504156, transport: "radio", viaLinkId: "usb-relay", at: 900, ok: false });
+
+      const aged = store.ageRadioLinks(500, 1000); // cutoff = 500; last ok sighting was at 0
+      expect(aged).toBe(1);
+      const row = store.snapshotRows().links.find((l) => l.id === "radio-gopiv-via-usb-relay");
+      expect(row?.state).toBe("stale");
+      expect(row?.state_reason).toBe("ttl-expired");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("does not age a radio link with a recent successful sighting, even if it was probed via a relay long ago", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1779042365, name: "getez", kind: "robot", at: 0 });
+      store.upsertLink({ id: "usb-relay", transport: "usb", address: { path: "/dev/cu.relay" }, at: 0 });
+      store.upsertLink({ id: "radio-vevov-via-usb-relay", transport: "radio", address: { relayLinkId: "usb-relay", channel: 37, group: 43 }, deviceId: 1779042365, at: 900 });
+      store.recordSighting({ deviceId: 1779042365, transport: "radio", viaLinkId: "usb-relay", at: 900, ok: true });
+
+      const aged = store.ageRadioLinks(500, 1000); // cutoff = 500; last ok sighting was at 900
+      expect(aged).toBe(0);
+      expect(store.snapshotRows().links.find((l) => l.id === "radio-vevov-via-usb-relay")?.state).toBe("discovered");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("ages a radio link whose relay link no longer exists", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 0 });
+      store.upsertLink({ id: "radio-gopiv-via-gone", transport: "radio", address: { relayLinkId: "usb-gone", channel: 1, group: 1 }, deviceId: 1198504156, at: 900 });
+      const aged = store.ageRadioLinks(500, 1000);
+      expect(aged).toBe(1);
+      expect(store.snapshotRows().links.find((l) => l.id === "radio-gopiv-via-gone")?.state).toBe("stale");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("ages a radio link whose relay link is itself stale, regardless of the radio link's own recent sighting", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 0 });
+      store.upsertLink({ id: "usb-relay", transport: "usb", address: { path: "/dev/cu.relay" }, at: 0 });
+      store.setLinkState({ id: "usb-relay", state: "stale", at: 900 });
+      store.upsertLink({ id: "radio-gopiv-via-usb-relay", transport: "radio", address: { relayLinkId: "usb-relay", channel: 47, group: 60 }, deviceId: 1198504156, at: 900 });
+      store.recordSighting({ deviceId: 1198504156, transport: "radio", viaLinkId: "usb-relay", at: 900, ok: true });
+
+      const aged = store.ageRadioLinks(500, 1000);
+      expect(aged).toBe(1);
+      expect(store.snapshotRows().links.find((l) => l.id === "radio-gopiv-via-usb-relay")?.state).toBe("stale");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("is idempotent -- a radio link already stale is not re-aged", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 0 });
+      store.upsertLink({ id: "radio-gopiv-via-gone", transport: "radio", address: { relayLinkId: "usb-gone", channel: 1, group: 1 }, deviceId: 1198504156, at: 900 });
+      expect(store.ageRadioLinks(500, 1000)).toBe(1);
+      expect(store.ageRadioLinks(500, 2000)).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("never ages a radio link with an open session", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 0 });
+      store.upsertLink({ id: "radio-gopiv-via-gone", transport: "radio", address: { relayLinkId: "usb-gone", channel: 1, group: 1 }, deviceId: 1198504156, at: 900 });
+      store.openSession("radio-gopiv-via-gone", 900);
+      const aged = store.ageRadioLinks(500, 1000);
+      expect(aged).toBe(0);
+      expect(store.snapshotRows().links.find((l) => l.id === "radio-gopiv-via-gone")?.state).toBe("discovered");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("never touches a non-radio link", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertLink({ id: "wifi-old", transport: "wifi", address: {}, at: 0 });
+      const aged = store.ageRadioLinks(500, 1000);
+      expect(aged).toBe(0);
+      expect(store.snapshotRows().links.find((l) => l.id === "wifi-old")?.state).toBe("discovered");
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("Store: clearRadioLinkStaleText (018-005)", () => {
+  it("clears state_reason on every radio link naming the given relayLinkId, leaving state untouched", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 0 });
+      store.upsertLink({ id: "usb-relay", transport: "usb", address: { path: "/dev/cu.relayOLD" }, at: 0 });
+      store.upsertLink({ id: "radio-gopiv-via-usb-relay", transport: "radio", address: { relayLinkId: "usb-relay", channel: 47, group: 60 }, deviceId: 1198504156, at: 0 });
+      store.setLinkState({ id: "radio-gopiv-via-usb-relay", state: "failed", at: 100, reason: "cannot open /dev/cu.relayOLD", failCount: 3 });
+
+      const cleared = store.clearRadioLinkStaleText("usb-relay");
+      expect(cleared).toBe(1);
+
+      const row = store.snapshotRows().links.find((l) => l.id === "radio-gopiv-via-usb-relay");
+      expect(row?.state_reason).toBeNull();
+      // state/fail_count are untouched -- only the text is stale here.
+      expect(row?.state).toBe("failed");
+      expect(row?.fail_count).toBe(3);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("is a no-op when no radio link names the given relayLinkId, or none carries failure text", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 0 });
+      store.upsertLink({ id: "usb-relay", transport: "usb", address: { path: "/dev/cu.relay" }, at: 0 });
+      store.upsertLink({ id: "radio-gopiv-via-usb-relay", transport: "radio", address: { relayLinkId: "usb-relay", channel: 47, group: 60 }, deviceId: 1198504156, at: 0 });
+      expect(store.clearRadioLinkStaleText("usb-relay")).toBe(0);
+      expect(store.clearRadioLinkStaleText("usb-some-other-relay")).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("never clears a mbrelay or other-transport link's failure text", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertLink({ id: "mbrelay-POOL", transport: "mbrelay", address: { relayLinkId: "usb-relay", channel: 1, group: 1 }, at: 0 });
+      store.setLinkState({ id: "mbrelay-POOL", state: "failed", at: 100, reason: "cannot open /dev/cu.relayOLD" });
+      expect(store.clearRadioLinkStaleText("usb-relay")).toBe(0);
+      expect(store.snapshotRows().links.find((l) => l.id === "mbrelay-POOL")?.state_reason).toBe("cannot open /dev/cu.relayOLD");
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe("Store: upsertService", () => {
   it("upserts keyed on (instance, type), preserving first_seen and refreshing the rest", () => {
     const { store } = freshStore();

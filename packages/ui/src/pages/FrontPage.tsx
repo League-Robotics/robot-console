@@ -94,7 +94,8 @@ import {
   useUnassigned,
   useWsActions,
 } from "../ws/WsProvider";
-import { cardLinks, connectionLabel, hiddenLinkCount, isCalibrationProgram, isLinkAnswering, isLinkUsable, lastCheckedText, linkStateText, nameDisplay, roleDisplay } from "../deviceDisplay";
+import { cardLinks, connectionLabel, isCalibrationProgram, isLinkAnswering, isLinkUsable, lastCheckedText, linkStateText, nameDisplay, roleDisplay } from "../deviceDisplay";
+import { TransportIcon, transportShortName } from "../components/TransportIcon";
 import { FlashDialog } from "../components/FlashDialog";
 import { RelayConnectControls } from "../components/RelayConnectControls";
 import "./FrontPage.css";
@@ -457,16 +458,21 @@ function DeviceCard({
             {linked && <span className="device-linked-pill">Linked</span>}
           </div>
 
-          <dl className="device-fields">
-            <div>
-              <dt>Role</dt>
-              <dd>{roleDisplay(device)}</dd>
-            </div>
-          </dl>
+          <p className="device-role" data-testid={`device-role-${device.id}`}>
+            {roleDisplay(device)}
+          </p>
 
+          {/* Stakeholder (2026-09-13): "I don't care if there's MB serial
+              and radio. I just want to get to the device ... make a
+              little card that's got a radio icon / server icon / Wi-Fi
+              icon / USB icon. If I hover over the icon, give me a pop-up
+              with all the details." One chip per live link; the full
+              row (state, reason, last checked, Connect) lives in the
+              chip's hover/focus popover. Everything older is on the
+              robot page's Diagnostics tab. */}
           <ul className="device-connections" aria-label={`Connections for ${device.name}`}>
             {cardLinks(device).map((link) => (
-              <DeviceConnectionRow
+              <LinkChip
                 key={link.id}
                 device={device}
                 link={link}
@@ -477,18 +483,6 @@ function DeviceCard({
               />
             ))}
           </ul>
-          {/* Ticket 018-010: a quiet, one-line summary for whatever
-              `cardLinks` hid -- aged/stale connections (and a USB link
-              whose path a different device now holds -- see that
-              function's own doc comment) are never listed as rows, but
-              a student/instructor should still be able to tell "this
-              card is hiding old history" from "there was never anything
-              else". */}
-          {hiddenLinkCount(device) > 0 && (
-            <p className="device-connections-hidden" data-testid={`device-hidden-links-${device.id}`}>
-              {hiddenLinkCount(device)} older connection{hiddenLinkCount(device) === 1 ? "" : "s"} hidden
-            </p>
-          )}
         </div>
 
         {primary && (
@@ -574,6 +568,63 @@ function DeviceCard({
  * own): a `setInterval` armed only while `link.nextRetryAt` is set, and
  * self-clearing once that moment has passed, so a link with no pending
  * retry (the common case) never starts a timer at all. */
+/** The chip's own state class: linked (answering session), open
+ * (connected but not yet answering), busy (connecting), failed, or
+ * idle (connectable/discovered/closed). */
+function chipState(link: SnapshotLink): "linked" | "open" | "busy" | "failed" | "idle" {
+  if (isLinkAnswering(link)) {
+    return "linked";
+  }
+  if (link.state === "connected") {
+    return "open";
+  }
+  if (link.state === "connecting") {
+    return "busy";
+  }
+  if (link.state === "failed" || link.state === "unresponsive") {
+    return "failed";
+  }
+  return "idle";
+}
+
+/** One connection chip: transport icon + one short word, with the full
+ * `DeviceConnectionRow` in a popover shown on hover or keyboard focus. A
+ * usable chip is itself a link into the device over that connection. */
+function LinkChip(props: {
+  device: SnapshotDevice;
+  link: SnapshotLink;
+  primary: SnapshotLink | undefined;
+  sendable: boolean;
+  onLinkConnect: (linkId: string) => void;
+  notice: LinkNotice | undefined;
+}) {
+  const { device, link } = props;
+  const state = chipState(link);
+  const short = link.via ? `${transportShortName(link.transport)} via ${link.via.relayName}` : transportShortName(link.transport);
+  const face = (
+    <>
+      <TransportIcon transport={link.transport} />
+      <span className="device-chip-text">{short}</span>
+    </>
+  );
+  return (
+    <li className="device-chip" data-state={state} data-testid={`device-chip-${link.id}`}>
+      {isLinkUsable(link) ? (
+        <Link to={`/d/${link.id}`} className="device-chip-face" aria-label={`Open ${device.name} over ${connectionLabel(link)}`}>
+          {face}
+        </Link>
+      ) : (
+        <button type="button" className="device-chip-face" aria-label={`${connectionLabel(link)}: ${linkStateText(link, undefined, device.kind)}`}>
+          {face}
+        </button>
+      )}
+      <div className="device-chip-popover" role="tooltip">
+        <DeviceConnectionRow {...props} />
+      </div>
+    </li>
+  );
+}
+
 function DeviceConnectionRow({
   device,
   link,
@@ -606,7 +657,7 @@ function DeviceConnectionRow({
   }, [link.nextRetryAt]);
 
   return (
-    <li className="device-connection" data-testid={`device-link-${link.id}`}>
+    <div className="device-connection" data-testid={`device-link-${link.id}`}>
       <span className="device-connection-label">{connectionLabel(link)}</span>
       <span className={link.state === "connected" ? "device-connection-state device-connection-open" : "device-connection-state"}>
         {linkStateText(link, now, device.kind)}
@@ -642,7 +693,7 @@ function DeviceConnectionRow({
           Connect
         </button>
       )}
-    </li>
+    </div>
   );
 }
 

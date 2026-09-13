@@ -330,3 +330,109 @@
   font-size: 0.8rem;
   color: var(--rc-text-muted);
 }
+
+/* Stakeholder (2026-09-13): the card shows the role as one quiet line
+   and one icon chip per live connection; every detail lives in the
+   chip's hover/focus popover, and history on the Diagnostics tab. */
+.device-role {
+  margin: 0.15rem 0 0;
+  font-size: 0.8rem;
+  color: var(--rc-text-muted);
+}
+
+.device-connections {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.7rem;
+}
+
+.device-chip {
+  position: relative;
+}
+
+.device-chip-face {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.7rem 0.35rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text-muted);
+  font: inherit;
+  font-size: 0.82rem;
+  line-height: 1;
+  text-decoration: none;
+  cursor: default;
+}
+
+a.device-chip-face {
+  cursor: pointer;
+}
+
+.device-chip[data-state="linked"] .device-chip-face {
+  background: var(--rc-ok-bg);
+  border-color: transparent;
+  color: var(--rc-ok-text);
+  font-weight: 600;
+}
+
+.device-chip[data-state="open"] .device-chip-face {
+  border-color: var(--rc-accent);
+  color: var(--rc-accent);
+}
+
+.device-chip[data-state="busy"] .device-chip-face {
+  border-style: dashed;
+  color: var(--rc-text);
+}
+
+.device-chip[data-state="failed"] .device-chip-face {
+  background: var(--rc-warn-bg);
+  border-color: var(--rc-warn-border);
+  color: var(--rc-warn-text);
+}
+
+.device-chip-face:hover,
+.device-chip-face:focus-visible {
+  outline: 2px solid var(--rc-accent);
+  outline-offset: 1px;
+}
+
+.device-chip-popover {
+  display: none;
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 0.4rem);
+  left: 0;
+  min-width: 18rem;
+  max-width: min(32rem, 90vw);
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+  font-size: 0.85rem;
+}
+
+.device-chip:hover .device-chip-popover,
+.device-chip:focus-within .device-chip-popover {
+  display: block;
+}
+
+/* keep the popover open while the pointer crosses the gap */
+.device-chip-popover::before {
+  content: "";
+  position: absolute;
+  top: -0.5rem;
+  left: 0;
+  right: 0;
+  height: 0.5rem;
+}
+
+.device-chip-popover .device-connection {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+}

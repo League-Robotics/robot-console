@@ -155,7 +155,7 @@ describe("RobotPage", () => {
     const { el } = mountRobotPage();
     const row = el.querySelector(".robot-page-title-row")!;
     expect(row.querySelector("h2")?.textContent).toBe("vevav");
-    expect(Array.from(row.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Functions & charts", "Configuration"]);
+    expect(Array.from(row.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Functions & charts", "Configuration", "Diagnostics"]);
     expect(el.querySelector('[data-testid="robot-tab-main"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
@@ -177,7 +177,7 @@ describe("RobotPage", () => {
 
   it("OOP 2026-09-10: a calibration robot gets a Calibration tab with both wizards, the code block, and the current calibration", () => {
     const { el } = mountRobotPage(robotDevice({ program: "calibration-1", version: "1" }));
-    expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Calibration", "Functions & charts", "Configuration"]);
+    expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Calibration", "Functions & charts", "Configuration", "Diagnostics"]);
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
     });

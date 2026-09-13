@@ -282,6 +282,20 @@ describe("multi-link device (host already groups links under one device)", () =>
   // itself, not merely "isn't the primary", so the non-usable wifi row
   // gets no arrow -- only a Connect button, since `failed` is in
   // `CONNECT_BUTTON_STATES`.
+  it("stakeholder 2026-09-13: each live link is an icon chip; the usable chip opens the device, the failed chip carries the details in its popover", () => {
+    const el = mount(withRouter(<DevicesList status="open" devices={[multiLinkDevice()]} unassigned={[]} sendable={true} />));
+    const usbChip = el.querySelector('[data-testid="device-chip-usb-vevov"]');
+    const wifiChip = el.querySelector('[data-testid="device-chip-wifi-vevov"]');
+    expect(usbChip?.getAttribute("data-state")).toBe("linked");
+    expect(usbChip?.querySelector('a.device-chip-face')?.getAttribute("href")).toBe("/d/usb-vevov");
+    expect(usbChip?.querySelector('svg[data-icon="usb"]')).not.toBeNull();
+    expect(wifiChip?.getAttribute("data-state")).toBe("failed");
+    expect(wifiChip?.querySelector("a.device-chip-face")).toBeNull();
+    expect(wifiChip?.querySelector('svg[data-icon="wifi"]')).not.toBeNull();
+    expect(wifiChip?.querySelector(".device-chip-popover")?.textContent).toContain("Couldn't connect: could not reach vevov.local:7654");
+    expect(el.querySelector('[data-testid="device-role-1"]')?.textContent).toBe("Role unknown");
+  });
+
   it("gives only the usable (primary) link a card open arrow; the non-usable link gets a row Connect button, no arrow", () => {
     const opens: string[] = [];
     const el = mount(

@@ -513,14 +513,24 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     broadcast(buildCurrentSnapshot());
   }
 
-  // Every currently-open session gets a raw-line subscription exactly
-  // once, so the console log echoes inbound ("rx") device chatter --
-  // connect/harvester.ts's own onLine/onClose/onAckNack subscriptions on
-  // the same LineLink are independent of this one (LineLink's `onLine`/
-  // `onRawLine` support any number of listeners; see that module's own
-  // doc comment). A WeakSet, not a Set, so a session this module has
-  // subscribed to can still be garbage-collected once the reconciler
-  // itself drops it (a close, or a fresh session replacing it).
+  // Every currently-open session gets an inbound-line subscription
+  // exactly once, so the console log echoes inbound ("rx") device
+  // chatter -- connect/harvester.ts's own onLine/onClose/onAckNack
+  // subscriptions on the same LineLink are independent of this one
+  // (LineLink's `onLine`/`onRawLine`/`onInboundLine` support any number
+  // of listeners; see that module's own doc comment). A WeakSet, not a
+  // Set, so a session this module has subscribed to can still be
+  // garbage-collected once the reconciler itself drops it (a close, or a
+  // fresh session replacing it).
+  //
+  // **Item G (team-lead, 2026-09-13)**: this used to read `onRawLine`,
+  // which only fires for a line `receive()` could not route to a decoded
+  // shape (unrouted or malformed) -- so a real, successfully-decoded
+  // reply (`id`/`status`/`ack`/`nack`) never reached the student console
+  // at all; only unsolicited `DBG:` lines (also unroutable) ever showed.
+  // `onInboundLine` fires for every inbound line regardless of how
+  // `receive()` classified it, so every reply is now broadcast exactly
+  // once -- see `LineLink.onInboundLine`'s own doc comment.
   const subscribedSessions = new WeakSet<ConnectedSession>();
   function ensureLineSubscriptions(): void {
     for (const session of runtime.reconciler.sessions.values()) {
@@ -528,7 +538,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
         continue;
       }
       subscribedSessions.add(session);
-      session.link.onRawLine((line: string) => {
+      session.link.onInboundLine((line: string) => {
         broadcast({ type: "line", linkId: session.linkId, direction: "rx", line, seq: nextSeq() }, { throttle: true });
       });
     }

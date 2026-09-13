@@ -92,6 +92,11 @@ function fakeWebSocketServer(): WebSocketServerLike & { triggerConnection: (ws: 
 function fakeLink(overrides: Partial<Record<string, unknown>> = {}) {
   const lineListeners: Array<(decoded: { verb: string; fields: readonly string[] }) => void> = [];
   const rawLineListeners: Array<(line: string) => void> = [];
+  // Item G (team-lead, 2026-09-13): server.ts's console-echo subscription
+  // reads `onInboundLine` now, not `onRawLine` -- see that method's own
+  // doc comment on `LineLink`. This fake needs its own listener list so
+  // `ensureLineSubscriptions` has a real function to call.
+  const inboundLineListeners: Array<(line: string) => void> = [];
   return {
     sendLine: vi.fn(),
     sendCommand: vi.fn((verb: string, fields: readonly unknown[] = []) => `${verb} ${fields.join(" ")}\n`),
@@ -110,12 +115,22 @@ function fakeLink(overrides: Partial<Record<string, unknown>> = {}) {
         if (i >= 0) rawLineListeners.splice(i, 1);
       };
     }),
+    onInboundLine: vi.fn((listener: (line: string) => void) => {
+      inboundLineListeners.push(listener);
+      return () => {
+        const i = inboundLineListeners.indexOf(listener);
+        if (i >= 0) inboundLineListeners.splice(i, 1);
+      };
+    }),
     close: vi.fn().mockResolvedValue(undefined),
     _emitLine: (decoded: { verb: string; fields: readonly string[] }) => {
       for (const l of lineListeners) l(decoded);
     },
     _emitRawLine: (line: string) => {
       for (const l of rawLineListeners) l(line);
+    },
+    _emitInboundLine: (line: string) => {
+      for (const l of inboundLineListeners) l(line);
     },
     ...overrides,
   };
@@ -730,6 +745,53 @@ describe("server.ts: line/send-command via runtime.reconciler.sessions", () => {
 
     expect(session.link.sendCommand).not.toHaveBeenCalled();
     expect(session.link.sendUnsequenced).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------
+  // Item G (team-lead, 2026-09-13): a real, successfully-decoded reply
+  // (id/status/ack/nack) never reached the student console because this
+  // subscription used to read `onRawLine`, which only ever fires for a
+  // line `receive()` could not route to a decoded shape. It now reads
+  // `onInboundLine`, which fires for every inbound line -- see
+  // `LineLink.onInboundLine`'s own doc comment.
+  // -------------------------------------------------------------------
+  it("broadcasts a decoded reply line (delivered via onInboundLine) as an rx line -- the bench defect this fixes", async () => {
+    const h = await harness();
+    const session = fakeSession("usb-1");
+    h.runtime.sessionsByLink.set("usb-1", session);
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    // `ensureLineSubscriptions` runs on `store.onChange` -- a store
+    // mutation (mirroring the snapshot-broadcast test's own pattern) is
+    // what actually registers this session's `onInboundLine` listener.
+    h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+    await flush();
+    ws.sent.length = 0;
+
+    (session.link as unknown as { _emitInboundLine: (line: string) => void })._emitInboundLine(
+      "id diffdrive calibration-0.20260913.1 1.20260912.8 gopiv",
+    );
+    await flush();
+
+    const rx = ws.sent.find((m) => m.type === "line" && (m as { direction?: string }).direction === "rx");
+    expect(rx).toMatchObject({ type: "line", linkId: "usb-1", direction: "rx", line: "id diffdrive calibration-0.20260913.1 1.20260912.8 gopiv" });
+  });
+
+  it("still broadcasts an unrouted/foreign line as an rx line via the same subscription (onRawLine's own former case is not lost)", async () => {
+    const h = await harness();
+    const session = fakeSession("usb-1");
+    h.runtime.sessionsByLink.set("usb-1", session);
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+    await flush();
+    ws.sent.length = 0;
+
+    (session.link as unknown as { _emitInboundLine: (line: string) => void })._emitInboundLine("beep boop overheard");
+    await flush();
+
+    const rx = ws.sent.find((m) => m.type === "line" && (m as { direction?: string }).direction === "rx");
+    expect(rx).toMatchObject({ type: "line", linkId: "usb-1", direction: "rx", line: "beep boop overheard" });
   });
 });
 

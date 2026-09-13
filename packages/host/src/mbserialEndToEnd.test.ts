@@ -220,6 +220,14 @@ function startFakeMbserialRobot(): { server: Server; port: Promise<number>; sock
             // (already `1` immediately after `connect()`'s own `HELLO`,
             // before any command is ever sent).
             socket.write(`ack ${stopMatch[1]} 7 none\n`);
+          } else if (line === "ID") {
+            // Item G (team-lead, 2026-09-13): `ID` is unsequenced (not
+            // one of protocol.md's 13 sequenced verbs), so this reply
+            // carries no `#<id>` suffix -- matches the live-hardware
+            // evidence the fix for this bench defect was based on
+            // (`id diffdrive calibration-0.20260913.1 1.20260912.8
+            // gopiv`).
+            socket.write(`id diffdrive calibration-0.20260913.1 1.20260912.8 ${ROBOT_NAME}\n`);
           }
         }
         newlineIndex = buffer.indexOf("\n");
@@ -381,6 +389,29 @@ describe("mbserial end to end (sprint 016 ticket 006): fake mDNS + real loopback
     expect(session?.link.session.lastDone).toBe(7);
     const lineMessages = ws.sent.filter((m): m is Extract<ServerMessage, { type: "line" }> => m.type === "line");
     expect(lineMessages.some((m) => m.direction === "tx" && m.line.startsWith("STOP"))).toBe(true);
+
+    // Item G (team-lead, 2026-09-13): a decoded reply (`id`) must reach
+    // the student console as an "rx" line broadcast -- before this fix,
+    // server.ts's console-echo subscription read `onRawLine`, which
+    // never fires for a well-formed, routable reply verb like `id`
+    // (only for unrouted/malformed lines), so this exact reply was
+    // silently dropped and the console showed nothing for it.
+    ws.sent.length = 0;
+    ws.emit(
+      "message",
+      Buffer.from(JSON.stringify({ type: "send-command", linkId, verb: "ID", fields: [] })),
+      false,
+    );
+    await waitFor(() =>
+      ws.sent.some(
+        (m): m is Extract<ServerMessage, { type: "line" }> =>
+          m.type === "line" && m.direction === "rx" && m.line.startsWith("id "),
+      ),
+    );
+    const idReply = ws.sent.find(
+      (m): m is Extract<ServerMessage, { type: "line" }> => m.type === "line" && m.direction === "rx" && m.line.startsWith("id "),
+    );
+    expect(idReply?.line).toBe(`id diffdrive calibration-0.20260913.1 1.20260912.8 ${ROBOT_NAME}`);
 
     // session-close
     ws.emit("message", Buffer.from(JSON.stringify({ type: "session-close", linkId })), false);

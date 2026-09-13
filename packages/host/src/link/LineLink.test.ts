@@ -260,6 +260,67 @@ describe("LineLink ack/nack sequencing", () => {
 });
 
 // ---------------------------------------------------------------------
+// onInboundLine (item G, team-lead 2026-09-13): a fourth, additive tap
+// that fires for EVERY inbound raw line -- decoded, unrouted, or
+// malformed alike -- unlike onRawLine, which fires only for a line
+// receive() could not route to a decoded shape. Bench root cause: a
+// real, successfully-decoded reply (id/status/ack/nack) never reached
+// the student console because server.ts's own broadcast read only
+// onRawLine -- see LineLink.onInboundLine's own doc comment.
+// ---------------------------------------------------------------------
+
+describe("LineLink.onInboundLine", () => {
+  it("a decoded reply line (a well-formed, routable verb) fires both onLine and onInboundLine, not just onLine", async () => {
+    const { link, stream } = await connectedLink();
+    const lines: unknown[] = [];
+    const inbound: string[] = [];
+    link.onLine((line) => lines.push(line));
+    link.onInboundLine((raw) => inbound.push(raw));
+    stream.emitData("id diffdrive calibration-0.20260913.1 1.20260912.8 gopiv\n");
+    expect(lines).toHaveLength(1);
+    expect(inbound).toEqual(["id diffdrive calibration-0.20260913.1 1.20260912.8 gopiv"]);
+  });
+
+  it("an unrouted (foreign) line fires both onRawLine and onInboundLine", async () => {
+    const { link, stream } = await connectedLink();
+    const raws: string[] = [];
+    const inbound: string[] = [];
+    link.onRawLine((raw) => raws.push(raw));
+    link.onInboundLine((raw) => inbound.push(raw));
+    stream.emitData("beep boop overheard\n");
+    expect(raws).toEqual(["beep boop overheard"]);
+    expect(inbound).toEqual(["beep boop overheard"]);
+  });
+
+  it("a well-formed ack fires onAckNack and onInboundLine, not onRawLine", async () => {
+    const { link, stream } = await connectedLink();
+    link.sendCommand("STOP"); // id 1
+    await flush();
+    const acks: unknown[] = [];
+    const raws: string[] = [];
+    const inbound: string[] = [];
+    link.onAckNack((event) => acks.push(event));
+    link.onRawLine((raw) => raws.push(raw));
+    link.onInboundLine((raw) => inbound.push(raw));
+    stream.emitData("ack 1 7 none\n");
+    expect(acks).toHaveLength(1);
+    expect(raws).toEqual([]);
+    expect(inbound).toEqual(["ack 1 7 none"]);
+  });
+
+  it("a line consumed as the identify() banner reply does NOT fire onInboundLine", async () => {
+    const { link, stream } = await connectedLink();
+    const inbound: string[] = [];
+    link.onInboundLine((raw) => inbound.push(raw));
+    const identifyPromise = link.identify();
+    await flush();
+    stream.emitData(`${BANNER_LINE}\n`);
+    await identifyPromise;
+    expect(inbound).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------
 // close() -- idempotent, and onClose fires (the fix for
 // "no onClose" -- 02-host-transport.md S5.1)
 // ---------------------------------------------------------------------

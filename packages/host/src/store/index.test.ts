@@ -512,6 +512,88 @@ describe("Store: ageRadioLinks (018-005)", () => {
   });
 });
 
+// ---------------------------------------------------------------------
+// ageRadioLinks connecting/grace-period exemption -- ticket 018-006
+// ---------------------------------------------------------------------
+
+describe("Store: ageRadioLinks connecting/grace-period exemption (018-006)", () => {
+  it("never ages a radio link while it is connecting, even past its ttl with no sighting", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 0 });
+      store.upsertLink({ id: "usb-relay", transport: "usb", address: { path: "/dev/cu.relay" }, at: 0 });
+      store.upsertLink({
+        id: "radio-gopiv-via-usb-relay",
+        transport: "radio",
+        address: { relayLinkId: "usb-relay", channel: 47, group: 60 },
+        deviceId: 1198504156,
+        at: 0,
+      });
+      store.setLinkState({ id: "radio-gopiv-via-usb-relay", state: "connecting", at: 0 });
+
+      // TTL - 1: still connecting, no sighting yet -- not aged.
+      expect(store.ageRadioLinks(500, 499)).toBe(0);
+      expect(store.snapshotRows().links.find((l) => l.id === "radio-gopiv-via-usb-relay")?.state).toBe("connecting");
+
+      // TTL + 1: still connecting -- exempt regardless of elapsed time.
+      expect(store.ageRadioLinks(500, 501)).toBe(0);
+      expect(store.snapshotRows().links.find((l) => l.id === "radio-gopiv-via-usb-relay")?.state).toBe("connecting");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("ages a radio link only after it leaves connecting (fails/idles) and a full ttl elapses since that transition, with no sighting", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 0 });
+      store.upsertLink({ id: "usb-relay", transport: "usb", address: { path: "/dev/cu.relay" }, at: 0 });
+      store.upsertLink({
+        id: "radio-gopiv-via-usb-relay",
+        transport: "radio",
+        address: { relayLinkId: "usb-relay", channel: 47, group: 60 },
+        deviceId: 1198504156,
+        at: 0,
+      });
+      store.setLinkState({ id: "radio-gopiv-via-usb-relay", state: "connecting", at: 0 });
+      // The connect attempt fails at t=501 -- state_since resets to 501.
+      store.setLinkState({ id: "radio-gopiv-via-usb-relay", state: "failed", at: 501, reason: "no ID reply" });
+
+      // Still within one ttl of the failure transition -- not yet aged.
+      expect(store.ageRadioLinks(500, 501)).toBe(0);
+      expect(store.snapshotRows().links.find((l) => l.id === "radio-gopiv-via-usb-relay")?.state).toBe("failed");
+
+      // A full ttl has now elapsed since the failure transition, still no sighting.
+      expect(store.ageRadioLinks(500, 1002)).toBe(1);
+      expect(store.snapshotRows().links.find((l) => l.id === "radio-gopiv-via-usb-relay")?.state).toBe("stale");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("still ages immediately when the relay is gone, even for a brand-new radio link within the grace period", () => {
+    // Documents that the 018-006 grace period is scoped to the
+    // no-sighting-yet branch, not the relay-gone/stale branch -- a
+    // relay that has provably vanished still ages its radio children
+    // right away regardless of how new they are (018-005's own case).
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 0 });
+      store.upsertLink({
+        id: "radio-gopiv-via-gone",
+        transport: "radio",
+        address: { relayLinkId: "usb-gone", channel: 1, group: 1 },
+        deviceId: 1198504156,
+        at: 900,
+      });
+      expect(store.ageRadioLinks(500, 950)).toBe(1);
+      expect(store.snapshotRows().links.find((l) => l.id === "radio-gopiv-via-gone")?.state).toBe("stale");
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe("Store: clearRadioLinkStaleText (018-005)", () => {
   it("clears state_reason on every radio link naming the given relayLinkId, leaving state untouched", () => {
     const { store } = freshStore();

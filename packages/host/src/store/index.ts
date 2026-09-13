@@ -862,7 +862,25 @@ export class Store {
    *   exists among current `links` rows, or is itself `stale`; or
    * - it has had no *successful* sighting (`sightings.ok = 1`, matched
    *   by `via_link_id = <relayLinkId>` and the same `device_id`) within
-   *   `ttlMs`.
+   *   `ttlMs` **and** at least `ttlMs` has passed since the link's own
+   *   `state_since` (018-006 grace period — see below).
+   *
+   * Never ages a link in the `connecting` state, and — 018-006,
+   * bench-evidenced race — never ages a link on the "no successful
+   * sighting yet" branch until `ttlMs` has passed since its own
+   * `state_since`: a radio link that `connect/relayBridger.ts` or a
+   * `server.ts` session-open just created, or that is actively
+   * `connecting`, has no `sessions` row yet (that only appears once a
+   * session actually opens) and no successful sighting yet either,
+   * since the sweeper is deliberately off during a harness/bench run —
+   * without this exemption, an aging tick landing in that window marked
+   * the link `stale` mid-connect, before it ever got a chance to
+   * succeed. This grace period applies only to the "no sighting yet"
+   * reason: a link whose relay is provably gone or `stale` still ages
+   * immediately regardless of how new the link itself is (018-005's own
+   * already-covered case) — only "nothing has had a chance to prove
+   * itself yet" waits out a full `ttlMs` from the link's last state
+   * transition first.
    *
    * Deliberately not `last_seen`-based like {@link ageLinks}:
    * `watchers/relaySweeper.ts`'s own `recordCandidateOutcome` bumps a
@@ -881,11 +899,14 @@ export class Store {
   ageRadioLinks(ttlMs: number, now: number): number {
     const cutoff = now - ttlMs;
     return this.withChangeBatch("links", () => {
-      const allLinks = this.db.prepare(`SELECT id, transport, address, state, device_id FROM links`).all() as Array<{
+      const allLinks = this.db
+        .prepare(`SELECT id, transport, address, state, state_since, device_id FROM links`)
+        .all() as Array<{
         id: string;
         transport: string;
         address: string;
         state: string;
+        state_since: number;
         device_id: number | null;
       }>;
       const linkById = new Map(allLinks.map((l) => [l.id, l] as const));
@@ -900,7 +921,15 @@ export class Store {
       );
       const keys: (string | null)[] = [];
       for (const link of allLinks) {
-        if (link.transport !== "radio" || link.state === "stale" || sessionLinkIds.has(link.id)) {
+        if (
+          link.transport !== "radio" ||
+          link.state === "stale" ||
+          link.state === "connecting" ||
+          sessionLinkIds.has(link.id)
+        ) {
+          // 018-006: a link actively `connecting` is exempt outright,
+          // regardless of relay/sighting state -- it has not yet had a
+          // chance to reach a session or a sighting at all.
           continue;
         }
         const relayLinkId = parseRelayLinkIdFromAddress(link.address);
@@ -910,7 +939,15 @@ export class Store {
         if (!shouldAge) {
           const row = lastOkStmt.get(relayLinkId as string, link.device_id) as { maxAt: number | null } | undefined;
           const lastOk = row?.maxAt ?? null;
-          shouldAge = lastOk === null || lastOk < cutoff;
+          if (lastOk === null) {
+            // 018-006 grace period: nothing has had a chance to prove
+            // itself yet -- only age once a full ttlMs has passed since
+            // this link's own last state transition, not the instant it
+            // (or its current state) was created.
+            shouldAge = now - link.state_since >= ttlMs;
+          } else {
+            shouldAge = lastOk < cutoff;
+          }
         }
         if (shouldAge) {
           staleStmt.run(now, link.id);

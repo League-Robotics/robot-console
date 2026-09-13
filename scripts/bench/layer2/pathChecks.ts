@@ -136,6 +136,44 @@ export function findDevice(snapshot: SnapshotLike, name: string): SnapshotDevice
   return snapshot.devices.find((d) => d.name === name);
 }
 
+/** The minimal slice of {@link BenchWsClient} {@link closeSiblingLinks}
+ * needs -- so it is directly testable against a fully synthetic fake
+ * client, no real socket ever required (same pattern `wsClient.ts`'s
+ * own `SettleDriver` uses for {@link waitForSettle}). */
+export interface SiblingCloseClient {
+  readonly snapshot: SnapshotLike | undefined;
+  sessionClose(linkId: string): void;
+}
+
+/**
+ * 018-007 Step 0: closes every currently-connected link on
+ * `deviceName` other than `keepLinkId` (if any). Called before a
+ * `radio`/`wifi` check so this device's traffic can only arrive over
+ * the path under test -- a link left open on another transport is
+ * exactly the ambiguity that let Layer 3's own "click the card's
+ * top-level arrow" bug silently test the wrong transport (018-007's
+ * own bench evidence: mbserial answered while the report recorded a
+ * radio-via-mbrelay PASS). This harness owns a fresh host per run, so
+ * nothing closed here is ever restored afterwards. Fire-and-return:
+ * the caller decides whether/how long to wait before the close has
+ * actually landed. Returns the ids actually closed.
+ */
+export function closeSiblingLinks(client: SiblingCloseClient, deviceName: string, keepLinkId: string | undefined): string[] {
+  const snapshot = client.snapshot;
+  if (snapshot === undefined) {
+    return [];
+  }
+  const device = snapshot.devices.find((d) => d.name === deviceName);
+  if (device === undefined) {
+    return [];
+  }
+  const toClose = device.links.filter((l) => l.id !== keepLinkId && l.state === "connected");
+  for (const link of toClose) {
+    client.sessionClose(link.id);
+  }
+  return toClose.map((l) => l.id);
+}
+
 export interface CheckPathOptions {
   connectTimeoutMs?: number;
   replyTimeoutMs?: number;
@@ -209,6 +247,7 @@ export async function checkPath(client: BenchWsClient, target: Layer2Target, opt
       timings: { toConnectedMs },
       replies: {},
       notices,
+      ...(lastKnownLinkId !== undefined ? { linkId: lastKnownLinkId } : {}),
     };
   }
 
@@ -225,6 +264,14 @@ export async function checkPath(client: BenchWsClient, target: Layer2Target, opt
 
   client.sendCommand(linkId, probeVerb);
   const replyStartedAt = Date.now();
+  // 018-007 Step 0: `waitForLine` already filters on `message.linkId ===
+  // linkId` (`wsClient.ts`) -- every reply this check can possibly match
+  // is already scoped to the exact link resolved above (the radio
+  // child link found by `via.relayLinkId`, never the device's arbitrary
+  // "primary" link), so a PASS here is genuine evidence for *this*
+  // transport specifically, not just "the robot answered somehow".
+  // `linkId` is carried into the result below so a report reader can
+  // verify that scoping independently rather than taking it on faith.
   const replyLine = await client.waitForLine(linkId, matchesReply, replyTimeoutMs);
   const toReplyMs = Date.now() - replyStartedAt;
   const notices = client.noticesFor(linkId).map((n) => n.text);
@@ -239,14 +286,16 @@ export async function checkPath(client: BenchWsClient, target: Layer2Target, opt
       timings: { toConnectedMs, toReplyMs },
       replies: {},
       notices,
+      linkId,
     };
   }
 
   return {
     status: "pass",
-    reason: `session-open -> connected -> send-command ${probeVerb} -> matching line rx -> session-close (reply: ${replyLine})`,
+    reason: `session-open -> connected -> send-command ${probeVerb} -> matching line rx (linkId ${linkId}) -> session-close (reply: ${replyLine})`,
     timings: { toConnectedMs, toReplyMs },
     replies: { line: replyLine },
     notices,
+    linkId,
   };
 }

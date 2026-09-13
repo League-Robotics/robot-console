@@ -21,6 +21,9 @@
  * keeps its classification logic pure and its socket/DOM I/O thin).
  */
 import type { Page } from "playwright-core";
+import type { SnapshotLink } from "@robot-console/host";
+import type { BenchWsClient } from "../layer2/wsClient.js";
+import { findLinkById, findRadioChildLink, type SnapshotLike } from "../layer2/pathChecks.js";
 import type { Layer3Assertion, Layer3PathResult } from "./types.js";
 
 /** Direct (non-relay) path labels, matched against `connectionLabel()`'s
@@ -110,6 +113,29 @@ export function isRelayStatusReplyLine(line: string): boolean {
   return /^«\s*#\s*channel:/i.test(line.trim());
 }
 
+/**
+ * 018-007 Step 0: whether a header's own `.app-header-connection-label`
+ * text (`connectionLabel(link)` verbatim -- `"USB · ..."`, `"WiFi ·
+ * ..."`, `"mbserial · ..."`, or `"Radio · ... (via relay <pool>)"`)
+ * actually matches the path this check is supposed to be exercising.
+ * This is the harness's own regression guard for the bug this ticket
+ * fixed: Layer 3 used to click a device card's top-level arrow (the
+ * device's "primary" link, whichever transport that happened to be)
+ * rather than the specific link for the path under test, so a
+ * `radio-via-mbrelay:<pool>` check could silently land on and pass an
+ * already-usable `mbserial` link instead (018-007's own bench
+ * evidence: header read "mbserial · loki.local:36627 · Linked" while
+ * the report recorded a radio PASS). Pure. */
+export function connectionLabelMatchesPath(labelText: string, path: string): boolean {
+  const trimmed = labelText.trim();
+  const pool = parseRelayPoolName(path);
+  if (pool !== undefined) {
+    return new RegExp(`^Radio · .*\\(via relay ${escapeRegExp(pool)}\\)$`).test(trimmed);
+  }
+  const prefix = directPathLabelPrefix(path);
+  return prefix !== undefined && new RegExp(`^${escapeRegExp(prefix)} · `).test(trimmed);
+}
+
 const MOTION_BUTTON_TEXT = /Forward|Backward|Turn left|Turn right|rotate/i;
 
 export interface DriverOptions {
@@ -162,28 +188,112 @@ async function poll<T>(check: () => Promise<T>, timeoutMs: number, intervalMs = 
   return last;
 }
 
+/** Same "Linked" predicate the UI itself uses (`deviceDisplay.ts`'s
+ * `isLinkUsable`, reimplemented here rather than imported so this
+ * harness never depends on `packages/ui`'s internals -- matches
+ * `layer2/pathChecks.ts`'s own identical inline check). Pure. */
+function isUsableLink(link: SnapshotLink | undefined): link is SnapshotLink {
+  return link !== undefined && link.state === "connected" && link.session !== undefined;
+}
+
+/** `deviceName`'s own link of the given direct transport, from a live
+ * snapshot -- the ground truth this module resolves a target's exact
+ * link id from, rather than ever clicking a device card's "primary"
+ * arrow (018-007 Step 0's own fix; see {@link connectionLabelMatchesPath}'s
+ * doc comment for the bug this replaces). Pure. */
+function findDirectLink(snapshot: SnapshotLike, deviceName: string, transport: "usb" | "mbserial" | "wifi"): SnapshotLink | undefined {
+  return snapshot.devices.find((d) => d.name === deviceName)?.links.find((l) => l.transport === transport);
+}
+
+/** `relayName`'s own `mbrelay` connectivity link -- the link id
+ * `session-open {relayLinkId, name}` needs, and the id
+ * {@link findRadioChildLink} matches a radio child link's own
+ * `via.relayLinkId` against. Pure. */
+function findRelayLink(snapshot: SnapshotLike, relayName: string): SnapshotLink | undefined {
+  return snapshot.devices.find((d) => d.name === relayName)?.links.find((l) => l.transport === "mbrelay");
+}
+
+/**
+ * 018-007 Step 0: closes every other currently-usable link on
+ * `deviceName` (per the live snapshot `linkClient` is tracking) before
+ * this function's caller opens the path under test, so a reply can
+ * only ever have arrived over that path -- see
+ * `layer2/pathChecks.ts`'s identical `closeSiblingLinks` for the full
+ * rationale (this is Layer 3's own copy, driving the same
+ * `BenchWsClient` wire calls directly rather than through the browser,
+ * since the front page offers no per-row Disconnect for a direct
+ * link). This harness owns a fresh host per run, so nothing closed
+ * here is ever restored. Waits a short, fixed grace period for the
+ * close(s) to land -- best-effort isolation, not itself a checked
+ * assertion, so it is not polled to a hard "session gone" state.
+ */
+async function closeOtherLinksAndWait(linkClient: BenchWsClient, deviceName: string, keepLinkId: string | undefined): Promise<string[]> {
+  const snapshot = linkClient.snapshot;
+  if (snapshot === undefined) {
+    return [];
+  }
+  const device = snapshot.devices.find((d) => d.name === deviceName);
+  if (device === undefined) {
+    return [];
+  }
+  const toClose = device.links.filter((l) => l.id !== keepLinkId && l.state === "connected");
+  for (const link of toClose) {
+    linkClient.sessionClose(link.id);
+  }
+  if (toClose.length > 0) {
+    await new Promise((resolve) => setTimeout(resolve, 750));
+  }
+  return toClose.map((l) => l.id);
+}
+
 /**
  * Navigate the front page from scratch and reach the robot page for
  * `target.device` over `target.path`, per this module's own doc
- * comment on how each transport is reached. Resolves the link href to
- * navigate to (or `undefined` on failure, with `reason` explaining
- * why) -- the caller (`checkPath`) does the actual `goto` plus every
- * on-page assertion, so this function's own job is exactly "get
- * Linked," nothing about the console/header/controls yet.
+ * comment on how each transport is reached. Resolves the *exact* link
+ * id for `target.path` directly from `linkClient`'s live snapshot (the
+ * same resolution `layer2/pathChecks.ts` uses: `findDirectLink`/
+ * `findRelayLink`/`findRadioChildLink`, never a device card's own
+ * "primary" link) and navigates straight to `/d/<that id>` -- the
+ * 018-007 Step 0 fix. The previous version clicked a device card's
+ * top-level open arrow, which follows whichever link the card
+ * considers "primary" regardless of the path this check was actually
+ * supposed to exercise; live bench evidence (this ticket's own
+ * screenshots) showed a `radio-via-mbrelay:torture` check landing on
+ * and passing an already-usable `mbserial` link instead, because that
+ * link -- not the freshly-bridged radio link -- was gopiv's/vevov's
+ * card-level primary. On failure, returns `reason` explaining why; the
+ * caller (`checkPath`) does every on-page assertion once this function
+ * has navigated to the resolved link's own page.
  */
 async function reachRobotPage(
   page: Page,
   baseUrl: string,
   target: { device: string; path: string },
+  linkClient: BenchWsClient,
   options: DriverOptions,
   screenshots: string[],
-): Promise<{ ok: true; relayNamedRobot?: boolean } | { ok: false; reason: string }> {
+): Promise<{ ok: true; linkId: string; relayNamedRobot?: boolean } | { ok: false; reason: string }> {
   await page.goto(baseUrl);
   await page.waitForSelector('[data-testid^="device-card-"], [data-testid^="unassigned-card-"]', { timeout: 15_000 }).catch(() => undefined);
   await page.waitForTimeout(1500);
 
   const relayPool = parseRelayPoolName(target.path);
   if (relayPool !== undefined) {
+    const relaySnapshotLink = linkClient.snapshot !== undefined ? findRelayLink(linkClient.snapshot, relayPool) : undefined;
+    if (relaySnapshotLink === undefined) {
+      return { ok: false, reason: `no mbrelay link found in the live snapshot for pool "${relayPool}"` };
+    }
+
+    // 018-007 Step 0: this device's traffic must only be able to arrive
+    // over the radio path under test -- close any other currently-usable
+    // link on the robot first (e.g. mbserial), so a reply can never be
+    // mistaken for coming through the wrong transport. This harness owns
+    // a fresh host per run, so nothing closed here is restored.
+    const closedBefore = await closeOtherLinksAndWait(linkClient, target.device, undefined);
+    if (closedBefore.length > 0) {
+      console.log(`[bench:layer3] closed sibling link(s) ${closedBefore.join(", ")} on "${target.device}" before checking radio-via-mbrelay:${relayPool}`);
+    }
+
     const relayCard = await cardLocator(page, relayPool);
     if ((await relayCard.count()) === 0) {
       return { ok: false, reason: `no relay card found for pool "${relayPool}"` };
@@ -224,29 +334,52 @@ async function reachRobotPage(
       }
     }
 
-    // The robot's own card now has an open arrow once its radio link is
-    // connected -- find *that* card (not the relay's), matching the
-    // ticket's own "or the card arrow if already Linked" instruction.
-    // Clicked directly (client-side route, via React Router's own
-    // <Link>) rather than reading `href` and calling `page.goto()`
-    // separately -- a full navigation drops and re-establishes the
-    // WebSocket connection, which live-verified cost this driver a
-    // "header does not say Linked" false failure (the fresh connection
-    // hadn't resynced the snapshot within this function's own wait) on
-    // the very first live run of this ticket, before this fix.
-    const robotCard = await cardLocator(page, target.device);
-    const arrow = robotCard.locator('[data-testid^="device-open-"]');
-    const appeared = await poll(async () => (await arrow.count()) > 0, options.connectTimeoutMs ?? 20_000);
-    if (!appeared) {
-      return { ok: false, reason: `"${target.device}" card never showed an open arrow after the relay bridge connected` };
+    // 018-007 Step 0: resolve the *radio child link for this specific
+    // relay* directly from the live snapshot -- the same lookup
+    // `layer2/pathChecks.ts` uses (`findRadioChildLink`, matching
+    // `via.relayLinkId`), never the robot card's own top-level arrow.
+    // See this function's own doc comment for the bug this replaces.
+    const radioLink = await poll(
+      async () => {
+        const snapshot = linkClient.snapshot;
+        if (snapshot === undefined) {
+          return undefined;
+        }
+        const child = findRadioChildLink(snapshot, target.device, relaySnapshotLink.id);
+        return isUsableLink(child) ? child : undefined;
+      },
+      options.connectTimeoutMs ?? 20_000,
+    );
+    if (radioLink === undefined) {
+      await screenshot(page, options, `front-${target.device}-radio-timeout`, screenshots);
+      return { ok: false, reason: `"${target.device}"'s radio link via relay "${relayPool}" never reached state "connected" with a session within the bound` };
     }
-    await arrow.click();
-    return { ok: true, relayNamedRobot };
+
+    await page.goto(`${baseUrl}d/${radioLink.id}`);
+    return { ok: true, linkId: radioLink.id, relayNamedRobot };
   }
 
   const prefix = directPathLabelPrefix(target.path);
   if (prefix === undefined) {
     return { ok: false, reason: `unrecognized path "${target.path}" -- not a direct transport or a relay path` };
+  }
+  const transport = target.path as "usb" | "mbserial" | "wifi";
+
+  const initialLink = linkClient.snapshot !== undefined ? findDirectLink(linkClient.snapshot, target.device, transport) : undefined;
+  if (initialLink === undefined) {
+    return { ok: false, reason: `no live-snapshot link of transport "${transport}" found for "${target.device}"` };
+  }
+  const linkId = initialLink.id;
+
+  // 018-007 Step 0: same "isolate the path under test" discipline as
+  // the radio branch above, only for wifi (the ticket's own "before a
+  // radio/wifi check" instruction -- an mbserial/usb *target* itself is
+  // left alone, matching Layer 2's identical scope decision).
+  if (transport === "wifi") {
+    const closedBefore = await closeOtherLinksAndWait(linkClient, target.device, linkId);
+    if (closedBefore.length > 0) {
+      console.log(`[bench:layer3] closed sibling link(s) ${closedBefore.join(", ")} on "${target.device}" before checking wifi`);
+    }
   }
 
   const card = await cardLocator(page, target.device);
@@ -255,81 +388,45 @@ async function reachRobotPage(
   }
   await screenshot(page, options, `front-${target.device}-before`, screenshots);
 
-  const row = card.locator(".device-connection").filter({ has: page.locator(".device-connection-label", { hasText: new RegExp(`^${prefix}`) }) });
+  const row = card.locator(`[data-testid="device-link-${linkId}"]`);
   if ((await row.count()) === 0) {
-    return { ok: false, reason: `"${target.device}" card has no connection row labeled "${prefix} ..."` };
+    return { ok: false, reason: `"${target.device}" card has no row for link "${linkId}" (transport "${transport}")` };
   }
 
-  // `FrontPage.tsx`'s `DeviceConnectionRow` only ever renders a
-  // row-level open arrow for a usable link that is *not* the card's own
-  // "primary" link (`isLinkUsable(link) && link !== primary`) -- the
-  // primary link's own open arrow is the *card's* top-level one
-  // instead (`device-open-<device.id>`, the same one the relay branch
-  // above already uses). Live-verified on this ticket's own third full
-  // run: gopiv/vevov's mbserial link *was* their card's primary link,
-  // so the row-only check below found neither a row arrow nor a
-  // Connect button (both correctly absent for a usable primary link)
-  // and wrongly reported failure. `resolveArrow` checks both shapes:
-  // the row's own arrow, or (when this row's own state text shows
-  // `.device-connection-open` -- i.e. this link genuinely is
-  // connected) the card's top-level arrow.
-  const existingArrow = row.locator('[data-testid^="device-link-open-"]');
-  const connectButton = row.locator('[data-testid^="device-link-connect-"]');
-  const cardArrow = card.locator('[data-testid^="device-open-"]');
-  const rowShowsConnected = row.locator(".device-connection-open");
-
-  type ArrowState = "row-arrow" | "card-arrow" | "connect" | undefined;
-  async function resolveArrow(): Promise<ArrowState> {
-    if ((await existingArrow.count()) > 0) {
-      return "row-arrow";
-    }
-    if ((await rowShowsConnected.count()) > 0 && (await cardArrow.count()) > 0) {
-      return "card-arrow";
-    }
+  if (!isUsableLink(initialLink)) {
+    const connectButton = row.locator(`[data-testid="device-link-connect-${linkId}"]`);
     if ((await connectButton.count()) > 0) {
-      return "connect";
+      await connectButton.click();
     }
-    return undefined;
+    // else: no Connect button -- `FrontPage.tsx`'s `CONNECT_BUTTON_STATES`
+    // deliberately excludes `"connecting"` (nothing to press mid-attempt).
+    // For an *owned* wifi/mbserial link the reconciler auto-connects on
+    // its own (architecture.md's auto-connect rule), so this is the
+    // common case for a fast transport, not a failure -- live-verified
+    // 018-007: closing the mbserial sibling above is itself what frees
+    // the reconciler to retry wifi immediately, and it can easily reach
+    // "connecting" before this page's own first snapshot round-trip
+    // lands. Poll below regardless; only the poll's own bound decides
+    // pass/fail, never the button's mere absence.
   }
 
-  // Poll rather than checking once: a freshly-loaded page's WebSocket
-  // round trip (fetch the current snapshot, React re-render) can
-  // briefly lag behind an already-settled host.
-  const initialState = await poll(resolveArrow, 10_000);
-
-  if (initialState === "row-arrow") {
-    await existingArrow.click();
-    return { ok: true };
-  }
-  if (initialState === "card-arrow") {
-    await cardArrow.click();
-    return { ok: true };
-  }
-  if (initialState !== "connect") {
-    return { ok: false, reason: `"${target.device}"/"${prefix}" row has neither an open arrow (row or card-level) nor a Connect button` };
-  }
-  await connectButton.click();
-
-  // Only an arrow state ends this wait -- unlike the poll above,
-  // "connect" must not be treated as truthy here (the button can
-  // legitimately still be present for a moment right after its own
-  // click, before the link's state actually transitions), or this
-  // would resolve immediately without ever waiting for the link to
-  // become usable.
-  const finalState = await poll(async () => {
-    const state = await resolveArrow();
-    return state === "row-arrow" || state === "card-arrow" ? state : undefined;
+  // Poll the live snapshot (not the DOM) for this exact link id
+  // becoming usable -- a freshly-loaded page's own WebSocket round trip
+  // can briefly lag behind an already-settled host, and this way the
+  // wait is scoped to the one link under test, not "some arrow appeared
+  // somewhere on this card."
+  const connectedLink = await poll(async () => {
+    const snapshot = linkClient.snapshot;
+    const link = snapshot !== undefined ? findLinkById(snapshot, linkId) : undefined;
+    return isUsableLink(link) ? link : undefined;
   }, options.connectTimeoutMs ?? 20_000);
-  if (finalState === "row-arrow") {
-    await existingArrow.click();
-    return { ok: true };
+  if (connectedLink === undefined) {
+    await screenshot(page, options, `front-${target.device}-timeout`, screenshots);
+    return { ok: false, reason: `"${target.device}"/"${transport}" (link "${linkId}") never reached state "connected" with a session within the bound` };
   }
-  if (finalState === "card-arrow") {
-    await cardArrow.click();
-    return { ok: true };
-  }
-  await screenshot(page, options, `front-${target.device}-timeout`, screenshots);
-  return { ok: false, reason: `"${target.device}"/"${prefix}" never became usable (no open arrow) within the bound after Connect` };
+
+  await page.goto(`${baseUrl}d/${linkId}`);
+  return { ok: true, linkId };
 }
 
 /**
@@ -350,14 +447,16 @@ export async function checkPath(
   baseUrl: string,
   target: { device: string; path: string; deviceKind: string },
   options: DriverOptions,
+  linkClient: BenchWsClient,
 ): Promise<Layer3PathResult> {
   const screenshots: string[] = [];
   const assertions: Layer3Assertion[] = [];
 
-  const reached = await reachRobotPage(page, baseUrl, target, options, screenshots);
+  const reached = await reachRobotPage(page, baseUrl, target, linkClient, options, screenshots);
   if (!reached.ok) {
     return { device: target.device, path: target.path, status: "fail", reason: reached.reason, assertions, screenshots };
   }
+  const linkId = reached.linkId;
 
   if (parseRelayPoolName(target.path) !== undefined) {
     assertions.push({
@@ -367,11 +466,27 @@ export async function checkPath(
     });
   }
 
-  // `reachRobotPage` already navigated here via a client-side route
-  // click (React Router's own <Link>, not `page.goto()`) -- see that
-  // function's own doc comment for why a full navigation must be
-  // avoided (it drops and re-establishes the WebSocket connection).
+  // `reachRobotPage` navigated here via `page.goto(baseUrl + "d/" +
+  // linkId)` directly, to the exact link id resolved from the live
+  // snapshot (018-007 Step 0) -- never an ambiguous DOM arrow click.
   await page.waitForSelector(".app-header", { timeout: 10_000 }).catch(() => undefined);
+
+  // 018-007 Step 0's own regression guard: before ever typing a probe
+  // verb, assert the header's own connection label actually names the
+  // path this check is supposed to be exercising. Navigating by the
+  // resolved link id above should make a mismatch impossible in
+  // practice, but this assertion is what turns "should be impossible"
+  // into checked evidence, per the ticket's own instruction -- and it
+  // is exactly what would have caught the pre-fix bug (a header reading
+  // "mbserial · loki.local:36627 · Linked" while the report recorded a
+  // radio-via-mbrelay PASS).
+  const labelText = await page.locator(".app-header-connection-label").innerText().catch(() => "");
+  const labelMatches = connectionLabelMatchesPath(labelText, target.path);
+  assertions.push({
+    name: "connection-label-matches-path",
+    pass: labelMatches,
+    detail: labelMatches ? `header shows "${labelText.trim()}", matching path "${target.path}"` : `page is on "${labelText.trim()}", not "${target.path}"`,
+  });
 
   const headerText = await poll(
     async () => {
@@ -427,7 +542,13 @@ export async function checkPath(
 
   let replyPass = false;
   let replyDetail = `link is not Linked -- ${probeVerb} was not sent (per honest-state requirement, matching every other layer's own 'never assume' discipline)`;
-  if (linked && !sendInputDisabled) {
+  if (!labelMatches) {
+    // 018-007 Step 0: never send a probe verb on a page that is on the
+    // wrong path -- a mismatch here already fails the check via
+    // `connection-label-matches-path`; sending `ID` anyway risks a
+    // coincidental reply from the wrong transport masking that failure.
+    replyDetail = `${probeVerb} was not sent -- connection-label-matches-path already failed (page is on "${labelText.trim()}", not "${target.path}")`;
+  } else if (linked && !sendInputDisabled) {
     await sendInput.click();
     await sendInput.fill(probeVerb);
     await sendInput.press("Enter");
@@ -440,7 +561,11 @@ export async function checkPath(
   }
   assertions.push({ name: "reply-within-5s", pass: replyPass, detail: replyDetail });
 
-  await screenshot(page, options, `${target.device}-${target.path}-final`, screenshots);
+  // 018-007 Step 0: screenshot names carry the exact link id this check
+  // navigated to, so a report reader can visually confirm (the header
+  // shows the same label the `connection-label-matches-path` assertion
+  // above checked) which link the screenshot was actually taken on.
+  await screenshot(page, options, `${target.device}-${target.path}-${linkId}-final`, screenshots);
 
   const allPass = assertions.every((a) => a.pass);
   return {
@@ -450,5 +575,6 @@ export async function checkPath(
     reason: allPass ? "every assertion passed" : assertions.filter((a) => !a.pass).map((a) => `${a.name}: ${a.detail}`).join("; "),
     assertions,
     screenshots,
+    linkId,
   };
 }

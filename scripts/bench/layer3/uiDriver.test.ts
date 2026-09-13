@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { directPathLabelPrefix, isIdReplyLine, isRawIdLeak, isRelayStatusReplyLine, looksLinked, parseRelayPoolName } from "./uiDriver.js";
+import { connectionLabelMatchesPath, directPathLabelPrefix, isIdReplyLine, isRawIdLeak, isRelayStatusReplyLine, looksLinked, parseRelayPoolName } from "./uiDriver.js";
 
 describe("parseRelayPoolName", () => {
   it("extracts the pool name from a radio-via-mbrelay path", () => {
@@ -84,6 +84,47 @@ describe("isIdReplyLine", () => {
 // own status reply (not an "id ..." reply, and not a second HELLO
 // banner either -- see isRelayStatusReplyLine's own doc comment) is the
 // expected match.
+// 018-007 Step 0: this harness's own regression guard for the bug this
+// ticket fixed -- Layer 3 used to click a device card's top-level arrow
+// (the device's "primary" link) rather than the exact link resolved for
+// the path under test, so a radio check could silently land on and pass
+// an already-usable mbserial link instead (live bench evidence: header
+// read "mbserial · loki.local:36627 · Linked" while the report recorded
+// a radio-via-mbrelay PASS).
+describe("connectionLabelMatchesPath", () => {
+  it("matches a direct wifi label", () => {
+    expect(connectionLabelMatchesPath("WiFi · 192.168.1.193:7654", "wifi")).toBe(true);
+  });
+
+  it("matches a direct mbserial label", () => {
+    expect(connectionLabelMatchesPath("mbserial · loki.local:36627", "mbserial")).toBe(true);
+  });
+
+  it("matches a direct usb label", () => {
+    expect(connectionLabelMatchesPath("USB · /dev/cu.usbmodem1234", "usb")).toBe(true);
+  });
+
+  it("matches a radio-via-relay label naming the right pool", () => {
+    expect(connectionLabelMatchesPath("Radio · ch47/grp60 (via relay torture)", "radio-via-mbrelay:torture")).toBe(true);
+  });
+
+  it("rejects a radio label naming a different pool", () => {
+    expect(connectionLabelMatchesPath("Radio · ch47/grp60 (via relay magni)", "radio-via-mbrelay:torture")).toBe(false);
+  });
+
+  it("rejects the exact live-verified 018-007 mismatch: on mbserial while radio was expected", () => {
+    expect(connectionLabelMatchesPath("mbserial · loki.local:36627", "radio-via-mbrelay:torture")).toBe(false);
+  });
+
+  it("rejects a direct label whose prefix doesn't match the path", () => {
+    expect(connectionLabelMatchesPath("WiFi · 192.168.1.193:7654", "mbserial")).toBe(false);
+  });
+
+  it("rejects a direct-shaped label for a radio path (missing the via-relay suffix)", () => {
+    expect(connectionLabelMatchesPath("Radio · ch47/grp60", "radio-via-mbrelay:torture")).toBe(false);
+  });
+});
+
 describe("isRelayStatusReplyLine", () => {
   it("recognizes a genuine rx relay status reply line (« prefix)", () => {
     expect(isRelayStatusReplyLine("«# channel: 0 group: 10 mode: RAW250 power: 7")).toBe(true);

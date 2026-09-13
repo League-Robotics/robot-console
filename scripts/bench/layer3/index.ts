@@ -200,23 +200,30 @@ async function main(): Promise<void> {
     // some cards not yet fully identified (no Connect button, no open
     // arrow -- neither, since the link was still `connecting`) by the
     // time the browser's first page load ran.
-    const settleClient = await BenchWsClient.connect({ url: wsUrl });
+    //
+    // 018-007 Step 0: this connection is kept open (not closed after
+    // settling) and threaded into every `checkPath` call as `linkClient`
+    // -- `uiDriver.ts` uses its live snapshot to resolve the *exact*
+    // link id for each path directly (never a device card's own
+    // "primary" link) and to close sibling links before a radio/wifi
+    // check, per that module's own doc comments.
+    const linkClient = await BenchWsClient.connect({ url: wsUrl });
     console.log("[bench:layer3] waiting for the snapshot stream to settle (unchanged for 5s, bounded at 90s)...");
-    const settle = await waitForSettle(settleClient, { stableForMs: 5_000, boundedMs: 90_000 });
+    const settle = await waitForSettle(linkClient, { stableForMs: 5_000, boundedMs: 90_000 });
     console.log(`[bench:layer3] settle: ${settle.settled ? "settled" : "NOT settled (bound reached)"} after ${settle.elapsedMs}ms`);
-    settleClient.close();
 
     const browser = await chromium.launch();
     try {
       const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
       for (const target of targets) {
         console.log(`[bench:layer3] checking ${target.device} / ${target.path}...`);
-        const result = await checkPath(page, baseUrl, target, { screenshotDir: options.screenshotDir });
+        const result = await checkPath(page, baseUrl, target, { screenshotDir: options.screenshotDir }, linkClient);
         console.log(`[bench:layer3] ${target.device} / ${target.path} -> ${result.status} (${result.reason})`);
         results.push(result);
       }
     } finally {
       await browser.close();
+      linkClient.close();
     }
   } finally {
     // Kill only the host process this run started -- never any other

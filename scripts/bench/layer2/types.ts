@@ -43,6 +43,14 @@ export interface Layer2Check {
    * failure here carries the same "verbatim, not summarized" evidence
    * Layer 1's own transcripts do. */
   notices: string[];
+  /** 018-007 Step 0: the exact link id this check watched and sent its
+   * probe verb to -- recorded so a report reader can independently
+   * confirm (e.g. against the live snapshot, or `findRadioChildLink`'s
+   * own resolution) that a `radio`/`wifi` PASS really came from the
+   * path under test, not some other link on the same device. Absent
+   * only when no link was ever resolved at all (the "no link found in
+   * the snapshot" / "never appeared" failures). */
+  linkId?: string;
 }
 
 /** One device x path row -- `layer1` is that path's Layer 1 verdict,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveOpenPayload, findLinkById, findRadioChildLink, describeTarget, isRelayTarget, isRelayStatusLine, type SnapshotLike } from "./pathChecks.js";
+import { resolveOpenPayload, findLinkById, findRadioChildLink, closeSiblingLinks, describeTarget, isRelayTarget, isRelayStatusLine, type SnapshotLike, type SiblingCloseClient } from "./pathChecks.js";
 
 /** Minimal fixture builder -- only the fields these pure helpers read. */
 function makeSnapshot(
@@ -123,6 +123,66 @@ describe("findRadioChildLink", () => {
   it("undefined before the child link has ever been created", () => {
     const snapshot = makeSnapshot([{ name: "gopiv", links: [] }]);
     expect(findRadioChildLink(snapshot, "gopiv", "mbrelay-torture")).toBeUndefined();
+  });
+});
+
+// 018-007 Step 0: closes every other currently-connected link on a
+// device before a radio/wifi check, so a reply can only ever have come
+// from the path under test -- see closeSiblingLinks's own doc comment.
+describe("closeSiblingLinks", () => {
+  function fakeClient(snapshot: SnapshotLike): { client: SiblingCloseClient; closed: string[] } {
+    const closed: string[] = [];
+    return {
+      client: {
+        snapshot,
+        sessionClose: (linkId: string) => {
+          closed.push(linkId);
+        },
+      },
+      closed,
+    };
+  }
+
+  it("closes every other connected link, keeping the one named", () => {
+    const snapshot = makeSnapshot([
+      {
+        name: "gopiv",
+        links: [
+          { id: "mbserial-gopiv", transport: "mbserial" },
+          { id: "radio-gopiv-via-torture", transport: "radio" },
+        ],
+      },
+    ]);
+    const { client, closed } = fakeClient(snapshot);
+    expect(closeSiblingLinks(client, "gopiv", "radio-gopiv-via-torture")).toEqual(["mbserial-gopiv"]);
+    expect(closed).toEqual(["mbserial-gopiv"]);
+  });
+
+  it("closes every connected link when keepLinkId is undefined (radio target: the child link doesn't exist yet)", () => {
+    const snapshot = makeSnapshot([{ name: "gopiv", links: [{ id: "mbserial-gopiv", transport: "mbserial" }] }]);
+    const { client, closed } = fakeClient(snapshot);
+    expect(closeSiblingLinks(client, "gopiv", undefined)).toEqual(["mbserial-gopiv"]);
+    expect(closed).toEqual(["mbserial-gopiv"]);
+  });
+
+  it("returns [] when no snapshot has arrived yet", () => {
+    const client: SiblingCloseClient = { snapshot: undefined, sessionClose: () => undefined };
+    expect(closeSiblingLinks(client, "gopiv", undefined)).toEqual([]);
+  });
+
+  it("returns [] when the device is absent from the snapshot", () => {
+    const { client } = fakeClient(makeSnapshot([]));
+    expect(closeSiblingLinks(client, "gopiv", undefined)).toEqual([]);
+  });
+
+  it("never touches a different device's links (e.g. the relay pool's own connectivity link)", () => {
+    const snapshot = makeSnapshot([
+      { name: "gopiv", links: [{ id: "mbserial-gopiv", transport: "mbserial" }] },
+      { name: "torture", links: [{ id: "mbrelay-torture", transport: "mbrelay" }] },
+    ]);
+    const { client, closed } = fakeClient(snapshot);
+    closeSiblingLinks(client, "gopiv", undefined);
+    expect(closed).toEqual(["mbserial-gopiv"]);
   });
 });
 

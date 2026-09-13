@@ -66,7 +66,7 @@ import { describeHolders, evaluateExclusivity, findHolders, realLsofRunner, type
 import { defaultKnownRobotsPath } from "../layer1/knownNames.js";
 import type { Layer1Report, PathResult } from "../layer1/types.js";
 import { BenchWsClient, waitForSettle } from "./wsClient.js";
-import { checkPath, describeTarget, skippedCheck, type Layer2Target } from "./pathChecks.js";
+import { checkPath, closeSiblingLinks, describeTarget, resolveOpenPayload, skippedCheck, type Layer2Target } from "./pathChecks.js";
 import { runTruthfulnessAssertions, type AssertableDevice } from "./truthfulness.js";
 import { auditDatabase, copyDatabaseForAudit } from "./auditDb.js";
 import type { Layer2DeviceEntry, Layer2PathEntry, Layer2Report } from "./types.js";
@@ -308,6 +308,22 @@ async function main(): Promise<void> {
       if (skipReason !== undefined) {
         layer2Check = skippedCheck(skipReason);
       } else {
+        // 018-007 Step 0: a radio or wifi check must be able to trust
+        // that a matching reply came from the path under test, not a
+        // sibling link (e.g. mbserial) also open on the same device --
+        // close every other currently-connected link on this device
+        // first. Never touches the relay pool's own device row (radio's
+        // `relayName` is a different device entirely), and this harness
+        // owns a fresh host per run, so nothing closed here is restored.
+        if (target.kind === "radio" || (target.kind === "direct" && target.transport === "wifi")) {
+          const keepPayload = target.kind === "direct" ? resolveOpenPayload(client.snapshot ?? { devices: [], unassigned: [] }, target) : undefined;
+          const keepLinkId = keepPayload && "linkId" in keepPayload ? keepPayload.linkId : undefined;
+          const closed = closeSiblingLinks(client, target.deviceName, keepLinkId);
+          if (closed.length > 0) {
+            console.log(`[bench:layer2] closed sibling link(s) ${closed.join(", ")} on "${target.deviceName}" before checking ${describeTarget(target)}`);
+            await new Promise((resolve) => setTimeout(resolve, 750));
+          }
+        }
         console.log(`[bench:layer2] checking ${describeTarget(target)}...`);
         layer2Check = await checkPath(client, target);
         console.log(`[bench:layer2] ${describeTarget(target)} -> ${layer2Check.status} (${layer2Check.reason})`);

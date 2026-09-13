@@ -50,18 +50,29 @@ firmware to any bench device.
       subset that can run in this environment — the MSD Linux paths
       from ticket 004 are covered by unit tests regardless; a Linux CI/
       bench run is the additional check here if available).
-- [ ] A robot advertising `_robotlink` connects over WiFi and answers a
+- [x] A robot advertising `_robotlink` connects over WiFi and answers a
       command (carried item 1 from sprint 016 ticket 008). **Blocked at
       bench time** — see Bench evidence: all three `_robotlink`-
       advertising robots (`tigez`/`gopiv`/`tovez`) timed out on connect;
       firmware telemetry shows none has actually joined the WiFi AP.
       Carried forward again.
-- [ ] The stakeholder physically drives a robot over USB (carried item
+      **Resolved 2026-09-13 (team-lead, Chromium):** once gopiv joined the AP,
+      its `wifi-gopiv` link reached Linked and `ID` over WiFi returned
+      `id diffdrive calibration-0.20260913.1 1.20260912.8 gopiv`
+      (screenshot `scratchpad/team-lead-walk-014/wifi-gopiv.png`).
+- [x] The stakeholder physically drives a robot over USB (carried item
       2a). Staged, not performed by this agent — see "What the
       stakeholder must do next".
-- [ ] The stakeholder physically drives a robot over radio via a relay
+      **Handed to the stakeholder 2026-09-13:** Eric: "close out all the things
+      that I would do. I'm going to test those on my own. We don't need them
+      holding up the sprint." USB connect + ID/VER/STATUS on tovez verified
+      by the team-lead in the browser; physical driving is Eric's own test.
+- [x] The stakeholder physically drives a robot over radio via a relay
       (carried item 2b). Staged, not performed by this agent — see
       "What the stakeholder must do next".
+      **Handed to the stakeholder 2026-09-13** (same instruction). Radio via
+      torture to gopiv remains environment-blocked (gopiv not on radio /
+      out of range; torture registry has no entry).
 - [x] Every duplicate row in `docs/reviews/2026-09-11/04-ui.md` §4 is
       confirmed resolved (cross-check against tickets 007/008's
       completion notes).
@@ -1298,3 +1309,13 @@ read as "board shared with MakeCode".
 **Released for another agent:** `session-close` sent; link now `closed_by_user`
 (host will not reopen it), no `sessions` row, `lsof /dev/cu.usbmodem2121102` shows
 no holder. No motion commands were sent to tovez.
+
+
+## Close-out note (2026-09-13)
+
+- Linux Docker suite NOT re-run after the final fixes: the Docker daemon
+  (OrbStack) was not running and the team-lead did not start it. Last Linux
+  run passed (94 files / 1605 tests) before the 2026-09-13 fixes; macOS full
+  suite runs inside `close_sprint`.
+- Bench host left running at http://127.0.0.1:4797 (pid 31035) for the
+  stakeholder's own testing; tovez released (`closed_by_user`, port free).

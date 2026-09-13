@@ -489,6 +489,27 @@ describe("startMdnsWatcher", () => {
     },
   );
 
+  it("a link that aged to stale is revived on its next sighting (bench: torture advertised every tick but stuck under Not seen recently)", () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const handle = start(store, backend);
+    try {
+      const service = wifiService("kkkkk", "kkkkk.local", 7654);
+      backend.robotlinkTcp.emitUp(service);
+      const linkId = "wifi-kkkkk";
+      vi.advanceTimersByTime(DEFAULT_WIFI_TTL_MS + DEFAULT_REQUERY_INTERVAL_MS * 2);
+      expect(store.snapshotRows().links.find((l) => l.id === linkId)?.state).toBe("stale");
+
+      backend.robotlinkTcp.emitUp(service);
+      const revived = store.snapshotRows().links.find((l) => l.id === linkId);
+      expect(revived?.state).not.toBe("stale");
+      expect(revived?.state).toBe("discovered");
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
   it(
     "the same continuously-present service goes stale anyway once announce packets stop arriving too (regression guard: presence refresh is not a permanent exemption)",
     () => {

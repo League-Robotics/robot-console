@@ -372,7 +372,17 @@ export function startMdnsWatcher(
     deviceId: number | null,
   ): void {
     const previous = storedAddress(linkId);
+    const previousState = store.snapshotRows().links.find((link) => link.id === linkId)?.state;
     store.upsertLink({ id: linkId, transport, address, deviceId, at: now() });
+    // Stakeholder bench (2026-09-13): `torture` was being advertised
+    // and seen every tick, yet sat under "Not seen recently" -- its link
+    // had aged to `stale` once and `upsertLink` never touches `state`,
+    // so nothing ever brought it back. A fresh sighting of a stale link
+    // revives it to `discovered`; the owned-link promotion below (and
+    // the reconciler) take it from there.
+    if (previousState === "stale") {
+      store.setLinkState({ id: linkId, state: "discovered", at: now(), reason: "seen again" });
+    }
     if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(address)) {
       markUnresponsiveIfSessionOpen(linkId, "address changed");
     }

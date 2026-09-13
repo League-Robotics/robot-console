@@ -101,6 +101,10 @@ function fakeLink(overrides: Partial<Record<string, unknown>> = {}) {
     sendLine: vi.fn(),
     sendCommand: vi.fn((verb: string, fields: readonly unknown[] = []) => `${verb} ${fields.join(" ")}\n`),
     sendUnsequenced: vi.fn((verb: string, fields: readonly unknown[] = []) => `${verb} ${fields.join(" ")}\n`),
+    // 018-010: a student's own unsequenced query goes through
+    // `sendUnsequencedQuery` (one bounded resend), not plain `sendUnsequenced`.
+    sendUnsequencedQuery: vi.fn((verb: string, fields: readonly unknown[] = []) => `${verb} ${fields.join(" ")}\n`),
+    hasPendingUnsequencedQuery: vi.fn(() => false),
     onLine: vi.fn((listener: (decoded: { verb: string; fields: readonly string[] }) => void) => {
       lineListeners.push(listener);
       return () => {
@@ -717,7 +721,7 @@ describe("server.ts: line/send-command via runtime.reconciler.sessions", () => {
     expect(notice).toMatchObject({ type: "notice", level: "error" });
   });
 
-  it("routes send-command through sendCommand for a sequenced verb and sendUnsequenced otherwise", async () => {
+  it("routes send-command through sendCommand for a sequenced verb and sendUnsequencedQuery otherwise", async () => {
     const h = await harness();
     const session = fakeSession("usb-1");
     h.runtime.sessionsByLink.set("usb-1", session);
@@ -730,7 +734,8 @@ describe("server.ts: line/send-command via runtime.reconciler.sessions", () => {
 
     ws.emit("message", Buffer.from(JSON.stringify({ type: "send-command", linkId: "usb-1", verb: "STATUS" })), false);
     await flush();
-    expect(session.link.sendUnsequenced).toHaveBeenCalledWith("STATUS", []);
+    expect(session.link.sendUnsequencedQuery).toHaveBeenCalledWith("STATUS", []);
+    expect(session.link.sendUnsequenced).not.toHaveBeenCalled();
   });
 
   it("rejects HELLO via send-command rather than forwarding it raw", async () => {
@@ -745,6 +750,7 @@ describe("server.ts: line/send-command via runtime.reconciler.sessions", () => {
 
     expect(session.link.sendCommand).not.toHaveBeenCalled();
     expect(session.link.sendUnsequenced).not.toHaveBeenCalled();
+    expect(session.link.sendUnsequencedQuery).not.toHaveBeenCalled();
   });
 
   // -------------------------------------------------------------------

@@ -951,3 +951,133 @@ gopiv card: gopiv Linked ROLE NEZHA2 mbserial · loki.local:40293 Linked WiFi ·
 No "Retrying in 0s" anywhere, the reason is now visible in plain
 words, and the screenshot (`.../scratchpad/walk-013/front.png`)
 confirms both the gopiv row and the clean `torture` card visually.
+
+## Defect: USB robot never auto-connects on plug-in (2026-09-13)
+
+**Reported by the team-lead**, from the live store (host pid 87704,
+state dir `.../scratchpad/017-013-bench-state`): a USB robot plugged in
+while the host runs never auto-connects. `tovez`'s `usb-...` link sat
+`discovered` for 5+ minutes with nothing acting on it; clicking Connect
+by hand worked in under a second.
+
+**Root cause, confirmed in code** (`packages/host/src/watchers/usbWatcher.ts`):
+`attach()` bails out of marking a link `connectable` whenever
+`address.path === undefined` -- DAPLink's CMSIS-DAP HID interface
+commonly finishes USB enumeration before the CDC serial port does, so a
+board is very often first seen `hid-only`. SWD naming runs fine off the
+HID handle alone and correctly upserts a named `devices` row, but
+`attach()`'s own early-return then leaves the link `discovered` (never
+`connectable`) because there is no serial path yet for the reconciler to
+open. The serial port's later arrival is reported as `updated`, not a
+fresh `added` (`diffDaplinkDevices`'s `reportUpdatedInPlace`,
+ticket 014-007) -- and the pre-fix `handleUpdated` only ever patched
+`address` and stopped, per its own "by design" comment. Nothing else in
+the module ever revisited an already-named, path-less link once the
+missing piece showed up, so it stayed `discovered` forever, with a
+manual Connect click as the only way out (`connect/connector.ts`'s
+`session-open` path does not require `connectable`, only the
+reconciler's automatic pass does).
+
+**Fix** (`packages/host/src/watchers/usbWatcher.ts`, `handleUpdated`
+only -- `attach()`'s own early-return and `handleAdded` are unchanged):
+after patching the link's `address` as before, `handleUpdated` now reads
+the link's prior row (`store.reconcilerRows()`) and, only for a link
+still `discovered` (never `connected`/`connecting`/`failed`/
+`unresponsive`/`closed_by_user`/`stale` -- all somebody else's business)
+whose new address now carries a serial path:
+
+- if the link was already named (`deviceId` set) -- the earlier attach
+  had everything except the path -- it is promoted straight to
+  `connectable`, no naming re-run;
+- if the link was never named *and* its `added`-time address had no
+  path either (the "HID-only, naming had nothing to go on" case,
+  distinct from a genuine SWD failure with a path already present),
+  naming gets exactly one more try by calling `attach()` again --
+  reused, not duplicated. `attach()`'s own logic then promotes to
+  `connectable` itself if this second try succeeds.
+- Any other naming failure (permission, timeout, an unsupported chip)
+  is still never retried -- unchanged from the module's existing
+  "SWD naming failure is still a dead end for automatic connect"
+  behavior, and covered by the pre-existing test asserting exactly one
+  `readSwdName` call across an unrelated HID/serial `updated` pair.
+
+`board_owner` discipline and the in-flight-attach task map
+(`attachTasks`) are both reused as-is: the retry path goes through the
+same `handleAdded` wrapper (acquire/release, catch/finally,
+`forgetTask`) a fresh `added` event already used, and `handleUpdated`
+bails immediately if an attach is already in flight for that serial
+rather than racing a second one. Module doc comments (`updated`'s
+per-poll-flow bullet, `attach()`'s own early-return comment, and the
+"SWD naming failure is still a dead end" section) were rewritten to
+describe this new behavior instead of the old "by design, no second
+chance" limitation.
+
+**Tests** (`packages/host/src/watchers/usbWatcher.test.ts`, all run in
+the foreground):
+
+- HID-only `added` (named successfully) then `updated` with a serial
+  path -- link becomes `connectable` exactly once (`setLinkState`
+  spied); `readSwdName` still called exactly once.
+- HID-only `added` where naming could not run (mocked `readSwdName`
+  failure on the first call only) then `updated` with a serial path --
+  naming retried exactly once (`readSwdName` called twice total), link
+  ends `connectable`, `board_owner` free afterward.
+- `updated` on a `connected` link (address changes) -- state stays
+  `connected`, no second `readSwdName` call.
+- `updated` on a `closed_by_user` link (address changes) -- state stays
+  `closed_by_user`, no second `readSwdName` call.
+- Integration case: runs the real `usbWatcher` against a real `Store`
+  through the exact HID-only-then-`updated` sequence above, then feeds
+  `store.reconcilerRows()` into `connect/reconciler.ts`'s real, pure
+  `plan()` and asserts it returns `[{ kind: "connect", linkId:
+  "usb-<serial>" }]` -- proving an `updated`-promoted link is not just
+  `connectable` in isolation but is exactly what the reconciler's own
+  next tick schedules a connect job for.
+- Existing suite (the pre-existing "never re-runs SWD naming" case
+  covering a *different* naming-failure shape, `removed`/heartbeat/
+  racing-removal cases, etc.) all still pass unmodified.
+
+`npx vitest run packages/host/src/watchers packages/host/src/connect
+packages/host/src/runtime.test.ts` -- **13 files, 218 tests, all
+passing**. `npm run typecheck` and `npm run build` (protocol + host +
+ui) both clean.
+
+**Live proof.** Old host (pid 87704) stopped (`kill -TERM`); fresh state
+dir `.../scratchpad/017-014-bench-state`, seeded with a read-only copy
+of `~/.local/state/robot-console/known-robots.json`; new host started
+`ROBOT_CONSOLE_STATE_DIR=.../017-014-bench-state node bin/robot-console.js
+--port 4797` (pid 8437), left running, waited on in the foreground via a
+bounded Node poll (no manual Connect click, no motion verb, no flash):
+
+- `tovez` on `/dev/cu.usbmodem2121102` was SWD-named and its link
+  reached `connectable` and then `connecting` **entirely on its own** --
+  the exact behavior that was previously missing (before this fix the
+  link never left `discovered` at all). This is the fix proven live:
+  the reconciler's automatic pass now picks up an `updated`-promoted
+  USB link with zero clicks.
+- The link did **not** reach `connected` in this window -- it cycles
+  `connecting -> failed` on repeated backoff retries
+  (`fail_count` climbing past 9), with `state_reason` alternating
+  between `"produced no banner within the identify budget"` and, once,
+  `"produced a banner whose name \"ovz\" does not match its own serial
+  231428700 -- serial data corrupted, check the USB cable"` -- a
+  truncated/garbled banner read, i.e. a live serial-line data-corruption
+  symptom (the connector's own error message names the cause), not an
+  auto-connect defect. This matches this same ticket's own earlier-
+  recorded finding for this exact board/port ("USB board identity"
+  section above: `tigez` on this same port previously showed identical
+  dropped/shifted-byte corruption) -- an intermittent bad USB
+  cable/connector, outside this fix's authority (no cable swap, no
+  flashing, no manual intervention performed).
+- `team-lead-walk2.mjs` run against the same host into
+  `.../scratchpad/walk-014`: `PROBLEMS 0`; every Linked robot
+  (`vevov`/`gopiv`/`tigez`) answered a typed `ID` (never a motion verb)
+  with a real `id diffdrive ...` line; `torture`'s relay card correctly
+  showed no session/no send controls; zero console errors. `tovez` did
+  not appear as a front-page card in this walk (a `failed`, `owned:
+  false` USB link has no card in the current UI projection -- a
+  pre-existing, separate condition, not something this ticket's fix
+  touches or regresses).
+
+Host left running: pid `8437`, port 4797, state dir
+`.../scratchpad/017-014-bench-state` (`host.log` there too).

@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: 018
+tickets:
+- 018-009
 ---
 
 # Bridging through the `torture` mbrelay pool fails, though the same handshake works by hand

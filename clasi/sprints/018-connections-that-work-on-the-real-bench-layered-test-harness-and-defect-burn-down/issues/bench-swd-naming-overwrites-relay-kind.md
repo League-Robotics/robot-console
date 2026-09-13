@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: 018
+tickets:
+- 018-004
 ---
 
 # USB SWD naming overwrites a relay's `kind` with `robot`

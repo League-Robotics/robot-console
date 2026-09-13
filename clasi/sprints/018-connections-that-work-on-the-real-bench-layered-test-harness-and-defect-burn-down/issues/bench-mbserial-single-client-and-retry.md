@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: 018
+tickets:
+- 018-008
 ---
 
 # mbserial bridges are single-client, and a failed mbserial link is not retried

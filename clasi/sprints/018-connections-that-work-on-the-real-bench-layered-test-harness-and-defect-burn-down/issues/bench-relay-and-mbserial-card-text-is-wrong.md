@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: 018
+tickets:
+- 018-010
 ---
 
 # Relay and mbserial cards show wrong, raw, or misleading text and state

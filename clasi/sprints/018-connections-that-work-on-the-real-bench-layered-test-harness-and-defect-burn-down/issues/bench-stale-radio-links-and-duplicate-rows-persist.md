@@ -1,5 +1,9 @@
 ---
-status: pending
+status: in-progress
+sprint: 018
+tickets:
+- 018-005
+- 018-006
 ---
 
 # Stale radio links and duplicate robot rows persist and clutter every card

@@ -266,6 +266,12 @@ function buildLink(link: ProjectionLinkRow, ctx: LinkContext): SnapshotLink {
       lastDoneReason: session.lastDoneReason,
       robotStatus: (session.robotStatus as RobotStatus | null | undefined) ?? null,
       functions: (session.functions as RobotFunction[] | null | undefined) ?? null,
+      // Sprint 018 ticket 010 (SUC-007): when this session last actually
+      // answered something -- see `store/index.ts`'s own
+      // `ProjectionSessionRow.answeredAt` doc comment and
+      // `deviceDisplay.ts`'s `isLinkAnswering`, the "Linked" criterion
+      // this field exists for.
+      answeredAt: session.answeredAt,
     };
   }
   return result;

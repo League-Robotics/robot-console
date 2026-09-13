@@ -364,7 +364,12 @@ describe("AppHeader Flash / Set Wi-Fi send-gating (ticket 011, carried from 009)
 // not usable, "Use <label> instead" to a usable sibling link.
 // ---------------------------------------------------------------------
 
-const OPEN_SESSION = { seq: 3, pending: 0, lastDone: 3, lastDoneReason: "none", robotStatus: null, functions: null };
+// Ticket 018-010: `linkStateText`'s "connected" case now reads "Linked"
+// only once the session has actually answered (`isLinkAnswering`), not
+// merely `state === "connected"` -- this fixture's own uses all mean to
+// exercise the header's "Linked" text, so it needs a fresh `answeredAt`
+// too, matching a session that has genuinely replied.
+const OPEN_SESSION = { seq: 3, pending: 0, lastDone: 3, lastDoneReason: "none", robotStatus: null, functions: null, answeredAt: Date.now() };
 
 function connectionText(el: HTMLDivElement): string | undefined {
   return el.querySelector('[data-testid="app-header-connection"]')?.textContent ?? undefined;

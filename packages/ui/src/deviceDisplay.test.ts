@@ -18,12 +18,17 @@ import {
   firmwareDiagnosticDetail,
   firmwareDisabledReason,
   isCalibrationProgram,
+  isLinkAnswering,
   isLinkUsable,
   lastCheckedText,
   linkStateText,
   nameDisplay,
+  plainFailureReason,
   roleDisplay,
+  stripInternalIds,
   sweepRateSuffix,
+  LINK_ANSWERED_FRESH_MS,
+  STALE_ADVERTISED_GRACE_MS,
   SWEEP_LABEL_FRESH_MS,
 } from "./deviceDisplay";
 
@@ -61,6 +66,15 @@ function device(overrides: Partial<Omit<SnapshotDevice, "links">> & { links?: Sn
 
 const OPEN_SESSION = { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null };
 
+/** A session that has genuinely answered recently -- ticket 018-010's
+ * own "Linked" criterion. `answeredAt` defaults to `Date.now()` at call
+ * time (not a fixed constant) so it stays fresh regardless of when a
+ * test happens to run; pass `now`/`answeredAt` explicitly wherever a
+ * test needs both pinned to the same fixed clock. */
+function answeredSession(answeredAt: number = Date.now()): NonNullable<SnapshotLink["session"]> {
+  return { ...OPEN_SESSION, answeredAt };
+}
+
 describe("isLinkUsable (extended scope, team-lead 2026-09-13, item A)", () => {
   it("true only when state is 'connected' AND session is defined", () => {
     expect(isLinkUsable(link({ state: "connected", session: OPEN_SESSION }))).toBe(true);
@@ -78,6 +92,39 @@ describe("isLinkUsable (extended scope, team-lead 2026-09-13, item A)", () => {
 
   it("false when neither connected nor a session exists", () => {
     expect(isLinkUsable(link({ state: "connectable" }))).toBe(false);
+  });
+});
+
+/**
+ * `isLinkAnswering` (ticket 018-010): the "Linked"/green-pill criterion
+ * -- stricter than `isLinkUsable`, which only checks the transport is
+ * open and a session object exists.
+ */
+describe("isLinkAnswering", () => {
+  const now = 1_000_000;
+
+  it("true when connected, session exists, and answeredAt is within the fresh window", () => {
+    expect(isLinkAnswering(link({ state: "connected", session: answeredSession(now - 1000) }), now)).toBe(true);
+  });
+
+  it("false when not isLinkUsable at all (e.g. not connected)", () => {
+    expect(isLinkAnswering(link({ state: "unresponsive", session: answeredSession(now) }), now)).toBe(false);
+  });
+
+  // Bench defect (vevov): a bridge that accepts TCP and flips state to
+  // "connected" while the robot behind it never once answers HELLO --
+  // `session` exists (opened) but has never actually answered anything.
+  it("false when connected with a session that has never answered (answeredAt null/absent)", () => {
+    expect(isLinkAnswering(link({ state: "connected", session: OPEN_SESSION }), now)).toBe(false);
+    expect(isLinkAnswering(link({ state: "connected", session: { ...OPEN_SESSION, answeredAt: null } }), now)).toBe(false);
+  });
+
+  it("false once answeredAt has gone stale (beyond LINK_ANSWERED_FRESH_MS)", () => {
+    expect(isLinkAnswering(link({ state: "connected", session: answeredSession(now - LINK_ANSWERED_FRESH_MS - 1) }), now)).toBe(false);
+  });
+
+  it("true right at the edge of the fresh window", () => {
+    expect(isLinkAnswering(link({ state: "connected", session: answeredSession(now - LINK_ANSWERED_FRESH_MS) }), now)).toBe(true);
   });
 });
 
@@ -126,9 +173,18 @@ describe("nameDisplay / roleDisplay", () => {
 describe("linkStateText", () => {
   const now = 1_000_000;
 
-  it("renders Linked/Connecting for the live states", () => {
-    expect(linkStateText(link({ state: "connected" }), now)).toBe("Linked");
+  it("renders Linked only once the session has actually answered; Connecting otherwise", () => {
+    expect(linkStateText(link({ state: "connected", session: answeredSession(now) }), now)).toBe("Linked");
     expect(linkStateText(link({ state: "connecting" }), now)).toBe("Connecting");
+  });
+
+  // Ticket 018-010 bench defect: `vevov`'s mbserial bridge accepted a
+  // TCP connection and flipped `state` to "connected" while the robot
+  // behind it never once answered HELLO -- the old criterion (`state ===
+  // "connected"` alone) still called this "Linked".
+  it("renders Connecting (not Linked) for a connected link whose session has never answered", () => {
+    expect(linkStateText(link({ state: "connected", session: OPEN_SESSION }), now)).toBe("Connecting");
+    expect(linkStateText(link({ state: "connected" }), now)).toBe("Connecting");
   });
 
   // Ticket 017-010 defect (team-lead walk 017-012, 2026-09-13): `gopiv`'s
@@ -213,15 +269,135 @@ describe("linkStateText", () => {
     expect(text).not.toContain('link "usb-9906…2820"');
   });
 
-  it("renders Not seen since <date> for a stale link with a lastSeen", () => {
+  it("renders Not seen since <date> for a stale link with a long-past lastSeen", () => {
     const lastSeen = Date.UTC(2026, 0, 1, 12, 0, 0);
     expect(linkStateText(link({ state: "stale", lastSeen }), now)).toContain("Not seen since");
+  });
+
+  // Ticket 018-010 bench defect: the `torture` relay's own row read "Not
+  // seen since 9/13/2026, 12:16:31 AM" although it was advertising right
+  // now (`state: "stale"`, `last_seen` 0 minutes old) -- the aging
+  // watcher marked it stale on its own schedule moments before (or
+  // regardless of) a fresh observation of the still-present service.
+  it("never renders Not seen since for a stale link whose lastSeen is still fresh (advertised right now)", () => {
+    expect(linkStateText(link({ state: "stale", lastSeen: now }), now)).toBe("Not linked");
+    expect(linkStateText(link({ state: "stale", lastSeen: now - STALE_ADVERTISED_GRACE_MS }), now)).toBe("Not linked");
+  });
+
+  it("renders Not seen since once lastSeen has actually gone beyond the advertised grace window", () => {
+    expect(linkStateText(link({ state: "stale", lastSeen: now - STALE_ADVERTISED_GRACE_MS - 1 }), now)).toContain("Not seen since");
   });
 
   it("renders Not linked for discovered/connectable/closed_by_user", () => {
     expect(linkStateText(link({ state: "discovered" }), now)).toBe("Not linked");
     expect(linkStateText(link({ state: "connectable" }), now)).toBe("Not linked");
     expect(linkStateText(link({ state: "closed_by_user" }), now)).toBe("Not linked");
+  });
+});
+
+/**
+ * `stripInternalIds`/`plainFailureReason` (ticket 018-010): exported so
+ * `RelayConnectControls.tsx` shares the exact same cleaning/wording
+ * `linkStateText` above already used internally, instead of showing a
+ * relay card's `reason`/bridging-error text raw. Every transport x
+ * failure-reason combination named in the issue's own "Expected"
+ * section is covered here directly (not only indirectly through
+ * `linkStateText`), since `RelayConnectControls`'s own "Connection to
+ * `<name>` lost" text calls `plainFailureReason` directly rather than
+ * going through `linkStateText`.
+ */
+describe("plainFailureReason (transport-aware failure advice, ticket 018-010)", () => {
+  it("gives USB-specific cable/power advice for a no-banner failure on a usb link", () => {
+    expect(plainFailureReason("connector: link \"usb-1\" produced no banner within the identify budget", "usb")).toBe(
+      "the robot didn't answer when we said hello — check the USB cable or that it's powered on",
+    );
+  });
+
+  it("gives mbserial-specific bridge/farm advice for the same failure shape on an mbserial link", () => {
+    expect(plainFailureReason('connector: link "mbserial-1" produced no banner within the identify budget', "mbserial")).toBe(
+      "the bridge answered but the robot didn't — is the robot plugged into the farm and powered?",
+    );
+  });
+
+  it("gives WiFi-specific network advice for the same failure shape on a wifi link", () => {
+    expect(plainFailureReason('connector: link "wifi-1" produced no banner within the identify budget', "wifi")).toBe(
+      "no answer from the robot over WiFi — is it on the network?",
+    );
+  });
+
+  it("gives radio/relay-specific range advice for the same failure shape on radio/mbrelay links", () => {
+    expect(
+      plainFailureReason('relayBridger: candidate "radio-tigez-via-mbrelay-torture" produced no banner within the identify budget', "radio"),
+    ).toBe("no radio reply — is the robot on and in range?");
+    expect(
+      plainFailureReason('relayBridger: candidate "mbrelay-tigez-via-mbrelay-torture" produced no banner within the identify budget', "mbrelay"),
+    ).toBe("no radio reply — is the robot on and in range?");
+  });
+
+  // Ticket 018-010's own bench evidence: the quoted candidate id can
+  // name a *different* robot than the one the link legitimately belongs
+  // to -- must be stripped outright, never surfaced, regardless of
+  // which name it happens to contain.
+  it("strips a candidate id even when it names a different robot than the link's own device", () => {
+    const reason = 'relayBridger: candidate "radio-tigez-via-mbrelay-torture" produced no banner within the identify budget';
+    const text = plainFailureReason(reason, "radio");
+    expect(text).not.toContain("tigez");
+    expect(text).not.toContain("radio-tigez-via-mbrelay-torture");
+  });
+
+  it("keeps 018-008's own bridge-contention text verbatim, regardless of transport", () => {
+    expect(plainFailureReason("another app is connected to this bridge", "mbserial")).toBe(
+      "another app is connected to this bridge",
+    );
+    expect(plainFailureReason("another app is connected to this bridge", "wifi")).toBe(
+      "another app is connected to this bridge",
+    );
+  });
+
+  it("recognizes a USB port-lock error and gives port-lock advice, only for usb", () => {
+    expect(plainFailureReason("Error: Opening /dev/tty.usbmodem1234: Resource busy", "usb")).toBe("another app has this board open");
+    expect(plainFailureReason("Error: Opening COM3: Access denied, EBUSY", "usb")).toBe("another app has this board open");
+  });
+
+  // Bench evidence: a relay card read "Connection to <name> lost: Error:
+  // No such file or directory..." verbatim -- a raw Node error with no
+  // recognizable shape must still fall back to plain per-transport
+  // advice, never be shown as-is.
+  it("falls back to per-transport no-answer advice for an unrecognized raw system error", () => {
+    expect(plainFailureReason("Error: No such file or directory, open '/dev/tty.usbmodem-relay-1'", "radio")).toBe(
+      "no radio reply — is the robot on and in range?",
+    );
+    expect(plainFailureReason("Error: connect ECONNREFUSED 192.168.1.50:7654", "wifi")).toBe(
+      "no answer from the robot over WiFi — is it on the network?",
+    );
+  });
+
+  it("keeps a banner/serial identity-mismatch reason verbatim regardless of transport", () => {
+    const reason = "banner identity gopiv disagrees with SWD name zeguz -- serial data corrupted, check the USB cable";
+    expect(plainFailureReason(reason, "usb")).toBe(reason);
+  });
+
+  it("maps a missed-STATUS-poll reason to 'stopped answering' regardless of transport", () => {
+    expect(plainFailureReason("no reply to 3 STATUS polls -- link presumed dead", "wifi")).toBe("stopped answering");
+  });
+
+  it("shows an unrecognized, already-plain reason verbatim", () => {
+    expect(plainFailureReason("no reply", "radio")).toBe("no reply");
+  });
+});
+
+describe("stripInternalIds", () => {
+  it("removes a connector:/relayBridger: prefix and any quoted link/candidate id", () => {
+    expect(stripInternalIds('connector: link "usb-9906…2820" produced no banner within the identify budget')).toBe(
+      "produced no banner within the identify budget",
+    );
+    expect(stripInternalIds('relayBridger: candidate "radio-gopiv-via-mbrelay-torture" produced no banner within the identify budget')).toBe(
+      "produced no banner within the identify budget",
+    );
+  });
+
+  it("leaves an already-plain reason untouched", () => {
+    expect(stripInternalIds("another app is connected to this bridge")).toBe("another app is connected to this bridge");
   });
 });
 
@@ -343,6 +519,21 @@ describe("findRelayChild", () => {
 
   it("returns undefined when no device has a via link to this relay", () => {
     expect(findRelayChild([device({ id: 5, links: [link()] })], RELAY_LINK_ID)).toBeUndefined();
+  });
+
+  // Ticket 018-010 bench evidence (`torture` relay card naming the wrong
+  // robot): two different devices can each carry their own qualifying
+  // via-linked link to the same relay at once (one bridged long ago and
+  // now stale/failed, one bridged more recently and also now failed).
+  // The freshest (`since`) one must win, not whichever happens to come
+  // first in `devices[]`.
+  it("picks the freshest (newest since) qualifying link when more than one device qualifies", () => {
+    const older = device({ id: 5, name: "gopiv", links: [viaLink({ id: "radio-gopiv-via-usb-relay-1", state: "failed", since: 100 })] });
+    const newer = device({ id: 6, name: "tigez", links: [viaLink({ id: "radio-tigez-via-usb-relay-1", state: "failed", since: 200 })] });
+    // Order in `devices[]` deliberately puts the stale one first --
+    // the old "first match wins" rule would have picked `gopiv`.
+    expect(findRelayChild([older, newer], RELAY_LINK_ID)?.device.name).toBe("tigez");
+    expect(findRelayChild([newer, older], RELAY_LINK_ID)?.device.name).toBe("tigez");
   });
 });
 

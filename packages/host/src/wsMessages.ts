@@ -321,6 +321,19 @@ export interface SnapshotLink {
     lastDoneReason: string | null;
     robotStatus: RobotStatus | null;
     functions: RobotFunction[] | null;
+    /** Sprint 018 ticket 010 (SUC-007): wall-clock time this session
+     * last actually answered something (any decoded reply -- see
+     * `connect/harvester.ts`'s `syncSession`), `null` if it never has.
+     * The UI's "Linked" criterion (`deviceDisplay.ts`'s
+     * `isLinkAnswering`) needs this to tell "the transport is open" from
+     * "the robot is actually there and answering" -- `state ===
+     * 'connected'` alone cannot (bench evidence: a bridge that accepts
+     * TCP but never replies to `HELLO` still flips its link to
+     * `connected`). Optional (like {@link SnapshotRelay.bridging}) so a
+     * pre-018-010 snapshot literal — most existing test fixtures — need
+     * not be updated to keep type-checking; a fixture that omits it is
+     * simply never "Linked" under the new criterion. */
+    answeredAt?: number | null;
   };
   /** Present only while a flash is in flight for this link. Flash
    * progress is held in server-side memory, not in the store

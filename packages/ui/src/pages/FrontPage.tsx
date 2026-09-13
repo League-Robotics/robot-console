@@ -94,7 +94,7 @@ import {
   useUnassigned,
   useWsActions,
 } from "../ws/WsProvider";
-import { connectionLabel, isCalibrationProgram, isLinkUsable, lastCheckedText, linkStateText, nameDisplay } from "../deviceDisplay";
+import { connectionLabel, isCalibrationProgram, isLinkAnswering, isLinkUsable, lastCheckedText, linkStateText, nameDisplay } from "../deviceDisplay";
 import { FlashDialog } from "../components/FlashDialog";
 import { RelayConnectControls } from "../components/RelayConnectControls";
 import "./FrontPage.css";
@@ -426,7 +426,13 @@ function DeviceCard({
   linkNotices: ReadonlyMap<string, LinkNotice>;
 }) {
   const primary = primaryLinkFor(device);
-  const linked = device.links.some((link) => link.state === "connected");
+  // Ticket 018-010: "Linked" requires a session that has actually
+  // answered, not just `state === "connected"` -- bench defect:
+  // `vevov`'s mbserial bridge accepted a TCP connection and flipped its
+  // link to `connected` while its own robot never once replied to
+  // `HELLO`, and this pill still showed green. See `deviceDisplay.ts`'s
+  // `isLinkAnswering` doc comment.
+  const linked = device.links.some((link) => isLinkAnswering(link));
   const isRelay = device.kind === "relay";
   const isCalibration = isCalibrationProgram(device.program);
 

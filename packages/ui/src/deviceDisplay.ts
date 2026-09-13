@@ -30,7 +30,7 @@
  * shared copy every per-link status rendering site now reads), not
  * folded into a device's role text.
  */
-import type { FirmwareAvailability, FirmwareKind, FlashPhase, SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
+import type { FirmwareAvailability, FirmwareKind, FlashPhase, SnapshotDevice, SnapshotLink, SnapshotRelay, Transport } from "@robot-console/host/src/wsMessages.js";
 
 /** A device's display name. `SnapshotDevice.name` is always a resolved
  * string (see this module's doc comment), so this is never anything
@@ -175,19 +175,37 @@ export const PHASE_LABEL: Record<FlashPhase, string> = {
  * actively-bridged child, hiding the "idle · sweeping" label behind a
  * bogus "Connection to `<name>` lost" the moment a single sweep pass
  * completes.
+ *
+ * ## Freshest match, not first match (ticket 018-010)
+ *
+ * Bench evidence (`torture` relay card): more than one device can
+ * legitimately carry a qualifying via-linked link to the *same*
+ * `relayLinkId` at once -- e.g. `gopiv` was bridged through `torture`
+ * earlier and is now `stale`/`failed`, and `tigez` was bridged through
+ * it more recently and is also now `failed`. The old "first match in
+ * `devices` order wins" rule could surface `gopiv`'s own stale row
+ * (with `gopiv`'s own unrelated reason text) as "the" child even while
+ * `tigez` was the actually-just-attempted one -- a card naming the
+ * wrong robot for its own displayed failure reason. This now picks the
+ * qualifying link with the newest `since` (its own state's start time)
+ * across every device, so a card always describes the most recent
+ * attempt through this relay, never a stale leftover one.
  */
 export function findRelayChild(
   devices: readonly SnapshotDevice[],
   relayLinkId: string,
 ): { device: SnapshotDevice; link: SnapshotLink } | undefined {
+  let best: { device: SnapshotDevice; link: SnapshotLink } | undefined;
   for (const device of devices) {
     for (const link of device.links) {
       if (link.via?.relayLinkId === relayLinkId && link.state !== "connectable" && link.state !== "discovered") {
-        return { device, link };
+        if (best === undefined || link.since > best.link.since) {
+          best = { device, link };
+        }
       }
     }
   }
-  return undefined;
+  return best;
 }
 
 /** How long a device's most recent sighting still counts as "the
@@ -282,6 +300,49 @@ export function isLinkUsable(link: SnapshotLink): boolean {
   return link.state === "connected" && link.session !== undefined;
 }
 
+/** How recently a session must have answered something (see
+ * `SnapshotLink.session.answeredAt`'s own doc comment) to still count
+ * as "Linked" -- generously above `connect/harvester.ts`'s own default
+ * poll cadence and missed-poll ceiling (`DEFAULT_STATUS_POLL_INTERVAL_MS`
+ * 2000ms x `DEFAULT_MISSED_POLL_LIMIT` 3 = 6000ms before the harvester
+ * itself would declare the link dead) so a single slow tick can't
+ * flicker the pill off, while still going stale well before a genuinely
+ * unresponsive link would otherwise be caught. */
+export const LINK_ANSWERED_FRESH_MS = 15_000;
+
+/** How recently a `stale` link's own `lastSeen` must have refreshed for
+ * {@link linkStateText} to treat it as still advertised (ticket
+ * 018-010) rather than trusting the `stale` state name alone -- see
+ * that function's own doc comment for the bench evidence
+ * (`state: "stale"`, `lastSeen` 0 minutes old). Generous enough to cover
+ * one aging-watcher pass lagging one fresh mDNS/registry observation,
+ * without being so long that a link genuinely gone quiet keeps reading
+ * "Not linked" forever instead of eventually saying so. */
+export const STALE_ADVERTISED_GRACE_MS = 90_000;
+
+/**
+ * Whether a link is not merely {@link isLinkUsable} (transport open,
+ * session object present) but has actually **answered** something
+ * recently -- the "Linked"/green-pill criterion (ticket 018-010; bench
+ * defect: `vevov`'s mbserial bridge accepted a TCP connection and
+ * flipped its link to `connected` while its own robot never once
+ * replied to `HELLO` -- the front page still showed a green "Linked"
+ * pill, because the old criterion read only `state === "connected"`).
+ * `link.session.answeredAt` is `undefined`/`null` for a session that has
+ * never answered anything (including one that pre-dates this ticket's
+ * migration, or a test fixture that never set it -- see that field's
+ * own doc comment) -- both correctly never "Linked" here. */
+export function isLinkAnswering(link: SnapshotLink, now: number = Date.now()): boolean {
+  if (!isLinkUsable(link)) {
+    return false;
+  }
+  const answeredAt = link.session?.answeredAt;
+  if (answeredAt === undefined || answeredAt === null) {
+    return false;
+  }
+  return now - answeredAt <= LINK_ANSWERED_FRESH_MS;
+}
+
 /** A short label for one link: the host-built `label` (e.g. "USB ·
  * /dev/tty.usbmodem1234", "Radio · ch41/grp3"), with the relay's own
  * name appended for a `via` link so a student doesn't have to resolve
@@ -305,12 +366,23 @@ export function connectionLabel(link: SnapshotLink): string {
  * "radio-gopiv-via-mbrelay-torture"`). Neither the module name nor the
  * internal id means anything to a student reading a front-page card --
  * bench evidence showed both leaking straight through into "Couldn't
- * connect: connector: link "usb-9906…2820" produced no banner…". Only the
- * prefix and quoted id fragments are removed; the rest of the message
- * (including a banner's own quoted `name`, which is student-meaningful)
- * is untouched.
+ * connect: connector: link "usb-9906…2820" produced no banner…", and (a
+ * relay card, ticket 018-010) "Connection to gopiv lost: relayBridger:
+ * candidate "radio-tigez-via-mbrelay-torture" produced no banner…" --
+ * the quoted candidate id can even name a *different* robot than the one
+ * the link legitimately belongs to (the id is minted from whichever name
+ * was requested at connect time, not from whoever's device row the link
+ * ends up attached to), which is exactly why it must always be removed
+ * outright rather than trusted for anything. Only the prefix and quoted
+ * id fragments are removed; the rest of the message (including a
+ * banner's own quoted `name`, which is student-meaningful) is untouched.
+ *
+ * Exported (ticket 018-010) so `RelayConnectControls.tsx`'s
+ * `relayStatusText` -- the other place a raw `link.reason`/bridging
+ * error reaches a card -- routes through the exact same cleaning rather
+ * than keeping its own, previously-absent, copy.
  */
-function stripInternalIds(reason: string): string {
+export function stripInternalIds(reason: string): string {
   return reason
     .replace(/^\s*(?:connector|relayBridger):\s*/, "")
     .replace(/\b(?:link|candidate)\s+"[^"]*"\s*/g, "")
@@ -318,36 +390,99 @@ function stripInternalIds(reason: string): string {
     .trim();
 }
 
+/** `connect/connector.ts`'s own `BRIDGE_CONTENTION_REASON` (018-008),
+ * duplicated here as a plain string rather than imported: that module
+ * pulls in Node-only transports (`serialport`, `node:sqlite` via the
+ * store) this browser-side package cannot bundle. Kept in sync by name
+ * (both reference "018-008" in their own doc comments) -- already plain
+ * words with no id to strip, so {@link plainFailureReason} passes it
+ * through unchanged; matched here only so it is never mistaken for one
+ * of the generic "something went wrong" shapes below and re-worded. */
+const BRIDGE_CONTENTION_REASON = "another app is connected to this bridge";
+
+/** Plain-word USB port-lock advice (ticket 018-010's own required
+ * truth): a second process already has the serial port open. Distinct
+ * from {@link BRIDGE_CONTENTION_REASON} -- that one names a *network*
+ * bridge's own single-client limit (mbserial/WiFi, 018-008); a local USB
+ * port has no such bridge to contend over, only the OS-level exclusive
+ * lock a `serialport` open failure (`EBUSY`/"Resource busy"/"Permission
+ * denied"/"already in use") reports. */
+const USB_PORT_LOCK_REASON = "another app has this board open";
+
+/** No-answer advice, one plain-word phrase per transport (ticket
+ * 018-010's own required truths list) -- covers both "no banner within
+ * the identify budget" (nothing at all came back) and a bare connect
+ * timeout, since both mean the same thing to a student: nobody answered.
+ * Bench evidence: `gopiv`'s mbserial row used to show the USB-specific
+ * "check the USB cable" advice for a network-bridge link -- the old
+ * {@link plainFailureReason} had exactly one phrasing for every
+ * transport. */
+const NO_ANSWER_ADVICE: Record<Transport, string> = {
+  usb: "the robot didn't answer when we said hello — check the USB cable or that it's powered on",
+  mbserial: "the bridge answered but the robot didn't — is the robot plugged into the farm and powered?",
+  wifi: "no answer from the robot over WiFi — is it on the network?",
+  radio: "no radio reply — is the robot on and in range?",
+  mbrelay: "no radio reply — is the robot on and in range?",
+};
+
+/** A raw system/transport-level error (a Node `Error.message`, an
+ * `ENOENT`/`EACCES`/etc. `errno` code, …) that never got translated to a
+ * known shape above -- bench evidence: a relay card read "Connection to
+ * `<name>` lost: Error: No such file or directory…" verbatim. There is
+ * no useful engineer detail to preserve in front of a student here (this
+ * is exactly the raw-plumbing leak {@link stripInternalIds} cannot
+ * clean, since it isn't a `connector`/`relayBridger` prefix or quoted
+ * id), so it falls back to the same per-transport "nobody answered"
+ * phrasing as a genuine no-banner failure -- still truthful (something
+ * kept this link from ever reaching the robot) without repeating
+ * engineer jargon. */
+const RAW_SYSTEM_ERROR_PATTERN = /^Error:|ENOENT|ECONNREFUSED|ECONNRESET|EACCES|EPIPE|No such file or directory/i;
+
 /**
- * Turn a raw `link.reason` (a `LineLink`/harvester/connector error
- * message, engineer-facing) into a short, plain-word phrase a student
- * can read -- after {@link stripInternalIds} removes the internal
- * module-name prefix and any quoted link/candidate id. A handful of
- * shapes are known well enough to name explicitly; anything else is
- * shown verbatim (cleaned of ids, but otherwise untranslated) rather than
- * swallowed, so an unanticipated reason is still visible rather than
- * silently genericized.
+ * Turn a raw `link.reason` (a `LineLink`/harvester/connector/
+ * relayBridger error message, engineer-facing) into a short, plain-word
+ * phrase a student can read -- after {@link stripInternalIds} removes
+ * the internal module-name prefix and any quoted link/candidate id. A
+ * handful of shapes are known well enough to name explicitly; anything
+ * else recognizable as raw system plumbing falls back to a per-transport
+ * "nobody answered" phrasing rather than being shown verbatim, so a
+ * student never sees a bare `Error:`/`errno` string.
+ *
+ * `transport` picks the right words for *who* failed to answer -- a USB
+ * board, a farm bridge (mbserial), a WiFi robot, or a robot reached
+ * through a relay (radio/mbrelay) -- ticket 018-010's own required
+ * truth: "failure advice matches the transport that actually failed".
  *
  * - No banner at all within the identify budget (`connector.ts`'s/
  *   `relayBridger.ts`'s own "produced no banner within the identify
- *   budget") reads as "the robot didn't answer when we said hello —
- *   check the USB cable or that it's powered on" -- bench evidence
- *   (2026-09-13): this was the literal, untranslated reason shown twice
- *   on `tovez`'s card.
+ *   budget"), or an unrecognized raw system error, both read as
+ *   {@link NO_ANSWER_ADVICE}`[transport]` -- the transport-specific
+ *   phrasing this ticket's required truths name.
  * - A banner/serial identity mismatch (`connector.ts`'s item-E checks,
  *   both ending "... check the USB cable") is already a specific,
  *   actionable instruction -- kept verbatim (once cleaned of ids) rather
  *   than genericized.
+ * - 018-008's own bridge-contention text ({@link BRIDGE_CONTENTION_REASON})
+ *   is kept verbatim -- already plain words, and already distinguishes
+ *   "someone else is using this" from "nobody answered".
+ * - A USB port already held by another process reads as
+ *   {@link USB_PORT_LOCK_REASON}.
  * - A connect timeout (`LineLink.connect()`'s own `"... timed out after
  *   Nms"`, or any other "timed out" message) reads as "no answer (timed
- *   out)".
+ *   out)" -- kept transport-agnostic (pre-dates this ticket; not one of
+ *   its named defects) rather than folded into {@link NO_ANSWER_ADVICE}.
  * - A harvester missed-poll reason (`"no reply to N STATUS polls --
- *   link presumed dead"`) reads as "stopped answering".
+ *   link presumed dead"`) reads as "stopped answering", regardless of
+ *   transport (this is "it was answering, then it stopped", not "it
+ *   never came back to begin with").
  */
-function plainFailureReason(reason: string): string {
+export function plainFailureReason(reason: string, transport: Transport): string {
   const cleaned = stripInternalIds(reason);
-  if (/no banner within the identify budget/i.test(cleaned)) {
-    return "the robot didn't answer when we said hello — check the USB cable or that it's powered on";
+  if (cleaned === BRIDGE_CONTENTION_REASON) {
+    return cleaned;
+  }
+  if (transport === "usb" && /EBUSY|resource busy|permission denied|already in use/i.test(cleaned)) {
+    return USB_PORT_LOCK_REASON;
   }
   if (cleaned.includes("check the USB cable")) {
     return cleaned;
@@ -357,6 +492,9 @@ function plainFailureReason(reason: string): string {
   }
   if (/timed out/i.test(cleaned)) {
     return "no answer (timed out)";
+  }
+  if (/no banner within the identify budget/i.test(cleaned) || RAW_SYSTEM_ERROR_PATTERN.test(cleaned)) {
+    return NO_ANSWER_ADVICE[transport];
   }
   return cleaned;
 }
@@ -380,24 +518,48 @@ function plainFailureReason(reason: string): string {
  * in Ns" suffix is appended only while `nextRetryAt` is still in the
  * future -- never "0s" or a negative count (a past/absent
  * `nextRetryAt` just omits the suffix, telling the truth: no retry is
- * pending). */
+ * pending).
+ *
+ * **`"Linked" requires an answered session, not just `state ===
+ * "connected"`** (ticket 018-010; bench defect: `vevov`'s mbserial
+ * bridge accepted a TCP connection and flipped its link to `connected`
+ * while its own robot never once replied to `HELLO` -- the front page
+ * still showed "Linked"). `state === "connected"` with a session that
+ * has not yet answered (or has gone stale, see {@link isLinkAnswering})
+ * now reads "Connecting" instead -- still true (a session exists, is
+ * being established/confirmed) without claiming a fact nobody has
+ * verified yet.
+ *
+ * **An advertised link never reads "Not seen since …"** (ticket 018-010;
+ * bench defect: the `torture` relay's own row read "Not seen since …"
+ * while `state: "stale"` but `lastSeen` only 0 minutes old -- the aging
+ * watcher can mark a link `stale` on its own schedule moments before a
+ * fresh observation of the still-present service, and nothing walks
+ * that state back until the *next* aging pass). A `stale` link whose
+ * `lastSeen` is still within {@link STALE_ADVERTISED_GRACE_MS} is
+ * presumed still advertised -- "Not linked" (true: no session) rather
+ * than the contradicted "Not seen since" claim. */
 export function linkStateText(link: SnapshotLink, now: number = Date.now()): string {
   switch (link.state) {
     case "connected":
-      return "Linked";
+      return isLinkAnswering(link, now) ? "Linked" : "Connecting";
     case "connecting":
       return "Connecting";
     case "failed":
     case "unresponsive": {
-      const base = link.reason ? `Couldn't connect: ${plainFailureReason(link.reason)}` : "Couldn't connect";
+      const base = link.reason ? `Couldn't connect: ${plainFailureReason(link.reason, link.transport)}` : "Couldn't connect";
       if (link.nextRetryAt !== null && link.nextRetryAt > now) {
         const seconds = Math.max(1, Math.ceil((link.nextRetryAt - now) / 1000));
         return `${base} · retrying in ${seconds}s`;
       }
       return base;
     }
-    case "stale":
+    case "stale": {
+      if (link.lastSeen !== null && Math.abs(now - link.lastSeen) <= STALE_ADVERTISED_GRACE_MS) {
+        return "Not linked";
+      }
       return link.lastSeen !== null ? `Not seen since ${new Date(link.lastSeen).toLocaleString()}` : "Not linked";
+    }
     case "discovered":
     case "connectable":
     case "closed_by_user":

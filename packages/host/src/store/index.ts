@@ -199,6 +199,12 @@ export interface UpdateSessionInput {
   robotStatus?: string | null;
   /** Serialized to JSON when provided. */
   functions?: unknown;
+  /** Sprint 018 ticket 010 (SUC-007): wall-clock time of the most
+   * recent actual reply on this session's link -- distinct from
+   * `lastDone` (only a *sequenced* command's own completion). See
+   * `connect/harvester.ts`'s `syncSession` and this column's own
+   * migration doc comment (`migrations/0002-session-answered-at.ts`). */
+  answeredAt?: number | null;
 }
 
 export interface SetFirmwareInput {
@@ -342,6 +348,8 @@ export interface ProjectionSessionRow {
   readonly lastDoneReason: string | null;
   readonly robotStatus: unknown;
   readonly functions: unknown;
+  /** See {@link UpdateSessionInput.answeredAt}'s own doc comment. */
+  readonly answeredAt: number | null;
 }
 
 /** One `relay_leases` row, as {@link Store.projectionRows} needs it —
@@ -1094,7 +1102,7 @@ export class Store {
              ON CONFLICT(link_id) DO UPDATE SET
                opened_at = excluded.opened_at,
                seq = NULL, pending = NULL, last_done = NULL, last_done_reason = NULL,
-               robot_status = NULL, functions = NULL`,
+               robot_status = NULL, functions = NULL, answered_at = NULL`,
           )
           .run(linkId, at);
       },
@@ -1116,7 +1124,8 @@ export class Store {
                last_done = COALESCE(?, last_done),
                last_done_reason = COALESCE(?, last_done_reason),
                robot_status = COALESCE(?, robot_status),
-               functions = COALESCE(?, functions)
+               functions = COALESCE(?, functions),
+               answered_at = COALESCE(?, answered_at)
              WHERE link_id = ?`,
           )
           .run(
@@ -1126,6 +1135,7 @@ export class Store {
             patch.lastDoneReason ?? null,
             patch.robotStatus ?? null,
             toJson(patch.functions),
+            patch.answeredAt ?? null,
             linkId,
           );
       },
@@ -1399,7 +1409,7 @@ export class Store {
     }>;
 
     const sessionRows = this.db
-      .prepare("SELECT link_id, seq, pending, last_done, last_done_reason, robot_status, functions FROM sessions")
+      .prepare("SELECT link_id, seq, pending, last_done, last_done_reason, robot_status, functions, answered_at FROM sessions")
       .all() as Array<{
       link_id: string;
       seq: number | null;
@@ -1408,6 +1418,7 @@ export class Store {
       last_done_reason: string | null;
       robot_status: string | null;
       functions: string | null;
+      answered_at: number | null;
     }>;
 
     const relayLeaseRows = this.db.prepare("SELECT relay_link_id, owner FROM relay_leases").all() as Array<{
@@ -1491,6 +1502,7 @@ export class Store {
         lastDoneReason: s.last_done_reason,
         robotStatus: s.robot_status !== null ? (JSON.parse(s.robot_status) as unknown) : null,
         functions: s.functions !== null ? (JSON.parse(s.functions) as unknown) : null,
+        answeredAt: s.answered_at,
       })),
       relayLeases: relayLeaseRows.map((r) => ({ relayLinkId: r.relay_link_id, owner: r.owner })),
       firmware: firmwareRows.map((f) => ({

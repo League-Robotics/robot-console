@@ -2,14 +2,14 @@
 id: '010'
 title: 'UI truthfulness: shared link-status text, correct Linked criteria, relay/mbserial
   card state'
-status: open
+status: in-progress
 use-cases:
 - SUC-007
 depends-on:
 - '004'
 - '006'
-- '008'
-- '009'
+- 008
+- 009
 github-issue: ''
 issue: bench-relay-and-mbserial-card-text-is-wrong.md
 completes_issue: true
@@ -55,23 +55,23 @@ patch each component's text independently):
 
 ## Acceptance Criteria
 
-- [ ] One shared link-status text module exists and is used by every
+- [x] One shared link-status text module exists and is used by every
       card/page that renders connection or failure state (no component
       formats its own ad hoc status string).
-- [ ] A relay bridge-status line names the robot actually attempted (not
+- [x] A relay bridge-status line names the robot actually attempted (not
       a mismatched name), in plain words, with no raw internal ids
       (link ids, device ids) visible.
-- [ ] Switch/Disconnect controls show only while a bridge session
+- [x] Switch/Disconnect controls show only while a bridge session
       actually exists; an idle relay's own row never claims "Not seen
       since ..." while it is advertising.
-- [ ] Failure advice text matches the transport that actually failed
+- [x] Failure advice text matches the transport that actually failed
       (USB vs. mbserial vs. relay radio each get the appropriate plain-
       language reason, not a mismatched one).
-- [ ] "Linked" (and any equivalent green-pill indicator) is shown only
+- [x] "Linked" (and any equivalent green-pill indicator) is shown only
       when a link is `connected` with a session that has answered within
       the poll window; a link that accepts TCP but has never answered a
       command is never shown as Linked.
-- [ ] Unit tests: the shared text module's output for each transport ×
+- [x] Unit tests: the shared text module's output for each transport ×
       failure-reason combination named in the issue's "Expected" list;
       component tests confirming `DeviceCard`/`RelayPage` call the
       shared module rather than formatting text inline.
@@ -81,6 +81,28 @@ patch each component's text independently):
       robot name, no raw internal ids, "Linked" only where a session has
       actually answered, and Switch/Disconnect only where a bridge
       session exists.
+
+      **BLOCKED, not met**: run 2026-09-13 (report:
+      `scratchpad/018-010-stakeholder-db/../bench-report-010.md`, see
+      programmer's own return for the exact path) found the stakeholder's
+      own `npm run dev` (pid 12415) holding every network resource the
+      five required paths need (gopiv mbserial/wifi, tigez mbserial,
+      vevov mbserial; the `torture` radio pool) -- `--skip-held` marked
+      all of them "skipped", not "pass" (0 of the 5 required paths were
+      actually exercised; only the `vitut` USB relay ran, and it
+      genuinely failed L2/L3 on an apparently pre-existing hardware
+      issue unrelated to this ticket). Per the "never kill/signal a
+      process you didn't start" rule, the harness could not be re-run
+      against a clear bench without the stakeholder stopping that
+      process first. A separate, non-conflicting truthfulness check DID
+      run clean: a host on a throwaway COPY of the stakeholder's real
+      `console.sqlite` (`--no-sweep --no-open`, `ROBOT_CONSOLE_STATE_DIR`
+      pointed at the copy, verified via `lsof` before screenshotting) --
+      every card's text was quoted and inspected; no raw ids, no
+      contradictory "Not seen since" on an advertised link, Switch/
+      Disconnect only where a session exists, "Linked" only alongside a
+      real answered session. See the programmer's own return for the
+      full quoted text and screenshot path.
 
 ## Implementation Plan
 

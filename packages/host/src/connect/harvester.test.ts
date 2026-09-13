@@ -54,6 +54,71 @@ async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+// Sprint 018 ticket 010 (SUC-007): `sessions.answered_at` -- the UI's
+// "Linked" criterion (`deviceDisplay.ts`'s `isLinkAnswering`) reads this
+// via `projection.ts`'s `SnapshotLink.session.answeredAt`. Every branch
+// inside `onLine` that calls `syncSession` (status/estop/funcs/the
+// default fall-through) is "the robot just answered something" by
+// construction -- see `harvester.ts`'s own updated `syncSession` doc
+// comment -- so each is covered here directly, plus the negative case
+// (a bare poll timeout, no reply at all, must never set it).
+describe("createHarvester -- sessions.answered_at (ticket 018-010)", () => {
+  it("is null until the first reply, then set to now() on a status reply", async () => {
+    const store = seededStore();
+    const { link, stream } = await connectedLink();
+    const harvester = createHarvester(store, { statusPollIntervalMs: 0, now: () => 5000 });
+    harvester.attach(session(link));
+
+    expect(store.snapshotRows().sessions.find((s) => s.link_id === "link-1")?.answered_at).toBeNull();
+
+    stream.emitData("status flags=01 active=1\n");
+    await flush();
+
+    expect(store.snapshotRows().sessions.find((s) => s.link_id === "link-1")?.answered_at).toBe(5000);
+    store.close();
+  });
+
+  it("is set on any other reply verb too (estop, funcs, and the default fall-through)", async () => {
+    const store = seededStore();
+    const { link, stream } = await connectedLink();
+    const harvester = createHarvester(store, { statusPollIntervalMs: 0, now: () => 7000 });
+    harvester.attach(session(link));
+
+    stream.emitData("estop\n");
+    await flush();
+    expect(store.snapshotRows().sessions.find((s) => s.link_id === "link-1")?.answered_at).toBe(7000);
+
+    stream.emitData("funcs drive x y\n");
+    await flush();
+    expect(store.snapshotRows().sessions.find((s) => s.link_id === "link-1")?.answered_at).toBe(7000);
+
+    stream.emitData("ver 1.2.3\n");
+    await flush();
+    expect(store.snapshotRows().sessions.find((s) => s.link_id === "link-1")?.answered_at).toBe(7000);
+    store.close();
+  });
+
+  // A missed `STATUS` poll (no reply at all) must never set answered_at --
+  // it is the harvester declaring the link dead, not the robot
+  // answering. `fail()` only writes `links.state`; it never deletes the
+  // `sessions` row (that is `connect/reconciler.ts`'s own job, once its
+  // `LineLink.onClose` subscription reacts to `fail()`'s own
+  // `link.close()`), so the row is still present here, just never
+  // answered.
+  it("stays null across a missed-poll watchdog death with no reply", async () => {
+    const store = seededStore();
+    const { link } = await connectedLink();
+    const harvester = createHarvester(store, { statusPollIntervalMs: 5, missedPollLimit: 1, now: () => 9000 });
+    harvester.attach(session(link));
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(store.snapshotRows().links.find((l) => l.id === "link-1")?.state).toBe("unresponsive");
+    expect(store.snapshotRows().sessions.find((s) => s.link_id === "link-1")?.answered_at).toBeNull();
+    store.close();
+  });
+});
+
 describe("createHarvester -- status/funcs/thdr+t", () => {
   it("status updates sessions.robot_status and resets the poll-miss counter", async () => {
     const store = seededStore();

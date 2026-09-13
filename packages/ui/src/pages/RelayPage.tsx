@@ -94,19 +94,28 @@
  * console makes sense for a link with no session while a child owns the
  * port) -- a one-line note says it returns after Disconnect.
  *
- * **"Connected to `<name>`" requires the child's link to actually be
- * `connected`, not just present** (mirrors sprint 013's own follow-up):
- * the child device is not removed from `devices[]` when its radio link
- * drops (`links.state` moves to `failed`/`unresponsive` instead;
- * `harvester`/watchers age it out separately) -- only a deliberate
- * Disconnect removes the bridge. So the status line reads "Connected to
- * `<name>` …" only when `child.link.state === "connected"`; otherwise
- * this page renders "Connection to `<name>` lost" (plus `child.link
- * .reason` when present, `data-testid="relay-lost"`) in its place -- the
- * connect bar and Disconnect stay available in that state (the
- * connected layout, including `RobotPage` for the child, stays mounted
- * throughout, driven by the child's existence, not its link's state) so
- * the student can retry or clean up.
+ * **"Connected to `<name>`" requires the child's link to actually have
+ * answered, not just be present** (mirrors sprint 013's own follow-up;
+ * tightened by ticket 018-010 from "state === connected" to
+ * `isLinkAnswering` -- see `RelayConnectControls.tsx`'s own doc comment,
+ * "a link that is merely TCP-connected but has never actually answered
+ * anything is never 'Connected to `<name>`'"): the child device is not
+ * removed from `devices[]` when its radio link drops (`links.state`
+ * moves to `failed`/`unresponsive` instead; `harvester`/watchers age it
+ * out separately) -- only a deliberate Disconnect removes the bridge. So
+ * the status line reads "Connected to `<name>` …" only once answering,
+ * "Connecting to `<name>`…" while a session exists but has not yet
+ * answered (or the link is still `connecting`), and "Connection to
+ * `<name>` lost" (plus a plain-word `reason` when present,
+ * `data-testid="relay-lost"`) once neither -- the connect bar stays
+ * mounted throughout (the connected layout, including `RobotPage` for
+ * the child, stays driven by the child's existence, not its link's
+ * state), but **Disconnect** now shows only while a bridge session
+ * genuinely exists (`RelayConnectControls.tsx`'s own `hasBridgeSession`
+ * -- ticket 018-010's fix for the bench defect where Switch/Disconnect
+ * showed "as if bridging" for a link that was never actually bridged);
+ * a `lost` child with no session left offers Connect, not Disconnect,
+ * to retry.
  */
 import type { SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
 import { AddressSourceChip } from "../components/AddressSourceChip";

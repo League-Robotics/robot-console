@@ -185,8 +185,25 @@ describe("DevicesList", () => {
     expect(el.querySelector('[data-testid="calibration-badge"]')).toBeNull();
   });
 
-  it("shows the Linked pill only when some link is connected", () => {
-    const linked = mount(withRouter(<DevicesList status="open" devices={[device(1, { links: [link("usb-1", { state: "connected" })] })]} unassigned={[]} />));
+  it("shows the Linked pill only when some link is connected AND has answered (ticket 018-010)", () => {
+    const linked = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              links: [
+                link("usb-1", {
+                  state: "connected",
+                  session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null, answeredAt: Date.now() },
+                }),
+              ],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
     expect(linked.querySelector(".device-linked-pill")).not.toBeNull();
 
     if (root) act(() => root!.unmount());
@@ -195,6 +212,34 @@ describe("DevicesList", () => {
     const notLinked = mount(withRouter(<DevicesList status="open" devices={[device(1, { links: [link("usb-1", { state: "connectable" })] })]} unassigned={[]} />));
     expect(notLinked.querySelector(".device-linked-pill")).toBeNull();
   });
+
+  // Ticket 018-010 bench defect: `vevov`'s mbserial bridge accepted a
+  // TCP connection and flipped its link to `connected` while its own
+  // robot never once replied to `HELLO` -- the pill must not show for
+  // merely `state === "connected"` with no session, or a session that
+  // has never answered.
+  it("never shows the Linked pill for a connected link that has no session, or a session that has never answered", () => {
+    const noSession = mount(withRouter(<DevicesList status="open" devices={[device(1, { links: [link("usb-1", { state: "connected" })] })]} unassigned={[]} />));
+    expect(noSession.querySelector(".device-linked-pill")).toBeNull();
+
+    if (root) act(() => root!.unmount());
+    if (container) container.remove();
+
+    const neverAnswered = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              links: [link("usb-1", { state: "connected", session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null } })],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
+    expect(neverAnswered.querySelector(".device-linked-pill")).toBeNull();
+  });
 });
 
 describe("multi-link device (host already groups links under one device)", () => {
@@ -202,7 +247,10 @@ describe("multi-link device (host already groups links under one device)", () =>
     return device(1, {
       name: "vevov",
       links: [
-        link("usb-vevov", { state: "connected", session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null } }),
+        link("usb-vevov", {
+          state: "connected",
+          session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null, answeredAt: Date.now() },
+        }),
         link("wifi-vevov", { transport: "wifi", label: "WiFi · vevov.local:7654", state: "failed", reason: "could not reach vevov.local:7654" }),
       ],
     });
@@ -806,6 +854,7 @@ describe("relay quick-connect", () => {
         link("usb-relay-1-via-vevav", {
           transport: "radio",
           state: "connected",
+          session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null, answeredAt: Date.now() },
           via: { relayLinkId: "usb-relay-1", relayName: "rly01", channel: 55, group: 114, addressSource: "derived" },
         }),
       ],
@@ -837,7 +886,13 @@ describe("relay quick-connect", () => {
     );
   });
 
-  it("a child whose link has dropped shows 'Connection to <name> lost', not 'Connected to'", () => {
+  // Ticket 018-010 bench defect: a stale `failed` child link with no
+  // real bridge session used to still show Switch/Disconnect "as if
+  // bridging". This link has no `session` at all (never got past
+  // identify) -- only a plain Connect should show, offering the student
+  // a way to try again, not a Disconnect for a session that never
+  // existed.
+  it("a child whose link has dropped (no session) shows 'Connection to <name> lost' and only a Connect button, not Switch/Disconnect", () => {
     const child = device(4, {
       name: "vevav",
       links: [
@@ -854,6 +909,32 @@ describe("relay quick-connect", () => {
     const lost = quick?.querySelector('[data-testid="relay-quick-lost-3"]');
     expect(lost).not.toBeNull();
     expect(lost?.textContent).toBe("Connection to vevav lost: no reply from vevav");
+    const buttons = Array.from(quick?.querySelectorAll("button") ?? []).map((b) => b.textContent);
+    expect(buttons).toContain("Connect");
+    expect(buttons).not.toContain("Switch");
+    expect(buttons).not.toContain("Disconnect");
+  });
+
+  // The `session`-kept counterpart: `connect/harvester.ts` keeps a
+  // session row open while a link is merely `unresponsive` (not yet
+  // reaped) -- `RelayPage.tsx`'s own design intent is that Switch/
+  // Disconnect stay offered in exactly that case, so the student can
+  // retry or clean up.
+  it("a child that is unresponsive but whose session is kept still offers Switch/Disconnect", () => {
+    const child = device(4, {
+      name: "vevav",
+      links: [
+        link("usb-relay-1-via-vevav", {
+          transport: "radio",
+          state: "unresponsive",
+          reason: "no reply from vevav",
+          session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+          via: { relayLinkId: "usb-relay-1", relayName: "rly01", channel: 55, group: 114, addressSource: "derived" },
+        }),
+      ],
+    });
+    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice(), child]} unassigned={[]} />));
+    const quick = el.querySelector('[data-testid="relay-quick-connect-3"]');
     const buttons = Array.from(quick?.querySelectorAll("button") ?? []).map((b) => b.textContent);
     expect(buttons).toContain("Switch");
     expect(buttons).toContain("Disconnect");

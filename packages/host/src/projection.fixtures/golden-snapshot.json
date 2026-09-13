@@ -73,6 +73,7 @@
             "pending": 1,
             "lastDone": 4,
             "lastDoneReason": "ok",
+            "answeredAt": null,
             "robotStatus": {
               "receivedAt": 120,
               "fields": {

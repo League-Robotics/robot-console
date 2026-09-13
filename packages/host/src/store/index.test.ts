@@ -905,6 +905,46 @@ describe("Store: sessions", () => {
       store.close();
     }
   });
+
+  // Sprint 018 ticket 010 (SUC-007): `answered_at` -- the UI's "Linked"
+  // criterion reads this via `projectionRows().sessions[].answeredAt`
+  // (see `deviceDisplay.ts`'s `isLinkAnswering`).
+  it("answered_at is null until updateSession sets it, and survives an omitted patch", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertLink({ id: "link-1", transport: "usb", address: {}, at: 1 });
+      store.openSession("link-1", 100);
+      let row = store.snapshotRows().sessions[0];
+      expect(row).toMatchObject({ answered_at: null });
+
+      store.updateSession("link-1", { answeredAt: 150 });
+      row = store.snapshotRows().sessions[0];
+      expect(row).toMatchObject({ answered_at: 150 });
+
+      // A later patch that omits answeredAt (e.g. a functions-only
+      // write) must not clear it -- COALESCE, same discipline as every
+      // other session field.
+      store.updateSession("link-1", { functions: [{ name: "drive" }] });
+      row = store.snapshotRows().sessions[0];
+      expect(row).toMatchObject({ answered_at: 150 });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("re-opening a session clears answered_at along with every other transient field", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertLink({ id: "link-1", transport: "usb", address: {}, at: 1 });
+      store.openSession("link-1", 100);
+      store.updateSession("link-1", { answeredAt: 150 });
+      store.openSession("link-1", 200);
+      const row = store.snapshotRows().sessions[0];
+      expect(row).toMatchObject({ opened_at: 200, answered_at: null });
+    } finally {
+      store.close();
+    }
+  });
 });
 
 describe("Store: board ownership", () => {
@@ -1182,6 +1222,7 @@ describe("Store: projectionRows", () => {
             leaseExpired: false,
           },
           functions: [{ name: "drive" }],
+          answeredAt: null,
         },
       ]);
 
@@ -1224,7 +1265,7 @@ describe("Store: projectionRows", () => {
 
       const rows = store.projectionRows();
       expect(rows.sessions).toEqual([
-        { linkId: "link-1", seq: null, pending: null, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+        { linkId: "link-1", seq: null, pending: null, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null, answeredAt: null },
       ]);
     } finally {
       store.close();

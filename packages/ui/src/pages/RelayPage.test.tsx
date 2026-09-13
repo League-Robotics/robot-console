@@ -335,6 +335,11 @@ describe("RelayPage: connected", () => {
     return link("radio-vevav-via-usb-relay-1", {
       transport: "radio",
       state: "connected",
+      // Ticket 018-010: "Connected to <name>" now requires the session
+      // to have actually answered (`isLinkAnswering`), not merely
+      // `state === "connected"` -- this fixture's default represents a
+      // genuinely live, answering bridge.
+      session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null, answeredAt: Date.now() },
       via: { relayLinkId: RELAY_LINK_ID, relayName: "rly01", channel: 55, group: 114, addressSource: "derived" },
       ...overrides,
     });

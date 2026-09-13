@@ -276,6 +276,13 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
           pending: link.session.pendingCount,
           lastDone: link.session.lastDone,
           lastDoneReason: link.session.lastDoneReason,
+          // Sprint 018 ticket 010 (SUC-007): every call to this function
+          // is from inside `onLine` below (never a bare poll timeout --
+          // see `pollStatus`'s own miss-counting, which never reaches
+          // here), so a call happening at all *is* the robot having just
+          // answered something. This is the one write the UI's "Linked"
+          // criterion (`deviceDisplay.ts`'s `isLinkAnswering`) reads.
+          answeredAt: now(),
           // `Store.updateSession`'s own `robotStatus`/`functions` fields
           // are pre-serialized JSON text (it JSON-encodes `functions`
           // itself but not `robotStatus` -- see `UpdateSessionInput`'s

@@ -90,6 +90,7 @@
 import { useMemo, useState } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useLinkLog, useSendable, useWsActions } from "../ws/WsProvider";
+import { isLinkUsable } from "../deviceDisplay";
 import "./CommandStrip.css";
 
 /** Matches a `get <name> ...` reply line and captures `<name>`.
@@ -106,7 +107,7 @@ export interface CommandStripProps {
 export function CommandStrip({ link }: CommandStripProps) {
   const linkId = link.id;
   const sendable = useSendable();
-  const linkOpen = link.session !== undefined && sendable;
+  const linkOpen = isLinkUsable(link) && sendable;
   const { sendCommand } = useWsActions();
   const log = useLinkLog(linkId);
 

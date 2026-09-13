@@ -46,6 +46,7 @@
  */
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useSendable, useWsActions } from "../ws/WsProvider";
+import { isLinkUsable } from "../deviceDisplay";
 import { clearEstop } from "../lib/estop";
 import "./StatusPanel.css";
 
@@ -152,11 +153,18 @@ export interface StatusPanelProps {
 export function StatusPanel({ link }: StatusPanelProps) {
   const linkId = link.id;
   const sendable = useSendable();
-  const linkOpen = link.session !== undefined && sendable;
+  const linkOpen = isLinkUsable(link) && sendable;
   const { sendCommand } = useWsActions();
   const status = link.session?.robotStatus ?? undefined;
 
   const isEstopped = status?.estopped === true;
+  // Extended scope (team-lead, 2026-09-13), item A: `status` is a pure
+  // display read of the link's own session -- it survives the link going
+  // unresponsive/failed/stale exactly like `session` itself does (see
+  // `isLinkUsable`'s own doc comment), so a table full of numbers is
+  // still shown, but labeled "last known" rather than presented as live
+  // once the link is no longer actually usable.
+  const isStale = status !== undefined && !isLinkUsable(link);
 
   function handleClearEstop(): void {
     clearEstop(sendCommand, linkId);
@@ -169,6 +177,11 @@ export function StatusPanel({ link }: StatusPanelProps) {
     <section className="robot-status-panel" aria-label="Robot status">
       <div className="status-panel-heading">
         <h3>Status</h3>
+        {isStale && (
+          <span className="status-panel-note status-panel-stale" data-testid="status-panel-stale">
+            last known
+          </span>
+        )}
         {/* OOP 2026-09-10 (stakeholder): no Ready/Moving word up here --
             the table already says both. Only two things are worth a
             word on this line: an e-stop, and "no status yet". */}

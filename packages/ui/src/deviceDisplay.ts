@@ -252,6 +252,47 @@ export function sweepRateSuffix(relay: SnapshotRelay | undefined): string {
   return ` (${relay.sweep.rate})`;
 }
 
+/**
+ * Whether a link is actually usable for sending right now -- the single
+ * predicate every send-capable control and every "is this link open"
+ * computation must read (extended scope, team-lead 2026-09-13; bench
+ * defect: `zapuz`/`tigez` showed drive controls ENABLED while the card
+ * read "Unreachable: no reply to 3 STATUS polls", because every call
+ * site gated on `link.session !== undefined` alone -- the harvester
+ * marks a link `unresponsive` while deliberately *keeping* its session
+ * row, so `session !== undefined` alone cannot tell "open and answering"
+ * from "open, but the device has stopped replying").
+ *
+ * `link.state === "connected"` is required in addition to `session !==
+ * undefined`: a link's own `session` field survives far more than a
+ * reconnect (see `useSendable`'s own doc comment) -- it also survives
+ * the link itself going `unresponsive`/`failed`/`stale` while the host
+ * keeps the (now-useless) session row around so a later good reply can
+ * resume it without a fresh handshake. Neither half alone is sufficient:
+ * `state === "connected"` with no `session` happens for the instant
+ * between a link resolving and its session actually opening; `session
+ * !== undefined` with `state !== "connected"` is exactly this bug.
+ *
+ * A caller that wants to gate an actual send (not just render "is this
+ * link open") must additionally check `useSendable()` -- this predicate
+ * says nothing about the host connection itself being live; see
+ * `useSendable`'s own doc comment.
+ */
+export function isLinkUsable(link: SnapshotLink): boolean {
+  return link.state === "connected" && link.session !== undefined;
+}
+
+/** A short label for one link: the host-built `label` (e.g. "USB ·
+ * /dev/tty.usbmodem1234", "Radio · ch41/grp3"), with the relay's own
+ * name appended for a `via` link so a student doesn't have to resolve
+ * `via.relayLinkId` themselves. Moved here from `FrontPage.tsx` (ticket
+ * 017-011) so `AppHeader` and `FrontPage` both read one shared
+ * definition, per this sprint's SUC-007 UI-dedupe goal, rather than each
+ * keeping its own copy. */
+export function connectionLabel(link: SnapshotLink): string {
+  return link.via ? `${link.label} (via relay ${link.via.relayName})` : link.label;
+}
+
 /** Per-link status text -- "Linked" / "Connecting" / "Unreachable: …" /
  * "Retrying in Ns" / "Not seen since …" / "Not linked", derived from
  * `state`/`reason`/`lastSeen`/`nextRetryAt` (`sprint.md`'s own wording).

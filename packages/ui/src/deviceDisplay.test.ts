@@ -12,11 +12,13 @@ import { describe, expect, it } from "vitest";
 import type { FirmwareAvailability, SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
 import {
   canBeFlashed,
+  connectionLabel,
   findRelayChild,
   findSweepingCandidateName,
   firmwareDiagnosticDetail,
   firmwareDisabledReason,
   isCalibrationProgram,
+  isLinkUsable,
   lastCheckedText,
   linkStateText,
   nameDisplay,
@@ -56,6 +58,42 @@ function device(overrides: Partial<Omit<SnapshotDevice, "links">> & { links?: Sn
     ...overrides,
   };
 }
+
+const OPEN_SESSION = { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null };
+
+describe("isLinkUsable (extended scope, team-lead 2026-09-13, item A)", () => {
+  it("true only when state is 'connected' AND session is defined", () => {
+    expect(isLinkUsable(link({ state: "connected", session: OPEN_SESSION }))).toBe(true);
+  });
+
+  it("false when session is defined but the link is not connected -- the exact bench bug (unresponsive link, session row kept)", () => {
+    expect(isLinkUsable(link({ state: "unresponsive", session: OPEN_SESSION }))).toBe(false);
+    expect(isLinkUsable(link({ state: "failed", session: OPEN_SESSION }))).toBe(false);
+    expect(isLinkUsable(link({ state: "stale", session: OPEN_SESSION }))).toBe(false);
+  });
+
+  it("false when connected but no session is open yet", () => {
+    expect(isLinkUsable(link({ state: "connected" }))).toBe(false);
+  });
+
+  it("false when neither connected nor a session exists", () => {
+    expect(isLinkUsable(link({ state: "connectable" }))).toBe(false);
+  });
+});
+
+describe("connectionLabel (moved from FrontPage.tsx, ticket 017-011)", () => {
+  it("returns the link's own label when it is not a via-relay link", () => {
+    expect(connectionLabel(link({ label: "USB · /dev/cu.usbmodemA" }))).toBe("USB · /dev/cu.usbmodemA");
+  });
+
+  it("appends '(via relay <name>)' for a via-relay link", () => {
+    const viaLink = link({
+      label: "Radio · ch47/grp60",
+      via: { relayLinkId: "mbrelay-torture", relayName: "torture", channel: 47, group: 60, addressSource: "derived" },
+    });
+    expect(connectionLabel(viaLink)).toBe("Radio · ch47/grp60 (via relay torture)");
+  });
+});
 
 describe("canBeFlashed", () => {
   it("is true for a usb link with capabilities.flash true, regardless of the owning device's role", () => {

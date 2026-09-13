@@ -74,6 +74,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { MAX_LINES_PER_LINK, useLinkLog, useSendable, useWsActions } from "../ws/WsProvider";
+import { isLinkUsable } from "../deviceDisplay";
 import { classifyLine } from "../lib/lineClass";
 import { SequencingIndicator } from "./SequencingIndicator";
 import "./DeviceConsole.css";
@@ -133,7 +134,7 @@ export function DeviceConsole({ link, name }: DeviceConsoleProps) {
   // being sendable, not just this link's own session state -- see
   // `useSendable`'s own doc comment.
   const sendable = useSendable();
-  const linkOpen = link.session !== undefined && sendable;
+  const linkOpen = isLinkUsable(link) && sendable;
   const sendDisabled = !linkOpen || pending;
 
   const submitLine = useCallback(() => {

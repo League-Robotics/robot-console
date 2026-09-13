@@ -59,6 +59,7 @@
 import { useEffect, useState } from "react";
 import type { RobotFunction, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useSendable, useWsActions } from "../ws/WsProvider";
+import { isLinkUsable } from "../deviceDisplay";
 import "./FunctionsPanel.css";
 
 /** One parameter parsed out of a `funcs` signature -- see
@@ -197,7 +198,7 @@ export interface FunctionsPanelProps {
 export function FunctionsPanel({ link, name }: FunctionsPanelProps) {
   const { sendCommand } = useWsActions();
   const sendable = useSendable();
-  const linkOpen = link.session !== undefined && sendable;
+  const linkOpen = isLinkUsable(link) && sendable;
   const functions = link.session?.functions ?? undefined;
 
   const [argsMap, setArgsMap] = useState<Map<string, string[]>>(() => loadStoredArgs(storageKeyFor(name)));

@@ -25,6 +25,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useSendable, useWsActions } from "../ws/WsProvider";
+import { isLinkUsable } from "../deviceDisplay";
 import { useHeldDrive, type WheelTarget as HeldDriveTarget } from "../hooks/useHeldDrive";
 import { DriveControls } from "./DriveControls";
 import "./DriveTab.css";
@@ -146,7 +147,7 @@ export interface DriveTabProps {
 export function DriveTab({ link }: DriveTabProps) {
   const linkId = link.id;
   const sendable = useSendable();
-  const linkOpen = link.session !== undefined && sendable;
+  const linkOpen = isLinkUsable(link) && sendable;
   const { sendCommand } = useWsActions();
   const engine = useDriveEngine(linkId, linkOpen);
   const [heldKeys, setHeldKeys] = useState<string[]>([]);

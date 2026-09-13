@@ -75,6 +75,7 @@ import {
 } from "../lib/calibration";
 import { useCopied } from "../lib/clipboard";
 import { validateRadioOverrideInput } from "../lib/radioAddress";
+import { isLinkUsable } from "../deviceDisplay";
 import { AddressSourceChip } from "./AddressSourceChip";
 import { CalibrationTable } from "./CalibrationTable";
 import { WifiCredentialsForm, validateWifiInput } from "./WifiCredentialsForm";
@@ -137,7 +138,7 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
   // 009's own `RobotPage` rewrite to settle precisely -- this mirrors
   // the pre-ticket-007 single-endpoint behavior closely enough in the
   // common case (one open link at a time).
-  const openLink = device.links.find((candidate) => candidate.session !== undefined);
+  const openLink = device.links.find((candidate) => isLinkUsable(candidate));
   const provisionResult = useWifiProvisionResult(openLink?.id ?? "");
 
   // Calibration values -- shared with the Calibration tab through localStorage.

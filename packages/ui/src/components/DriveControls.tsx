@@ -137,6 +137,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useSendable, useWsActions } from "../ws/WsProvider";
+import { isLinkUsable } from "../deviceDisplay";
 import { useHeldDrive } from "../hooks/useHeldDrive";
 import { clearEstop } from "../lib/estop";
 import "./DriveControls.css";
@@ -339,7 +340,7 @@ export interface DriveControlsProps {
 export function DriveControls({ link }: DriveControlsProps) {
   const linkId = link.id;
   const sendable = useSendable();
-  const linkOpen = link.session !== undefined && sendable;
+  const linkOpen = isLinkUsable(link) && sendable;
   const { sendCommand } = useWsActions();
   const held = useHeldDrive(sendCommand, linkId, linkOpen);
   const [activeDirection, setActiveDirection] = useState<DriveDirection | null>(null);

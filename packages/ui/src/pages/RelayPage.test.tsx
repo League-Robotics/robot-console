@@ -244,9 +244,32 @@ describe("RelayPage: not connected", () => {
     expect(el.querySelector('[data-testid="relay-bridge-failed"]')?.textContent).toBe("GoPiv did not respond");
   });
 
-  it("renders the relay's own DeviceConsole while no child is bridged", () => {
+  it("extended scope (team-lead, 2026-09-13), item D: renders NO console/sequencing banner while no child is bridged and the relay's own link has no open session -- only the relay's own idle/sweeping state", () => {
+    // Bench complaint this fixes: an idle `torture` relay's page used to
+    // show "No link open to torture -- open a link before sending." and
+    // "No session -- sequencing state..." -- meaningless noise for a
+    // relay nobody has opened a raw console session on.
     const { el, socket } = mountRelayPage(relayDevice());
-    pushSnapshot(socket, { devices: [relayDevice()] });
+    pushSnapshot(socket, { devices: [relayDevice()] }); // default link: connected, no session
+    expect(el.querySelector('[aria-label="Console"]')).toBeNull();
+    expect(el.querySelector('[aria-label="Sequencing state"]')).toBeNull();
+    expect(el.textContent).not.toContain("No link open");
+    expect(el.textContent).not.toContain("sequencing state");
+  });
+
+  it("renders the relay's own DeviceConsole once its own connectivity link actually has an open session", () => {
+    const withSession = device(3, {
+      name: "rly01",
+      kind: "relay",
+      links: [
+        link(RELAY_LINK_ID, {
+          state: "connected",
+          session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+        }),
+      ],
+    });
+    const { el, socket } = mountRelayPage(withSession);
+    pushSnapshot(socket, { devices: [withSession] });
     expect(el.querySelector('[aria-label="Console"]')).not.toBeNull();
   });
 

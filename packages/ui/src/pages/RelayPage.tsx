@@ -114,7 +114,7 @@ import { DeviceConsole } from "../components/DeviceConsole";
 import { RelayConnectControls } from "../components/RelayConnectControls";
 import { RobotPage } from "./RobotPage";
 import { useDevices, useRelays, useSendable, useWsActions } from "../ws/WsProvider";
-import { findRelayChild, nameDisplay } from "../deviceDisplay";
+import { findRelayChild, isLinkUsable, nameDisplay } from "../deviceDisplay";
 import "./RelayPage.css";
 
 export interface RelayPageProps {
@@ -199,7 +199,18 @@ export function RelayPage({ device }: RelayPageProps) {
             default if none is set.
           </p>
 
-          {relayLink && <DeviceConsole link={relayLink} name={relayName} />}
+          {/* Extended scope (team-lead, 2026-09-13), item D: an idle
+              relay's own console/sequencing-state banner was meaningless
+              noise ("No link open to torture — open a link before
+              sending." / "No session — sequencing state…") -- this
+              relay's own state (idle / sweeping / bridging), already
+              rendered by RelayConnectControls above, is the only thing
+              worth showing while there is no session on this link. The
+              console only mounts once the relay's own connectivity link
+              is actually usable (a student opened a raw console on the
+              relay itself, a rare direct case distinct from bridging to
+              a robot child). */}
+          {relayLink && isLinkUsable(relayLink) && <DeviceConsole link={relayLink} name={relayName} />}
         </>
       )}
     </section>

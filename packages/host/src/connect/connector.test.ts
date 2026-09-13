@@ -4,6 +4,7 @@ import { Store } from "../store/index.js";
 import type { ByteStream } from "../link/LineLink.js";
 import { FakeByteStream } from "../link/__fixtures__/FakeByteStream.js";
 import { realScheduler, type Scheduler } from "../link/pacing.js";
+import { deviceIdToName } from "@robot-console/protocol";
 import { createConnector, type ConnectorDeps, type LinkRow } from "./connector.js";
 
 // Sprint 015 ticket 001's own suite: one test per acceptance criterion,
@@ -681,6 +682,94 @@ describe("connectAndIdentify -- failure path", () => {
     await expect(promise).rejects.toThrow(/no banner/i);
     const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
     expect(linkRow?.state).toBe("failed");
+    store.close();
+  });
+
+  // -------------------------------------------------------------------
+  // Item E (team-lead, 2026-09-13): bench defect -- a bad USB
+  // cable/connector produced a corrupted serial banner that got upserted
+  // as a brand-new device with owned=true and no cross-check at all
+  // (`zapuz`/`tigez`/`tovez` were all the same physical board, one flaky
+  // cable). Both a self-inconsistent banner and a banner disagreeing
+  // with a link's own SWD-named deviceId must fail closed instead.
+  // -------------------------------------------------------------------
+
+  it("rejects a banner whose own name disagrees with its own serial (protocol bannerNameMatchesSerial) -- no device upserted, link failed with the cable reason", async () => {
+    const store = freshStore();
+    // deviceIdToName(1198504156) === "vevov" (see ROBOT_BANNER's own
+    // comment above) -- "notreal" is deliberately a different name for
+    // the same serial, exactly the self-inconsistency
+    // `bannerNameMatchesSerial` exists to catch.
+    const stream = new BannerByteStream("device NEZHA2 robot notreal 1198504156");
+    const connector = createConnector(store, baseDeps(stream));
+    const link = usbLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await expect(promise).rejects.toThrow(/does not match its own serial.*check the USB cable/i);
+
+    const rows = store.snapshotRows();
+    expect(rows.devices.find((d) => d.id === ROBOT_SERIAL)).toBeUndefined();
+    const linkRow = rows.links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("failed");
+    expect(linkRow?.state_reason).toMatch(/does not match its own serial/);
+    store.close();
+  });
+
+  it("a usb link already carrying a deviceId from SWD naming rejects a banner reporting a different serial -- no device upsert, owned never set, link failed with the cable reason", async () => {
+    const store = freshStore();
+    const SWD_DEVICE_ID = 2665; // deviceIdToName(2665) === "tovez" -- any id distinct from ROBOT_SERIAL
+    const swdName = deviceIdToName(SWD_DEVICE_ID);
+    const link = usbLink();
+    // Seed exactly what `watchers/usbWatcher.ts`'s SWD naming pass would
+    // have already written before the connector ever sees this link.
+    store.upsertDevice({ id: SWD_DEVICE_ID, name: swdName, kind: "robot", at: 0 });
+    store.upsertLink({ id: link.id, transport: link.transport, address: link.address, deviceId: SWD_DEVICE_ID, at: 0 });
+
+    // The banner read over the (flaky) serial connection reports a
+    // DIFFERENT board entirely -- ROBOT_SERIAL/"vevov", not SWD_DEVICE_ID.
+    const stream = new BannerByteStream(ROBOT_BANNER);
+    const connector = createConnector(store, baseDeps(stream));
+    const linkWithDeviceId: LinkRow = { ...link, deviceId: SWD_DEVICE_ID };
+
+    const promise = connector.connectAndIdentify(linkWithDeviceId, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await expect(promise).rejects.toThrow(/banner identity vevov disagrees with SWD name tovez.*check the USB cable/i);
+
+    const rows = store.snapshotRows();
+    // No new device row for the banner's own (corrupted) serial.
+    expect(rows.devices.find((d) => d.id === ROBOT_SERIAL)).toBeUndefined();
+    // The SWD-named device is untouched -- never marked owned by this
+    // rejected attempt.
+    const swdDevice = rows.devices.find((d) => d.id === SWD_DEVICE_ID);
+    expect(swdDevice?.owned).toBe(0);
+    const linkRow = rows.links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("failed");
+    expect(linkRow?.state_reason).toMatch(/banner identity vevov disagrees with SWD name tovez/);
+    store.close();
+  });
+
+  it("a usb link with a matching SWD deviceId (the ordinary case) still connects normally -- the cross-check is not a false positive", async () => {
+    const store = freshStore();
+    const link = usbLink();
+    store.upsertDevice({ id: ROBOT_SERIAL, name: deviceIdToName(ROBOT_SERIAL), kind: "robot", at: 0 });
+    store.upsertLink({ id: link.id, transport: link.transport, address: link.address, deviceId: ROBOT_SERIAL, at: 0 });
+
+    const stream = new BannerByteStream(ROBOT_BANNER); // banner.serial === ROBOT_SERIAL -- agrees
+    const connector = createConnector(store, baseDeps(stream));
+    const linkWithDeviceId: LinkRow = { ...link, deviceId: ROBOT_SERIAL };
+
+    const promise = connector.connectAndIdentify(linkWithDeviceId, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    const session = await promise;
+
+    expect(session.deviceId).toBe(ROBOT_SERIAL);
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("connected");
     store.close();
   });
 });

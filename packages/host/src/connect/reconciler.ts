@@ -459,7 +459,11 @@ export interface Reconciler {
  * expects out of a {@link ReconcilerRows} link — same fields, different
  * (typed, camelCase) source. */
 function toConnectorLinkRow(link: ReconcilerRows["links"][number]): LinkRow {
-  return { id: link.id, transport: link.transport, address: link.address };
+  // `deviceId` threaded through (item E, team-lead 2026-09-13) so
+  // `connector.ts`'s host-identity cross-check can compare a banner's
+  // own serial against the deviceId a `usb` link's row already carries
+  // from SWD naming -- see `LinkRow.deviceId`'s own doc comment.
+  return { id: link.id, transport: link.transport, address: link.address, deviceId: link.deviceId };
 }
 
 /**

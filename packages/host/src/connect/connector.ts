@@ -113,6 +113,7 @@
  * it.
  */
 import {
+  bannerNameMatchesSerial,
   classifyBanner,
   deviceIdToName,
   nameToValue,
@@ -144,6 +145,15 @@ export interface LinkRow {
   readonly id: string;
   readonly transport: Transport;
   readonly address: unknown;
+  /** The device this link's row is already associated with, if any --
+   * for a `usb` link, this is populated by `watchers/usbWatcher.ts`'s SWD
+   * naming pass (run before this module ever sees the link) and read
+   * back here for the host-identity cross-check below (item E, team-lead
+   * 2026-09-13). `undefined` when the caller does not track this (e.g. a
+   * relay/radio candidate `relayBridger.ts` builds its own `LinkRow`
+   * for), which this module treats identically to `null` (no cross-check
+   * possible or needed). */
+  readonly deviceId?: number | null;
 }
 
 /** What a successful {@link Connector.connectAndIdentify} call hands to
@@ -790,6 +800,45 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
       if (!banner) {
         void lineLink.close();
         const err = new Error(`connector: link "${link.id}" produced no banner within the identify budget`);
+        recordFailure(store, link.id, err.message, now(), backoffCapMs);
+        throw err;
+      }
+
+      // Item E (team-lead, 2026-09-13): reject a banner whose own
+      // name/serial fields are internally inconsistent -- a well-formed
+      // banner's `name` is always derivable from its `serial` (protocol
+      // §2.2; `bannerNameMatchesSerial`'s own doc comment). A mismatch
+      // here means the bytes themselves are corrupted (the same failure
+      // mode this ticket's other identity check targets), not a naming
+      // policy question -- there is no device identity to safely act on.
+      if (!bannerNameMatchesSerial(banner)) {
+        void lineLink.close();
+        const err = new Error(
+          `connector: link "${link.id}" produced a banner whose name "${banner.name}" does not match its own serial ${banner.serial} -- serial data corrupted, check the USB cable`,
+        );
+        recordFailure(store, link.id, err.message, now(), backoffCapMs);
+        throw err;
+      }
+
+      // Item E (team-lead, 2026-09-13): bench defect -- a `usb` link
+      // already carrying a `deviceId` from SWD naming (`usbWatcher.ts`,
+      // run before this module ever sees the link) is a claim about
+      // which physical board is on the other end of this port. A banner
+      // read over the same serial connection that disagrees with that
+      // claim is not a "new device" -- on the observed bench hardware
+      // (`zapuz`/`tigez`/`tovez`), it was a single flaky USB cable
+      // producing a different corrupted serial number on each read. Do
+      // NOT upsert a device or set owned in that case; record the
+      // disagreement (reaching the front-page card via this link's own
+      // `state_reason`, per `deviceDisplay.ts`'s `linkStateText`) and
+      // close the line link, exactly like every other identify failure
+      // above.
+      if (link.transport === "usb" && link.deviceId !== undefined && link.deviceId !== null && link.deviceId !== banner.serial) {
+        void lineLink.close();
+        const swdName = deviceIdToName(link.deviceId);
+        const err = new Error(
+          `banner identity ${banner.name} disagrees with SWD name ${swdName} -- serial data corrupted, check the USB cable`,
+        );
         recordFailure(store, link.id, err.message, now(), backoffCapMs);
         throw err;
       }

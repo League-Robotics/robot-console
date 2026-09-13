@@ -104,6 +104,37 @@ patch each component's text independently):
       real answered session. See the programmer's own return for the
       full quoted text and screenshot path.
 
+      **Second pass, 2026-09-13 (commit c38fa2c)**: the team-lead found
+      the first pass's own evidence screenshot
+      (`scratchpad/front-page-full.png`) NOT truthful -- torture/vitut
+      showed "lost" banners (one with a raw `ttl-expired` reason) for
+      bridges that ended long ago; every card was cluttered with aged/
+      stale link rows (including a `tovez` USB row for a port `vitut`
+      now physically holds); gopiv's card showed `tigez`'s own radio
+      address via a mismatched `device_id`; vevav's card used robot-
+      shaped USB advice for a relay, and its `kind` was found to
+      actually be `"robot"` in the stakeholder's real store despite
+      `role: "RADIOBRIDGE"` (data defect, not just a text bug). All five
+      fixed -- `currentRelayChild`/`cardLinks`/`hiddenLinkCount`/
+      `plainFailureReason(..., kind)` in `deviceDisplay.ts`,
+      `store.upsertLink`'s write-time guard plus two new one-time
+      repairs (`repairRadioLinkDeviceAssociation`,
+      `repairDeviceKindFromRole`). Still blocked, per this ticket's own
+      still-open bullet, on the real-bench harness run (`npm run dev`
+      pid 12415 still holds every network resource) -- the same
+      throwaway-copy truthfulness check as the first pass, re-run clean
+      against this commit: a fresh host (`--no-sweep --no-open`,
+      `ROBOT_CONSOLE_STATE_DIR` pointed at a new copy under
+      `scratchpad/018-010-stakeholder-db-2/`, verified via `lsof` first)
+      rendered `scratchpad/front-page-full-2.png` (visually inspected),
+      plus one robot page (`scratchpad/robot-page-gopiv.png`, gopiv) and
+      two relay pages (`scratchpad/relay-page-vitut.png`,
+      `scratchpad/relay-page-torture.png`). Every card's full text is
+      quoted in the programmer's own return for this pass. Confirmed via
+      direct DB read: `vevav.kind` is now `"relay"`, and
+      `radio-tigez-via-mbrelay-torture.device_id` is now tigez's own id
+      (was gopiv's).
+
 ## Implementation Plan
 
 **Approach**: introduce the shared text module first, with unit tests

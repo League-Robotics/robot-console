@@ -48,6 +48,21 @@
  * A resync notice ({@link reportDesyncIfNeeded}'s old text) is forwarded
  * the same way, via {@link HarvesterDeps.onNotice}; both default to a
  * no-op so this module has no hard dependency on either not existing yet.
+ *
+ * ## `STATUS` poll defers to a foreign query in flight (018-009)
+ *
+ * `pollStatus()` checks `link.hasPendingUnsequencedQuery` before every
+ * tick and skips sending `STATUS` entirely while it is `true` — see
+ * `link/LineLink.ts`'s own module doc comment, "Unsequenced query resend
+ * and poll/query serialization", for the full rationale and the bench
+ * evidence (a student's own `send-command ID` racing this poll's
+ * `STATUS` on the same lossy radio hop) that motivated it. A skipped
+ * tick is not counted as a missed poll. This module's own two
+ * `sendUnsequenced` calls (the initial `ID` probe just below, and the
+ * poll's own `STATUS` a few lines down) deliberately stay on that plain
+ * method rather than `sendUnsequencedQuery` — gating the poll on its own
+ * prior send would let a link that never answers at all starve every
+ * later tick indefinitely, defeating the missed-poll watchdog below.
  */
 import {
   TelemetryDecoder,
@@ -182,6 +197,20 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
 
       function pollStatus(): void {
         if (failed || !link.isOpen) {
+          return;
+        }
+        // 018-009: never send our own STATUS poll while a foreign
+        // (student-originated, `server.ts`'s `send-command`) unsequenced
+        // query is still awaiting its own reply/resend on this same
+        // link -- bench evidence against the real `torture` radio pool
+        // showed two near-simultaneous unprefixed sends (a student's own
+        // `ID` racing this poll's own `STATUS`) can be merged or dropped
+        // by a lossy relay hop. Skipping here is not a miss: nothing was
+        // sent, so nothing could have gone unanswered -- the next tick,
+        // `statusPollIntervalMs` later, tries again once the foreign
+        // query has settled. See `LineLink.hasPendingUnsequencedQuery`'s
+        // own doc comment.
+        if (link.hasPendingUnsequencedQuery) {
           return;
         }
         if (pollAwaitingStatus) {

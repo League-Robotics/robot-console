@@ -17,6 +17,64 @@
  * swallowed (§5.8); and this module calls `@robot-console/protocol`'s
  * `receive()` facade directly instead of re-deriving decode → classify →
  * ack/nack → resend ordering by hand.
+ *
+ * ## Unsequenced query resend and poll/query serialization (018-009)
+ *
+ * A non-sequenced verb (`ID`, `STATUS`, `HELP`, `DEBUG`, `VER`, `ESTOP`,
+ * ...; `isSequencedVerb` gates only the 11 id-bearing verbs onto
+ * `sendCommand` instead) has no built-in retry of any kind, unlike a
+ * sequenced verb (which the protocol's own ack/nack scheme already
+ * resends on a nack) — one lost packet on a lossy hop is simply gone.
+ *
+ * Bench evidence (sprint 018 ticket 009, `torture` mbrelay pool, real
+ * hardware): `vevov` bridged through `torture` passes Layer 1's full
+ * data-plane handshake every time (HELLO/ID both eventually answered,
+ * packets lost on either verb unpredictably) but repeatedly failed
+ * Layer 2's `send-command ID` — "connected, but no line rx matching
+ * `id ` within 5000ms" — even though the identical robot answers a raw,
+ * uncontended `ID` reliably. The isolated reproduction
+ * (`scripts/bench/repro/mbrelay-reliability.ts`) confirmed
+ * `connect/harvester.ts`'s own 2s-cadence `STATUS` poll racing a
+ * student's own `ID` send (`server.ts`'s `send-command` dispatch) on the
+ * same physical radio hop is a material contributor: two near-
+ * simultaneous unprefixed sends can be merged or dropped by the relay,
+ * on top of the link's own baseline loss rate.
+ *
+ * Two changes, both on {@link sendUnsequencedQuery} — a distinct method
+ * from the plain {@link sendUnsequenced}, deliberately: see
+ * {@link sendUnsequenced}'s own doc comment for why the harvester's own
+ * internal bookkeeping sends (its initial `ID` probe, its `STATUS` poll
+ * itself) must never gate on themselves, only `server.ts`'s dispatch of
+ * a genuinely foreign, student-originated query uses this method:
+ *
+ *   1. **One bounded resend.** After sending, this module waits up to
+ *      {@link DEFAULT_UNSEQUENCED_QUERY_RESEND_MS} for an inbound line
+ *      whose decoded verb is this send's own expected reply verb (see
+ *      {@link expectedReplyVerbFor}); if none arrives, it resends the
+ *      identical line exactly once and waits the same bound again, then
+ *      gives up. Safe to resend blindly: every verb ever sent
+ *      unsequenced is either a pure query (`ID`/`STATUS`/`HELP`/`DEBUG`/
+ *      `VER`) or an idempotent state-set (`ESTOP` — sending it twice
+ *      leaves the robot no more stopped than sending it once); nothing
+ *      unsequenced carries ordering state the way a sequenced verb's own
+ *      id does, which is exactly why it is unsequenced in the first
+ *      place.
+ *   2. **A pending-query gate.** {@link hasPendingUnsequencedQuery} is
+ *      `true` for the whole window above (both the original wait and the
+ *      one resend's own wait) — `connect/harvester.ts`'s own poll loop
+ *      checks this before each tick and skips sending its own `STATUS`
+ *      entirely while it is `true`, so a poll tick is never issued at the
+ *      same moment a foreign query sent via `sendUnsequencedQuery` is
+ *      still in flight on the same link. A skipped tick is not counted
+ *      as a missed poll — it was never sent, so it cannot have been
+ *      unanswered.
+ *
+ * Applied uniformly to every transport (not only radio/mbrelay) — the
+ * same posture this module's missed-poll-ceiling generalization already
+ * takes (`connect/harvester.ts`'s own doc comment): a resend/gate that
+ * never fires on a reliable transport (the reply arrives almost
+ * immediately, well inside the bound) costs nothing there, and there is
+ * no reliable way to ask "is this specific hop lossy" up front anyway.
  */
 import {
   parseBanner,
@@ -101,6 +159,38 @@ const DEFAULT_WRITE_PACE_MS = 10;
 const DEFAULT_IDENTIFY_TIMEOUT_MS = 3000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
 
+/** Default bound {@link LineLink.sendUnsequenced} waits for its own
+ * expected reply verb before resending once, and again after the resend
+ * before giving up — see the module doc comment's "Unsequenced query
+ * resend" section. Comfortably shorter than
+ * `scripts/bench/layer2/pathChecks.ts`'s own 5000ms reply-timeout budget,
+ * so a resend still has time to be answered within that outer window;
+ * comfortably longer than the ~30-40ms reply latency this codebase's own
+ * live-bench evidence measured for an uncontended radio reply. */
+export const DEFAULT_UNSEQUENCED_QUERY_RESEND_MS = 1500;
+
+/**
+ * The lowercase reply verb {@link LineLink.sendUnsequenced} should wait
+ * for after sending `verb` unsequenced — `undefined` for a verb this
+ * module cannot pair a reply to at all, in which case no resend/pending-
+ * tracking happens (identical to this method's behavior before 018-009).
+ * Every verb actually sent unsequenced in production (`ID`, `STATUS`,
+ * `HELP`, `DEBUG`, `VER`, `ESTOP` — anything a student's `send-command`
+ * reaches that `isSequencedVerb` does not claim) mirrors its own
+ * lowercase text as its reply verb (`@robot-console/protocol`'s
+ * `REPLY_VERBS`); `PING` is the one documented exception (`checkLiveness()`'s
+ * own `pong` reply), handled explicitly here even though production never
+ * routes `PING` through `sendUnsequenced` (`checkLiveness()` is its own
+ * dedicated method) — a student typing `send-command PING` by hand
+ * (unusual, but not rejected by `isSequencedVerb`) still gets a correctly
+ * paired wait instead of one that can never see its own reply. Exported
+ * for direct unit coverage of this mapping, independent of the timing
+ * machinery around it.
+ */
+export function expectedReplyVerbFor(verb: string): string {
+  return verb.toUpperCase() === "PING" ? "pong" : verb.toLowerCase();
+}
+
 type LineLinkState = "idle" | "connecting" | "connected" | "closing" | "closed";
 
 /** Tiny multi-listener Set wrapper — every `onX`/dispatch pair below
@@ -133,6 +223,12 @@ export class LineLink {
   private readonly connectTimeoutMs: number;
   private readonly onForeign: ((raw: string) => void) | undefined;
   private readonly preamble: ((stream: ByteStream, signal: AbortSignal) => Promise<void>) | undefined;
+  private readonly scheduler: Scheduler;
+
+  /** Count of {@link sendUnsequencedQuery} calls currently within their
+   * own resend/wait window — see {@link hasPendingUnsequencedQuery} and
+   * the module doc comment's "Unsequenced query resend" section. */
+  private pendingUnsequencedQueries = 0;
 
   private readonly lineEmitter = new Emitter<DecodedLine>();
   private readonly rawLineEmitter = new Emitter<string>();
@@ -157,7 +253,8 @@ export class LineLink {
     private readonly stream: ByteStream,
     options: LineLinkOptions = {},
   ) {
-    this.pacer = new WritePacer(options.writePaceMs ?? DEFAULT_WRITE_PACE_MS, options.scheduler ?? realScheduler);
+    this.scheduler = options.scheduler ?? realScheduler;
+    this.pacer = new WritePacer(options.writePaceMs ?? DEFAULT_WRITE_PACE_MS, this.scheduler);
     this.reassembler = new LineReassembler({
       // exactOptionalPropertyTypes: only include `maxBufferChars` when
       // actually given -- explicitly setting it to `undefined` is a
@@ -196,6 +293,17 @@ export class LineLink {
    * closed. */
   get isOpen(): boolean {
     return this.state === "connected";
+  }
+
+  /** True while at least one query verb sent via {@link sendUnsequencedQuery}
+   * is still within its own resend/wait window (original send plus, if
+   * unanswered, one resend) — see the module doc comment's "Unsequenced
+   * query resend and poll/query serialization" section.
+   * `connect/harvester.ts`'s own `STATUS` poll checks this before every
+   * tick so it never sends its own query while a foreign one (e.g. a
+   * student's `send-command ID`) is still outstanding on the same link. */
+  get hasPendingUnsequencedQuery(): boolean {
+    return this.pendingUnsequencedQueries > 0;
   }
 
   /** The underlying `@robot-console/protocol` `Session` — sequencing
@@ -334,12 +442,82 @@ export class LineLink {
     return line;
   }
 
-  /** Send an unsequenced verb via `Session.sendUnsequenced()`. Paced. */
+  /** Send an unsequenced verb via `Session.sendUnsequenced()`. Paced.
+   * Plain and unchanged by 018-009 — no resend, no
+   * {@link hasPendingUnsequencedQuery} participation. `connect/harvester.ts`'s
+   * own internal bookkeeping sends (its initial `ID` probe, its `STATUS`
+   * poll) deliberately keep using this method: they must never gate
+   * *themselves* out (a harvester poll's own prior tick still pending
+   * would otherwise starve every later tick indefinitely on a link that
+   * never answers at all, defeating the missed-poll watchdog). See
+   * {@link sendUnsequencedQuery} for the query-with-resend/gate variant
+   * `server.ts`'s `send-command` dispatch uses for a student's own
+   * unsequenced verb. */
   sendUnsequenced(verb: string, fields: readonly WireField[] = []): string {
     this.assertConnected("sendUnsequenced");
     const line = this.protocolSession.sendUnsequenced(verb, fields);
     this.paceWrite(line);
     return line;
+  }
+
+  /** Send an unsequenced verb exactly like {@link sendUnsequenced}, but
+   * additionally arms this send's own bounded resend-once-if-unanswered
+   * window (see the module doc comment's "Unsequenced query resend"
+   * section) — {@link hasPendingUnsequencedQuery} is `true` for that
+   * whole window, which `connect/harvester.ts`'s own `STATUS` poll checks
+   * before every tick so it never sends its own query while THIS one is
+   * still outstanding. For a genuinely foreign, student-originated query
+   * — `server.ts`'s `send-command` dispatch for a non-sequenced verb —
+   * never for the harvester's own internal bookkeeping sends (see
+   * {@link sendUnsequenced}'s own doc comment for why those must stay
+   * plain). The returned line text and synchronous contract (send now,
+   * return the exact text sent) match {@link sendUnsequenced} exactly;
+   * the resend/gate machinery runs entirely in the background. */
+  sendUnsequencedQuery(verb: string, fields: readonly WireField[] = []): string {
+    this.assertConnected("sendUnsequencedQuery");
+    const line = this.protocolSession.sendUnsequenced(verb, fields);
+    this.paceWrite(line);
+    this.armUnsequencedResend(verb, line);
+    return line;
+  }
+
+  /** Background resend/pending-tracking for one {@link sendUnsequencedQuery}
+   * call — see that method's own doc comment and the module doc
+   * comment's "Unsequenced query resend" section. Never rejects, never
+   * throws; runs entirely in the background (the caller's own
+   * `sendUnsequencedQuery` call has already returned by the time this
+   * settles). */
+  private armUnsequencedResend(verb: string, line: string): void {
+    const expectedVerb = expectedReplyVerbFor(verb);
+    this.pendingUnsequencedQueries += 1;
+    let settled = false;
+    const finish = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      unsubscribe();
+      this.pendingUnsequencedQueries -= 1;
+    };
+    const unsubscribe = this.lineEmitter.on((decoded) => {
+      if (!settled && decoded.verb === expectedVerb) {
+        finish();
+      }
+    });
+    void (async () => {
+      await this.scheduler.delay(DEFAULT_UNSEQUENCED_QUERY_RESEND_MS);
+      if (settled) {
+        return;
+      }
+      // One bounded resend -- never a second one, per the module doc
+      // comment's own invariant. Only while still connected: a closed
+      // link has nothing left to resend onto.
+      if (this.isOpen) {
+        this.paceWrite(line);
+      }
+      await this.scheduler.delay(DEFAULT_UNSEQUENCED_QUERY_RESEND_MS);
+      finish();
+    })();
   }
 
   /** Send `PING` — the liveness probe to use instead of re-sending

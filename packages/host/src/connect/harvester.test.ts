@@ -251,3 +251,80 @@ describe("createHarvester -- resync notice (reportDesyncIfNeeded)", () => {
     store.close();
   });
 });
+
+// ---------------------------------------------------------------------
+// 018-009: the STATUS poll defers to a foreign unsequenced query (e.g. a
+// student's own `send-command ID`) still in flight on the same link --
+// bench evidence against the real `torture` mbrelay pool found a
+// student's `ID` racing this poll's own `STATUS` merged/dropped by a
+// lossy relay hop. See LineLink.ts's own module doc comment,
+// "Unsequenced query resend and poll/query serialization", for the full
+// rationale.
+// ---------------------------------------------------------------------
+
+/** `statusPollIntervalMs`/waits below use 50ms ticks, well clear of
+ * `LineLink`'s own write-pacing gap (`DEFAULT_WRITE_PACE_MS`, 10ms) on
+ * the *real* scheduler this suite's `connectedLink()` uses -- a shorter
+ * interval risked a write already scheduled by a just-fired tick landing
+ * a few ms *after* a test captured its "before" baseline, an event-loop
+ * race rather than anything the gate itself gets wrong (caught live
+ * while writing this suite). */
+const POLL_INTERVAL_MS = 50;
+
+function statusWriteCount(stream: FakeByteStream): number {
+  return stream.writes.filter((w) => w.bytes.trim().toUpperCase() === "STATUS").length;
+}
+
+describe("createHarvester -- STATUS poll defers to a pending foreign query (018-009)", () => {
+  it("skips every poll tick (and never counts one as a miss) while link.hasPendingUnsequencedQuery is true", async () => {
+    const store = seededStore();
+    const { link, stream } = await connectedLink();
+    const setLinkState = vi.spyOn(store, "setLinkState");
+    const harvester = createHarvester(store, { statusPollIntervalMs: POLL_INTERVAL_MS, missedPollLimit: 1000 });
+    harvester.attach(session(link));
+    // Let attach()'s own initial ID probe and first STATUS tick land,
+    // then settle both before this test's own scenario begins.
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS + 20));
+    stream.emitData("id diffdrive calibration-0.20260913.1 1.20260912.8 vevov\n");
+    expect(link.hasPendingUnsequencedQuery).toBe(false);
+    const statusCountBeforeForeignQuery = statusWriteCount(stream);
+
+    // Simulate a foreign (student-originated) unsequenced query still in
+    // flight on this same link -- e.g. server.ts's send-command dispatch
+    // for a non-sequenced verb.
+    link.sendUnsequencedQuery("ID");
+    expect(link.hasPendingUnsequencedQuery).toBe(true);
+
+    // Several poll intervals elapse while the foreign query is pending --
+    // none of them may add a new STATUS write.
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS * 3));
+
+    expect(statusWriteCount(stream)).toBe(statusCountBeforeForeignQuery);
+    // A skipped tick is not a miss -- confirm the watchdog never fired.
+    expect(setLinkState.mock.calls.some(([input]) => input.state === "unresponsive")).toBe(false);
+    store.close();
+  });
+
+  it("resumes polling once the foreign query settles", async () => {
+    const store = seededStore();
+    const { link, stream } = await connectedLink();
+    const harvester = createHarvester(store, { statusPollIntervalMs: POLL_INTERVAL_MS, missedPollLimit: 1000 });
+    harvester.attach(session(link));
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS + 20));
+    stream.emitData("id diffdrive calibration-0.20260913.1 1.20260912.8 vevov\n");
+    expect(link.hasPendingUnsequencedQuery).toBe(false);
+    const statusCountBeforeForeignQuery = statusWriteCount(stream);
+
+    link.sendUnsequencedQuery("ID");
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS * 2));
+    expect(statusWriteCount(stream)).toBe(statusCountBeforeForeignQuery); // still gated
+
+    // The foreign query's own reply arrives -- the gate clears.
+    stream.emitData("id diffdrive calibration-0.20260913.1 1.20260912.8 vevov\n");
+    expect(link.hasPendingUnsequencedQuery).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS * 2));
+    expect(statusWriteCount(stream)).toBeGreaterThan(statusCountBeforeForeignQuery);
+    store.close();
+  });
+});

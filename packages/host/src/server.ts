@@ -856,7 +856,14 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       throw new Error('"HELLO" cannot be sent via send-command -- close and reopen the link instead');
     }
     const fields = message.fields ?? [];
-    const sent = isSequencedVerb(message.verb) ? session.link.sendCommand(message.verb, fields) : session.link.sendUnsequenced(message.verb, fields);
+    // 018-009: a non-sequenced verb (ID/STATUS/HELP/DEBUG/VER/ESTOP/...)
+    // goes through `sendUnsequencedQuery`, not the plain
+    // `sendUnsequenced` -- a student's own query gets a bounded one-time
+    // resend if unanswered, and connect/harvester.ts's own STATUS poll
+    // defers to it while it is outstanding (see LineLink.ts's own module
+    // doc comment, "Unsequenced query resend and poll/query
+    // serialization", for the full rationale and bench evidence).
+    const sent = isSequencedVerb(message.verb) ? session.link.sendCommand(message.verb, fields) : session.link.sendUnsequencedQuery(message.verb, fields);
     broadcast({ type: "line", linkId: message.linkId, direction: "tx", line: sent.replace(/\n$/, ""), seq: nextSeq() }, { throttle: true });
   });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LineLink } from "./LineLink.js";
+import { DEFAULT_UNSEQUENCED_QUERY_RESEND_MS, expectedReplyVerbFor, LineLink } from "./LineLink.js";
 import { FakeByteStream } from "./__fixtures__/FakeByteStream.js";
 import type { Scheduler } from "./pacing.js";
 
@@ -445,6 +445,133 @@ describe("LineLink.close", () => {
     await flush();
     stream.emitClose();
     await expect(identifyPromise).resolves.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------
+// 018-009: sendUnsequenced's own bounded resend-once-if-unanswered, and
+// the hasPendingUnsequencedQuery gate connect/harvester.ts's STATUS poll
+// checks. See LineLink.ts's own module doc comment, "Unsequenced query
+// resend and poll/query serialization", for the bench evidence (a
+// student's own `send-command ID` racing the harvester's STATUS poll on
+// the real `torture` mbrelay pool) this fixes.
+// ---------------------------------------------------------------------
+
+/** A `Scheduler` whose `delay()` never resolves on its own -- a test
+ * drives every timeout deterministically via {@link resolveAll}. Same
+ * pattern as `RelayCommandPlane.test.ts`'s own `controllableScheduler()`. */
+function controllableScheduler(): Scheduler & { resolveAll: () => void } {
+  const resolvers: Array<() => void> = [];
+  return {
+    delay: (_ms: number) =>
+      new Promise<void>((resolve) => {
+        resolvers.push(resolve);
+      }),
+    resolveAll: () => {
+      const pending = resolvers.splice(0, resolvers.length);
+      for (const resolve of pending) {
+        resolve();
+      }
+    },
+  };
+}
+
+async function connectedLinkWithScheduler(scheduler: Scheduler): Promise<{ link: LineLink; stream: FakeByteStream }> {
+  const stream = new FakeByteStream();
+  const link = new LineLink(stream, { scheduler, connectTimeoutMs: 5000, identifyTimeoutMs: 5000 });
+  const connectPromise = link.connect();
+  stream.resolveOpen();
+  await connectPromise;
+  return { link, stream };
+}
+
+/** A well-formed `id ...` reply line, decoding with verb `"id"` --
+ * matches the shape `LineLink.onInboundLine`'s own suite already uses. */
+const ID_REPLY_LINE = "id diffdrive calibration-0.20260913.1 1.20260912.8 gopiv\n";
+
+describe("LineLink.sendUnsequencedQuery resend + pending gate (018-009)", () => {
+  it("hasPendingUnsequencedQuery is true immediately after sendUnsequenced, false again once the matching reply arrives", async () => {
+    const scheduler = controllableScheduler();
+    const { link, stream } = await connectedLinkWithScheduler(scheduler);
+
+    expect(link.hasPendingUnsequencedQuery).toBe(false);
+    link.sendUnsequencedQuery("ID");
+    expect(link.hasPendingUnsequencedQuery).toBe(true);
+
+    stream.emitData(ID_REPLY_LINE);
+    expect(link.hasPendingUnsequencedQuery).toBe(false);
+  });
+
+  it("resends the identical line exactly once if unanswered within the bound, then gives up", async () => {
+    const scheduler = controllableScheduler();
+    const { link, stream } = await connectedLinkWithScheduler(scheduler);
+
+    const line = link.sendUnsequencedQuery("ID");
+    await flush();
+    expect(stream.writes.map((w) => w.bytes)).toEqual([line]);
+    expect(link.hasPendingUnsequencedQuery).toBe(true);
+
+    // First bound elapses with no reply -- one resend, identical text.
+    scheduler.resolveAll();
+    await flush();
+    expect(stream.writes.map((w) => w.bytes)).toEqual([line, line]);
+    expect(link.hasPendingUnsequencedQuery).toBe(true); // still within the resend's own wait
+
+    // Second bound elapses, still no reply -- give up, never a third send.
+    scheduler.resolveAll();
+    await flush();
+    expect(stream.writes.map((w) => w.bytes)).toEqual([line, line]);
+    expect(link.hasPendingUnsequencedQuery).toBe(false);
+  });
+
+  it("never resends once a matching reply has already arrived", async () => {
+    const scheduler = controllableScheduler();
+    const { link, stream } = await connectedLinkWithScheduler(scheduler);
+
+    const line = link.sendUnsequencedQuery("ID");
+    await flush();
+    stream.emitData(ID_REPLY_LINE);
+    expect(link.hasPendingUnsequencedQuery).toBe(false);
+
+    // The bound elapsing after the reply already settled must not trigger
+    // a resend.
+    scheduler.resolveAll();
+    await flush();
+    expect(stream.writes.map((w) => w.bytes)).toEqual([line]);
+  });
+
+  it("a reply arriving during the resend's own wait window still clears the pending gate and stops further resends", async () => {
+    const scheduler = controllableScheduler();
+    const { link, stream } = await connectedLinkWithScheduler(scheduler);
+
+    const line = link.sendUnsequencedQuery("ID");
+    await flush();
+    scheduler.resolveAll(); // first bound elapses -- one resend goes out
+    await flush();
+    expect(stream.writes.map((w) => w.bytes)).toEqual([line, line]);
+
+    stream.emitData(ID_REPLY_LINE); // the resend's own reply arrives
+    expect(link.hasPendingUnsequencedQuery).toBe(false);
+
+    scheduler.resolveAll(); // the resend's own bound elapsing must not fire a third send
+    await flush();
+    expect(stream.writes.map((w) => w.bytes)).toEqual([line, line]);
+  });
+
+  it("expectedReplyVerbFor mirrors a query verb's own lowercase text, except PING -> pong", () => {
+    expect(expectedReplyVerbFor("ID")).toBe("id");
+    expect(expectedReplyVerbFor("STATUS")).toBe("status");
+    expect(expectedReplyVerbFor("status")).toBe("status");
+    expect(expectedReplyVerbFor("HELP")).toBe("help");
+    expect(expectedReplyVerbFor("PING")).toBe("pong");
+    expect(expectedReplyVerbFor("ping")).toBe("pong");
+  });
+
+  it("DEFAULT_UNSEQUENCED_QUERY_RESEND_MS is comfortably inside a 5000ms outer reply budget", () => {
+    // scripts/bench/layer2/pathChecks.ts's own DEFAULT_REPLY_TIMEOUT_MS --
+    // two full resend-wait windows must still fit comfortably inside it,
+    // per the module doc comment's own "Unsequenced query resend" section.
+    expect(DEFAULT_UNSEQUENCED_QUERY_RESEND_MS * 2).toBeLessThan(5000);
   });
 });
 

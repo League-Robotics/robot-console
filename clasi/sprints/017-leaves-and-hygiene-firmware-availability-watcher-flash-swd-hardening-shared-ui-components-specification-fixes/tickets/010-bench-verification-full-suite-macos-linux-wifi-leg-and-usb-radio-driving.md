@@ -513,3 +513,89 @@ Once USB and radio driving are done, the team-lead will read
 acceptance items were actually exercised, then check those two boxes
 and close out the WiFi item's carry-forward status for the sprint
 retro.
+
+## Browser walk (2026-09-13)
+
+Follow-up to the "Bench defects found by the stakeholder" section
+above: the team-lead dispatched a programmer pass (ticket 011 plus an
+extended-scope items A-G) to fix the send-gating bug behind "the UI is
+completely broken" and to prove it live in a real browser, not just via
+unit tests. Full write-up (per-item description, unit/FakeSocket test
+list, connectionLabel/isLinkUsable code) lives in ticket 011's own
+"Extended scope" section; this section is the bench hand-off record for
+010's own sake, since 010 owns the bench pass/hand-off bookkeeping.
+
+**What was fixed**: every send-capable control's `link.session !==
+undefined` gate replaced with `isLinkUsable(link) = state === "connected"
+&& session !== undefined` (item A); front-page cards no longer show an
+open arrow into a device with no usable link, showing a per-link
+Connect button + plain-language state/reason instead (item B); the
+robot page header (ticket 011's own base scope, generalized) shows
+"Not connected over `<label>`: `<reason>`" for a link that dropped while
+its session row survived, not just the plain "no session" case (item
+C); an idle relay's page no longer shows a meaningless console/
+sequencing-state banner (item D); `connect/connector.ts` now rejects a
+banner whose identity disagrees with a USB link's own SWD-named
+`deviceId` (or with its own serial), the root cause of the
+`zapuz`/`tigez`/`tovez` phantom-re-identification defect from a flaky
+cable (item E); and `server.ts`'s console broadcast now reads a new
+`LineLink.onInboundLine` tap instead of `onRawLine`, fixing a *separate*
+regression the team-lead found live on this same host: a real,
+successfully-decoded device reply (`id`/`status`/`ack`/`nack`) never
+reached the student console at all -- only unsolicited `DBG:` chatter
+did (item G).
+
+**Tests**: `npx vitest run packages/ui packages/host/src` -- **84
+files, 1281 tests, all passing**. `npm run typecheck` / `npm run build`
+both clean.
+
+**Browser walk**: fresh host, state dir seeded with read-only copies of
+the real `known-robots.json`/`wifi-credentials.json`,
+`ui-walk-after.mjs` (extends the team-lead's own `ui-walk.mjs`
+verbatim, kept alongside it) driven against it:
+
+- Cards: `torture` (relay, idle, no usable child -- open arrow kept
+  per item B's relay carve-out), `vevov`/`gopiv`/`tovez`/`tigez` (each
+  one card, `Linked`, open arrow, no Connect buttons). No card showed
+  an open arrow with no usable link (`CARD_ASSERTIONS`: empty).
+- Header connection text, live: `torture` -- "No open session on this
+  link" + Connect, no console banner; the other four -- their own
+  transport label + "Linked".
+- Enabled-control assertion: every ENABLED drive button and the
+  console send input (20 total across the four usable robot pages)
+  belonged to a page whose header read "...Linked" -- zero exceptions
+  (`ASSERTION PASS`).
+- Item G, live: typed `ID` (never a motion verb) into each of the four
+  usable robot pages' console send box; each rendered a real `id ...`
+  reply within 3s -- `vevov`/`gopiv`: `calibration-0.20260913.1`;
+  `tovez`/`tigez`: `unbaked`, `1.20260912.8`. Before this fix, none of
+  these lines would have reached the console (`onRawLine` never fires
+  for a decoded, routable reply).
+- Item E: no `"banner identity ... disagrees with SWD name ..."` line
+  appeared in this session's `host.log` -- the flaky USB cable behaved
+  consistently as `tovez` for the whole run, so the physical fault
+  wasn't reproduced live this pass (an honest limitation of one bench
+  window). The fix itself is proven at the unit level
+  (`connector.test.ts`'s three new cases).
+- No `console.error` output from the page at any point.
+
+Screenshots: `<scratchpad>/ui-walk-after/00-front.png`,
+`01-torture.png`, `02-vevov.png`, `03-gopiv.png`, `04-tovez.png`,
+`05-tigez.png`. Script: `<scratchpad>/ui-walk-after.mjs` (the original
+`ui-walk.mjs` and its own `ui-walk-baseline/` screenshots are untouched,
+for before/after comparison).
+
+**Host left running for the stakeholder**:
+
+- URL: `http://127.0.0.1:4797/`
+- PID: see `<scratchpad>/017-011-bench-state/pid`
+- State dir: `<scratchpad>/017-011-bench-state` (`host.log`,
+  `console.sqlite`, read-only seed copies of `known-robots.json`/
+  `wifi-credentials.json`)
+
+**Still true, unchanged by this pass** (carried from the section
+above, not re-litigated here): the `torture`-to-`gopiv` radio bridge and
+the WiFi leg both remain blocked on physical/network conditions outside
+this pass's fix authority. This pass did not touch USB cables, RF
+range, or the classroom AP -- it fixed what the UI *shows and enables*
+given whatever the real link state honestly is.

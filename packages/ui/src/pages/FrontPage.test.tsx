@@ -323,7 +323,7 @@ describe("extended scope (team-lead, 2026-09-13), item B: a card with no usable 
     expect(el.querySelector('[data-testid="device-link-open-usb-zapuz"]')).toBeNull();
   });
 
-  it("shows each link's state text AND its reason in plain words, plus a Connect button that sends session-open, gated by sendable", () => {
+  it("shows each link's state text (with its reason in plain words folded in, once) plus a Connect button that sends session-open, gated by sendable", () => {
     const opens: string[] = [];
     const el = mount(
       withRouter(
@@ -347,10 +347,15 @@ describe("extended scope (team-lead, 2026-09-13), item B: a card with no usable 
       ),
     );
     const row = el.querySelector('[data-testid="device-link-usb-zapuz"]');
+    // Ticket 017-010 fix (team-lead bench evidence, 2026-09-13): the raw
+    // `link.reason` used to also render in its own
+    // `device-link-reason-*` span, duplicating the exact same sentence
+    // `linkStateText` already shows (unmapped, on top of that) --
+    // `plainFailureReason` folds it into the state text once and that
+    // separate span is gone outright.
     expect(row?.textContent).toContain("Couldn't connect: stopped answering");
-    expect(el.querySelector('[data-testid="device-link-reason-usb-zapuz"]')?.textContent).toBe(
-      "no reply to 3 STATUS polls -- link presumed dead",
-    );
+    expect(row?.textContent?.match(/stopped answering/g)).toHaveLength(1);
+    expect(el.querySelector('[data-testid="device-link-reason-usb-zapuz"]')).toBeNull();
     const connect = el.querySelector<HTMLButtonElement>('[data-testid="device-link-connect-usb-zapuz"]');
     expect(connect).not.toBeNull();
     expect(connect!.disabled).toBe(false);
@@ -703,6 +708,49 @@ describe("not seen recently (devices the host still knows about with zero curren
     });
     expect(el.querySelector('[data-testid="not-seen-device-9"]')).toBeNull();
   });
+
+  // Ticket 017-010 (team-lead bench evidence, 2026-09-13): "the same
+  // robot appears twice" -- `tovez` id 2665 (`owned: 1`, no links, the
+  // known-robots.json placeholder) and `tovez` id 2314287040 (`owned:
+  // 0`, real USB serial, SWD-named) both showed up on the front page at
+  // once: a real device card AND "Not seen recently · tovez". Even with
+  // the placeholder-merge fix, a not-yet-merged snapshot moment must
+  // never render this -- `FrontPage` itself filters `notSeenRecently` by
+  // name against every device that already has a card, independent of
+  // whether the store has merged the two rows yet.
+  it("never lists a name under 'Not seen recently' that already has a device card on the page (the tovez bug)", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage(
+        snapshot({
+          devices: [
+            // The real, currently-linked row -- gets a card.
+            device(2314287040, { name: "tovez", links: [link("usb-tovez", { state: "connected" })] }),
+            // The unmerged known-robots.json placeholder -- zero links,
+            // would normally fall into "Not seen recently" under its own
+            // name.
+            device(2665, { name: "tovez", links: [] }),
+          ],
+        }),
+      );
+    });
+    expect(el.querySelector('[data-testid="device-card-2314287040"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="not-seen-device-2665"]')).toBeNull();
+    // No "Not seen recently" section at all -- its only candidate
+    // (2665) was filtered out, leaving nothing to render the section
+    // for.
+    expect(el.querySelector(".remembered-robots")).toBeNull();
+  });
 });
 
 describe("relay quick-connect", () => {
@@ -976,6 +1024,39 @@ describe("relay quick-connect", () => {
     });
     const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-quick-connect-select-3"]');
     expect(Array.from(select!.options).map((o) => o.textContent)).toEqual(["Choose a robot…", "vevav"]);
+  });
+
+  // Ticket 017-010 (team-lead bench evidence, 2026-09-13): the relay
+  // quick-connect picker listed "tovez" twice -- two `kind: "robot"`
+  // device rows sharing one name (the unmerged known-robots.json
+  // placeholder plus its real, SWD-named row) each contributed their own
+  // name to `robotOptions`. `FrontPage` now de-dupes by name before
+  // handing the list to the picker.
+  it("de-duplicates a robot name that currently has two device rows (an unmerged placeholder + its real row)", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage(
+        snapshot({
+          devices: [
+            relayDevice(),
+            device(2314287040, { name: "tovez", kind: "robot", links: [link("usb-tovez")] }),
+            device(2665, { name: "tovez", kind: "robot", links: [] }),
+          ],
+        }),
+      );
+    });
+    const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-quick-connect-select-3"]');
+    expect(Array.from(select!.options).map((o) => o.textContent)).toEqual(["Choose a robot…", "tovez"]);
   });
 });
 

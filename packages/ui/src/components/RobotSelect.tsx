@@ -12,6 +12,15 @@
  * `wsMessages.ts`'s module doc comment). Empty-roster case renders a
  * disabled placeholder option plus a hint rather than an empty, silently
  * unusable `<select>`.
+ *
+ * **De-duplicated defensively (ticket 017-010, bench defect "the same
+ * robot appears twice", 2026-09-13)**: `options` de-dupes by name before
+ * rendering. Every known caller already de-dupes its own `robotOptions`
+ * list too (`FrontPage.tsx`/`RelayPage.tsx`), but an unmerged
+ * `known-robots.json` placeholder sharing a name with its real,
+ * currently-linked device is exactly the shape that would otherwise
+ * offer the same robot name twice in this picker — this component does
+ * not trust every caller to have already caught that.
  */
 export interface RobotSelectProps {
   options: string[];
@@ -20,7 +29,8 @@ export interface RobotSelectProps {
 }
 
 export function RobotSelect({ options, value, onChange }: RobotSelectProps) {
-  const empty = options.length === 0;
+  const uniqueOptions = Array.from(new Set(options));
+  const empty = uniqueOptions.length === 0;
   return (
     <label className="relay-robot-picker">
       <span>Robot</span>
@@ -37,7 +47,7 @@ export function RobotSelect({ options, value, onChange }: RobotSelectProps) {
         ) : (
           <>
             <option value="">Choose a robot…</option>
-            {options.map((name) => (
+            {uniqueOptions.map((name) => (
               <option key={name} value={name}>
                 {name}
               </option>

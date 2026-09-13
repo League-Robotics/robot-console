@@ -183,6 +183,36 @@ describe("linkStateText", () => {
     expect(linkStateText(link({ state: "failed", reason }), now)).toBe(`Couldn't connect: ${reason}`);
   });
 
+  // Ticket 017-010 (team-lead bench evidence, 2026-09-13): `tovez`'s card
+  // read "Couldn't connect: connector: link "usb-9906…2820" produced no
+  // banner within the identify budget" -- the internal module-name prefix
+  // and quoted link id leaked straight through, and "no banner within the
+  // identify budget" itself was never translated to plain words.
+  it("strips the connector: prefix and quoted link id, and maps no-banner to a plain-word cable/power hint", () => {
+    const reason = 'connector: link "usb-9906…2820" produced no banner within the identify budget';
+    expect(linkStateText(link({ state: "failed", reason }), now)).toBe(
+      "Couldn't connect: the robot didn't answer when we said hello — check the USB cable or that it's powered on",
+    );
+  });
+
+  it("strips the relayBridger: prefix and quoted candidate id the same way", () => {
+    const reason = 'relayBridger: candidate "radio-gopiv-via-mbrelay-torture" produced no banner within the identify budget';
+    expect(linkStateText(link({ state: "unresponsive", reason }), now)).toBe(
+      "Couldn't connect: the robot didn't answer when we said hello — check the USB cable or that it's powered on",
+    );
+  });
+
+  it("strips the connector:/link id plumbing from a banner/serial mismatch reason but keeps the cable instruction itself", () => {
+    const reason =
+      'connector: link "usb-9906…2820" produced a banner whose name "ovz" does not match its own serial 231428700 -- serial data corrupted, check the USB cable';
+    const text = linkStateText(link({ state: "failed", reason }), now);
+    expect(text).toBe(
+      'Couldn\'t connect: produced a banner whose name "ovz" does not match its own serial 231428700 -- serial data corrupted, check the USB cable',
+    );
+    expect(text).not.toContain("connector:");
+    expect(text).not.toContain('link "usb-9906…2820"');
+  });
+
   it("renders Not seen since <date> for a stale link with a lastSeen", () => {
     const lastSeen = Date.UTC(2026, 0, 1, 12, 0, 0);
     expect(linkStateText(link({ state: "stale", lastSeen }), now)).toContain("Not seen since");

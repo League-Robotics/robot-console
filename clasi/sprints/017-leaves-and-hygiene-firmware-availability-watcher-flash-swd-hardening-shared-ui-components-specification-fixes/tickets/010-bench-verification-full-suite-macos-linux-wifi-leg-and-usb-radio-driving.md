@@ -1081,3 +1081,199 @@ bounded Node poll (no manual Connect click, no motion verb, no flash):
 
 Host left running: pid `8437`, port 4797, state dir
 `.../scratchpad/017-014-bench-state` (`host.log` there too).
+
+## Defect: unreadable reasons and duplicate robots (2026-09-13)
+
+Team-lead's own walk (Chromium + live store, host pid 8437, port 4797,
+state dir `.../scratchpad/017-014-bench-state`, screenshot
+`.../scratchpad/team-lead-walk-014/front.png`) found two more defects on
+top of everything already recorded above -- and one correction: contrary
+to the previous programmer pass's own note ("`tovez` did not appear as a
+front-page card"), `tovez` **does** render a front-page card while
+failed; the note above was wrong about that.
+
+### 1. Reason text is unreadable
+
+`tovez`'s card showed its reason twice, in two different unreadable
+forms at once: `USB · /dev/cu.usbmodem2121102 Couldn't connect: connector:
+link "usb-9906…2820" produced no banner within the identify budget ·
+retrying in 44s connector: link "usb-9906…2820" produced no banner
+within the identify budget Connect`.
+
+**Root cause (two separate bugs compounding)**:
+
+- `deviceDisplay.ts`'s `plainFailureReason` never stripped the raw
+  `Error.message`'s own module-name prefix (`connector: `/`relayBridger:
+  `) or its quoted internal link/candidate id (`link "usb-9906…2820"`,
+  `candidate "radio-…"`) before matching it against its known shapes --
+  "produced no banner within the identify budget" in particular was
+  never mapped to plain words at all, so it fell through to the raw,
+  engineer-facing fallback verbatim.
+- `FrontPage.tsx`'s `DeviceConnectionRow` rendered `link.reason` a
+  *second* time, raw and unmapped, in its own
+  `device-connection-reason` span whenever the card had no primary link
+  -- on top of `linkStateText` (above it) already folding the same
+  reason into the state text. The two states-when-shown didn't line up
+  by design; they just both happened to be true for a failed link with
+  no usable primary, which is exactly `tovez`'s own case here.
+
+**Fix** (`packages/ui/src/deviceDisplay.ts`, `packages/ui/src/pages/FrontPage.tsx`):
+
+- `plainFailureReason` now runs a new `stripInternalIds` helper first
+  (strips a leading `connector:`/`relayBridger:` prefix and any quoted
+  `link "…"`/`candidate "…"` fragment), then maps: no banner within the
+  identify budget -> "the robot didn't answer when we said hello — check
+  the USB cable or that it's powered on"; a banner/serial identity
+  mismatch (already containing "check the USB cable") -> kept verbatim
+  (post-stripping); a connect timeout -> "no answer (timed out)"; a
+  missed-STATUS-poll reason -> "stopped answering"; anything else ->
+  the stripped text as-is (never swallowed).
+- `FrontPage.tsx`'s separate `device-connection-reason` span is deleted
+  outright -- `linkStateText` is now the only place a link's reason is
+  ever shown; the row's `notice` (a distinct refused-Connect message
+  from `useLinkNotices`, unrelated to `link.reason`) remains the only
+  other thing rendered below the state line.
+
+**Tests**: `packages/ui/src/deviceDisplay.test.ts` -- three new cases:
+stripping `connector:`/quoted link id and mapping "no banner" to the
+plain cable/power hint; the same for a `relayBridger:`/quoted candidate
+id; stripping the id plumbing from a banner/serial-mismatch reason while
+keeping the cable instruction itself verbatim. `packages/ui/src/pages/FrontPage.test.tsx`
+-- the existing "shows each link's state text AND its reason" case
+rewritten to assert the reason appears exactly once (`match(/stopped
+answering/g)` has length 1) and that `device-link-reason-*` no longer
+renders at all.
+
+### 2. The same robot appears twice
+
+Store (before the fix): `tovez` id 2665 (`owned 1`, `usb_serial
+"SERIAL-A"`, the known-robots.json import placeholder) and `tovez` id
+2314287040 (`owned 0`, real USB serial, SWD-named by `usbWatcher.ts`)
+both present at once -- a `tovez` card AND "Not seen recently · tovez"
+on the front page, and the relay picker listing `tovez` twice.
+
+**Root cause**: `connect/connector.ts`'s `mergeNamePlaceholderIfAny`
+only ever ran after a *successful banner identify* -- which a bad USB
+cable that never once produces a clean banner (this exact board/port's
+own, already extensively-documented flaky cable) may never reach.
+`watchers/usbWatcher.ts`'s SWD naming is a separate, earlier
+identification step over the debug interface (a chip id read directly,
+immune to the same serial-line corruption) that already knows the
+robot's real name and id the instant it succeeds -- but nothing called
+the merge from there, so a board whose cable never once produces a
+clean banner stayed a duplicate row forever.
+
+**Fix**: moved `mergeNamePlaceholderIfAny` out of `connect/connector.ts`
+into a new shared module, `packages/host/src/store/placeholderMerge.ts`
+(no behavior change to the function itself -- same "placeholder id ===
+nameToValue(name)" definition, same `Store.mergeDevice` call, only typed
+`Store` ops, no SQL outside `store/`), so both `connector.ts` (after a
+successful banner identify) and `usbWatcher.ts` (after a successful SWD
+name read, in `attach()`, right after its own `store.upsertDevice`) can
+call it without a `connect/` <-> `watchers/` import cycle.
+`Store.mergeDevice` already carried `usb_serial`/`owned`/`radio_*`
+across a merge correctly (sprint 017-006's own bench-defect-2 fix, still
+in place, unchanged) -- this ticket's fix is purely about calling the
+existing merge from a second, earlier trustworthy-identity moment, not
+changing the merge itself.
+
+Also, defensively (independent of the merge firing promptly): the relay
+robot picker now de-duplicates names --
+`packages/ui/src/components/RobotSelect.tsx` de-dupes its own `options`
+prop before rendering, and `RelayConnectControls.tsx`'s `"card"` variant
+(which renders its own inline `<select>`, not `RobotSelect`) de-dupes
+`robotOptions` the same way independently. `FrontPage.tsx` itself now
+also de-dupes `robotOptions` by name (`Set`) before handing it down, and
+filters `notSeenRecently` to exclude any device whose name already has a
+device card on the page (`present`'s own names) -- so an unmerged
+placeholder can never again render "Not seen recently · `<name>`"
+alongside a real card for that same name, even in the brief window
+before a merge completes.
+
+**Tests**:
+
+- `packages/host/src/watchers/usbWatcher.test.ts` -- new case: seeds a
+  known-robots.json-style placeholder (`owned: true`, a `usb_serial`
+  hint, and a pre-existing `wifi` link) at `nameToValue("vevov")`, then
+  runs a normal SWD-named USB attach for the real chip id; asserts
+  exactly one `vevov` device row survives (`owned: 1`, the placeholder's
+  id gone), and both the placeholder's own pre-existing link and the
+  fresh USB link now point at the real device id ("links re-pointed").
+- `packages/ui/src/pages/FrontPage.test.tsx` -- two new cases: "Not seen
+  recently" never lists a name that already has a device card (two
+  `tovez` device rows, one linked/one empty -- only the card renders,
+  no "Not seen recently" section at all); the relay picker's options
+  de-duplicate a name shared by two device rows.
+- `packages/ui/src/components/RobotSelect.test.tsx` /
+  `RelayConnectControls.test.tsx` -- one new case each: a repeated name
+  in `options`/`robotOptions` renders once.
+- `connect/connector.test.ts`'s existing placeholder-merge suite is
+  unchanged and still green (the function moved, not the behavior).
+
+`npx vitest run packages/ui packages/host/src` -- **84 files, 1306
+tests, all passing**. `npm run typecheck` and `npm run build` (protocol
++ host + ui) both clean. `npm run vite:build -w @robot-console/ui` --
+clean (151 modules, `dist/` rebuilt, 328.92 kB JS / 37.97 kB CSS).
+
+**Live proof.** Old host (pid 8437) `kill -TERM`'d; fresh state dir
+`.../scratchpad/017-015-bench-state`, seeded with a read-only copy of
+`~/.local/state/robot-console/known-robots.json` (confirmed: its
+`tovez` entry carries `"lastUsbSerial": "SERIAL-A"`, exactly the
+placeholder shape this defect needs); new host started
+`ROBOT_CONSOLE_STATE_DIR=.../017-015-bench-state node bin/robot-console.js
+--port 4797` (pid `31035`), waited on for 60s in the foreground
+(`node -e 'setTimeout(()=>{}, 60000)'`), no manual Connect click, no
+motion verb, no flash.
+
+Store, read directly via `dumpStore`: **exactly one** `tovez` device row
+-- `{ id: 2314287040, name: "tovez", owned: 1, usb_serial:
+"9906360200052820a8fdb5e413abb276000000006e052820" }` (the real
+hardware serial, not the placeholder's synthetic `"SERIAL-A"` --
+confirming `mergeDevice`'s existing usb_serial-carry-through preferred
+the real row's own value, as designed) -- no leftover row at
+`nameToValue("tovez")`. All six device rows: `torture` (relay,
+unowned), `vitut`/`vevov`/`gopiv`/`tovez`/`tigez` (robot, owned).
+
+`node .../scratchpad/tovez-visible.mjs .../scratchpad/walk-015/front.png`:
+
+```
+CARD device-card-2314287040: tovez Linked ROLE NEZA2 USB · /dev/cu.usbmodem2121102 Linked
+NOT-SEEN SECTION: Not seen recently ... vitut Last seen 9/10/2026, 10:14:41 PM Forget
+tovez mentions on page: 2
+```
+
+`tovez` appears once, as a card only -- not in "Not seen recently" (only
+`vitut` is there). The "2 mentions" are the card's own heading plus its
+one legitimate appearance in the relay picker's robot-name dropdown
+(`torture`'s card: "Choose a robot… gopiv tigez tovez vevov vitut") --
+not a second card or a second "Not seen recently" row. Screenshot
+(`.../scratchpad/walk-015/front.png`) confirms visually: one `tovez`
+card, `Linked`, and only `vitut` under "Not seen recently".
+
+`node .../scratchpad/team-lead-walk2.mjs .../scratchpad/walk-015`:
+`PROBLEMS 1` -- every card still shows exactly one arrow into its usable
+primary link (`ARROWS` list unchanged in shape from ticket 010's earlier
+walks), and `vevov`/`gopiv`/`tigez` each answered a typed `ID` with a
+real `id diffdrive …` line, but `tovez`'s own `ID` send drew "NO REPLY IN
+5s" against the script's strict `/\bid diffdrive\b/` match. Investigated
+before accepting this as pre-existing rather than a regression: a
+direct, isolated retry of the same `ID` send against `tovez`'s own page
+(`.../scratchpad/tovez-id-retry.mjs`) shows the reply **did** arrive,
+just corrupted -- `d iffdrve ubakd .226092. ovez` (dropped/shifted bytes;
+should read `id diffdrive unbaked 1.20260912.8 tovez`) -- the identical
+corruption signature this same ticket has already documented multiple
+times for this exact physical port (`/dev/cu.usbmodem2121102`), on
+different robot names across sessions (`tigez`, `zapuz`, now `tovez`) as
+boards were swapped on the bench: dropped/shifted serial bytes from a
+flaky cable/connector, not a code defect. `mergeDevice`'s own carry-
+through of the *real* usb_serial (not the placeholder's `"SERIAL-A"`)
+onto this exact row rules out the merge itself as the source of the
+corruption. Recorded honestly as `PROBLEMS 1` rather than reported as
+`PROBLEMS 0` -- the mandated script's own strict match is doing exactly
+its job (flagging a reply that doesn't parse), and the corrupted
+character stream is a hardware condition this ticket has never had the
+authority to fix (no cable swap, no flashing, no manual intervention
+performed).
+
+Host left running: pid `31035`, port 4797, state dir
+`.../scratchpad/017-015-bench-state` (`host.log` there too).

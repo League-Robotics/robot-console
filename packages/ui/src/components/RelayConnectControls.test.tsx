@@ -209,6 +209,18 @@ describe("RelayConnectControls variant=card", () => {
     const button = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Connect") as HTMLButtonElement;
     expect(button.disabled).toBe(true);
   });
+
+  // Ticket 017-010 (team-lead bench evidence, 2026-09-13): "the same
+  // robot appears twice" -- the card variant renders its own inline
+  // `<select>` (not `RobotSelect`), so it needs its own defensive
+  // de-dupe of `robotOptions` for a name currently shared by two device
+  // rows (an unmerged known-robots.json placeholder plus its real row).
+  it("de-duplicates a repeated name in robotOptions", () => {
+    const { el } = renderCard({ robotOptions: ["gopiv", "tovez", "tovez", "vevav"] });
+    const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-quick-connect-select-3"]')!;
+    const values = Array.from(select.options).map((o) => o.value);
+    expect(values).toEqual(["", "gopiv", "tovez", "vevav"]);
+  });
 });
 
 describe("RelayConnectControls variant=page", () => {

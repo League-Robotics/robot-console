@@ -294,33 +294,71 @@ export function connectionLabel(link: SnapshotLink): string {
 }
 
 /**
+ * Strip internal plumbing from a raw `link.reason` before it is ever
+ * matched against {@link plainFailureReason}'s known shapes or shown to a
+ * student (ticket 017-010, team-lead bench walk 2026-09-13): a link's
+ * `reason` frequently comes straight from `connect/connector.ts`'s or
+ * `connect/relayBridger.ts`'s own thrown `Error.message`, which is
+ * engineer-facing by construction -- prefixed with the throwing module's
+ * own name (`"connector: "`, `"relayBridger: "`) and naming the internal
+ * `links.id`/candidate id in quotes (`link "usb-9906…2820"`, `candidate
+ * "radio-gopiv-via-mbrelay-torture"`). Neither the module name nor the
+ * internal id means anything to a student reading a front-page card --
+ * bench evidence showed both leaking straight through into "Couldn't
+ * connect: connector: link "usb-9906…2820" produced no banner…". Only the
+ * prefix and quoted id fragments are removed; the rest of the message
+ * (including a banner's own quoted `name`, which is student-meaningful)
+ * is untouched.
+ */
+function stripInternalIds(reason: string): string {
+  return reason
+    .replace(/^\s*(?:connector|relayBridger):\s*/, "")
+    .replace(/\b(?:link|candidate)\s+"[^"]*"\s*/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+/**
  * Turn a raw `link.reason` (a `LineLink`/harvester/connector error
  * message, engineer-facing) into a short, plain-word phrase a student
- * can read. Only three shapes are known well enough to name explicitly;
- * anything else is shown verbatim rather than swallowed, so an
- * unanticipated reason is still visible (just not translated) rather
- * than silently genericized.
+ * can read -- after {@link stripInternalIds} removes the internal
+ * module-name prefix and any quoted link/candidate id. A handful of
+ * shapes are known well enough to name explicitly; anything else is
+ * shown verbatim (cleaned of ids, but otherwise untranslated) rather than
+ * swallowed, so an unanticipated reason is still visible rather than
+ * silently genericized.
  *
- * - A connect timeout (`LineLink.connect()`'s own `"... timed out after
- *   Nms"`, or any other "timed out" message -- `identify()`'s no-banner
- *   case reads the same way) reads as "no answer (timed out)".
+ * - No banner at all within the identify budget (`connector.ts`'s/
+ *   `relayBridger.ts`'s own "produced no banner within the identify
+ *   budget") reads as "the robot didn't answer when we said hello —
+ *   check the USB cable or that it's powered on" -- bench evidence
+ *   (2026-09-13): this was the literal, untranslated reason shown twice
+ *   on `tovez`'s card.
  * - A banner/serial identity mismatch (`connector.ts`'s item-E checks,
  *   both ending "... check the USB cable") is already a specific,
- *   actionable instruction -- kept verbatim rather than genericized.
+ *   actionable instruction -- kept verbatim (once cleaned of ids) rather
+ *   than genericized.
+ * - A connect timeout (`LineLink.connect()`'s own `"... timed out after
+ *   Nms"`, or any other "timed out" message) reads as "no answer (timed
+ *   out)".
  * - A harvester missed-poll reason (`"no reply to N STATUS polls --
  *   link presumed dead"`) reads as "stopped answering".
  */
 function plainFailureReason(reason: string): string {
-  if (reason.includes("check the USB cable")) {
-    return reason;
+  const cleaned = stripInternalIds(reason);
+  if (/no banner within the identify budget/i.test(cleaned)) {
+    return "the robot didn't answer when we said hello — check the USB cable or that it's powered on";
   }
-  if (/STATUS poll/i.test(reason)) {
+  if (cleaned.includes("check the USB cable")) {
+    return cleaned;
+  }
+  if (/STATUS poll/i.test(cleaned)) {
     return "stopped answering";
   }
-  if (/timed out/i.test(reason)) {
+  if (/timed out/i.test(cleaned)) {
     return "no answer (timed out)";
   }
-  return reason;
+  return cleaned;
 }
 
 /** Per-link status text -- "Linked" / "Connecting" / "Couldn't connect:

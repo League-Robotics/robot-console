@@ -14,7 +14,12 @@
  *   serial, read its SWD name with a timeout (`swdName.ts`'s
  *   `readSwdName`, which never rejects on its own but is not itself
  *   bounded — this module adds the timeout), upsert `devices` (if
- *   named) and `links(usb, discovered)`, release the owner. Sprint 015
+ *   named) and `links(usb, discovered)`, release the owner. A named
+ *   device also merges any `known-robots.json` placeholder sharing its
+ *   name (`store/placeholderMerge.ts`'s `mergeNamePlaceholderIfAny`,
+ *   bench defect 010, 2026-09-13 — SWD naming is trustworthy identity
+ *   the instant it succeeds, so this must not wait on a later banner
+ *   identify that a flaky cable may never produce cleanly). Sprint 015
  *   ticket 003: this watcher writes rows only and stops here — it no
  *   longer opens a `LineLink` or sends `HELLO` itself (see "Watchers
  *   write rows only" below). If SWD naming identified the board, the
@@ -83,6 +88,7 @@ import {
 } from "../devices.js";
 import { readSwdName as defaultReadSwdName, type CortexMFactory, type SwdNameResult } from "../swdName.js";
 import { Store } from "../store/index.js";
+import { mergeNamePlaceholderIfAny } from "../store/placeholderMerge.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 1000;
 /** Bound on `readSwdName` — that function never rejects on its own
@@ -228,6 +234,18 @@ export function startUsbWatcher(
           usbSerial: device.serialNumber,
           at: now(),
         });
+        // Bench defect 010 (2026-09-13): "the same robot appears twice".
+        // SWD naming (a chip id read directly over the debug interface)
+        // is trustworthy identity the instant it succeeds -- unlike a
+        // banner identify, it never gets a second chance to be corrupted
+        // by a flaky serial cable, so it must not wait for one to merge a
+        // `known-robots.json` placeholder. `connect/connector.ts`'s own
+        // merge (after a successful banner identify) is not enough on its
+        // own: a board whose cable never once produces a clean banner
+        // (the exact `tovez` bench case) would otherwise stay a
+        // duplicate row forever. See `store/placeholderMerge.ts`'s own
+        // doc comment for the shared helper and why it lives there.
+        mergeNamePlaceholderIfAny(store, swdResult.name, swdResult.deviceId, now());
       }
       store.upsertLink({
         id: linkId,

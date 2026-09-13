@@ -125,11 +125,24 @@ export function FrontPage() {
   const linkNotices = useLinkNotices();
 
   const present = devices.filter((device) => device.links.length > 0);
-  const notSeenRecently = devices.filter((device) => device.links.length === 0);
-  const robotOptions = devices
-    .filter((device) => device.kind === "robot")
-    .map((device) => device.name)
-    .sort((a, b) => a.localeCompare(b));
+  // Ticket 017-010 fix (team-lead bench evidence, 2026-09-13): a
+  // known-robots.json placeholder that hasn't merged with its real,
+  // currently-linked row yet (e.g. `mergeNamePlaceholderIfAny` hasn't
+  // run yet, or the merge is defined not to fire -- see
+  // `store/placeholderMerge.ts`'s own doc comment) must never be listed
+  // here under the same name a device card already shows -- that is
+  // exactly the duplicate-`tovez` bench defect ("Not seen recently ·
+  // tovez" alongside a real `tovez` card). Filtering by name, not id, is
+  // deliberate: the whole point is to hide a *different* device row that
+  // merely shares a name with one already on screen.
+  const presentNames = new Set(present.map((device) => device.name));
+  const notSeenRecently = devices.filter((device) => device.links.length === 0 && !presentNames.has(device.name));
+  // De-duplicated (`Set`) for the same reason (ticket 017-010): an
+  // unmerged placeholder sharing a name with a real device must not
+  // offer that name twice in the relay picker.
+  const robotOptions = Array.from(
+    new Set(devices.filter((device) => device.kind === "robot").map((device) => device.name)),
+  ).sort((a, b) => a.localeCompare(b));
 
   return (
     <>
@@ -511,6 +524,20 @@ function DeviceCard({
  * suppressed for `device.kind === "relay"` regardless of the link's
  * own state.
  *
+ * **Reason shown once (team-lead bench walk, 2026-09-13)**: this row
+ * used to also render `link.reason` verbatim in its own span whenever
+ * there was no primary link -- but `linkStateText` above it already
+ * folds a `failed`/`unresponsive` link's `reason` (plain-worded via
+ * `deviceDisplay.ts`'s `plainFailureReason`) straight into the state
+ * text, so the raw span duplicated the same sentence a second time,
+ * unmapped (the bench-reported `tovez` card: the reason text appearing
+ * twice, once with the internal `connector:`/`link "id"` plumbing still
+ * attached). That span is gone outright -- `linkStateText` is now the
+ * only place a link's reason is ever shown -- and `notice` (a distinct
+ * refused-Connect message from `useLinkNotices`, not derived from
+ * `link.reason` at all) remains the only *other* thing this row renders
+ * below the state line.
+ *
  * **Retry countdown ticks (team-lead walk 017-012, 2026-09-13)**: when
  * `linkStateText` does show a "· retrying in Ns" suffix (a genuinely
  * future `nextRetryAt`), it must visibly count down rather than freeze
@@ -559,11 +586,6 @@ function DeviceConnectionRow({
       <span className={link.state === "connected" ? "device-connection-state device-connection-open" : "device-connection-state"}>
         {linkStateText(link, now)}
       </span>
-      {!primary && link.reason && (
-        <span className="device-connection-reason" data-testid={`device-link-reason-${link.id}`}>
-          {link.reason}
-        </span>
-      )}
       {notice && (
         <span className="device-connection-notice" data-testid={`device-link-notice-${link.id}`} role="status">
           {notice.text}

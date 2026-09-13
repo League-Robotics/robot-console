@@ -56,6 +56,17 @@ describe("RobotSelect", () => {
     expect(select.options[0]!.textContent).toBe("Choose a robot…");
   });
 
+  // Ticket 017-010 (team-lead bench evidence, 2026-09-13): "the same
+  // robot appears twice" -- a repeated name (e.g. an unmerged
+  // known-robots.json placeholder sharing a name with its real,
+  // currently-linked device) must not be offered twice in this picker.
+  it("de-duplicates a repeated name in options", () => {
+    const el = mount(<RobotSelect options={["gopiv", "tovez", "tovez", "vevav"]} value="" onChange={() => {}} />);
+    const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-robot-select"]')!;
+    const values = Array.from(select.options).map((o) => o.value);
+    expect(values).toEqual(["", "gopiv", "tovez", "vevav"]);
+  });
+
   it("reflects the given value and calls onChange with the newly picked name", () => {
     const onChange = vi.fn();
     const el = mount(<RobotSelect options={["gopiv", "vevav"]} value="vevav" onChange={onChange} />);

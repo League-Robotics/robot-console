@@ -116,7 +116,6 @@ import {
   bannerNameMatchesSerial,
   classifyBanner,
   deviceIdToName,
-  nameToValue,
   type DeviceClassification,
   type ParsedBanner,
 } from "@robot-console/protocol";
@@ -131,6 +130,7 @@ import {
 } from "../link/bootWindowIdentify.js";
 import { runRelayCommandPlane } from "../link/RelayCommandPlane.js";
 import { Store, type DeviceKind, type Transport } from "../store/index.js";
+import { mergeNamePlaceholderIfAny } from "../store/placeholderMerge.js";
 import { KeyedMutex } from "./keyedMutex.js";
 
 // ---------------------------------------------------------------------
@@ -650,7 +650,7 @@ function mergeUsbPlaceholderIfAny(store: Store, usbSerial: string | undefined, d
  * ### Bench defect 2 (2026-09-12): the original `usb_serial IS NULL`
  * filter never matched a real imported placeholder
  *
- * The first cut of this function (above, sprint 017 ticket 006) matched
+ * The first cut of this function (sprint 017 ticket 006) matched
  * placeholder candidates by `usb_serial IS NULL`, reasoning that a row
  * already carrying a `usb_serial` must have already been correlated.
  * That reasoning was wrong: `store/importers/knownRobots.ts` writes the
@@ -664,39 +664,27 @@ function mergeUsbPlaceholderIfAny(store: Store, usbSerial: string | undefined, d
  * `mbserial`/`wifi`; same for `tovez` (2665/2314287040) and `vevov`
  * (1031/1198504156).
  *
- * The fix drops the `usb_serial` test entirely and instead defines a
- * placeholder by **how it was constructed**: `store/importers/
- * knownRobots.ts` always seeds a robot placeholder's id as exactly
- * `nameToValue(name)` (the same convention `watchers/mdnsWatcher.ts`'s
- * `createRelayDeviceIfAbsent` uses for a relay pool row -- see that
- * function's own doc comment). A row's `usb_serial` is "last seen via
- * USB" telemetry, not an identity claim, so it plays no part in this
- * decision either way. Since `nameToValue` is a pure function of `name`
- * with exactly one output, and `devices.id` is the table's own primary
- * key, **at most one row can ever have `id === nameToValue(name)`** --
- * the "two placeholders sharing one name" ambiguity the original filter
- * had to account for cannot arise under this definition, so there is no
- * `candidates.length` check to make; a plain `find` suffices. The
- * *real* ambiguous case this module still declines to guess at is
- * different: two `kind='robot'` rows sharing `name` where *neither* has
- * `id === nameToValue(name)` (e.g. two independently-identified real
- * chips that happen to decode to the same five-letter name -- the
- * `architecture.md` §4 collision case) -- neither is a placeholder by
- * this definition, so this function simply never touches either, same
- * "leave it alone, `forget-device` is the manual escape hatch" outcome
- * as before.
+ * The fix (now implemented in `store/placeholderMerge.ts`'s
+ * `mergeNamePlaceholderIfAny`, imported above) drops the `usb_serial`
+ * test entirely and instead defines a placeholder by **how it was
+ * constructed** -- see that module's own doc comment for the full
+ * reasoning, including why a plain `find` suffices (no
+ * `candidates.length` ambiguity check) and which *different* ambiguous
+ * case is still deliberately left untouched.
+ *
+ * ### Bench defect (2026-09-13): the same robot appears twice, again
+ *
+ * This merge only ever ran here, after a full connect *and* a successful
+ * banner identify -- a bad USB cable that never once produces a clean
+ * banner (bench evidence: `tovez` on a flaky cable) means this call site
+ * simply never fires, even though `watchers/usbWatcher.ts`'s own SWD
+ * naming (a separate, earlier identification step over the debug
+ * interface, immune to the same serial-line corruption) already knows
+ * the robot's real name and id. `usbWatcher.ts`'s `attach()` now calls
+ * the same shared `mergeNamePlaceholderIfAny` directly after a successful
+ * SWD name read, closing that gap -- see `store/placeholderMerge.ts`'s
+ * own doc comment.
  */
-function mergeNamePlaceholderIfAny(store: Store, name: string, deviceId: number, at: number): void {
-  const placeholderId = nameToValue(name);
-  const placeholder = store
-    .snapshotRows()
-    .devices.find(
-      (row) => row.kind === "robot" && Number(row.id) === placeholderId && Number(row.id) !== deviceId,
-    );
-  if (placeholder) {
-    store.mergeDevice(Number(placeholder.id), deviceId, at);
-  }
-}
 
 // ---------------------------------------------------------------------
 // createConnector

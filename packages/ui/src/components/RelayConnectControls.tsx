@@ -131,6 +131,13 @@ export function RelayConnectControls({
     }
   }, [child?.device.name]);
 
+  // De-duplicated defensively (ticket 017-010, bench defect "the same
+  // robot appears twice", 2026-09-13) -- the `"card"` variant below
+  // renders its own inline `<select>` rather than reusing `RobotSelect`
+  // (which de-dupes on its own, see that component's own doc comment),
+  // so this variant needs the same defense independently.
+  const uniqueRobotOptions = Array.from(new Set(robotOptions));
+
   const connectDisabled = selectedName === "" || relayLinkId === undefined || !sendable;
   function handleConnect(): void {
     if (connectDisabled || !relayLinkId) {
@@ -168,11 +175,11 @@ export function RelayConnectControls({
           <select
             data-testid={`relay-quick-connect-select-${idSuffix}`}
             value={selectedName}
-            disabled={robotOptions.length === 0}
+            disabled={uniqueRobotOptions.length === 0}
             onChange={(event) => setSelectedName(event.target.value)}
           >
-            <option value="">{robotOptions.length === 0 ? "No robots known yet" : "Choose a robot…"}</option>
-            {robotOptions.map((name) => (
+            <option value="">{uniqueRobotOptions.length === 0 ? "No robots known yet" : "Choose a robot…"}</option>
+            {uniqueRobotOptions.map((name) => (
               <option key={name} value={name}>
                 {name}
               </option>

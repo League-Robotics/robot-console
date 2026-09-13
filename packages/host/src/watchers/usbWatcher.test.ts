@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { nameToValue } from "@robot-console/protocol";
 import { openStoreDb } from "../store/db.js";
 import { Store } from "../store/index.js";
 import type { DaplinkDevice } from "../devices.js";
@@ -99,6 +100,59 @@ describe("startUsbWatcher", () => {
       expect(rows.links[0]).toMatchObject({ id: `usb-${SERIAL_A}`, device_id: VEVOV_ID, state: "connectable" });
       expect(rows.sessions).toHaveLength(0);
       expect(boardOwnerIsFree(store, SERIAL_A)).toBe(true);
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  // Bench defect 010 (2026-09-13, team-lead evidence): "the same robot
+  // appears twice" -- `tovez` id 2665 (`owned: 1`, `usb_serial:
+  // "SERIAL-A"`, the known-robots.json import placeholder) stayed a
+  // separate row from `tovez` id 2314287040 (`owned: 0`, real USB
+  // serial, SWD-named) because `connect/connector.ts`'s own
+  // `mergeNamePlaceholderIfAny` call only ever ran after a *successful
+  // banner identify*, which a bad cable may never produce cleanly. SWD
+  // naming (this module's own `attach()`) is a separate, earlier, cable-
+  // corruption-immune identification step -- it now calls the same
+  // shared merge (`store/placeholderMerge.ts`) directly once it names a
+  // board, closing that gap.
+  it("bench defect 010 (2026-09-13): a successful SWD name merges a known-robots.json placeholder sharing its name -- one row, owned, links re-pointed", async () => {
+    const store = freshStore();
+    const placeholderId = nameToValue("vevov");
+    // Seed exactly the known-robots.json import shape (sprint.md's own
+    // "usb_serial is a required field" note): owned, a usb_serial hint,
+    // and a pre-existing link from an earlier (non-USB) sighting that
+    // must be re-pointed once the merge fires.
+    store.upsertDevice({ id: placeholderId, name: "vevov", kind: "robot", usbSerial: "SERIAL-OLD", at: 0 });
+    store.setOwned(placeholderId, true, 0);
+    store.upsertLink({
+      id: "wifi-vevov",
+      transport: "wifi",
+      address: { host: "vevov.local", port: 7654 },
+      deviceId: placeholderId,
+      at: 0,
+    });
+
+    const listDevices = vi.fn(async () => [serialOnlyDevice(SERIAL_A, "/dev/cu.usbmodemA")]);
+    const deps: UsbWatcherDeps = { listDevices, readSwdName: async () => NAMED_VEVOV };
+    const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+    try {
+      await waitFor(() => store.snapshotRows().links.find((l) => l.id === `usb-${SERIAL_A}`)?.state === "connectable");
+
+      const rows = store.snapshotRows();
+      // Exactly one "vevov" device row -- the placeholder merged away,
+      // not left as a second, duplicate row.
+      const vevovRows = rows.devices.filter((d) => d.name === "vevov");
+      expect(vevovRows).toHaveLength(1);
+      expect(vevovRows[0]).toMatchObject({ id: VEVOV_ID, owned: 1 });
+      expect(rows.devices.some((d) => d.id === placeholderId)).toBe(false);
+
+      // Both links now point at the real (SWD-named) device id: the
+      // placeholder's own pre-existing wifi link, re-pointed by the
+      // merge, and the fresh usb link `attach()` itself just wrote.
+      expect(rows.links.find((l) => l.id === "wifi-vevov")).toMatchObject({ device_id: VEVOV_ID });
+      expect(rows.links.find((l) => l.id === `usb-${SERIAL_A}`)).toMatchObject({ device_id: VEVOV_ID, state: "connectable" });
     } finally {
       handle.stop();
       store.close();

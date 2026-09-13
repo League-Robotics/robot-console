@@ -212,6 +212,59 @@ describe("LineLink.identify", () => {
     stream.emitData(`${BANNER_LINE}\n`);
     await expect(identifyPromise).resolves.not.toBeNull();
   });
+
+  // 018-007: a WiFi robot sends its own banner twice after HELLO and
+  // interleaves unsolicited `DBG:wifi ...` lines (live-verified root
+  // cause of the `.local`-hostname connect investigation). Neither
+  // should error, reject anything, or be mistaken for a fresh identify()
+  // banner reply -- `resolveBannerWait` is already cleared by the time
+  // either arrives, so a second `device ...` line classifies as an
+  // ordinary "reply" direction line (`codec.ts`'s `REPLY_VERBS` includes
+  // "device") and reaches `onLine` harmlessly, while `DBG:wifi ...`
+  // (uppercase first letter -> "command" direction, not ack/nack) is
+  // simply unrouted console text via `onRawLine` -- see
+  // `receive.ts`/`codec.ts`'s own doc comments for why neither path ever
+  // throws or flags malformed.
+  it("018-007: tolerates a WiFi robot's doubled banner and interleaved DBG:wifi lines, without erroring or misclassifying", async () => {
+    const { link, stream } = await connectedLink();
+    const lines: unknown[] = [];
+    const rawLines: string[] = [];
+    const errors: unknown[] = [];
+    link.onLine((line) => lines.push(line));
+    link.onRawLine((raw) => rawLines.push(raw));
+    link.onError((err) => errors.push(err));
+
+    const identifyPromise = link.identify();
+    await flush();
+
+    const spaceFormBanner = "device NEZHA2 robot gopiv 2175407711";
+    stream.emitData(`${spaceFormBanner}\n`);
+    const banner = await identifyPromise;
+    expect(banner).toEqual(
+      expect.objectContaining({ role: "NEZHA2", commonName: "robot", name: "gopiv", serial: 2175407711 }),
+    );
+    expect(link.isOpen).toBe(true);
+
+    // The robot's own second copy of the same banner, plus an
+    // interleaved DBG:wifi line -- both arrive well after identify()
+    // already resolved and cleared its banner wait.
+    stream.emitData("DBG:wifi rssi=-42 ch=6\n");
+    stream.emitData(`${spaceFormBanner}\n`);
+    await flush();
+
+    expect(errors).toEqual([]);
+    expect(link.isOpen).toBe(true);
+    // The DBG line: unrouted (command-direction, uppercase D), reaches
+    // onRawLine as plain console text, not onLine.
+    expect(rawLines).toContain("DBG:wifi rssi=-42 ch=6");
+    // The repeated banner: reply-direction ("device" is a known reply
+    // verb), reaches onLine like any other non-ack/nack reply -- it is
+    // NOT re-consumed as a second identify() banner (identify() already
+    // resolved once, above) and does not change `link.banner`/`link.name`.
+    expect(lines).toEqual(expect.arrayContaining([expect.objectContaining({ verb: "device" })]));
+    expect(link.banner).toEqual(banner);
+    expect(link.name).toBe("gopiv");
+  });
 });
 
 // ---------------------------------------------------------------------

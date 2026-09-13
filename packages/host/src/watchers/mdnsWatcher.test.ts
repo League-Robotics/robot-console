@@ -123,16 +123,30 @@ function fakeBackend() {
   return backend;
 }
 
-function wifiService(name: string, host: string, port: number): MdnsService {
-  return { name: `${name} robot link`, host, port, txt: { name, role: "robot", link: "v6" }, fqdn: `${name}.local` };
+function wifiService(name: string, host: string, port: number, addresses?: string[]): MdnsService {
+  return {
+    name: `${name} robot link`,
+    host,
+    port,
+    txt: { name, role: "robot", link: "v6" },
+    fqdn: `${name}.local`,
+    ...(addresses !== undefined ? { addresses } : {}),
+  };
 }
 
-function mbserialService(name: string, host: string, port: number): MdnsService {
-  return { name, host, port, fqdn: `${name}.local` };
+function mbserialService(name: string, host: string, port: number, addresses?: string[]): MdnsService {
+  return { name, host, port, fqdn: `${name}.local`, ...(addresses !== undefined ? { addresses } : {}) };
 }
 
-function mbrelayService(name: string, host: string, port: number, registryPort: number): MdnsService {
-  return { name, host, port, txt: { registry: String(registryPort) }, fqdn: `${name}.local` };
+function mbrelayService(name: string, host: string, port: number, registryPort: number, addresses?: string[]): MdnsService {
+  return {
+    name,
+    host,
+    port,
+    txt: { registry: String(registryPort) },
+    fqdn: `${name}.local`,
+    ...(addresses !== undefined ? { addresses } : {}),
+  };
 }
 
 function mbflashService(name: string, host: string, port: number): MdnsService {
@@ -265,6 +279,113 @@ describe("startMdnsWatcher", () => {
       }
     },
   );
+
+  // 018-007: mdnsWatcher.ts stores the resolved IPv4 address (`ip`)
+  // alongside `host`/`port`, picked out of the A/AAAA answers
+  // `bonjour-service` itself already parses (`MdnsService.addresses`) --
+  // this is the address `tcpStream.ts` dials directly instead of ever
+  // resolving the `.local` hostname itself.
+  describe("018-007: resolved IPv4 address (ip) storage", () => {
+    it("stores the resolved ip alongside host/port for a wifi link's first observation", () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const handle = start(store, backend);
+      try {
+        backend.robotlinkTcp.emitUp(wifiService("eeeee", "eeeee.local", 7654, ["fe80::1", "192.168.1.193"]));
+        const row = store.snapshotRows().links.find((l) => l.id === "wifi-eeeee");
+        expect(row?.address).toBe(JSON.stringify({ host: "eeeee.local", port: 7654, ip: "192.168.1.193" }));
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    });
+
+    it("stores the resolved ip for a mbserial link", () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const handle = start(store, backend);
+      try {
+        backend.serial.emitUp(mbserialService("fffff", "fffff.local", 37317, ["192.168.1.148"]));
+        const row = store.snapshotRows().links.find((l) => l.id === "mbserial-fffff");
+        expect(row?.address).toBe(JSON.stringify({ host: "fffff.local", port: 37317, ip: "192.168.1.148" }));
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    });
+
+    it("stores the resolved ip for a mbrelay link, alongside registryPort", () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const handle = start(store, backend);
+      try {
+        backend.relay.emitUp(mbrelayService("torture", "torture.local", 12345, 8080, ["192.168.1.12"]));
+        const row = store.snapshotRows().links.find((l) => l.id === "mbrelay-torture");
+        expect(row?.address).toBe(JSON.stringify({ host: "torture.local", port: 12345, ip: "192.168.1.12", registryPort: 8080 }));
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    });
+
+    it("omits ip entirely (never stores it as null/undefined) when the observation carries no IPv4 address", () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const handle = start(store, backend);
+      try {
+        backend.robotlinkTcp.emitUp(wifiService("ggggg", "ggggg.local", 7654, ["fe80::2"]));
+        const row = store.snapshotRows().links.find((l) => l.id === "wifi-ggggg");
+        expect(row?.address).toBe(JSON.stringify({ host: "ggggg.local", port: 7654 }));
+
+        backend.robotlinkTcp.emitUp(wifiService("hhhhh", "hhhhh.local", 7654));
+        const rowNoAddresses = store.snapshotRows().links.find((l) => l.id === "wifi-hhhhh");
+        expect(rowNoAddresses?.address).toBe(JSON.stringify({ host: "hhhhh.local", port: 7654 }));
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    });
+
+    it("an ip-only change (host/port unchanged) still marks an open session unresponsive, same as a host/port change", () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const handle = start(store, backend);
+      try {
+        backend.robotlinkTcp.emitUp(wifiService("iiiii", "iiiii.local", 7654, ["192.168.1.10"]));
+        const linkId = "wifi-iiiii";
+        store.openSession(linkId, Date.now());
+
+        backend.robotlinkTcp.emitServiceChange(wifiService("iiiii", "iiiii.local", 7654, ["192.168.1.11"]));
+
+        const row = store.snapshotRows().links.find((l) => l.id === linkId);
+        expect(row?.address).toBe(JSON.stringify({ host: "iiiii.local", port: 7654, ip: "192.168.1.11" }));
+        expect(row?.state).toBe("unresponsive");
+        expect(row?.state_reason).toBe("address changed");
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    });
+
+    it("re-announcing the same ip on an unchanged instance does not mark an open session unresponsive", () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const handle = start(store, backend);
+      try {
+        backend.robotlinkTcp.emitUp(wifiService("jjjjj", "jjjjj.local", 7654, ["192.168.1.20"]));
+        const linkId = "wifi-jjjjj";
+        store.openSession(linkId, Date.now());
+
+        backend.robotlinkTcp.emitServiceChange(wifiService("jjjjj", "jjjjj.local", 7654, ["192.168.1.20"]));
+
+        const row = store.snapshotRows().links.find((l) => l.id === linkId);
+        expect(row?.state).not.toBe("unresponsive");
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    });
+  });
 
   it(
     "advancing the fake clock past each TTL with no further traffic ages links(wifi|mbserial|mbrelay) stale and deletes their services rows",

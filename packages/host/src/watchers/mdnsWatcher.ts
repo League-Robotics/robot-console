@@ -28,13 +28,26 @@
  * then upserts the type's `links` row:
  *
  * - `_robotlink.*` → `links(wifi)`, keyed by TXT `name` (falling back to
- *   the instance name), address `{host, port}`. Both protocols collapse
- *   to the same link id, mirroring `mdnsDiscovery.ts`'s own
+ *   the instance name), address `{host, port, ip?}`. Both protocols
+ *   collapse to the same link id, mirroring `mdnsDiscovery.ts`'s own
  *   `wifiRobotKey` rule.
  * - `_mbserial._tcp` → `links(mbserial)`; the instance name **is** the
  *   robot's name directly (`wsMessages.ts:572-575`).
  * - `_mbrelay._tcp` → `links(mbrelay)`, address including `registryPort`
  *   parsed from TXT `registry=<port>`.
+ *
+ * 018-007: `wifi`/`mbserial`/`mbrelay` addresses above all gain an
+ * optional `ip` field — the first IPv4-shaped string in this
+ * observation's own `MdnsService.addresses` (`firstIpv4`, below;
+ * `undefined` when no A/AAAA answer came with this particular
+ * observation). `tcpStream.ts` dials this directly instead of ever
+ * resolving the `.local` `host` itself — root cause: macOS's dual-stack
+ * `net.connect`-by-hostname path can stall ~5s past `LineLink`'s own
+ * connect timeout, or return a dead/unscoped IPv6 link-local address,
+ * before ever trying IPv4 (confirmed against real hardware — see
+ * `sprint.md`). `host`/`port` are kept unconditionally alongside it, for
+ * `tcpStream.ts`'s own bounded fallback lookup when no `ip` is stored
+ * yet.
  * - `_mbflash._tcp` → `services` only, no `links` row (per the issue:
  *   "not browsed" today, added here, but nothing yet connects to it).
  *
@@ -187,6 +200,27 @@ const ROBOTLINK_UDP_FIND: MdnsFindOptions = { type: "robotlink", protocol: "udp"
  * though `_robotlink.*` collapses to one `links(wifi)` row. */
 function serviceRowType(find: MdnsFindOptions): string {
   return `${find.type}.${find.protocol}`;
+}
+
+/** `^\d{1,3}(\.\d{1,3}){3}$` — a plain dotted-quad shape check, not a
+ * full validator (no per-octet 0-255 range check): `MdnsService.addresses`
+ * only ever carries what `bonjour-service` itself parsed out of a real
+ * A/AAAA answer, so an IPv4-shaped string here is already a real
+ * address, never attacker- or user-supplied text this needs to defend
+ * against. */
+const IPV4_PATTERN = /^\d{1,3}(\.\d{1,3}){3}$/;
+
+/**
+ * 018-007: the first IPv4-shaped address in `addresses` (mixed IPv4/
+ * IPv6 strings — `MdnsService.addresses`'s own doc comment), or
+ * `undefined` if none is present (e.g. a response this cycle carried
+ * only an AAAA answer, or none at all). This is exactly the address
+ * `tcpStream.ts` dials directly instead of ever resolving `host` (a
+ * `.local` hostname) itself — root-causing the WiFi/mbserial connect
+ * hang this ticket fixes (`sprint.md`'s own root-cause section).
+ */
+function firstIpv4(addresses: readonly string[] | undefined): string | undefined {
+  return addresses?.find((address) => IPV4_PATTERN.test(address));
 }
 
 /**
@@ -385,11 +419,22 @@ export function startMdnsWatcher(
     }
   }
 
+  /** 018-007: `{host, port}` plus the resolved IPv4 address (`ip`), when
+   * this observation's own `addresses` carried one — additive, never
+   * replacing `host`/`port` (`tcpStream.ts` still needs `host` for its
+   * own bounded fallback lookup when no `ip` is stored yet). Shared by
+   * `handleWifi`/`handleMbserial`/`handleMbrelay`, the three transports
+   * this ticket's own address-shape change applies to. */
+  function tcpAddress(service: MdnsService): { host: string; port: number; ip?: string } {
+    const ip = firstIpv4(service.addresses);
+    return { host: service.host, port: service.port, ...(ip !== undefined ? { ip } : {}) };
+  }
+
   function handleWifi(service: MdnsService): void {
     const name = service.txt?.name ?? service.name;
     const linkId = `wifi-${name}`;
     const deviceId = uniqueOwnedDeviceIdByName(name);
-    upsertLinkAndDetectChange(linkId, "wifi", { host: service.host, port: service.port }, deviceId);
+    upsertLinkAndDetectChange(linkId, "wifi", tcpAddress(service), deviceId);
     promoteOwnedLinkIfDiscovered(linkId, deviceId);
   }
 
@@ -397,7 +442,7 @@ export function startMdnsWatcher(
     const name = service.name;
     const linkId = `mbserial-${name}`;
     const deviceId = uniqueOwnedDeviceIdByName(name);
-    upsertLinkAndDetectChange(linkId, "mbserial", { host: service.host, port: service.port }, deviceId);
+    upsertLinkAndDetectChange(linkId, "mbserial", tcpAddress(service), deviceId);
     promoteOwnedLinkIfDiscovered(linkId, deviceId);
   }
 
@@ -483,7 +528,7 @@ export function startMdnsWatcher(
     upsertLinkAndDetectChange(
       `mbrelay-${name}`,
       "mbrelay",
-      { host: service.host, port: service.port, registryPort: parseRegistryPort(service.txt?.registry) },
+      { ...tcpAddress(service), registryPort: parseRegistryPort(service.txt?.registry) },
       deviceId,
     );
   }

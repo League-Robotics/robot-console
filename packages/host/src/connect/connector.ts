@@ -192,8 +192,11 @@ export interface ConnectorDeps {
   createSerialStream?: (path: string) => ByteStream;
   /** Injectable TCP adapter factory (wifi/mbserial direct, and the
    * physical transport under a `radio`/`mbrelay` relay hop). Defaults to
-   * the real {@link tcpStream}. */
-  createTcpStream?: (host: string, port: number) => ByteStream;
+   * the real {@link tcpStream}. `ip`, when given, is the resolved IPv4
+   * address `watchers/mdnsWatcher.ts` already stored on the link
+   * (018-007) — dialed directly instead of ever resolving `host` again
+   * here. */
+  createTcpStream?: (host: string, port: number, ip?: string) => ByteStream;
   /** Builds the `LineLink` wrapping a {@link ByteStream}. Defaults to
    * `new LineLink(stream, options)`; overridable so a test can spy on
    * the link the connector drives. */
@@ -265,6 +268,13 @@ export interface UsbAddress {
 export interface TcpAddress {
   readonly host: string;
   readonly port: number;
+  /** Resolved IPv4 address (018-007), when `watchers/mdnsWatcher.ts` has
+   * observed one for this service — see that module's own doc comment.
+   * Absent for a link stored before this ticket landed, or if no A
+   * record was ever seen; `buildStreamPlan` below falls back to
+   * `tcpStream`'s own bounded `dns.lookup` in that case, never a raw
+   * `.local` hostname straight to `net.connect`. */
+  readonly ip?: string;
 }
 export interface RelayAddress {
   readonly relayLinkId: string;
@@ -300,7 +310,7 @@ export function parseLinkAddress(transport: Transport, raw: unknown): ParsedAddr
       if (typeof rec.host !== "string" || typeof rec.port !== "number") {
         throw new Error(`connector: ${transport} address missing string "host"/number "port" (got ${JSON.stringify(rec)})`);
       }
-      return { host: rec.host, port: rec.port };
+      return { host: rec.host, port: rec.port, ...(typeof rec.ip === "string" ? { ip: rec.ip } : {}) };
     }
     case "radio":
     case "mbrelay": {
@@ -416,7 +426,7 @@ export function resolveRelayPhysical(store: Store, relayLinkId: string, expected
   if (typeof rec.host !== "string" || typeof rec.port !== "number") {
     throw new Error(`connector: relay link "${relayLinkId}" (mbrelay) address missing string "host"/number "port"`);
   }
-  return { transport: "mbrelay", address: { host: rec.host, port: rec.port } };
+  return { transport: "mbrelay", address: { host: rec.host, port: rec.port, ...(typeof rec.ip === "string" ? { ip: rec.ip } : {}) } };
 }
 
 // ---------------------------------------------------------------------
@@ -487,7 +497,7 @@ function buildStreamPlan(
   address: ParsedAddress,
   store: Store,
   createSerialStream: (path: string) => ByteStream,
-  createTcpStream: (host: string, port: number) => ByteStream,
+  createTcpStream: (host: string, port: number, ip?: string) => ByteStream,
   getLink: () => LineLink,
   scheduler: Scheduler,
   relayHandshakeTimeoutMs: number | undefined,
@@ -500,7 +510,7 @@ function buildStreamPlan(
     case "wifi":
     case "mbserial": {
       const tcp = address as TcpAddress;
-      return { stream: createTcpStream(tcp.host, tcp.port) };
+      return { stream: createTcpStream(tcp.host, tcp.port, tcp.ip) };
     }
     case "radio":
     case "mbrelay": {
@@ -510,7 +520,7 @@ function buildStreamPlan(
       const stream =
         physical.transport === "usb"
           ? createSerialStream((physical.address as UsbAddress).path)
-          : createTcpStream((physical.address as TcpAddress).host, (physical.address as TcpAddress).port);
+          : createTcpStream((physical.address as TcpAddress).host, (physical.address as TcpAddress).port, (physical.address as TcpAddress).ip);
       const preamble = buildRelayPreamble(relay.channel, relay.group, getLink, scheduler, relayHandshakeTimeoutMs);
       return { stream, preamble };
     }
@@ -697,7 +707,7 @@ function mergeUsbPlaceholderIfAny(store: Store, usbSerial: string | undefined, d
  */
 export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: ConnectorOptions = {}): Connector {
   const createSerialStream = deps.createSerialStream ?? ((path: string) => serialStream(path));
-  const createTcpStream = deps.createTcpStream ?? ((host: string, port: number) => tcpStream(host, port));
+  const createTcpStream = deps.createTcpStream ?? ((host: string, port: number, ip?: string) => tcpStream(host, port, ip !== undefined ? { ip } : {}));
   const createLineLink = deps.createLineLink ?? ((stream: ByteStream, options: LineLinkOptions) => new LineLink(stream, options));
   const scheduler = deps.scheduler ?? realScheduler;
   const now = deps.now ?? (() => Date.now());

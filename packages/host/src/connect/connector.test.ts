@@ -255,6 +255,58 @@ describe("connectAndIdentify -- success path, every transport", () => {
     store.close();
   });
 
+  // 018-007: `TcpAddress.ip` (from `watchers/mdnsWatcher.ts`'s stored
+  // A-record capture) is threaded through to `createTcpStream` as its
+  // third argument for wifi/mbserial, and for the physical hop under a
+  // `mbrelay` relay -- never silently dropped, and `host` is still
+  // passed too (for `tcpStream.ts`'s own bounded fallback lookup when a
+  // link predates this ticket and carries no `ip` yet).
+  it("wifi: passes the link's stored ip through to createTcpStream, alongside host/port", async () => {
+    const store = freshStore();
+    const stream = new BannerByteStream(ROBOT_BANNER);
+    const calls: Array<{ host: string; port: number; ip: string | undefined }> = [];
+    const connector = createConnector(store, {
+      ...baseDeps(stream),
+      createTcpStream: (host: string, port: number, ip?: string) => {
+        calls.push({ host, port, ip });
+        return stream;
+      },
+    });
+    const link: LinkRow = { id: "wifi-gopiv", transport: "wifi", address: { host: "gopiv.local", port: 7654, ip: "192.168.1.193" } };
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await promise;
+
+    expect(calls).toEqual([{ host: "gopiv.local", port: 7654, ip: "192.168.1.193" }]);
+    store.close();
+  });
+
+  it("mbserial: createTcpStream receives host/port with ip undefined for a link stored before this ticket (no ip yet)", async () => {
+    const store = freshStore();
+    const stream = new BannerByteStream(ROBOT_BANNER);
+    const calls: Array<{ host: string; port: number; ip: string | undefined }> = [];
+    const connector = createConnector(store, {
+      ...baseDeps(stream),
+      createTcpStream: (host: string, port: number, ip?: string) => {
+        calls.push({ host, port, ip });
+        return stream;
+      },
+    });
+    const link = mbserialLink(); // address: { host, port } -- no ip
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await promise;
+
+    expect(calls).toEqual([{ host: "10.0.0.6", port: 4001, ip: undefined }]);
+    store.close();
+  });
+
   it("radio: rides a local usb relay, running the RelayCommandPlane preamble before HELLO", async () => {
     const store = freshStore();
     const relayLinkId = "usb-RELAY-SERIAL";
@@ -296,6 +348,36 @@ describe("connectAndIdentify -- success path, every transport", () => {
     expect(session.deviceId).toBe(ROBOT_SERIAL);
     const bytesWritten = stream.writes.map((w) => w.bytes.trim());
     expect(bytesWritten).toEqual(["?", "!ECHO OFF", "!MODE RAW250", "!CG 47 60", "!P 7", "!GO", "HELLO"]);
+    store.close();
+  });
+
+  // 018-007: the relay pool's own stored `ip` (its `mbrelay`-transport
+  // link's address, from `watchers/mdnsWatcher.ts`) is threaded to
+  // createTcpStream for the physical hop too, not only a direct
+  // wifi/mbserial link.
+  it("mbrelay: passes the relay pool's own stored ip through to createTcpStream for the physical hop", async () => {
+    const store = freshStore();
+    const relayLinkId = "mbrelay-POOL";
+    store.upsertLink({ id: relayLinkId, transport: "mbrelay", address: { host: "10.0.0.9", port: 5000, ip: "192.168.1.12" }, at: 1 });
+
+    const stream = new RelayByteStream(ROBOT_BANNER);
+    const calls: Array<{ host: string; port: number; ip: string | undefined }> = [];
+    const connector = createConnector(store, {
+      ...baseDeps(stream, realScheduler),
+      createTcpStream: (host: string, port: number, ip?: string) => {
+        calls.push({ host, port, ip });
+        return stream;
+      },
+    });
+    const link = mbrelayLink(relayLinkId);
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await promise;
+
+    expect(calls).toEqual([{ host: "10.0.0.9", port: 5000, ip: "192.168.1.12" }]);
     store.close();
   });
 

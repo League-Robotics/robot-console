@@ -181,8 +181,11 @@ export interface RelayBridgerDeps {
    * method under test never needs `sendBreak()`). */
   createSerialStream?: (path: string) => ByteStream;
   /** Injectable TCP adapter factory (the mbrelay physical hop). Defaults
-   * to the real {@link tcpStream}. */
-  createTcpStream?: (host: string, port: number) => ByteStream;
+   * to the real {@link tcpStream}. `ip`, when given, is the resolved
+   * IPv4 address `watchers/mdnsWatcher.ts` already stored on the relay's
+   * own link (018-007) — see `connector.ts`'s `TcpAddress.ip` doc
+   * comment. */
+  createTcpStream?: (host: string, port: number, ip?: string) => ByteStream;
   /** Builds the `LineLink` wrapping a candidate's {@link ByteStream}.
    * Defaults to `new LineLink(stream, options)`. */
   createLineLink?: (stream: ByteStream, options: LineLinkOptions) => LineLink;
@@ -546,7 +549,7 @@ function relayLinkTransport(store: Store, relayLinkId: string): "usb" | "mbrelay
  */
 export function createRelayBridger(store: Store, deps: RelayBridgerDeps = {}, opts: RelayBridgerOptions = {}): RelayBridger {
   const createSerialStreamFn = deps.createSerialStream ?? ((path: string) => serialStream(path));
-  const createTcpStreamFn = deps.createTcpStream ?? ((host: string, port: number) => tcpStream(host, port));
+  const createTcpStreamFn = deps.createTcpStream ?? ((host: string, port: number, ip?: string) => tcpStream(host, port, ip !== undefined ? { ip } : {}));
   const createLineLinkFn = deps.createLineLink ?? ((stream: ByteStream, options: LineLinkOptions) => new LineLink(stream, options));
   const scheduler = deps.scheduler ?? realScheduler;
   const now = deps.now ?? (() => Date.now());
@@ -594,7 +597,7 @@ export function createRelayBridger(store: Store, deps: RelayBridgerDeps = {}, op
     const stream: ByteStream =
       physical.transport === "usb"
         ? createSerialStreamFn((physical.address as UsbAddress).path)
-        : createTcpStreamFn((physical.address as TcpAddress).host, (physical.address as TcpAddress).port);
+        : createTcpStreamFn((physical.address as TcpAddress).host, (physical.address as TcpAddress).port, (physical.address as TcpAddress).ip);
 
     let lineLink: LineLink | undefined;
     const runPreamble = buildRelayPreamble(

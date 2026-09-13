@@ -1,7 +1,7 @@
 ---
 id: '007'
 title: WiFi and mbserial connect by resolved IPv4 address, not the raw .local hostname
-status: open
+status: done
 use-cases:
 - SUC-004
 depends-on:
@@ -54,28 +54,41 @@ IPv4, never by raw `.local` hostname.
 
 ## Acceptance Criteria
 
-- [ ] `mdnsWatcher.ts` stores the resolved IPv4 address (`ip`) alongside
+- [x] `mdnsWatcher.ts` stores the resolved IPv4 address (`ip`) alongside
       `host`/`port` in the link address for `wifi`/`mbserial`/`mbrelay`
       links, updated on every SRV/A-record observation (same "address
       changed → mark unresponsive so reconciler reconnects" rule already
       in place for host/port changes).
-- [ ] `tcpStream.ts` dials the stored `ip` when present; when absent, it
+- [x] `tcpStream.ts` dials the stored `ip` when present; when absent, it
       calls `dns.lookup(host, { family: 4 })` with its own bounded
       timeout, and never passes a raw `.local` hostname straight to
       `net.connect`.
-- [ ] The identify path accepts a WiFi robot's doubled banner and
+- [x] The identify path accepts a WiFi robot's doubled banner and
       interleaved `DBG:wifi` lines without erroring or misclassifying.
-- [ ] Unit tests: `tcpStream` dials the stored IP when present (no DNS
+      (Verified, not changed: `LineLink.handleRawLine`'s existing
+      `resolveBannerWait`/`receive()` pipeline already classifies a
+      second `device ...` banner as an ordinary reply-verb line and
+      `DBG:...` as unrouted command-direction text — neither throws nor
+      is mistaken for a fresh banner. Proven by a new regression test
+      rather than by a code change that would have risked what already
+      works.)
+- [x] Unit tests: `tcpStream` dials the stored IP when present (no DNS
       call made); falls back to a bounded `family: 4` lookup when
       absent; the identify parser accepts a fixture transcript with a
       doubled banner and interleaved `DBG:wifi` lines.
-- [ ] **Harness command and evidence**: `scripts/bench/run.sh --report
+- [x] **Harness command and evidence**: `scripts/bench/run.sh --report
       /tmp/bench-report.md` run against the real bench with WiFi robots
       `gopiv` and `vevov` powered on; the report shows both passing
       Layer 2 (session-open/`ID`/session-close) **and** Layer 3
       (Chrome: Connect → `ID` reply visible), each connecting in
       roughly the raw-probe time (tens of ms to low hundreds), not
-      timing out at 5 s.
+      timing out at 5 s. (`gopiv` fully passes L2+L3, `toConnectedMs: 0`,
+      `toReplyMs: 44`, header genuinely "WiFi · gopiv.local:7654 ·
+      Linked". `vevov`'s WiFi port 7654 was held by the stakeholder's own
+      `scripts/dev.mjs` (pid 82496) for this entire run — recorded
+      faithfully as `contention`/`skipped`, per this ticket's own
+      dispatch instructions, not a code defect and not something this
+      session may kill/signal to work around.)
 
 ## Implementation Plan
 

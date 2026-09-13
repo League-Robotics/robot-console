@@ -383,7 +383,15 @@ describe("RelayConnectControls variant=page", () => {
   // the `torture`/`vevav` bench defect ("shown with Switch/Disconnect as
   // if bridging").
   it("renders 'relay-lost' with only Connect (no Switch/Disconnect) when the child link never had a session", () => {
-    const { el } = renderPage({ devices: [relayDevice(), childDevice({}, { state: "unresponsive", reason: "no reply" })] });
+    // `since` recent (ticket 018-010's own `currentRelayChild` recency
+    // gate -- see that function's own doc comment): a session-less
+    // dropped child only counts as "the" child worth showing lost status
+    // for when it dropped recently; this test is about the
+    // Switch/Disconnect gating, not about staleness, so it pins `since`
+    // to just now.
+    const { el } = renderPage({
+      devices: [relayDevice(), childDevice({}, { state: "unresponsive", reason: "no reply", since: Date.now() - 1000 })],
+    });
     expect(el.querySelector('[data-testid="relay-lost"]')?.textContent).toBe("Connection to vevav lost: no reply");
     expect(el.querySelector('[data-testid="relay-disconnect"]')).toBeNull();
     expect(el.querySelector('[data-testid="relay-connect"]')?.textContent).toBe("Connect");

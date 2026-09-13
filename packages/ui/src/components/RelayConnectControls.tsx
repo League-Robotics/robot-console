@@ -28,7 +28,7 @@
  */
 import { useEffect, useState } from "react";
 import type { SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
-import { findRelayChild, findSweepingCandidateName, isLinkAnswering, isLinkUsable, plainFailureReason, sweepRateSuffix } from "../deviceDisplay";
+import { currentRelayChild, findSweepingCandidateName, isLinkAnswering, isLinkUsable, plainFailureReason, sweepRateSuffix } from "../deviceDisplay";
 import { RobotSelect } from "./RobotSelect";
 import "./RelayConnectControls.css";
 
@@ -167,7 +167,10 @@ export function RelayConnectControls({
 }: RelayConnectControlsProps) {
   const relayLinkId = relay.links[0]?.id;
   const relayInfo = relayLinkId ? relays.find((r) => r.linkId === relayLinkId) : undefined;
-  const child = relayLinkId ? findRelayChild(devices, relayLinkId) : undefined;
+  // Ticket 018-010: `currentRelayChild`, not the bare `findRelayChild` --
+  // see that function's own doc comment (never resurrect an old,
+  // long-dropped bridge as "the" child).
+  const child = relayLinkId ? currentRelayChild(devices, relayLinkId) : undefined;
   const status = relayStatusText({ relayInfo, devices, relayLinkId, ...(variant === "page" ? { relayName: relay.name } : {}) }, child);
   // Ticket 018-010: Switch/Disconnect show only while a bridge session
   // genuinely exists -- see `hasBridgeSession`'s own doc comment. Not

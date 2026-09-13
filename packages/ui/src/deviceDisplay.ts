@@ -208,6 +208,69 @@ export function findRelayChild(
   return best;
 }
 
+/** How long ago a {@link findRelayChild} match's own `since` (its state's
+ * start time) may sit before {@link currentRelayChild} stops treating it
+ * as "the" child a relay card/page shows connected/lost status for --
+ * ticket 018-010 (team-lead bench walk 2026-09-13). Bench evidence: the
+ * `torture` card read a red "Connection to gopiv lost: ttl-expired" box,
+ * and `vitut`'s card read a bare "Connection to tigez lost" with no
+ * reason at all -- both for a bridge that had genuinely ended hours (in
+ * `torture`'s case) or longer ago, resurrected purely because
+ * `findRelayChild` itself never expires a `failed`/`unresponsive` match
+ * by age, only by state shape. A relay card must describe a bridge that
+ * dropped recently, in this host process's own lifetime -- never
+ * resurrect old bridge history read back from a copied/restarted store.
+ * Five minutes is comfortably above every retry/backoff window this
+ * sprint's transports use, while still being "recent" in the plain
+ * English sense the ticket's own acceptance criteria use. */
+export const RELAY_CHILD_RECENT_MS = 5 * 60_000;
+
+/**
+ * {@link findRelayChild}'s own match, additionally required to still be
+ * "current" for status/connected-view purposes -- the single function
+ * `RelayConnectControls.tsx` and `RelayPage.tsx` both call instead of
+ * `findRelayChild` directly, so a relay's status text and its own
+ * decision to mount `RobotPage`/`AddressSourceChip` for "the" child never
+ * disagree (ticket 018-010).
+ *
+ * A match is current when either:
+ * - it is genuinely live right now (answering, still usable/`connecting`
+ *   -- {@link isLinkAnswering}/{@link isLinkUsable}), regardless of how
+ *   long ago it started (a long-healthy bridge must never expire just
+ *   because it is old); or
+ * - it carries a live session ({@link hasBridgeSession}-equivalent,
+ *   `link.session !== undefined`) -- a session the reconciler is still
+ *   actively tracking is never "old history", whatever its age; or
+ * - it is a recent drop: not `stale`, and its own `since` is within
+ *   {@link RELAY_CHILD_RECENT_MS} of `now`.
+ *
+ * Anything else -- a `stale` link (aged out by
+ * `store/index.ts`'s `ageRadioLinks`), or a `failed`/`unresponsive`/
+ * `closed_by_user` link with no session that dropped longer ago than
+ * that -- is old bridge history and is never "the" child: this returns
+ * `undefined`, exactly as if `findRelayChild` had found nothing, so a
+ * card/page falls back to its ordinary idle/sweeping/bridging rendering
+ * instead of resurrecting a long-dead connection.
+ */
+export function currentRelayChild(
+  devices: readonly SnapshotDevice[],
+  relayLinkId: string,
+  now: number = Date.now(),
+): { device: SnapshotDevice; link: SnapshotLink } | undefined {
+  const found = findRelayChild(devices, relayLinkId);
+  if (found === undefined) {
+    return undefined;
+  }
+  const { link } = found;
+  if (link.state === "stale") {
+    return undefined;
+  }
+  if (isLinkAnswering(link, now) || isLinkUsable(link) || link.state === "connecting" || link.session !== undefined) {
+    return found;
+  }
+  return now - link.since <= RELAY_CHILD_RECENT_MS ? found : undefined;
+}
+
 /** How long a device's most recent sighting still counts as "the
  * sweeper is probing this name right now" for the relay card's "idle ·
  * sweeping `<name>`" label (sprint 016 ticket 004) -- comfortably above
@@ -425,6 +488,24 @@ const NO_ANSWER_ADVICE: Record<Transport, string> = {
   mbrelay: "no radio reply — is the robot on and in range?",
 };
 
+/** No-answer advice for a relay device's OWN connectivity link (`kind:
+ * "relay"`, ticket 018-010 bench defect: `vevav`, a RADIOBRIDGE relay
+ * plugged in over USB, showed {@link NO_ANSWER_ADVICE}`.usb`'s robot
+ * wording -- "check the USB cable or that it's powered on" -- for a
+ * board that is not a robot at all). Used instead of {@link
+ * NO_ANSWER_ADVICE} whenever the failing link's owning device is a
+ * relay, regardless of that link's own transport (`usb` for a
+ * physically-attached bridge, `mbrelay` for one discovered over the
+ * network -- both read this same text; a relay never gets robot-shaped
+ * advice). "Parked in the data plane" names the specific known failure
+ * mode this sprint's own relay firmware has (018-004/016-001: a relay
+ * that answered a banner once can get stuck forwarding radio traffic
+ * without re-arming its own identify listener) rather than a generic
+ * "is it plugged in" guess, since the relay firmware answering that
+ * question is usually "yes, and its LED is on". */
+const RELAY_NO_ANSWER_ADVICE =
+  "the relay didn't answer when we said hello — it may be parked in the data plane; unplug and replug it to reset";
+
 /** A raw system/transport-level error (a Node `Error.message`, an
  * `ENOENT`/`EACCES`/etc. `errno` code, …) that never got translated to a
  * known shape above -- bench evidence: a relay card read "Connection to
@@ -475,8 +556,15 @@ const RAW_SYSTEM_ERROR_PATTERN = /^Error:|ENOENT|ECONNREFUSED|ECONNRESET|EACCES|
  *   link presumed dead"`) reads as "stopped answering", regardless of
  *   transport (this is "it was answering, then it stopped", not "it
  *   never came back to begin with").
+ *
+ * `kind` (ticket 018-010, defaults to `"robot"` so every pre-existing
+ * caller is unaffected): a device whose own `kind` is `"relay"` gets
+ * {@link RELAY_NO_ANSWER_ADVICE} in place of {@link NO_ANSWER_ADVICE}
+ * `[transport]` for the no-banner/raw-system-error case -- see that
+ * constant's own doc comment for the bench defect (`vevav`'s card,
+ * robot-shaped USB advice for a relay).
  */
-export function plainFailureReason(reason: string, transport: Transport): string {
+export function plainFailureReason(reason: string, transport: Transport, kind: SnapshotDevice["kind"] = "robot"): string {
   const cleaned = stripInternalIds(reason);
   if (cleaned === BRIDGE_CONTENTION_REASON) {
     return cleaned;
@@ -494,7 +582,7 @@ export function plainFailureReason(reason: string, transport: Transport): string
     return "no answer (timed out)";
   }
   if (/no banner within the identify budget/i.test(cleaned) || RAW_SYSTEM_ERROR_PATTERN.test(cleaned)) {
-    return NO_ANSWER_ADVICE[transport];
+    return kind === "relay" ? RELAY_NO_ANSWER_ADVICE : NO_ANSWER_ADVICE[transport];
   }
   return cleaned;
 }
@@ -538,8 +626,13 @@ export function plainFailureReason(reason: string, transport: Transport): string
  * that state back until the *next* aging pass). A `stale` link whose
  * `lastSeen` is still within {@link STALE_ADVERTISED_GRACE_MS} is
  * presumed still advertised -- "Not linked" (true: no session) rather
- * than the contradicted "Not seen since" claim. */
-export function linkStateText(link: SnapshotLink, now: number = Date.now()): string {
+ * than the contradicted "Not seen since" claim.
+ *
+ * `kind` (ticket 018-010, defaults to `"robot"`): passed straight through
+ * to {@link plainFailureReason} so a relay's own connectivity link gets
+ * relay-shaped no-answer advice instead of robot-shaped advice -- see
+ * that function's own doc comment. */
+export function linkStateText(link: SnapshotLink, now: number = Date.now(), kind: SnapshotDevice["kind"] = "robot"): string {
   switch (link.state) {
     case "connected":
       return isLinkAnswering(link, now) ? "Linked" : "Connecting";
@@ -547,7 +640,7 @@ export function linkStateText(link: SnapshotLink, now: number = Date.now()): str
       return "Connecting";
     case "failed":
     case "unresponsive": {
-      const base = link.reason ? `Couldn't connect: ${plainFailureReason(link.reason, link.transport)}` : "Couldn't connect";
+      const base = link.reason ? `Couldn't connect: ${plainFailureReason(link.reason, link.transport, kind)}` : "Couldn't connect";
       if (link.nextRetryAt !== null && link.nextRetryAt > now) {
         const seconds = Math.max(1, Math.ceil((link.nextRetryAt - now) / 1000));
         return `${base} · retrying in ${seconds}s`;
@@ -587,4 +680,49 @@ export function lastCheckedText(device: SnapshotDevice, link: SnapshotLink): str
     return undefined;
   }
   return `Last checked ${new Date(device.lastChecked).toLocaleString()}`;
+}
+
+/**
+ * The links a device card should actually list (ticket 018-010 bench
+ * defect: every card cluttered with aged rows -- `vevov` showing two
+ * `Not seen since …` radio rows from a day+ ago, `gopiv` showing four
+ * radio rows including "yesterday's", `tovez` showing a `USB ·
+ * /dev/cu.usbmodem2121102` row for a port that now belongs to a
+ * different device entirely (`vitut`), `tigez` showing USB/WiFi rows
+ * from 9/12). Ticket 018-005 taught the store to age a quiet link to
+ * `stale` (`ageLinks`/`ageRadioLinks`), and ticket 018-010's own
+ * `linkStateText` already renders that state honestly ("Not seen
+ * since …", or "Not linked" within {@link STALE_ADVERTISED_GRACE_MS}) --
+ * but nothing before this stopped a card from listing a `stale` row at
+ * all. This is that filter: a `stale` link is never rendered as one of
+ * the device's connections, full stop -- the aging watcher having
+ * marked it so already means its own service/port is gone, however
+ * "honest" the leftover row's own text is.
+ *
+ * This is also what hides a USB link whose physical path a different
+ * device now holds: `watchers/usbWatcher.ts`'s `handleRemoved` marks a
+ * departed board's own link `stale` (event-driven, immediately -- not
+ * waiting on any TTL) the moment it is unplugged, and a *new* board at
+ * the same path always gets its own distinct link id (keyed by USB
+ * serial number, not by port path -- see that module's own doc
+ * comment) -- so the OLD device's own link row is always `stale` by the
+ * time a different device's row exists at that path, and is filtered
+ * out here exactly like any other aged link, with no separate
+ * path-collision check needed.
+ *
+ * Everything else -- usable/connecting, a fresh sighting not yet
+ * connected (`discovered`/`connectable`), or a `failed`/`unresponsive`/
+ * `closed_by_user` link whose underlying port/service is still current
+ * (not yet aged) -- is shown, in `device.links`' own order. */
+export function cardLinks(device: SnapshotDevice): SnapshotLink[] {
+  return device.links.filter((link) => link.state !== "stale");
+}
+
+/** How many of `device.links` {@link cardLinks} hides -- the count a
+ * card's own quiet "N older connections hidden" summary line reports
+ * (ticket 018-010's own acceptance criterion, "optionally summarised as
+ * one quiet line"), so a student can tell "nothing" apart from
+ * "something was hidden here" without the clutter itself coming back. */
+export function hiddenLinkCount(device: SnapshotDevice): number {
+  return device.links.length - cardLinks(device).length;
 }

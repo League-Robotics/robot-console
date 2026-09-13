@@ -123,7 +123,7 @@ import { DeviceConsole } from "../components/DeviceConsole";
 import { RelayConnectControls } from "../components/RelayConnectControls";
 import { RobotPage } from "./RobotPage";
 import { useDevices, useRelays, useSendable, useWsActions } from "../ws/WsProvider";
-import { findRelayChild, isLinkUsable, nameDisplay } from "../deviceDisplay";
+import { currentRelayChild, isLinkUsable, nameDisplay } from "../deviceDisplay";
 import "./RelayPage.css";
 
 export interface RelayPageProps {
@@ -151,10 +151,14 @@ export function RelayPage({ device }: RelayPageProps) {
   // Still needed here (in addition to `RelayConnectControls`' own
   // identical derivation) to pick this page's own layout -- connected
   // vs. not -- and to gate `AddressSourceChip`/`RobotPage`/the relay's
-  // own `DeviceConsole` accordingly. A plain `findRelayChild` call is
-  // cheap and pure; this is not the kind of duplicated business-rule or
-  // user-facing copy this ticket's extraction targets.
-  const child = relayLinkId ? findRelayChild(devices, relayLinkId) : undefined;
+  // own `DeviceConsole` accordingly. `currentRelayChild` (ticket 018-010,
+  // not the bare `findRelayChild`) so this page's own mount decision
+  // never disagrees with `RelayConnectControls`' status text about
+  // whether an old, long-dropped bridge still counts as "the" child --
+  // see that function's own doc comment. Still a cheap, pure call; not
+  // the kind of duplicated business-rule or user-facing copy this
+  // ticket's extraction targets.
+  const child = relayLinkId ? currentRelayChild(devices, relayLinkId) : undefined;
 
   const robotOptions = devices
     .filter((candidate) => candidate.kind === "robot")

@@ -94,7 +94,7 @@ import {
   useUnassigned,
   useWsActions,
 } from "../ws/WsProvider";
-import { connectionLabel, isCalibrationProgram, isLinkAnswering, isLinkUsable, lastCheckedText, linkStateText, nameDisplay } from "../deviceDisplay";
+import { cardLinks, connectionLabel, hiddenLinkCount, isCalibrationProgram, isLinkAnswering, isLinkUsable, lastCheckedText, linkStateText, nameDisplay } from "../deviceDisplay";
 import { FlashDialog } from "../components/FlashDialog";
 import { RelayConnectControls } from "../components/RelayConnectControls";
 import "./FrontPage.css";
@@ -458,7 +458,7 @@ function DeviceCard({
           </dl>
 
           <ul className="device-connections" aria-label={`Connections for ${device.name}`}>
-            {device.links.map((link) => (
+            {cardLinks(device).map((link) => (
               <DeviceConnectionRow
                 key={link.id}
                 device={device}
@@ -470,6 +470,18 @@ function DeviceCard({
               />
             ))}
           </ul>
+          {/* Ticket 018-010: a quiet, one-line summary for whatever
+              `cardLinks` hid -- aged/stale connections (and a USB link
+              whose path a different device now holds -- see that
+              function's own doc comment) are never listed as rows, but
+              a student/instructor should still be able to tell "this
+              card is hiding old history" from "there was never anything
+              else". */}
+          {hiddenLinkCount(device) > 0 && (
+            <p className="device-connections-hidden" data-testid={`device-hidden-links-${device.id}`}>
+              {hiddenLinkCount(device)} older connection{hiddenLinkCount(device) === 1 ? "" : "s"} hidden
+            </p>
+          )}
         </div>
 
         {primary && (
@@ -590,7 +602,7 @@ function DeviceConnectionRow({
     <li className="device-connection" data-testid={`device-link-${link.id}`}>
       <span className="device-connection-label">{connectionLabel(link)}</span>
       <span className={link.state === "connected" ? "device-connection-state device-connection-open" : "device-connection-state"}>
-        {linkStateText(link, now)}
+        {linkStateText(link, now, device.kind)}
       </span>
       {notice && (
         <span className="device-connection-notice" data-testid={`device-link-notice-${link.id}`} role="status">

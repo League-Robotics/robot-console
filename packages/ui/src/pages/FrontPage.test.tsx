@@ -900,6 +900,10 @@ describe("relay quick-connect", () => {
           transport: "radio",
           state: "failed",
           reason: "no reply from vevav",
+          // Recent `since` (ticket 018-010's own `currentRelayChild`
+          // recency gate) -- this test is about Switch/Disconnect
+          // gating, not staleness, so it pins the drop to just now.
+          since: Date.now() - 1000,
           via: { relayLinkId: "usb-relay-1", relayName: "rly01", channel: 55, group: 114, addressSource: "derived" },
         }),
       ],

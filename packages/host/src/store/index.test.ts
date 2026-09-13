@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { nameToValue } from "@robot-console/protocol";
 import { openStoreDb } from "./db.js";
 import { DeviceNameMismatchError, Store, openStore, type ChangeEvent } from "./index.js";
 
@@ -347,6 +348,62 @@ describe("Store: upsertLink / setLinkState / ageLinks", () => {
       // a later call without deviceId must not clear it
       store.upsertLink({ id: "link-1", transport: "usb", address: {}, at: 200 });
       expect(store.snapshotRows().links[0]?.device_id).toBe(42);
+    } finally {
+      store.close();
+    }
+  });
+
+  // Ticket 018-010: `upsertLink`'s own write-time guard against a
+  // `radio`/`mbrelay` child link's `device_id` disagreeing with the name
+  // its own `links.id` encodes (bench defect:
+  // `radio-tigez-via-mbrelay-torture` carrying `gopiv`'s own device_id).
+  it("upsertLink re-points a radio child link's device_id to the id-named device, regardless of what deviceId was supplied", () => {
+    const { store } = freshStore();
+    try {
+      const tigezId = nameToValue("tigez");
+      store.upsertDevice({ id: 1461, name: "gopiv", kind: "robot", at: 50 });
+      store.upsertDevice({ id: tigezId, name: "tigez", kind: "robot", at: 50 });
+      // Link id names `tigez`; `deviceId` (as a relay-bridge identify
+      // might mistakenly supply) names `gopiv` instead.
+      store.upsertLink({
+        id: "radio-tigez-via-mbrelay-torture",
+        transport: "radio",
+        address: { relayLinkId: "mbrelay-torture", channel: 55, group: 114 },
+        deviceId: 1461,
+        at: 100,
+      });
+      expect(store.snapshotRows().links[0]?.device_id).toBe(tigezId);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("upsertLink leaves deviceId as supplied when no device is named by the link id yet (an ordinary first sighting, not a correction)", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1461, name: "gopiv", kind: "robot", at: 50 });
+      // No "tigez" device row exists yet -- the write-time guard must
+      // not null this out (that stronger rule is the one-time repair's
+      // own, `repair/repairRadioLinkDeviceAssociation.ts`).
+      store.upsertLink({
+        id: "radio-tigez-via-mbrelay-torture",
+        transport: "radio",
+        address: { relayLinkId: "mbrelay-torture", channel: 55, group: 114 },
+        deviceId: 1461,
+        at: 100,
+      });
+      expect(store.snapshotRows().links[0]?.device_id).toBe(1461);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("upsertLink never applies the radio-child guard to a plain usb/wifi/mbserial link id", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1461, name: "gopiv", kind: "robot", at: 50 });
+      store.upsertLink({ id: "usb-relay-serial", transport: "usb", address: { path: "/dev/cu.a" }, deviceId: 1461, at: 100 });
+      expect(store.snapshotRows().links[0]?.device_id).toBe(1461);
     } finally {
       store.close();
     }

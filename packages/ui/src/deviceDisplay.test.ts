@@ -12,11 +12,14 @@ import { describe, expect, it } from "vitest";
 import type { FirmwareAvailability, SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
 import {
   canBeFlashed,
+  cardLinks,
   connectionLabel,
+  currentRelayChild,
   findRelayChild,
   findSweepingCandidateName,
   firmwareDiagnosticDetail,
   firmwareDisabledReason,
+  hiddenLinkCount,
   isCalibrationProgram,
   isLinkAnswering,
   isLinkUsable,
@@ -28,6 +31,7 @@ import {
   stripInternalIds,
   sweepRateSuffix,
   LINK_ANSWERED_FRESH_MS,
+  RELAY_CHILD_RECENT_MS,
   STALE_ADVERTISED_GRACE_MS,
   SWEEP_LABEL_FRESH_MS,
 } from "./deviceDisplay";
@@ -293,6 +297,26 @@ describe("linkStateText", () => {
     expect(linkStateText(link({ state: "connectable" }), now)).toBe("Not linked");
     expect(linkStateText(link({ state: "closed_by_user" }), now)).toBe("Not linked");
   });
+
+  // Ticket 018-010 bench defect: `vevav`'s own front-page card row read
+  // the robot-shaped "check the USB cable or that it's powered on" for a
+  // relay's own no-answer link. `kind` (the owning device's own kind,
+  // threaded from `FrontPage.tsx`'s `DeviceConnectionRow`/`AppHeader.tsx`)
+  // picks relay-shaped wording instead when passed "relay", and defaults
+  // to "robot" wording (every test above, which never passes it) when
+  // omitted.
+  it("gives relay-shaped advice when kind is 'relay', leaving every other call site's default untouched", () => {
+    const reason = 'connector: link "usb-1" produced no banner within the identify budget';
+    expect(linkStateText(link({ state: "failed", reason }), now, "relay")).toBe(
+      "Couldn't connect: the relay didn't answer when we said hello — it may be parked in the data plane; unplug and replug it to reset",
+    );
+    expect(linkStateText(link({ state: "failed", reason }), now, "robot")).toBe(
+      "Couldn't connect: the robot didn't answer when we said hello — check the USB cable or that it's powered on",
+    );
+    expect(linkStateText(link({ state: "failed", reason }), now)).toBe(
+      "Couldn't connect: the robot didn't answer when we said hello — check the USB cable or that it's powered on",
+    );
+  });
 });
 
 /**
@@ -383,6 +407,30 @@ describe("plainFailureReason (transport-aware failure advice, ticket 018-010)", 
 
   it("shows an unrecognized, already-plain reason verbatim", () => {
     expect(plainFailureReason("no reply", "radio")).toBe("no reply");
+  });
+
+  // Ticket 018-010 bench defect: `vevav`, a RADIOBRIDGE relay plugged in
+  // over USB, showed the robot-shaped "check the USB cable or that it's
+  // powered on" advice for its own no-answer USB failure. `kind` (a
+  // device's own kind, not the link's transport) picks relay-shaped
+  // advice instead, for both a no-banner failure and an unrecognized raw
+  // system error, and regardless of whether the relay's own link is
+  // usb or mbrelay -- and defaults to "robot" wording when omitted, so
+  // every pre-existing call site above is unaffected.
+  it("gives relay-shaped 'parked in the data plane' advice for a relay device's own no-answer link, regardless of transport", () => {
+    const relayAdvice = "the relay didn't answer when we said hello — it may be parked in the data plane; unplug and replug it to reset";
+    expect(
+      plainFailureReason('connector: link "usb-1" produced no banner within the identify budget', "usb", "relay"),
+    ).toBe(relayAdvice);
+    expect(
+      plainFailureReason("Error: No such file or directory, open '/dev/cu.usbmodem-vevav'", "usb", "relay"),
+    ).toBe(relayAdvice);
+    expect(
+      plainFailureReason('connector: link "mbrelay-1" produced no banner within the identify budget', "mbrelay", "relay"),
+    ).toBe(relayAdvice);
+    expect(plainFailureReason('connector: link "usb-1" produced no banner within the identify budget', "usb", "robot")).not.toBe(
+      relayAdvice,
+    );
   });
 });
 
@@ -537,6 +585,63 @@ describe("findRelayChild", () => {
   });
 });
 
+/**
+ * `currentRelayChild` (ticket 018-010): `findRelayChild`'s own match,
+ * additionally required to still be "current" -- see that function's
+ * own doc comment for the bench defects this fixes (`torture`'s card
+ * reading "Connection to gopiv lost: ttl-expired", `vitut`'s reading a
+ * bare "Connection to tigez lost", both for a bridge that had genuinely
+ * ended long before this host process ever started).
+ */
+describe("currentRelayChild", () => {
+  const now = 1_000_000;
+
+  it("returns the same match as findRelayChild when it is genuinely live (answering)", () => {
+    const answering = device({ id: 5, name: "vevov", links: [viaLink({ state: "connected", session: answeredSession(now) })] });
+    expect(currentRelayChild([answering], RELAY_LINK_ID, now)?.device.name).toBe("vevov");
+  });
+
+  it("returns undefined for a stale match -- old bridge history, never resurrected", () => {
+    const staleChild = device({
+      id: 5,
+      name: "gopiv",
+      links: [viaLink({ state: "stale", reason: "ttl-expired", since: now - 10 * 60_000 })],
+    });
+    expect(currentRelayChild([staleChild], RELAY_LINK_ID, now)).toBeUndefined();
+  });
+
+  it("returns undefined for a failed/unresponsive match with no session that dropped longer ago than RELAY_CHILD_RECENT_MS", () => {
+    const longAgo = device({
+      id: 6,
+      name: "tigez",
+      links: [viaLink({ state: "unresponsive", reason: "no reply", since: now - RELAY_CHILD_RECENT_MS - 1 })],
+    });
+    expect(currentRelayChild([longAgo], RELAY_LINK_ID, now)).toBeUndefined();
+  });
+
+  it("still returns a failed/unresponsive match with no session that dropped recently", () => {
+    const recent = device({
+      id: 6,
+      name: "tigez",
+      links: [viaLink({ state: "unresponsive", reason: "no reply", since: now - 1000 })],
+    });
+    expect(currentRelayChild([recent], RELAY_LINK_ID, now)?.device.name).toBe("tigez");
+  });
+
+  it("never expires a match that still carries a live session, however old its since", () => {
+    const oldButSessioned = device({
+      id: 6,
+      name: "tigez",
+      links: [viaLink({ state: "unresponsive", reason: "no reply", since: now - 10 * RELAY_CHILD_RECENT_MS, session: OPEN_SESSION })],
+    });
+    expect(currentRelayChild([oldButSessioned], RELAY_LINK_ID, now)?.device.name).toBe("tigez");
+  });
+
+  it("returns undefined when findRelayChild itself finds nothing", () => {
+    expect(currentRelayChild([device({ id: 5, links: [link()] })], RELAY_LINK_ID, now)).toBeUndefined();
+  });
+});
+
 describe("findSweepingCandidateName", () => {
   const now = 1_000_000;
 
@@ -611,5 +716,64 @@ describe("sweepRateSuffix (ticket 016-007)", () => {
 
   it("is empty when relay itself is undefined (no relays[] entry at all)", () => {
     expect(sweepRateSuffix(undefined)).toBe("");
+  });
+});
+
+/**
+ * `cardLinks`/`hiddenLinkCount` (ticket 018-010): the device-card link
+ * filter for the bench defect where every card was cluttered with aged
+ * rows -- `vevov`/`gopiv`/`tovez`/`tigez` each showing one or more
+ * `Not seen since …` rows from hours or days ago, and `tovez` showing a
+ * USB row for a port a different device (`vitut`) now physically holds.
+ */
+describe("cardLinks / hiddenLinkCount", () => {
+  it("keeps a usable, connecting, discovered, connectable, failed, unresponsive, or closed_by_user link", () => {
+    const kept: SnapshotLink["state"][] = ["connectable", "discovered", "connecting", "connected", "failed", "unresponsive", "closed_by_user"];
+    const d = device({ links: kept.map((state, i) => link({ id: `link-${i}`, state })) });
+    expect(cardLinks(d)).toHaveLength(kept.length);
+    expect(hiddenLinkCount(d)).toBe(0);
+  });
+
+  it("hides a stale link entirely -- never rendered as a row, regardless of its own lastSeen/reason text", () => {
+    const d = device({
+      links: [
+        link({ id: "usb-live", state: "connectable" }),
+        link({ id: "radio-aged", state: "stale", reason: "ttl-expired", lastSeen: 0 }),
+      ],
+    });
+    const kept = cardLinks(d);
+    expect(kept).toHaveLength(1);
+    expect(kept[0]?.id).toBe("usb-live");
+    expect(hiddenLinkCount(d)).toBe(1);
+  });
+
+  // The `tovez` bench defect: a USB link whose physical path a different
+  // device (`vitut`) now holds. `usbWatcher.ts`'s `handleRemoved` marks
+  // the departed board's own link `stale` immediately (event-driven, not
+  // TTL-based) the instant it is unplugged -- so this is exactly the
+  // same `stale` filter above, not a separate path-collision check.
+  it("hides an old device's own USB link once its path has been taken over by a different device (state: stale)", () => {
+    const tovez = device({
+      name: "tovez",
+      links: [link({ id: "usb-old-serial", state: "stale", transport: "usb", label: "USB · /dev/cu.usbmodem2121102" })],
+    });
+    expect(cardLinks(tovez)).toHaveLength(0);
+    expect(hiddenLinkCount(tovez)).toBe(1);
+  });
+
+  it("hiddenLinkCount is 0 when nothing was hidden", () => {
+    expect(hiddenLinkCount(device({ links: [link({ state: "connectable" })] }))).toBe(0);
+  });
+
+  it("counts more than one hidden link", () => {
+    const d = device({
+      links: [
+        link({ id: "a", state: "stale" }),
+        link({ id: "b", state: "stale" }),
+        link({ id: "c", state: "connectable" }),
+      ],
+    });
+    expect(hiddenLinkCount(d)).toBe(2);
+    expect(cardLinks(d)).toHaveLength(1);
   });
 });

@@ -229,7 +229,7 @@ export function AppHeader() {
           <span className="app-header-connection-label">{connectionLabel(link)}</span>
           {usable ? (
             <span className="app-header-connection-state" data-testid="app-header-connection-state">
-              {linkStateText(link)}
+              {linkStateText(link, undefined, device?.kind)}
             </span>
           ) : (
             <>

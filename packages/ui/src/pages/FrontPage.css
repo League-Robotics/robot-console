@@ -319,3 +319,14 @@
   color: var(--rc-warn-text);
   flex-basis: 100%;
 }
+
+/* Ticket 018-010: the quiet "N older connections hidden" summary line
+   for whatever `deviceDisplay.ts`'s `cardLinks` filtered out of the
+   Connections list above -- deliberately muted/small, matching
+   `.device-connection-state`'s own muted color, so it reads as
+   background information rather than another row worth alarm. */
+.device-connections-hidden {
+  margin: 0.35rem 0 0;
+  font-size: 0.8rem;
+  color: var(--rc-text-muted);
+}

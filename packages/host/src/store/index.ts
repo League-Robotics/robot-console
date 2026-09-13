@@ -72,9 +72,46 @@
  */
 import type { DatabaseSync } from "node:sqlite";
 import { EventEmitter } from "node:events";
-import { deviceIdToName } from "@robot-console/protocol";
+import { deviceIdToName, nameToValue } from "@robot-console/protocol";
 import { openStoreDb, type StoreDbOptions } from "./db.js";
 import { mergeDuplicateDeviceRows } from "./repair/mergeDuplicateDeviceRows.js";
+import { repairDeviceKindFromRole } from "./repair/repairDeviceKindFromRole.js";
+import { repairRadioLinkDeviceAssociation } from "./repair/repairRadioLinkDeviceAssociation.js";
+
+/**
+ * Parses the robot name a `radio`/`mbrelay` "child" link's own id encodes
+ * -- `connect/relayBridger.ts`'s `defaultFailoverChildLinkId` convention,
+ * `<transport>-<name>-via-<relayLinkId>` (`watchers/relaySweeper.ts`'s
+ * `radioChildLinkId` mints the identical shape). Returns `undefined` for
+ * any link id not shaped this way (a relay's own connectivity link, a
+ * usb/wifi/mbserial link, or anything else) -- including one whose
+ * captured segment merely *looks* name-shaped but is not one of the
+ * well-formed five-letter names {@link nameToValue} accepts (a relay's
+ * own synthetic name, e.g. `mbrelay-torture`, never matches the `-via-`
+ * shape at all, but this still guards against a coincidental false
+ * match).
+ *
+ * Ticket 018-010 (bench defect: `radio-tigez-via-mbrelay-torture` carried
+ * `gopiv`'s own `device_id` in the stakeholder's real store) -- this is
+ * the one parsing rule both {@link Store.upsertLink}'s write-time guard
+ * below and `repair/repairRadioLinkDeviceAssociation.ts`'s one-time
+ * backfill apply; duplicated (not imported) in that repair module purely
+ * to avoid a runtime import cycle between the two files -- see that
+ * module's own doc comment for why, and keep both copies in sync by name
+ * if this one ever changes. */
+function radioChildLinkName(linkId: string): string | undefined {
+  const match = /^(?:radio|mbrelay)-([a-z]+?)-via-.+$/.exec(linkId);
+  if (!match) {
+    return undefined;
+  }
+  const candidate = match[1] as string;
+  try {
+    nameToValue(candidate);
+    return candidate;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Thrown by {@link Store.upsertDevice} when `deviceIdToName(id)` does
  * not equal the supplied `name` — a mis-radixed serial or an invented
@@ -605,6 +642,31 @@ export class Store {
     );
   }
 
+  /** Sets `devices.kind` directly — the write primitive
+   * `repair/repairDeviceKindFromRole.ts` (ticket 018-010) uses to
+   * promote an already-persisted row whose `role` is a relay-only
+   * firmware token (`RADIOBRIDGE`/`RADIORELAY`) but whose `kind` still
+   * says `"robot"`. Deliberately distinct from {@link upsertDevice}'s
+   * own `kind` handling (optional, and only ever asserted by a caller
+   * that has just positively identified the device — see that method's
+   * own doc comment, "kind is never guessed") — a one-time repair over
+   * already-persisted, already-contradictory data is not "guessing", it
+   * is correcting a row against a rule (`role` implies `kind`) the store
+   * itself cannot otherwise enforce at write time (a device's `role` can
+   * be written by the very same call that sets `kind` — `connect/
+   * connector.ts`'s successful-identify path always does both together —
+   * so the inconsistency this fixes is necessarily historical). A no-op
+   * if `id` has no row yet. */
+  setDeviceKind(id: number, kind: DeviceKind): void {
+    this.withChange(
+      "devices",
+      () => String(id),
+      () => {
+        this.db.prepare("UPDATE devices SET kind = ? WHERE id = ?").run(kind, id);
+      },
+    );
+  }
+
   /** Sets a device's radio address override — `radio_channel`,
    * `radio_group`, and `radio_source = 'override'` (sprint 015 ticket
    * 006). The one writer of an `"override"`-sourced radio address;
@@ -766,9 +828,30 @@ export class Store {
    * the row in the `discovered` state (see architecture.md §5 for the
    * state machine `setLinkState` drives from there); on every later
    * call, refreshes `device_id`/`address`/`last_seen` only — state is
-   * exclusively {@link setLinkState}'s concern. */
+   * exclusively {@link setLinkState}'s concern.
+   *
+   * **Ticket 018-010's own write-time guard**: when `input.id` is a
+   * `radio`/`mbrelay` child link (see {@link radioChildLinkName}) and
+   * `input.deviceId` is being written at all (an actual value, not the
+   * "don't touch it" `null`/`undefined` this method already treats as a
+   * no-op via `COALESCE`) and a `kind = 'robot'` device is already known
+   * by the link id's own `<name>` segment, that device — never the
+   * caller's own `input.deviceId` — is what actually gets written; see
+   * {@link resolveRadioLinkDeviceId}'s own doc comment for why an
+   * as-yet-unmatched name is left as the caller supplied it here, rather
+   * than dropped to `null` (that stronger rule is exclusively the
+   * one-time repair's own — see `repair/repairRadioLinkDeviceAssociation
+   * .ts`). This is what keeps a `links.id` and its `device_id` from
+   * ever *newly* disagreeing when the correct device is already on hand
+   * — the bench-evidenced defect this ticket fixes had
+   * `radio-tigez-via-mbrelay-torture` (a link id that names `tigez`, an
+   * already-known robot) carrying `gopiv`'s own `device_id`, from a
+   * relay-bridge identify that wrote the actually-answering device's id
+   * under the *requested* candidate's link id rather than checking the
+   * two agreed. */
   upsertLink(input: UpsertLinkInput): void {
     const addressJson = JSON.stringify(input.address);
+    const deviceId = this.resolveRadioLinkDeviceId(input.id, input.deviceId);
     this.withChange(
       "links",
       () => input.id,
@@ -782,7 +865,62 @@ export class Store {
                address = excluded.address,
                last_seen = excluded.last_seen`,
           )
-          .run(input.id, input.deviceId ?? null, input.transport, addressJson, input.at, input.at);
+          .run(input.id, deviceId ?? null, input.transport, addressJson, input.at, input.at);
+      },
+    );
+  }
+
+  /** {@link upsertLink}'s own write-time guard -- see that method's doc
+   * comment. Returns `input.deviceId` unchanged whenever there is
+   * nothing to correct: `deviceId` is `null`/`undefined` (this call
+   * isn't writing `device_id` at all), `linkId` isn't a `radio`/
+   * `mbrelay` child link id in the first place, or no `kind = 'robot'`
+   * device is named by the link id's own `<name>` segment yet (deferring
+   * to `input.deviceId` in that last case, rather than dropping it to
+   * `null` outright, is deliberate -- see below). Otherwise returns that
+   * named device's own id, regardless of what `deviceId` the caller
+   * supplied.
+   *
+   * **Never `null`s out an unmatched name at write time** -- unlike
+   * `repair/repairRadioLinkDeviceAssociation.ts`'s one-time backfill
+   * (which does, once, for an already-corrupted row -- see that module's
+   * own doc comment), this live guard only *re-points* a write to an
+   * already-known conflicting device; it never *clears* one on the
+   * strength of "no device named `<name>` exists yet" alone. A brand-new
+   * radio/mbrelay sighting legitimately upserts a link before its
+   * matching `devices` row exists in some call orders — dropping
+   * `deviceId` to `null` here on every such ordinary first-sight write
+   * would be actively wrong, not merely overcautious. */
+  private resolveRadioLinkDeviceId(linkId: string, deviceId: number | null | undefined): number | null | undefined {
+    if (deviceId === null || deviceId === undefined) {
+      return deviceId;
+    }
+    const name = radioChildLinkName(linkId);
+    if (name === undefined) {
+      return deviceId;
+    }
+    const named = this.db.prepare(`SELECT id FROM devices WHERE kind = 'robot' AND name = ?`).get(name) as
+      | { id: number }
+      | undefined;
+    return named?.id ?? deviceId;
+  }
+
+  /** Re-points (or clears) a single `links` row's `device_id` directly —
+   * the write primitive `repair/repairRadioLinkDeviceAssociation.ts`
+   * (ticket 018-010) uses to fix an already-persisted radio/mbrelay link
+   * whose `device_id` names a different device than its own `links.id`
+   * does. Deliberately distinct from {@link upsertLink} (whose
+   * `device_id` write is otherwise `COALESCE`-merged, add-only per that
+   * method's own doc comment) since a repair must be able to *clear* a
+   * wrong `device_id` back to `NULL` when no correctly-named device
+   * exists, not merely add one. `state`/`address`/etc. are left
+   * untouched — only `device_id` moves. */
+  setLinkDeviceId(linkId: string, deviceId: number | null): void {
+    this.withChange(
+      "links",
+      () => linkId,
+      () => {
+        this.db.prepare(`UPDATE links SET device_id = ? WHERE id = ?`).run(deviceId, linkId);
       },
     );
   }
@@ -1638,18 +1776,24 @@ export class Store {
 }
 
 /** Opens (creating/migrating as needed — see `db.ts`) the console's
- * store and wraps it as a {@link Store}. Runs the one-time duplicate
- * device-row repair (018-006, {@link mergeDuplicateDeviceRows}) once,
+ * store and wraps it as a {@link Store}. Runs three one-time repairs,
  * right here — after migrations have applied but before this function
  * returns to any caller that goes on to start watchers/importers, so
  * every production caller (`store/bootstrap.ts`'s `openStoreWithImports`,
- * this module's own tests) gets a repaired store with no extra wiring.
- * `debug/dumpStore.ts` deliberately does not call `openStore` at all
- * (it opens a read-only connection directly) and so never runs this
- * repair — a read-only inspector must never write, and this repair, on
- * an already-affected database, always does. */
+ * this module's own tests) gets a repaired store with no extra wiring:
+ * the duplicate device-row repair (018-006, {@link
+ * mergeDuplicateDeviceRows}), the device-kind-from-role repair (018-010,
+ * {@link repairDeviceKindFromRole}), and the radio/mbrelay link
+ * device-association repair (018-010, {@link
+ * repairRadioLinkDeviceAssociation}). `debug/dumpStore.ts` deliberately
+ * does not call `openStore` at all (it opens a read-only connection
+ * directly) and so never runs any of them — a read-only inspector must
+ * never write, and all three, on an already-affected database, always
+ * do. */
 export function openStore(options: StoreDbOptions = {}): Store {
   const store = new Store(openStoreDb(options));
   mergeDuplicateDeviceRows(store, Date.now());
+  repairDeviceKindFromRole(store);
+  repairRadioLinkDeviceAssociation(store);
   return store;
 }

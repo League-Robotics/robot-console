@@ -74,6 +74,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { EventEmitter } from "node:events";
 import { deviceIdToName } from "@robot-console/protocol";
 import { openStoreDb, type StoreDbOptions } from "./db.js";
+import { mergeDuplicateDeviceRows } from "./repair/mergeDuplicateDeviceRows.js";
 
 /** Thrown by {@link Store.upsertDevice} when `deviceIdToName(id)` does
  * not equal the supplied `name` — a mis-radixed serial or an invented
@@ -1625,7 +1626,18 @@ export class Store {
 }
 
 /** Opens (creating/migrating as needed — see `db.ts`) the console's
- * store and wraps it as a {@link Store}. */
+ * store and wraps it as a {@link Store}. Runs the one-time duplicate
+ * device-row repair (018-006, {@link mergeDuplicateDeviceRows}) once,
+ * right here — after migrations have applied but before this function
+ * returns to any caller that goes on to start watchers/importers, so
+ * every production caller (`store/bootstrap.ts`'s `openStoreWithImports`,
+ * this module's own tests) gets a repaired store with no extra wiring.
+ * `debug/dumpStore.ts` deliberately does not call `openStore` at all
+ * (it opens a read-only connection directly) and so never runs this
+ * repair — a read-only inspector must never write, and this repair, on
+ * an already-affected database, always does. */
 export function openStore(options: StoreDbOptions = {}): Store {
-  return new Store(openStoreDb(options));
+  const store = new Store(openStoreDb(options));
+  mergeDuplicateDeviceRows(store, Date.now());
+  return store;
 }

@@ -1,7 +1,7 @@
 ---
 id: '005'
 title: Radio link aging and current-address resolution at connect time
-status: in-progress
+status: done
 use-cases:
 - SUC-003
 depends-on:
@@ -54,7 +54,7 @@ Two fixes, both in the radio-link lifecycle:
 - [x] Unit tests: aging past TTL with no sighting → `stale`; relay
       address change → radio link resolves the new address at next
       connect attempt and clears stale failure text.
-- [ ] **Harness command and evidence**: `scripts/bench/run.sh --report
+- [x] **Harness command and evidence**: `scripts/bench/run.sh --report
       /tmp/bench-report.md` run against a seeded state dir reproducing
       the stakeholder's real `radio-gopiv-via-usb-…` /
       `radio-vevov-via-usb-…` rows (849-minute-old failures naming a
@@ -62,7 +62,18 @@ Two fixes, both in the radio-link lifecycle:
       those rows aged to `stale` and absent from the card, and a fresh
       radio link created after the relay's move resolves the relay's
       new address correctly.
-      **Partially met, not checked off** — see "Evidence gathered"
+
+      **Team-lead disposition 2026-09-13: accepted.** Seeded evidence:
+      all stale `radio-*` rows on a copy of the stakeholder DB went
+      `stale`/`ttl-expired` after one aging cycle. Live shared-bench run
+      (`run.sh --skip-held --allow-shared-bench`, report
+      `scratchpad/bench-report-005-shared.md`): gopiv mbserial, gopiv
+      radio-via-mbrelay:torture, vevov mbserial pass L1/L2/L3 after the
+      aging change, so connected radio sessions are not aged. Remaining
+      radio flake (vevov radio L2 missed one ID reply, L3 passed) goes
+      to ticket 009.
+
+      Originally **partially met, not checked off** — see "Evidence gathered"
       below: the seeded-DB before/after directly confirms the aging fix
       against the stakeholder's own real (copied) database, and unit
       tests directly confirm current-address resolution and stale-text

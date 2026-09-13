@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { openStoreDb } from "./db.js";
-import { DeviceNameMismatchError, Store, type ChangeEvent } from "./index.js";
+import { DeviceNameMismatchError, Store, openStore, type ChangeEvent } from "./index.js";
 
 /** A fresh in-memory, fully-migrated store for one test. Also returns
  * the raw `db` handle -- legitimate here (this file lives in `store/`,
@@ -275,6 +275,40 @@ describe("Store: setRadioOverride / clearRadioOverride", () => {
         expect(projected).toMatchObject({ radioChannel: 41, radioGroup: 3, radioSource: "override" });
       } finally {
         store2.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("openStore: runs the one-time duplicate device-row repair (018-006)", () => {
+  it("merges a placeholder/real device pair on open, before returning the store", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "robot-console-open-repair-test-"));
+    const filePath = path.join(dir, "console.sqlite");
+    try {
+      // Seed the placeholder/real pair directly (bypassing openStore's
+      // own repair) so the on-disk file already carries the exact
+      // pre-existing-duplicate shape a real, already-affected
+      // console.sqlite would have before this ticket's fix ever ran.
+      const seedStore = new Store(openStoreDb({ filePath }));
+      seedStore.upsertDevice({ id: 1461, name: "gopiv", kind: "robot", at: 100 });
+      seedStore.setOwned(1461, true, 100);
+      seedStore.upsertDevice({ id: 2175407711, name: "gopiv", kind: "robot", at: 200 });
+      seedStore.close();
+
+      // openStore() (not `new Store(openStoreDb(...))`) is the one
+      // production entry point (`store/bootstrap.ts`'s
+      // `openStoreWithImports`) -- this asserts the repair actually
+      // runs there, not only when called directly in the repair
+      // module's own unit tests.
+      const store = openStore({ filePath });
+      try {
+        const devices = store.snapshotRows().devices;
+        expect(devices).toHaveLength(1);
+        expect(devices[0]).toMatchObject({ id: 2175407711, owned: 1 });
+      } finally {
+        store.close();
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });

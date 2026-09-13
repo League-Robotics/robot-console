@@ -92,7 +92,7 @@ import {
   useUnassigned,
   useWsActions,
 } from "../ws/WsProvider";
-import { isCalibrationProgram, lastCheckedText, linkStateText, nameDisplay } from "../deviceDisplay";
+import { connectionLabel, isCalibrationProgram, isLinkUsable, lastCheckedText, linkStateText, nameDisplay } from "../deviceDisplay";
 import { FlashDialog } from "../components/FlashDialog";
 import { RelayConnectControls } from "../components/RelayConnectControls";
 import "./FrontPage.css";
@@ -104,6 +104,11 @@ export function FrontPage() {
   const relays = useRelays();
   const radioMigrationOffers = useRadioMigrationOffers();
   const { send, resolveRadioMigration } = useWsActions();
+  // Extended scope (team-lead, 2026-09-13), item B: a per-link Connect
+  // button on a card with no usable link -- see `DeviceCard`'s own doc
+  // comment. Threaded down as a plain prop, matching `onRelayConnect`
+  // etc. above.
+  const onLinkConnect = (linkId: string) => send({ type: "session-open", linkId });
   // Ticket 011 (carried from 009's send-gating sweep): read here (the
   // hook-bearing page) and threaded down as a plain prop -- `DevicesList`/
   // `RelayConnectControls` deliberately take no `WsProvider`-dependent
@@ -133,6 +138,7 @@ export function FrontPage() {
         onForgetDevice={(deviceId) => send({ type: "forget-device", deviceId })}
         onRelayConnect={(relayLinkId, name) => send({ type: "session-open", relayLinkId, name })}
         onRelayDisconnect={(linkId) => send({ type: "session-close", linkId })}
+        onLinkConnect={onLinkConnect}
       />
     </>
   );
@@ -195,6 +201,12 @@ export interface DevicesListProps {
   onRelayConnect?: (relayLinkId: string, name: string) => void;
   /** A relay card's Disconnect press for its currently-bridged link. */
   onRelayDisconnect?: (linkId: string) => void;
+  /** Extended scope (team-lead, 2026-09-13), item B: a card with no
+   * usable link shows a Connect button per link instead of an open
+   * arrow -- this is its press, sending exactly `{ type: "session-open",
+   * linkId }`. Defaults to a no-op so call sites/tests that don't care
+   * are unaffected. */
+  onLinkConnect?: (linkId: string) => void;
   /** Whether a send is currently meaningful (`useSendable()`, threaded
    * down as a plain prop -- see `FrontPage`'s own doc comment). Gates
    * the relay quick-connect Connect/Switch button. Defaults to `true`
@@ -213,6 +225,7 @@ export function DevicesList({
   robotOptions = [],
   onRelayConnect = () => {},
   onRelayDisconnect = () => {},
+  onLinkConnect = () => {},
   sendable = true,
 }: DevicesListProps) {
   const empty = devices.length === 0 && unassigned.length === 0;
@@ -238,6 +251,7 @@ export function DevicesList({
                 robotOptions={robotOptions}
                 onRelayConnect={onRelayConnect}
                 onRelayDisconnect={onRelayDisconnect}
+                onLinkConnect={onLinkConnect}
                 sendable={sendable}
               />
             </li>
@@ -256,23 +270,49 @@ export function DevicesList({
   );
 }
 
-/** Which link a device card's main open-arrow should lead to: the one
- * with an open session, else the first link the host reports. This is
- * a display choice over links the host has *already* grouped under one
- * device (unlike the retired `linkScore`, which scored/grouped
- * possibly-different devices across transports itself) -- not a
- * re-implementation of host auto-switch policy. */
+/** Which link a device card's main open-arrow should lead to: a usable
+ * link (see `deviceDisplay.ts`'s `isLinkUsable`), preferring the first
+ * one. This is a display choice over links the host has *already*
+ * grouped under one device (unlike the retired `linkScore`, which
+ * scored/grouped possibly-different devices across transports itself)
+ * -- not a re-implementation of host auto-switch policy.
+ *
+ * **Extended scope (team-lead, 2026-09-13), item B**: before this
+ * change, a card with NO usable link still fell back to `links[0]`,
+ * producing an open arrow into a device the student could not actually
+ * use -- exactly the bench complaint ("How is it letting me go into it
+ * if it's not connected?"). Now, a non-relay device with no usable link
+ * gets no primary at all (`DeviceCard` renders no open arrow, and a
+ * per-link Connect row instead -- see its own doc comment). A relay
+ * device keeps the old fallback: its own connectivity link legitimately
+ * has no session most of the time (`RelayConnectControls` owns the
+ * actual bridge/session lifecycle, not this link directly), so relay
+ * cards must keep their existing open arrow and relay controls
+ * regardless. */
 function primaryLinkFor(device: SnapshotDevice): SnapshotLink | undefined {
-  return device.links.find((link) => link.session !== undefined) ?? device.links[0];
+  const usable = device.links.find((link) => isLinkUsable(link));
+  if (usable) {
+    return usable;
+  }
+  return device.kind === "relay" ? device.links[0] : undefined;
 }
 
-/** A short label for one link: the host-built `label` (e.g. "USB ·
- * /dev/tty.usbmodem1234", "Radio · ch41/grp3"), with the relay's own
- * name appended for a `via` link so a student doesn't have to resolve
- * `via.relayLinkId` themselves. */
-function connectionLabel(link: SnapshotLink): string {
-  return link.via ? `${link.label} (via relay ${link.via.relayName})` : link.label;
-}
+/** A link's state qualifying it for the per-link Connect button
+ * (extended scope, team-lead 2026-09-13, item B) -- every state a
+ * student could plausibly open a session from. Deliberately excludes
+ * `connecting` (already in flight); `connected` (a `connected`-but-no-
+ * session link is a brief in-between moment, not one to offer a second
+ * open for); and `closed_by_user` (the spec's own exact five-state list
+ * -- a student who deliberately closed a link is not offered it back
+ * from the front page; they can still reopen it from the device page
+ * itself). */
+const CONNECT_BUTTON_STATES = new Set<SnapshotLink["state"]>([
+  "connectable",
+  "discovered",
+  "failed",
+  "stale",
+  "unresponsive",
+]);
 
 
 /** An arrow glyph for the open buttons -- inline SVG so it needs no
@@ -300,7 +340,19 @@ function ArrowIcon({ direction }: { direction: "forward" | "back" }) {
  * primary link on the right; every other link gets its own small arrow
  * in the Connections list), each a real `Link`. A relay device
  * additionally carries the robot picker + Connect/Switch/Disconnect
- * (`RelayConnectControls`, ticket 017-007 -- shared with `RelayPage.tsx`). */
+ * (`RelayConnectControls`, ticket 017-007 -- shared with `RelayPage.tsx`).
+ *
+ * **Extended scope (team-lead, 2026-09-13), item B**: when
+ * `primaryLinkFor` finds no usable link for a non-relay device, this
+ * card renders no open arrow at all -- neither the main one nor any
+ * per-link one, since none of them lead anywhere the student could
+ * actually use right now (the bench complaint this fixes: "How is it
+ * letting me go into it if it's not connected?"). Each link row shows
+ * its own state text and (when present) its `reason` in plain words,
+ * plus a Connect button for any link whose state is one a session could
+ * plausibly be opened from ({@link CONNECT_BUTTON_STATES}) -- gated by
+ * `sendable` (this card's own `useSendable()`, threaded down as a plain
+ * prop like every other send-capable control on this page). */
 function DeviceCard({
   device,
   devices,
@@ -308,6 +360,7 @@ function DeviceCard({
   robotOptions,
   onRelayConnect,
   onRelayDisconnect,
+  onLinkConnect,
   sendable,
 }: {
   device: SnapshotDevice;
@@ -316,6 +369,7 @@ function DeviceCard({
   robotOptions: string[];
   onRelayConnect: (relayLinkId: string, name: string) => void;
   onRelayDisconnect: (linkId: string) => void;
+  onLinkConnect: (linkId: string) => void;
   sendable: boolean;
 }) {
   const primary = primaryLinkFor(device);
@@ -351,12 +405,17 @@ function DeviceCard({
                 <span className={link.state === "connected" ? "device-connection-state device-connection-open" : "device-connection-state"}>
                   {linkStateText(link)}
                 </span>
+                {!primary && link.reason && (
+                  <span className="device-connection-reason" data-testid={`device-link-reason-${link.id}`}>
+                    {link.reason}
+                  </span>
+                )}
                 {lastCheckedText(device, link) && (
                   <span className="device-connection-last-checked" data-testid={`device-link-lastchecked-${link.id}`}>
                     {lastCheckedText(device, link)}
                   </span>
                 )}
-                {link !== primary && (
+                {primary && link !== primary && (
                   <Link
                     to={`/d/${link.id}`}
                     className="device-connection-open-button"
@@ -365,6 +424,17 @@ function DeviceCard({
                   >
                     <ArrowIcon direction="forward" />
                   </Link>
+                )}
+                {!primary && CONNECT_BUTTON_STATES.has(link.state) && (
+                  <button
+                    type="button"
+                    className="device-connection-connect-button"
+                    data-testid={`device-link-connect-${link.id}`}
+                    disabled={!sendable}
+                    onClick={() => onLinkConnect(link.id)}
+                  >
+                    Connect
+                  </button>
                 )}
               </li>
             ))}

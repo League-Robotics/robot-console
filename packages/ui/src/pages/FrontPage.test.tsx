@@ -141,8 +141,25 @@ describe("DevicesList", () => {
     expect(el.textContent ?? "").toContain("No devices detected yet");
   });
 
-  it("renders the open arrow as a real link to the device's primary link page", () => {
-    const el = mount(withRouter(<DevicesList status="open" devices={[device(1)]} unassigned={[]} />));
+  it("renders the open arrow as a real link to the device's primary (usable) link page", () => {
+    // Extended scope (team-lead, 2026-09-13), item B: a card's open
+    // arrow only ever leads to a usable link (state "connected" AND an
+    // open session) -- `link()`'s own default has no session, so this
+    // test opens one explicitly rather than relying on the old
+    // "falls back to links[0] regardless" behavior this ticket removes.
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              links: [link("usb-1", { session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null } })],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
     const openArrow = el.querySelector('[data-testid="device-open-1"]');
     expect(openArrow?.tagName).toBe("A");
     expect(openArrow?.getAttribute("href")).toBe("/d/usb-1");
@@ -208,6 +225,106 @@ describe("multi-link device (host already groups links under one device)", () =>
     expect(el.querySelector('[data-testid="device-link-open-usb-vevov"]')).toBeNull();
     expect(el.querySelector('[data-testid="device-link-usb-vevov"]')?.textContent).toContain("Linked");
     expect(el.querySelectorAll("a a")).toHaveLength(0);
+  });
+});
+
+describe("extended scope (team-lead, 2026-09-13), item B: a card with no usable link", () => {
+  it("renders no open arrow at all (neither the card's own nor any per-link one) when no link is usable", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              name: "zapuz",
+              links: [
+                link("usb-zapuz", {
+                  state: "unresponsive",
+                  reason: "no reply to 3 STATUS polls -- link presumed dead",
+                  session: { seq: 4, pending: 0, lastDone: 4, lastDoneReason: "none", robotStatus: null, functions: null },
+                }),
+              ],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
+    expect(el.querySelector('[data-testid="device-open-1"]')).toBeNull();
+    expect(el.querySelector('[data-testid="device-link-open-usb-zapuz"]')).toBeNull();
+  });
+
+  it("shows each link's state text AND its reason in plain words, plus a Connect button that sends session-open, gated by sendable", () => {
+    const opens: string[] = [];
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              name: "zapuz",
+              links: [
+                link("usb-zapuz", {
+                  state: "unresponsive",
+                  reason: "no reply to 3 STATUS polls -- link presumed dead",
+                }),
+              ],
+            }),
+          ]}
+          unassigned={[]}
+          sendable={true}
+          onLinkConnect={(linkId) => opens.push(linkId)}
+        />,
+      ),
+    );
+    const row = el.querySelector('[data-testid="device-link-usb-zapuz"]');
+    expect(row?.textContent).toContain("Unreachable: no reply to 3 STATUS polls -- link presumed dead");
+    expect(el.querySelector('[data-testid="device-link-reason-usb-zapuz"]')?.textContent).toBe(
+      "no reply to 3 STATUS polls -- link presumed dead",
+    );
+    const connect = el.querySelector<HTMLButtonElement>('[data-testid="device-link-connect-usb-zapuz"]');
+    expect(connect).not.toBeNull();
+    expect(connect!.disabled).toBe(false);
+    act(() => {
+      connect!.click();
+    });
+    expect(opens).toEqual(["usb-zapuz"]);
+  });
+
+  it("disables the Connect button when sendable is false", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[device(1, { links: [link("usb-1", { state: "failed", reason: "boom" })] })]}
+          unassigned={[]}
+          sendable={false}
+        />,
+      ),
+    );
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="device-link-connect-usb-1"]')!.disabled).toBe(true);
+  });
+
+  it("offers no Connect button for a state not in the connectable set (e.g. connecting)", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList status="open" devices={[device(1, { links: [link("usb-1", { state: "connecting" })] })]} unassigned={[]} />,
+      ),
+    );
+    expect(el.querySelector('[data-testid="device-link-connect-usb-1"]')).toBeNull();
+  });
+
+  it("a relay card keeps its existing open arrow regardless of its own link having no usable session", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[device(2, { name: "torture", kind: "relay", links: [link("mbrelay-torture", { transport: "mbrelay", state: "connected" })] })]}
+          unassigned={[]}
+        />,
+      ),
+    );
+    expect(el.querySelector('[data-testid="device-open-2"]')?.getAttribute("href")).toBe("/d/mbrelay-torture");
   });
 });
 

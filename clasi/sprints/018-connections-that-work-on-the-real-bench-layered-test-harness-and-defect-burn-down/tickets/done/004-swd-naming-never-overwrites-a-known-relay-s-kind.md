@@ -1,7 +1,7 @@
 ---
 id: '004'
 title: SWD naming never overwrites a known relay's kind
-status: in-progress
+status: done
 use-cases:
 - SUC-002
 depends-on:
@@ -64,6 +64,17 @@ honor it for `kind`.
       environment condition, not a regression from this ticket's fix.
       Re-running `scripts/bench/run.sh` once that dev server is paused
       should produce a clean pass row.
+
+      **Team-lead disposition 2026-09-13:** code fix and seeded
+      reproduction accepted (vevav stays relay across an SWD read on a
+      copy of the stakeholder DB; vitut no-relay-as-robot passes every
+      run). A clean vitut USB L2/L3 pass row is blocked by bench
+      contention: the stakeholder's running host (`scripts/dev.mjs`)
+      sweeps relays and opens their serial ports intermittently (88
+      sightings in 10 min), and the harness host's own sweeper does the
+      same. Re-verified in the full-bench gate ticket 011 on an
+      exclusive bench. Related defect filed:
+      `bench-relay-port-contention-sweeper-vs-session.md`.
 
 ### Evidence gathered (2026-09-13)
 

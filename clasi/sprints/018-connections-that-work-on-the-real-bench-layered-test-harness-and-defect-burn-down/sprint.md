@@ -19,6 +19,7 @@ issues:
 - bench-mbserial-single-client-and-retry.md
 - bench-relay-and-mbserial-card-text-is-wrong.md
 - bench-wifi-connect-hangs-on-local-hostname.md
+- bench-relay-port-contention-sweeper-vs-session.md
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 

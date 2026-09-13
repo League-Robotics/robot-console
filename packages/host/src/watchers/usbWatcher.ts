@@ -106,6 +106,12 @@ const NAMING_OWNER = "naming";
 /** `tasks.name` this watcher heartbeats every poll. */
 const TASK_NAME = "usbWatcher";
 
+/** Inverse of {@link usbLinkId}: the USB serial a `usb-<serial>` link
+ * id names, or `undefined` for any other id. */
+export function usbSerialFromLinkId(linkId: string): string | undefined {
+  return linkId.startsWith("usb-") ? linkId.slice("usb-".length) : undefined;
+}
+
 /** Stable `links.id` for a USB device, derived from the DAPLink
  * interface chip's own USB serial number (the join key that survives a
  * replug — see `devices.ts`'s own module doc comment). */
@@ -421,8 +427,35 @@ export function startUsbWatcher(
     store.releaseBoardOwner(device.serialNumber, NAMING_OWNER);
   }
 
+  /** Stakeholder (2026-09-13): "Zapig is in a box. It is not connected
+   * to anything. Why is it showing up as a robot here?" A board unplugged
+   * while no host was running never gets a `removed` event, so its
+   * `usb` link stayed `connectable` across restarts. On the first poll,
+   * every `usb` link whose board is not enumerated right now is treated
+   * exactly as if it had just been removed (stale, session closed,
+   * naming owner released). */
+  function reconcileAbsentBoards(enumerated: readonly DaplinkDevice[]): void {
+    const presentSerials = new Set(enumerated.map((device) => device.serialNumber));
+    for (const link of store.reconcilerRows().links) {
+      if (link.transport !== "usb" || link.state === "stale") {
+        continue;
+      }
+      const serialNumber = usbSerialFromLinkId(link.id);
+      if (serialNumber === undefined || presentSerials.has(serialNumber)) {
+        continue;
+      }
+      handleRemoved({ serialNumber, displaySerial: serialNumber.slice(-8), availability: "hid-only" });
+    }
+  }
+
+  let reconciledAtStart = false;
+
   async function pollOnce(): Promise<void> {
     const next = await listDevices();
+    if (!reconciledAtStart) {
+      reconciledAtStart = true;
+      reconcileAbsentBoards(next);
+    }
     // Opt into the `updated` bucket (ticket 014-010): this watcher is
     // the consumer `diffDaplinkDevices`'s `updated` behaviour was built
     // for (ticket 014-007) -- refresh address, keep everything else

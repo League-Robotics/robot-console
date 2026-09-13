@@ -51,6 +51,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void
 }
 
 const SERIAL_A = "9900000031864e451111111111111111000000000000001";
+const SERIAL_B = "9900000031864e452222222222222222000000000000002";
 const VEVOV_ID = 1198504156;
 
 function serialOnlyDevice(serialNumber: string, path: string): DaplinkDevice {
@@ -85,6 +86,28 @@ const NAMED_VEVOV: SwdNameResult = { status: "named", name: "vevov", deviceId: V
 const NEVER_NAMED: SwdNameResult = { status: "unnamed", reason: "no-hid-path", error: "no HID path" };
 
 describe("startUsbWatcher", () => {
+  it("first poll marks a remembered usb link stale when its board is not enumerated (unplugged while no host ran)", async () => {
+    const store = freshStore();
+    store.upsertDevice({ id: VEVOV_ID, name: "vevov", kind: "relay", role: "RADIOBRIDGE", at: 0 });
+    store.upsertLink({ id: `usb-${SERIAL_A}`, transport: "usb", address: { path: "/dev/cu.usbmodemA" }, deviceId: VEVOV_ID, at: 0 });
+    store.setLinkState({ id: `usb-${SERIAL_A}`, state: "connectable", at: 0 });
+    store.upsertLink({ id: `usb-${SERIAL_B}`, transport: "usb", address: { path: "/dev/cu.usbmodemB" }, deviceId: null, at: 0 });
+    store.setLinkState({ id: `usb-${SERIAL_B}`, state: "connectable", at: 0 });
+
+    const listDevices = vi.fn(async () => [serialOnlyDevice(SERIAL_B, "/dev/cu.usbmodemB")]);
+    const deps: UsbWatcherDeps = { listDevices, readSwdName: async () => NEVER_NAMED };
+    const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+    try {
+      await waitFor(() => store.snapshotRows().links.find((link) => link.id === `usb-${SERIAL_A}`)?.state === "stale");
+      const rows = store.snapshotRows();
+      expect(rows.links.find((link) => link.id === `usb-${SERIAL_B}`)?.state).toBe("connectable");
+      expect(boardOwnerIsFree(store, SERIAL_A)).toBe(true);
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
   it("added + SWD naming success yields one devices row and a connectable links row (no connect of its own)", async () => {
     const store = freshStore();
     const listDevices = vi.fn(async () => [serialOnlyDevice(SERIAL_A, "/dev/cu.usbmodemA")]);

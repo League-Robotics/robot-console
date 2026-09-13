@@ -124,7 +124,14 @@ export function FrontPage() {
   // could never call without a variable number of hooks per render.
   const linkNotices = useLinkNotices();
 
-  const present = devices.filter((device) => device.links.length > 0);
+  // Stakeholder (2026-09-13): "pay attention to things that are
+  // connected or disconnected ... put it in a list of things we've seen
+  // before, but don't put it on my list of things that are available."
+  // A device is listed as available only when it has at least one link
+  // that is not `stale` (`cardLinks`); a device whose every link has
+  // aged out (unplugged, powered off, no longer advertised) goes to
+  // "Not seen recently" instead of a card full of hidden connections.
+  const present = devices.filter((device) => cardLinks(device).length > 0);
   // Ticket 017-010 fix (team-lead bench evidence, 2026-09-13): a
   // known-robots.json placeholder that hasn't merged with its real,
   // currently-linked row yet (e.g. `mergeNamePlaceholderIfAny` hasn't
@@ -136,7 +143,7 @@ export function FrontPage() {
   // deliberate: the whole point is to hide a *different* device row that
   // merely shares a name with one already on screen.
   const presentNames = new Set(present.map((device) => device.name));
-  const notSeenRecently = devices.filter((device) => device.links.length === 0 && !presentNames.has(device.name));
+  const notSeenRecently = devices.filter((device) => cardLinks(device).length === 0 && !presentNames.has(device.name));
   // De-duplicated (`Set`) for the same reason (ticket 017-010): an
   // unmerged placeholder sharing a name with a real device must not
   // offer that name twice in the relay picker.

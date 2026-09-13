@@ -753,6 +753,33 @@ describe("not seen recently (devices the host still knows about with zero curren
     expect(socket!.sent).toEqual([JSON.stringify({ type: "forget-device", deviceId: 9 })]);
   });
 
+  it("FrontPage lists a device whose every link is stale under not-seen-recently, not as an available card", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage(
+        snapshot({
+          devices: [
+            device(9, { name: "zapig", links: [link("usb-z", { state: "stale", transport: "usb" })] }),
+            device(10, { name: "gopiv", links: [link("wifi-g", { state: "connectable", transport: "wifi" })] }),
+          ],
+        }),
+      );
+    });
+    expect(el.querySelector('[data-testid="not-seen-device-9"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="not-seen-device-10"]')).toBeNull();
+    expect(el.textContent).toContain("gopiv");
+  });
+
   it("the row disappears once the next snapshot omits the device (no optimistic local removal needed)", () => {
     let socket: FakeSocket | null = null;
     const el = mount(

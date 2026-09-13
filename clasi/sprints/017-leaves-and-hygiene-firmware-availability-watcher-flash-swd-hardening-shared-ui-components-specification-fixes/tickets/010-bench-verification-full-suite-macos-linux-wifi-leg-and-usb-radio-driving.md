@@ -1277,3 +1277,24 @@ performed).
 
 Host left running: pid `31035`, port 4797, state dir
 `.../scratchpad/017-015-bench-state` (`host.log` there too).
+
+## Correction and tovez USB test (2026-09-13)
+
+**Correction (stakeholder):** the corrupted tovez data on `/dev/cu.usbmodem2121102`
+recorded above as "bad USB cable" was MakeCode (WebUSB in a browser) connected to
+the same board, not the cable. Every "cable" attribution in this ticket should be
+read as "board shared with MakeCode".
+
+**tovez over USB, MakeCode disconnected (team-lead, Chromium against host pid
+31035):** header `USB · /dev/cu.usbmodem2121102 · Linked`; status panel live
+(control cycles 377). Console replies:
+
+- `ID` → `id diffdrive unbaked 1.20260912.8 tovez`
+- `VER` → `ver 1.20260912.8`
+- `STATUS` → `status ready=1 active=0 connL=1 connR=1 otos=0 wedge=0 flags=31 i2cf=7 cyc=377 tlm=off next=1 done=0 reason=none`
+- `FUNCS` typed as a raw line → no `funcs` line within 5 s. FUNCS is a sequenced
+  verb, so a raw line without `#id` is not a valid request; not counted as a defect.
+
+**Released for another agent:** `session-close` sent; link now `closed_by_user`
+(host will not reopen it), no `sessions` row, `lsof /dev/cu.usbmodem2121102` shows
+no holder. No motion commands were sent to tovez.

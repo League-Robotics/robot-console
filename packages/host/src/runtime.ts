@@ -216,19 +216,25 @@ export interface StartRuntimeOptions {
    * into the bridger too. */
   relaySweeperDeps?: Omit<RelaySweeperDeps, "revocation">;
   relaySweeperOptions?: RelaySweeperOptions;
-  /** 018-005 Step 0b: never start the relay sweeper at all when `true`
-   * (`--no-sweep` / `ROBOT_CONSOLE_DISABLE_SWEEP=1`, `cli.ts`'s own
-   * parsing). The bench harness's Layer 2/3 each start their own real
-   * host instance against a scratch state dir — with the sweeper
-   * running, that instance's own `watchers/relaySweeper.ts` opens usb
-   * relay ports on its own schedule, on top of whatever this same
-   * harness run is *also* trying to probe against the identical
-   * physical relay (Layer 1's raw probe, or another harness host
-   * instance), racing itself the same way the stakeholder's `npm run
-   * dev` was found to race a harness run (`exclusivity.ts`'s own
-   * running-host detection). `false`/omitted (the default) starts the
-   * sweeper exactly as before this option existed — production startup
-   * (`bin/robot-console.js`) never sets this. */
+  /** Never start the relay sweeper at all unless explicitly set to
+   * `false`. **Defaults to `true` (the sweeper is off) when omitted** —
+   * ticket 018-010: "you're not going to sweep when you're idle
+   * RadioRelay, so turn that off." this inverts sprint 018 ticket 005
+   * Step 0b's original sense, where `false`/omitted started the sweeper
+   * and only an explicit `--no-sweep`/`ROBOT_CONSOLE_DISABLE_SWEEP`
+   * (`cli.ts`'s own parsing) turned it off for the bench harness alone.
+   * That harness reasoning still holds (the sweeper opening USB relay
+   * ports on its own schedule races Layer 1's raw probes, or another
+   * harness host instance, or a stakeholder's own separately-running
+   * `npm run dev` — `exclusivity.ts`'s own running-host detection) but
+   * is no longer the only reason to default it off: a classroom's
+   * idle-radio sweep is disruptive enough on its own (bench flash wear,
+   * `SWEEP_MIN_INTERVAL_MS`'s own doc comment) that the stakeholder
+   * wants it opt-in everywhere, production startup included — `cli.ts`'s
+   * `--sweep`/`ROBOT_CONSOLE_ENABLE_SWEEP` is that opt-in, and this
+   * field's own default is what makes omitting it (as `scripts/dev.mjs`'s
+   * bare `startRuntime()` call does) equivalent to `--no-sweep` used to
+   * be, not to the old always-on default. */
   disableSweep?: boolean;
 
   installUnhandledRejectionBackstop?: typeof defaultInstallUnhandledRejectionBackstop;
@@ -316,12 +322,18 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
   );
   const reconciler = startReconcilerFn(store, { ...options.reconcilerDeps, connector, bridger });
 
-  // 018-005 Step 0b: `disableSweep` skips calling `startRelaySweeperFn`
-  // entirely -- not merely passing it an option that makes it a no-op --
-  // so no scan-tick `setInterval` is ever created and no relay lease is
-  // ever acquired by this runtime's own sweeper, full stop. `stop()` is
-  // still awaited uniformly below regardless of which branch ran.
-  const relaySweeperHandle: RelaySweeperHandle = options.disableSweep
+  // 018-010: `disableSweep` defaults to `true` when omitted (see this
+  // option's own doc comment) -- so the common case (no caller opinion
+  // at all, e.g. `scripts/dev.mjs`'s bare `startRuntime()`) skips
+  // calling `startRelaySweeperFn` entirely -- not merely passing it an
+  // option that makes it a no-op -- so no scan-tick `setInterval` is
+  // ever created and no relay lease is ever acquired by this runtime's
+  // own sweeper, full stop. Only an explicit `disableSweep: false`
+  // (`cli.ts`'s `--sweep`/`ROBOT_CONSOLE_ENABLE_SWEEP`) starts it.
+  // `stop()` is still awaited uniformly below regardless of which
+  // branch ran.
+  const disableSweep = options.disableSweep ?? true;
+  const relaySweeperHandle: RelaySweeperHandle = disableSweep
     ? { stop: async () => {} }
     : startRelaySweeperFn(store, { ...options.relaySweeperDeps, revocation: relayLeaseRevocation }, options.relaySweeperOptions);
 

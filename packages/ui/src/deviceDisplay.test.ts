@@ -163,9 +163,31 @@ describe("nameDisplay / roleDisplay", () => {
     expect(nameDisplay(device({ name: "tigez" }))).toEqual({ text: "tigez", flagged: false });
   });
 
-  it("roleDisplay returns the announced role, or a calm placeholder when none has been announced", () => {
+  it("roleDisplay returns the announced role, whatever the device's kind", () => {
     expect(roleDisplay(device({ role: "NEZHA2" }))).toBe("NEZHA2");
-    expect(roleDisplay(device({ role: null }))).toBe("No role announced");
+    expect(roleDisplay(device({ kind: "relay", role: "RADIOBRIDGE" }))).toBe("RADIOBRIDGE");
+  });
+
+  it("018-010 item 3: a robot with no announced role falls back to a plain 'Role unknown'", () => {
+    expect(roleDisplay(device({ kind: "robot", role: null }))).toBe("Role unknown");
+  });
+
+  it("018-010 item 3: a relay with no announced role is labeled by its links' own transport -- mbrelay host", () => {
+    expect(
+      roleDisplay(device({ kind: "relay", role: null, links: [link({ id: "mbrelay-torture", transport: "mbrelay" })] })),
+    ).toBe("mbrelay host");
+  });
+
+  it("018-010 item 3: ... or mbserial host, for a serial-bridge farm host", () => {
+    expect(
+      roleDisplay(device({ kind: "relay", role: null, links: [link({ id: "mbserial-gopiv", transport: "mbserial" })] })),
+    ).toBe("mbserial host");
+  });
+
+  it("018-010 item 3: a relay with no announced role and no mbrelay/mbserial link falls back to 'Role unknown' too", () => {
+    expect(roleDisplay(device({ kind: "relay", role: null, links: [link({ id: "usb-SERIAL-A", transport: "usb" })] }))).toBe(
+      "Role unknown",
+    );
   });
 });
 

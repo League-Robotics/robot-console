@@ -148,6 +148,7 @@
  * module's own suite.
  */
 import { nameToValue } from "@robot-console/protocol";
+import { isLocalMdnsService } from "../localHost.js";
 import { Store, type Transport } from "../store/index.js";
 import type { MdnsBackend, MdnsBrowser, MdnsFindOptions, MdnsService } from "../discovery/mdnsDiscovery.js";
 
@@ -439,6 +440,13 @@ export function startMdnsWatcher(
   }
 
   function handleMbserial(service: MdnsService): void {
+    // 018-010: never observe a service that resolves back to this very
+    // machine (own hostname/loopback/own interface address) — see
+    // `localHost.ts`'s own doc comment. Mirrors `handleMbrelay`'s
+    // identical guard below.
+    if (isLocalMdnsService(service)) {
+      return;
+    }
     const name = service.name;
     const linkId = `mbserial-${name}`;
     const deviceId = uniqueOwnedDeviceIdByName(name);
@@ -520,6 +528,14 @@ export function startMdnsWatcher(
   }
 
   function handleMbrelay(service: MdnsService): void {
+    // 018-010: never mint (or even observe) a relay device for a
+    // service that resolves back to this very machine -- "you're going
+    // to plug something in, and it's going to show up in the list; you
+    // don't need to identify the host" (the stakeholder's own framing).
+    // See `localHost.ts`'s own doc comment for the two signals checked.
+    if (isLocalMdnsService(service)) {
+      return;
+    }
     const name = service.name;
     // The existing name-match fast path stays first, unchanged
     // (regression guard); the fallback below is additive, not a

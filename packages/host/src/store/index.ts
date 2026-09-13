@@ -76,6 +76,7 @@ import { deviceIdToName, nameToValue } from "@robot-console/protocol";
 import { openStoreDb, type StoreDbOptions } from "./db.js";
 import { clearDeadProcessState } from "./repair/clearDeadProcessState.js";
 import { mergeDuplicateDeviceRows } from "./repair/mergeDuplicateDeviceRows.js";
+import { removeLocalHostDeviceRows } from "./repair/removeLocalHostDeviceRows.js";
 import { repairDeviceKindFromRole } from "./repair/repairDeviceKindFromRole.js";
 import { repairRadioLinkDeviceAssociation } from "./repair/repairRadioLinkDeviceAssociation.js";
 
@@ -824,6 +825,37 @@ export class Store {
   }
 
   // ---- links -------------------------------------------------------
+
+  /** Deletes `id`'s `links` row outright — unlike {@link deleteDevice}
+   * (which only detaches links from a forgotten device, keeping the
+   * link row itself as a still-observable physical/network endpoint),
+   * this is for a link that should never have existed at all: ticket
+   * 018-010's own local-host mDNS filter
+   * (`repair/removeLocalHostDeviceRows.ts`, `watchers/mdnsWatcher.ts`'s
+   * `isLocalMdnsService` guard) uses this to clean up a `mbrelay`/
+   * `mbserial` link row that turned out to name this very machine, not
+   * a real relay or robot. `sessions`/`relay_leases` both carry a
+   * `REFERENCES links(id)` foreign key (`db.ts`'s schema) with no
+   * `ON DELETE CASCADE`, so any row there for `id` is deleted first — in
+   * ordinary use both are already empty by the time this runs (`ticket
+   * 018-010`'s own `clearDeadProcessState` always runs first at
+   * `openStore`), but this method does not assume that. `sightings.
+   * via_link_id` is a plain `TEXT` column, not a foreign key (`db.ts`'s
+   * schema has no `REFERENCES` on it), so a leftover sighting row naming
+   * a since-deleted link is harmless and left alone, exactly like a
+   * sighting naming a since-forgotten device already is. A no-op if `id`
+   * has no row. */
+  deleteLink(id: string): void {
+    this.withChange(
+      "links",
+      () => id,
+      () => {
+        this.db.prepare("DELETE FROM sessions WHERE link_id = ?").run(id);
+        this.db.prepare("DELETE FROM relay_leases WHERE relay_link_id = ?").run(id);
+        this.db.prepare("DELETE FROM links WHERE id = ?").run(id);
+      },
+    );
+  }
 
   /** Records a watcher's observation of a link. On first sight, creates
    * the row in the `discovered` state (see architecture.md §5 for the
@@ -1824,7 +1856,7 @@ export class Store {
 }
 
 /** Opens (creating/migrating as needed — see `db.ts`) the console's
- * store and wraps it as a {@link Store}. Runs four one-time-per-open
+ * store and wraps it as a {@link Store}. Runs five one-time-per-open
  * repairs, right here — after migrations have applied but before this
  * function returns to any caller that goes on to start
  * watchers/importers, so every production caller (`store/bootstrap.ts`'s
@@ -1834,12 +1866,15 @@ export class Store {
  * logically precedes any data-correctness repair, though the two are
  * otherwise independent), the duplicate device-row repair (018-006,
  * {@link mergeDuplicateDeviceRows}), the device-kind-from-role repair
- * (018-010, {@link repairDeviceKindFromRole}), and the radio/mbrelay link
+ * (018-010, {@link repairDeviceKindFromRole}), the radio/mbrelay link
  * device-association repair (018-010, {@link
- * repairRadioLinkDeviceAssociation}). `debug/dumpStore.ts` deliberately
+ * repairRadioLinkDeviceAssociation}), and the local-host device-row
+ * repair (018-010, {@link removeLocalHostDeviceRows} — removes a device
+ * row this very machine minted for itself before `mdnsWatcher.ts`'s own
+ * `isLocalMdnsService` guard existed). `debug/dumpStore.ts` deliberately
  * does not call `openStore` at all (it opens a read-only connection
  * directly) and so never runs any of them — a read-only inspector must
- * never write, and all four, on an already-affected database, always
+ * never write, and all five, on an already-affected database, always
  * do. */
 export function openStore(options: StoreDbOptions = {}): Store {
   const store = new Store(openStoreDb(options));
@@ -1847,5 +1882,6 @@ export function openStore(options: StoreDbOptions = {}): Store {
   mergeDuplicateDeviceRows(store, Date.now());
   repairDeviceKindFromRole(store);
   repairRadioLinkDeviceAssociation(store);
+  removeLocalHostDeviceRows(store);
   return store;
 }

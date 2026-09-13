@@ -117,9 +117,28 @@ describe("DevicesList", () => {
     expect(text).toContain("USB · /dev/tty.usbmodem-usb-1");
   });
 
-  it("shows 'No role announced' when role is null", () => {
+  it("018-010 item 3: shows a plain 'Role unknown' for a robot with no announced role", () => {
     const el = mount(withRouter(<DevicesList status="open" devices={[device(1, { role: null })]} unassigned={[]} />));
-    expect(el.textContent ?? "").toContain("No role announced");
+    expect(el.textContent ?? "").toContain("Role unknown");
+  });
+
+  it("018-010 item 3: labels a roleless relay by its own links' transport instead of 'Role unknown'", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              kind: "relay",
+              role: null,
+              links: [link("mbrelay-torture", { transport: "mbrelay" })],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
+    expect(el.textContent ?? "").toContain("mbrelay host");
   });
 
   it("shows a connecting banner without dropping the last-known device list", () => {

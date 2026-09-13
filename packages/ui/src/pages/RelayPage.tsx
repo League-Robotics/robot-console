@@ -123,7 +123,7 @@ import { DeviceConsole } from "../components/DeviceConsole";
 import { RelayConnectControls } from "../components/RelayConnectControls";
 import { RobotPage } from "./RobotPage";
 import { useDevices, useRelays, useSendable, useWsActions } from "../ws/WsProvider";
-import { currentRelayChild, isLinkUsable, nameDisplay } from "../deviceDisplay";
+import { currentRelayChild, isLinkUsable, nameDisplay, roleDisplay } from "../deviceDisplay";
 import "./RelayPage.css";
 
 export interface RelayPageProps {
@@ -170,6 +170,14 @@ export function RelayPage({ device }: RelayPageProps) {
   return (
     <section className={`relay-page${child ? " relay-page-connected" : ""}`} aria-label="Relay device">
       <h2>{relayName}</h2>
+      {/* 018-010 item 3: a relay device is a host, not "No role
+          announced" -- `roleDisplay` names what it is by its links'
+          own transport (mbrelay/mbserial host) when no banner role has
+          been announced, or keeps a USB relay's own announced role
+          (RADIOBRIDGE/RADIORELAY) unchanged. */}
+      <p className="relay-page-role" data-testid="relay-page-role">
+        {roleDisplay(device)}
+      </p>
 
       <RelayConnectControls
         variant="page"

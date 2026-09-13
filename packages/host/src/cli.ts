@@ -150,24 +150,28 @@ function hasNoOpenFlag(argv: readonly string[], env: NodeJS.ProcessEnv): boolean
   return raw !== undefined && raw.length > 0;
 }
 
-/** `--no-sweep` from argv, or `ROBOT_CONSOLE_DISABLE_SWEEP` (any
- * non-empty value) from env: never start the relay sweeper
- * (`runtime.ts`'s own `StartRuntimeOptions.disableSweep`).
+/** `--sweep` from argv, or `ROBOT_CONSOLE_ENABLE_SWEEP` (any non-empty
+ * value) from env: start the relay sweeper (`runtime.ts`'s own
+ * `StartRuntimeOptions.disableSweep`, which now defaults to `true` --
+ * see that field's own doc comment).
  *
- * Added for sprint 018 ticket 005 Step 0b: the bench harness starts its
- * own real host instance (Layer 2/3) against a scratch state dir, on
- * the same physical bench Layer 1's raw probes (or another harness host
- * instance) are also touching -- with the sweeper running, that host
- * instance's own `watchers/relaySweeper.ts` opens usb relay ports on its
- * own schedule, racing the harness's own run the exact way a
- * stakeholder's separately-running `npm run dev` was found to
- * (`scripts/bench/layer1/exclusivity.ts`'s own running-host detection).
+ * Ticket 018-010 ("you're not going to sweep when you're idle
+ * RadioRelay, so turn that off") inverts sprint 018 ticket 005 Step
+ * 0b's original `--no-sweep`/`ROBOT_CONSOLE_DISABLE_SWEEP` flag: the
+ * sweeper now defaults OFF for every caller (production startup
+ * included, not just the bench harness), and this flag is the opt back
+ * IN for anyone who still wants a relay's idle radio periodically swept
+ * for reachable robots. `--no-sweep`/`ROBOT_CONSOLE_DISABLE_SWEEP` are
+ * still accepted as plain, silently-ignored argv/env tokens (never an
+ * error) purely for compatibility -- `scripts/bench`'s Layer 2/3 still
+ * pass `--no-sweep` on their own command line, and there is no reason to
+ * make that a hard error now that it is simply already the default.
  * Mirrors {@link hasNoOpenFlag}'s exact shape. */
-function hasNoSweepFlag(argv: readonly string[], env: NodeJS.ProcessEnv): boolean {
-  if (argv.includes("--no-sweep")) {
+function hasSweepFlag(argv: readonly string[], env: NodeJS.ProcessEnv): boolean {
+  if (argv.includes("--sweep")) {
     return true;
   }
-  const raw = env.ROBOT_CONSOLE_DISABLE_SWEEP;
+  const raw = env.ROBOT_CONSOLE_ENABLE_SWEEP;
   return raw !== undefined && raw.length > 0;
 }
 
@@ -267,10 +271,11 @@ export async function main(
   // Ticket 005: production startup now actually opens the store and
   // starts both watchers (until this ticket, only the retired
   // `--watch-store` flag did) -- see the module doc comment.
-  // 018-005 Step 0b: `--no-sweep`/`ROBOT_CONSOLE_DISABLE_SWEEP` sets
-  // `disableSweep` by default; an explicit `deps.runtimeOptions.disableSweep`
-  // (a test's own override) still wins, since it spreads last.
-  const runtime = startRuntimeFn({ storeOptions: { env }, disableSweep: hasNoSweepFlag(argv, env), ...deps.runtimeOptions });
+  // 018-010: the sweeper defaults off; `--sweep`/`ROBOT_CONSOLE_ENABLE_SWEEP`
+  // is the explicit opt back in (`hasSweepFlag`'s own doc comment). An
+  // explicit `deps.runtimeOptions.disableSweep` (a test's own override)
+  // still wins, since it spreads last.
+  const runtime = startRuntimeFn({ storeOptions: { env }, disableSweep: !hasSweepFlag(argv, env), ...deps.runtimeOptions });
 
   // Sprint 017 ticket 001: `getFirmwareConfig` reads `settings` via the
   // store, not `env`/a `.env` file directly, so it must be called after

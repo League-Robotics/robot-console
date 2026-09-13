@@ -241,8 +241,11 @@ export function describeHolders(holders: readonly Holder[]): string {
 // reopens it — this harness's own relay sweeper (`packages/host/src/
 // watchers/relaySweeper.ts`, started by Layer 2/3's own harness host
 // instances) does exactly the same thing to itself, which is why Layer
-// 2/3 start their own host with the sweeper disabled (`--no-sweep` /
-// `ROBOT_CONSOLE_DISABLE_SWEEP=1`, `packages/host/src/cli.ts`).
+// 2/3 start their own host with the sweeper disabled (`--no-sweep`,
+// `packages/host/src/cli.ts` -- ticket 018-010: the sweeper now
+// defaults off for every caller, so this flag is kept only as an
+// explicit, harmless no-op on Layer 2/3's own spawned command line,
+// not because it is still what turns the sweeper off).
 //
 // Detecting a *running host process at all* (rather than trying to
 // catch it mid-open via `lsof` alone) is the only reliable signal.

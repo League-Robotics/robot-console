@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import os from "node:os";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { deviceIdToName, nameToValue } from "@robot-console/protocol";
 import { openStoreDb } from "../store/db.js";
@@ -815,6 +816,82 @@ describe("startMdnsWatcher", () => {
       }
     },
   );
+
+  // ---------------------------------------------------------------------
+  // 018-010, item 2: this very machine must never mint (or even
+  // observe) itself as a relay/serial-bridge device -- the stakeholder's
+  // own front page showed a card named after his Mac's own hostname
+  // ("gala") with "No role announced" once something local advertised
+  // an `_mbrelay._tcp`/`_mbserial._tcp` service whose SRV host resolved
+  // back to that same machine. `os.hostname()` (never a hardcoded
+  // stand-in for "gala") is used here so this suite proves the real
+  // rule against whatever machine actually runs it, in CI included.
+  // ---------------------------------------------------------------------
+  it("018-010: never mints a relay device for an mbrelay service whose host is this very machine", () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const handle = start(store, backend);
+    try {
+      backend.relay.emitUp(mbrelayService(os.hostname(), `${os.hostname()}.local`, 8760, 8761));
+
+      expect(store.snapshotRows().links.find((l) => l.id === `mbrelay-${os.hostname()}`)).toBeUndefined();
+      expect(store.snapshotRows().devices.filter((d) => d.kind === "relay")).toHaveLength(0);
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it("018-010: never mints a relay device for an mbrelay service resolved to one of this machine's own addresses, even when the host label doesn't textually match", () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const handle = start(store, backend);
+    try {
+      backend.relay.emitUp(mbrelayService("someOtherLabel", "some-other-label.local", 8760, 8761, ["127.0.0.1"]));
+
+      expect(store.snapshotRows().links.find((l) => l.id === "mbrelay-someOtherLabel")).toBeUndefined();
+      expect(store.snapshotRows().devices.filter((d) => d.kind === "relay")).toHaveLength(0);
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it("018-010: still mints a relay device for a different machine's mbrelay service (regression guard -- the filter is not over-broad)", () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const handle = start(store, backend);
+    try {
+      backend.relay.emitUp(mbrelayService("torture", "torture.local", 8760, 8761, ["192.168.1.12"]));
+
+      expect(store.snapshotRows().links.find((l) => l.id === "mbrelay-torture")).toBeDefined();
+      expect(store.snapshotRows().devices.filter((d) => d.kind === "relay")).toHaveLength(1);
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it("018-010: never observes an mbserial service whose host is this very machine (defensive symmetry with handleMbrelay)", () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const owned = namedDevice(3);
+    // Coincidentally-matching name isn't the point here -- this proves
+    // the guard runs before any owned-device attachment would even be
+    // attempted, using this machine's own hostname as the mbserial
+    // instance name (the shape a locally-running bridge would actually
+    // advertise under).
+    store.upsertDevice({ id: owned.id, name: owned.name, kind: "robot", owned: true, at: 1 });
+    const handle = start(store, backend);
+    try {
+      backend.serial.emitUp(mbserialService(os.hostname(), `${os.hostname()}.local`, 8760));
+
+      expect(store.snapshotRows().links.find((l) => l.id === `mbserial-${os.hostname()}`)).toBeUndefined();
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
 
   it("heartbeats a tasks row every browse cycle", () => {
     const store = freshStore();

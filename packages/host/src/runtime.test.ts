@@ -118,6 +118,14 @@ function fakeDeps() {
     createRelayLeaseRevocation: createRelayLeaseRevocationMock,
     startRelaySweeper: startRelaySweeperMock,
     installUnhandledRejectionBackstop: installUnhandledRejectionBackstopMock,
+    // 018-010: `disableSweep` now defaults to `true` (sweeper off) when
+    // omitted -- every fixture here explicitly opts back in so the
+    // composition/telemetry/stop() suites below (which exist to test
+    // wiring OTHER than the sweeper's own on/off default) keep
+    // exercising `startRelaySweeperMock` exactly as before. The
+    // dedicated "disableSweep default" describe block below is the one
+    // place that omits this override on purpose.
+    disableSweep: false,
   };
 
   return {
@@ -356,13 +364,23 @@ describe("startRuntime -- disableSweep (018-005 Step 0b)", () => {
     expect(f.calls).toEqual(["uninstallUnhandledRejectionBackstop", "reconciler.stop", "usbWatcher.stop", "mdnsWatcher.stop", "firmwareWatcher.stop", "store.close"]);
   });
 
-  it("starts the sweeper exactly as before when disableSweep is omitted/false -- the default is unchanged", () => {
+  it("starts the sweeper when disableSweep: false is passed explicitly", () => {
     const f = fakeDeps();
-    startRuntime(f.options);
+    startRuntime({ ...f.options, disableSweep: false });
     expect(f.startRelaySweeperMock).toHaveBeenCalledTimes(1);
+  });
+});
 
-    const f2 = fakeDeps();
-    startRuntime({ ...f2.options, disableSweep: false });
-    expect(f2.startRelaySweeperMock).toHaveBeenCalledTimes(1);
+describe("startRuntime -- disableSweep defaults to true (018-010: sweeper off by default)", () => {
+  it("never calls startRelaySweeper when disableSweep is omitted entirely -- not just when it's explicitly true. Mirrors scripts/dev.mjs's own bare startRuntime() call, which has no opinion on disableSweep at all", () => {
+    const f = fakeDeps();
+    const { disableSweep: _drop, ...optionsWithoutDisableSweep } = f.options;
+
+    startRuntime(optionsWithoutDisableSweep);
+
+    expect(f.startRelaySweeperMock).not.toHaveBeenCalled();
+    // The shared revocation seam is still constructed -- the bridger
+    // still needs it even with the sweeper off by default.
+    expect(f.createRelayLeaseRevocationMock).toHaveBeenCalledTimes(1);
   });
 });

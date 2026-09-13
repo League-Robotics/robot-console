@@ -150,6 +150,31 @@ describe("RelayPage: not connected", () => {
     expect(el.querySelector("h2")?.textContent).toBe("rly01");
   });
 
+  // 018-010 item 3: "relay hosts are hosts, not 'No role announced'" --
+  // `roleDisplay` (`deviceDisplay.ts`) drives this page's own role line
+  // the same way it drives `FrontPage.tsx`'s card.
+  it("018-010 item 3: labels a roleless relay by its own mbrelay link", () => {
+    const { el, socket } = mountRelayPage(
+      device(3, { name: "rly01", kind: "relay", role: null, links: [link(RELAY_LINK_ID, { transport: "mbrelay", state: "connected" })] }),
+    );
+    pushSnapshot(socket, { devices: [relayDevice()] });
+    expect(el.querySelector('[data-testid="relay-page-role"]')?.textContent).toBe("mbrelay host");
+  });
+
+  it("018-010 item 3: labels a roleless relay by its own mbserial link", () => {
+    const { el, socket } = mountRelayPage(
+      device(3, { name: "rly01", kind: "relay", role: null, links: [link(RELAY_LINK_ID, { transport: "mbserial", state: "connected" })] }),
+    );
+    pushSnapshot(socket, { devices: [relayDevice()] });
+    expect(el.querySelector('[data-testid="relay-page-role"]')?.textContent).toBe("mbserial host");
+  });
+
+  it("018-010 item 3: a USB relay keeps its own announced role (RADIOBRIDGE/RADIORELAY)", () => {
+    const { el, socket } = mountRelayPage(relayDevice({ role: "RADIOBRIDGE" }));
+    pushSnapshot(socket, { devices: [relayDevice({ role: "RADIOBRIDGE" })] });
+    expect(el.querySelector('[data-testid="relay-page-role"]')?.textContent).toBe("RADIOBRIDGE");
+  });
+
   it("renders 'idle' when relays[] reports lease: null and no bridging", () => {
     const { el, socket } = mountRelayPage(relayDevice());
     pushSnapshot(socket, {

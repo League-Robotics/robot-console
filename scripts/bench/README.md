@@ -241,13 +241,18 @@ mbserial projection (architecture.md §4's "`devices.owned` is the WiFi
 gate" rule); the real file itself is never opened for writing. The host
 is started with `--no-open` (added to `packages/host/src/cli.ts` by
 this ticket) so it never tries to launch a desktop browser on a
-headless bench run, and with `--no-sweep` (018-005 Step 0b — `--no-sweep`
-/ `ROBOT_CONSOLE_DISABLE_SWEEP=1`, `runtime.ts`'s own `disableSweep`
-option) so this harness host never runs its own relay sweeper: with it
-running, this same host instance would race Layer 1's own raw probes
-(or another harness host instance) against the identical physical
-relay — the exact contention this ticket's own `--allow-shared-bench`
-detection exists to catch when a *stakeholder's* host does it. This
+headless bench run, and with `--no-sweep` so this harness host never
+runs its own relay sweeper: with it running, this same host instance
+would race Layer 1's own raw probes (or another harness host instance)
+against the identical physical relay — the exact contention this
+ticket's own `--allow-shared-bench` detection exists to catch when a
+*stakeholder's* host does it. (018-010: the relay sweeper now defaults
+off for every caller, not just this harness — `runtime.ts`'s own
+`StartRuntimeOptions.disableSweep` defaults to `true` when omitted, and
+`--sweep`/`ROBOT_CONSOLE_ENABLE_SWEEP=1` is the opt back in. `--no-sweep`
+is still passed here, and still accepted, but only as an explicit,
+harmless no-op — it is no longer what makes this harness host skip
+sweeping; omitting it would skip sweeping exactly the same way.) This
 harness must not do it to itself.
 
 ### Module map (Layer 2)

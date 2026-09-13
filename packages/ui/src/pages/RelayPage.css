@@ -21,6 +21,14 @@
   font-size: 0.9rem;
 }
 
+/* 018-010 item 3: the relay's own role/host label, right under its
+ * name -- same muted treatment as `.relay-page-hint`, one line. */
+.relay-page-role {
+  margin: 0;
+  color: var(--rc-text-muted);
+  font-size: 0.9rem;
+}
+
 /* Ticket 017-007: `.relay-autoconnecting-status`/`.relay-page-alert`/
  * `.relay-connected-status`/`.relay-idle-status`/`.relay-connect-bar`
  * moved to `components/RelayConnectControls.css` (imported by

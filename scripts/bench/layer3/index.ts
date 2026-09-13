@@ -170,10 +170,13 @@ async function main(): Promise<void> {
   const binPath = path.join(REPO_ROOT, "bin", "robot-console.js");
   const baseUrl = `http://127.0.0.1:${options.port}/`;
   const wsUrl = `ws://127.0.0.1:${options.port}/`;
-  // 018-005 Step 0b: `--no-sweep` -- same reasoning as `layer2/index.ts`'s
-  // own host spawn: this harness host must never run its own relay
-  // sweeper, or it races Layer 1's own raw probes (or another harness
-  // host instance) against the identical physical relay.
+  // Same reasoning as `layer2/index.ts`'s own host spawn: this harness
+  // host must never run its own relay sweeper, or it races Layer 1's
+  // own raw probes (or another harness host instance) against the
+  // identical physical relay. 018-010: the sweeper now defaults OFF for
+  // every caller -- `--no-sweep` below is kept only as a harmless,
+  // explicit no-op (see that module's own updated comment), not because
+  // it is still what turns the sweeper off.
   console.log(`[bench:layer3] starting host: node ${binPath} --port ${options.port} --no-open --no-sweep (ROBOT_CONSOLE_STATE_DIR=${options.stateDir})`);
   const child: ChildProcessByStdio<null, Readable, Readable> = spawn(
     process.execPath,

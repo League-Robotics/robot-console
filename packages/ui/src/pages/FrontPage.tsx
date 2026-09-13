@@ -94,7 +94,7 @@ import {
   useUnassigned,
   useWsActions,
 } from "../ws/WsProvider";
-import { cardLinks, connectionLabel, hiddenLinkCount, isCalibrationProgram, isLinkAnswering, isLinkUsable, lastCheckedText, linkStateText, nameDisplay } from "../deviceDisplay";
+import { cardLinks, connectionLabel, hiddenLinkCount, isCalibrationProgram, isLinkAnswering, isLinkUsable, lastCheckedText, linkStateText, nameDisplay, roleDisplay } from "../deviceDisplay";
 import { FlashDialog } from "../components/FlashDialog";
 import { RelayConnectControls } from "../components/RelayConnectControls";
 import "./FrontPage.css";
@@ -453,7 +453,7 @@ function DeviceCard({
           <dl className="device-fields">
             <div>
               <dt>Role</dt>
-              <dd>{device.role ?? "No role announced"}</dd>
+              <dd>{roleDisplay(device)}</dd>
             </div>
           </dl>
 

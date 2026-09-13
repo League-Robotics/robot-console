@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { nameToValue } from "@robot-console/protocol";
@@ -323,6 +323,59 @@ describe("openStore: clears dead-process-owned state on open (018-010)", () => {
         const links = store.snapshotRows().links;
         expect(links.find((l) => l.id === "usb-SERIAL-C")).toMatchObject({ state: "connectable" });
         expect(links.find((l) => l.id === "usb-SERIAL-B")).toMatchObject({ state: "discovered" });
+      } finally {
+        store.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("openStore: removes a local-host device row on open (018-010, item 2)", () => {
+  it("removes a kind='relay' device row (and its links) whose name is this very machine's own hostname", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "robot-console-local-host-repair-test-"));
+    const filePath = path.join(dir, "console.sqlite");
+    try {
+      const hostname = os.hostname();
+      // Seed directly (bypassing openStore's own repair) so the on-disk
+      // file already carries exactly the shape a real console.sqlite
+      // that self-minted before `mdnsWatcher.ts`'s own filter existed
+      // would have -- mirrors this file's other repair-wiring tests'
+      // own seeding style.
+      const seedId = -424242; // an arbitrary negative id -- the same range hashRelayNameToNegativeId uses for a non-grammar name
+      const seedStore = new Store(openStoreDb({ filePath }));
+      seedStore.upsertDevice({ id: seedId, name: hostname, kind: "relay", at: 100 });
+      seedStore.upsertLink({ id: `mbrelay-${hostname}`, transport: "mbrelay", address: { host: `${hostname}.local`, port: 8760 }, deviceId: seedId, at: 100 });
+      seedStore.close();
+
+      const store = openStore({ filePath });
+      try {
+        const rows = store.snapshotRows();
+        expect(rows.devices.find((d) => d.id === seedId)).toBeUndefined();
+        expect(rows.links.find((l) => l.id === `mbrelay-${hostname}`)).toBeUndefined();
+      } finally {
+        store.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("never touches a relay device row named after a different machine", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "robot-console-local-host-repair-regression-test-"));
+    const filePath = path.join(dir, "console.sqlite");
+    try {
+      const seedStore = new Store(openStoreDb({ filePath }));
+      seedStore.upsertDevice({ id: -999999, name: "torture", kind: "relay", at: 100 });
+      seedStore.upsertLink({ id: "mbrelay-torture", transport: "mbrelay", address: { host: "torture.local", port: 8760 }, deviceId: -999999, at: 100 });
+      seedStore.close();
+
+      const store = openStore({ filePath });
+      try {
+        const rows = store.snapshotRows();
+        expect(rows.devices.find((d) => d.id === -999999)).toBeDefined();
+        expect(rows.links.find((l) => l.id === "mbrelay-torture")).toBeDefined();
       } finally {
         store.close();
       }
@@ -966,6 +1019,46 @@ describe("Store: deleteDevice", () => {
     try {
       store.deleteDevice(1234);
       expect(store.snapshotRows().devices).toHaveLength(0);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("Store: deleteLink (018-010)", () => {
+  it("deletes the links row outright -- unlike deleteDevice, no row survives", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertLink({ id: "mbrelay-gala", transport: "mbrelay", address: { host: "gala.local", port: 8760 }, at: 100 });
+      store.deleteLink("mbrelay-gala");
+      expect(store.snapshotRows().links).toHaveLength(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("first deletes any sessions/relay_leases row for the link, since both carry a REFERENCES links(id) foreign key", () => {
+    const { store, db } = freshStore();
+    try {
+      store.upsertLink({ id: "mbrelay-gala", transport: "mbrelay", address: { host: "gala.local", port: 8760 }, at: 100 });
+      store.openSession("mbrelay-gala", 100);
+      store.acquireRelayLease("mbrelay-gala", "sweep", 100);
+
+      expect(() => store.deleteLink("mbrelay-gala")).not.toThrow();
+
+      expect(store.snapshotRows().links).toHaveLength(0);
+      expect(db.prepare("SELECT * FROM sessions WHERE link_id = ?").get("mbrelay-gala")).toBeUndefined();
+      expect(db.prepare("SELECT * FROM relay_leases WHERE relay_link_id = ?").get("mbrelay-gala")).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("is a no-op for an id with no links row", () => {
+    const { store } = freshStore();
+    try {
+      expect(() => store.deleteLink("no-such-link")).not.toThrow();
+      expect(store.snapshotRows().links).toHaveLength(0);
     } finally {
       store.close();
     }

@@ -43,12 +43,38 @@ export function nameDisplay(device: SnapshotDevice): { text: string; flagged: bo
   return { text: device.name, flagged: false };
 }
 
-/** A device's role text: the announced `role`, or a calm "not yet
- * announced" placeholder. The old `sessionError`-driven "Unresponsive"
- * branch has no device-level equivalent -- see this module's doc
- * comment. */
+/** A device's role text: the announced `role` when there is one.
+ * Otherwise (ticket 018-010, item 3 -- "relay hosts are hosts, not 'No
+ * role announced'"): for a `kind === "relay"` device with no announced
+ * role, say what it *is* by the transport its own links actually use --
+ * a `mbrelay` link means this device is only known as an mbrelay pool's
+ * own host (`watchers/mdnsWatcher.ts`'s `handleMbrelay` minting, never
+ * identified over USB), so "mbrelay host"; a `mbserial` link means the
+ * same for a serial-bridge farm host, "mbserial host". A relay
+ * identified over USB always has a role by construction
+ * (`connect/connector.ts` writes `kind`/`role` together from the same
+ * banner, the instant it becomes `kind: "relay"` at all -- see
+ * `repair/repairDeviceKindFromRole.ts`'s own doc comment) -- these two
+ * transport labels are for the *other* way a relay row comes to exist,
+ * mDNS-only, never plugged into this host directly. A robot with no
+ * role (never yet identified/banner-less) has no transport-shaped
+ * story to tell instead, so it keeps the old sessionError-era's
+ * calm plain fallback, reworded to "Role unknown" (the old "No role
+ * announced" phrasing is retired everywhere this module's callers
+ * render it). */
 export function roleDisplay(device: SnapshotDevice): string {
-  return device.role ?? "No role announced";
+  if (device.role !== null) {
+    return device.role;
+  }
+  if (device.kind === "relay") {
+    if (device.links.some((link) => link.transport === "mbrelay")) {
+      return "mbrelay host";
+    }
+    if (device.links.some((link) => link.transport === "mbserial")) {
+      return "mbserial host";
+    }
+  }
+  return "Role unknown";
 }
 
 /** Whether `device.program` marks it as a calibration build --

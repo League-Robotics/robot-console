@@ -17,16 +17,19 @@
     "build": "npm run build -w @robot-console/protocol && npm run build -w @robot-console/host && npm run build -w @robot-console/ui",
     "typecheck": "npm run build -w @robot-console/protocol && npm run build -w @robot-console/host && tsc --noEmit -p packages/protocol/tsconfig.json && tsc --noEmit -p packages/host/tsconfig.json && tsc --noEmit -p packages/ui/tsconfig.json && tsc --noEmit -p scripts/tsconfig.json",
     "version": "npm install --package-lock-only",
-    "bench:layer1": "tsx scripts/bench/layer1/index.ts"
+    "bench:layer1": "tsx scripts/bench/layer1/index.ts",
+    "bench:layer2": "tsx scripts/bench/layer2/index.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "@types/node": "^26.4.1",
+    "@types/ws": "^8.18.1",
     "bonjour-service": "^1.4.4",
     "serialport": "^13.0.0",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.0",
+    "ws": "^8.21.3"
   },
   "engines": {
     "node": ">=22.13"

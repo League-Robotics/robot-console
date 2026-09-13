@@ -109,6 +109,26 @@ function parsePortEnv(env: NodeJS.ProcessEnv): number | undefined {
   return Number.isInteger(value) ? value : undefined;
 }
 
+/** `--no-open` from argv, or `ROBOT_CONSOLE_NO_OPEN` (any non-empty
+ * value) from env: skip the automatic browser launch entirely.
+ *
+ * Added for sprint 018 ticket 002's Layer 2 bench harness, which starts
+ * a real host against a scratch state dir on a headless bench run --
+ * without this, {@link main} would try to launch a real desktop browser
+ * every time the harness starts a host, which is both unwanted (no
+ * student is at this bench run) and, on a CI/headless box, itself a
+ * source of a hung or failing `open()` call unrelated to anything this
+ * harness is testing. No pre-existing flag/env covered this ("dev.mjs"
+ * launches a full graphical session for its own bench sessions, not a
+ * headless one), so this ticket adds it. */
+function hasNoOpenFlag(argv: readonly string[], env: NodeJS.ProcessEnv): boolean {
+  if (argv.includes("--no-open")) {
+    return true;
+  }
+  const raw = env.ROBOT_CONSOLE_NO_OPEN;
+  return raw !== undefined && raw.length > 0;
+}
+
 /** `--dump-store` from argv (ticket 014-009 / SUC-006): print the store
  * as JSON and exit, never starting the runtime/server or opening a
  * browser. */
@@ -222,6 +242,10 @@ export async function main(
   console.log(`robot-console: listening on ${server.url}`);
 
   installShutdownHandlers(server, runtime, exit);
+
+  if (hasNoOpenFlag(argv, env)) {
+    return;
+  }
 
   try {
     await openBrowser(server.url);

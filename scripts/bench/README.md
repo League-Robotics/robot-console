@@ -115,15 +115,69 @@ confused with a real wire line).
 | `layer1/tcpLineSession.ts`, `layer1/lineReassembler.ts` | Shared line-oriented TCP client / byte reassembly (deliberately *not* imported from `packages/host` — see `lineReassembler.ts`'s doc comment for the host-internals boundary this harness keeps throughout). |
 | `layer1/index.ts` | Orchestrates all of the above and writes the report. |
 
+## Running Layer 2
+
+Layer 2 (`layer2/`, ticket 018-002) starts a **real host** — the
+compiled `packages/host/dist/` a student's `npx robot-console` actually
+runs, not a `tsx`-from-source shortcut — against a fresh, seeded state
+directory, waits for its watchers to settle, then for every path
+Layer 1's report marked reachable: `session-open` → `send-command
+{verb: "ID"}` → assert a matching `line` rx → `session-close` over the
+host's own WebSocket contract (`docs/design/architecture.md` §9). It
+also runs three card-truthfulness assertions directly against the live
+snapshot (no UI needed): no link is `stale`/"Not seen since ..." while
+its mDNS service is currently advertised (per Layer 1's own discovery);
+no device is recorded `kind: "robot"` while its role says relay; exactly
+one `devices` row per name.
+
+```sh
+npm run build   # Layer 2 tests the shipped host, not source -- required first
+
+# Default: refuses if anything Layer 1 found reachable is already held.
+npm run bench:layer2 -- --layer1 /tmp/bench-layer1.json --out /tmp/bench-layer2.json
+
+# Skip whatever's held, same --skip-held contract as Layer 1.
+npm run bench:layer2 -- --skip-held --layer1 /tmp/bench-layer1.json --out /tmp/bench-layer2.json --state-dir /tmp/bench-layer2-state --port 4799
+```
+
+`--layer1` defaults to `./bench-layer1-report.json`; `--state-dir`
+defaults to a fresh directory under `os.tmpdir()` when omitted (never
+the real state directory); `--port` defaults to `4799`. The host this
+run starts is killed (`SIGTERM`) in a `finally` when this script exits,
+whatever the outcome — no other process is ever touched, same
+exclusivity discipline as Layer 1's own `lsof` check (reused directly,
+against every resource a Layer-1-reachable path touches).
+
+`known-robots.json` is copied — read-only, from its real location — into
+the scratch state dir before the host starts, so devices already in the
+roster come up `owned: true` rather than being gated off the WiFi/
+mbserial projection (architecture.md §4's "`devices.owned` is the WiFi
+gate" rule); the real file itself is never opened for writing. The host
+is started with `--no-open` (added to `packages/host/src/cli.ts` by
+this ticket) so it never tries to launch a desktop browser on a
+headless bench run.
+
+### Module map (Layer 2)
+
+| File | Job |
+| --- | --- |
+| `layer2/wsClient.ts` | A thin `ws` client speaking the host's own wire contract directly (`session-open`/`send-command`/`session-close`, tracking the latest `snapshot`/`line`/`notice` stream); also `waitForSettle`, the "unchanged for 5s, bounded at 90s" settle detector. |
+| `layer2/pathChecks.ts` | Per-path target resolution (which link id a `{deviceName, transport}` or `{deviceName, relayName}` target maps to in the current snapshot) and the actual `checkPath` round trip. |
+| `layer2/truthfulness.ts` | The three card-truthfulness assertions, pure functions over a narrow `Snapshot` slice. |
+| `layer2/index.ts` | Orchestrates: exclusivity check, seed + start the host, settle, per-path checks, assertions, writes the report. |
+
 ## Testing
 
 `npx vitest run scripts/bench` runs this harness's own unit suite: every
 pure parser/classifier (banner/reply classification, the exclusivity
-check, DNS resolution edge cases) is tested against captured byte
-sequences and mocked `lsof` output — **no live hardware in CI**. Live
-hardware is exercised only by actually running `npm run bench:layer1`
-by hand against the real bench, which is this ticket's own evidence
-(see its completion notes), not something CI re-runs.
+check, DNS resolution edge cases, Layer 2's target resolution and
+truthfulness assertions, `waitForSettle` against a scripted fake driver)
+is tested against captured byte sequences, mocked `lsof` output, and
+snapshot fixtures — **no live hardware in CI**. Live hardware is
+exercised only by actually running `npm run bench:layer1`/`npm run
+bench:layer2` by hand against the real bench, which is each ticket's own
+evidence (see their completion notes), not something CI re-runs.
 
 `npm run typecheck` includes `scripts/tsconfig.json`, which covers this
-directory.
+directory. `packages/host/src/cli.test.ts` covers the `--no-open`/
+`ROBOT_CONSOLE_NO_OPEN` flag Layer 2 relies on.

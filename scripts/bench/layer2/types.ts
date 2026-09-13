@@ -74,6 +74,32 @@ export interface AssertionResult {
   reason: string;
 }
 
+/** One finding from the 018-003 `--audit-db` mode (`auditDb.ts`) --
+ * duplicated here (rather than importing that module's own type) only
+ * to keep `types.ts` a single, dependency-free shape reference, matching
+ * this file's own existing precedent of re-declaring rather than
+ * re-exporting (`AssertionResult` above already does the same for
+ * `truthfulness.ts`'s type). */
+export interface AuditDbFinding {
+  check: "one-row-per-name" | "relay-as-robot" | "would-be-hidden-radio-link" | "usb-path-mismatch";
+  device: string;
+  detail: string;
+}
+
+/** The `--audit-db` mode's own report, nested under the main Layer 2
+ * report when that flag was passed. `sourcePath` is the *real* database
+ * path the caller named (for the reader's own reference); `dbPath` is
+ * always the scratch copy this run actually opened -- the real file is
+ * never opened directly, per `auditDb.ts`'s own doc comment. */
+export interface Layer2AuditDb {
+  sourcePath: string;
+  dbPath: string;
+  generatedAt: string;
+  deviceCount: number;
+  linkCount: number;
+  findings: AuditDbFinding[];
+}
+
 export interface Layer2Report {
   startedAt: string;
   finishedAt: string;
@@ -86,4 +112,6 @@ export interface Layer2Report {
   settle: { settled: boolean; elapsedMs: number; neverAppeared: string[] };
   devices: Layer2DeviceEntry[];
   assertions: AssertionResult[];
+  /** Present only when `--audit-db <path>` was passed (018-003). */
+  auditDb?: Layer2AuditDb;
 }

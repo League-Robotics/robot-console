@@ -80,6 +80,12 @@ export function parseRadioPassthroughReply(line: string): string | null {
  * Classify one command-plane sweep reply (or `undefined` for a timeout)
  * for `expectedName`. Pure — directly testable against captured wire
  * text.
+ *
+ * @deprecated superseded by {@link classifyRadioSweepReplies} (018-003
+ * flake fix, see that function's own doc comment) for the *live* sweep
+ * path in `runCommandPlaneSweep` — kept, and still tested, only because
+ * it remains a valid single-line classifier other callers/tests may
+ * still reasonably want.
  */
 export function classifyRadioSweepReply(
   expectedName: string,
@@ -100,6 +106,78 @@ export function classifyRadioSweepReply(
     return { status: "fail", reason: `pass-through banner named "${banner.name}", expected "${expectedName}"` };
   }
   return { status: "pass", reason: `radio pass-through HELLO answered: ${replyLine}` };
+}
+
+/**
+ * True when `inner` (an already `< `-stripped pass-through payload) is a
+ * bare echo of a command word this harness itself sends (`HELLO`/`ID`),
+ * rather than a robot's own banner reply.
+ *
+ * ## Live-verified flake (018-003)
+ *
+ * Team-lead review of a live `bench-layer1.json` run found
+ * `radio-via-mbrelay:torture` fail for `gopiv` with reason
+ * `pass-through reply did not parse as a banner: "ID"` — one run after
+ * the identical request passed cleanly. `runCommandPlaneSweep` never
+ * sends a pass-through `> ID` at all (only `> HELLO`), so a literal
+ * `"< ID"` line can only be a **stale echo**: a relay physically parked
+ * in its data plane from an earlier, unrelated unprefixed `HELLO`/`ID`
+ * data-plane exchange (see {@link probeMbrelayDataPlane}'s own doc
+ * comment on that alternation) can flush a buffered echo of the last
+ * command it saw back out as a `< ...` pass-through line once it
+ * re-enters the command plane and answers a *later*, unrelated `!CG`/
+ * `> HELLO` sweep request — exactly "an echo of the command," per this
+ * ticket's own hypothesis. The old code (`session.waitForLine((line) =>
+ * parseRadioPassthroughReply(line) !== null, ...)`) treated *any*
+ * `< ...` line as the definitive reply, so a stale echo (or, just as
+ * plausibly, a genuinely late reply belonging to a *previous* name's
+ * already-timed-out request — "matched against the wrong request after
+ * a lost reply") was indistinguishable from the real answer.
+ *
+ * The fix ({@link classifyRadioSweepReplies}/{@link sweepOneName})
+ * never accepts an echo as the answer — it keeps waiting past one,
+ * within the same bounded window — and separately tolerates one lost
+ * radio packet by resending `> HELLO` once if nothing pass-through-
+ * shaped has arrived by the window's midpoint.
+ */
+export function isCommandEcho(inner: string): boolean {
+  return /^(HELLO|ID)$/i.test(inner.trim());
+}
+
+/**
+ * Correlate the sweep's real outcome for `expectedName` out of every
+ * pass-through-shaped reply line seen across one name's whole probe
+ * window (possibly several, if a bounded resend happened) — pure, so
+ * the correlation rule (skip stale echoes, take the first genuine
+ * banner) is directly testable against captured/synthetic sequences
+ * without a real socket. `replyLines` are already `< `-stripped (i.e.
+ * each already passed {@link parseRadioPassthroughReply}); an empty
+ * array means nothing pass-through-shaped arrived at all within the
+ * window (a real timeout, not a lost-then-recovered packet).
+ */
+export function classifyRadioSweepReplies(
+  expectedName: string,
+  replyLines: readonly string[],
+): { status: ProbeStatus; reason: string } {
+  if (replyLines.length === 0) {
+    return { status: "fail", reason: "timeout: no radio reply (name likely unreachable via this pool)" };
+  }
+  const genuine = replyLines.filter((inner) => !isCommandEcho(inner));
+  if (genuine.length === 0) {
+    return {
+      status: "fail",
+      reason: `only a stale command echo was seen, no genuine banner (${JSON.stringify(replyLines)}) -- relay likely still flushing a prior data-plane exchange`,
+    };
+  }
+  const first = genuine[0]!;
+  const banner = parseBanner(first);
+  if (banner === null) {
+    return { status: "fail", reason: `pass-through reply did not parse as a banner: ${JSON.stringify(first)}` };
+  }
+  if (banner.name !== expectedName) {
+    return { status: "fail", reason: `pass-through banner named "${banner.name}", expected "${expectedName}"` };
+  }
+  return { status: "pass", reason: `radio pass-through HELLO answered: < ${first}` };
 }
 
 /** Outcome of sending one command-plane line and waiting for either its
@@ -162,6 +240,74 @@ export interface KnownRadioName {
 }
 
 /**
+ * Run the correlated, retry-tolerant `> HELLO` exchange for one name
+ * over an already-tuned `session`: send, collect every pass-through-
+ * shaped (`< ...`) line seen across `perNameTimeoutMs`, resending once
+ * (bounded — "tolerate one lost radio packet") if nothing has arrived by
+ * the window's midpoint, and resolving early the moment a genuine
+ * (non-echo) pass-through line arrives. See {@link isCommandEcho}'s doc
+ * comment for why echoes are skipped rather than accepted.
+ *
+ * Not unit-tested directly (same "transport I/O is live-bench evidence,
+ * not CI" boundary as the rest of this module's socket-driving code —
+ * `README.md`'s Testing section); {@link classifyRadioSweepReplies},
+ * which this delegates the actual verdict to, carries the correlation
+ * rule's own unit coverage.
+ */
+async function sweepOneName(
+  session: TcpLineSession,
+  name: string,
+  perNameTimeoutMs: number,
+): Promise<{ status: ProbeStatus; reason: string }> {
+  return new Promise((resolve) => {
+    const collected: string[] = [];
+    let settled = false;
+    let resendTimer: ReturnType<typeof setTimeout>;
+    let finalTimer: ReturnType<typeof setTimeout>;
+
+    const finish = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(resendTimer);
+      clearTimeout(finalTimer);
+      unsubscribe();
+      resolve(classifyRadioSweepReplies(name, collected));
+    };
+
+    const unsubscribe = session.onLine((line) => {
+      if (settled) {
+        return;
+      }
+      const inner = parseRadioPassthroughReply(line);
+      if (inner === null) {
+        return;
+      }
+      collected.push(inner);
+      if (!isCommandEcho(inner)) {
+        finish();
+      }
+      // An echo is deliberately *not* terminal -- keep waiting within
+      // the same window for a genuine reply, per this function's own
+      // doc comment.
+    });
+
+    resendTimer = setTimeout(
+      () => {
+        if (!settled && collected.filter((line) => !isCommandEcho(line)).length === 0) {
+          session.sendRaw(buildRadioSendLine("HELLO"));
+        }
+      },
+      Math.max(1, Math.floor(perNameTimeoutMs / 2)),
+    );
+    finalTimer = setTimeout(finish, perNameTimeoutMs);
+
+    session.sendRaw(buildRadioSendLine("HELLO"));
+  });
+}
+
+/**
  * Run the command-plane sweep for every entry in `names` over one
  * already-open `session`: tune to `(channel, group)`, send `> HELLO`,
  * classify the reply. Restores `!CG 0 10` at the end regardless of how
@@ -196,10 +342,8 @@ export async function runCommandPlaneSweep(
       continue;
     }
 
-    const replyWait = session.waitForLine((line) => parseRadioPassthroughReply(line) !== null, perNameTimeoutMs);
-    session.sendRaw(buildRadioSendLine("HELLO"));
-    const reply = await replyWait;
-    results.set(name, { ...classifyRadioSweepReply(name, reply), transcript: session.transcript.slice(sliceStart) });
+    const outcome = await sweepOneName(session, name, perNameTimeoutMs);
+    results.set(name, { ...outcome, transcript: session.transcript.slice(sliceStart) });
   }
 
   const restoreSliceStart = session.transcript.length;

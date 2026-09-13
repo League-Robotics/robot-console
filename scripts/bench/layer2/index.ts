@@ -68,6 +68,7 @@ import type { Layer1Report, PathResult } from "../layer1/types.js";
 import { BenchWsClient, waitForSettle } from "./wsClient.js";
 import { checkPath, describeTarget, skippedCheck, type Layer2Target } from "./pathChecks.js";
 import { runTruthfulnessAssertions, type AssertableDevice } from "./truthfulness.js";
+import { auditDatabase, copyDatabaseForAudit } from "./auditDb.js";
 import type { Layer2DeviceEntry, Layer2PathEntry, Layer2Report } from "./types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -79,6 +80,12 @@ interface CliOptions {
   layer1Path: string;
   port: number;
   skipHeld: boolean;
+  /** 018-003: path to a **real** `console.sqlite` to audit (a copy is
+   * made into scratch before it is ever opened -- see `auditDb.ts`'s
+   * own doc comment). `undefined` when `--audit-db` was not passed --
+   * the audit is entirely optional and independent of the rest of this
+   * run. */
+  auditDbPath: string | undefined;
 }
 
 const DEFAULT_PORT = 4799;
@@ -89,6 +96,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
   let layer1Path = path.join(process.cwd(), "bench-layer1-report.json");
   let port = DEFAULT_PORT;
   let skipHeld = false;
+  let auditDbPath: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--state-dir") {
@@ -104,6 +112,8 @@ function parseArgs(argv: readonly string[]): CliOptions {
       }
     } else if (arg === "--skip-held") {
       skipHeld = true;
+    } else if (arg === "--audit-db") {
+      auditDbPath = argv[++i];
     }
   }
   return {
@@ -112,6 +122,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
     layer1Path,
     port,
     skipHeld,
+    auditDbPath,
   };
 }
 
@@ -309,7 +320,36 @@ async function main(): Promise<void> {
       role: d.role,
       links: d.links.map((l) => ({ id: l.id, transport: l.transport, state: l.state, reason: l.reason })),
     }));
-    const assertions = runTruthfulnessAssertions(assertableDevices, advertisedNames);
+    // 018-003 strengthening: Layer 1's own banner-based classification
+    // (`classifyUsbDevice` in `layer1/index.ts`, derived only from an
+    // actual captured banner line, never from a device's own possibly-
+    // absent snapshot `role`) is threaded into the relay-as-robot
+    // assertion so a relay Layer 1 positively identified is still
+    // flagged even when the live snapshot's own `role` is `null` (e.g.
+    // `vevav`, which never re-banners after the harness's own
+    // break-reset).
+    const layer1RelayNames = new Set(layer1.devices.filter((d) => d.kind === "relay").map((d) => d.name));
+    const assertions = runTruthfulnessAssertions(assertableDevices, advertisedNames, layer1RelayNames);
+
+    // ---- Database audit mode (018-003) --------------------------------
+    // Entirely independent of the live host round-trip above: audits a
+    // *copy* of a real, accumulated `console.sqlite` (never opened in
+    // place -- `auditDb.ts`'s own doc comment) so the truthfulness
+    // checks can be verified against real history, not only this run's
+    // fresh scratch state dir.
+    let auditDb: Layer2Report["auditDb"];
+    if (options.auditDbPath !== undefined) {
+      const copyDir = path.join(options.stateDir, "audit-db-copy");
+      mkdirSync(copyDir, { recursive: true });
+      console.log(`[bench:layer2] audit-db: copying ${options.auditDbPath} -> ${copyDir}...`);
+      const copiedPath = copyDatabaseForAudit(options.auditDbPath, copyDir);
+      const auditReport = auditDatabase(copiedPath);
+      auditDb = { sourcePath: options.auditDbPath, ...auditReport };
+      console.log(`[bench:layer2] audit-db: ${auditReport.deviceCount} device row(s), ${auditReport.linkCount} link row(s), ${auditReport.findings.length} finding(s)`);
+      for (const finding of auditReport.findings) {
+        console.log(`[bench:layer2] audit-db finding [${finding.check}] ${finding.device}: ${finding.detail}`);
+      }
+    }
 
     const finishedAt = new Date();
     const report: Layer2Report = {
@@ -320,6 +360,7 @@ async function main(): Promise<void> {
       settle: { settled: settle.settled, elapsedMs: settle.elapsedMs, neverAppeared },
       devices: [...deviceEntries.values()].sort((a, b) => a.name.localeCompare(b.name)),
       assertions,
+      ...(auditDb !== undefined ? { auditDb } : {}),
     };
 
     writeFileSync(options.outPath, JSON.stringify(report, null, 2), "utf8");

@@ -77,9 +77,47 @@ describe("assertNoRelayAsRobot", () => {
     expect(assertNoRelayAsRobot(devices)[0]?.pass).toBe(true);
   });
 
-  it("a device with role: null (never identified) passes -- nothing to contradict yet", () => {
+  it("a device with role: null and no links at all passes -- nothing to contradict yet", () => {
     const devices: AssertableDevice[] = [{ name: "unknown-board", kind: "robot", role: null, links: [] }];
     expect(assertNoRelayAsRobot(devices)[0]?.pass).toBe(true);
+  });
+
+  // ---- 018-003 strengthening: the assertion was passing vacuously ----
+
+  it("live 018-003 defect, now caught: a USB device with kind:robot and role:null (never identified) fails as 'unidentified, recorded as robot'", () => {
+    const devices: AssertableDevice[] = [{ name: "vevav", kind: "robot", role: null, links: [link({ id: "usb-vevav", transport: "usb" })] }];
+    const results = assertNoRelayAsRobot(devices);
+    expect(results[0]?.pass).toBe(false);
+    expect(results[0]?.reason).toContain("vevav");
+    expect(results[0]?.reason).toContain("unidentified, recorded as robot");
+  });
+
+  it("Layer 1's own banner-based relay classification flags kind:robot even when the live role is null", () => {
+    const devices: AssertableDevice[] = [{ name: "vevav", kind: "robot", role: null, links: [link({ id: "usb-vevav", transport: "usb" })] }];
+    const results = assertNoRelayAsRobot(devices, new Set(["vevav"]));
+    expect(results[0]?.pass).toBe(false);
+    expect(results[0]?.reason).toContain("Layer 1's own banner-based classification");
+  });
+
+  it("a link's own reason/history mentioning a relay banner flags kind:robot even with role:null and no Layer 1 evidence", () => {
+    const devices: AssertableDevice[] = [
+      { name: "vevav", kind: "robot", role: null, links: [link({ id: "usb-vevav", transport: "usb", reason: "banner DEVICE:RADIOBRIDGE:1234 seen previously" })] },
+    ];
+    const results = assertNoRelayAsRobot(devices);
+    expect(results[0]?.pass).toBe(false);
+    expect(results[0]?.reason).toContain("link's own reason/history");
+  });
+
+  it("a device with role:null and no USB link (e.g. WiFi/mbserial-only) does not get the 'unidentified' flag", () => {
+    const devices: AssertableDevice[] = [{ name: "gopiv", kind: "robot", role: null, links: [link({ id: "mbserial-gopiv", transport: "mbserial" })] }];
+    expect(assertNoRelayAsRobot(devices)[0]?.pass).toBe(true);
+  });
+
+  it("relay-as-robot fixture still fails via role even with no Layer 1/link-history evidence supplied", () => {
+    const devices: AssertableDevice[] = [{ name: "vitut", kind: "robot", role: "RADIOBRIDGE", links: [] }];
+    const results = assertNoRelayAsRobot(devices, new Set());
+    expect(results[0]?.pass).toBe(false);
+    expect(results[0]?.reason).toContain("its own role");
   });
 });
 
@@ -121,5 +159,13 @@ describe("runTruthfulnessAssertions", () => {
     ];
     const results = runTruthfulnessAssertions(devices, new Set(["gopiv"]));
     expect(results.every((r) => r.pass)).toBe(true);
+  });
+
+  it("threads layer1RelayNames through to the strengthened relay-as-robot check (018-003)", () => {
+    const devices: AssertableDevice[] = [{ name: "vevav", kind: "robot", role: null, links: [link({ id: "usb-vevav", transport: "usb" })] }];
+    const results = runTruthfulnessAssertions(devices, new Set(), new Set(["vevav"]));
+    const relayResult = results.find((r) => r.assertion === "no-relay-as-robot");
+    expect(relayResult?.pass).toBe(false);
+    expect(relayResult?.reason).toContain("Layer 1's own banner-based classification");
   });
 });

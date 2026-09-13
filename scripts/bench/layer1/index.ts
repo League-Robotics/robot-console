@@ -48,6 +48,7 @@ import { readKnownRobotNames } from "./knownNames.js";
 import { listDaplinkPorts, probeUsb, toCalloutPath } from "./usbProbe.js";
 import { probeMbserial, probeMbserialContention } from "./mbserialProbe.js";
 import { probeWifi } from "./wifiProbe.js";
+import { FRIENDLY_NAME_PATTERN, namesNeedingWifiLookup, WIFI_ROBOTLINK_PORT } from "./wifiNameLookup.js";
 import {
   probeMbrelayDataPlane,
   probeMbrelayStatus,
@@ -57,19 +58,30 @@ import {
 import { TcpLineSession } from "./tcpLineSession.js";
 import { resolveRadioAddress } from "./registry.js";
 import { nameToRadioAddress } from "@robot-console/protocol";
+import { attemptSilentRelayHidReset } from "./hidReset.js";
 import type { DeviceEntry, Layer1Report, PathResult, TcpProbeEndpoint } from "./types.js";
 
 interface CliOptions {
   skipHeld: boolean;
   outPath: string;
+  /** 018-003 opt-in: try one DAPLink vendor-command HID reset
+   * (`hidReset.ts`) against any USB device that never produced a banner
+   * at all, even after `usbProbe.ts`'s own break-reset retry -- e.g.
+   * `vevav`, live-verified silent through one break during the 018-002
+   * bench run. Never on by default -- resetting a physical board is a
+   * stronger action than anything else this harness does unprompted. */
+  hidResetSilentRelays: boolean;
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
   let skipHeld = false;
   let outPath = path.join(process.cwd(), "bench-layer1-report.json");
+  let hidResetSilentRelays = false;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--skip-held") {
       skipHeld = true;
+    } else if (argv[i] === "--hid-reset-silent-relays") {
+      hidResetSilentRelays = true;
     } else if (argv[i] === "--out") {
       const next = argv[i + 1];
       if (next === undefined) {
@@ -79,7 +91,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
       i += 1;
     }
   }
-  return { skipHeld, outPath };
+  return { skipHeld, outPath, hidResetSilentRelays };
 }
 
 function tcpResourceKey(ip: string, port: number): string {
@@ -232,8 +244,29 @@ async function main(): Promise<void> {
       continue;
     }
     console.log(`[bench:layer1] usb: probing ${port.path} (serial ${port.serialNumber ?? "?"})...`);
-    const result = await probeUsb(port);
-    const { deviceName, kind } = classifyUsbDevice(result, name);
+    let result = await probeUsb(port);
+    let { deviceName, kind } = classifyUsbDevice(result, name);
+
+    // 018-003 opt-in only: a device that produced no banner at all, even
+    // after usbProbe.ts's own break-reset retry, is exactly the state
+    // live-verified against vevav -- try one DAPLink vendor HID reset
+    // (hidReset.ts) and re-probe once, rather than reporting fail
+    // outright. Never runs unless the caller explicitly opted in.
+    if (options.hidResetSilentRelays && kind === "unknown") {
+      const calloutPath = toCalloutPath(port.path);
+      console.log(`[bench:layer1] usb: ${calloutPath} produced no banner -- attempting DAPLink HID reset (--hid-reset-silent-relays)...`);
+      const hidReset = await attemptSilentRelayHidReset(calloutPath);
+      console.log(`[bench:layer1] usb: HID reset for ${calloutPath} -> ${hidReset.attempted ? (hidReset.ok ? "ok" : "failed") : "not attempted"} (${hidReset.detail})`);
+      result = { ...result, transcript: [...result.transcript, { t: result.transcript.at(-1)?.t ?? 0, dir: "info", line: `HID reset attempt: ${hidReset.detail}` }] };
+      if (hidReset.ok) {
+        console.log(`[bench:layer1] usb: re-probing ${port.path} after HID reset...`);
+        const reprobed = await probeUsb(port);
+        result = { ...reprobed, transcript: [...result.transcript, ...reprobed.transcript] };
+        ({ deviceName, kind } = classifyUsbDevice(result, name));
+        console.log(`[bench:layer1] usb: ${port.path} after HID reset -> ${result.status} (${result.reason})`);
+      }
+    }
+
     registry.addPath(deviceName, kind, result);
     console.log(`[bench:layer1] usb: ${port.path} -> ${result.status} (${result.reason})`);
   }
@@ -279,23 +312,69 @@ async function main(): Promise<void> {
     console.log(`[bench:layer1] wifi: ${name} -> ${result.status} (${result.reason})`);
   }
 
-  // ---- mbrelay pool(s) ------------------------------------------------
   // Only a well-formed five-letter micro:bit name is representable as a
   // radio address at all (`nameToRadioAddress`/`nameToValue` throw for
   // anything else) -- `registry.all()` can also carry a USB board's raw
   // serial number as its "name" (this harness's own fallback, per
   // `usbProbe.ts`'s doc comment, for a board whose banner never arrived)
   // or the mbrelay pool's own name (e.g. "torture", not five letters
-  // either). Filtering here, once, is what keeps this sweep from
+  // either). Filtering here, once, is what keeps both the WiFi
+  // by-name-lookup step below and the mbrelay sweep further down from
   // crashing on either — caught live on the 2026-09-13 bench evidence
   // run before this fix (`nameToValue` threw on a raw USB serial
   // string).
-  const FRIENDLY_NAME_PATTERN = /^[zvgpt][uoiea][zvgpt][uoiea][zvgpt]$/;
   const usbNames = registry.all().map((d) => d.name);
-  const allKnownNames = [...new Set([...knownNames, ...mbserialServices.map((s) => s.name), ...wifiEndpoints.map(({ service }) => wifiNameFromTxt(service)), ...usbNames])].filter(
-    (name) => FRIENDLY_NAME_PATTERN.test(name),
+  const announcedWifiNames = new Set(wifiEndpoints.map(({ service }) => wifiNameFromTxt(service)));
+  const allKnownNames = [...new Set([...knownNames, ...mbserialServices.map((s) => s.name), ...announcedWifiNames, ...usbNames])].filter((name) =>
+    FRIENDLY_NAME_PATTERN.test(name),
   );
 
+  // ---- WiFi by name lookup (018-003 Step 0 hardening) -----------------
+  // `_robotlink` is a periodic-announcement-only service (mdnsBrowse.ts's
+  // own doc comment) -- a robot that hasn't announced again yet within
+  // *this* run's browse window is otherwise invisible to Layer 1 even
+  // though it is right there on the network, live-verified on
+  // 2026-09-13 (gopiv's own `wifi` row went missing on a re-run purely
+  // because its next announcement hadn't landed in time). For every
+  // known name not already found by mDNS announcement, resolve
+  // `<name>.local` directly (bounded, `dnsResolve.ts`'s own
+  // `DEFAULT_RESOLVE_TIMEOUT_MS`) and dial port 7654 -- see
+  // `wifiNameLookup.ts`'s own module doc comment.
+  const lookupCandidates = namesNeedingWifiLookup(allKnownNames, announcedWifiNames);
+  if (lookupCandidates.length > 0) {
+    console.log(`[bench:layer1] wifi-by-name: checking ${lookupCandidates.length} known name(s) not seen via mDNS announcement: ${lookupCandidates.join(", ")}...`);
+  }
+  for (const name of lookupCandidates) {
+    const hostname = `${name}.local`;
+    const { ip, resolveMs, error } = await resolveIPv4(hostname);
+    if (ip === undefined) {
+      console.log(`[bench:layer1] wifi-by-name: ${name} -> resolve FAILED after ${resolveMs}ms: ${error} (not necessarily a WiFi robot -- no row emitted)`);
+      continue;
+    }
+    const endpoint: TcpProbeEndpoint = { host: hostname, ip, port: WIFI_ROBOTLINK_PORT, resolveMs };
+    // Best-effort exclusivity: the main exclusivity check above only
+    // covers what mDNS had already discovered by that point. Rather than
+    // abort a run that has already probed everything else over a
+    // resource discovered only now, a held resource found here is simply
+    // skipped (never probed), regardless of --skip-held -- this is
+    // strictly more conservative than the main check's refuse mode, not
+    // less.
+    const holdersHere = await findHolders([{ kind: "tcp", host: ip, port: WIFI_ROBOTLINK_PORT }], realLsofRunner);
+    if (holdersHere.length > 0) {
+      console.log(`[bench:layer1] wifi-by-name: ${name} -> skipping, held by ${describeHolders(holdersHere)}`);
+      continue;
+    }
+    console.log(`[bench:layer1] wifi-by-name: probing ${name} at ${hostname} (${ip})...`);
+    const result = await probeWifi(name, endpoint);
+    if (result.status === "pass") {
+      registry.addPath(name, "robot", { ...result, reason: `${result.reason} (found by name lookup, not announcement)` });
+      console.log(`[bench:layer1] wifi-by-name: ${name} -> pass (found by name lookup, not announcement)`);
+    } else {
+      console.log(`[bench:layer1] wifi-by-name: ${name} -> ${result.status} (${result.reason}) -- no row emitted, not a confirmed WiFi robot`);
+    }
+  }
+
+  // ---- mbrelay pool(s) ------------------------------------------------
   for (const { service, endpoint } of mbrelayEndpoints) {
     const poolName = service.name;
     const key = tcpResourceKey(endpoint.ip ?? endpoint.host, endpoint.port);

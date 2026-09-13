@@ -27,6 +27,15 @@ export interface AssertableLink {
   reason: string | null;
 }
 
+/**
+ * A relay's own banner `role` token, per `wire_handler.cpp`'s banner
+ * dialects -- also used, alongside {@link RELAY_ROLE_PATTERN} below, to
+ * detect a relay banner mentioned inside a *link's* own `reason` text
+ * (018-003 strengthening: "link history" evidence, not just the
+ * device's own current `role`).
+ */
+const RELAY_BANNER_TEXT_PATTERN = /RADIO(BRIDGE|RELAY)/i;
+
 /** The handful of `SnapshotDevice` fields these assertions read. */
 export interface AssertableDevice {
   name: string;
@@ -103,18 +112,77 @@ export function assertNoStaleWhileAdvertised(
  * "No device has `kind: 'robot'` while its role/banner history says
  * relay." Reports one result per device (not only failures), so a
  * clean run is visible in the report, not just silent.
+ *
+ * ## 018-003 strengthening -- the assertion was passing vacuously
+ *
+ * Team-lead review of a live report found `"no-relay-as-robot vevav:
+ * kind robot consistent with role (none)"` — **the exact bug this
+ * assertion exists to catch**, passing clean, because the original
+ * implementation only ever compared a device's *own current* `role`
+ * against the relay-banner pattern: `vevav` (a known relay, USB
+ * `/dev/cu.usbmodem2121402`, no banner even after one break-reset) had
+ * `role: null`, so `roleLooksLikeRelay` was `false` and the device
+ * quietly passed as "kind robot, consistent with role none" — kind
+ * `"robot"` is not remotely consistent with "no role at all", it is
+ * simply unidentified.
+ *
+ * This now flags two distinct, both real, failure shapes:
+ *
+ * 1. **Relay evidence contradicts `kind: "robot"`** — from the device's
+ *    own `role`, from `layer1RelayNames` (Layer 1's own classification,
+ *    from an actual captured banner — see `layer1/index.ts`'s
+ *    `classifyUsbDevice`), or from a link's own `reason` text
+ *    mentioning a relay banner (a link's failure history can carry this
+ *    even after the device's current `role` has been cleared/never
+ *    set).
+ * 2. **Unidentified over USB but recorded `kind: "robot"` anyway** — a
+ *    device with a USB link, `role: null` (never actually identified),
+ *    and no relay evidence either: `kind: "robot"` is asserted with no
+ *    basis at all, which is exactly as untruthful as misclassifying a
+ *    known relay.
  */
-export function assertNoRelayAsRobot(devices: readonly AssertableDevice[]): AssertionResult[] {
+export function assertNoRelayAsRobot(
+  devices: readonly AssertableDevice[],
+  layer1RelayNames: ReadonlySet<string> = new Set(),
+): AssertionResult[] {
   return devices.map((device) => {
-    const roleLooksLikeRelay = device.role !== null && RELAY_ROLE_PATTERN.test(device.role);
-    const misclassified = device.kind === "robot" && roleLooksLikeRelay;
+    const ownRoleLooksLikeRelay = device.role !== null && RELAY_ROLE_PATTERN.test(device.role);
+    const layer1SaysRelay = layer1RelayNames.has(device.name);
+    const linkHistorySaysRelay = device.links.some((link) => link.reason !== null && RELAY_BANNER_TEXT_PATTERN.test(link.reason));
+    const relayEvidence = ownRoleLooksLikeRelay || layer1SaysRelay || linkHistorySaysRelay;
+    const misclassifiedAsRelay = device.kind === "robot" && relayEvidence;
+
+    const hasUsbLink = device.links.some((link) => link.transport === "usb");
+    const unidentifiedRecordedAsRobot = device.kind === "robot" && device.role === null && !relayEvidence && hasUsbLink;
+
+    if (misclassifiedAsRelay) {
+      const evidence = [
+        ownRoleLooksLikeRelay ? `its own role ("${device.role}")` : null,
+        layer1SaysRelay ? "Layer 1's own banner-based classification" : null,
+        linkHistorySaysRelay ? "a link's own reason/history" : null,
+      ]
+        .filter((e): e is string => e !== null)
+        .join(", ");
+      return {
+        assertion: "no-relay-as-robot",
+        device: device.name,
+        pass: false,
+        reason: `device "${device.name}" is recorded kind:"robot" but ${evidence} says relay`,
+      };
+    }
+    if (unidentifiedRecordedAsRobot) {
+      return {
+        assertion: "no-relay-as-robot",
+        device: device.name,
+        pass: false,
+        reason: `device "${device.name}" has a USB link and no role after settle -- unidentified, recorded as robot`,
+      };
+    }
     return {
       assertion: "no-relay-as-robot",
       device: device.name,
-      pass: !misclassified,
-      reason: misclassified
-        ? `device "${device.name}" is recorded kind:"robot" but its own role ("${device.role}") is a relay banner role`
-        : `kind ("${device.kind}") is consistent with role (${device.role === null ? "none" : `"${device.role}"`})`,
+      pass: true,
+      reason: `kind ("${device.kind}") is consistent with role (${device.role === null ? "none" : `"${device.role}"`})`,
     };
   });
 }
@@ -142,14 +210,19 @@ export function assertOneRowPerName(devices: readonly AssertableDevice[]): Asser
 }
 
 /** Run all three assertions and concatenate their per-device results,
- * in the fixed order the ticket lists them. */
+ * in the fixed order the ticket lists them. `layer1RelayNames` (018-003)
+ * is the set of device names Layer 1's own banner-based classification
+ * recorded as `kind: "relay"` -- threaded through to
+ * {@link assertNoRelayAsRobot}'s strengthened check; defaults to empty
+ * for callers (and existing tests) with no Layer 1 report at hand. */
 export function runTruthfulnessAssertions(
   devices: readonly AssertableDevice[],
   advertisedNames: ReadonlySet<string>,
+  layer1RelayNames: ReadonlySet<string> = new Set(),
 ): AssertionResult[] {
   return [
     ...assertNoStaleWhileAdvertised(devices, advertisedNames),
-    ...assertNoRelayAsRobot(devices),
+    ...assertNoRelayAsRobot(devices, layer1RelayNames),
     ...assertOneRowPerName(devices),
   ];
 }

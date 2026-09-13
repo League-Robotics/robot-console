@@ -151,11 +151,18 @@ describe("RobotPage", () => {
     expect(el.textContent).not.toContain("Hold a direction");
   });
 
-  it("OOP 2026-09-10: tabs sit beside the name; a plain robot gets Main, Drive, Functions & charts and Configuration", () => {
+  it("ticket 018-010: tabs sit beside the name; every robot (including a plain, non-calibration one) gets Main, Drive, Calibration, Functions & charts, Configuration and Diagnostics", () => {
     const { el } = mountRobotPage();
     const row = el.querySelector(".robot-page-title-row")!;
     expect(row.querySelector("h2")?.textContent).toBe("vevav");
-    expect(Array.from(row.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Functions & charts", "Configuration", "Diagnostics"]);
+    expect(Array.from(row.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual([
+      "Main",
+      "Drive",
+      "Calibration",
+      "Functions & charts",
+      "Configuration",
+      "Diagnostics",
+    ]);
     expect(el.querySelector('[data-testid="robot-tab-main"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
@@ -175,7 +182,7 @@ describe("RobotPage", () => {
     expect(el.querySelector('[data-testid="robot-tab-functions"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("OOP 2026-09-10: a calibration robot gets a Calibration tab with both wizards, the code block, and the current calibration", () => {
+  it("ticket 018-010: the Calibration tab (offered for any robot) shows both wizards, the code block, and the current calibration", () => {
     const { el } = mountRobotPage(robotDevice({ program: "calibration-1", version: "1" }));
     expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Calibration", "Functions & charts", "Configuration", "Diagnostics"]);
     act(() => {
@@ -187,6 +194,17 @@ describe("RobotPage", () => {
     expect(el.querySelector(".robot-page-column-left [aria-label=\"Rotation calibration\"]")).not.toBeNull();
     expect(el.querySelector(".robot-page-column-left [aria-label=\"Calibration code\"]")).not.toBeNull();
     expect(el.querySelector(".robot-page-column-right [aria-label=\"Current calibration\"]")).not.toBeNull();
+  });
+
+  it("ticket 018-010: a plain, non-calibration robot also gets a working Calibration tab (flash panel says what's running)", () => {
+    const { el } = mountRobotPage(robotDevice({ program: null, version: null }));
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
+    });
+    expect(el.querySelector('[data-testid="robot-tab-panel-calibration"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="calibration-firmware-not-running"]')?.textContent).toBe("Program: unknown");
+    const flashButton = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash calibration firmware");
+    expect(flashButton).not.toBeUndefined();
   });
 
   it("renders exactly one console and a command strip in the right column", () => {

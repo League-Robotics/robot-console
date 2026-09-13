@@ -39,7 +39,7 @@ import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RobotFunction, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { RotationCalibrationWizard, deriveRotationCalibrationRun, reportedTrackWidthCm } from "./RotationCalibrationWizard";
+import { RotationCalibrationWizard, deriveRotationCalibrationRun, reportedTrackWidthCm, robotReportedSlip } from "./RotationCalibrationWizard";
 import { WsProvider, useWsActions } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 
@@ -620,5 +620,18 @@ describe("RotationCalibrationWizard as CalibrationPage drives it (OOP 2026-09-10
         deriveRotationCalibrationRun([{ direction: "rx", line: "CALA:measured b=8.84cm  (anchor was 12.08)" }]),
       ),
     ).toBe(8.84);
+  });
+
+  it("ticket 018-010: robotReportedSlip reads the firmware's own CALA:derived slip= line, distinct from reportedTrackWidthCm", () => {
+    const run = deriveRotationCalibrationRun([
+      { direction: "rx", line: "CALA:measured b=8.84cm  (anchor was 12.08)" },
+      { direction: "rx", line: "CALA:derived slip=1.301 = track 11.5 / b 8.84" },
+    ]);
+    expect(robotReportedSlip(run)).toBe(1.301);
+    expect(reportedTrackWidthCm(run)).toBe(8.84);
+    // Absent entirely (no `derived slip=` line yet) reads `undefined`, not 0.
+    expect(
+      robotReportedSlip(deriveRotationCalibrationRun([{ direction: "rx", line: "CALA:measured b=8.84cm" }])),
+    ).toBeUndefined();
   });
 });

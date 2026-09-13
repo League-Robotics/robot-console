@@ -206,6 +206,32 @@ export function reportedTrackWidthCm(run: RotationCalibrationRun): number | unde
   return undefined;
 }
 
+/** The robot's own `CALA:derived slip=<n> = track <a> / b <b>` line
+ * (ticket 018-010, item 4) -- the firmware's own slip computation,
+ * already on the wire (it is where `deriveRotationCalibrationRun`'s own
+ * `derivedSnippet` fallback reads the number from, when the `apply` line
+ * itself is dropped over WiFi). Never folded into `lib/calibration.ts`'s
+ * own `DerivedCalibration.rotationalSlip`: the firmware divides its own
+ * hard-coded 11.5 cm anchor by the reported width, not this robot's
+ * actual measured track width, so the two numbers answer different
+ * questions and both are shown, side by side, in the "Current
+ * calibration" table (`CalibrationTable.tsx`) -- see this module's own
+ * doc comment's "The image's own `derived slip` is ignored" note in
+ * `lib/calibration.ts`. */
+export function robotReportedSlip(run: RotationCalibrationRun): number | undefined {
+  if (run.kind !== "succeeded" && run.kind !== "running") {
+    return undefined;
+  }
+  const texts = [...run.leadingEvents, ...run.stages.flatMap((stage) => stage.events)];
+  for (const text of texts) {
+    const match = /^derived slip=\s*(-?\d+(?:\.\d+)?)/.exec(text.trim());
+    if (match) {
+      return Number(match[1]);
+    }
+  }
+  return undefined;
+}
+
 export interface RotationCalibrationWizardProps {
   link: SnapshotLink;
   /** OOP 2026-09-10: called whenever the current run's derived state

@@ -55,6 +55,14 @@
  * own doc comment for the full rationale; the `stop-button`/
  * `estop-button`/`estop-clear-button` `data-testid`s are unchanged.
  *
+ * **Calibration tab always offered (ticket 018-010).** Previously gated
+ * on `isCalibrationProgram(device.program)` -- a robot not currently
+ * running the calibration build had no way to reach the tab that flashes
+ * it. `CalibrationPage.tsx` itself now shows what's actually running and
+ * offers Flash regardless (see its own doc comment); this page just
+ * mounts the tab unconditionally, passing `device` through so that panel
+ * can read `program`/`version`.
+ *
  * **`program`/`version` diagnostics (sprint 011 ticket 002).** Shown
  * verbatim, near the `<h2>` name heading, whenever `device.program` is
  * non-null -- a robot that never answered `ID` (older firmware, or the
@@ -100,7 +108,7 @@
  */
 import { useState } from "react";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { isCalibrationProgram, nameDisplay } from "../deviceDisplay";
+import { nameDisplay } from "../deviceDisplay";
 import { CalibrationPage } from "../components/CalibrationPage";
 import { ChartsPanel } from "../components/ChartsPanel";
 import { CommandStrip } from "../components/CommandStrip";
@@ -126,20 +134,22 @@ export interface RobotPageProps {
 /** OOP 2026-09-10: the robot page is split into tabs next to the
  * robot's name (stakeholder direction): Main (status, drive, console),
  * Drive (`DriveTab`: the pad alone, plus cursor keys and a gamepad),
- * Calibration (`CalibrationPage`: both wizards feeding one code block
- * -- only offered for a calibration-classified robot), and Functions & charts (functions and the drive pad on one side,
- * charts and the path trace on the other). Sequencing state moved into the console's
- * own header (`DeviceConsole`) rather than a page panel. */
+ * Calibration (`CalibrationPage`: flash the calibration build, run
+ * whatever `cal*` functions `FUNCS` reports, and the wizards/code block/
+ * console feeding one calibration state -- always offered, ticket
+ * 018-010, not gated on the robot currently running a calibration
+ * build), and Functions & charts (functions and the drive pad on one
+ * side, charts and the path trace on the other). Sequencing state moved
+ * into the console's own header (`DeviceConsole`) rather than a page
+ * panel. */
 export type RobotTab = "main" | "drive" | "calibration" | "functions" | "configuration" | "diagnostics";
 
 export function RobotPage({ device, link }: RobotPageProps) {
-  const hasCalibration = isCalibrationProgram(device.program);
-  const [selectedTab, setSelectedTab] = useState<RobotTab>("main");
-  const tab: RobotTab = selectedTab === "calibration" && !hasCalibration ? "main" : selectedTab;
+  const [tab, setSelectedTab] = useState<RobotTab>("main");
   const tabs: Array<{ id: RobotTab; label: string }> = [
     { id: "main", label: "Main" },
     { id: "drive", label: "Drive" },
-    ...(hasCalibration ? [{ id: "calibration" as const, label: "Calibration" }] : []),
+    { id: "calibration", label: "Calibration" },
     { id: "functions", label: "Functions & charts" },
     { id: "configuration", label: "Configuration" },
     { id: "diagnostics", label: "Diagnostics" },
@@ -196,7 +206,7 @@ export function RobotPage({ device, link }: RobotPageProps) {
 
       {tab === "drive" && <DriveTab link={link} />}
 
-      {tab === "calibration" && <CalibrationPage link={link} name={device.name} />}
+      {tab === "calibration" && <CalibrationPage device={device} link={link} name={device.name} />}
 
       {tab === "configuration" && <ConfigurationPage device={device} />}
 

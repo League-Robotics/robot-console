@@ -100,4 +100,57 @@ describe("CalibrationTable", () => {
     expect(el.querySelector('[data-testid="configuration-effective-track"]')?.textContent).toBe("run the rotation calibration");
     expect(el.querySelector('[data-testid="configuration-slip"]')?.textContent).toBe("—");
   });
+
+  describe("ticket 018-010: 'Wheel track' vs 'Measured track width (robot-reported)', and the robot-reported slip", () => {
+    it("calibration variant: the ruler-measured input row is now labelled 'Wheel track', freeing 'Measured track width' for the robot-reported row", () => {
+      const el = mount(<CalibrationTable variant="calibration" state={{}} derived={{}} onPatch={vi.fn()} />);
+      const rowLabels = Array.from(el.querySelectorAll("th")).map((th) => th.textContent);
+      expect(rowLabels).toEqual(["Wheel diameter", "Wheel track", "Measured track width", "Effective track width", "Rotational slip"]);
+      expect(el.querySelector('label[for="calibration-track-width"]')?.textContent).toBe("Wheel track");
+    });
+
+    it("calibration variant: the robot-reported track width shows the value, its source, and the not-yet-measured copy when absent", () => {
+      const withValue = mount(
+        <CalibrationTable
+          variant="calibration"
+          state={{ reportedTrackWidthCm: 8.84, reportedWithDiameterMm: 90.28 }}
+          derived={{}}
+          onPatch={vi.fn()}
+        />,
+      );
+      const cell = withValue.querySelector('[data-testid="calibration-reported-track-width"]');
+      expect(cell?.textContent).toContain("8.84 cm");
+      expect(cell?.textContent).toContain("robot-reported, from rotation calibration");
+
+      const empty = mount(<CalibrationTable variant="calibration" state={{}} derived={{}} onPatch={vi.fn()} />);
+      expect(empty.querySelector('[data-testid="calibration-reported-track-width"]')?.textContent).toBe(
+        "not measured yet — run the rotation calibration",
+      );
+    });
+
+    it("configuration variant: the robot-reported track width row shows the bare value with no source annotation", () => {
+      const el = mount(
+        <CalibrationTable variant="configuration" state={{ reportedTrackWidthCm: 8.84 }} derived={{}} onPatch={vi.fn()} />,
+      );
+      expect(el.querySelector('[data-testid="configuration-reported-track-width"]')?.textContent).toBe("8.84 cm");
+    });
+
+    it("calibration variant: the robot's own CALA:derived slip= value shows alongside the computed slip, only when known", () => {
+      const withoutRobotSlip = mount(
+        <CalibrationTable variant="calibration" state={{ measuredTrackWidthCm: 11.5 }} derived={{ rotationalSlip: 1.301 }} onPatch={vi.fn()} />,
+      );
+      expect(withoutRobotSlip.querySelector('[data-testid="calibration-robot-reported-slip"]')).toBeNull();
+
+      const withRobotSlip = mount(
+        <CalibrationTable
+          variant="calibration"
+          state={{ measuredTrackWidthCm: 11.5, robotReportedSlip: 1.301 }}
+          derived={{ rotationalSlip: 1.301 }}
+          onPatch={vi.fn()}
+        />,
+      );
+      const slipCell = withRobotSlip.querySelector('[data-testid="calibration-slip"]');
+      expect(slipCell?.textContent).toBe("1.301 (robot reported 1.301)");
+    });
+  });
 });

@@ -35,6 +35,19 @@
  * board too), and never silently omitted or given a serial-derived
  * fallback name (the exact `microbit-console` mistake this sprint exists
  * to not repeat).
+ *
+ * ## Every dapjs call is time-bounded (sprint 017 ticket 003)
+ *
+ * `processor.connect()` and `processor.readMem32()` are each wrapped in
+ * `lib/withTimeout.ts`'s {@link withTimeout} — `node-hid`/`dapjs` give no
+ * bounded-wait or cancellation of their own, so a wedged transport used
+ * to hang the caller (and the board's `board_owner` naming slot) forever
+ * (`flash.ts`'s own module doc carries the matching change for its own
+ * DAPLink calls). A timeout classifies as `reason: "timeout"` in the
+ * returned {@link SwdNameFailure}; `disconnect()` in this function's own
+ * `finally` block already runs regardless of which of the two awaits
+ * failed, so no additional best-effort cleanup is needed at the timeout
+ * site itself.
  */
 
 import { HID as NodeHidDevice } from "node-hid";
@@ -47,6 +60,7 @@ import { HID as NodeHidDevice } from "node-hid";
 // entry point) no longer applies.
 import { HID as HidTransport, CortexM } from "./vendor/dapjs/index.js";
 import { deviceIdToName } from "@robot-console/protocol";
+import { TimeoutError, withTimeout } from "./lib/withTimeout.js";
 import type { DaplinkDevice } from "./devices.js";
 
 /** `FICR.DEVICEID[1]` — the 32-bit word CODAL hashes into the board's
@@ -69,7 +83,7 @@ export interface SwdNameSuccess {
  * apart; `error` is always the underlying message for display/logging. */
 export interface SwdNameFailure {
   status: "unnamed";
-  reason: "no-hid-path" | "permission" | "attach-failed";
+  reason: "no-hid-path" | "permission" | "attach-failed" | "timeout";
   error: string;
 }
 
@@ -116,6 +130,23 @@ function defaultCortexMFactory(hidPath: string): CortexM {
   return new CortexM(transport);
 }
 
+/** Default bound on `processor.connect()`. Overridable via
+ * {@link ReadSwdNameOptions.connectTimeoutMs}. */
+export const DEFAULT_SWD_CONNECT_TIMEOUT_MS = 3_000;
+
+/** Default bound on `processor.readMem32()` — a single 32-bit register
+ * read, so this stays short. Overridable via
+ * {@link ReadSwdNameOptions.readTimeoutMs}. */
+export const DEFAULT_SWD_READ_TIMEOUT_MS = 3_000;
+
+export interface ReadSwdNameOptions {
+  createCortexM?: CortexMFactory;
+  /** See {@link DEFAULT_SWD_CONNECT_TIMEOUT_MS}. */
+  connectTimeoutMs?: number;
+  /** See {@link DEFAULT_SWD_READ_TIMEOUT_MS}. */
+  readTimeoutMs?: number;
+}
+
 /**
  * Read a joined `devices.ts` record's five-letter name over SWD.
  *
@@ -125,13 +156,14 @@ function defaultCortexMFactory(hidPath: string): CortexM {
  * cooperating firmware — see the module doc.
  *
  * Always resolves, never rejects: any failure (no HID path, permission
- * denied, attach/read failure) comes back as a {@link SwdNameFailure}
- * rather than a thrown error, so a caller enumerating many devices can
- * name each independently without one bad board taking the others down.
+ * denied, attach/read failure, a timeout on either call) comes back as a
+ * {@link SwdNameFailure} rather than a thrown error, so a caller
+ * enumerating many devices can name each independently without one bad
+ * board taking the others down.
  */
 export async function readSwdName(
   device: DaplinkDevice,
-  options?: { createCortexM?: CortexMFactory },
+  options?: ReadSwdNameOptions,
 ): Promise<SwdNameResult> {
   const hidPath = device.hid?.path;
   if (hidPath === undefined) {
@@ -143,6 +175,8 @@ export async function readSwdName(
   }
 
   const createCortexM = options?.createCortexM ?? defaultCortexMFactory;
+  const connectTimeoutMs = options?.connectTimeoutMs ?? DEFAULT_SWD_CONNECT_TIMEOUT_MS;
+  const readTimeoutMs = options?.readTimeoutMs ?? DEFAULT_SWD_READ_TIMEOUT_MS;
   let processor: CortexM;
   try {
     processor = createCortexM(hidPath);
@@ -151,10 +185,13 @@ export async function readSwdName(
   }
 
   try {
-    await processor.connect();
-    const deviceId = await processor.readMem32(FICR_DEVICEID1);
+    await withTimeout(processor.connect(), connectTimeoutMs, "processor.connect()");
+    const deviceId = await withTimeout(processor.readMem32(FICR_DEVICEID1), readTimeoutMs, "processor.readMem32()");
     return swdNameResultFromDeviceId(deviceId);
   } catch (error) {
+    if (error instanceof TimeoutError) {
+      return { status: "unnamed", reason: "timeout", error: error.message };
+    }
     return classifyAttachError(error);
   } finally {
     try {

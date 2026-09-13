@@ -2,7 +2,7 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import { WifiCredentialsDialog, validateWifiInput } from "./WifiCredentialsDialog";
+import { WifiCredentialsDialog } from "./WifiCredentialsDialog";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 
@@ -65,17 +65,8 @@ function sent(socket: FakeSocket): unknown[] {
   return socket.sent.map((raw) => JSON.parse(raw));
 }
 
-describe("validateWifiInput", () => {
-  it("refuses spaces, empties, and over-long values; accepts a blank password only when one is stored", () => {
-    expect(validateWifiInput("Busboom Mesh", "pw", false)).toContain("spaces");
-    expect(validateWifiInput("", "pw", false)).toContain("network name");
-    expect(validateWifiInput("Net", "", false)).toContain("password");
-    expect(validateWifiInput("Net", "", true)).toBeNull();
-    expect(validateWifiInput("x".repeat(33), "pw", false)).toContain("too long");
-    expect(validateWifiInput("Net", "p".repeat(64), false)).toContain("too long");
-    expect(validateWifiInput("Busboom_Garage", "hunter2", false)).toBeNull();
-  });
-});
+// `validateWifiInput`'s own coverage moved to `WifiCredentialsForm.test.tsx`
+// (ticket 017-008) -- it now lives in, and is shared through, that module.
 
 describe("WifiCredentialsDialog", () => {
   it("asks the host for the stored network on open, prefills the name, and on submit saves then provisions this endpoint", () => {

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { deviceIdToName } from "@robot-console/protocol";
+import { deviceIdToName, nameToValue } from "@robot-console/protocol";
 import { openStoreDb } from "../store/db.js";
 import {
   Store,
@@ -15,7 +15,7 @@ import {
 import { FakeByteStream } from "../link/__fixtures__/FakeByteStream.js";
 import { realScheduler, type Scheduler } from "../link/pacing.js";
 import { createConnector, type Connector, type ConnectedSession } from "./connector.js";
-import { plan, planUserClose, planUserOpen, startReconciler } from "./reconciler.js";
+import { describeUserOpenRefusal, plan, planUserClose, planUserOpen, startReconciler } from "./reconciler.js";
 
 // Sprint 015 ticket 002's own suite: table-driven `plan()`/`planUserOpen`/
 // `planUserClose` cases (pure, no store or network access at all), plus
@@ -277,6 +277,72 @@ describe("planUserOpen", () => {
   });
 });
 
+// ---------------------------------------------------------------------
+// Bench defect 4 (2026-09-12): describeUserOpenRefusal narrates exactly
+// the branches planUserOpen above refuses on -- one table test per
+// planUserOpen case that returns [], confirming a reason string comes
+// back for each, and confirming every job-producing case above narrates
+// to undefined (never a false-positive "refused" the UI would show for
+// something that actually worked).
+// ---------------------------------------------------------------------
+
+describe("describeUserOpenRefusal", () => {
+  it("is undefined whenever planUserOpen would actually produce a job", () => {
+    const opensPlainly = rows({
+      devices: [deviceRow(1, true)],
+      links: [linkRow({ id: "wifi-1", transport: "wifi", deviceId: 1 })],
+    });
+    expect(planUserOpen(opensPlainly, "wifi-1")).not.toEqual([]);
+    expect(describeUserOpenRefusal(opensPlainly, "wifi-1")).toBeUndefined();
+
+    const reopensClosedByUser = rows({
+      devices: [deviceRow(1, true)],
+      links: [linkRow({ id: "usb-1", transport: "usb", deviceId: 1, state: "closed_by_user", userClosed: true })],
+    });
+    expect(describeUserOpenRefusal(reopensClosedByUser, "usb-1")).toBeUndefined();
+
+    const switches = rows({
+      links: [
+        linkRow({ id: "radio-A", transport: "radio", address: { relayLinkId: "relay-1", channel: 1, group: 1 }, state: "connected" }),
+        linkRow({ id: "radio-B", transport: "radio", address: { relayLinkId: "relay-1", channel: 2, group: 1 } }),
+      ],
+      sessions: [{ linkId: "radio-A" }],
+    });
+    expect(describeUserOpenRefusal(switches, "radio-B")).toBeUndefined();
+  });
+
+  it("names an unknown linkId", () => {
+    expect(describeUserOpenRefusal(rows({}), "does-not-exist")).toBe('no such link "does-not-exist"');
+  });
+
+  it("names a not-yet-owned device as the reason a wifi/mbserial open is refused", () => {
+    const input = rows({
+      devices: [deviceRow(1, false)],
+      links: [linkRow({ id: "wifi-1", transport: "wifi", deviceId: 1 })],
+    });
+    expect(planUserOpen(input, "wifi-1")).toEqual([]);
+    expect(describeUserOpenRefusal(input, "wifi-1")).toMatch(/not owned/);
+  });
+
+  it("names an already-open link (session already exists) as the reason", () => {
+    const input = rows({
+      links: [linkRow({ id: "radio-A", transport: "radio", address: { relayLinkId: "relay-1", channel: 1, group: 1 }, state: "connected" })],
+      sessions: [{ linkId: "radio-A" }],
+    });
+    expect(planUserOpen(input, "radio-A")).toEqual([]);
+    expect(describeUserOpenRefusal(input, "radio-A")).toBe("already open");
+  });
+
+  it("names an already-connecting (in-flight) link as the reason", () => {
+    const input = rows({
+      devices: [deviceRow(1, true)],
+      links: [linkRow({ id: "usb-1", transport: "usb", deviceId: 1, state: "connecting" })],
+    });
+    expect(planUserOpen(input, "usb-1")).toEqual([]);
+    expect(describeUserOpenRefusal(input, "usb-1")).toBe("already connecting");
+  });
+});
+
 describe("planUserClose", () => {
   it("closes an open (session-backed) link", () => {
     const input = rows({
@@ -507,6 +573,136 @@ describe("startReconciler -- executor integration (real connector, fake ByteStre
     }
   });
 
+  it(
+    "bench defect 5 (2026-09-12): a sessions row inherited from a prior process (link left unresponsive, no live in-memory session) is cleared at startup, and the link auto-reconnects for real instead of being refused forever",
+    async () => {
+      // Simulates exactly the live bench finding: `mbserial-vevov` had a
+      // real session at some point (a *previous* process's own
+      // `runConnect`), the harvester's missed-poll watchdog later wrote
+      // `links.state = 'unresponsive'` (harvester.ts's own `fail` --
+      // deliberately never touches `sessions`), and then that process
+      // exited (or was killed) without ever calling `session-close` --
+      // leaving `sessions` row and `links.state` exactly as seeded below,
+      // with no `ConnectedSession` anywhere to back it. A *fresh*
+      // `startReconciler` call (this executor's own `sessions` Map is
+      // always empty at construction) must not trust that leftover row.
+      store.upsertDevice({ id: ROBOT_SERIAL, name: deviceIdToName(ROBOT_SERIAL), kind: "robot", at: 1 });
+      store.setOwned(ROBOT_SERIAL, true, 1);
+      store.upsertLink({ id: "wifi-1", transport: "wifi", address: { host: "10.0.0.5", port: 4000 }, deviceId: ROBOT_SERIAL, at: 1 });
+      store.openSession("wifi-1", 1); // the prior process's own now-orphaned session row
+      store.setLinkState({ id: "wifi-1", state: "unresponsive", at: 1, reason: "no reply to 3 STATUS polls -- link presumed dead" });
+
+      // Sanity: before this fix, this is precisely the shape that made
+      // `planUserOpen`/`describeUserOpenRefusal` refuse forever and
+      // `server.ts`'s `requireSession` throw "has no open session" on
+      // every command -- see reconciler.ts's own `plan`/`planUserOpen`.
+      expect(describeUserOpenRefusal(store.reconcilerRows(), "wifi-1")).toBe("already open");
+
+      const stream = new BannerByteStream(ROBOT_BANNER);
+      const connector = createConnector(store, {
+        createTcpStream: () => stream,
+        scheduler: immediateScheduler,
+        now: () => NOW,
+      });
+
+      const reconciler = startReconciler(store, { connector, now: () => NOW, tickIntervalMs: 1_000_000 });
+      try {
+        // The stale row is gone, and the link is back to `connectable`,
+        // synchronously -- before this executor's own first tick() ever
+        // dispatches a job.
+        expect(store.snapshotRows().sessions.find((s) => s.link_id === "wifi-1")).toBeUndefined();
+
+        await flush(); // let the now-eligible auto-connect reach stream.open()
+        stream.resolveOpen();
+        await flush();
+        await flush();
+
+        // A real, live session this executor itself opened -- the one
+        // registry `server.ts`'s `requireSession` reads is now the truth.
+        const linkRowAfter = store.snapshotRows().links.find((l) => l.id === "wifi-1");
+        expect(linkRowAfter?.state).toBe("connected");
+        expect(store.snapshotRows().sessions.find((s) => s.link_id === "wifi-1")).toBeDefined();
+        const session = reconciler.sessions.get("wifi-1");
+        expect(session?.linkId).toBe("wifi-1");
+        expect(session?.link).toBeDefined();
+      } finally {
+        reconciler.stop();
+      }
+    },
+  );
+
+  it(
+    "merges a known-robots placeholder into the real device row via the automatic auto-connect path too, not only a user-initiated session-open (bench defect 2, 2026-09-12)",
+    async () => {
+      // `connect/connector.ts`'s `mergeNamePlaceholderIfAny` runs inside
+      // `attempt()` itself, the same function this executor's automatic
+      // `plan()` pass dispatches a job to -- so there is only one code
+      // path to prove, not a second one to wire up. This test exercises
+      // it through `startReconciler`'s own automatic tick (no
+      // `requestOpen` call at all), confirming the merge fires
+      // regardless of which entry point triggered the connect --
+      // exactly the bench finding this ticket's own evidence flagged as
+      // still open ("confirm the merge also runs for links that are
+      // ALREADY connected at startup").
+      const placeholderId = nameToValue(deviceIdToName(ROBOT_SERIAL)); // "vevov"'s synthetic id
+      store.upsertDevice({ id: placeholderId, name: deviceIdToName(ROBOT_SERIAL), kind: "robot", usbSerial: "0012345678", at: 1 });
+      store.setOwned(placeholderId, true, 1);
+      // The link is already attached to the placeholder -- exactly what
+      // `watchers/mdnsWatcher.ts`'s own device-linking does on the bench
+      // before the real chip has ever been seen (the placeholder is, for
+      // now, "the" owned device of that name).
+      store.upsertLink({ id: "wifi-1", transport: "wifi", address: { host: "10.0.0.5", port: 4000 }, deviceId: placeholderId, at: 1 });
+      store.setLinkState({ id: "wifi-1", state: "connectable", at: 1 });
+
+      const stream = new BannerByteStream(ROBOT_BANNER);
+      const connector = createConnector(store, {
+        createTcpStream: () => stream,
+        scheduler: immediateScheduler,
+        now: () => NOW,
+      });
+
+      const reconciler = startReconciler(store, { connector, now: () => NOW, tickIntervalMs: 1_000_000 });
+      try {
+        await flush(); // let the automatic (no requestOpen) attempt reach stream.open()
+        stream.resolveOpen();
+        await flush();
+        await flush();
+
+        const rows = store.snapshotRows();
+        // One row, not two -- the placeholder merged into the real chip
+        // id, carrying owned/usb_serial forward (store/index.test.ts's
+        // own Store: mergeDevice suite covers that column-by-column).
+        expect(rows.devices).toHaveLength(1);
+        expect(rows.devices[0]).toMatchObject({ id: ROBOT_SERIAL, owned: 1, usb_serial: "0012345678" });
+        expect(rows.links.find((l) => l.id === "wifi-1")?.device_id).toBe(ROBOT_SERIAL);
+      } finally {
+        reconciler.stop();
+      }
+    },
+  );
+
+  it("requestOpen reports a refusedReason for a not-yet-owned link, and none once ownership is granted and the connect actually goes through (bench defect 4)", async () => {
+    store.upsertLink({ id: "wifi-1", transport: "wifi", address: { host: "10.0.0.5", port: 4000 }, deviceId: null, at: 1 });
+    store.setLinkState({ id: "wifi-1", state: "connectable", at: 1 });
+
+    const connector: Connector = {
+      connectAndIdentify: () => new Promise<ConnectedSession>(() => {}),
+    };
+    const reconciler = startReconciler(store, { connector, now: () => NOW, tickIntervalMs: 1_000_000 });
+    try {
+      // deviceId is null (no owned device attached at all) -- refused,
+      // same "not owned" branch as an attached-but-unowned device.
+      const refused = await reconciler.requestOpen("wifi-1");
+      expect(refused.refusedReason).toBeDefined();
+
+      // An unknown linkId is refused too, distinctly.
+      const unknown = await reconciler.requestOpen("does-not-exist");
+      expect(unknown.refusedReason).toBe('no such link "does-not-exist"');
+    } finally {
+      reconciler.stop();
+    }
+  });
+
   it("never auto-bridges a connectable radio link (architecture.md §8 rule 5)", async () => {
     store.upsertLink({ id: "usb-RELAY", transport: "usb", address: { path: "/dev/cu.relay" }, at: 1 });
     store.upsertLink({ id: "radio-A", transport: "radio", address: { relayLinkId: "usb-RELAY", channel: 47, group: 60 }, at: 1 });
@@ -634,6 +830,130 @@ describe("startReconciler -- executor integration (real connector, fake ByteStre
       store.setLinkState({ id: "usb-RELAY", state: "connectable", at: NOW + 1 });
       await flush();
       expect(createSerialStreamCalls).toBe(1);
+    } finally {
+      reconciler.stop();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------
+// Bench defect 010 addendum (2026-09-13, "dead transport leaves session,
+// blocks reconnect"): the reconciler is the single owner of session
+// teardown -- see reconciler.ts's own `reapDeadSession`/`clearStaleSession`
+// doc comments.
+// ---------------------------------------------------------------------
+
+describe("startReconciler -- dead-transport session teardown (bench defect 010 addendum)", () => {
+  let dir: string;
+  let store: Store;
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), "robot-console-reconciler-dead-transport-test-"));
+    store = new Store(openStoreDb({ filePath: path.join(dir, "console.sqlite") }));
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a fake LineLink closing after connect: the sessions row disappears, the link becomes reconnectable, and the very next tick reconnects", async () => {
+    store.upsertDevice({ id: ROBOT_SERIAL, name: deviceIdToName(ROBOT_SERIAL), kind: "robot", at: 1 });
+    store.setOwned(ROBOT_SERIAL, true, 1);
+    store.upsertLink({ id: "wifi-1", transport: "wifi", address: { host: "10.0.0.5", port: 4000 }, deviceId: ROBOT_SERIAL, at: 1 });
+    store.setLinkState({ id: "wifi-1", state: "connectable", at: 1 });
+
+    // A fresh `BannerByteStream` is handed out on every `createTcpStream`
+    // call, so the very first connect and the auto-retriggered reconnect
+    // after the reap each get their own stream to answer HELLO on --
+    // mirrors a real replug/redial, not one stream reused across two
+    // physically distinct attempts.
+    const streams: BannerByteStream[] = [];
+    const connector = createConnector(store, {
+      createTcpStream: () => {
+        const stream = new BannerByteStream(ROBOT_BANNER);
+        streams.push(stream);
+        return stream;
+      },
+      scheduler: immediateScheduler,
+      now: () => NOW,
+    });
+
+    // backoffCapMs: 0 -- so `recordFailure`'s own `next_retry_at` lands at
+    // exactly `now()` (a fixed clock throughout this test), making the
+    // very next `plan()` pass -- already re-run by the reap's own store
+    // writes going through the same change feed -- immediately eligible,
+    // with no need to fast-forward a clock this test does not advance.
+    const reconciler = startReconciler(store, { connector, now: () => NOW, tickIntervalMs: 1_000_000, backoffCapMs: 0 });
+    try {
+      await flush();
+      streams[0]?.resolveOpen();
+      await flush();
+      await flush();
+
+      expect(store.snapshotRows().links.find((l) => l.id === "wifi-1")?.state).toBe("connected");
+      expect(store.snapshotRows().sessions.find((s) => s.link_id === "wifi-1")).toBeDefined();
+      expect(reconciler.sessions.get("wifi-1")).toBeDefined();
+
+      // Simulate the dead transport: the underlying stream closes on its
+      // own (a flaky cable, not a user close-command).
+      streams[0]?.emitClose();
+      await flush();
+      await flush();
+
+      // The invariant this fix exists for: a `sessions` row exists only
+      // while the reconciler holds a live LineLink for that link -- and
+      // the very next tick (triggered by the reap's own store writes)
+      // already reconnected it, over a second, distinct stream.
+      expect(streams).toHaveLength(2);
+      streams[1]?.resolveOpen();
+      await flush();
+      await flush();
+
+      expect(store.snapshotRows().links.find((l) => l.id === "wifi-1")?.state).toBe("connected");
+      const sessionRow = store.snapshotRows().sessions.find((s) => s.link_id === "wifi-1");
+      expect(sessionRow).toBeDefined();
+      expect(reconciler.sessions.get("wifi-1")).toBeDefined();
+    } finally {
+      reconciler.stop();
+    }
+  });
+
+  it("requestOpen on a connectable link with a leftover session row is not refused -- the stale session is cleared first", async () => {
+    // A radio link, deliberately: it is never auto-connected (rule 5,
+    // `plan()`'s own `AUTO_CONNECT_TRANSPORTS`), so nothing this
+    // executor's own startup tick or `clearInheritedSessions` does can
+    // race ahead of this test's own explicit `requestOpen` call --
+    // isolating fix item 2 (a *mid-run* leftover session, left behind
+    // well after construction, e.g. by a dead transport this executor's
+    // own `reapDeadSession` had not yet reached) from the pre-existing,
+    // construction-time-only `clearInheritedSessions` (bench defect 5).
+    store.upsertLink({ id: "usb-RELAY", transport: "usb", address: { path: "/dev/cu.relay" }, at: 1 });
+    store.upsertLink({ id: "radio-A", transport: "radio", address: { relayLinkId: "usb-RELAY", channel: 1, group: 1 }, at: 1 });
+    store.setLinkState({ id: "radio-A", state: "connectable", at: 1 });
+
+    let opens = 0;
+    const connector: Connector = {
+      connectAndIdentify: () => {
+        opens++;
+        return Promise.reject(new Error("test: no real transport"));
+      },
+    };
+
+    const reconciler = startReconciler(store, { connector, now: () => NOW, tickIntervalMs: 1_000_000 });
+    try {
+      expect(opens).toBe(0); // radio never auto-connects on its own
+
+      // The leftover session appears well after construction -- nothing
+      // to do with the startup-only `clearInheritedSessions`.
+      store.openSession("radio-A", NOW);
+      expect(describeUserOpenRefusal(store.reconcilerRows(), "radio-A")).toBe("already open");
+
+      const result = await reconciler.requestOpen("radio-A");
+
+      expect(result.refusedReason).toBeUndefined();
+      expect(opens).toBe(1);
+      expect(store.snapshotRows().sessions.find((s) => s.link_id === "radio-A")).toBeUndefined();
     } finally {
       reconciler.stop();
     }

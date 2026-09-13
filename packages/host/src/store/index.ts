@@ -44,7 +44,12 @@
  * self-contradictory row — see `docs/reviews/2026-09-11/05-protocol.md`
  * §2 item 6, which found exactly this disagreement in the RADIOBRIDGE
  * banner fixture (`getez` / `1779042496`, which actually decodes to
- * `gatav`).
+ * `gatav`). Narrowed 2026-09-12 (ticket 017-005): the check is skipped
+ * only when `id < 0 && kind === 'relay'` — a negative id is never a real
+ * chip id, so it is unambiguously a synthetic id (e.g. `mdnsWatcher.ts`'s
+ * hash-derived fallback for a non-grammar mDNS relay name) rather than a
+ * mis-radixed serial. Every other row shape still enforces the check
+ * exactly as before.
  */
 import type { DatabaseSync } from "node:sqlite";
 import { EventEmitter } from "node:events";
@@ -422,9 +427,27 @@ export class Store {
   // ---- devices ----------------------------------------------------
 
   upsertDevice(input: UpsertDeviceInput): void {
-    const expectedName = deviceIdToName(input.id);
-    if (expectedName !== input.name) {
-      throw new DeviceNameMismatchError(input.id, input.name);
+    // Narrowed 2026-09-12 (ticket 017-005, thrown-and-resolved exception;
+    // see sprint.md's Revision note and Design Rationale): this check is
+    // skipped only when `input.id < 0 && input.kind === 'relay'`. A
+    // negative id is never a real chip id (`FICR.DEVICEID[1]` is an
+    // unsigned 32-bit value, so every genuine chip id is non-negative) --
+    // it is unambiguously synthetic, minted by `mdnsWatcher.ts`'s
+    // `createRelayDeviceIfAbsent` as a stable hash of `mbrelay:<instance>`
+    // for a relay whose mDNS instance name doesn't parse as a five-letter
+    // micro:bit name (e.g. `torture`), for which no id choice could ever
+    // satisfy `deviceIdToName(id) === name` (that function always produces
+    // a well-formed five-letter name for any integer). Every other row
+    // shape -- every `kind='robot'` row, and every grammar-named
+    // `kind='relay'` row (positive/`nameToValue`-range id) -- still
+    // enforces the check exactly as before; this narrows, not removes,
+    // the protection the 014-003 invariant put in place.
+    const skipNameCheck = input.id < 0 && input.kind === "relay";
+    if (!skipNameCheck) {
+      const expectedName = deviceIdToName(input.id);
+      if (expectedName !== input.name) {
+        throw new DeviceNameMismatchError(input.id, input.name);
+      }
     }
     this.withChange(
       "devices",
@@ -520,9 +543,14 @@ export class Store {
    * device identifies (over USB, correlated by `usb_serial` — see
    * `connect/connector.ts`'s own caller), its rows must collapse into
    * one. `owned` is OR'd, `first_seen` takes the earlier of the two,
-   * and `radio_channel`/`radio_group`/`radio_source` are filled from
-   * `fromId` only where `intoId` does not already have them — the real
-   * row's own already-set values are never clobbered.
+   * `radio_channel`/`radio_group`/`radio_source` are filled from
+   * `fromId` only where `intoId` does not already have them, and
+   * `usb_serial` keeps `intoId`'s own value if it has one, else falls
+   * back to `fromId`'s (bench defect 2, 2026-09-12: a known-robots
+   * placeholder's `usb_serial` is "last seen via USB" telemetry worth
+   * keeping if the real row has none of its own yet) — the real row's
+   * own already-set values are never clobbered, for any of these
+   * columns.
    *
    * `node:sqlite` enforces `links.device_id REFERENCES devices(id)`
    * (this module's own doc comment, "Foreign keys are enforced"), so
@@ -545,12 +573,13 @@ export class Store {
         radio_channel: number | null;
         radio_group: number | null;
         radio_source: RadioSource;
+        usb_serial: string | null;
       };
       const fromRow = this.db
-        .prepare("SELECT owned, first_seen, radio_channel, radio_group, radio_source FROM devices WHERE id = ?")
+        .prepare("SELECT owned, first_seen, radio_channel, radio_group, radio_source, usb_serial FROM devices WHERE id = ?")
         .get(fromId) as MergeableDeviceRow | undefined;
       const intoRow = this.db
-        .prepare("SELECT owned, first_seen, radio_channel, radio_group, radio_source FROM devices WHERE id = ?")
+        .prepare("SELECT owned, first_seen, radio_channel, radio_group, radio_source, usb_serial FROM devices WHERE id = ?")
         .get(intoId) as MergeableDeviceRow | undefined;
       if (!fromRow || !intoRow) {
         this.db.exec("ROLLBACK");
@@ -562,13 +591,14 @@ export class Store {
       const radioChannel = intoRow.radio_channel ?? fromRow.radio_channel;
       const radioGroup = intoRow.radio_group ?? fromRow.radio_group;
       const radioSource = intoRow.radio_source ?? fromRow.radio_source;
+      const usbSerial = intoRow.usb_serial ?? fromRow.usb_serial;
 
       this.db
         .prepare(
-          `UPDATE devices SET owned = ?, first_seen = ?, radio_channel = ?, radio_group = ?, radio_source = ?, last_seen = ?
+          `UPDATE devices SET owned = ?, first_seen = ?, radio_channel = ?, radio_group = ?, radio_source = ?, usb_serial = ?, last_seen = ?
            WHERE id = ?`,
         )
-        .run(owned, firstSeen, radioChannel, radioGroup, radioSource, at, intoId);
+        .run(owned, firstSeen, radioChannel, radioGroup, radioSource, usbSerial, at, intoId);
 
       const linkRows = this.db.prepare("SELECT id FROM links WHERE device_id = ?").all(fromId) as Array<{ id: string }>;
       this.db.prepare("UPDATE links SET device_id = ? WHERE device_id = ?").run(intoId, fromId);
@@ -978,6 +1008,22 @@ export class Store {
   getSetting(key: string): string | undefined {
     const row = this.db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
     return row?.value;
+  }
+
+  /** The stored `etag` for one firmware `kind`'s most recent successful
+   * poll, or `undefined` if no `firmware` row exists yet (never polled)
+   * or the row has no `etag` recorded. Sprint 017 ticket 002:
+   * `watchers/firmwareWatcher.ts` reads this before every poll to send
+   * as `If-None-Match` -- deliberately not part of
+   * {@link ProjectionFirmwareRow}/`projectionRows()` (an HTTP-caching
+   * implementation detail the UI never needs), so this is its own
+   * narrow typed read, per "nothing outside `store/` issues SQL"
+   * (architecture.md §3 rule 3). */
+  getFirmwareEtag(kind: "relay" | "robot"): string | undefined {
+    const row = this.db.prepare("SELECT etag FROM firmware WHERE kind = ?").get(kind) as
+      | { etag: string | null }
+      | undefined;
+    return row?.etag ?? undefined;
   }
 
   setSetting(key: string, value: string): void {

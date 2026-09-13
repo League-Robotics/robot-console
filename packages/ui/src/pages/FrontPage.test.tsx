@@ -21,7 +21,7 @@ import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Snapshot, SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
-import { DevicesList, FrontPage, RadioMigrationOffers, linkStatusText } from "./FrontPage";
+import { DevicesList, FrontPage, RadioMigrationOffers } from "./FrontPage";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 import { withRouter } from "../testing/renderWithRouter";
@@ -101,38 +101,10 @@ function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   };
 }
 
-describe("linkStatusText", () => {
-  const now = 1_000_000;
-
-  it("renders Linked/Connecting for the live states", () => {
-    expect(linkStatusText(link("a", { state: "connected" }), now)).toBe("Linked");
-    expect(linkStatusText(link("a", { state: "connecting" }), now)).toBe("Connecting");
-  });
-
-  it("renders Retrying in Ns when failed with a pending retry", () => {
-    expect(linkStatusText(link("a", { state: "failed", nextRetryAt: now + 5000, reason: "timeout" }), now)).toBe("Retrying in 5s");
-  });
-
-  it("renders Unreachable: <reason> when failed with no pending retry", () => {
-    expect(linkStatusText(link("a", { state: "failed", reason: "no reply" }), now)).toBe("Unreachable: no reply");
-  });
-
-  it("renders Unresponsive (with reason) for the unresponsive state", () => {
-    expect(linkStatusText(link("a", { state: "unresponsive", reason: "HELLO timed out" }), now)).toBe("Unreachable: HELLO timed out");
-    expect(linkStatusText(link("a", { state: "unresponsive" }), now)).toBe("Unresponsive");
-  });
-
-  it("renders Not seen since <date> for a stale link with a lastSeen", () => {
-    const lastSeen = Date.UTC(2026, 0, 1, 12, 0, 0);
-    expect(linkStatusText(link("a", { state: "stale", lastSeen }), now)).toContain("Not seen since");
-  });
-
-  it("renders Not linked for discovered/connectable/closed_by_user", () => {
-    expect(linkStatusText(link("a", { state: "discovered" }), now)).toBe("Not linked");
-    expect(linkStatusText(link("a", { state: "connectable" }), now)).toBe("Not linked");
-    expect(linkStatusText(link("a", { state: "closed_by_user" }), now)).toBe("Not linked");
-  });
-});
+// `linkStatusText`'s own cases (renamed `linkStateText`) moved to
+// `deviceDisplay.test.ts` (ticket 017-007 -- moved there along with the
+// function itself, out of this module's former local copy). Not
+// re-tested here.
 
 describe("DevicesList", () => {
   it("renders a device card with name, role, and its one connection", () => {
@@ -169,8 +141,25 @@ describe("DevicesList", () => {
     expect(el.textContent ?? "").toContain("No devices detected yet");
   });
 
-  it("renders the open arrow as a real link to the device's primary link page", () => {
-    const el = mount(withRouter(<DevicesList status="open" devices={[device(1)]} unassigned={[]} />));
+  it("renders the open arrow as a real link to the device's primary (usable) link page", () => {
+    // Extended scope (team-lead, 2026-09-13), item B: a card's open
+    // arrow only ever leads to a usable link (state "connected" AND an
+    // open session) -- `link()`'s own default has no session, so this
+    // test opens one explicitly rather than relying on the old
+    // "falls back to links[0] regardless" behavior this ticket removes.
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              links: [link("usb-1", { session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null } })],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
     const openArrow = el.querySelector('[data-testid="device-open-1"]');
     expect(openArrow?.tagName).toBe("A");
     expect(openArrow?.getAttribute("href")).toBe("/d/usb-1");
@@ -219,8 +208,20 @@ describe("multi-link device (host already groups links under one device)", () =>
     });
   }
 
-  it("lists every link, with the primary (open-session) link's open arrow on the card and a small row arrow for the rest", () => {
-    const el = mount(withRouter(<DevicesList status="open" devices={[multiLinkDevice()]} unassigned={[]} />));
+  // Ticket 017-010 (team-lead bench walk, 2026-09-13): this used to
+  // assert an open arrow *into the non-usable wifi link* -- exactly the
+  // bench complaint ("How is it letting me go into it if it's not
+  // connected?"). A per-link arrow now requires `isLinkUsable(link)`
+  // itself, not merely "isn't the primary", so the non-usable wifi row
+  // gets no arrow -- only a Connect button, since `failed` is in
+  // `CONNECT_BUTTON_STATES`.
+  it("gives only the usable (primary) link a card open arrow; the non-usable link gets a row Connect button, no arrow", () => {
+    const opens: string[] = [];
+    const el = mount(
+      withRouter(
+        <DevicesList status="open" devices={[multiLinkDevice()]} unassigned={[]} sendable={true} onLinkConnect={(linkId) => opens.push(linkId)} />,
+      ),
+    );
 
     expect(el.querySelectorAll("h3.device-name")).toHaveLength(1);
     expect(el.querySelector('[data-testid="device-open-1"]')?.getAttribute("href")).toBe("/d/usb-vevov");
@@ -229,13 +230,303 @@ describe("multi-link device (host already groups links under one device)", () =>
     expect(rows).toHaveLength(2);
     const wifiRow = el.querySelector('[data-testid="device-link-wifi-vevov"]');
     expect(wifiRow?.textContent).toContain("WiFi · vevov.local:7654");
-    expect(wifiRow?.textContent).toContain("Unreachable: could not reach vevov.local:7654");
-    expect(el.querySelector('[data-testid="device-link-open-wifi-vevov"]')?.getAttribute("href")).toBe("/d/wifi-vevov");
-    // The primary link gets no extra row arrow -- the card's own open
-    // arrow already leads there.
+    expect(wifiRow?.textContent).toContain("Couldn't connect: could not reach vevov.local:7654");
+
+    // No arrow anywhere except the card's own, into the usable link.
+    expect(el.querySelectorAll('[data-testid^="device-link-open-"]')).toHaveLength(0);
+    expect(el.querySelector('[data-testid="device-link-open-wifi-vevov"]')).toBeNull();
     expect(el.querySelector('[data-testid="device-link-open-usb-vevov"]')).toBeNull();
     expect(el.querySelector('[data-testid="device-link-usb-vevov"]')?.textContent).toContain("Linked");
     expect(el.querySelectorAll("a a")).toHaveLength(0);
+
+    // The non-usable wifi link is still `failed`, one of
+    // `CONNECT_BUTTON_STATES`, so it gets a Connect button that sends
+    // session-open for its own link id -- regardless of the card
+    // already having a usable primary link on usb-vevov.
+    const connect = el.querySelector<HTMLButtonElement>('[data-testid="device-link-connect-wifi-vevov"]');
+    expect(connect).not.toBeNull();
+    expect(connect!.disabled).toBe(false);
+    act(() => {
+      connect!.click();
+    });
+    expect(opens).toEqual(["wifi-vevov"]);
+
+    // The usable primary link itself gets no Connect button: "connected"
+    // is not in CONNECT_BUTTON_STATES.
+    expect(el.querySelector('[data-testid="device-link-connect-usb-vevov"]')).toBeNull();
+  });
+
+  it("gives every usable link its own row arrow when a card has two usable links, plus the card's own arrow to the primary", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              name: "vevov",
+              links: [
+                link("usb-vevov", {
+                  state: "connected",
+                  session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+                }),
+                link("wifi-vevov", {
+                  transport: "wifi",
+                  label: "WiFi · vevov.local:7654",
+                  state: "connected",
+                  session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+                }),
+              ],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
+
+    // Primary is the first usable link (usb-vevov) -- the card's own
+    // arrow leads there, and it gets no extra row arrow.
+    expect(el.querySelector('[data-testid="device-open-1"]')?.getAttribute("href")).toBe("/d/usb-vevov");
+    expect(el.querySelector('[data-testid="device-link-open-usb-vevov"]')).toBeNull();
+
+    // The second usable link is not the primary, so it gets its own
+    // small row arrow.
+    expect(el.querySelector('[data-testid="device-link-open-wifi-vevov"]')?.getAttribute("href")).toBe("/d/wifi-vevov");
+
+    // Exactly one card arrow + one row arrow across the whole card.
+    expect(el.querySelectorAll('[data-testid^="device-link-open-"], [data-testid^="device-open-"]')).toHaveLength(2);
+  });
+});
+
+describe("extended scope (team-lead, 2026-09-13), item B: a card with no usable link", () => {
+  it("renders no open arrow at all (neither the card's own nor any per-link one) when no link is usable", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              name: "zapuz",
+              links: [
+                link("usb-zapuz", {
+                  state: "unresponsive",
+                  reason: "no reply to 3 STATUS polls -- link presumed dead",
+                  session: { seq: 4, pending: 0, lastDone: 4, lastDoneReason: "none", robotStatus: null, functions: null },
+                }),
+              ],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
+    expect(el.querySelector('[data-testid="device-open-1"]')).toBeNull();
+    expect(el.querySelector('[data-testid="device-link-open-usb-zapuz"]')).toBeNull();
+  });
+
+  it("shows each link's state text (with its reason in plain words folded in, once) plus a Connect button that sends session-open, gated by sendable", () => {
+    const opens: string[] = [];
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              name: "zapuz",
+              links: [
+                link("usb-zapuz", {
+                  state: "unresponsive",
+                  reason: "no reply to 3 STATUS polls -- link presumed dead",
+                }),
+              ],
+            }),
+          ]}
+          unassigned={[]}
+          sendable={true}
+          onLinkConnect={(linkId) => opens.push(linkId)}
+        />,
+      ),
+    );
+    const row = el.querySelector('[data-testid="device-link-usb-zapuz"]');
+    // Ticket 017-010 fix (team-lead bench evidence, 2026-09-13): the raw
+    // `link.reason` used to also render in its own
+    // `device-link-reason-*` span, duplicating the exact same sentence
+    // `linkStateText` already shows (unmapped, on top of that) --
+    // `plainFailureReason` folds it into the state text once and that
+    // separate span is gone outright.
+    expect(row?.textContent).toContain("Couldn't connect: stopped answering");
+    expect(row?.textContent?.match(/stopped answering/g)).toHaveLength(1);
+    expect(el.querySelector('[data-testid="device-link-reason-usb-zapuz"]')).toBeNull();
+    const connect = el.querySelector<HTMLButtonElement>('[data-testid="device-link-connect-usb-zapuz"]');
+    expect(connect).not.toBeNull();
+    expect(connect!.disabled).toBe(false);
+    act(() => {
+      connect!.click();
+    });
+    expect(opens).toEqual(["usb-zapuz"]);
+  });
+
+  it("disables the Connect button when sendable is false", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[device(1, { links: [link("usb-1", { state: "failed", reason: "boom" })] })]}
+          unassigned={[]}
+          sendable={false}
+        />,
+      ),
+    );
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="device-link-connect-usb-1"]')!.disabled).toBe(true);
+  });
+
+  it("offers no Connect button for a state not in the connectable set (e.g. connecting)", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList status="open" devices={[device(1, { links: [link("usb-1", { state: "connecting" })] })]} unassigned={[]} />,
+      ),
+    );
+    expect(el.querySelector('[data-testid="device-link-connect-usb-1"]')).toBeNull();
+  });
+
+  it("a relay card keeps its existing open arrow regardless of its own link having no usable session", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[device(2, { name: "torture", kind: "relay", links: [link("mbrelay-torture", { transport: "mbrelay", state: "connected" })] })]}
+          unassigned={[]}
+        />,
+      ),
+    );
+    expect(el.querySelector('[data-testid="device-open-2"]')?.getAttribute("href")).toBe("/d/mbrelay-torture");
+  });
+
+  // Bench defect (team-lead walk 017-012, 2026-09-13): the `torture`
+  // relay card showed a row-level Connect button on its own mbrelay
+  // link -- opening a relay pool's own link is not a student action,
+  // the relay card already gets its robot-picker Connect via
+  // `RelayConnectControls`. The button must stay suppressed for every
+  // state in `CONNECT_BUTTON_STATES`, not just the `connected` case the
+  // pre-existing open-arrow test above happens to use.
+  it("never shows a row-level Connect button on a relay card's own link, in any connectable state", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          sendable={true}
+          devices={[
+            device(2, {
+              name: "torture",
+              kind: "relay",
+              links: [link("mbrelay-torture", { transport: "mbrelay", label: "mbrelay · torture.local:8760", state: "connectable" })],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
+    expect(el.querySelector('[data-testid="device-link-connect-mbrelay-torture"]')).toBeNull();
+    expect(el.querySelector('[data-testid="device-link-mbrelay-torture"]')?.textContent).toContain("mbrelay · torture.local:8760");
+  });
+});
+
+describe("bench defect 010 addendum (2026-09-13): a refused/failed Connect shows the host's notice on the row", () => {
+  // `DevicesList` on its own has no `linkNotices` to read (it takes no
+  // `WsProvider`-dependent hook of its own -- `DeviceConnectionRow`'s own
+  // doc comment) -- this exercises the whole path end-to-end through
+  // `FrontPage` + `WsProvider` + a `FakeSocket`, exactly like a real
+  // Connect click and the host's own `notice` reply.
+  it("Connect on a connectable link, refused by the host, renders that refusal on the link's own row within one snapshot tick", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage(
+        snapshot({
+          devices: [device(1, { name: "tovez", links: [link("usb-tovez", { state: "connectable" })] })],
+        }),
+      );
+    });
+
+    const connect = el.querySelector<HTMLButtonElement>('[data-testid="device-link-connect-usb-tovez"]');
+    expect(connect).not.toBeNull();
+    act(() => {
+      connect!.click();
+    });
+    expect(socket!.sent).toContainEqual(JSON.stringify({ type: "session-open", linkId: "usb-tovez" }));
+
+    // The host refuses (bench defect 010's own dead-transport case, or
+    // any other `describeUserOpenRefusal` reason) and broadcasts a
+    // link-scoped notice -- exactly `server.ts`'s existing
+    // `session-open` handler behavior, already wired before this fix;
+    // what was missing was the front page ever reading it.
+    act(() => {
+      socket!.emitMessage({
+        type: "notice",
+        level: "warn",
+        linkId: "usb-tovez",
+        text: "connect refused: already open",
+        at: 1,
+        seq: 2,
+      });
+    });
+
+    const row = el.querySelector('[data-testid="device-link-usb-tovez"]');
+    expect(row?.textContent).toContain("connect refused: already open");
+    expect(el.querySelector('[data-testid="device-link-notice-usb-tovez"]')?.textContent).toBe(
+      "connect refused: already open",
+    );
+  });
+
+  it("the notice clears once the link is next reported connected", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage(
+        snapshot({ devices: [device(1, { name: "tovez", links: [link("usb-tovez", { state: "connectable" })] })] }),
+      );
+    });
+    act(() => {
+      socket!.emitMessage({ type: "notice", level: "warn", linkId: "usb-tovez", text: "connect refused: already open", at: 1, seq: 2 });
+    });
+    expect(el.querySelector('[data-testid="device-link-notice-usb-tovez"]')).not.toBeNull();
+
+    act(() => {
+      socket!.emitMessage(
+        snapshot({
+          seq: 3,
+          devices: [
+            device(1, {
+              name: "tovez",
+              links: [
+                link("usb-tovez", {
+                  state: "connected",
+                  session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+                }),
+              ],
+            }),
+          ],
+        }),
+      );
+    });
+    expect(el.querySelector('[data-testid="device-link-notice-usb-tovez"]')).toBeNull();
   });
 });
 
@@ -416,6 +707,49 @@ describe("not seen recently (devices the host still knows about with zero curren
       socket!.emitMessage(snapshot({ devices: [] }));
     });
     expect(el.querySelector('[data-testid="not-seen-device-9"]')).toBeNull();
+  });
+
+  // Ticket 017-010 (team-lead bench evidence, 2026-09-13): "the same
+  // robot appears twice" -- `tovez` id 2665 (`owned: 1`, no links, the
+  // known-robots.json placeholder) and `tovez` id 2314287040 (`owned:
+  // 0`, real USB serial, SWD-named) both showed up on the front page at
+  // once: a real device card AND "Not seen recently · tovez". Even with
+  // the placeholder-merge fix, a not-yet-merged snapshot moment must
+  // never render this -- `FrontPage` itself filters `notSeenRecently` by
+  // name against every device that already has a card, independent of
+  // whether the store has merged the two rows yet.
+  it("never lists a name under 'Not seen recently' that already has a device card on the page (the tovez bug)", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage(
+        snapshot({
+          devices: [
+            // The real, currently-linked row -- gets a card.
+            device(2314287040, { name: "tovez", links: [link("usb-tovez", { state: "connected" })] }),
+            // The unmerged known-robots.json placeholder -- zero links,
+            // would normally fall into "Not seen recently" under its own
+            // name.
+            device(2665, { name: "tovez", links: [] }),
+          ],
+        }),
+      );
+    });
+    expect(el.querySelector('[data-testid="device-card-2314287040"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="not-seen-device-2665"]')).toBeNull();
+    // No "Not seen recently" section at all -- its only candidate
+    // (2665) was filtered out, leaving nothing to render the section
+    // for.
+    expect(el.querySelector(".remembered-robots")).toBeNull();
   });
 });
 
@@ -690,6 +1024,39 @@ describe("relay quick-connect", () => {
     });
     const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-quick-connect-select-3"]');
     expect(Array.from(select!.options).map((o) => o.textContent)).toEqual(["Choose a robot…", "vevav"]);
+  });
+
+  // Ticket 017-010 (team-lead bench evidence, 2026-09-13): the relay
+  // quick-connect picker listed "tovez" twice -- two `kind: "robot"`
+  // device rows sharing one name (the unmerged known-robots.json
+  // placeholder plus its real, SWD-named row) each contributed their own
+  // name to `robotOptions`. `FrontPage` now de-dupes by name before
+  // handing the list to the picker.
+  it("de-duplicates a robot name that currently has two device rows (an unmerged placeholder + its real row)", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage(
+        snapshot({
+          devices: [
+            relayDevice(),
+            device(2314287040, { name: "tovez", kind: "robot", links: [link("usb-tovez")] }),
+            device(2665, { name: "tovez", kind: "robot", links: [] }),
+          ],
+        }),
+      );
+    });
+    const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-quick-connect-select-3"]');
+    expect(Array.from(select!.options).map((o) => o.textContent)).toEqual(["Choose a robot…", "tovez"]);
   });
 });
 

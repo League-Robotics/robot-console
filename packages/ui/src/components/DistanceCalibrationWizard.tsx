@@ -55,6 +55,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { parseCalibrationLine } from "./CalibrationReport";
 import { useLinkLog, useSendable, useWsActions } from "../ws/WsProvider";
+import { isLinkUsable } from "../deviceDisplay";
 import "./DistanceCalibrationWizard.css";
 
 /** Matches a bare `err ...` reply to the `RUN` command itself (e.g.
@@ -177,7 +178,7 @@ export interface DistanceCalibrationWizardProps {
 export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWizardProps) {
   const linkId = link.id;
   const sendable = useSendable();
-  const linkOpen = link.session !== undefined && sendable;
+  const linkOpen = isLinkUsable(link) && sendable;
   const { sendCommand } = useWsActions();
   const log = useLinkLog(linkId);
   const functions = link.session?.functions ?? undefined;

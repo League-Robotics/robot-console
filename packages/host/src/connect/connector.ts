@@ -19,7 +19,10 @@
  * defined and stubbed with a no-op default so this module's own
  * signature never had to change), and `mergeUsbPlaceholderIfAny` (below,
  * near the failure-recording helpers) — see that function's own doc
- * comment for the merge itself.
+ * comment for the merge itself. Sprint 017 ticket 006 adds a sibling,
+ * `mergeNamePlaceholderIfAny`, generalizing the merge to any transport's
+ * first identification (not only `usb`) — see its own doc comment,
+ * directly below `mergeUsbPlaceholderIfAny`.
  *
  * ## `LinkRow.address` shapes, by transport
  *
@@ -110,6 +113,7 @@
  * it.
  */
 import {
+  bannerNameMatchesSerial,
   classifyBanner,
   deviceIdToName,
   type DeviceClassification,
@@ -126,6 +130,7 @@ import {
 } from "../link/bootWindowIdentify.js";
 import { runRelayCommandPlane } from "../link/RelayCommandPlane.js";
 import { Store, type DeviceKind, type Transport } from "../store/index.js";
+import { mergeNamePlaceholderIfAny } from "../store/placeholderMerge.js";
 import { KeyedMutex } from "./keyedMutex.js";
 
 // ---------------------------------------------------------------------
@@ -140,6 +145,15 @@ export interface LinkRow {
   readonly id: string;
   readonly transport: Transport;
   readonly address: unknown;
+  /** The device this link's row is already associated with, if any --
+   * for a `usb` link, this is populated by `watchers/usbWatcher.ts`'s SWD
+   * naming pass (run before this module ever sees the link) and read
+   * back here for the host-identity cross-check below (item E, team-lead
+   * 2026-09-13). `undefined` when the caller does not track this (e.g. a
+   * relay/radio candidate `relayBridger.ts` builds its own `LinkRow`
+   * for), which this module treats identically to `null` (no cross-check
+   * possible or needed). */
+  readonly deviceId?: number | null;
 }
 
 /** What a successful {@link Connector.connectAndIdentify} call hands to
@@ -620,6 +634,58 @@ function mergeUsbPlaceholderIfAny(store: Store, usbSerial: string | undefined, d
   }
 }
 
+/**
+ * Generalizes the merge above to any transport's first identification
+ * (sprint 017 ticket 006; SUC-006; issue
+ * `placeholder-merge-for-non-usb-transports.md`). `mergeUsbPlaceholderIfAny`
+ * only ever fires for a `usb` identify -- it is the join key of choice
+ * *when available* (a hardware serial survives a legacy naming
+ * disagreement, per its own doc comment's `vevov`/`vevav` case) but a
+ * robot first identified over `mbserial`/`wifi` has no USB serial to
+ * correlate against at all, so a `known-robots.json`-seeded placeholder
+ * for that robot (synthetic id, no true chip id) and its real row never
+ * collapse -- seen on the bench for `gopiv` (placeholder 1461 vs. real
+ * 2175407711, sprint 016 ticket 008).
+ *
+ * ### Bench defect 2 (2026-09-12): the original `usb_serial IS NULL`
+ * filter never matched a real imported placeholder
+ *
+ * The first cut of this function (sprint 017 ticket 006) matched
+ * placeholder candidates by `usb_serial IS NULL`, reasoning that a row
+ * already carrying a `usb_serial` must have already been correlated.
+ * That reasoning was wrong: `store/importers/knownRobots.ts` writes the
+ * JSON's own `lastUsbSerial` into every imported placeholder's
+ * `usb_serial` column unconditionally (`KnownRobotRecord.lastUsbSerial`
+ * is a required field, not optional) -- so a placeholder imported from a
+ * real `known-robots.json` almost always *does* carry a `usb_serial`,
+ * and the old filter excluded exactly the rows it was meant to find.
+ * Confirmed live: `gopiv` 1461 (imported, `owned=1`, `usb_serial` set)
+ * never merged with the real row 2175407711 identified over
+ * `mbserial`/`wifi`; same for `tovez` (2665/2314287040) and `vevov`
+ * (1031/1198504156).
+ *
+ * The fix (now implemented in `store/placeholderMerge.ts`'s
+ * `mergeNamePlaceholderIfAny`, imported above) drops the `usb_serial`
+ * test entirely and instead defines a placeholder by **how it was
+ * constructed** -- see that module's own doc comment for the full
+ * reasoning, including why a plain `find` suffices (no
+ * `candidates.length` ambiguity check) and which *different* ambiguous
+ * case is still deliberately left untouched.
+ *
+ * ### Bench defect (2026-09-13): the same robot appears twice, again
+ *
+ * This merge only ever ran here, after a full connect *and* a successful
+ * banner identify -- a bad USB cable that never once produces a clean
+ * banner (bench evidence: `tovez` on a flaky cable) means this call site
+ * simply never fires, even though `watchers/usbWatcher.ts`'s own SWD
+ * naming (a separate, earlier identification step over the debug
+ * interface, immune to the same serial-line corruption) already knows
+ * the robot's real name and id. `usbWatcher.ts`'s `attach()` now calls
+ * the same shared `mergeNamePlaceholderIfAny` directly after a successful
+ * SWD name read, closing that gap -- see `store/placeholderMerge.ts`'s
+ * own doc comment.
+ */
+
 // ---------------------------------------------------------------------
 // createConnector
 // ---------------------------------------------------------------------
@@ -726,6 +792,45 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
         throw err;
       }
 
+      // Item E (team-lead, 2026-09-13): reject a banner whose own
+      // name/serial fields are internally inconsistent -- a well-formed
+      // banner's `name` is always derivable from its `serial` (protocol
+      // §2.2; `bannerNameMatchesSerial`'s own doc comment). A mismatch
+      // here means the bytes themselves are corrupted (the same failure
+      // mode this ticket's other identity check targets), not a naming
+      // policy question -- there is no device identity to safely act on.
+      if (!bannerNameMatchesSerial(banner)) {
+        void lineLink.close();
+        const err = new Error(
+          `connector: link "${link.id}" produced a banner whose name "${banner.name}" does not match its own serial ${banner.serial} -- serial data corrupted, check the USB cable`,
+        );
+        recordFailure(store, link.id, err.message, now(), backoffCapMs);
+        throw err;
+      }
+
+      // Item E (team-lead, 2026-09-13): bench defect -- a `usb` link
+      // already carrying a `deviceId` from SWD naming (`usbWatcher.ts`,
+      // run before this module ever sees the link) is a claim about
+      // which physical board is on the other end of this port. A banner
+      // read over the same serial connection that disagrees with that
+      // claim is not a "new device" -- on the observed bench hardware
+      // (`zapuz`/`tigez`/`tovez`), it was a single flaky USB cable
+      // producing a different corrupted serial number on each read. Do
+      // NOT upsert a device or set owned in that case; record the
+      // disagreement (reaching the front-page card via this link's own
+      // `state_reason`, per `deviceDisplay.ts`'s `linkStateText`) and
+      // close the line link, exactly like every other identify failure
+      // above.
+      if (link.transport === "usb" && link.deviceId !== undefined && link.deviceId !== null && link.deviceId !== banner.serial) {
+        void lineLink.close();
+        const swdName = deviceIdToName(link.deviceId);
+        const err = new Error(
+          `banner identity ${banner.name} disagrees with SWD name ${swdName} -- serial data corrupted, check the USB cable`,
+        );
+        recordFailure(store, link.id, err.message, now(), backoffCapMs);
+        throw err;
+      }
+
       const classification = classifyBanner(banner);
       const deviceId = banner.serial;
       const name = deviceIdToName(deviceId);
@@ -741,6 +846,9 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
         at: now(),
       });
       mergeUsbPlaceholderIfAny(store, usbSerial, deviceId, now());
+      if (kind === "robot") {
+        mergeNamePlaceholderIfAny(store, name, deviceId, now());
+      }
       if (link.transport === "usb" && classification.type === "robot") {
         store.setOwned(deviceId, true, now());
       }

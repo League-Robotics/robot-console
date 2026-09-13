@@ -12,12 +12,15 @@ import { describe, expect, it } from "vitest";
 import type { FirmwareAvailability, SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
 import {
   canBeFlashed,
+  connectionLabel,
   findRelayChild,
   findSweepingCandidateName,
   firmwareDiagnosticDetail,
   firmwareDisabledReason,
   isCalibrationProgram,
+  isLinkUsable,
   lastCheckedText,
+  linkStateText,
   nameDisplay,
   roleDisplay,
   sweepRateSuffix,
@@ -56,6 +59,42 @@ function device(overrides: Partial<Omit<SnapshotDevice, "links">> & { links?: Sn
   };
 }
 
+const OPEN_SESSION = { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null };
+
+describe("isLinkUsable (extended scope, team-lead 2026-09-13, item A)", () => {
+  it("true only when state is 'connected' AND session is defined", () => {
+    expect(isLinkUsable(link({ state: "connected", session: OPEN_SESSION }))).toBe(true);
+  });
+
+  it("false when session is defined but the link is not connected -- the exact bench bug (unresponsive link, session row kept)", () => {
+    expect(isLinkUsable(link({ state: "unresponsive", session: OPEN_SESSION }))).toBe(false);
+    expect(isLinkUsable(link({ state: "failed", session: OPEN_SESSION }))).toBe(false);
+    expect(isLinkUsable(link({ state: "stale", session: OPEN_SESSION }))).toBe(false);
+  });
+
+  it("false when connected but no session is open yet", () => {
+    expect(isLinkUsable(link({ state: "connected" }))).toBe(false);
+  });
+
+  it("false when neither connected nor a session exists", () => {
+    expect(isLinkUsable(link({ state: "connectable" }))).toBe(false);
+  });
+});
+
+describe("connectionLabel (moved from FrontPage.tsx, ticket 017-011)", () => {
+  it("returns the link's own label when it is not a via-relay link", () => {
+    expect(connectionLabel(link({ label: "USB · /dev/cu.usbmodemA" }))).toBe("USB · /dev/cu.usbmodemA");
+  });
+
+  it("appends '(via relay <name>)' for a via-relay link", () => {
+    const viaLink = link({
+      label: "Radio · ch47/grp60",
+      via: { relayLinkId: "mbrelay-torture", relayName: "torture", channel: 47, group: 60, addressSource: "derived" },
+    });
+    expect(connectionLabel(viaLink)).toBe("Radio · ch47/grp60 (via relay torture)");
+  });
+});
+
 describe("canBeFlashed", () => {
   it("is true for a usb link with capabilities.flash true, regardless of the owning device's role", () => {
     expect(canBeFlashed(link({ capabilities: { open: true, close: false, flash: true, provisionWifi: false } }))).toBe(true);
@@ -76,6 +115,113 @@ describe("nameDisplay / roleDisplay", () => {
   it("roleDisplay returns the announced role, or a calm placeholder when none has been announced", () => {
     expect(roleDisplay(device({ role: "NEZHA2" }))).toBe("NEZHA2");
     expect(roleDisplay(device({ role: null }))).toBe("No role announced");
+  });
+});
+
+/**
+ * `linkStateText` (ticket 017-007): moved here from `FrontPage.tsx`'s
+ * own former local `linkStatusText` -- these cases moved with it,
+ * rather than being kept twice.
+ */
+describe("linkStateText", () => {
+  const now = 1_000_000;
+
+  it("renders Linked/Connecting for the live states", () => {
+    expect(linkStateText(link({ state: "connected" }), now)).toBe("Linked");
+    expect(linkStateText(link({ state: "connecting" }), now)).toBe("Connecting");
+  });
+
+  // Ticket 017-010 defect (team-lead walk 017-012, 2026-09-13): `gopiv`'s
+  // WiFi row read "Retrying in 0s" forever -- a `failed` link whose
+  // `nextRetryAt` had already passed (the reconciler never schedules a
+  // second retry once the device has another connected link), which both
+  // lied about an active retry and hid `reason` from the student
+  // entirely. `failed`/`unresponsive` now always lead with "Couldn't
+  // connect: <plain reason>", and the "· retrying in Ns" suffix appears
+  // only while `nextRetryAt` is genuinely still in the future.
+  it("failed with a past nextRetryAt shows the plain reason and no retry countdown at all (the gopiv bug)", () => {
+    const text = linkStateText(
+      link({ state: "failed", reason: "LineLink.connect() timed out after 5000ms", nextRetryAt: now - 240_000 }),
+      now,
+    );
+    expect(text).toBe("Couldn't connect: no answer (timed out)");
+    expect(text).not.toContain("Retrying");
+    expect(text).not.toContain("retrying");
+  });
+
+  it("failed with a future nextRetryAt shows the plain reason plus a retrying-in-Ns suffix", () => {
+    const text = linkStateText(
+      link({ state: "failed", reason: "LineLink.connect() timed out after 5000ms", nextRetryAt: now + 5000 }),
+      now,
+    );
+    expect(text).toBe("Couldn't connect: no answer (timed out) · retrying in 5s");
+  });
+
+  it("never shows a 0s or negative countdown -- a nextRetryAt within the current second still rounds up to at least 1s", () => {
+    const text = linkStateText(link({ state: "failed", reason: "boom", nextRetryAt: now + 400 }), now);
+    expect(text).toContain("retrying in 1s");
+    expect(text).not.toContain("0s");
+  });
+
+  it("renders Couldn't connect: <reason> when failed with no pending retry", () => {
+    expect(linkStateText(link({ state: "failed", reason: "no reply" }), now)).toBe("Couldn't connect: no reply");
+  });
+
+  it("renders Couldn't connect (with plain-word reason) for the unresponsive state", () => {
+    expect(linkStateText(link({ state: "unresponsive", reason: "HELLO timed out" }), now)).toBe("Couldn't connect: no answer (timed out)");
+    expect(linkStateText(link({ state: "unresponsive" }), now)).toBe("Couldn't connect");
+  });
+
+  it("maps a missed-STATUS-poll reason to 'stopped answering'", () => {
+    expect(linkStateText(link({ state: "unresponsive", reason: "no reply to 3 STATUS polls -- link presumed dead" }), now)).toBe(
+      "Couldn't connect: stopped answering",
+    );
+  });
+
+  it("keeps a banner/serial identity-mismatch reason verbatim (it's already an actionable cable instruction)", () => {
+    const reason = "banner identity gopiv disagrees with SWD name zeguz -- serial data corrupted, check the USB cable";
+    expect(linkStateText(link({ state: "failed", reason }), now)).toBe(`Couldn't connect: ${reason}`);
+  });
+
+  // Ticket 017-010 (team-lead bench evidence, 2026-09-13): `tovez`'s card
+  // read "Couldn't connect: connector: link "usb-9906…2820" produced no
+  // banner within the identify budget" -- the internal module-name prefix
+  // and quoted link id leaked straight through, and "no banner within the
+  // identify budget" itself was never translated to plain words.
+  it("strips the connector: prefix and quoted link id, and maps no-banner to a plain-word cable/power hint", () => {
+    const reason = 'connector: link "usb-9906…2820" produced no banner within the identify budget';
+    expect(linkStateText(link({ state: "failed", reason }), now)).toBe(
+      "Couldn't connect: the robot didn't answer when we said hello — check the USB cable or that it's powered on",
+    );
+  });
+
+  it("strips the relayBridger: prefix and quoted candidate id the same way", () => {
+    const reason = 'relayBridger: candidate "radio-gopiv-via-mbrelay-torture" produced no banner within the identify budget';
+    expect(linkStateText(link({ state: "unresponsive", reason }), now)).toBe(
+      "Couldn't connect: the robot didn't answer when we said hello — check the USB cable or that it's powered on",
+    );
+  });
+
+  it("strips the connector:/link id plumbing from a banner/serial mismatch reason but keeps the cable instruction itself", () => {
+    const reason =
+      'connector: link "usb-9906…2820" produced a banner whose name "ovz" does not match its own serial 231428700 -- serial data corrupted, check the USB cable';
+    const text = linkStateText(link({ state: "failed", reason }), now);
+    expect(text).toBe(
+      'Couldn\'t connect: produced a banner whose name "ovz" does not match its own serial 231428700 -- serial data corrupted, check the USB cable',
+    );
+    expect(text).not.toContain("connector:");
+    expect(text).not.toContain('link "usb-9906…2820"');
+  });
+
+  it("renders Not seen since <date> for a stale link with a lastSeen", () => {
+    const lastSeen = Date.UTC(2026, 0, 1, 12, 0, 0);
+    expect(linkStateText(link({ state: "stale", lastSeen }), now)).toContain("Not seen since");
+  });
+
+  it("renders Not linked for discovered/connectable/closed_by_user", () => {
+    expect(linkStateText(link({ state: "discovered" }), now)).toBe("Not linked");
+    expect(linkStateText(link({ state: "connectable" }), now)).toBe("Not linked");
+    expect(linkStateText(link({ state: "closed_by_user" }), now)).toBe("Not linked");
   });
 });
 

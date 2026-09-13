@@ -8,11 +8,12 @@
  * including on the redirect target the initial asset URL 302s to), so
  * the browser cannot fetch them at all. Every GitHub HTTP call in this
  * codebase -- release lookup, asset download, and (via
- * {@link FirmwareAvailabilityCache}) the periodic recheck -- lives in
- * this module and this module alone, the same way `swdName.ts` is the
- * sole owner of the SWD transport it wraps. This is a hard boundary
- * dictated by the missing CORS header, not a convenience: nothing here
- * may be "simplified" by moving a fetch to the browser.
+ * `watchers/firmwareWatcher.ts`, sprint 017 ticket 002) the periodic
+ * recheck -- lives in this module and this module alone, the same way
+ * `swdName.ts` is the sole owner of the SWD transport it wraps. This is
+ * a hard boundary dictated by the missing CORS header, not a
+ * convenience: nothing here may be "simplified" by moving a fetch to
+ * the browser.
  *
  * ## Failure is a value, not an exception
  *
@@ -22,7 +23,7 @@
  * network error, a missing asset, and a sha256 mismatch are all
  * ordinary return values, not thrown errors -- so `deviceRegistry.ts`
  * (ticket 005) can report a precise reason to a student rather than an
- * uncaught exception, and so `FirmwareAvailabilityCache`'s poll loop
+ * uncaught exception, and so `watchers/firmwareWatcher.ts`'s poll loop
  * never dies because one repo happens to have zero releases today.
  *
  * ## Availability is polled, not checked once
@@ -34,12 +35,10 @@
  * button must go from disabled to enabled the moment that repo cuts
  * its first release, with **no code change and no host restart** --
  * see `sprint.md`'s Design Rationale. A one-shot check at server
- * startup could never do that; {@link FirmwareAvailabilityCache}
- * re-runs the check on an interval instead, mirroring `devices.ts`'s
- * `DeviceWatcher` shape exactly (`current()`, `onChange()`,
- * `start()`/`stop()`, a directly-callable `pollOnce()` for
- * deterministic tests) so `server.ts` composes it the same way it
- * already composes `DeviceWatcher`.
+ * startup could never do that; `watchers/firmwareWatcher.ts` (sprint
+ * 017 ticket 002, replacing the retired `FirmwareAvailabilityCache`)
+ * re-runs the check on its own per-kind schedule instead, writing the
+ * result straight to the `firmware` table.
  *
  * ## Injectable `fetch`
  *
@@ -51,8 +50,7 @@
  */
 
 import { createHash } from "node:crypto";
-import type { FirmwareConfigMap, FirmwareSource } from "./config.js";
-import type { FirmwareAvailability, FirmwareKind } from "./wsMessages.js";
+import type { FirmwareSource } from "./config.js";
 
 /** GitHub's REST API base. Not itself injectable -- tests inject
  * `fetch` and assert against fixture responses keyed by whatever URL
@@ -283,11 +281,17 @@ export async function resolveRelease(
     (asset) => asset.name.toLowerCase() === MANIFEST_ASSET_NAME,
   );
   if (!hexAsset || !manifestAsset) {
+    // Sprint 017 ticket 002 / issue
+    // `host-rejects-robot-template-release-asset-naming.md` step 3: name
+    // the asset(s) actually found, not just which required name is
+    // missing -- a maintainer staring at "release vX is missing
+    // MICROBIT.hex" with no further clue has to go check GitHub by hand
+    // to see the repo published `nezha-robot-template-vX.hex` instead.
+    const foundNames = release.assets.map((asset) => `"${asset.name}"`);
+    const foundText = foundNames.length > 0 ? `has ${foundNames.join(", ")}` : "has no assets";
     return {
       reason: "no-asset",
-      message: `release ${release.tagName} is missing ${hexAsset ? "" : "MICROBIT.hex"}${
-        !hexAsset && !manifestAsset ? " and " : ""
-      }${manifestAsset ? "" : "MICROBIT.hex.txt"}`,
+      message: `release ${release.tagName} ${foundText}; expected "MICROBIT.hex" and "MICROBIT.hex.txt"`,
     };
   }
 
@@ -374,10 +378,8 @@ export async function fetchAndVerifyHex(
 
 /**
  * `resolveRelease` narrowed to a boolean: `true` iff a release with
- * both required assets exists for `source`. Used as the default
- * per-poll check inside {@link FirmwareAvailabilityCache}, and
- * available standalone for any caller that only needs a yes/no answer.
- * Never throws.
+ * both required assets exists for `source`. Available standalone for
+ * any caller that only needs a yes/no answer. Never throws.
  */
 export async function checkAvailability(
   source: FirmwareSource,
@@ -385,219 +387,4 @@ export async function checkAvailability(
 ): Promise<boolean> {
   const result = await resolveRelease(source, options);
   return !("reason" in result);
-}
-
-/** Ordered list of every {@link FirmwareKind}, for iterating a
- * {@link FirmwareConfigMap}/status map without relying on object key
- * enumeration order. */
-const FIRMWARE_KINDS: readonly FirmwareKind[] = ["relay", "robot"];
-
-/** Full per-firmware availability snapshot, as `server.ts` merges into
- * every `EndpointsMessage.firmwareStatus`. */
-export type FirmwareStatusMap = Record<FirmwareKind, FirmwareAvailability>;
-
-export type FirmwareAvailabilityListener = (current: FirmwareStatusMap) => void;
-
-/**
- * Availability check result richer than {@link checkAvailability}'s
- * plain boolean: `reason` carries the specific {@link ReleaseError}
- * reason (e.g. `"no-releases"`) so {@link FirmwareAvailabilityCache}
- * can populate `FirmwareAvailability.reason` for the UI, rather than
- * only ever reporting an unexplained `false`. `message` (out-of-process,
- * 2026-09-08) likewise carries {@link ReleaseError.message} through so
- * `FirmwareAvailability.message` can be populated -- the specific
- * diagnostic (which repo/tag/asset), not just the short `reason` token.
- */
-export type FirmwareAvailabilityChecker = (
-  source: FirmwareSource,
-) => Promise<{ available: boolean; reason?: string; message?: string }>;
-
-/** Default {@link FirmwareAvailabilityChecker}: resolves a release with
- * the real global `fetch` and maps a {@link ReleaseError}'s `reason`/
- * `message` straight through -- `reason` is already exactly the short,
- * stable token (`"no-releases"`, `"tag-not-found"`, `"no-asset"`,
- * `"network"`) `wsMessages.ts`'s `FirmwareAvailability.reason` expects,
- * and `message` is already the specific, safe-to-show diagnostic text
- * `resolveRelease` built for exactly this purpose -- see that type's own
- * doc comment for what it does and does not contain. */
-async function defaultAvailabilityChecker(
-  source: FirmwareSource,
-): Promise<{ available: boolean; reason?: string; message?: string }> {
-  const result = await resolveRelease(source);
-  return "reason" in result
-    ? { available: false, reason: result.reason, message: result.message }
-    : { available: true };
-}
-
-export interface FirmwareAvailabilityCacheOptions {
-  /** Poll interval in ms when {@link FirmwareAvailabilityCache.start} is
-   * used. Defaults to {@link DEFAULT_AVAILABILITY_POLL_INTERVAL_MS}.
-   * Irrelevant if callers drive
-   * {@link FirmwareAvailabilityCache.pollOnce} themselves. */
-  pollIntervalMs?: number;
-  /** How to check one configured source's availability. Defaults to
-   * {@link defaultAvailabilityChecker} (real GitHub, real `fetch`).
-   * Tests inject a fixture-backed fake so `pollOnce()` can be driven
-   * deterministically with no network call. */
-  checkAvailability?: FirmwareAvailabilityChecker;
-  /** Re-read the firmware configuration at the start of every
-   * {@link FirmwareAvailabilityCache.pollOnce}. Supply
-   * `() => getFirmwareConfig()` (as `server.ts` does) so a `.env` that
-   * appears or changes *after* the host started is picked up within one
-   * poll interval instead of never -- the constructor's `config`
-   * argument is only ever a starting snapshot.
-   *
-   * Opt-in rather than defaulted: a cache constructed with an explicit
-   * config map (every test, and any caller wiring its own sources)
-   * must keep using exactly that map, not silently reach out to the
-   * real repo-root `.env` behind the caller's back. */
-  loadConfig?: () => FirmwareConfigMap;
-}
-
-/**
- * Availability poll interval: a few minutes. This is an implementation
- * default, not a stakeholder-specified value (see `sprint.md`'s Step 7
- * open question) -- picked to be frequent enough that a newly-cut
- * `pxt-nezha-diffdrive` release shows up within one class period
- * without a host restart, while never hammering GitHub's unauthenticated
- * rate limit (60 requests/hour/IP) with two firmware kinds polled
- * indefinitely.
- */
-export const DEFAULT_AVAILABILITY_POLL_INTERVAL_MS = 5 * 60 * 1000;
-
-/** `reason` used for a configured-but-not-yet-polled entry, before
- * {@link FirmwareAvailabilityCache.pollOnce} has run for the first
- * time. Distinct from any {@link ReleaseError} reason so the UI (or a
- * test) can tell "never checked yet" apart from "checked and
- * unavailable". */
-const NOT_YET_CHECKED_REASON = "not-yet-checked";
-
-function initialStatus(config: FirmwareConfigMap): FirmwareStatusMap {
-  const status = {} as FirmwareStatusMap;
-  for (const kind of FIRMWARE_KINDS) {
-    const source = config[kind];
-    status[kind] =
-      source === undefined
-        ? { configured: false }
-        : {
-            configured: true,
-            repoUrl: source.repoUrl,
-            tag: source.tag,
-            available: false,
-            reason: NOT_YET_CHECKED_REASON,
-          };
-  }
-  return status;
-}
-
-/**
- * Live poller over {@link checkAvailability}: re-checks every
- * configured {@link FirmwareSource} on an interval and notifies
- * listeners when the resulting {@link FirmwareStatusMap} changes. This
- * is what lets the robot-firmware flash button go from disabled to
- * enabled the moment `pxt-nezha-diffdrive` cuts its first release, with
- * no code change and no host restart (`sprint.md`'s Design Rationale).
- *
- * Deliberately mirrors `devices.ts`'s `DeviceWatcher` shape: `current()`
- * for the latest snapshot, `onChange()` to subscribe, `start()`/`stop()`
- * for the real interval timer (`unref`'d so it never keeps the process
- * alive on its own), and a directly-callable `pollOnce()` so tests can
- * drive the check deterministically without depending on real timers.
- */
-export class FirmwareAvailabilityCache {
-  private config: FirmwareConfigMap;
-  private readonly pollIntervalMs: number;
-  private readonly checkAvailabilityFn: FirmwareAvailabilityChecker;
-  private readonly loadConfigFn: (() => FirmwareConfigMap) | undefined;
-  private timer: ReturnType<typeof setInterval> | undefined;
-  private readonly listeners = new Set<FirmwareAvailabilityListener>();
-  private status: FirmwareStatusMap;
-
-  constructor(config: FirmwareConfigMap, options: FirmwareAvailabilityCacheOptions = {}) {
-    this.config = config;
-    this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_AVAILABILITY_POLL_INTERVAL_MS;
-    this.checkAvailabilityFn = options.checkAvailability ?? defaultAvailabilityChecker;
-    this.loadConfigFn = options.loadConfig;
-    this.status = initialStatus(config);
-  }
-
-  /** Availability as of the most recent poll (a conservative
-   * "not yet checked" / unavailable placeholder before the first
-   * {@link pollOnce}). */
-  current(): FirmwareStatusMap {
-    return this.status;
-  }
-
-  /** Subscribe to change events. Returns an unsubscribe function. */
-  onChange(listener: FirmwareAvailabilityListener): () => void {
-    this.listeners.add(listener);
-    return () => {
-      this.listeners.delete(listener);
-    };
-  }
-
-  /**
-   * Run one poll immediately: re-read configuration (if `loadConfig`
-   * was supplied), re-check every configured firmware source, update
-   * the snapshot, and notify listeners only if the result actually
-   * changed. Returns the latest snapshot either way so callers/tests
-   * can inspect it without a listener.
-   */
-  async pollOnce(): Promise<FirmwareStatusMap> {
-    // Re-read configuration first, when the caller opted into it: a
-    // source that was unconfigured at startup (no `.env` yet) or has
-    // been repointed at a different tag since must take effect here,
-    // otherwise it never would. See `loadConfig`'s own doc.
-    if (this.loadConfigFn !== undefined) {
-      this.config = this.loadConfigFn();
-    }
-    const next = {} as FirmwareStatusMap;
-    for (const kind of FIRMWARE_KINDS) {
-      const source = this.config[kind];
-      if (source === undefined) {
-        next[kind] = { configured: false };
-        continue;
-      }
-      const { available, reason, message } = await this.checkAvailabilityFn(source);
-      next[kind] = available
-        ? { configured: true, repoUrl: source.repoUrl, tag: source.tag, available: true }
-        : {
-            configured: true,
-            repoUrl: source.repoUrl,
-            tag: source.tag,
-            available: false,
-            ...(reason !== undefined ? { reason } : {}),
-            ...(message !== undefined ? { message } : {}),
-          };
-    }
-
-    const changed = JSON.stringify(next) !== JSON.stringify(this.status);
-    this.status = next;
-    if (changed) {
-      for (const listener of this.listeners) {
-        listener(this.status);
-      }
-    }
-    return this.status;
-  }
-
-  /** Start polling on `pollIntervalMs`. No-op if already started. */
-  start(): void {
-    if (this.timer) {
-      return;
-    }
-    this.timer = setInterval(() => {
-      void this.pollOnce();
-    }, this.pollIntervalMs);
-    // Don't let the poll timer keep the process alive on its own.
-    this.timer.unref?.();
-  }
-
-  /** Stop polling. No-op if not started. */
-  stop(): void {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = undefined;
-    }
-  }
 }

@@ -24,6 +24,11 @@
  * 2. `startUsbWatcher`/`startMdnsWatcher` (sprint 014) — write
  *    `devices`/`links`/`services` rows; neither opens a session itself
  *    any more (sprint 015 ticket 003's "watchers write rows only").
+ * 2a. `startFirmwareWatcher` (sprint 017 ticket 002) — polls each
+ *    firmware kind's GitHub release with `ETag`/backoff and writes
+ *    `firmware` rows directly, replacing the retired
+ *    `FirmwareAvailabilityCache` that `server.ts` used to construct and
+ *    poll itself.
  * 3. `createHarvester` (ticket 003) — the real {@link HarvesterAttach}
  *    implementation, wired with `onTelemetry`/`onNotice` sinks this
  *    module fans out to every subscriber of {@link Runtime.telemetry}
@@ -55,8 +60,8 @@
  * backstop first (nothing should still be marking links failed once
  * everything else is stopping), the reconciler (stops scheduling new
  * jobs — does not close any already-open session, mirroring every
- * watcher's own `stop()` contract), the relay sweeper, both watchers,
- * then the store.
+ * watcher's own `stop()` contract), the relay sweeper, all three
+ * watchers, then the store.
  *
  * Every collaborator is injectable via {@link StartRuntimeOptions},
  * mirroring `cli.ts`'s own `CliDeps` seam ("real defaults, fakes in
@@ -76,6 +81,12 @@ import {
   startMdnsWatcher as defaultStartMdnsWatcher,
   type MdnsWatcherOptions,
 } from "./watchers/mdnsWatcher.js";
+import {
+  startFirmwareWatcher as defaultStartFirmwareWatcher,
+  type FirmwareWatcherDeps,
+  type FirmwareWatcherHandle,
+  type FirmwareWatcherOptions,
+} from "./watchers/firmwareWatcher.js";
 import { createBonjourBackend as defaultCreateBonjourBackend, type MdnsBackend } from "./discovery/mdnsDiscovery.js";
 import { createConnector as defaultCreateConnector, type ConnectorDeps, type ConnectorOptions } from "./connect/connector.js";
 import {
@@ -126,7 +137,7 @@ export interface Runtime {
    * relay sweeper (awaited — ticket 016-008: its own `stop()` now waits
    * for every in-flight per-relay pass's cleanup before resolving, so
    * this method must await it too, or the store below could still close
-   * out from under a pass's still-running `finally` block), both
+   * out from under a pass's still-running `finally` block), all three
    * watchers, uninstalls the unhandled-rejection backstop, and closes
    * the store. Does not close any already-open session — mirrors the
    * reconciler's own `stop()` contract (this module's doc comment). */
@@ -155,6 +166,15 @@ export interface StartRuntimeOptions {
   mdnsBackend?: MdnsBackend;
   createBonjourBackend?: typeof defaultCreateBonjourBackend;
   mdnsWatcherOptions?: MdnsWatcherOptions;
+
+  /** Sprint 017 ticket 002: replaces the retired `FirmwareAvailabilityCache`
+   * (which `server.ts` used to construct and poll itself). Composed here
+   * exactly like both other watchers — writes `firmware` rows directly;
+   * `server.ts`'s existing `store.onChange` subscription broadcasts the
+   * resulting snapshot with no firmware-specific glue of its own. */
+  startFirmwareWatcher?: typeof defaultStartFirmwareWatcher;
+  firmwareWatcherDeps?: FirmwareWatcherDeps;
+  firmwareWatcherOptions?: FirmwareWatcherOptions;
 
   createConnector?: typeof defaultCreateConnector;
   /** Every {@link ConnectorDeps} field except `harvester`, which this
@@ -202,21 +222,23 @@ export interface StartRuntimeOptions {
 }
 
 /**
- * Compose the store, both watchers, the harvester/connector/reconciler,
- * and the unhandled-rejection backstop into one running host. See the
- * module doc comment for composition order and every collaborator's own
- * module for what it does. Synchronous: every collaborator constructed
- * here starts (or opens) synchronously — the reconciler's own initial
- * `tick()` (and, on top of it, each watcher's own poll) dispatches
- * whatever real I/O they need fire-and-forget from there, exactly as
- * running `startReconciler`/`startUsbWatcher`/`startMdnsWatcher`
- * directly already does.
+ * Compose the store, all three watchers, the harvester/connector/
+ * reconciler, and the unhandled-rejection backstop into one running
+ * host. See the module doc comment for composition order and every
+ * collaborator's own module for what it does. Synchronous: every
+ * collaborator constructed here starts (or opens) synchronously — the
+ * reconciler's own initial `tick()` (and, on top of it, each watcher's
+ * own poll) dispatches whatever real I/O they need fire-and-forget from
+ * there, exactly as running
+ * `startReconciler`/`startUsbWatcher`/`startMdnsWatcher`/
+ * `startFirmwareWatcher` directly already does.
  */
 export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
   const openStoreWithImportsFn = options.openStoreWithImports ?? defaultOpenStoreWithImports;
   const startUsbWatcherFn = options.startUsbWatcher ?? defaultStartUsbWatcher;
   const startMdnsWatcherFn = options.startMdnsWatcher ?? defaultStartMdnsWatcher;
   const createBonjourBackendFn = options.createBonjourBackend ?? defaultCreateBonjourBackend;
+  const startFirmwareWatcherFn = options.startFirmwareWatcher ?? defaultStartFirmwareWatcher;
   const createConnectorFn = options.createConnector ?? defaultCreateConnector;
   const createHarvesterFn = options.createHarvester ?? defaultCreateHarvester;
   const createRelayBridgerFn = options.createRelayBridger ?? defaultCreateRelayBridger;
@@ -244,6 +266,11 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
   const usbHandle: UsbWatcherHandle = startUsbWatcherFn(store, options.usbWatcherDeps, options.usbWatcherOptions);
   const mdnsBackend = options.mdnsBackend ?? createBonjourBackendFn();
   const mdnsHandle = startMdnsWatcherFn(store, { backend: mdnsBackend }, options.mdnsWatcherOptions);
+  const firmwareHandle: FirmwareWatcherHandle = startFirmwareWatcherFn(
+    store,
+    options.firmwareWatcherDeps,
+    options.firmwareWatcherOptions,
+  );
 
   const harvester = createHarvesterFn(store, {
     ...options.harvesterDeps,
@@ -304,6 +331,7 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
       await relaySweeperHandle.stop();
       usbHandle.stop();
       mdnsHandle.stop();
+      firmwareHandle.stop();
       store.close();
     },
   };

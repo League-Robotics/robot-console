@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { nameToValue } from "@robot-console/protocol";
 import { openStoreDb } from "../store/db.js";
 import { Store } from "../store/index.js";
 import type { DaplinkDevice } from "../devices.js";
 import type { SwdNameResult } from "../swdName.js";
+import { plan } from "../connect/reconciler.js";
 import { startUsbWatcher, type UsbWatcherDeps, type UsbWatcherOptions } from "./usbWatcher.js";
 
 // Ticket 014-007's own suite, rewritten by sprint 015 ticket 003:
@@ -104,6 +106,59 @@ describe("startUsbWatcher", () => {
     }
   });
 
+  // Bench defect 010 (2026-09-13, team-lead evidence): "the same robot
+  // appears twice" -- `tovez` id 2665 (`owned: 1`, `usb_serial:
+  // "SERIAL-A"`, the known-robots.json import placeholder) stayed a
+  // separate row from `tovez` id 2314287040 (`owned: 0`, real USB
+  // serial, SWD-named) because `connect/connector.ts`'s own
+  // `mergeNamePlaceholderIfAny` call only ever ran after a *successful
+  // banner identify*, which a bad cable may never produce cleanly. SWD
+  // naming (this module's own `attach()`) is a separate, earlier, cable-
+  // corruption-immune identification step -- it now calls the same
+  // shared merge (`store/placeholderMerge.ts`) directly once it names a
+  // board, closing that gap.
+  it("bench defect 010 (2026-09-13): a successful SWD name merges a known-robots.json placeholder sharing its name -- one row, owned, links re-pointed", async () => {
+    const store = freshStore();
+    const placeholderId = nameToValue("vevov");
+    // Seed exactly the known-robots.json import shape (sprint.md's own
+    // "usb_serial is a required field" note): owned, a usb_serial hint,
+    // and a pre-existing link from an earlier (non-USB) sighting that
+    // must be re-pointed once the merge fires.
+    store.upsertDevice({ id: placeholderId, name: "vevov", kind: "robot", usbSerial: "SERIAL-OLD", at: 0 });
+    store.setOwned(placeholderId, true, 0);
+    store.upsertLink({
+      id: "wifi-vevov",
+      transport: "wifi",
+      address: { host: "vevov.local", port: 7654 },
+      deviceId: placeholderId,
+      at: 0,
+    });
+
+    const listDevices = vi.fn(async () => [serialOnlyDevice(SERIAL_A, "/dev/cu.usbmodemA")]);
+    const deps: UsbWatcherDeps = { listDevices, readSwdName: async () => NAMED_VEVOV };
+    const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+    try {
+      await waitFor(() => store.snapshotRows().links.find((l) => l.id === `usb-${SERIAL_A}`)?.state === "connectable");
+
+      const rows = store.snapshotRows();
+      // Exactly one "vevov" device row -- the placeholder merged away,
+      // not left as a second, duplicate row.
+      const vevovRows = rows.devices.filter((d) => d.name === "vevov");
+      expect(vevovRows).toHaveLength(1);
+      expect(vevovRows[0]).toMatchObject({ id: VEVOV_ID, owned: 1 });
+      expect(rows.devices.some((d) => d.id === placeholderId)).toBe(false);
+
+      // Both links now point at the real (SWD-named) device id: the
+      // placeholder's own pre-existing wifi link, re-pointed by the
+      // merge, and the fresh usb link `attach()` itself just wrote.
+      expect(rows.links.find((l) => l.id === "wifi-vevov")).toMatchObject({ device_id: VEVOV_ID });
+      expect(rows.links.find((l) => l.id === `usb-${SERIAL_A}`)).toMatchObject({ device_id: VEVOV_ID, state: "connectable" });
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
   it("SWD naming failure leaves the link discovered, not connectable -- nothing for the reconciler to schedule yet", async () => {
     const store = freshStore();
     const listDevices = vi.fn(async () => [serialOnlyDevice(SERIAL_A, "/dev/cu.usbmodemA")]);
@@ -172,6 +227,165 @@ describe("startUsbWatcher", () => {
     }
   });
 
+  it(
+    "bench defect 010 (2026-09-13): HID-only added then updated with a serial path promotes the link to " +
+      "connectable exactly once (the board reads plugged in, never Connect-clicked)",
+    async () => {
+      const store = freshStore();
+      const setLinkStateSpy = vi.spyOn(store, "setLinkState");
+      const readSwdName = vi.fn(async () => NAMED_VEVOV);
+      let poll = 0;
+      const listDevices = vi.fn(async () => {
+        poll++;
+        return poll === 1
+          ? [hidOnlyDevice(SERIAL_A, "IOHIDDevice@A")]
+          : [fullDevice(SERIAL_A, "/dev/cu.usbmodemA", "IOHIDDevice@A")];
+      });
+      const deps: UsbWatcherDeps = { listDevices, readSwdName };
+      const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+      try {
+        await waitFor(() => store.snapshotRows().links[0]?.state === "connectable");
+        // A few more polls (the device list is stable from here on, so no
+        // further `updated` events fire) must not re-run naming or
+        // re-promote the link a second time.
+        await new Promise((resolve) => setTimeout(resolve, 30));
+
+        expect(readSwdName).toHaveBeenCalledTimes(1);
+        const rows = store.snapshotRows();
+        expect(rows.links[0]).toMatchObject({ device_id: VEVOV_ID, state: "connectable" });
+        expect(JSON.parse(rows.links[0]?.address as string)).toMatchObject({
+          path: "/dev/cu.usbmodemA",
+          hidPath: "IOHIDDevice@A",
+        });
+        const connectablePromotions = setLinkStateSpy.mock.calls.filter(
+          (call) => call[0].state === "connectable",
+        );
+        expect(connectablePromotions).toHaveLength(1);
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    },
+  );
+
+  it(
+    "bench defect 010 (2026-09-13): naming that could not run at added time (no path yet) gets one retry once " +
+      "the serial path arrives via updated, and only once",
+    async () => {
+      const store = freshStore();
+      let calls = 0;
+      const readSwdName = vi.fn(async () => {
+        calls++;
+        return calls === 1 ? NEVER_NAMED : NAMED_VEVOV;
+      });
+      let poll = 0;
+      const listDevices = vi.fn(async () => {
+        poll++;
+        return poll === 1
+          ? [hidOnlyDevice(SERIAL_A, "IOHIDDevice@A")]
+          : [fullDevice(SERIAL_A, "/dev/cu.usbmodemA", "IOHIDDevice@A")];
+      });
+      const deps: UsbWatcherDeps = { listDevices, readSwdName };
+      const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+      try {
+        await waitFor(() => store.snapshotRows().links[0]?.state === "connectable");
+        await new Promise((resolve) => setTimeout(resolve, 30));
+
+        expect(readSwdName).toHaveBeenCalledTimes(2);
+        const rows = store.snapshotRows();
+        expect(rows.devices[0]).toMatchObject({ id: VEVOV_ID });
+        expect(rows.links[0]).toMatchObject({ device_id: VEVOV_ID, state: "connectable" });
+        expect(boardOwnerIsFree(store, SERIAL_A)).toBe(true);
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    },
+  );
+
+  it("updated on a connected link leaves its state untouched (only the address is patched)", async () => {
+    const store = freshStore();
+    const readSwdName = vi.fn(async () => NAMED_VEVOV);
+    let poll = 0;
+    const listDevices = vi.fn(async () => {
+      poll++;
+      return poll === 1
+        ? [fullDevice(SERIAL_A, "/dev/cu.usbmodemA", "IOHIDDevice@A")]
+        : [fullDevice(SERIAL_A, "/dev/cu.usbmodemB", "IOHIDDevice@A")];
+    });
+    const deps: UsbWatcherDeps = { listDevices, readSwdName };
+    const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+    try {
+      await waitFor(() => store.snapshotRows().links[0]?.state === "connectable");
+      const linkId = `usb-${SERIAL_A}`;
+      store.setLinkState({ id: linkId, state: "connected", at: Date.now() });
+
+      // Let the path-changing `updated` poll happen.
+      await waitFor(() => JSON.parse(store.snapshotRows().links[0]?.address as string).path === "/dev/cu.usbmodemB");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      expect(readSwdName).toHaveBeenCalledTimes(1);
+      expect(store.snapshotRows().links[0]).toMatchObject({ state: "connected" });
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it("updated on a closed_by_user link leaves its state untouched (only the address is patched)", async () => {
+    const store = freshStore();
+    const readSwdName = vi.fn(async () => NAMED_VEVOV);
+    let poll = 0;
+    const listDevices = vi.fn(async () => {
+      poll++;
+      return poll === 1
+        ? [fullDevice(SERIAL_A, "/dev/cu.usbmodemA", "IOHIDDevice@A")]
+        : [fullDevice(SERIAL_A, "/dev/cu.usbmodemB", "IOHIDDevice@A")];
+    });
+    const deps: UsbWatcherDeps = { listDevices, readSwdName };
+    const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+    try {
+      await waitFor(() => store.snapshotRows().links[0]?.state === "connectable");
+      const linkId = `usb-${SERIAL_A}`;
+      store.setLinkState({ id: linkId, state: "closed_by_user", at: Date.now(), userClosed: true });
+
+      await waitFor(() => JSON.parse(store.snapshotRows().links[0]?.address as string).path === "/dev/cu.usbmodemB");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      expect(readSwdName).toHaveBeenCalledTimes(1);
+      expect(store.snapshotRows().links[0]).toMatchObject({ state: "closed_by_user" });
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it(
+    "integration: an updated-promoted link is exactly what connect/reconciler.ts's own plan() schedules a " +
+      "connect job for -- the reconciler's next tick, not a Connect click, is what completes bench defect 010",
+    async () => {
+      const store = freshStore();
+      let poll = 0;
+      const listDevices = vi.fn(async () => {
+        poll++;
+        return poll === 1
+          ? [hidOnlyDevice(SERIAL_A, "IOHIDDevice@A")]
+          : [fullDevice(SERIAL_A, "/dev/cu.usbmodemA", "IOHIDDevice@A")];
+      });
+      const deps: UsbWatcherDeps = { listDevices, readSwdName: async () => NAMED_VEVOV };
+      const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+      try {
+        await waitFor(() => store.snapshotRows().links[0]?.state === "connectable");
+
+        const jobs = plan(store.reconcilerRows(), Date.now());
+        expect(jobs).toEqual([{ kind: "connect", linkId: `usb-${SERIAL_A}` }]);
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    },
+  );
+
   it("removed ages the link to stale within one poll, aborts any in-flight attach, and releases any board_owner row", async () => {
     const store = freshStore();
     let poll = 0;
@@ -194,6 +408,49 @@ describe("startUsbWatcher", () => {
       store.close();
     }
   });
+
+  it(
+    "bench defect 010 addendum (2026-09-13): removed closes any open session, and a later added leaves the link " +
+      "connectable with no session -- ready for the reconciler's own auto-reconnect",
+    async () => {
+      const store = freshStore();
+      // Explicitly test-driven, not a raw poll counter: a 10ms poll
+      // interval racing an unconditional counter could skip straight
+      // past `stale` back to `connectable` before the test ever observes
+      // it. `present` only flips when this test says so.
+      let present = true;
+      const listDevices = vi.fn(async () => (present ? [serialOnlyDevice(SERIAL_A, "/dev/cu.usbmodemA")] : []));
+      const deps: UsbWatcherDeps = { listDevices, readSwdName: async () => NAMED_VEVOV };
+      const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+      try {
+        await waitFor(() => store.snapshotRows().links[0]?.state === "connectable");
+        const linkId = `usb-${SERIAL_A}`;
+
+        // Simulate a session that was open on this link when the cable
+        // died -- exactly what a live `connect/reconciler.ts` would have
+        // left behind (this file's own suite doesn't wire the reconciler
+        // in; that half is `connect/reconciler.test.ts`'s job).
+        store.openSession(linkId, Date.now());
+        expect(store.snapshotRows().sessions.find((s) => s.link_id === linkId)).toBeDefined();
+
+        // The next poll reports the board gone.
+        present = false;
+        await waitFor(() => store.snapshotRows().links[0]?.state === "stale");
+        expect(store.snapshotRows().sessions.find((s) => s.link_id === linkId)).toBeUndefined();
+
+        // The board reappears -- a fresh `added`, re-identified and
+        // marked `connectable` again, still with no session: exactly
+        // what `connect/reconciler.ts`'s `plan()` needs to see to
+        // schedule a fresh auto-connect.
+        present = true;
+        await waitFor(() => store.snapshotRows().links[0]?.state === "connectable");
+        expect(store.snapshotRows().sessions.find((s) => s.link_id === linkId)).toBeUndefined();
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    },
+  );
 
   it("a removal racing an in-flight SWD read (before any links row exists yet) skips marking the link connectable", async () => {
     const store = freshStore();

@@ -20,6 +20,7 @@ import { WebSocket as RealWebSocket } from "ws";
 import {
   startServer,
   DEFAULT_BUFFERED_AMOUNT_THRESHOLD_BYTES,
+  DEFAULT_MAX_PAYLOAD_BYTES,
   type RunningServer,
   type ServerRuntime,
   type StartServerOptions,
@@ -29,6 +30,8 @@ import {
 import { deviceIdToName, nameToRadioAddress } from "@robot-console/protocol";
 import { openStoreDb } from "./store/db.js";
 import { Store } from "./store/index.js";
+import { MAX_UPLOAD_BYTE_LENGTH } from "./localHexUpload.js";
+import { UPLOAD_ID_BYTE_LENGTH } from "./wsMessages.js";
 import type { ConnectedSession } from "./connect/connector.js";
 import type { HarvesterTelemetryEvent } from "./connect/harvester.js";
 import type { Snapshot, ServerMessage, FirmwareSourceRef } from "./wsMessages.js";
@@ -89,6 +92,11 @@ function fakeWebSocketServer(): WebSocketServerLike & { triggerConnection: (ws: 
 function fakeLink(overrides: Partial<Record<string, unknown>> = {}) {
   const lineListeners: Array<(decoded: { verb: string; fields: readonly string[] }) => void> = [];
   const rawLineListeners: Array<(line: string) => void> = [];
+  // Item G (team-lead, 2026-09-13): server.ts's console-echo subscription
+  // reads `onInboundLine` now, not `onRawLine` -- see that method's own
+  // doc comment on `LineLink`. This fake needs its own listener list so
+  // `ensureLineSubscriptions` has a real function to call.
+  const inboundLineListeners: Array<(line: string) => void> = [];
   return {
     sendLine: vi.fn(),
     sendCommand: vi.fn((verb: string, fields: readonly unknown[] = []) => `${verb} ${fields.join(" ")}\n`),
@@ -107,12 +115,22 @@ function fakeLink(overrides: Partial<Record<string, unknown>> = {}) {
         if (i >= 0) rawLineListeners.splice(i, 1);
       };
     }),
+    onInboundLine: vi.fn((listener: (line: string) => void) => {
+      inboundLineListeners.push(listener);
+      return () => {
+        const i = inboundLineListeners.indexOf(listener);
+        if (i >= 0) inboundLineListeners.splice(i, 1);
+      };
+    }),
     close: vi.fn().mockResolvedValue(undefined),
     _emitLine: (decoded: { verb: string; fields: readonly string[] }) => {
       for (const l of lineListeners) l(decoded);
     },
     _emitRawLine: (line: string) => {
       for (const l of rawLineListeners) l(line);
+    },
+    _emitInboundLine: (line: string) => {
+      for (const l of inboundLineListeners) l(line);
     },
     ...overrides,
   };
@@ -133,7 +151,12 @@ function fakeRuntime() {
   const sessionsByLink = new Map<string, ConnectedSession>();
   const telemetryListeners = new Set<(linkId: string, event: HarvesterTelemetryEvent) => void>();
   const noticeListeners = new Set<(linkId: string, message: string) => void>();
-  const requestOpen = vi.fn().mockResolvedValue(undefined);
+  // Bench defect 4: the real reconciler.requestOpen resolves to
+  // `{ refusedReason?: string }`, never bare `undefined` -- server.ts's
+  // own session-open handler destructures `refusedReason` off the
+  // result, so this fake must match that shape or every existing
+  // session-open test here would throw on the destructure.
+  const requestOpen = vi.fn().mockResolvedValue({});
   const requestClose = vi.fn().mockResolvedValue(undefined);
 
   const runtime: ServerRuntime & {
@@ -222,13 +245,6 @@ async function startTestServer(overrides: Partial<StartServerOptions> = {}): Pro
     port: 0,
     createWebSocketServer: () => wss,
     firmwareConfig: { relay: undefined, robot: undefined },
-    availabilityCache: {
-      current: () => ({ relay: { configured: false }, robot: { configured: false } }),
-      onChange: () => () => {},
-      start: () => {},
-      stop: () => {},
-      pollOnce: async () => ({ relay: { configured: false }, robot: { configured: false } }),
-    } as unknown as StartServerOptions["availabilityCache"],
     ...overrides,
   });
   return { server, store, runtime, wss, dir };
@@ -380,6 +396,36 @@ describe("server.ts: session-open/session-close dispatch", () => {
     expect(h.runtime.requestOpen).toHaveBeenCalledWith("usb-1");
   });
 
+  it(
+    "bench defect 4 (2026-09-12): broadcasts a link-scoped notice when the reconciler refuses a {linkId} session-open",
+    async () => {
+      const h = await harness();
+      h.runtime.requestOpen.mockResolvedValueOnce({ refusedReason: "this device is not owned yet -- claim it first" });
+      const ws = fakeWebSocket();
+      h.wss.triggerConnection(ws);
+      ws.sent.length = 0;
+
+      ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", linkId: "wifi-1" })), false);
+      await flush();
+
+      const notice = ws.sent.find((m) => m.type === "notice");
+      expect(notice).toMatchObject({ type: "notice", level: "warn", linkId: "wifi-1" });
+      expect((notice as { text: string }).text).toMatch(/not owned/);
+    },
+  );
+
+  it("broadcasts no notice at all when the reconciler actually opens the link (the default fake resolves to {})", async () => {
+    const h = await harness();
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    ws.sent.length = 0;
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", linkId: "usb-1" })), false);
+    await flush();
+
+    expect(ws.sent.some((m) => m.type === "notice")).toBe(false);
+  });
+
   it("forwards session-close to reconciler.requestClose", async () => {
     const h = await harness();
     const ws = fakeWebSocket();
@@ -414,6 +460,26 @@ describe("server.ts: session-open/session-close dispatch", () => {
       group: derived.group,
     });
   });
+
+  it(
+    "bench defect 4: broadcasts a link-scoped notice, addressed to the new radio child, when the reconciler refuses a {relayLinkId, name} bridge",
+    async () => {
+      const h = await harness();
+      h.runtime.requestOpen.mockResolvedValueOnce({ refusedReason: "already connecting" });
+      const ws = fakeWebSocket();
+      h.wss.triggerConnection(ws);
+      await flush();
+      ws.sent.length = 0;
+
+      ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", relayLinkId: "usb-RELAY", name: "vevov" })), false);
+      await flush();
+
+      const childLinkId = "radio-vevov-via-usb-RELAY";
+      const notice = ws.sent.find((m) => m.type === "notice");
+      expect(notice).toMatchObject({ type: "notice", level: "warn", linkId: childLinkId });
+      expect((notice as { text: string }).text).toMatch(/already connecting/);
+    },
+  );
 
   it("uses the device's own stored radio override, when one exists, instead of the name-derived default", async () => {
     const h = await harness();
@@ -680,11 +746,76 @@ describe("server.ts: line/send-command via runtime.reconciler.sessions", () => {
     expect(session.link.sendCommand).not.toHaveBeenCalled();
     expect(session.link.sendUnsequenced).not.toHaveBeenCalled();
   });
+
+  // -------------------------------------------------------------------
+  // Item G (team-lead, 2026-09-13): a real, successfully-decoded reply
+  // (id/status/ack/nack) never reached the student console because this
+  // subscription used to read `onRawLine`, which only ever fires for a
+  // line `receive()` could not route to a decoded shape. It now reads
+  // `onInboundLine`, which fires for every inbound line -- see
+  // `LineLink.onInboundLine`'s own doc comment.
+  // -------------------------------------------------------------------
+  it("broadcasts a decoded reply line (delivered via onInboundLine) as an rx line -- the bench defect this fixes", async () => {
+    const h = await harness();
+    const session = fakeSession("usb-1");
+    h.runtime.sessionsByLink.set("usb-1", session);
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    // `ensureLineSubscriptions` runs on `store.onChange` -- a store
+    // mutation (mirroring the snapshot-broadcast test's own pattern) is
+    // what actually registers this session's `onInboundLine` listener.
+    h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+    await flush();
+    ws.sent.length = 0;
+
+    (session.link as unknown as { _emitInboundLine: (line: string) => void })._emitInboundLine(
+      "id diffdrive calibration-0.20260913.1 1.20260912.8 gopiv",
+    );
+    await flush();
+
+    const rx = ws.sent.find((m) => m.type === "line" && (m as { direction?: string }).direction === "rx");
+    expect(rx).toMatchObject({ type: "line", linkId: "usb-1", direction: "rx", line: "id diffdrive calibration-0.20260913.1 1.20260912.8 gopiv" });
+  });
+
+  it("still broadcasts an unrouted/foreign line as an rx line via the same subscription (onRawLine's own former case is not lost)", async () => {
+    const h = await harness();
+    const session = fakeSession("usb-1");
+    h.runtime.sessionsByLink.set("usb-1", session);
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+    await flush();
+    ws.sent.length = 0;
+
+    (session.link as unknown as { _emitInboundLine: (line: string) => void })._emitInboundLine("beep boop overheard");
+    await flush();
+
+    const rx = ws.sent.find((m) => m.type === "line" && (m as { direction?: string }).direction === "rx");
+    expect(rx).toMatchObject({ type: "line", linkId: "usb-1", direction: "rx", line: "beep boop overheard" });
+  });
 });
 
 // ---------------------------------------------------------------------
 // flash-start
 // ---------------------------------------------------------------------
+
+describe("server.ts: DEFAULT_MAX_PAYLOAD_BYTES ties WebSocketServer's own maxPayload to the local-hex upload cap", () => {
+  // Sprint 017 ticket 003 / review finding F9
+  // (`03-host-server-flash-releases.md`): the real enforcement boundary
+  // for an oversized local-hex upload must be `WebSocketServer`'s own
+  // `maxPayload`, not only `localHexUpload.ts`'s post-hoc declared-vs-
+  // actual `byteLength` check -- so `maxPayload` must actually be tied
+  // to that cap, not merely "comfortably above" it by some separately
+  // chosen, coincidentally larger number.
+  it("is at least MAX_UPLOAD_BYTE_LENGTH plus the uploadId prefix, and not wildly larger than that", () => {
+    const floor = MAX_UPLOAD_BYTE_LENGTH + UPLOAD_ID_BYTE_LENGTH;
+    expect(DEFAULT_MAX_PAYLOAD_BYTES).toBeGreaterThanOrEqual(floor);
+    // "tied to the cap", not merely "large enough" -- the slack above
+    // the floor is only for ordinary JSON control-message framing
+    // overhead, not megabytes of headroom.
+    expect(DEFAULT_MAX_PAYLOAD_BYTES - floor).toBeLessThan(64 * 1024);
+  });
+});
 
 describe("server.ts: flash-start", () => {
   const FAKE_DEVICE: DaplinkDevice = { serialNumber: "SERIAL123", displaySerial: "IAL1" } as unknown as DaplinkDevice;
@@ -752,6 +883,62 @@ describe("server.ts: flash-start", () => {
     const result = ws.sent.find((m) => m.type === "flash-result");
     expect(result).toMatchObject({ type: "flash-result", status: "error" });
   });
+
+  // Sprint 017 ticket 003: flash-start now routes through
+  // `connect/flasher.ts`, which closes an already-open session first
+  // (via `runtime.reconciler.requestClose`) and acquires
+  // `board_owner = 'flash'` for the duration of the flash -- "the owner
+  // handoff visible in the store" this ticket's own AC describes.
+  it("closes an already-open session first, holds board_owner='flash' only while flash() runs, and releases it afterward", async () => {
+    let storeRef: Store | undefined;
+    const flashMock = vi.fn(async (_device, _hex, onProgress: (phase: string) => void) => {
+      // While flash() itself runs, board_owner must already be held by
+      // 'flash' -- a different owner's acquire attempt must fail.
+      expect(storeRef!.acquireBoardOwner("SERIAL123", "someone-else", Date.now())).toBe(false);
+      onProgress("erasing");
+      return { status: "ok", method: "swd" } satisfies FlashOutcome;
+    });
+    const h = await harness({
+      enumerateDaplinkDevices: async () => [FAKE_DEVICE],
+      flash: flashMock as unknown as StartServerOptions["flash"],
+    });
+    storeRef = h.store;
+    h.store.upsertLink({ id: "usb-SERIAL123", transport: "usb", address: { path: "/dev/x" }, at: 1 });
+    await flush();
+
+    // Simulate a session already open on this link before the flash.
+    h.runtime.sessionsByLink.set("usb-SERIAL123", fakeSession("usb-SERIAL123"));
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const sha256 = createHash("sha256").update("hello").digest("hex");
+    ws.emit(
+      "message",
+      Buffer.from(JSON.stringify({ type: "flash-local-begin", fileName: "a.hex", byteLength: 5, sha256 })),
+      false,
+    );
+    await flush();
+    const ready = ws.sent.find((m) => m.type === "flash-local-ready") as { uploadId: string } | undefined;
+    const uploadId = ready!.uploadId;
+    ws.emit("message", Buffer.concat([Buffer.from(uploadId, "ascii"), Buffer.from("hello")]), true);
+    await flush();
+
+    const source: FirmwareSourceRef = { kind: "local-hex", uploadId, fileName: "a.hex", sha256 };
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId: "usb-SERIAL123", source })), false);
+    await flush();
+    await flush();
+
+    expect(h.runtime.requestClose).toHaveBeenCalledWith("usb-SERIAL123");
+    expect(flashMock).toHaveBeenCalled();
+    // board_owner released once the flash finished -- a fresh acquire by
+    // a different owner now succeeds.
+    expect(h.store.acquireBoardOwner("SERIAL123", "someone-else", Date.now())).toBe(true);
+    const result = ws.sent.find((m) => m.type === "flash-result");
+    expect(result).toMatchObject({ type: "flash-result", status: "ok" });
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -783,13 +970,6 @@ describe("server.ts: close() with the real ws.WebSocketServer (bench 015-011 dea
       runtime,
       port: 0,
       firmwareConfig: { relay: undefined, robot: undefined },
-      availabilityCache: {
-        current: () => ({ relay: { configured: false }, robot: { configured: false } }),
-        onChange: () => () => {},
-        start: () => {},
-        stop: () => {},
-        pollOnce: async () => ({ relay: { configured: false }, robot: { configured: false } }),
-      } as unknown as StartServerOptions["availabilityCache"],
     });
 
     const client = new RealWebSocket(server.url.replace(/^http/, "ws"));

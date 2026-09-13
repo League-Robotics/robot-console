@@ -54,9 +54,12 @@
  * nothing renewed it) or it coasts on past release (nothing ever told
  * it to stop).
  *
- * **Resend interval chosen here: {@link DRIVE_RESEND_INTERVAL_MS} = 150ms,
- * lease {@link DRIVE_LEASE_MS} = 400ms.** 150ms sits comfortably inside
- * a 400ms lease (2.6 resends per lease window), so a single missed
+ * **Resend interval 150ms, lease 400ms** (ticket 017-007: the resend
+ * timer and release/unmount `STOP` discipline itself now live in
+ * {@link useHeldDrive}, `../hooks/useHeldDrive.ts`, shared with
+ * `DriveTab.tsx`'s keyboard/gamepad engine -- see that module's own doc
+ * comment for the timer mechanics). 150ms sits comfortably inside a
+ * 400ms lease (2.6 resends per lease window), so a single missed
  * interval tick under normal event-loop jitter still lands well before
  * the lease would expire. 150ms is also nowhere near the host's own
  * ~10ms `WritePacer` floor (ticket 003) — this timer is a UI-side lease
@@ -134,15 +137,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useSendable, useWsActions } from "../ws/WsProvider";
+import { isLinkUsable } from "../deviceDisplay";
+import { useHeldDrive } from "../hooks/useHeldDrive";
+import { clearEstop } from "../lib/estop";
 import "./DriveControls.css";
 
 /** [mm/s] -- see this module's doc comment for why 150. */
 const DRIVE_VELOCITY_MM_S = 150;
-/** [ms] -- the `WHEELS_V` lease length sent with every resend. */
-const DRIVE_LEASE_MS = 400;
-/** [ms] -- how often a held direction re-issues `WHEELS_V`, well inside
- * {@link DRIVE_LEASE_MS}. See this module's doc comment. */
-const DRIVE_RESEND_INTERVAL_MS = 150;
 
 /** `cruise` field for every fixed-angle `MOVE_X` turn. `0` is not "zero
  * speed" -- it is the wire's own "use the robot's configured default
@@ -339,20 +340,14 @@ export interface DriveControlsProps {
 export function DriveControls({ link }: DriveControlsProps) {
   const linkId = link.id;
   const sendable = useSendable();
-  const linkOpen = link.session !== undefined && sendable;
+  const linkOpen = isLinkUsable(link) && sendable;
   const { sendCommand } = useWsActions();
+  const held = useHeldDrive(sendCommand, linkId, linkOpen);
   const [activeDirection, setActiveDirection] = useState<DriveDirection | null>(null);
   const activeRef = useRef<DriveDirection | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   function release(): void {
-    if (intervalRef.current !== undefined) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = undefined;
-    }
-    if (activeRef.current !== null) {
-      sendCommand(linkId, "STOP");
-    }
+    held.setTarget(null);
     activeRef.current = null;
     setActiveDirection(null);
   }
@@ -363,10 +358,7 @@ export function DriveControls({ link }: DriveControlsProps) {
     }
     activeRef.current = direction;
     setActiveDirection(direction);
-    const [left, right] = wheelVelocities(direction);
-    const resend = () => sendCommand(linkId, "WHEELS_V", [left, right, DRIVE_LEASE_MS]);
-    resend();
-    intervalRef.current = setInterval(resend, DRIVE_RESEND_INTERVAL_MS);
+    held.setTarget(wheelVelocities(direction));
   }
 
   /** One-shot fixed turn -- a click, not a hold. See this module's doc
@@ -396,29 +388,28 @@ export function DriveControls({ link }: DriveControlsProps) {
   const estopped = link.session?.robotStatus?.estopped === true;
 
   // A held direction must not survive the link closing out from under
-  // it (disconnect/session close mid-hold) -- release() sends STOP,
-  // which `sendCommand` silently drops if the socket isn't open, but
-  // the local resend timer must still be torn down regardless.
+  // it (disconnect/session close mid-hold) -- `useHeldDrive` itself
+  // already sends the STOP and tears down its own resend timer for this
+  // transition (silently dropped by `sendCommand` if the socket isn't
+  // open); this component's own effect only needs to reset its local
+  // "which direction is held" bookkeeping so a later re-press isn't
+  // blocked by a stale `activeRef`.
   useEffect(() => {
     if (!linkOpen) {
-      release();
+      activeRef.current = null;
+      setActiveDirection(null);
     }
-    // `release` itself is intentionally omitted from the dependency
-    // list: it is a plain function recreated every render (no memo),
-    // and only `linkOpen` transitioning to false should ever trigger
-    // this effect body -- rerunning it every render for an unrelated
-    // reason would just call `release()` redundantly while a direction
-    // is not held (a harmless no-op) but adds nothing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [linkOpen]);
 
-  // Never leave a resend timer running (or the robot believing it
-  // should keep moving) past this component's own lifetime.
+  // Never leave this component's own bookkeeping pointing at a stale
+  // direction past its own lifetime -- `useHeldDrive`'s own unmount
+  // effect (inside the hook itself) is what sends the STOP and tears
+  // down the resend timer.
   useEffect(() => {
     return () => {
-      release();
+      activeRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function directionButton(direction: DriveDirection) {
@@ -512,10 +503,7 @@ export function DriveControls({ link }: DriveControlsProps) {
           className="drive-controls-clear-estop-button"
           data-testid="estop-clear-button"
           disabled={!linkOpen}
-          onClick={() => {
-            sendCommand(linkId, "SET", ["estop_clear", "1"]);
-            sendCommand(linkId, "STATUS");
-          }}
+          onClick={() => clearEstop(sendCommand, linkId)}
         >
           Clear E-STOP
         </button>

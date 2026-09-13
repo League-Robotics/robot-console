@@ -23,15 +23,30 @@
  *
  * The old two-step "send session-close for the current child, then
  * session-open for the new one" (`sprint.md`'s own retired Design
- * Rationale entry) is gone: `handleConnect` below sends exactly
- * `{ type: "session-open", relayLinkId, name }` whether or not a child
- * is already bridged -- `connect/reconciler.ts`'s `planUserOpen` is what
- * turns that single request into a close-old + open-new pair, executed
- * as one job, host-side. This page never sequences two messages of its
- * own for a switch. The no-pick "default failover" request
- * (`autoRobot: true`) has no replacement in the new wire contract
- * either (`wsMessages.ts`'s own `SessionOpenMessage` doc comment) -- a
- * name must be picked before Connect is enabled.
+ * Rationale entry) is gone: the `onConnect` callback handed to
+ * `RelayConnectControls` below sends exactly `{ type: "session-open",
+ * relayLinkId, name }` whether or not a child is already bridged --
+ * `connect/reconciler.ts`'s `planUserOpen` is what turns that single
+ * request into a close-old + open-new pair, executed as one job,
+ * host-side. This page never sequences two messages of its own for a
+ * switch. The no-pick "default failover" request (`autoRobot: true`)
+ * has no replacement in the new wire contract either (`wsMessages.ts`'s
+ * own `SessionOpenMessage` doc comment) -- a name must be picked before
+ * Connect is enabled.
+ *
+ * ## Ticket 017-007: connect bar + status text shared with `FrontPage.tsx`
+ *
+ * The picker, Connect/Switch/Disconnect buttons, and every status-copy
+ * branch described below (idle/sweeping/connecting/failed/connected/
+ * lost) now live in one place, `components/RelayConnectControls.tsx`
+ * (`relayStatusText` its single source of the copy strings), rendered
+ * here with `variant="page"` -- this page kept its own former markup/
+ * classes/`data-testid`s exactly (that component's own doc comment).
+ * `FrontPage.tsx`'s relay quick-connect card mounts the same component
+ * with `variant="card"`. `RobotSelect` (the name picker itself) moved
+ * out of this file into its own module, `components/RobotSelect.tsx`,
+ * for the same reason -- this page no longer doubles as the module a
+ * shared UI piece is imported from.
  *
  * ## `lease` rendering (sprint 015 ticket 008's own scope item, extended
  * by sprint 016 ticket 004)
@@ -93,13 +108,13 @@
  * throughout, driven by the child's existence, not its link's state) so
  * the student can retry or clean up.
  */
-import { useEffect, useState } from "react";
 import type { SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
 import { AddressSourceChip } from "../components/AddressSourceChip";
 import { DeviceConsole } from "../components/DeviceConsole";
+import { RelayConnectControls } from "../components/RelayConnectControls";
 import { RobotPage } from "./RobotPage";
 import { useDevices, useRelays, useSendable, useWsActions } from "../ws/WsProvider";
-import { findRelayChild, findSweepingCandidateName, sweepRateSuffix } from "../deviceDisplay";
+import { findRelayChild, isLinkUsable, nameDisplay } from "../deviceDisplay";
 import "./RelayPage.css";
 
 export interface RelayPageProps {
@@ -123,87 +138,50 @@ export function RelayPage({ device }: RelayPageProps) {
 
   const relayLink = device.links[0];
   const relayLinkId = relayLink?.id;
-  const relayInfo = relayLinkId ? relays.find((candidate) => candidate.linkId === relayLinkId) : undefined;
-  const bridging = relayInfo?.bridging;
-  const lease = relayInfo?.lease ?? null;
 
+  // Still needed here (in addition to `RelayConnectControls`' own
+  // identical derivation) to pick this page's own layout -- connected
+  // vs. not -- and to gate `AddressSourceChip`/`RobotPage`/the relay's
+  // own `DeviceConsole` accordingly. A plain `findRelayChild` call is
+  // cheap and pure; this is not the kind of duplicated business-rule or
+  // user-facing copy this ticket's extraction targets.
   const child = relayLinkId ? findRelayChild(devices, relayLinkId) : undefined;
-  // Sprint 016 ticket 004: "idle · sweeping <name>" while the sweep
-  // lease is held and no child is bridged -- see `deviceDisplay.ts`'s
-  // own `findSweepingCandidateName` doc comment for why this is
-  // inferred client-side rather than carried as a new wire field.
-  const sweepingName = relayLinkId && lease === "sweep" ? findSweepingCandidateName(devices, relayLinkId, Date.now()) : undefined;
-
-  const [selectedName, setSelectedName] = useState<string>("");
-
-  // Sync the connect bar to the live child's own name whenever it
-  // appears or changes -- covers both "this page mounted while already
-  // connected" and "the host just confirmed a fresh session-open" with
-  // the same logic.
-  useEffect(() => {
-    if (child) {
-      setSelectedName(child.device.name);
-    }
-  }, [child?.device.name]);
 
   const robotOptions = devices
     .filter((candidate) => candidate.kind === "robot")
     .map((candidate) => candidate.name)
     .sort((a, b) => a.localeCompare(b));
 
-  // Ticket 011 (carried from 009's send-gating sweep): `useSendable()`
-  // (socket open, snapshot not stale) gates Connect/Switch the same way
-  // every other send-capable control in the app now does -- the relay
-  // link's own `session`-independent state (it never has a `session`
-  // itself) meant this button was the one place send-gating had not
-  // yet reached.
-  function handleConnect(): void {
-    if (!relayLinkId || !selectedName || !sendable) {
-      return;
-    }
-    // Exactly one message -- see this module's own doc comment. The
-    // reconciler (ticket 002's `planUserOpen`) treats this as a
-    // close-old-child + open-new-child job when a child already exists,
-    // never a client-sequenced session-close then session-open.
-    send({ type: "session-open", relayLinkId, name: selectedName });
-  }
-
-  function handleDisconnect(): void {
-    if (!child) {
-      return;
-    }
-    send({ type: "session-close", linkId: child.link.id });
-  }
-
-  const connectDisabled = selectedName === "" || relayLinkId === undefined || !sendable;
-  const relayName = device.name;
+  const relayName = nameDisplay(device).text;
 
   return (
     <section className={`relay-page${child ? " relay-page-connected" : ""}`} aria-label="Relay device">
       <h2>{relayName}</h2>
 
+      <RelayConnectControls
+        variant="page"
+        relay={device}
+        devices={devices}
+        relays={relays}
+        robotOptions={robotOptions}
+        // Exactly one message -- see this module's own doc comment. The
+        // reconciler (ticket 002's `planUserOpen`) treats this as a
+        // close-old-child + open-new-child job when a child already
+        // exists, never a client-sequenced session-close then
+        // session-open.
+        onConnect={(linkId, name) => send({ type: "session-open", relayLinkId: linkId, name })}
+        onDisconnect={(linkId) => send({ type: "session-close", linkId })}
+        // Ticket 011 (carried from 009's send-gating sweep): gates
+        // Connect/Switch the same way every other send-capable control
+        // in the app now does -- the relay link's own `session`-
+        // independent state (it never has a `session` itself) meant
+        // this button was the one place send-gating had not yet
+        // reached.
+        sendable={sendable}
+      />
+
       {child ? (
         <>
-          {child.link.state === "connected" ? (
-            <p className="relay-connected-status" data-testid="relay-connected">
-              Connected to {child.device.name} via {relayName}
-              {child.link.via ? ` on channel ${child.link.via.channel}, group ${child.link.via.group}` : ""}
-            </p>
-          ) : (
-            <p className="relay-page-alert" role="alert" data-testid="relay-lost">
-              Connection to {child.device.name} lost{child.link.reason ? `: ${child.link.reason}` : ""}
-            </p>
-          )}
-
-          <div className="relay-connect-bar">
-            <RobotSelect options={robotOptions} value={selectedName} onChange={setSelectedName} />
-            <button type="button" data-testid="relay-connect" disabled={connectDisabled} onClick={handleConnect}>
-              Switch
-            </button>
-            <button type="button" data-testid="relay-disconnect" onClick={handleDisconnect}>
-              Disconnect
-            </button>
-          </div>
           <p className="relay-page-hint">The relay's own console returns after Disconnect.</p>
 
           {/* Mounted above RobotPage, never inside it -- RobotPage's own
@@ -216,81 +194,25 @@ export function RelayPage({ device }: RelayPageProps) {
         </>
       ) : (
         <>
-          <div className="relay-connect-bar">
-            <RobotSelect options={robotOptions} value={selectedName} onChange={setSelectedName} />
-            <button type="button" data-testid="relay-connect" disabled={connectDisabled} onClick={handleConnect}>
-              Connect
-            </button>
-          </div>
           <p className="relay-page-hint">
             Uses the picked robot's radio address as configured on its device page (Set Radio), or the name-derived
             default if none is set.
           </p>
 
-          {bridging?.state === "connecting" && (
-            <p className="relay-autoconnecting-status" role="status" data-testid="relay-autoconnecting">
-              {bridging.robotName ? `Connecting to ${bridging.robotName}…` : "Connecting…"}
-            </p>
-          )}
-          {bridging?.state === "failed" && (
-            <p className="relay-page-alert" role="alert" data-testid="relay-bridge-failed">
-              {bridging.error ?? `Could not reach ${bridging.robotName ?? "the robot"}`}
-            </p>
-          )}
-          {!bridging && (
-            <p className="relay-idle-status" role="status" data-testid="relay-idle">
-              {lease === "sweep" ? `idle · sweeping${sweepingName ? ` ${sweepingName}` : ""}${sweepRateSuffix(relayInfo)}` : "idle"}
-            </p>
-          )}
-
-          {relayLink && <DeviceConsole link={relayLink} name={relayName} />}
+          {/* Extended scope (team-lead, 2026-09-13), item D: an idle
+              relay's own console/sequencing-state banner was meaningless
+              noise ("No link open to torture — open a link before
+              sending." / "No session — sequencing state…") -- this
+              relay's own state (idle / sweeping / bridging), already
+              rendered by RelayConnectControls above, is the only thing
+              worth showing while there is no session on this link. The
+              console only mounts once the relay's own connectivity link
+              is actually usable (a student opened a raw console on the
+              relay itself, a rare direct case distinct from bridging to
+              a robot child). */}
+          {relayLink && isLinkUsable(relayLink) && <DeviceConsole link={relayLink} name={relayName} />}
         </>
       )}
     </section>
-  );
-}
-
-/** The robot-name picker, shared by both the not-connected and
- * connected connect bars -- every `kind: "robot"` device's name, host
- * order sorted (no separate "remembered vs. discovered" distinction any
- * more; that whole roster/discovery side-list pair is retired along
- * with `EndpointsMessage`, see `wsMessages.ts`'s module doc comment).
- * Empty-roster case renders a disabled placeholder option plus a hint
- * rather than an empty, silently unusable `<select>`. */
-export function RobotSelect({
-  options,
-  value,
-  onChange,
-}: {
-  options: string[];
-  value: string;
-  onChange: (name: string) => void;
-}) {
-  const empty = options.length === 0;
-  return (
-    <label className="relay-robot-picker">
-      <span>Robot</span>
-      <select
-        data-testid="relay-robot-select"
-        value={value}
-        disabled={empty}
-        onChange={(event) => onChange(event.target.value)}
-      >
-        {empty ? (
-          <option value="" disabled>
-            No robots known yet — connect one over USB once
-          </option>
-        ) : (
-          <>
-            <option value="">Choose a robot…</option>
-            {options.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </>
-        )}
-      </select>
-    </label>
   );
 }

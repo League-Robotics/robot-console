@@ -24,34 +24,24 @@
  * caller (which already knows which link it is opening this dialog
  * for) passes `linkId` and `linkOpen` directly, plus `name` for the
  * dialog's own title text (a link has no name of its own).
+ *
+ * ## Ticket 017-008: fields shared with `ConfigurationPage` via
+ * `WifiCredentialsForm`
+ *
+ * The ssid/password inputs, their validation (`validateWifiInput`), and
+ * the "where this network came from" note moved to
+ * `components/WifiCredentialsForm.tsx`, shared with `ConfigurationPage`'s
+ * Wi-Fi tab (`04-ui.md` §4). This dialog keeps the surrounding `<dialog>`
+ * chrome, the submit flow (`set-wifi-credentials` + `provision-wifi`),
+ * and the write-result display -- see that module's own doc comment for
+ * why the save flow itself did not move.
  */
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useSendable, useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
+import { Modal } from "./Modal";
+import { WifiCredentialsForm, validateWifiInput } from "./WifiCredentialsForm";
 import "./FlashDialog.css";
 import "./CredentialsDialog.css";
-
-export const WIFI_SSID_MAX = 32;
-export const WIFI_PASSWORD_MAX = 63;
-
-/** `null` when acceptable, else the reason. Exported for tests. */
-export function validateWifiInput(ssid: string, password: string, hasStoredPassword: boolean): string | null {
-  if (ssid.length === 0) {
-    return "Enter the network name.";
-  }
-  if (/\s/.test(ssid) || /\s/.test(password)) {
-    return "The network name and password cannot contain spaces.";
-  }
-  if (ssid.length > WIFI_SSID_MAX) {
-    return `The network name is too long (${WIFI_SSID_MAX} characters at most).`;
-  }
-  if (password.length > WIFI_PASSWORD_MAX) {
-    return `The password is too long (${WIFI_PASSWORD_MAX} characters at most).`;
-  }
-  if (password.length === 0 && !hasStoredPassword) {
-    return "Enter the password.";
-  }
-  return null;
-}
 
 export interface WifiCredentialsDialogProps {
   linkId: string;
@@ -77,7 +67,6 @@ export function WifiCredentialsDialog({ linkId, linkOpen, name, triggerClassName
   const [open, setOpen] = useState(false);
   const [ssid, setSsid] = useState("");
   const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [writing, setWriting] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -96,20 +85,6 @@ export function WifiCredentialsDialog({ linkId, linkOpen, name, triggerClassName
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, stored?.ssid]);
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) {
-      return;
-    }
-    if (open) {
-      if (typeof dialog.showModal === "function") {
-        dialog.showModal();
-      } else {
-        dialog.setAttribute("open", "");
-      }
-    }
-  }, [open]);
 
   useEffect(() => {
     if (result) {
@@ -142,8 +117,6 @@ export function WifiCredentialsDialog({ linkId, linkOpen, name, triggerClassName
     setPassword("");
   }
 
-  const hasStored = stored?.hasPassword === true && stored.ssid === ssid.trim();
-
   return (
     <>
       <button
@@ -158,94 +131,61 @@ export function WifiCredentialsDialog({ linkId, linkOpen, name, triggerClassName
       >
         Set Wi-Fi
       </button>
-      {open && (
-        <dialog
-          ref={dialogRef}
-          className="flash-dialog"
-          aria-label="Set Wi-Fi credentials"
-          data-testid="wifi-credentials-dialog"
-          onClose={close}
-          onCancel={(event) => {
-            event.preventDefault();
-            close();
-          }}
-        >
-          <div className="flash-dialog-panel credentials-panel">
-            <div className="flash-dialog-header">
-              <h2>Set Wi-Fi on {name}</h2>
-              <button type="button" className="flash-dialog-close" onClick={close} aria-label="Close">
-                ×
+      <Modal
+        open={open}
+        dialogRef={dialogRef}
+        className="flash-dialog"
+        ariaLabel="Set Wi-Fi credentials"
+        testId="wifi-credentials-dialog"
+        onClose={close}
+        onCancel={(event) => {
+          event.preventDefault();
+          close();
+        }}
+      >
+        <div className="flash-dialog-panel credentials-panel">
+          <div className="flash-dialog-header">
+            <h2>Set Wi-Fi on {name}</h2>
+            <button type="button" className="flash-dialog-close" onClick={close} aria-label="Close">
+              ×
+            </button>
+          </div>
+          <form className="credentials-form" onSubmit={handleSubmit}>
+            <WifiCredentialsForm
+              variant="dialog"
+              ssid={ssid}
+              password={password}
+              onSsidChange={setSsid}
+              onPasswordChange={setPassword}
+              stored={stored}
+              error={error}
+            />
+            {result && (
+              <p
+                className={result.ok ? "credentials-result credentials-result-ok" : "credentials-result credentials-error"}
+                role="status"
+                data-testid="wifi-result"
+              >
+                {result.message}
+              </p>
+            )}
+            <div className="credentials-actions">
+              <button
+                type="submit"
+                className="credentials-primary"
+                data-testid="wifi-write"
+                disabled={!linkOpen || writing || !sendable}
+                title={!sendable ? "Disconnected from the host" : linkOpen ? undefined : "Open a link to the robot first"}
+              >
+                {writing ? "Writing…" : "Save and write to robot"}
+              </button>
+              <button type="button" onClick={close}>
+                Close
               </button>
             </div>
-            <form className="credentials-form" onSubmit={handleSubmit}>
-              <label>
-                <span>Network name</span>
-                <input
-                  data-testid="wifi-ssid"
-                  value={ssid}
-                  maxLength={WIFI_SSID_MAX}
-                  autoComplete="off"
-                  onChange={(event) => setSsid(event.target.value)}
-                />
-              </label>
-              <label>
-                <span>Password</span>
-                <span className="credentials-password-row">
-                  <input
-                    data-testid="wifi-password"
-                    type={showPassword ? "text" : "password"}
-                    value={password}
-                    maxLength={WIFI_PASSWORD_MAX}
-                    autoComplete="off"
-                    placeholder={hasStored ? "saved — leave blank to keep" : ""}
-                    onChange={(event) => setPassword(event.target.value)}
-                  />
-                  <button type="button" className="credentials-show" onClick={() => setShowPassword((value) => !value)}>
-                    {showPassword ? "Hide" : "Show"}
-                  </button>
-                </span>
-              </label>
-              <p className="credentials-note">
-                {stored?.source === "stored"
-                  ? "Saved on this computer. "
-                  : stored?.source === "env"
-                    ? "From this computer's configuration. "
-                    : "No network saved on this computer yet. "}
-                Written to the robot's credential slot 0 over the open link; the robot uses it after its
-                next power cycle.
-              </p>
-              {error && (
-                <p className="credentials-error" role="alert" data-testid="wifi-error">
-                  {error}
-                </p>
-              )}
-              {result && (
-                <p
-                  className={result.ok ? "credentials-result credentials-result-ok" : "credentials-result credentials-error"}
-                  role="status"
-                  data-testid="wifi-result"
-                >
-                  {result.message}
-                </p>
-              )}
-              <div className="credentials-actions">
-                <button
-                  type="submit"
-                  className="credentials-primary"
-                  data-testid="wifi-write"
-                  disabled={!linkOpen || writing || !sendable}
-                  title={!sendable ? "Disconnected from the host" : linkOpen ? undefined : "Open a link to the robot first"}
-                >
-                  {writing ? "Writing…" : "Save and write to robot"}
-                </button>
-                <button type="button" onClick={close}>
-                  Close
-                </button>
-              </div>
-            </form>
-          </div>
-        </dialog>
-      )}
+          </form>
+        </div>
+      </Modal>
     </>
   );
 }

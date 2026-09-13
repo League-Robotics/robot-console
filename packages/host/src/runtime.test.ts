@@ -37,6 +37,12 @@ function fakeDeps() {
   const fakeBackend = { marker: "fake-backend" };
   const createBonjourBackendMock = vi.fn(() => fakeBackend) as unknown as StartRuntimeOptions["createBonjourBackend"];
 
+  const firmwareStopMock = vi.fn(() => calls.push("firmwareWatcher.stop"));
+  const startFirmwareWatcherMock = vi.fn(() => {
+    calls.push("startFirmwareWatcher");
+    return { stop: firmwareStopMock };
+  }) as unknown as StartRuntimeOptions["startFirmwareWatcher"];
+
   let capturedHarvesterDeps: HarvesterDeps | undefined;
   const fakeHarvester = { marker: "fake-harvester" };
   const createHarvesterMock = vi.fn((_store: unknown, deps: HarvesterDeps) => {
@@ -104,6 +110,7 @@ function fakeDeps() {
     startUsbWatcher: startUsbWatcherMock,
     startMdnsWatcher: startMdnsWatcherMock,
     createBonjourBackend: createBonjourBackendMock,
+    startFirmwareWatcher: startFirmwareWatcherMock,
     createHarvester: createHarvesterMock,
     createConnector: createConnectorMock,
     createRelayBridger: createRelayBridgerMock,
@@ -125,6 +132,8 @@ function fakeDeps() {
     fakeRevocation,
     usbStopMock,
     mdnsStopMock,
+    firmwareStopMock,
+    startFirmwareWatcherMock,
     reconcilerStopMock,
     relaySweeperStopMock,
     uninstallMock,
@@ -148,7 +157,7 @@ function fakeDeps() {
 }
 
 describe("startRuntime -- composition", () => {
-  it("opens the store, starts both watchers against it, and wires harvester -> connector -> reconciler in order", () => {
+  it("opens the store, starts all three watchers against it, and wires harvester -> connector -> reconciler in order", () => {
     const f = fakeDeps();
 
     const runtime = startRuntime(f.options);
@@ -156,6 +165,10 @@ describe("startRuntime -- composition", () => {
     expect(f.openStoreWithImportsMock).toHaveBeenCalledTimes(1);
     expect(f.startUsbWatcherMock).toHaveBeenCalledWith(f.fakeStore, undefined, undefined);
     expect(f.startMdnsWatcherMock).toHaveBeenCalledWith(f.fakeStore, { backend: f.fakeBackend }, undefined);
+    // Sprint 017 ticket 002: the firmware watcher is composed here too,
+    // exactly like the other two -- replacing the retired
+    // `FirmwareAvailabilityCache` server.ts used to construct itself.
+    expect(f.startFirmwareWatcherMock).toHaveBeenCalledWith(f.fakeStore, undefined, undefined);
     expect(f.createHarvesterMock).toHaveBeenCalledTimes(1);
     expect(f.createHarvesterMock).toHaveBeenCalledWith(f.fakeStore, expect.any(Object));
     // The connector this runtime builds is handed the harvester this
@@ -189,12 +202,14 @@ describe("startRuntime -- composition", () => {
     expect(runtime.reconciler).toBe(f.fakeReconciler);
   });
 
-  it("forwards storeOptions/usbWatcherDeps/usbWatcherOptions/mdnsWatcherOptions/connectorOptions/reconcilerDeps/harvesterDeps through untouched", () => {
+  it("forwards storeOptions/usbWatcherDeps/usbWatcherOptions/mdnsWatcherOptions/firmwareWatcherDeps/firmwareWatcherOptions/connectorOptions/reconcilerDeps/harvesterDeps through untouched", () => {
     const f = fakeDeps();
     const storeOptions = { filePath: ":memory:" };
     const usbWatcherDeps = { now: () => 42 };
     const usbWatcherOptions = { pollIntervalMs: 5 };
     const mdnsWatcherOptions = { requeryIntervalMs: 5 };
+    const firmwareWatcherDeps = { now: () => 11 };
+    const firmwareWatcherOptions = { pollIntervalMs: 5 };
     const connectorOptions = { connectTimeoutMs: 5 };
     const reconcilerDeps = { now: () => 99, tickIntervalMs: 5 };
     const harvesterDeps = { now: () => 7 };
@@ -205,6 +220,8 @@ describe("startRuntime -- composition", () => {
       usbWatcherDeps,
       usbWatcherOptions,
       mdnsWatcherOptions,
+      firmwareWatcherDeps,
+      firmwareWatcherOptions,
       connectorOptions,
       reconcilerDeps,
       harvesterDeps,
@@ -213,6 +230,7 @@ describe("startRuntime -- composition", () => {
     expect(f.openStoreWithImportsMock).toHaveBeenCalledWith(storeOptions);
     expect(f.startUsbWatcherMock).toHaveBeenCalledWith(f.fakeStore, usbWatcherDeps, usbWatcherOptions);
     expect(f.startMdnsWatcherMock).toHaveBeenCalledWith(f.fakeStore, { backend: f.fakeBackend }, mdnsWatcherOptions);
+    expect(f.startFirmwareWatcherMock).toHaveBeenCalledWith(f.fakeStore, firmwareWatcherDeps, firmwareWatcherOptions);
     expect(f.createConnectorMock).toHaveBeenCalledWith(f.fakeStore, expect.any(Object), connectorOptions);
     expect(f.getCapturedReconcilerDeps()).toMatchObject(reconcilerDeps);
     expect(f.getCapturedHarvesterDeps()).toMatchObject(harvesterDeps);
@@ -277,7 +295,7 @@ describe("startRuntime -- telemetry fan-out", () => {
 });
 
 describe("startRuntime -- stop()", () => {
-  it("stops the backstop, the reconciler, the relay sweeper, both watchers, then closes the store, in that order", async () => {
+  it("stops the backstop, the reconciler, the relay sweeper, all three watchers, then closes the store, in that order", async () => {
     const f = fakeDeps();
     const runtime = startRuntime(f.options);
     f.calls.length = 0; // only care about stop()'s own ordering from here
@@ -294,6 +312,7 @@ describe("startRuntime -- stop()", () => {
       "relaySweeper.stop",
       "usbWatcher.stop",
       "mdnsWatcher.stop",
+      "firmwareWatcher.stop",
       "store.close",
     ]);
   });
@@ -310,6 +329,7 @@ describe("startRuntime -- stop()", () => {
     expect(f.relaySweeperStopMock).toHaveBeenCalledTimes(1);
     expect(f.usbStopMock).toHaveBeenCalledTimes(1);
     expect(f.mdnsStopMock).toHaveBeenCalledTimes(1);
+    expect(f.firmwareStopMock).toHaveBeenCalledTimes(1);
     expect(f.fakeStore.close).toHaveBeenCalledTimes(1);
   });
 });

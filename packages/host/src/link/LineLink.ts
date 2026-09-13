@@ -136,6 +136,7 @@ export class LineLink {
 
   private readonly lineEmitter = new Emitter<DecodedLine>();
   private readonly rawLineEmitter = new Emitter<string>();
+  private readonly inboundLineEmitter = new Emitter<string>();
   private readonly ackNackEmitter = new Emitter<AckNackEvent>();
   private readonly errorEmitter = new Emitter<Error>();
   private readonly closeEmitter = new Emitter<Error | undefined>();
@@ -382,6 +383,26 @@ export class LineLink {
     return this.rawLineEmitter.on(listener);
   }
 
+  /**
+   * Subscribe to EVERY inbound raw line this link receives — decoded
+   * (`id`/`status`/`ack`/`nack`/...), unrouted, or malformed alike — the
+   * moment it is not consumed as a banner reply. Bench defect (team-lead,
+   * 2026-09-13, item G): `server.ts`'s student console broadcast used to
+   * read only {@link onRawLine}, which fires exclusively for lines
+   * `receive()` could not route to a decoded shape (`result.unrouted`) or
+   * flagged malformed — so a real, successfully-decoded reply (`id`,
+   * `status`, `ack`, `nack`) never reached the console at all, and only
+   * unsolicited `DBG:` lines (which `receive()` also can't route) were
+   * ever visible. This regressed in the 015-005 server rewrite. `onLine`/
+   * `onAckNack`/`onRawLine`'s own existing semantics and call sites
+   * (`connector.ts`'s relay preamble depends on `onRawLine` specifically)
+   * are unchanged by this addition — this is a fourth, additive tap, not
+   * a replacement.
+   */
+  onInboundLine(listener: RawLineListener): () => void {
+    return this.inboundLineEmitter.on(listener);
+  }
+
   onAckNack(listener: AckNackListener): () => void {
     return this.ackNackEmitter.on(listener);
   }
@@ -427,6 +448,10 @@ export class LineLink {
         return;
       }
     }
+
+    // Every inbound line that isn't consumed as a banner reply reaches
+    // `onInboundLine` -- see that method's own doc comment (item G).
+    this.inboundLineEmitter.dispatch(raw);
 
     // exactOptionalPropertyTypes: only include `onForeign` when configured.
     const result = receive(this.protocolSession, raw, this.onForeign ? { onForeign: this.onForeign } : {});

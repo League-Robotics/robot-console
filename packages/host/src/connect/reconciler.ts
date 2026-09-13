@@ -74,7 +74,7 @@
  * within one `tick()`/`requestOpen` call before that write has even
  * landed.
  */
-import type { ConnectedSession, Connector, LinkRow } from "./connector.js";
+import { DEFAULT_BACKOFF_CAP_MS, recordFailure, type ConnectedSession, type Connector, type LinkRow } from "./connector.js";
 import { toBridgeRequest, type RelayBridger } from "./relayBridger.js";
 import type { ReconcilerRows, Store, Transport } from "../store/index.js";
 
@@ -319,6 +319,45 @@ export function planUserOpen(rows: ReconcilerRows, linkId: string): Job[] {
 }
 
 /**
+ * Bench defect 4 (2026-09-12): a human-readable reason {@link
+ * planUserOpen} produced no job for `linkId`, or `undefined` if it would
+ * actually produce one. A user-initiated `session-open` that silently
+ * does nothing is exactly the "I click the buttons and nothing happens"
+ * bench complaint this narrates -- `startReconciler`'s own `requestOpen`
+ * (below) surfaces this to `server.ts`, which turns it into a `notice`
+ * broadcast the UI already knows how to render on the link's own
+ * console log (`WsProvider.tsx`'s `appendNotice`).
+ *
+ * Deliberately a separate function, not a second return value woven
+ * into {@link planUserOpen} itself: that function's own contract (pure,
+ * `(rows, linkId) => Job[]`, unit-tested as a table of inputs/outputs
+ * throughout this module's own suite) is untouched, so the two
+ * functions can never disagree about *whether* a job was produced, only
+ * -- when none was -- about *why not*. Narrates the same three branches
+ * `planUserOpen` itself refuses on; a link that already has a job
+ * coming (a switch, or a plain connect) is not "refused" at all, so
+ * this only ever returns a reason for the branches that return `[]`.
+ */
+export function describeUserOpenRefusal(rows: ReconcilerRows, linkId: string): string | undefined {
+  const link = rows.links.find((candidate) => candidate.id === linkId);
+  if (!link) {
+    return `no such link "${linkId}"`;
+  }
+  if (link.state === "connecting") {
+    return "already connecting";
+  }
+  const openSessionLinkIds = new Set(rows.sessions.map((session) => session.linkId));
+  if (openSessionLinkIds.has(link.id)) {
+    return "already open";
+  }
+  const device = link.deviceId !== null ? rows.devices.find((candidate) => candidate.id === link.deviceId) : undefined;
+  if (requiresOwned(link.transport) && !(device?.owned ?? false)) {
+    return "this device is not owned yet -- claim it first";
+  }
+  return undefined;
+}
+
+/**
  * The user-forwarded `session-close` counterpart to {@link plan}. Pure:
  * returns a `close` job only if `linkId` is actually open (a session
  * row) or opening (`state = 'connecting'`) — closing a link that is
@@ -371,6 +410,13 @@ export interface ReconcilerDeps {
   now?: () => number;
   /** Overrides {@link DEFAULT_TICK_INTERVAL_MS} — tests only. */
   tickIntervalMs?: number;
+  /** Cap on the exponential backoff {@link recordFailure} computes when
+   * this executor's own dead-transport reaping (bench defect 010
+   * addendum, "dead transport leaves session, blocks reconnect") records
+   * a failure -- same knob as `connect/connector.ts`'s own
+   * `ConnectorOptions.backoffCapMs`. Defaults to
+   * {@link DEFAULT_BACKOFF_CAP_MS}. */
+  backoffCapMs?: number;
 }
 
 /** Read-only view of the executor's own currently-open sessions — the
@@ -394,8 +440,17 @@ export interface Reconciler {
    * explicit user `session-open` command to (or ticket 001's own
    * connect flow, per this module's doc comment) — same precedence
    * rules as an automatic job, see {@link planUserOpen}. Resolves once
-   * every job it dispatched has settled (never rejects). */
-  requestOpen(linkId: string): Promise<void>;
+   * every job it dispatched has settled (never rejects).
+   *
+   * Bench defect 4 (2026-09-12): the resolved value's `refusedReason`
+   * is set (via {@link describeUserOpenRefusal}) exactly when this call
+   * produced no job at all — `server.ts`'s own `session-open` handler
+   * turns a set `refusedReason` into a `notice` broadcast, so a refused
+   * open is never silent to the student at the console. Absent when a
+   * job was actually dispatched (successfully or not — a dispatched
+   * job's own failure already surfaces via `links.state = 'failed'`
+   * and the snapshot it produces, not this return value). */
+  requestOpen(linkId: string): Promise<{ refusedReason?: string }>;
   /** The `session-close` counterpart — see {@link planUserClose}. */
   requestClose(linkId: string): Promise<void>;
   /** See {@link ReconcilerSessions}. */
@@ -411,7 +466,11 @@ export interface Reconciler {
  * expects out of a {@link ReconcilerRows} link — same fields, different
  * (typed, camelCase) source. */
 function toConnectorLinkRow(link: ReconcilerRows["links"][number]): LinkRow {
-  return { id: link.id, transport: link.transport, address: link.address };
+  // `deviceId` threaded through (item E, team-lead 2026-09-13) so
+  // `connector.ts`'s host-identity cross-check can compare a banner's
+  // own serial against the deviceId a `usb` link's row already carries
+  // from SWD naming -- see `LinkRow.deviceId`'s own doc comment.
+  return { id: link.id, transport: link.transport, address: link.address, deviceId: link.deviceId };
 }
 
 /**
@@ -425,6 +484,7 @@ function toConnectorLinkRow(link: ReconcilerRows["links"][number]): LinkRow {
 export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler {
   const now = deps.now ?? (() => Date.now());
   const tickIntervalMs = deps.tickIntervalMs ?? DEFAULT_TICK_INTERVAL_MS;
+  const backoffCapMs = deps.backoffCapMs ?? DEFAULT_BACKOFF_CAP_MS;
 
   /** linkIds with a connect attempt currently in flight -- acceptance
    * criterion 3: "never re-issues a job already in flight for the same
@@ -487,6 +547,54 @@ export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler 
     return deps.connector.connectAndIdentify(link, signal);
   }
 
+  /**
+   * Bench defect 010 addendum (2026-09-13, "dead transport leaves
+   * session, blocks reconnect"): the reconciler is the single owner of
+   * session teardown (this module's own doc comment) -- reached here via
+   * one `LineLink.onClose` subscription taken the moment `runConnect`
+   * starts tracking a session, so *every* way a live link can die (a
+   * genuine transport close, or `harvester.ts`'s own missed-poll `fail()`
+   * now also closing the link -- see that function's own doc comment)
+   * converges on this one cleanup: drop the local reference, close the
+   * store's `sessions` row, close the `LineLink` itself (idempotent --
+   * already closed in every real case this fires from, but this module
+   * makes no assumption about that), and record a `failed` state with
+   * backoff fields so {@link plan}'s `isAutoConnectEligible` has
+   * something to retry (architecture.md §5's own state diagram draws
+   * exactly this edge, `unresponsive --> failed`; `unresponsive` alone is
+   * never auto-connect-eligible, which is what let this defect linger
+   * forever once a watcher's own later `connectable` write raced past a
+   * still-open `sessions` row).
+   *
+   * `sessions.get(linkId) !== session` guards against a session this
+   * call no longer owns: `runClose`/`runSwitch` (or a fresh `runConnect`
+   * replacing this same linkId) may have already deleted or replaced the
+   * map entry before this listener ever fires -- reacting anyway would
+   * double-close or reap the wrong session.
+   */
+  function reapDeadSession(linkId: string, session: ConnectedSession, reason: Error | undefined): void {
+    if (sessions.get(linkId) !== session) {
+      return;
+    }
+    sessions.delete(linkId);
+    try {
+      store.closeSession(linkId);
+      void session.link.close();
+      recordFailure(store, linkId, reason ? reason.message : "transport closed", now(), backoffCapMs);
+    } catch {
+      // Best-effort past this point: a lingering `LineLink`'s own
+      // `onClose` can fire well after `stop()` was called (which
+      // deliberately leaves an already-open session alone -- this
+      // module's own doc comment) and the owning store closed out from
+      // under it (process shutdown; a test's own teardown order --
+      // confirmed live in `mbserialEndToEnd.test.ts`, where destroying
+      // the fake robot's socket races the harness's own `store.close()`
+      // a few lines later). Nothing further to reconcile once the store
+      // itself is gone; this must never become an uncaught exception
+      // thrown out of a raw socket "close" event handler.
+    }
+  }
+
   function runConnect(linkId: string): Promise<void> {
     if (inFlight.has(linkId)) {
       return Promise.resolve();
@@ -505,6 +613,7 @@ export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler 
             return returnRelayToIdle(session);
           }
           sessions.set(linkId, session);
+          session.link.onClose((reason) => reapDeadSession(linkId, session, reason));
           return undefined;
         },
         () => {
@@ -570,17 +679,123 @@ export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler 
     }
   }
 
+  /** Ticket 017-010 bench defect 5 ("send-command finds reconciler-
+   * opened sessions"): a `sessions` row is durable proof of an open link
+   * only *within* one executor's own lifetime — {@link
+   * deviceHasActiveLink}'s own doc comment already says as much ("a
+   * session survives its link going unresponsive", the more durable of
+   * the two signals it checks). It is not proof across a process
+   * restart: no `ConnectedSession`/`LineLink` can be reconstituted from
+   * the database, so this executor's own {@link sessions} Map is always
+   * empty right here — before the first {@link tick} — while
+   * `console.sqlite`'s `sessions` table can still carry rows an *earlier*
+   * process opened and never explicitly closed (killed, or crashed).
+   *
+   * Left alone, that mismatch is exactly the 2026-09-12 bench defect:
+   * `mbserial-vevov` sat `unresponsive` (the harvester's missed-poll
+   * watchdog writes `links.state` only — see `harvester.ts`'s own `fail`
+   * — it does not, and should not, touch `sessions`, since a session
+   * surviving `unresponsive` *within* a live process is exactly the
+   * point) with its old `sessions` row still in place from the process
+   * before this one. `plan`'s "device already has an active link" gate
+   * and `planUserOpen`'s "already open" refusal both read that row and
+   * treat the device as connected forever, refusing every future
+   * auto-reconnect and every explicit user Connect — while `server.ts`'s
+   * `requireSession` (reading *this* executor's own empty {@link
+   * sessions} Map, correctly) threw `link "mbserial-vevov" has no open
+   * session` on every `send-command`/`line`/`provision-wifi`. The UI
+   * panels that gate on `link.session !== undefined`
+   * (`CommandStrip.tsx`, `DeviceConsole.tsx`) kept showing the link as
+   * usable — including its last-known, now-frozen `STATUS` reply — since
+   * that field only reflects the row's mere presence, never which
+   * process actually holds the connection; this is also why the "no open
+   * session" notice repeated on every click, not once — nothing ever
+   * told the UI to stop trying.
+   *
+   * Run once, here, before the first {@link tick}: every `sessions` row
+   * inherited from before this executor started (all of them, at this
+   * point — {@link sessions} cannot yet hold anything of its own) is
+   * closed, and its link returned to `connectable` — not
+   * `closed_by_user`, since nothing here is a user's own request to stop
+   * — so the very next `tick()` picks it back up as an ordinary
+   * auto-connect candidate, exactly as if it had never connected before
+   * this process started. This is what makes `sessions` one registry
+   * again: present in the store if and only if present in *this*
+   * executor's own Map, from boot onward — every later mutation
+   * (`runConnect`/`runClose`) already keeps the two in lockstep, so nothing
+   * but this startup gap needed closing.
+   *
+   * (Two processes deliberately sharing one state dir at the same time
+   * is not a configuration this project supports — architecture.md's own
+   * "one host owns the store" — so this does not attempt to distinguish
+   * "stale, left by a dead process" from "some other live process's own
+   * session" any further than that.) */
+  function clearInheritedSessions(): void {
+    for (const session of store.reconcilerRows().sessions) {
+      store.closeSession(session.linkId);
+      store.setLinkState({
+        id: session.linkId,
+        state: "connectable",
+        at: now(),
+        reason: "stale-session-cleared-at-startup",
+      });
+    }
+  }
+
+  /**
+   * Bench defect 010 addendum, fix item 2: `describeUserOpenRefusal`
+   * must not say "already open" when the stored link state is not
+   * actually `connected` (or `connecting`, already mid-attempt) --
+   * {@link clearInheritedSessions} above only ever runs once, at
+   * construction, for a session inherited from a *previous* process;
+   * this is its runtime counterpart, run on every {@link requestOpen}
+   * call, for a session left behind *during* this process's own
+   * lifetime by a dead transport `reapDeadSession` has not yet reached
+   * (or a watcher's own `removed` handling closing the store's row
+   * directly -- see `watchers/usbWatcher.ts`'s own doc comment) while
+   * this executor's local {@link sessions} map still holds a reference.
+   *
+   * `planUserOpen`/`describeUserOpenRefusal` stay pure (this module's own
+   * doc comment: no store or network access) -- this executor clears the
+   * stale row *before* ever calling either, so by the time they run, the
+   * row already reflects "nothing open here", and a user's Connect is
+   * never refused for a link that is not actually connected. */
+  function clearStaleSession(rows: ReconcilerRows, linkId: string): ReconcilerRows {
+    const link = rows.links.find((candidate) => candidate.id === linkId);
+    if (!link || link.state === "connected" || link.state === "connecting") {
+      return rows;
+    }
+    const hasSession = rows.sessions.some((candidate) => candidate.linkId === linkId);
+    if (!hasSession) {
+      return rows;
+    }
+    const local = sessions.get(linkId);
+    if (local) {
+      sessions.delete(linkId);
+      void local.link.close();
+    }
+    store.closeSession(linkId);
+    return store.reconcilerRows();
+  }
+
+  clearInheritedSessions();
   const unsubscribe = store.onChange(() => tick());
   const timer: ReturnType<typeof setInterval> = setInterval(tick, tickIntervalMs);
   timer.unref?.();
   tick();
 
   return {
-    async requestOpen(linkId: string): Promise<void> {
-      const rows = store.reconcilerRows();
-      for (const job of planUserOpen(rows, linkId)) {
+    async requestOpen(linkId: string): Promise<{ refusedReason?: string }> {
+      const rows = clearStaleSession(store.reconcilerRows(), linkId);
+      const jobs = planUserOpen(rows, linkId);
+      if (jobs.length === 0) {
+        const refusedReason = describeUserOpenRefusal(rows, linkId);
+        return refusedReason !== undefined ? { refusedReason } : {};
+      }
+      for (const job of jobs) {
         await dispatch(job);
       }
+      return {};
     },
     async requestClose(linkId: string): Promise<void> {
       const rows = store.reconcilerRows();

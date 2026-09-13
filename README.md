@@ -75,6 +75,44 @@ out of sync with the new root version, which dirties the very next
   `npm install --package-lock-only` by hand once after any bump made
   that way, before committing.
 
+## Configuration
+
+The two flashable firmware sources -- the relay's and the robot's --
+are configured via `ROBOT_CONSOLE_RELAY_FIRMWARE` /
+`ROBOT_CONSOLE_ROBOT_FIRMWARE`, each a `<github-repo-url>[:<tag>]`
+string (`tag` defaults to `latest`). At every host startup, an importer
+resolves these in the following order and writes the result into the
+host's own SQLite store (`console.sqlite`'s `settings` table) --
+**an explicit environment variable always wins over a stale stored
+value**, on every restart:
+
+1. `process.env` -- set directly, or via `dotconfig load` (see
+   `config/AGENTS.md`) assembling `config/prod/public.env`'s
+   `ROBOT_CONSOLE_RELAY_FIRMWARE`/`ROBOT_CONSOLE_ROBOT_FIRMWARE` into
+   `.env` and that file being sourced into the shell before
+   `npx robot-console` runs.
+2. A `.env` file in the host's state directory (`$ROBOT_CONSOLE_STATE_DIR`,
+   else `${XDG_STATE_HOME:-~/.local/state}/robot-console`) -- the same
+   `KEY=value` shape `dotconfig load` assembles, dropped there directly
+   for a packaged/registry install with no repo checkout to speak of.
+3. `.env` at the repository root -- only when actually running from a
+   robot-console checkout (detected by walking up from the installed
+   package's own directory looking for the checkout's root
+   `package.json`, not by assuming a fixed number of `..` segments,
+   which breaks under a packaged/registry install where no such
+   ancestor exists). This is what makes `npm run dev`/`dotconfig load`
+   work out of a checkout with no state-dir `.env` of its own.
+
+Neither source configuring a given firmware kind is not an error --
+that flash button simply renders "not configured" until one does.
+Editing `.env` (by hand or via `dotconfig load`/`dotconfig save`) takes
+effect on the *next* host restart, not while the host is already
+running -- the importer runs once per bootstrap, not on a poll.
+
+See `packages/host/src/store/importers/firmwareConfig.ts` for the full
+precedence logic and `packages/host/src/config.ts` for how a resolved
+string becomes a typed firmware source.
+
 ## Development
 
 One command, one terminal, hot reload:

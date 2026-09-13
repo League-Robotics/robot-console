@@ -135,6 +135,26 @@ describe("StatusPanel state word", () => {
   });
 });
 
+describe("StatusPanel 'last known' staleness label (extended scope, team-lead 2026-09-13, item A)", () => {
+  it("labels the table 'last known' once the link is no longer usable (session survives, state dropped)", () => {
+    const { el } = mountPanel(openLink(baseStatus(), { state: "unresponsive", reason: "no reply to 3 STATUS polls -- link presumed dead" }));
+    expect(el.querySelector('[data-testid="status-panel-stale"]')?.textContent).toBe("last known");
+    // The table itself is still rendered -- a pure display read, per
+    // `isLinkUsable`'s own doc comment, not hidden outright.
+    expect(el.querySelector('[data-testid="status-panel-fields"]')).not.toBeNull();
+  });
+
+  it("shows no 'last known' label while the link is actually usable", () => {
+    const { el } = mountPanel(openLink(baseStatus()));
+    expect(el.querySelector('[data-testid="status-panel-stale"]')).toBeNull();
+  });
+
+  it("shows no 'last known' label when there is no status at all to be stale", () => {
+    const { el } = mountPanel(closedLink());
+    expect(el.querySelector('[data-testid="status-panel-stale"]')).toBeNull();
+  });
+});
+
 describe("StatusPanel fields (OOP 2026-09-10: a named table, no refresh, no counter)", () => {
   it("renders the firmware's keys as labelled rows with decoded values, unknown keys raw", () => {
     const { el } = mountPanel(

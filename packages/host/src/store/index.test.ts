@@ -87,6 +87,56 @@ describe("Store: upsertDevice", () => {
   });
 });
 
+// ---------------------------------------------------------------------
+// Ticket 017-005 (2026-09-12 architecture revision): the
+// `deviceIdToName(id) === name` check is narrowed to skip evaluation
+// only when `id < 0 && kind === 'relay'` -- negative ids are never real
+// chip ids (`FICR.DEVICEID[1]` is unsigned 32-bit), so they are
+// unambiguously synthetic (mdnsWatcher.ts's hash-derived fallback for a
+// non-grammar mDNS relay name). Every other row shape still enforces
+// the check exactly as before -- this table exercises both the new
+// narrowed case and the still-enforced cases side by side.
+// ---------------------------------------------------------------------
+describe("Store: upsertDevice name/id invariant narrowing (ticket 017-005)", () => {
+  it.each([
+    ["negative id + non-grammar name + kind='relay' -> accepted", -1, "torture", "relay" as const, false],
+    ["negative id + non-grammar name + kind='robot' -> still throws", -1, "torture", "robot" as const, true],
+    // The existing 014-003 mismatch fixture (protocol review §2 item 6):
+    // a positive/chip id paired with a mismatched name still throws,
+    // whichever kind is supplied -- the narrowing never touches a
+    // non-negative id.
+    ["positive chip id + mismatched name + kind='relay' -> still throws (014-003 fixture)", 1779042496, "getez", "relay" as const, true],
+    ["positive chip id + mismatched name + kind='robot' -> still throws (014-003 fixture)", 1779042496, "getez", "robot" as const, true],
+  ] as const)("%s", (_label, id, name, kind, shouldThrow) => {
+    const { store } = freshStore();
+    try {
+      if (shouldThrow) {
+        expect(() => store.upsertDevice({ id, name, kind, at: 1 })).toThrow(DeviceNameMismatchError);
+        expect(store.snapshotRows().devices).toHaveLength(0);
+      } else {
+        expect(() => store.upsertDevice({ id, name, kind, at: 1 })).not.toThrow();
+        const row = store.snapshotRows().devices.find((r) => r.id === id);
+        expect(row).toMatchObject({ id, name, kind });
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  it("is idempotent for a repeat observation of the same synthetic negative-id relay", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: -1, name: "torture", kind: "relay", at: 1 });
+      store.upsertDevice({ id: -1, name: "torture", kind: "relay", at: 2 });
+      const rows = store.snapshotRows().devices;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: -1, name: "torture", kind: "relay", first_seen: 1, last_seen: 2 });
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe("Store: setOwned", () => {
   it("sets owned and refreshes last_seen; is a no-op if the device does not exist", () => {
     const { store } = freshStore();
@@ -400,6 +450,34 @@ describe("Store: mergeDevice", () => {
     }
   });
 
+  it("carries usb_serial from the placeholder when the real row has none, but never clobbers a usb_serial the real row already has (bench defect 2)", () => {
+    const { store } = freshStore();
+    try {
+      // First pairing: the real row has no usb_serial of its own yet --
+      // the placeholder's own (a known-robots.json import's own
+      // "last seen via USB" hint, per connector.ts's own doc comment)
+      // survives the merge instead of being dropped.
+      store.upsertDevice({ id: 1031, name: "vevov", kind: "robot", usbSerial: "0012345678", at: 100 });
+      store.upsertDevice({ id: 536019796, name: "vevav", kind: "robot", at: 200 });
+      store.mergeDevice(1031, 536019796, 200);
+      expect(store.snapshotRows().devices[0]).toMatchObject({ id: 536019796, usb_serial: "0012345678" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("never clobbers the real row's own already-set usb_serial with the placeholder's", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1031, name: "vevov", kind: "robot", usbSerial: "old-serial", at: 100 });
+      store.upsertDevice({ id: 536019796, name: "vevav", kind: "robot", usbSerial: "real-serial", at: 200 });
+      store.mergeDevice(1031, 536019796, 200);
+      expect(store.snapshotRows().devices[0]).toMatchObject({ id: 536019796, usb_serial: "real-serial" });
+    } finally {
+      store.close();
+    }
+  });
+
   it("is a no-op (rolls back, changes nothing) when either id has no devices row, or the ids are equal", () => {
     const { store } = freshStore();
     try {
@@ -542,6 +620,20 @@ describe("Store: firmware / settings / heartbeat", () => {
       store.setFirmware({ kind: "robot", repo: "org/repo", tag: "v2", available: false, checkedAt: 200 });
       const row = db.prepare("SELECT * FROM firmware WHERE kind = 'robot'").get() as Record<string, unknown>;
       expect(row).toMatchObject({ tag: "v2", available: 0, checked_at: 200 });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("getFirmwareEtag reads the stored etag, undefined when never polled or absent", () => {
+    const { store } = freshStore();
+    try {
+      expect(store.getFirmwareEtag("robot")).toBeUndefined();
+      store.setFirmware({ kind: "robot", repo: "org/repo", tag: "v1", available: true, etag: '"abc123"', checkedAt: 100 });
+      expect(store.getFirmwareEtag("robot")).toBe('"abc123"');
+      expect(store.getFirmwareEtag("relay")).toBeUndefined();
+      store.setFirmware({ kind: "robot", repo: "org/repo", tag: "v2", available: true, checkedAt: 200 });
+      expect(store.getFirmwareEtag("robot")).toBeUndefined();
     } finally {
       store.close();
     }

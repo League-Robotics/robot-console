@@ -100,7 +100,7 @@
  */
 import { useState } from "react";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { isCalibrationProgram } from "../deviceDisplay";
+import { isCalibrationProgram, nameDisplay } from "../deviceDisplay";
 import { CalibrationPage } from "../components/CalibrationPage";
 import { ChartsPanel } from "../components/ChartsPanel";
 import { CommandStrip } from "../components/CommandStrip";
@@ -146,7 +146,7 @@ export function RobotPage({ device, link }: RobotPageProps) {
   return (
     <section className="robot-page" aria-label="Robot device">
       <div className="robot-page-title-row">
-        <h2>{device.name}</h2>
+        <h2>{nameDisplay(device).text}</h2>
         <div className="robot-page-tabs" role="tablist" aria-label="Robot pages">
           {tabs.map((entry) => (
             <button

@@ -220,6 +220,14 @@ function startFakeMbserialRobot(): { server: Server; port: Promise<number>; sock
             // (already `1` immediately after `connect()`'s own `HELLO`,
             // before any command is ever sent).
             socket.write(`ack ${stopMatch[1]} 7 none\n`);
+          } else if (line === "ID") {
+            // Item G (team-lead, 2026-09-13): `ID` is unsequenced (not
+            // one of protocol.md's 13 sequenced verbs), so this reply
+            // carries no `#<id>` suffix -- matches the live-hardware
+            // evidence the fix for this bench defect was based on
+            // (`id diffdrive calibration-0.20260913.1 1.20260912.8
+            // gopiv`).
+            socket.write(`id diffdrive calibration-0.20260913.1 1.20260912.8 ${ROBOT_NAME}\n`);
           }
         }
         newlineIndex = buffer.indexOf("\n");
@@ -382,6 +390,29 @@ describe("mbserial end to end (sprint 016 ticket 006): fake mDNS + real loopback
     const lineMessages = ws.sent.filter((m): m is Extract<ServerMessage, { type: "line" }> => m.type === "line");
     expect(lineMessages.some((m) => m.direction === "tx" && m.line.startsWith("STOP"))).toBe(true);
 
+    // Item G (team-lead, 2026-09-13): a decoded reply (`id`) must reach
+    // the student console as an "rx" line broadcast -- before this fix,
+    // server.ts's console-echo subscription read `onRawLine`, which
+    // never fires for a well-formed, routable reply verb like `id`
+    // (only for unrouted/malformed lines), so this exact reply was
+    // silently dropped and the console showed nothing for it.
+    ws.sent.length = 0;
+    ws.emit(
+      "message",
+      Buffer.from(JSON.stringify({ type: "send-command", linkId, verb: "ID", fields: [] })),
+      false,
+    );
+    await waitFor(() =>
+      ws.sent.some(
+        (m): m is Extract<ServerMessage, { type: "line" }> =>
+          m.type === "line" && m.direction === "rx" && m.line.startsWith("id "),
+      ),
+    );
+    const idReply = ws.sent.find(
+      (m): m is Extract<ServerMessage, { type: "line" }> => m.type === "line" && m.direction === "rx" && m.line.startsWith("id "),
+    );
+    expect(idReply?.line).toBe(`id diffdrive calibration-0.20260913.1 1.20260912.8 ${ROBOT_NAME}`);
+
     // session-close
     ws.emit("message", Buffer.from(JSON.stringify({ type: "session-close", linkId })), false);
     await waitFor(() => h.reconciler.sessions.get(linkId) === undefined);
@@ -391,4 +422,134 @@ describe("mbserial end to end (sprint 016 ticket 006): fake mDNS + real loopback
     const linkAfterClose = h.store.snapshotRows().links.find((l) => l.id === linkId);
     expect(linkAfterClose?.state).toBe("closed_by_user");
   });
+});
+
+describe("mbserial end to end -- bench defect 5 (2026-09-12): sessions inherited across a host restart", () => {
+  it(
+    "a sessions row left over from a killed process (link unresponsive, no live in-memory session) is cleared at the next boot, the link auto-reconnects for real, and send-command through server.ts no longer throws 'has no open session'",
+    async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), "robot-console-mbserial-restart-"));
+      const robot = startFakeMbserialRobot();
+      const robotPort = await robot.port;
+      const linkId = `mbserial-${ROBOT_NAME}`;
+
+      try {
+        // --- "process 1": a real session gets established, then the
+        // process dies without ever calling session-close (killed, or
+        // crashed) -- `reconciler1.stop()` below only unsubscribes this
+        // executor's own timers/change-feed listener, exactly like a
+        // real process exit, never `requestClose`. No `server.ts`/
+        // harvester wiring in this half at all -- this test only needs a
+        // real `sessions` row plus a real `links.state` to seed, the
+        // same end state `harvester.ts`'s own missed-poll `fail()`
+        // leaves behind on a live bench (reconciler.test.ts's own
+        // "bench defect 5" unit test covers that transition itself).
+        const store1 = new Store(openStoreDb({ filePath: path.join(dir, "console.sqlite") }));
+        try {
+          store1.upsertDevice({ id: ROBOT_SERIAL, name: ROBOT_NAME, kind: "robot", at: 1 });
+          store1.setOwned(ROBOT_SERIAL, true, 1);
+          store1.upsertLink({ id: linkId, transport: "mbserial", address: { host: "127.0.0.1", port: robotPort }, deviceId: ROBOT_SERIAL, at: 1 });
+          store1.setLinkState({ id: linkId, state: "connectable", at: 1 });
+
+          const connector1 = createConnector(store1, { scheduler: realScheduler, now: () => Date.now() });
+          const reconciler1 = startReconciler(store1, { connector: connector1, now: () => Date.now(), tickIntervalMs: 1_000_000 });
+          try {
+            await waitFor(() => store1.snapshotRows().links.find((l) => l.id === linkId)?.state === "connected");
+            expect(store1.snapshotRows().sessions.find((s) => s.link_id === linkId)).toBeDefined();
+
+            // The missed-poll watchdog's own end state, written directly
+            // (no harvester wired into this bare connector) -- `sessions`
+            // untouched, exactly `harvester.ts`'s `fail()`.
+            store1.setLinkState({
+              id: linkId,
+              state: "unresponsive",
+              at: Date.now(),
+              reason: "no reply to 3 STATUS polls -- link presumed dead",
+            });
+          } finally {
+            reconciler1.stop();
+          }
+        } finally {
+          store1.close();
+        }
+
+        // --- "process 2": a fresh boot against the SAME state dir/db --
+        // the exact restart this ticket's fix targets. The fake robot
+        // itself is untouched across this boundary (a host restart never
+        // power-cycles the physical robot).
+        const store2 = new Store(openStoreDb({ filePath: path.join(dir, "console.sqlite") }));
+        try {
+          const connector2 = createConnector(store2, { scheduler: realScheduler, now: () => Date.now() });
+          const reconciler2 = startReconciler(store2, { connector: connector2, now: () => Date.now(), tickIntervalMs: 1_000_000 });
+          try {
+            const wss2 = fakeWebSocketServer();
+            const server2 = await startServer({
+              store: store2,
+              runtime: {
+                reconciler: reconciler2,
+                telemetry: { onTelemetry: () => () => {}, onNotice: () => () => {} },
+              },
+              port: 0,
+              createWebSocketServer: () => wss2,
+              firmwareConfig: { relay: undefined, robot: undefined },
+              availabilityCache: {
+                current: () => ({ relay: { configured: false }, robot: { configured: false } }),
+                onChange: () => () => {},
+                start: () => {},
+                stop: () => {},
+                pollOnce: async () => ({ relay: { configured: false }, robot: { configured: false } }),
+              } as unknown as StartServerOptions["availabilityCache"],
+            });
+            try {
+              // The stale row is gone synchronously, before this fresh
+              // executor's own first tick() ever runs (reconciler.ts's
+              // own `clearInheritedSessions`) -- confirmed here via the
+              // store directly, before anything else has had a chance to
+              // reopen it for real.
+              expect(store2.snapshotRows().sessions.find((s) => s.link_id === linkId)).toBeUndefined();
+
+              const ws2 = fakeWebSocket();
+              wss2.triggerConnection(ws2);
+              await flush();
+
+              // No `session-open` sent at all -- an owned mbserial link's
+              // own auto-connect (architecture.md §8 rule 1) picks this
+              // back up on its own, against the still-live fake robot.
+              await waitFor(() => store2.snapshotRows().links.find((l) => l.id === linkId)?.state === "connected");
+
+              const session = reconciler2.sessions.get(linkId);
+              expect(session?.linkId).toBe(linkId);
+
+              ws2.emit(
+                "message",
+                Buffer.from(JSON.stringify({ type: "send-command", linkId, verb: "STOP", fields: [] })),
+                false,
+              );
+              await waitFor(() => session?.link.session.lastDone === 7);
+
+              // The exact bench defect: `send-command` must not throw
+              // "has no open session" any more, once, let alone
+              // repeatedly.
+              const notices = ws2.sent.filter((m): m is Extract<ServerMessage, { type: "notice" }> => m.type === "notice");
+              expect(notices.some((n) => n.text.includes("has no open session"))).toBe(false);
+              const lineMessages = ws2.sent.filter((m): m is Extract<ServerMessage, { type: "line" }> => m.type === "line");
+              expect(lineMessages.some((m) => m.direction === "tx" && m.line.startsWith("STOP"))).toBe(true);
+            } finally {
+              await server2.close();
+            }
+          } finally {
+            reconciler2.stop();
+          }
+        } finally {
+          store2.close();
+        }
+      } finally {
+        for (const socket of robot.sockets) {
+          socket.destroy();
+        }
+        await new Promise<void>((resolve) => robot.server.close(() => resolve()));
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });

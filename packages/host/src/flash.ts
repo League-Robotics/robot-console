@@ -20,7 +20,7 @@
  *      validation failed after the erase began — see
  *      {@link isValidIntelHexText} and its call site in {@link flash}.
  *   2. **Failure is a value, not an exception**, matching `swdName.ts`'s
- *      and `releases.ts`'s convention: {@link flashOverSwd} and
+ *      and `releases.ts`'s convention: {@link flashViaDapLink} and
  *      {@link flash} always resolve to a classified {@link FlashOutcome},
  *      never throw and never reject, so a caller can report precisely
  *      what state the board is in rather than catching an uncaught
@@ -32,8 +32,8 @@
  *
  * `swdName.ts` deliberately attaches to a target *without* halting or
  * resetting it, so reading a five-letter name never disturbs firmware a
- * student might be mid-session with. `flashOverSwd` in this module does
- * the opposite on purpose: flashing fundamentally requires halting,
+ * student might be mid-session with. `flashViaDapLink` in this module
+ * does the opposite on purpose: flashing fundamentally requires halting,
  * erasing, writing, and resetting the target — there is no way to
  * program new firmware without interrupting whatever is currently
  * running. Do not "fix" one module by copying the other's constraint:
@@ -42,6 +42,31 @@
  * exists for a use case (recovering a board that already failed to
  * identify) where the target is not expected to have anything running
  * worth preserving.
+ *
+ * ## Naming: DAPLink vendor commands, not SWD (sprint 017 ticket 003)
+ *
+ * `flashViaDapLink`/`resetViaDapLink` were previously named
+ * `flashOverSwd`/`resetOverSwd` — a misnomer the 2026-09-11 review
+ * called out (`03-host-server-flash-releases.md` §2): both drive
+ * `dapjs`'s `DAPLink` class, which talks to the DAPLink *interface
+ * chip's own vendor-specific HID commands*, not the target's SWD debug
+ * port directly the way `swdName.ts`'s `CortexM`-based `readSwdName`
+ * does. The distinction is not pedantic: it is why
+ * {@link resetViaDapLink}'s reset never re-enumerates USB (that
+ * function's own doc comment) — a fact that is true of the DAPLink
+ * vendor reset command and would not necessarily be true of a genuine
+ * SWD-level reset.
+ *
+ * ## Every dapjs/HID call is time-bounded (sprint 017 ticket 003)
+ *
+ * `daplink.connect()` and `daplink.flash()` are each wrapped in
+ * {@link withTimeout} (`lib/withTimeout.ts`) — `node-hid`/`dapjs` give no
+ * bounded-wait or cancellation of their own, so a wedged USB transport
+ * used to hang the caller (and the board's `board_owner` slot) forever.
+ * A timeout classifies as `reason: "timeout"` in the returned
+ * {@link FlashFailure}, and the DAPLink handle is disconnected
+ * best-effort before returning (never left open) — see each function's
+ * own doc comment for exactly where.
  *
  * ## DAPjs's `DAPLink.flash()` is one atomic vendor-command sequence
  *
@@ -86,9 +111,38 @@
  * `sprint.md`'s Success Criteria); this module's own tests still inject
  * their own `resolveVolumePath` rather than exercising the real
  * filesystem.
+ *
+ * ## Platform-aware MSD enumeration, and settle/remount timing (sprint 017 ticket 004)
+ *
+ * The volume-listing step above used to be a single hard-coded
+ * `readdir("/Volumes")` — darwin-only, so Linux and Windows silently
+ * never found a fallback volume at all. {@link listVolumeNames} replaces
+ * that with a `platform`-branching enumeration (darwin `/Volumes`, linux
+ * `/media/<user>`/`/run/media/<user>`/`/mnt`, win32 drive letters
+ * `A:`-`Z:`), still plain `fs`/`readdir` per `sprint.md`'s Design
+ * Rationale ("no external process"), and still gated by the same
+ * `DETAILS.TXT` join described above — this function only narrows the
+ * candidate list (by name, where a name is meaningful to check at all;
+ * win32 drive letters carry none, so every present drive is a candidate
+ * there). A directory that fails to list is logged via `console.warn`
+ * and skipped, never swallowed silently.
+ *
+ * Separately, {@link flash}'s MSD path now waits
+ * {@link DEFAULT_MSD_SETTLE_MS} before starting the copy (a volume that
+ * has just been (re)mounted benefits from a short settle window), and —
+ * after {@link flashViaMsd}'s write returns — polls (best-effort, up to
+ * {@link DEFAULT_MSD_REMOUNT_TIMEOUT_MS}) for the volume to disappear and
+ * reappear, the observable side effect of DAPLink's own bootloader
+ * erasing/flashing/resetting the target from the file it was just handed.
+ * Only once that poll settles (whether or not a remount was actually
+ * observed — see {@link waitForVolumeRemount}'s own doc comment for why
+ * failing to observe one is not itself a flash failure) is `"resetting"`
+ * reported and the outcome resolved — `writeFile` returning is no longer
+ * treated as "the flash is done."
  */
 
-import { readdir, readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
+import { access as fsAccess, readdir, readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { HID as NodeHidDevice } from "node-hid";
 // Ticket 014-001: `dapjs` is vendored under `./vendor/dapjs/` (this
@@ -99,6 +153,7 @@ import { HID as NodeHidDevice } from "node-hid";
 // package's own `tsc`, resolves `events` to Node's real `EventEmitter`,
 // which has it).
 import { HID as HidTransport, DAPLink } from "./vendor/dapjs/index.js";
+import { TimeoutError, withTimeout } from "./lib/withTimeout.js";
 import type { DaplinkDevice } from "./devices.js";
 import type { FlashPhase } from "./wsMessages.js";
 
@@ -266,6 +321,19 @@ export interface FlashSuccess {
  *   - `"no-volume"` — SWD flashing failed and no mounted MSD volume
  *     could be resolved for this device, so no fallback was attempted.
  *   - `"write-failed"` — the MSD fallback's file write itself failed.
+ *   - `"timeout"` (sprint 017 ticket 003) — `daplink.connect()` or
+ *     `daplink.flash()` did not settle within its configured budget (see
+ *     the module doc's "Every dapjs/HID call is time-bounded" section).
+ *     The DAPLink handle is disconnected best-effort before this is
+ *     returned.
+ *   - `"owner-unavailable"` (sprint 017 ticket 003) — produced only by
+ *     `connect/flasher.ts`, never by this module directly: `board_owner
+ *     = 'flash'` could not be acquired for this device within that
+ *     module's own acquire-retry budget, even after closing any open
+ *     session first. Listed here (rather than in a separate type)
+ *     because `connect/flasher.ts` returns the same {@link FlashOutcome}
+ *     type this module does, per its own "thin orchestrator" design
+ *     (`sprint.md`'s Design Rationale).
  */
 export interface FlashFailure {
   status: "error";
@@ -277,7 +345,9 @@ export interface FlashFailure {
     | "attach-failed"
     | "program-failed"
     | "no-volume"
-    | "write-failed";
+    | "write-failed"
+    | "timeout"
+    | "owner-unavailable";
   error: string;
 }
 
@@ -313,12 +383,41 @@ function defaultDapLinkFactory(hidPath: string): DAPLink {
   return new DAPLink(transport);
 }
 
+/** Default bound on `daplink.connect()` — see the module doc's "Every
+ * dapjs/HID call is time-bounded" section. Overridable per call via
+ * {@link FlashViaDapLinkOptions.connectTimeoutMs} (tests shrink this to
+ * avoid a slow suite). */
+export const DEFAULT_DAPLINK_CONNECT_TIMEOUT_MS = 5_000;
+
+/** Default bound on the single `daplink.flash()` call, which erases,
+ * writes, and resets the target as one atomic sequence (module doc's
+ * "DAPjs's DAPLink.flash() is one atomic vendor-command sequence"
+ * section) — generous, since a full micro:bit v2 image can take several
+ * seconds to program page-by-page over HID. Overridable per call via
+ * {@link FlashViaDapLinkOptions.flashTimeoutMs}. */
+export const DEFAULT_DAPLINK_FLASH_TIMEOUT_MS = 30_000;
+
+/** Default bound on `daplink.connect()`/`daplink.reset()` inside
+ * {@link resetViaDapLink}. Overridable via
+ * {@link ResetViaDapLinkOptions}. */
+export const DEFAULT_DAPLINK_RESET_TIMEOUT_MS = 5_000;
+
+export interface FlashViaDapLinkOptions {
+  createDapLink?: DapLinkFactory;
+  /** See {@link DEFAULT_DAPLINK_CONNECT_TIMEOUT_MS}. */
+  connectTimeoutMs?: number;
+  /** See {@link DEFAULT_DAPLINK_FLASH_TIMEOUT_MS}. */
+  flashTimeoutMs?: number;
+}
+
 /**
  * Flash `hex` (already extracted to a plain, v2-only Intel hex — see
  * {@link flash}, which is the caller that does that extraction) onto
- * `device` over SWD, using `dapjs`'s `DAPLink` vendor-command flash
- * protocol against the same CMSIS-DAP HID handle `swdName.ts` uses
- * (`device.hid.path`).
+ * `device` via `dapjs`'s `DAPLink` vendor-command flash protocol,
+ * against the same CMSIS-DAP HID handle `swdName.ts` uses
+ * (`device.hid.path`) — see the module doc's "Naming" section for why
+ * this is not itself an SWD-level operation despite the vendored `dapjs`
+ * package's own class name.
  *
  * Unlike `swdName.ts`, this **does** halt, erase, write, and reset the
  * target -- see the module doc's "Attach-and-may-halt" section for why
@@ -329,12 +428,20 @@ function defaultDapLinkFactory(hidPath: string): DAPLink {
  * internally, and `"resetting"` once that call resolves (see the module
  * doc for why finer-grained phase boundaries aren't available from
  * `dapjs`). Always resolves to a {@link FlashOutcome}, never throws.
+ *
+ * `daplink.connect()` and `daplink.flash()` are each wrapped in
+ * {@link withTimeout}; either one timing out classifies as
+ * `reason: "timeout"`. A `connect()` timeout disconnects the (possibly
+ * still-opening) handle best-effort before returning, since that call
+ * never reaches this function's own `finally` block below; a
+ * `flash()` timeout is already covered by that `finally`, same as every
+ * other error thrown from within it.
  */
-export async function flashOverSwd(
+export async function flashViaDapLink(
   device: DaplinkDevice,
   hex: string,
   onProgress: (phase: FlashPhase) => void,
-  options?: { createDapLink?: DapLinkFactory },
+  options?: FlashViaDapLinkOptions,
 ): Promise<FlashOutcome> {
   const hidPath = device.hid?.path;
   if (hidPath === undefined) {
@@ -347,6 +454,9 @@ export async function flashOverSwd(
   }
 
   const createDapLink = options?.createDapLink ?? defaultDapLinkFactory;
+  const connectTimeoutMs = options?.connectTimeoutMs ?? DEFAULT_DAPLINK_CONNECT_TIMEOUT_MS;
+  const flashTimeoutMs = options?.flashTimeoutMs ?? DEFAULT_DAPLINK_FLASH_TIMEOUT_MS;
+
   let daplink: DAPLink;
   try {
     daplink = createDapLink(hidPath);
@@ -356,8 +466,18 @@ export async function flashOverSwd(
   }
 
   try {
-    await daplink.connect();
+    await withTimeout(daplink.connect(), connectTimeoutMs, "daplink.connect()");
   } catch (error) {
+    if (error instanceof TimeoutError) {
+      try {
+        await daplink.disconnect();
+      } catch {
+        // Best-effort cleanup only -- see this function's own `finally`
+        // block below for why a failed disconnect must never mask or
+        // replace whatever result was already determined.
+      }
+      return { status: "error", method: "swd", reason: "timeout", error: error.message };
+    }
     const { reason, error: message } = classifyAttachError(error);
     return { status: "error", method: "swd", reason, error: message };
   }
@@ -366,10 +486,13 @@ export async function flashOverSwd(
   try {
     onProgress("erasing");
     daplink.on(DAPLink.EVENT_PROGRESS, reportWriting);
-    await daplink.flash(Buffer.from(hex, "utf-8"));
+    await withTimeout(daplink.flash(Buffer.from(hex, "utf-8")), flashTimeoutMs, "daplink.flash()");
     onProgress("resetting");
     return { status: "ok", method: "swd" };
   } catch (error) {
+    if (error instanceof TimeoutError) {
+      return { status: "error", method: "swd", reason: "timeout", error: error.message };
+    }
     return {
       status: "error",
       method: "swd",
@@ -398,7 +521,7 @@ export async function flashOverSwd(
 /**
  * Reset `device` via its DAPLink interface chip's own vendor reset
  * command (`dapjs`'s `CmsisDAP#reset()`, which `DAPLink` inherits) --
- * **not** a flash, and not the same operation as {@link flashOverSwd}'s
+ * **not** a flash, and not the same operation as {@link flashViaDapLink}'s
  * own post-write reset (which is the last step of `DAPLink#flash()`'s
  * one atomic sequence, not separately callable).
  *
@@ -415,16 +538,28 @@ export async function flashOverSwd(
  * (possibly different) robot, without the serial port the caller is
  * about to reopen ever disappearing out from under it mid-sequence.
  *
- * Mirrors {@link flashOverSwd}'s own shape and "failure is a value,
+ * Mirrors {@link flashViaDapLink}'s own shape and "failure is a value,
  * never throws" contract exactly (HID-path-first, injectable
  * `createDapLink`, best-effort `disconnect()` in a `finally` that can
- * never mask an already-determined result) but with nothing to write
- * and no {@link FlashPhase} progress to report -- just connect, reset,
- * disconnect.
+ * never mask an already-determined result, every dapjs call bound by
+ * {@link withTimeout}) but with nothing to write and no
+ * {@link FlashPhase} progress to report -- just connect, reset,
+ * disconnect. A `connect()` or `reset()` timeout is reported as
+ * `{ ok: false, error }` — this function has no typed failure-reason
+ * union of its own (unlike {@link FlashOutcome}), so a timeout here is
+ * just another rejected-then-classified error, distinguishable by the
+ * `TimeoutError`-shaped message.
  */
-export async function resetOverSwd(
+export interface ResetViaDapLinkOptions {
+  createDapLink?: DapLinkFactory;
+  /** See {@link DEFAULT_DAPLINK_RESET_TIMEOUT_MS}. Bounds both
+   * `daplink.connect()` and `daplink.reset()`. */
+  timeoutMs?: number;
+}
+
+export async function resetViaDapLink(
   device: DaplinkDevice,
-  options?: { createDapLink?: DapLinkFactory },
+  options?: ResetViaDapLinkOptions,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const hidPath = device.hid?.path;
   if (hidPath === undefined) {
@@ -435,6 +570,7 @@ export async function resetOverSwd(
   }
 
   const createDapLink = options?.createDapLink ?? defaultDapLinkFactory;
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_DAPLINK_RESET_TIMEOUT_MS;
   let daplink: DAPLink;
   try {
     daplink = createDapLink(hidPath);
@@ -443,20 +579,28 @@ export async function resetOverSwd(
   }
 
   try {
-    await daplink.connect();
+    await withTimeout(daplink.connect(), timeoutMs, "daplink.connect()");
   } catch (error) {
+    if (error instanceof TimeoutError) {
+      try {
+        await daplink.disconnect();
+      } catch {
+        // Best-effort cleanup only -- see this function's own `finally`
+        // block below.
+      }
+    }
     return { ok: false, error: errorMessage(error) };
   }
 
   try {
-    await daplink.reset();
+    await withTimeout(daplink.reset(), timeoutMs, "daplink.reset()");
     return { ok: true };
   } catch (error) {
     return { ok: false, error: errorMessage(error) };
   } finally {
-    // Best-effort cleanup only -- see flashOverSwd's own `finally` block
-    // for why a failed disconnect must never mask or replace whatever
-    // result was already determined above.
+    // Best-effort cleanup only -- see flashViaDapLink's own `finally`
+    // block for why a failed disconnect must never mask or replace
+    // whatever result was already determined above.
     try {
       await daplink.disconnect();
     } catch {
@@ -502,6 +646,103 @@ export async function flashViaMsd(
 ): Promise<void> {
   const writeFile = options?.writeFile ?? defaultWriteFile;
   await writeFile(path.join(volumePath, MSD_HEX_FILENAME), hex);
+}
+
+/** Injectable delay, mirroring `connect/flasher.ts`'s own `DelayFn` seam
+ * exactly (same shape, same "real, `unref()`'d timer by default"
+ * default) -- both modules need the same "never keep the process alive
+ * on a pending delay" property, and tests need the same "swap in an
+ * instant/deterministic delay" seam, so the shape is duplicated here
+ * rather than importing it from `connect/flasher.ts` (this module has no
+ * dependency on that one -- see this module's own doc comment on
+ * dependency direction, and `connect/flasher.ts`'s own "depends only on
+ * `store` and `flash.ts`" note; the edge does not run the other way). */
+export type DelayFn = (ms: number) => Promise<void>;
+
+function defaultDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    (timer as unknown as { unref?: () => void }).unref?.();
+  });
+}
+
+/** Settle delay {@link flash} waits before starting the MSD write itself
+ * -- this ticket's own acceptance criterion. A volume that has just been
+ * (re)mounted (for instance, immediately after the SWD attempt that
+ * itself failed) benefits from a short window before it is written to. */
+export const DEFAULT_MSD_SETTLE_MS = 500;
+
+/** Default total budget {@link waitForVolumeRemount} polls for the MSD
+ * volume to disappear and reappear after {@link flashViaMsd}'s write
+ * returns -- DAPLink's own bootloader typically completes its
+ * erase/flash/remount cycle well under this on real hardware; 10s leaves
+ * headroom for a slow USB mass-storage re-enumeration without leaving a
+ * `flash-progress` client waiting indefinitely. */
+export const DEFAULT_MSD_REMOUNT_TIMEOUT_MS = 10_000;
+
+/** Poll interval within {@link DEFAULT_MSD_REMOUNT_TIMEOUT_MS}'s budget. */
+export const DEFAULT_MSD_REMOUNT_POLL_MS = 200;
+
+/** Function shape used to check whether `volumePath` is currently
+ * present/mounted. Defaults to a real filesystem check (`fs.access`);
+ * overridable so tests simulate the volume disappearing and reappearing
+ * on a schedule without a real board. */
+export type VolumeExistsFn = (volumePath: string) => Promise<boolean>;
+
+async function defaultVolumeExists(volumePath: string): Promise<boolean> {
+  try {
+    await fsAccess(volumePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Wait (bounded by `timeoutMs`) for `volumePath` to disappear and then
+ * reappear -- DAPLink's own remount cycle once it has finished processing
+ * the `.hex` file {@link flashViaMsd} just wrote onto it. This is what
+ * lets {@link flash} avoid reporting success the instant `writeFile`
+ * returns, per this ticket's own acceptance criterion.
+ *
+ * Best-effort: if the volume is never observed to disappear at all (for
+ * instance because the polling interval is too coarse to catch a very
+ * fast unmount/remount cycle), or `timeoutMs` elapses before it
+ * reappears, this resolves anyway rather than rejecting. The write itself
+ * already succeeded -- {@link flashViaMsd} returned without throwing --
+ * so a remount this function fails to *observe* is a lost confirmation,
+ * not evidence the flash itself failed; a real board that this function's
+ * polling simply never catches mid-cycle should not be reported as a
+ * flash failure on that basis alone.
+ */
+async function waitForVolumeRemount(
+  volumePath: string,
+  options: {
+    volumeExists: VolumeExistsFn;
+    delay: DelayFn;
+    now: () => number;
+    timeoutMs: number;
+    pollMs: number;
+  },
+): Promise<void> {
+  const { volumeExists, delay, now, timeoutMs, pollMs } = options;
+  const deadline = now() + timeoutMs;
+
+  let sawGone = false;
+  while (now() < deadline) {
+    const present = await volumeExists(volumePath);
+    if (!present) {
+      sawGone = true;
+    } else if (sawGone) {
+      // Disappeared, then reappeared -- the remount DAPLink's own
+      // bootloader performs once it's done processing the write.
+      return;
+    }
+    await delay(pollMs);
+  }
+  // Timed out without observing a disappear-then-reappear cycle -- see
+  // this function's own doc comment for why that is not itself treated
+  // as a failure.
 }
 
 /** Function shape used to read a text file's contents whole. Defaults to
@@ -585,21 +826,133 @@ export function findMatchingVolume(
     ?.volumePath;
 }
 
+/** Injectable seams for {@link listVolumeNames}. Defaults to the real
+ * filesystem (`node:fs/promises`'s `readdir`) and `os.userInfo().username`
+ * so this function is unit-testable against a fake filesystem, per this
+ * module's other injection seams ({@link WriteFileFn},
+ * {@link ReadTextFileFn}). */
+export interface ListVolumeNamesDeps {
+  /** Reads one directory's entries. Defaults to `node:fs/promises`'s
+   * `readdir`. Reused for win32's drive-letter probing too -- a
+   * successful `readdir` on a drive root is treated as "this letter is
+   * in use", a thrown error as "not in use" (see {@link listVolumeNames}'s
+   * own doc comment for why that particular throw is not itself logged
+   * as an enumeration failure). */
+  readdir?: (dirPath: string) => Promise<string[]>;
+  /** Resolves the logged-in username substituted into linux's
+   * `/media/<user>` and `/run/media/<user>` candidate directories.
+   * Defaults to `os.userInfo().username`. */
+  username?: () => string;
+}
+
+/** Every drive letter Windows can assign -- `win32`'s own candidate
+ * enumeration probes each one via {@link ListVolumeNamesDeps.readdir},
+ * since (unlike darwin's `/Volumes` or linux's `/media/<user>`) there is
+ * no single parent directory to list; a mounted volume simply *is* one
+ * of these 26 possible roots. Forward slashes (`"D:/"`, not `"D:\\"`) so
+ * every path this module builds stays deterministic under test
+ * regardless of the host OS actually running the test suite -- Node's
+ * `fs` accepts `/` as a path separator on Windows too, so this is not a
+ * compromise at real runtime either. */
+const WIN32_DRIVE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
 /**
- * Default MSD volume resolver: list `/Volumes/MICROBIT*` entries
- * (unchanged from the old placeholder's discovery step), read each
- * one's `DETAILS.TXT`, and hand the parsed candidates to
- * {@link findMatchingVolume} to pick the one actually belonging to
- * `device` -- see the module doc's "MSD volume-to-device matching"
- * section. A volume whose `DETAILS.TXT` is missing or unreadable is
- * skipped (not a match, and not a failure of the whole resolution); an
- * empty `/Volumes` listing or a failure listing it at all still returns
- * `undefined`, exactly mirroring the old placeholder's `readdir`
- * try/catch. `listVolumeNames`/`readTextFile` are injectable (defaulting
- * to the real filesystem) purely so this function itself is
- * unit-testable with no real mounted volume -- {@link flash}'s own tests
- * always inject their own `resolveVolumePath` instead of exercising this
- * default (see the module doc).
+ * Enumerate every mounted-volume candidate path for `platform`, matched
+ * on name (`MICROBIT*`) where a name is meaningful to check at all -- see
+ * the module doc's "MSD volume-to-device matching" section for why the
+ * *actual* device match always happens later, via `DETAILS.TXT`'s
+ * `Unique ID` ({@link findMatchingVolume}); this function is only the
+ * cheap first-pass narrowing step, generalized (sprint 017 ticket 004)
+ * from the old darwin-only `readdir("/Volumes")` call to also cover linux
+ * and win32:
+ *
+ *   - **darwin**: `/Volumes/MICROBIT*`.
+ *   - **linux**: `/media/<user>/MICROBIT*`, `/run/media/<user>/MICROBIT*`,
+ *     and `/mnt/MICROBIT*` -- three conventional per-distro mount roots,
+ *     all checked (a distro that doesn't use one of them simply fails to
+ *     list it, logged and skipped, not fatal to checking the others --
+ *     see below). `<user>` is `os.userInfo().username` unless
+ *     {@link ListVolumeNamesDeps.username} overrides it.
+ *   - **win32**: every drive letter `A:` through `Z:`, probed for
+ *     existence via {@link ListVolumeNamesDeps.readdir} rather than
+ *     name-matched -- a drive letter carries no name to check at all; the
+ *     real match still happens via `DETAILS.TXT` downstream, same as
+ *     every other platform.
+ *
+ * A candidate directory that fails to list (darwin's `/Volumes`, or one
+ * of linux's three candidate roots) is logged via `console.warn` and
+ * skipped -- never swallowed silently, and never fatal to checking the
+ * platform's other candidate directories. An absent win32 drive letter is
+ * *not* logged as a failure: unlike a missing `/Volumes` or
+ * `/media/<user>` (both expected to exist on their respective platforms),
+ * an unused drive letter is the overwhelmingly common case -- most of the
+ * 26 are never assigned -- so treating every one as a loggable failure
+ * would be noise, not signal.
+ */
+export async function listVolumeNames(
+  platform: NodeJS.Platform,
+  deps: ListVolumeNamesDeps = {},
+): Promise<string[]> {
+  const readdirFn = deps.readdir ?? ((dirPath: string) => readdir(dirPath));
+
+  if (platform === "win32") {
+    const volumePaths: string[] = [];
+    for (const letter of WIN32_DRIVE_LETTERS) {
+      const drivePath = `${letter}:/`;
+      try {
+        await readdirFn(drivePath);
+        volumePaths.push(drivePath);
+      } catch {
+        // Not a failure -- see this function's own doc comment.
+        continue;
+      }
+    }
+    return volumePaths;
+  }
+
+  let baseDirs: string[];
+  if (platform === "darwin") {
+    baseDirs = ["/Volumes"];
+  } else if (platform === "linux") {
+    const username = (deps.username ?? (() => os.userInfo().username))();
+    baseDirs = [`/media/${username}`, `/run/media/${username}`, "/mnt"];
+  } else {
+    console.warn(`listVolumeNames: unsupported platform "${platform}" -- no MSD volumes will be found`);
+    return [];
+  }
+
+  const volumePaths: string[] = [];
+  for (const baseDir of baseDirs) {
+    let entries: string[];
+    try {
+      entries = await readdirFn(baseDir);
+    } catch (error) {
+      console.warn(
+        `listVolumeNames: could not list "${baseDir}" (${errorMessage(error)}) -- skipping this directory`,
+      );
+      continue;
+    }
+    for (const name of entries.filter((entry) => entry.startsWith("MICROBIT"))) {
+      volumePaths.push(path.join(baseDir, name));
+    }
+  }
+  return volumePaths;
+}
+
+/**
+ * Default MSD volume resolver: enumerate every candidate volume path via
+ * {@link listVolumeNames} (platform-aware since sprint 017 ticket 004 --
+ * see that function's own doc comment), read each one's `DETAILS.TXT`,
+ * and hand the parsed candidates to {@link findMatchingVolume} to pick
+ * the one actually belonging to `device` -- see the module doc's "MSD
+ * volume-to-device matching" section. A volume whose `DETAILS.TXT` is
+ * missing or unreadable is skipped (not a match, and not a failure of the
+ * whole resolution); an empty candidate list or a failure enumerating at
+ * all still returns `undefined`. `listVolumeNames`/`readTextFile` are
+ * injectable (defaulting to the real filesystem) purely so this function
+ * itself is unit-testable with no real mounted volume -- {@link flash}'s
+ * own tests always inject their own `resolveVolumePath` instead of
+ * exercising this default (see the module doc).
  */
 export async function defaultResolveVolumePath(
   device: DaplinkDevice,
@@ -608,23 +961,22 @@ export async function defaultResolveVolumePath(
     readTextFile?: ReadTextFileFn;
   },
 ): Promise<string | undefined> {
-  const listVolumeNames = options?.listVolumeNames ?? (() => readdir("/Volumes"));
+  const listNames = options?.listVolumeNames ?? (() => listVolumeNames(os.platform()));
   const readTextFile = options?.readTextFile ?? defaultReadTextFile;
 
-  let entries: string[];
+  let volumePaths: string[];
   try {
-    entries = await listVolumeNames();
+    volumePaths = await listNames();
   } catch (error) {
     console.warn(
-      `defaultResolveVolumePath: could not list "/Volumes" (${errorMessage(error)}) -- ` +
+      `defaultResolveVolumePath: could not enumerate mounted volumes (${errorMessage(error)}) -- ` +
         "treating this as no mounted MSD volume found",
     );
     return undefined;
   }
 
   const candidates: VolumeCandidate[] = [];
-  for (const name of entries.filter((entry) => entry.startsWith("MICROBIT"))) {
-    const volumePath = path.join("/Volumes", name);
+  for (const volumePath of volumePaths) {
     try {
       const text = await readTextFile(path.join(volumePath, DETAILS_TXT_FILENAME));
       candidates.push({ volumePath, details: parseDetailsTxt(text) });
@@ -639,7 +991,7 @@ export async function defaultResolveVolumePath(
 }
 
 export interface FlashOptions {
-  /** Injectable `dapjs`/`node-hid` factory for {@link flashOverSwd}.
+  /** Injectable `dapjs`/`node-hid` factory for {@link flashViaDapLink}.
    * Defaults to the real stack. */
   createDapLink?: DapLinkFactory;
   /** Injectable filesystem write for {@link flashViaMsd}. Defaults to
@@ -650,21 +1002,52 @@ export interface FlashOptions {
    * real `DETAILS.TXT`-to-serial join (see the module doc). Tests always
    * inject their own. */
   resolveVolumePath?: (device: DaplinkDevice) => Promise<string | undefined>;
+  /** Forwarded to {@link flashViaDapLink}'s own
+   * {@link FlashViaDapLinkOptions.connectTimeoutMs}. Defaults to
+   * {@link DEFAULT_DAPLINK_CONNECT_TIMEOUT_MS}. */
+  connectTimeoutMs?: number;
+  /** Forwarded to {@link flashViaDapLink}'s own
+   * {@link FlashViaDapLinkOptions.flashTimeoutMs}. Defaults to
+   * {@link DEFAULT_DAPLINK_FLASH_TIMEOUT_MS}. */
+  flashTimeoutMs?: number;
+  /** Settle delay before the MSD write starts (sprint 017 ticket 004).
+   * Defaults to {@link DEFAULT_MSD_SETTLE_MS}. */
+  msdSettleMs?: number;
+  /** Total budget to observe the MSD volume disappear/reappear after the
+   * write completes. Defaults to {@link DEFAULT_MSD_REMOUNT_TIMEOUT_MS}. */
+  msdRemountTimeoutMs?: number;
+  /** Poll interval within that budget. Defaults to
+   * {@link DEFAULT_MSD_REMOUNT_POLL_MS}. */
+  msdRemountPollMs?: number;
+  /** Injectable delay, used for both the MSD settle wait and the remount
+   * poll loop. Defaults to a real, `unref()`'d `setTimeout`-based delay.
+   * Tests substitute an instant/deterministic delay so the settle/poll
+   * timing this ticket adds does not make the suite slow. */
+  delay?: DelayFn;
+  /** Wall-clock reader for the remount poll's own deadline. Defaults to
+   * `Date.now`. Tests substitute a fake, manually-advanced clock paired
+   * with a fake `delay` so a 10s poll budget resolves instantly. */
+  now?: () => number;
+  /** Injectable check for whether the MSD volume is currently present.
+   * Defaults to a real filesystem check (`fs.access`). Tests substitute
+   * a fake that reports the volume disappearing and reappearing on a
+   * schedule, without a real board. */
+  volumeExists?: VolumeExistsFn;
 }
 
 /**
  * Orchestrate a full flash: extract the universal-hex v2 block (if
  * `hexText` is a universal hex at all -- a plain Intel hex passes
  * through unchanged), validate the result structurally, try
- * {@link flashOverSwd}, and fall back to {@link flashViaMsd} only when
- * the SWD attempt itself failed to attach or program (never on a
- * successful-but-slow write -- a `FlashSuccess` from `flashOverSwd` is
- * returned as-is, with no fallback attempted).
+ * {@link flashViaDapLink}, and fall back to {@link flashViaMsd} only
+ * when the SWD attempt itself failed to attach or program (never on a
+ * successful-but-slow write -- a `FlashSuccess` from `flashViaDapLink`
+ * is returned as-is, with no fallback attempted).
  *
  * Per the module doc's "Validate before erasing anything" rule: hex
  * extraction and structural validation both happen **before**
- * {@link flashOverSwd} is called at all, so a malformed hex is rejected
- * with no board ever attached to, let alone erased.
+ * {@link flashViaDapLink} is called at all, so a malformed hex is
+ * rejected with no board ever attached to, let alone erased.
  *
  * The MSD fallback is skipped (the original SWD failure is returned
  * unchanged) whenever `resolveVolumePath` cannot find a mounted volume
@@ -689,8 +1072,10 @@ export async function flash(
     };
   }
 
-  const swdOutcome = await flashOverSwd(device, extracted, onProgress, {
+  const swdOutcome = await flashViaDapLink(device, extracted, onProgress, {
     ...(options?.createDapLink !== undefined ? { createDapLink: options.createDapLink } : {}),
+    ...(options?.connectTimeoutMs !== undefined ? { connectTimeoutMs: options.connectTimeoutMs } : {}),
+    ...(options?.flashTimeoutMs !== undefined ? { flashTimeoutMs: options.flashTimeoutMs } : {}),
   });
   if (swdOutcome.status === "ok") {
     return swdOutcome;
@@ -703,10 +1088,36 @@ export async function flash(
     return swdOutcome;
   }
 
+  const delay = options?.delay ?? defaultDelay;
+  const now = options?.now ?? (() => Date.now());
+  const volumeExists = options?.volumeExists ?? defaultVolumeExists;
+  const settleMs = options?.msdSettleMs ?? DEFAULT_MSD_SETTLE_MS;
+  const remountTimeoutMs = options?.msdRemountTimeoutMs ?? DEFAULT_MSD_REMOUNT_TIMEOUT_MS;
+  const remountPollMs = options?.msdRemountPollMs ?? DEFAULT_MSD_REMOUNT_POLL_MS;
+
   try {
+    // Sprint 017 ticket 004: settle before writing at all -- a volume
+    // that has just been (re)mounted (e.g. right after the SWD attempt
+    // that itself just failed) benefits from a short window first.
+    await delay(settleMs);
     onProgress("writing");
     await flashViaMsd(volumePath, Buffer.from(extracted, "utf-8"), {
       ...(options?.writeFile !== undefined ? { writeFile: options.writeFile } : {}),
+    });
+    // `writeFile` returning is not "done" -- DAPLink's bootloader still
+    // has to erase/flash/reset the target from the file it was just
+    // handed, observable only as the volume disappearing and
+    // reappearing. Report "resetting" now (the write that triggers that
+    // process has just been handed off) and wait for it (best-effort)
+    // before resolving success -- see `waitForVolumeRemount`'s own doc
+    // comment.
+    onProgress("resetting");
+    await waitForVolumeRemount(volumePath, {
+      volumeExists,
+      delay,
+      now,
+      timeoutMs: remountTimeoutMs,
+      pollMs: remountPollMs,
     });
     return { status: "ok", method: "msd" };
   } catch (error) {

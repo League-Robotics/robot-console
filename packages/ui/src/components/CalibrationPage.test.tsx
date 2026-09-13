@@ -3,21 +3,17 @@
  * CalibrationPage.test.tsx — the Calibration tab's state machine
  * (OOP 2026-09-10; migrated to the `Snapshot` contract, sprint 015
  * ticket 009): wheel diameter gates the rotation run, the two wizards
- * feed one calibration state, and one code block is built from it. Pure
- * helpers are tested directly; the mounted tests drive the page through
- * a FakeSocket exactly as the wizards' own tests do.
+ * feed one calibration state, and one code block is built from it. The
+ * pure calibration-math helpers this page used to re-export
+ * (`correctTrackWidth`, `deriveCalibration`, `calibrationCode`) now live
+ * in, and are tested by, `lib/calibration.test.ts` (ticket 017-008) --
+ * this file keeps only the mounted, FakeSocket-driven behavior.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { RobotFunction, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import {
-  CALIBRATION_IMAGE_BASELINE_DIAMETER_MM,
-  CalibrationPage,
-  calibrationCode,
-  correctTrackWidth,
-  deriveCalibration,
-} from "./CalibrationPage";
+import { CalibrationPage } from "./CalibrationPage";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 
@@ -102,54 +98,6 @@ function type(el: HTMLDivElement, id: string, value: string): void {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
-
-describe("calibration maths", () => {
-  it("corrects the reported track width by the ratio of the real wheel to the image's baseline wheel", () => {
-    // Same wheel as the image assumed: no change.
-    expect(correctTrackWidth(8.84, CALIBRATION_IMAGE_BASELINE_DIAMETER_MM, CALIBRATION_IMAGE_BASELINE_DIAMETER_MM)).toBe(8.84);
-    // Real wheel 10% bigger: every commanded turn came out 10% larger,
-    // so the routine under-reported the width by 10%.
-    expect(correctTrackWidth(10, 90, 99)).toBe(11);
-  });
-
-  it("deriveCalibration: no measured track width -> the effective width is the track width and slip is 1", () => {
-    expect(deriveCalibration({ wheelDiameterMm: 90.28, reportedTrackWidthCm: 8.84, reportedWithDiameterMm: 90.28 })).toEqual({
-      effectiveTrackWidthCm: 8.84,
-      trackWidthCm: 8.84,
-      rotationalSlip: 1,
-    });
-  });
-
-  it("deriveCalibration: a measured track width gives slip = measured / effective", () => {
-    expect(
-      deriveCalibration({ wheelDiameterMm: 90.28, measuredTrackWidthCm: 11.5, reportedTrackWidthCm: 8.84, reportedWithDiameterMm: 90.28 }),
-    ).toEqual({ effectiveTrackWidthCm: 8.84, trackWidthCm: 11.5, rotationalSlip: 1.301 });
-  });
-
-  it("deriveCalibration: a rotation result without a wheel diameter yields nothing", () => {
-    expect(deriveCalibration({ reportedTrackWidthCm: 8.84 })).toEqual({});
-  });
-
-  it("calibrationCode builds up line by line as information arrives", () => {
-    expect(calibrationCode({}, "gopiv")).toBe("");
-    expect(calibrationCode({ wheelDiameterMm: 90.68 }, "gopiv")).toBe(
-      ["// gopiv calibration", "diffDrive.setWheelCalibration(90.68 * Math.PI / 360)  // wheel diameter 90.68 mm"].join("\n"),
-    );
-    const full = calibrationCode(
-      { wheelDiameterMm: 90.28, measuredTrackWidthCm: 11.5, reportedTrackWidthCm: 8.84, reportedWithDiameterMm: 90.28 },
-      "gopiv",
-    );
-    expect(full.split("\n")).toEqual([
-      "// gopiv calibration",
-      "diffDrive.setWheelCalibration(90.28 * Math.PI / 360)  // wheel diameter 90.28 mm",
-      "diffDrive.setTrackWidth(11.5)  // measured track width, cm",
-      "diffDrive.setConfigValue(ConfigField.RotationalSlip, 1.301)  // measured 11.5 cm / effective 8.84 cm",
-    ]);
-    const unmeasured = calibrationCode({ wheelDiameterMm: 90.28, reportedTrackWidthCm: 8.84, reportedWithDiameterMm: 90.28 }, "gopiv");
-    expect(unmeasured).toContain("diffDrive.setTrackWidth(8.84)  // effective track width, cm (not measured with a ruler)");
-    expect(unmeasured).toContain("diffDrive.setConfigValue(ConfigField.RotationalSlip, 1)");
-  });
-});
 
 describe("CalibrationPage", () => {
   it("starts empty: no code, rotation blocked, and a distance run unlocks rotation and fills the code block", () => {

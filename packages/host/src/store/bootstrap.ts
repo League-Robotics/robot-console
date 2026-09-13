@@ -1,6 +1,8 @@
 /**
  * bootstrap.ts — the one production call site for ticket 003's one-time
- * JSON importers (`importers/knownRobots.ts`, `importers/wifiCredentials.ts`).
+ * JSON importers (`importers/knownRobots.ts`, `importers/wifiCredentials.ts`)
+ * and, as of sprint 017 ticket 001, the every-bootstrap firmware-config
+ * importer (`importers/firmwareConfig.ts`).
  *
  * Ticket 014-010's bench pass found that both importers existed with
  * *zero* call sites anywhere in production code: neither `--dump-store`
@@ -31,6 +33,7 @@ import { resolveKnownRobotsFilePath } from "./stateDir.js";
 import { resolveWifiCredentialsFilePath } from "./wifiCredentials.js";
 import { importKnownRobots } from "./importers/knownRobots.js";
 import { importWifiCredentials } from "./importers/wifiCredentials.js";
+import { importFirmwareConfig } from "./importers/firmwareConfig.js";
 
 /**
  * Opens the store (creating/migrating as needed, exactly like
@@ -43,10 +46,15 @@ import { importWifiCredentials } from "./importers/wifiCredentials.js";
  * `resolveWifiCredentialsFilePath`'s own `{ stateDir }`-only forwarding
  * of `knownRobots.ts`'s options).
  *
- * Each importer is guarded by its own `settings` row (see each
- * importer's own doc comment), so calling this more than once against
- * the same store — e.g. a process restart against the same state dir —
- * is a no-op after the first successful import.
+ * `importKnownRobots`/`importWifiCredentials` are each guarded by their
+ * own one-time `settings` row (see each importer's own doc comment), so
+ * calling this more than once against the same store — e.g. a process
+ * restart against the same state dir — is a no-op after the first
+ * successful import. `importFirmwareConfig` (sprint 017 ticket 001) is
+ * deliberately *not* one-time-guarded the same way — it re-resolves and
+ * overwrites its `settings` rows on every call, so a present env var or
+ * an edited `.env` always takes effect on the next restart; see that
+ * importer's own doc comment.
  */
 export function openStoreWithImports(options: StoreDbOptions = {}): Store {
   const store = openStore(options);
@@ -58,6 +66,7 @@ export function openStoreWithImports(options: StoreDbOptions = {}): Store {
 
   importKnownRobots(store, knownRobotsPath);
   importWifiCredentials(store, wifiCredentialsPath);
+  importFirmwareConfig(store, { ...pathOptions, env });
 
   return store;
 }

@@ -74,6 +74,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { MAX_LINES_PER_LINK, useLinkLog, useSendable, useWsActions } from "../ws/WsProvider";
+import { isLinkUsable } from "../deviceDisplay";
+import { classifyLine } from "../lib/lineClass";
 import { SequencingIndicator } from "./SequencingIndicator";
 import "./DeviceConsole.css";
 
@@ -82,29 +84,6 @@ import "./DeviceConsole.css";
  * host's own pacing budget is what actually protects the device; this
  * just keeps a student from firing unpaced writes by mashing Enter. */
 const SEND_COOLDOWN_MS = 250;
-
-type LineKind = "comment" | "debug" | "error" | "ack" | "data";
-
-/** Presentation-only classification of a raw line, per `ConsoleTab.tsx`'s
- * original "worth reflecting in the display" list. This never hides or
- * filters a line -- every line the host forwarded is still shown -- it
- * only picks which style class to draw it with. */
-export function classifyLine(line: string): LineKind {
-  const text = line.trimStart();
-  if (text.startsWith("#")) {
-    return "comment";
-  }
-  if (text.startsWith("DBG:")) {
-    return "debug";
-  }
-  if (/^(err|nack)\b/i.test(text)) {
-    return "error";
-  }
-  if (/^ack\b/i.test(text)) {
-    return "ack";
-  }
-  return "data";
-}
 
 export interface DeviceConsoleProps {
   link: SnapshotLink;
@@ -155,7 +134,7 @@ export function DeviceConsole({ link, name }: DeviceConsoleProps) {
   // being sendable, not just this link's own session state -- see
   // `useSendable`'s own doc comment.
   const sendable = useSendable();
-  const linkOpen = link.session !== undefined && sendable;
+  const linkOpen = isLinkUsable(link) && sendable;
   const sendDisabled = !linkOpen || pending;
 
   const submitLine = useCallback(() => {

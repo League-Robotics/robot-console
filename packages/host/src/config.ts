@@ -1,48 +1,62 @@
 /**
  * config.ts — where the two flashable firmware sources come from
- * (sprint 2, ticket 002).
+ * (sprint 2, ticket 002; store-backed as of sprint 017 ticket 001).
  *
  * Per `sprint.md`'s Architecture (Step 3, "config.ts"): this module
  * turns two `dotconfig`-assembled environment variables,
  * `ROBOT_CONSOLE_RELAY_FIRMWARE` and `ROBOT_CONSOLE_ROBOT_FIRMWARE`
  * (the same `ROBOT_CONSOLE_*` naming convention `cli.ts` already uses
  * for `ROBOT_CONSOLE_PORT`), into typed {@link FirmwareSource} values.
- * It owns environment parsing and nothing else -- it knows nothing
- * about HTTP, USB, or the WebSocket contract (those are
+ * It owns environment/string parsing and nothing else -- it knows
+ * nothing about HTTP, USB, or the WebSocket contract (those are
  * `releases.ts`'s, `flash.ts`'s, and `wsMessages.ts`'s jobs
  * respectively).
+ *
+ * ## Sprint 017 ticket 001: `getFirmwareConfig` reads `settings`, not a file
+ *
+ * Through sprint 016, {@link getFirmwareConfig} resolved
+ * `ROBOT_CONSOLE_*_FIRMWARE` straight from `process.env`/a `.env` file
+ * resolved *relative to this module's own location*
+ * (`packages/host/src/config.ts` -> `<repo root>/.env`). Under a
+ * registry or packaged install that guessed path never exists (or,
+ * worse, resolves to some unrelated directory), so both flash buttons
+ * silently rendered "not configured" even when the environment was
+ * otherwise set up correctly (`clasi/issues/
+ * firmware-config-env-becomes-settings-importer.md`). The fix moves
+ * `.env`-finding to a bootstrap-time importer
+ * (`store/importers/firmwareConfig.ts`) that writes the resolved raw
+ * strings into `settings` keys {@link SETTINGS_KEY_BY_FIRMWARE}; this
+ * module's job shrinks to *reading* those settings and turning the
+ * resolved string into a typed {@link FirmwareSource} -- it no longer
+ * does any file I/O of its own for firmware sources. `parseEnvFile`
+ * (a general-purpose helper) and `parseFirmwareSource` stay here, since
+ * the importer itself calls the former and this module still owns the
+ * latter.
  *
  * ## An absent or malformed variable is never fatal
  *
  * A student or instructor with no `dotconfig` install at all -- or one
  * who simply hasn't set these two variables yet -- must still get a
  * fully running host. {@link getFirmwareConfig} therefore never
- * throws: a missing variable yields `undefined` for that
- * {@link FirmwareKind} entry, and the caller (`deviceRegistry.ts`/
- * `server.ts`, later tickets) renders that as "not configured" --
- * a disabled flash button with an explanation, not a crash.
+ * throws: a missing `settings` row yields `undefined` for that
+ * {@link FirmwareKind} entry, and the caller (`server.ts`) renders that
+ * as "not configured" -- a disabled flash button with an explanation,
+ * not a crash.
  *
  * ## `.env` reading is a few lines of hand-rolled parsing, not `dotenv`
  *
  * Per the sprint's Design Rationale: adding the `dotenv` npm dependency
  * to parse two `KEY=value` lines would be disproportionate, and
  * shelling out to the `dotconfig` CLI would make an external binary's
- * presence a hard startup dependency -- both rejected. {@link loadEnvFile}
- * is deliberately narrow (unquoted `KEY=value`, blank-line and
- * `#`-comment skipping, no multi-line values) and is not meant to grow
- * into a general `.env` parser. It only ever sets a `process.env` key
- * that isn't already set -- an explicit environment variable always
- * wins over the assembled file -- and a missing file is a no-op, not
- * an error.
+ * presence a hard startup dependency -- both rejected. {@link loadEnvFile}/
+ * {@link parseEnvFile} are deliberately narrow (unquoted `KEY=value`,
+ * blank-line and `#`-comment skipping, no multi-line values) and are not
+ * meant to grow into a general `.env` parser.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { FirmwareKind } from "./wsMessages.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import type { Store } from "./store/index.js";
+import { existsSync, readFileSync } from "node:fs";
 
 /** A resolved firmware source: a GitHub repo URL and the release tag
  * to fetch from it (`"latest"` unless the configured value pins a
@@ -54,20 +68,21 @@ export interface FirmwareSource {
 }
 
 /** One entry per {@link FirmwareKind}; `undefined` means that
- * firmware's environment variable was absent, empty, or otherwise
- * could not be resolved to a source -- never a thrown error. */
+ * firmware's `settings` row was absent, empty, or otherwise could not
+ * be resolved to a source -- never a thrown error. */
 export type FirmwareConfigMap = Record<FirmwareKind, FirmwareSource | undefined>;
 
 /** Tag used when a configured value carries no explicit `:<tag>`
  * suffix. */
 const DEFAULT_TAG = "latest";
 
-/** The `ROBOT_CONSOLE_*` environment variable that configures each
- * {@link FirmwareKind}, following `cli.ts`'s existing
- * `ROBOT_CONSOLE_PORT` naming convention. */
-const ENV_VAR_BY_FIRMWARE: Record<FirmwareKind, string> = {
-  relay: "ROBOT_CONSOLE_RELAY_FIRMWARE",
-  robot: "ROBOT_CONSOLE_ROBOT_FIRMWARE",
+/** The `settings.key` each {@link FirmwareKind}'s resolved raw source
+ * string is stored under. `store/importers/firmwareConfig.ts` is the
+ * sole writer (at bootstrap); {@link getFirmwareConfig} is the sole
+ * production reader. */
+export const SETTINGS_KEY_BY_FIRMWARE: Record<FirmwareKind, string> = {
+  relay: "firmware.relay.source",
+  robot: "firmware.robot.source",
 };
 
 /**
@@ -106,15 +121,6 @@ export function parseFirmwareSource(raw: string): FirmwareSource {
   return { repoUrl: candidateRepoUrl, tag: candidateTag };
 }
 
-/** `packages/host/src/config.ts` -> `<repo root>/.env`, the file
- * `dotconfig load` assembles. Resolved relative to this module's own
- * location (not `process.cwd()`), mirroring `server.ts`'s
- * `defaultStaticDir()` pattern, so it works regardless of where
- * `robot-console` is invoked from. */
-function defaultDotenvPath(): string {
-  return path.resolve(__dirname, "../../../.env");
-}
-
 /**
  * Minimal `.env` parser: splits on newlines, skips blank lines and
  * `#`-comments, and splits each remaining line on its first `=` into a
@@ -122,13 +128,20 @@ function defaultDotenvPath(): string {
  * `dotenvPath` file yields an empty map, not an error; this is the only
  * I/O in this module and it deliberately never throws.
  *
- * Kept separate from {@link loadEnvFile} because {@link
- * getFirmwareConfig} must be able to re-read the file on demand. The
- * host resolves firmware config repeatedly while running (see that
- * function's doc), and a parser that mutates `process.env` can only
- * ever be believed once -- the first read would win permanently.
+ * `dotenvPath` is required -- as of sprint 017 ticket 001 this module no
+ * longer guesses a default location relative to its own module file
+ * (the old `defaultDotenvPath()`, `path.resolve(__dirname,
+ * "../../../.env")`, silently resolved to a nonexistent -- or worse,
+ * unrelated -- directory under a registry/packaged install, since the
+ * on-disk depth from this file to the repo root is not the same as the
+ * depth from wherever the package actually gets installed). Finding
+ * *which* `.env` file (if any) applies is now `store/importers/
+ * firmwareConfig.ts`'s job (state dir, falling back to a checkout's
+ * repo root, detected by an actual `package.json` walk rather than a
+ * fixed `..` count); this function only ever parses a path it is
+ * handed.
  */
-export function parseEnvFile(dotenvPath: string = defaultDotenvPath()): Record<string, string> {
+export function parseEnvFile(dotenvPath: string): Record<string, string> {
   const vars: Record<string, string> = {};
   if (!existsSync(dotenvPath)) {
     return vars;
@@ -161,16 +174,10 @@ export function parseEnvFile(dotenvPath: string = defaultDotenvPath()): Record<s
  * Copy {@link parseEnvFile}'s result onto `env`, setting `env[key]`
  * only when that key is not already present -- an explicit environment
  * variable always wins over the assembled file. A missing `dotenvPath`
- * file is a no-op, not an error.
- *
- * Note this is *not* how {@link getFirmwareConfig} reads its own
- * variables; see that function for why it resolves against a fresh
- * parse instead of a one-time mutation.
+ * file is a no-op, not an error. `dotenvPath` is required for the same
+ * reason {@link parseEnvFile}'s is -- see that function's doc comment.
  */
-export function loadEnvFile(
-  dotenvPath: string = defaultDotenvPath(),
-  env: NodeJS.ProcessEnv = process.env,
-): void {
+export function loadEnvFile(dotenvPath: string, env: NodeJS.ProcessEnv = process.env): void {
   for (const [key, value] of Object.entries(parseEnvFile(dotenvPath))) {
     if (!(key in env)) {
       env[key] = value;
@@ -179,46 +186,31 @@ export function loadEnvFile(
 }
 
 /**
- * Read the two `ROBOT_CONSOLE_*_FIRMWARE` environment variables and
- * parse them into a {@link FirmwareConfigMap}. Called at host startup
- * (`cli.ts`) and again on every availability poll, so the result is
- * threaded down to `deviceRegistry.ts`/`server.ts` afresh rather than
- * captured once.
+ * Read the two firmware-source `settings` rows
+ * ({@link SETTINGS_KEY_BY_FIRMWARE}) and parse them into a
+ * {@link FirmwareConfigMap}. Called at host startup (`cli.ts`) and
+ * again on every availability poll (`server.ts`/`releases.ts`), so the
+ * result is threaded down to callers afresh rather than captured once.
  *
- * **Re-reads `dotenvPath` on every call, and never mutates `env`.**
- * That is deliberate, and it is what makes the config self-heal. The
- * normal `dotconfig` workflow assembles `.env` with `dotconfig load`,
- * which a student may well run *after* starting the host -- and editing
- * a pinned tag in `.env` mid-session is likewise expected. A one-time
- * read into `process.env` cannot see either: the file's absence would
- * be cached forever, and once a value had been copied into
- * `process.env` no later edit could displace it. Resolving against a
- * fresh parse on each call means the host notices both, within one poll
- * interval, with no restart.
- *
- * An explicit environment variable still wins over the file, matching
- * {@link loadEnvFile}'s precedence. A missing file is a no-op, e.g. no
- * `dotconfig` install at all. Never throws: an absent, empty, or
- * unparseable variable yields `undefined` for that
- * {@link FirmwareKind}'s entry.
+ * As of sprint 017 ticket 001, this reads `settings` via `store` --
+ * never `process.env` or a `.env` file directly. Those are
+ * `store/importers/firmwareConfig.ts`'s job, run once at every store
+ * bootstrap (`store/bootstrap.ts`); "re-read on every call" therefore
+ * now means "re-read whatever the importer last wrote", not "re-parse
+ * a file on every poll" -- a `.env` edited after the host started is
+ * picked up on the next restart (the next bootstrap), not before.
+ * Never throws: an absent, empty, or unparseable `settings` value
+ * yields `undefined` for that {@link FirmwareKind}'s entry.
  */
-export function getFirmwareConfig(
-  env: NodeJS.ProcessEnv = process.env,
-  dotenvPath?: string,
-): FirmwareConfigMap {
-  const fileVars = parseEnvFile(dotenvPath);
+export function getFirmwareConfig(store: Store): FirmwareConfigMap {
   return {
-    relay: parseConfiguredVar(env, fileVars, ENV_VAR_BY_FIRMWARE.relay),
-    robot: parseConfiguredVar(env, fileVars, ENV_VAR_BY_FIRMWARE.robot),
+    relay: parseConfiguredSetting(store, "relay"),
+    robot: parseConfiguredSetting(store, "robot"),
   };
 }
 
-function parseConfiguredVar(
-  env: NodeJS.ProcessEnv,
-  fileVars: Record<string, string>,
-  key: string,
-): FirmwareSource | undefined {
-  const raw = env[key] ?? fileVars[key];
+function parseConfiguredSetting(store: Store, kind: FirmwareKind): FirmwareSource | undefined {
+  const raw = store.getSetting(SETTINGS_KEY_BY_FIRMWARE[kind]);
   if (raw === undefined || raw.trim().length === 0) {
     return undefined;
   }

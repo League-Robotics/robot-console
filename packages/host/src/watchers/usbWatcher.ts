@@ -14,17 +14,34 @@
  *   serial, read its SWD name with a timeout (`swdName.ts`'s
  *   `readSwdName`, which never rejects on its own but is not itself
  *   bounded — this module adds the timeout), upsert `devices` (if
- *   named) and `links(usb, discovered)`, release the owner. Sprint 015
+ *   named) and `links(usb, discovered)`, release the owner. A named
+ *   device also merges any `known-robots.json` placeholder sharing its
+ *   name (`store/placeholderMerge.ts`'s `mergeNamePlaceholderIfAny`,
+ *   bench defect 010, 2026-09-13 — SWD naming is trustworthy identity
+ *   the instant it succeeds, so this must not wait on a later banner
+ *   identify that a flaky cable may never produce cleanly). Sprint 015
  *   ticket 003: this watcher writes rows only and stops here — it no
  *   longer opens a `LineLink` or sends `HELLO` itself (see "Watchers
  *   write rows only" below). If SWD naming identified the board, the
  *   link is marked `connectable` so `connect/reconciler.ts`'s `plan()`
  *   schedules the actual connect through `connect/connector.ts`.
- * - **`updated`**: patch the link's `address` only. Never re-runs SWD
- *   naming — the whole point of `diffDaplinkDevices` reporting this as
- *   `updated` rather than remove+add.
- * - **`removed`**: mark the link `stale`, release any `board_owner` row,
- *   abort any in-flight attach task for that serial.
+ * - **`updated`**: patch the link's `address` only, then — only for a
+ *   link still sitting `discovered` (never `connected`/`connecting`/
+ *   `failed`/`unresponsive`/`closed_by_user`/`stale`) whose new address
+ *   now has a serial `path` — either mark it `connectable` (it was
+ *   already named at `added` time; the serial port was simply the last
+ *   piece to arrive) or, if it was never named *and* its `added`-time
+ *   address had no path either, give naming one more try via `attach()`
+ *   itself (bench defect 010, 2026-09-13; see `attach()`'s own doc
+ *   comment for why this is safe and `handleUpdated`'s for the exact
+ *   gate). A naming failure for any other reason is still never
+ *   retried — the whole point of `diffDaplinkDevices` reporting this as
+ *   `updated` rather than remove+add is that a *content* change alone
+ *   must never repeat a completed SWD read.
+ * - **`removed`**: mark the link `stale`, close any open `sessions` row
+ *   for it (bench defect 010 addendum, 2026-09-13 -- see `handleRemoved`'s
+ *   own doc comment), release any `board_owner` row, abort any in-flight
+ *   attach task for that serial.
  *
  * Every poll also heartbeats a `tasks` row (`architecture.md` §3 rule
  * 5), so a wedged watcher is visible without the UI.
@@ -46,15 +63,16 @@
  *
  * `connect/reconciler.ts`'s `plan()` only ever considers a link whose
  * `device_id` is already known (it groups auto-connect candidates per
- * device) — this was already true before this ticket, so a board whose
- * SWD read fails (`namedDeviceId` stays `undefined`) is left `discovered`
- * rather than `connectable`, exactly like the pre-ticket code's own
- * "this watcher never gets a second chance to identify this board
- * through this code path (by design)" limitation for a HID-only attach
- * whose serial port never arrives. A future ticket may want the
- * connector's own banner-based identify to be reachable without a prior
- * SWD-derived `device_id` (the old registry's own `defaultLinkFactory`
- * path did not require one either) — out of scope here.
+ * device) — so a board whose SWD read fails for a reason unrelated to a
+ * missing serial path (permission, timeout, an unsupported/locked chip)
+ * is left `discovered` forever, with no retry: `handleUpdated` (see
+ * below) only ever gives naming a second try when the *first* attempt
+ * had no serial path to offer either, on the theory that "no path yet"
+ * is the one specific precondition this module can later observe
+ * change. A future ticket may want the connector's own banner-based
+ * identify to be reachable without a prior SWD-derived `device_id` (the
+ * old registry's own `defaultLinkFactory` path did not require one
+ * either) — out of scope here.
  *
  * ## Injectable seams
  *
@@ -70,6 +88,7 @@ import {
 } from "../devices.js";
 import { readSwdName as defaultReadSwdName, type CortexMFactory, type SwdNameResult } from "../swdName.js";
 import { Store } from "../store/index.js";
+import { mergeNamePlaceholderIfAny } from "../store/placeholderMerge.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 1000;
 /** Bound on `readSwdName` — that function never rejects on its own
@@ -215,6 +234,18 @@ export function startUsbWatcher(
           usbSerial: device.serialNumber,
           at: now(),
         });
+        // Bench defect 010 (2026-09-13): "the same robot appears twice".
+        // SWD naming (a chip id read directly over the debug interface)
+        // is trustworthy identity the instant it succeeds -- unlike a
+        // banner identify, it never gets a second chance to be corrupted
+        // by a flaky serial cable, so it must not wait for one to merge a
+        // `known-robots.json` placeholder. `connect/connector.ts`'s own
+        // merge (after a successful banner identify) is not enough on its
+        // own: a board whose cable never once produces a clean banner
+        // (the exact `tovez` bench case) would otherwise stay a
+        // duplicate row forever. See `store/placeholderMerge.ts`'s own
+        // doc comment for the shared helper and why it lives there.
+        mergeNamePlaceholderIfAny(store, swdResult.name, swdResult.deviceId, now());
       }
       store.upsertLink({
         id: linkId,
@@ -233,9 +264,14 @@ export function startUsbWatcher(
       // or this attach is HID-only (no serial port yet) -- nothing the
       // reconciler could connect to yet either way. A later poll reports
       // the serial port's arrival as `updated`, not a fresh `added`, so
-      // this watcher never gets a second chance to mark this link
-      // `connectable` through this code path (by design, unchanged from
-      // the pre-ticket behavior).
+      // this exact call never gets a second chance to mark this link
+      // `connectable` -- but bench defect 010 (2026-09-13) found the link
+      // then stayed `discovered` indefinitely, since nothing else ever
+      // revisited it either. `handleUpdated` below now does: once the
+      // serial path arrives, it promotes an already-named link straight
+      // to `connectable`, or -- if naming had nothing to go on the first
+      // time either (no path yet) -- calls this same `attach()` again for
+      // one more try.
       return;
     }
 
@@ -255,20 +291,94 @@ export function startUsbWatcher(
       .finally(() => forgetTask(device.serialNumber, controller));
   }
 
+  /**
+   * Bench defect 010 (2026-09-13): a USB robot plugged in while the host
+   * runs never auto-connected. `attach()` bails without marking the link
+   * `connectable` whenever the board's serial port has not yet enumerated
+   * (`address.path === undefined` — DAPLink's HID interface commonly
+   * finishes enumerating first). The serial port's later arrival was
+   * only ever reported here as `updated`, which used to patch `address`
+   * and stop — so a link that was already fully named at `added` time sat
+   * `discovered` forever, with nothing left to ever revisit it (observed
+   * live: a board's link stuck `discovered` for 5+ minutes, while
+   * clicking Connect by hand worked in under a second). Fixed here:
+   * once the new address has a serial path and the link is still
+   * `discovered` (never `connected`/`connecting`/`failed`/`unresponsive`/
+   * `closed_by_user`/`stale` — those are somebody else's business), a
+   * link that was already named just needed the path and is promoted
+   * straight to `connectable`; a link that was never named *and* whose
+   * `added`-time address had no path either gets one more naming try via
+   * `attach()` itself (reused, not duplicated) — see that function's own
+   * doc comment. A naming failure for any other reason is still never
+   * retried, matching the module doc's "still a dead end" section.
+   */
   function handleUpdated(device: DaplinkDevice): void {
+    const linkId = usbLinkId(device.serialNumber);
+    const existing = store.reconcilerRows().links.find((link) => link.id === linkId);
+
     store.upsertLink({
-      id: usbLinkId(device.serialNumber),
+      id: linkId,
       transport: "usb",
       address: usbLinkAddress(device),
       at: now(),
     });
+
+    if (!existing || existing.state !== "discovered" || attachTasks.has(device.serialNumber)) {
+      // Nothing to reconsider: no prior row, a state this handler must
+      // never touch, or an `attach()` already in flight for this serial
+      // (let it finish rather than racing a second SWD read/board_owner
+      // claim against itself).
+      return;
+    }
+
+    const address = usbLinkAddress(device);
+    if (address.path === undefined) {
+      // Still no serial port -- nothing new for the reconciler yet.
+      return;
+    }
+
+    if (existing.deviceId != null) {
+      // Already named at `added` time; the serial path was the only
+      // thing missing. Safe for the reconciler's next tick to connect.
+      store.setLinkState({ id: linkId, state: "connectable", at: now() });
+      return;
+    }
+
+    const existingAddress = existing.address as { path?: string } | null | undefined;
+    if (existingAddress?.path === undefined) {
+      // Never named, and the earlier attach had no serial path to offer
+      // either -- give naming one more try now that one has appeared.
+      // If it fails again (for any reason), this link simply falls back
+      // to the module doc's "still a dead end" behavior; it is not
+      // retried a third time from here.
+      handleAdded(device);
+    }
   }
 
   function handleRemoved(device: DaplinkDevice): void {
     attachTasks.get(device.serialNumber)?.abort();
     attachTasks.delete(device.serialNumber);
 
-    store.setLinkState({ id: usbLinkId(device.serialNumber), state: "stale", at: now() });
+    const linkId = usbLinkId(device.serialNumber);
+    store.setLinkState({ id: linkId, state: "stale", at: now() });
+    // Bench defect 010 addendum (2026-09-13, "dead transport leaves
+    // session, blocks reconnect"): architecture.md §6.1's own "On
+    // remove: mark the link stale, close any session, release owners"
+    // -- the close-any-session half was missing here, so a `sessions`
+    // row (and, transitively, `connect/reconciler.ts`'s own `plan()`/
+    // `describeUserOpenRefusal` treating the device as still open)
+    // outlived a board that had already physically disappeared, until
+    // whatever eventually noticed the dead transport on its own (the
+    // harvester's slower missed-poll watchdog) got around to it.
+    // `store.closeSession` is a plain, idempotent DELETE -- safe to call
+    // whether or not a session was actually open -- and this executor
+    // holds no live `LineLink` of its own to close directly (only
+    // `connect/reconciler.ts`'s private `sessions` map does; it reaps
+    // its own local reference once the row disappears out from under it,
+    // via its own dead-transport cleanup -- see that module's doc
+    // comment). This is exactly "a store change the reconciler reacts
+    // to" (`store.onChange` already re-runs `plan()` on every write).
+    store.closeSession(linkId);
     store.releaseBoardOwner(device.serialNumber, NAMING_OWNER);
   }
 

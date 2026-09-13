@@ -201,12 +201,17 @@ export async function main(
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
   const port = parsePortFlag(argv) ?? parsePortEnv(env);
-  const firmwareConfig = getFirmwareConfigFn(env);
 
   // Ticket 005: production startup now actually opens the store and
   // starts both watchers (until this ticket, only the retired
   // `--watch-store` flag did) -- see the module doc comment.
   const runtime = startRuntimeFn({ storeOptions: { env }, ...deps.runtimeOptions });
+
+  // Sprint 017 ticket 001: `getFirmwareConfig` reads `settings` via the
+  // store, not `env`/a `.env` file directly, so it must be called after
+  // `runtime` (and its store, with `openStoreWithImports`'s
+  // `importFirmwareConfig` already having run) exists.
+  const firmwareConfig = getFirmwareConfigFn(runtime.store);
 
   const server = await startServerFn({
     store: runtime.store,

@@ -174,6 +174,37 @@ describe("createHarvester -- unresponsive, exactly once", () => {
     expect(store.snapshotRows().links.find((l) => l.id === "link-1")?.state).toBe("unresponsive");
     store.close();
   });
+
+  it(
+    "bench defect 010 addendum (2026-09-13): a missed-poll-detected death also closes the LineLink itself, " +
+      "not just the store row -- so connect/reconciler.ts's own onClose-based session teardown still runs " +
+      "even though the transport never closed on its own",
+    async () => {
+      const store = seededStore();
+      const { link, stream } = await connectedLink(); // never answers STATUS
+      let closed: Error | undefined;
+      let closeFired = false;
+      link.onClose((reason) => {
+        closeFired = true;
+        closed = reason;
+      });
+      const harvester = createHarvester(store, { statusPollIntervalMs: 5, missedPollLimit: 3 });
+      harvester.attach(session(link));
+
+      await new Promise((resolve) => setTimeout(resolve, 120));
+
+      // The watchdog branch alone never touches the transport (module
+      // doc comment, pre-fix) -- confirming this ticket's own fix: `fail()`
+      // now also closes it, so `stream.close()` was actually called and
+      // the link's own `onClose` (the seam `connect/reconciler.ts` reacts
+      // to) fired, with no separate transport-level close/error needed.
+      expect(stream.closeCallCount).toBeGreaterThanOrEqual(1);
+      expect(link.isOpen).toBe(false);
+      expect(closeFired).toBe(true);
+      expect(closed).toBeUndefined(); // no ByteStream "error" was ever emitted
+      store.close();
+    },
+  );
 });
 
 describe("createHarvester -- resync notice (reportDesyncIfNeeded)", () => {

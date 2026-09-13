@@ -2,13 +2,20 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getFirmwareConfig, loadEnvFile, parseEnvFile, parseFirmwareSource } from "./config.js";
+import { openStoreDb } from "./store/db.js";
+import { Store } from "./store/index.js";
+import { getFirmwareConfig, loadEnvFile, parseEnvFile, parseFirmwareSource, SETTINGS_KEY_BY_FIRMWARE } from "./config.js";
 
-/** A path that never resolves to a real file, so `getFirmwareConfig()`
- * calls in tests that don't care about `.env` reading never
- * accidentally pick up this repo's own real `.env` (if one happens to
- * exist at the repo root from a real `dotconfig load`). */
+/** A path that never resolves to a real file, so `parseEnvFile`/
+ * `loadEnvFile` calls in tests that don't care about `.env` reading
+ * never accidentally pick up this repo's own real `.env` (if one
+ * happens to exist at the repo root from a real `dotconfig load`). */
 const NO_SUCH_FILE = path.join(tmpdir(), "robot-console-config-test-no-such-file.env");
+
+function freshStore(): Store {
+  const db = openStoreDb({ filePath: ":memory:" });
+  return new Store(db);
+}
 
 describe("parseFirmwareSource", () => {
   it("defaults tag to latest for a bare repo URL", () => {
@@ -53,23 +60,39 @@ describe("parseFirmwareSource", () => {
   });
 });
 
+/**
+ * Sprint 017 ticket 001: `getFirmwareConfig` is now a `settings` reader
+ * (via `store`), not an `env`/`.env` reader -- resolving `process.env`/
+ * `.env` into those `settings` rows is `store/importers/
+ * firmwareConfig.ts`'s job (see its own test file). These tests only
+ * exercise the "turn a settings row into a typed FirmwareSource, never
+ * throw" contract.
+ */
 describe("getFirmwareConfig", () => {
-  it("resolves both firmware sources when both env vars are set", () => {
-    const env = {
-      ROBOT_CONSOLE_RELAY_FIRMWARE: "https://github.com/League-Robotics/microbit-radio-relay:latest",
-      ROBOT_CONSOLE_ROBOT_FIRMWARE: "https://github.com/League-Robotics/pxt-nezha-diffdrive:v0.1.0",
-    };
-    expect(getFirmwareConfig(env, NO_SUCH_FILE)).toEqual({
+  let store: Store;
+
+  beforeEach(() => {
+    store = freshStore();
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it("resolves both firmware sources when both settings rows are present", () => {
+    store.setSetting(SETTINGS_KEY_BY_FIRMWARE.relay, "https://github.com/League-Robotics/microbit-radio-relay:latest");
+    store.setSetting(SETTINGS_KEY_BY_FIRMWARE.robot, "https://github.com/League-Robotics/pxt-nezha-diffdrive:v0.1.0");
+
+    expect(getFirmwareConfig(store)).toEqual({
       relay: { repoUrl: "https://github.com/League-Robotics/microbit-radio-relay", tag: "latest" },
       robot: { repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive", tag: "v0.1.0" },
     });
   });
 
-  it("resolves only the configured entry when one env var is set", () => {
-    const env = {
-      ROBOT_CONSOLE_RELAY_FIRMWARE: "https://github.com/League-Robotics/microbit-radio-relay:latest",
-    };
-    const result = getFirmwareConfig(env, NO_SUCH_FILE);
+  it("resolves only the configured entry when one settings row is present", () => {
+    store.setSetting(SETTINGS_KEY_BY_FIRMWARE.relay, "https://github.com/League-Robotics/microbit-radio-relay:latest");
+
+    const result = getFirmwareConfig(store);
     expect(result.relay).toEqual({
       repoUrl: "https://github.com/League-Robotics/microbit-radio-relay",
       tag: "latest",
@@ -77,26 +100,24 @@ describe("getFirmwareConfig", () => {
     expect(result.robot).toBeUndefined();
   });
 
-  it("never throws and yields undefined for both entries when neither env var is set", () => {
-    expect(() => getFirmwareConfig({}, NO_SUCH_FILE)).not.toThrow();
-    expect(getFirmwareConfig({}, NO_SUCH_FILE)).toEqual({ relay: undefined, robot: undefined });
+  it("never throws and yields undefined for both entries when neither settings row exists", () => {
+    expect(() => getFirmwareConfig(store)).not.toThrow();
+    expect(getFirmwareConfig(store)).toEqual({ relay: undefined, robot: undefined });
   });
 
-  it("treats an empty-string env var the same as unset", () => {
-    const result = getFirmwareConfig({ ROBOT_CONSOLE_RELAY_FIRMWARE: "" }, NO_SUCH_FILE);
+  it("treats an empty-string settings value the same as unset", () => {
+    store.setSetting(SETTINGS_KEY_BY_FIRMWARE.relay, "");
+    const result = getFirmwareConfig(store);
     expect(result.relay).toBeUndefined();
   });
 
-  it("changing the configured tag resolves a different source, with no code change", () => {
-    const first = getFirmwareConfig(
-      { ROBOT_CONSOLE_ROBOT_FIRMWARE: "https://github.com/League-Robotics/pxt-nezha-diffdrive:v1.0.0" },
-      NO_SUCH_FILE,
-    );
-    const second = getFirmwareConfig(
-      { ROBOT_CONSOLE_ROBOT_FIRMWARE: "https://github.com/League-Robotics/pxt-nezha-diffdrive:v2.0.0" },
-      NO_SUCH_FILE,
-    );
+  it("reflects a settings row updated between calls, with no code change", () => {
+    store.setSetting(SETTINGS_KEY_BY_FIRMWARE.robot, "https://github.com/League-Robotics/pxt-nezha-diffdrive:v1.0.0");
+    const first = getFirmwareConfig(store);
     expect(first.robot?.tag).toBe("v1.0.0");
+
+    store.setSetting(SETTINGS_KEY_BY_FIRMWARE.robot, "https://github.com/League-Robotics/pxt-nezha-diffdrive:v2.0.0");
+    const second = getFirmwareConfig(store);
     expect(second.robot?.tag).toBe("v2.0.0");
   });
 });
@@ -138,76 +159,6 @@ describe("loadEnvFile", () => {
     const env: NodeJS.ProcessEnv = {};
     expect(() => loadEnvFile(NO_SUCH_FILE, env)).not.toThrow();
     expect(env).toEqual({});
-  });
-});
-
-/**
- * Regression tests for the failure that motivated this: a host started
- * *before* `dotconfig load` assembled `.env` reported both firmware
- * kinds as unconfigured for the life of the process, and the Devices
- * tab told the student "Not set up for this classroom yet" even though
- * the file was sitting right there. `getFirmwareConfig` must therefore
- * re-read the file on every call and must not mutate `env` -- a value
- * copied into `process.env` once could never afterwards be displaced by
- * an edit to the file.
- */
-describe("getFirmwareConfig re-reads .env", () => {
-  let dir: string;
-  let envPath: string;
-
-  beforeEach(() => {
-    dir = mkdtempSync(path.join(tmpdir(), "robot-console-config-"));
-    envPath = path.join(dir, ".env");
-  });
-
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("picks up a .env that did not exist on the first call", () => {
-    const env: NodeJS.ProcessEnv = {};
-
-    expect(getFirmwareConfig(env, envPath)).toEqual({ relay: undefined, robot: undefined });
-
-    writeFileSync(
-      envPath,
-      "ROBOT_CONSOLE_RELAY_FIRMWARE=https://github.com/League-Robotics/microbit-radio-relay:latest\n",
-    );
-
-    expect(getFirmwareConfig(env, envPath).relay).toEqual({
-      repoUrl: "https://github.com/League-Robotics/microbit-radio-relay",
-      tag: "latest",
-    });
-  });
-
-  it("picks up a tag edited in .env after the first call", () => {
-    const env: NodeJS.ProcessEnv = {};
-    writeFileSync(envPath, "ROBOT_CONSOLE_RELAY_FIRMWARE=https://example.test/repo:latest\n");
-    expect(getFirmwareConfig(env, envPath).relay?.tag).toBe("latest");
-
-    writeFileSync(envPath, "ROBOT_CONSOLE_RELAY_FIRMWARE=https://example.test/repo:v1.2.3\n");
-    expect(getFirmwareConfig(env, envPath).relay?.tag).toBe("v1.2.3");
-  });
-
-  it("does not mutate the env it reads from", () => {
-    const env: NodeJS.ProcessEnv = {};
-    writeFileSync(envPath, "ROBOT_CONSOLE_RELAY_FIRMWARE=https://example.test/repo:latest\n");
-
-    getFirmwareConfig(env, envPath);
-
-    expect(env.ROBOT_CONSOLE_RELAY_FIRMWARE).toBeUndefined();
-  });
-
-  it("lets an explicit environment variable win over the file", () => {
-    const env: NodeJS.ProcessEnv = {
-      ROBOT_CONSOLE_RELAY_FIRMWARE: "https://explicit.test/repo:pinned",
-    };
-    writeFileSync(envPath, "ROBOT_CONSOLE_RELAY_FIRMWARE=https://from-file.test/repo:latest\n");
-
-    expect(getFirmwareConfig(env, envPath).relay).toEqual({
-      repoUrl: "https://explicit.test/repo",
-      tag: "pinned",
-    });
   });
 });
 

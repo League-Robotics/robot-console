@@ -10,29 +10,38 @@
  *    proportional speed and turn. Read through the Gamepad API on a
  *    short poll (there is no event for stick movement).
  *
- * Both feed one {@link useDriveEngine}, which speaks exactly the wire
- * dialect `DriveControls` uses for a held button: `WHEELS_V left right
- * lease` re-sent every {@link DRIVE_RESEND_INTERVAL_MS} inside a
- * {@link DRIVE_LEASE_MS} lease, then one `STOP` on release -- so the
- * robot's own lease still stops it if this tab dies mid-hold. The
- * gamepad wins over the keyboard when both are active.
+ * Both feed one {@link useDriveEngine}, layered over the shared
+ * {@link useHeldDrive} engine (ticket 017-007, `../hooks/useHeldDrive.ts`
+ * -- the same held-direction resend/`STOP` discipline `DriveControls`
+ * uses for a held button): `WHEELS_V left right lease` re-sent every
+ * {@link HELD_DRIVE_RESEND_INTERVAL_MS} inside a {@link
+ * HELD_DRIVE_LEASE_MS} lease, then one `STOP` on release -- so the
+ * robot's own lease still stops it if this tab dies mid-hold. This
+ * module's own `useDriveEngine` adds exactly one thing `useHeldDrive`
+ * itself does not know about: merging two named sources (keyboard,
+ * gamepad -- gamepad wins while off-centre) into the one target it hands
+ * the shared engine.
  */
 import { useEffect, useRef, useState } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useSendable, useWsActions } from "../ws/WsProvider";
+import { isLinkUsable } from "../deviceDisplay";
+import { useHeldDrive, type WheelTarget as HeldDriveTarget } from "../hooks/useHeldDrive";
 import { DriveControls } from "./DriveControls";
 import "./DriveTab.css";
 
-/** Same numbers as `DriveControls` -- one dialect for every held drive. */
+/** Same number `DriveControls` drives at -- one dialect for every held
+ * drive. */
 export const DRIVE_VELOCITY_MM_S = 150;
-export const DRIVE_LEASE_MS = 400;
-export const DRIVE_RESEND_INTERVAL_MS = 150;
 /** How often the gamepad is sampled. */
 export const GAMEPAD_POLL_MS = 50;
 /** Stick travel below this is treated as centred. */
 export const GAMEPAD_DEADZONE = 0.12;
 
-export type WheelTarget = readonly [left: number, right: number];
+/** Re-exported from `useHeldDrive` (ticket 017-007) rather than
+ * redefined here -- one `[left, right]` wheel-target shape for every
+ * held-drive consumer. */
+export type WheelTarget = HeldDriveTarget;
 
 /** Speeds are quantised to 5 mm/s so stick jitter does not read as a
  * new target every sample. */
@@ -87,59 +96,20 @@ function isTextTarget(target: EventTarget | null): boolean {
 
 /** The one place a held drive turns into wire traffic -- see this
  * module's doc comment. Two named sources (`keyboard`, `gamepad`); the
- * gamepad wins while it is off-centre. */
+ * gamepad wins while it is off-centre. The resend timer and release/
+ * unmount `STOP` discipline itself is `useHeldDrive`'s job (ticket
+ * 017-007); this function's own contribution is exactly the two-source
+ * merge, applied every time either source changes. */
 function useDriveEngine(linkId: string, linkOpen: boolean) {
   const { sendCommand } = useWsActions();
+  const held = useHeldDrive(sendCommand, linkId, linkOpen);
   const sources = useRef<{ keyboard: WheelTarget | null; gamepad: WheelTarget | null }>({ keyboard: null, gamepad: null });
   const active = useRef<WheelTarget | null>(null);
-  const timer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
-  const sendRef = useRef(sendCommand);
-  sendRef.current = sendCommand;
-  // `DriveTab`'s own keyboard/gamepad effects (below) mount once
-  // (`[linkId]`/`[]` deps) and keep calling the exact `setSource`
-  // closure this hook returned on that first render -- `sources`/
-  // `active`/`timer` stay correct across renders because `useRef`
-  // itself is stable, but a plain captured `linkOpen` parameter would
-  // freeze at whatever it was on that first render forever (ticket 009
-  // surfaced this: `linkOpen` now depends on `useSendable()`, which is
-  // still `false` on the very first render, before the test/production
-  // socket has even reported "open"). A ref sidesteps that: every call
-  // to `apply()`, however stale the closure invoking it, reads the
-  // current value.
-  const linkOpenRef = useRef(linkOpen);
-  linkOpenRef.current = linkOpen;
 
   function apply(): void {
-    const next = linkOpenRef.current ? (sources.current.gamepad ?? sources.current.keyboard) : null;
-    const was = active.current;
-    if (next === null) {
-      if (timer.current !== undefined) {
-        clearInterval(timer.current);
-        timer.current = undefined;
-      }
-      if (was !== null) {
-        sendRef.current(linkId, "STOP");
-      }
-      active.current = null;
-      return;
-    }
+    const next = sources.current.gamepad ?? sources.current.keyboard;
     active.current = next;
-    if (was !== null) {
-      // Already driving: the running resend picks up the new target at
-      // its next tick. Never send per stick sample -- the gamepad is
-      // polled every 50 ms and a moving stick would otherwise flood the
-      // link at 20 commands a second (observed to knock gopiv's WiFi
-      // module off the network).
-      return;
-    }
-    const resend = () => {
-      const target = active.current;
-      if (target !== null) {
-        sendRef.current(linkId, "WHEELS_V", [target[0], target[1], DRIVE_LEASE_MS]);
-      }
-    };
-    resend();
-    timer.current = setInterval(resend, DRIVE_RESEND_INTERVAL_MS);
+    held.setTarget(next);
   }
 
   function setSource(name: "keyboard" | "gamepad", target: WheelTarget | null): void {
@@ -147,8 +117,10 @@ function useDriveEngine(linkId: string, linkOpen: boolean) {
     apply();
   }
 
-  // Link closed mid-hold: drop the timer (STOP is dropped by
-  // sendCommand anyway with no socket).
+  // Link closed mid-hold: drop the locally-tracked sources (`useHeldDrive`
+  // itself already drops the timer/sends STOP for this transition; the
+  // `apply()` call here just keeps `active`/`sources` in sync so a later
+  // reconnect doesn't resume a stale held direction).
   useEffect(() => {
     if (!linkOpen) {
       sources.current = { keyboard: null, gamepad: null };
@@ -175,7 +147,7 @@ export interface DriveTabProps {
 export function DriveTab({ link }: DriveTabProps) {
   const linkId = link.id;
   const sendable = useSendable();
-  const linkOpen = link.session !== undefined && sendable;
+  const linkOpen = isLinkUsable(link) && sendable;
   const { sendCommand } = useWsActions();
   const engine = useDriveEngine(linkId, linkOpen);
   const [heldKeys, setHeldKeys] = useState<string[]>([]);

@@ -24,11 +24,12 @@
  * `nameError`/flagged-name rendering is gone for the same reason:
  * `SnapshotDevice.name` is always a resolved string.
  *
- * Per-link status text ("Linked" / "Connecting" / "Unreachable: …" /
- * "Retrying in Ns" / "Not seen since …") is now derived from
+ * Per-link status text ("Linked" / "Connecting" / "Couldn't connect: …"
+ * / "Not seen since …") is now derived from
  * `SnapshotLink.state`/`reason`/`lastSeen`/`nextRetryAt` by
- * `linkStatusText` below, rather than from a flat `sessionOpen`/
- * `sessionError` pair.
+ * `deviceDisplay.ts`'s shared `linkStateText` (ticket 017-007: moved
+ * there from this module's own former local copy), rather than from a
+ * flat `sessionOpen`/`sessionError` pair.
  *
  * The remembered-robot roster (`Snapshot.rememberedRobots` in the old
  * contract) is gone as its own side list: a device the host still
@@ -59,11 +60,14 @@
  * `UnassignedCard` (the direct successor of "role === null" under the
  * new contract -- see that component's own doc comment).
  *
- * **Sweep takeover rendering (sprint 016 ticket 004)**: `RelayQuickConnect`
- * now also renders "idle · sweeping `<name>`" (or plain "idle") while no
+ * **Sweep takeover rendering (sprint 016 ticket 004)**: the relay card's
+ * own connect controls (`components/RelayConnectControls.tsx`, ticket
+ * 017-007 -- extracted from this module's own former `RelayQuickConnect`,
+ * now shared with `RelayPage.tsx` rather than each keeping an identical
+ * copy) render "idle · sweeping `<name>`" (or plain "idle") while no
  * child is bridged and no `bridging` is in flight, mirroring
  * `RelayPage.tsx`'s own identical label -- both read
- * `deviceDisplay.ts`'s shared `findRelayChild` (now guarded against a
+ * `deviceDisplay.ts`'s shared `findRelayChild` (guarded against a
  * sweep-only sighting being mistaken for a live child) and
  * `findSweepingCandidateName` (a client-side inference from
  * `SnapshotDevice.lastChecked`, since no wire field names "which
@@ -79,18 +83,20 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import type { SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
-import type { ConnectionStatus, PendingRadioMigration } from "../ws/WsProvider";
+import type { ConnectionStatus, LinkNotice, PendingRadioMigration } from "../ws/WsProvider";
 import {
   useConnectionStatus,
   useDevices,
+  useLinkNotices,
   useRadioMigrationOffers,
   useRelays,
   useSendable,
   useUnassigned,
   useWsActions,
 } from "../ws/WsProvider";
-import { findRelayChild, findSweepingCandidateName, isCalibrationProgram, lastCheckedText, sweepRateSuffix } from "../deviceDisplay";
+import { connectionLabel, isCalibrationProgram, isLinkUsable, lastCheckedText, linkStateText, nameDisplay } from "../deviceDisplay";
 import { FlashDialog } from "../components/FlashDialog";
+import { RelayConnectControls } from "../components/RelayConnectControls";
 import "./FrontPage.css";
 
 export function FrontPage() {
@@ -100,20 +106,43 @@ export function FrontPage() {
   const relays = useRelays();
   const radioMigrationOffers = useRadioMigrationOffers();
   const { send, resolveRadioMigration } = useWsActions();
+  // Extended scope (team-lead, 2026-09-13), item B: a per-link Connect
+  // button on a card with no usable link -- see `DeviceCard`'s own doc
+  // comment. Threaded down as a plain prop, matching `onRelayConnect`
+  // etc. above.
+  const onLinkConnect = (linkId: string) => send({ type: "session-open", linkId });
   // Ticket 011 (carried from 009's send-gating sweep): read here (the
   // hook-bearing page) and threaded down as a plain prop -- `DevicesList`/
-  // `RelayQuickConnect` deliberately take no `WsProvider`-dependent hooks
-  // of their own (existing tests mount `DevicesList` standalone, with no
-  // provider in the tree), matching how `onRelayConnect`/`robotOptions`
-  // etc. already reach them.
+  // `RelayConnectControls` deliberately take no `WsProvider`-dependent
+  // hooks of their own (existing tests mount `DevicesList` standalone,
+  // with no provider in the tree), matching how `onRelayConnect`/
+  // `robotOptions` etc. already reach them.
   const sendable = useSendable();
+  // Bench defect 010 addendum (2026-09-13), fix item 3: same reasoning --
+  // read the whole map once here, threaded down as a plain prop, rather
+  // than a per-row hook `DeviceConnectionRow` (nested under `DevicesList`)
+  // could never call without a variable number of hooks per render.
+  const linkNotices = useLinkNotices();
 
   const present = devices.filter((device) => device.links.length > 0);
-  const notSeenRecently = devices.filter((device) => device.links.length === 0);
-  const robotOptions = devices
-    .filter((device) => device.kind === "robot")
-    .map((device) => device.name)
-    .sort((a, b) => a.localeCompare(b));
+  // Ticket 017-010 fix (team-lead bench evidence, 2026-09-13): a
+  // known-robots.json placeholder that hasn't merged with its real,
+  // currently-linked row yet (e.g. `mergeNamePlaceholderIfAny` hasn't
+  // run yet, or the merge is defined not to fire -- see
+  // `store/placeholderMerge.ts`'s own doc comment) must never be listed
+  // here under the same name a device card already shows -- that is
+  // exactly the duplicate-`tovez` bench defect ("Not seen recently ·
+  // tovez" alongside a real `tovez` card). Filtering by name, not id, is
+  // deliberate: the whole point is to hide a *different* device row that
+  // merely shares a name with one already on screen.
+  const presentNames = new Set(present.map((device) => device.name));
+  const notSeenRecently = devices.filter((device) => device.links.length === 0 && !presentNames.has(device.name));
+  // De-duplicated (`Set`) for the same reason (ticket 017-010): an
+  // unmerged placeholder sharing a name with a real device must not
+  // offer that name twice in the relay picker.
+  const robotOptions = Array.from(
+    new Set(devices.filter((device) => device.kind === "robot").map((device) => device.name)),
+  ).sort((a, b) => a.localeCompare(b));
 
   return (
     <>
@@ -129,6 +158,8 @@ export function FrontPage() {
         onForgetDevice={(deviceId) => send({ type: "forget-device", deviceId })}
         onRelayConnect={(relayLinkId, name) => send({ type: "session-open", relayLinkId, name })}
         onRelayDisconnect={(linkId) => send({ type: "session-close", linkId })}
+        onLinkConnect={onLinkConnect}
+        linkNotices={linkNotices}
       />
     </>
   );
@@ -191,13 +222,31 @@ export interface DevicesListProps {
   onRelayConnect?: (relayLinkId: string, name: string) => void;
   /** A relay card's Disconnect press for its currently-bridged link. */
   onRelayDisconnect?: (linkId: string) => void;
+  /** Extended scope (team-lead, 2026-09-13), item B: a card with no
+   * usable link shows a Connect button per link instead of an open
+   * arrow -- this is its press, sending exactly `{ type: "session-open",
+   * linkId }`. Defaults to a no-op so call sites/tests that don't care
+   * are unaffected. */
+  onLinkConnect?: (linkId: string) => void;
   /** Whether a send is currently meaningful (`useSendable()`, threaded
    * down as a plain prop -- see `FrontPage`'s own doc comment). Gates
    * the relay quick-connect Connect/Switch button. Defaults to `true`
    * so call sites (and this component's own tests) that don't care
    * about disconnection state are unaffected. */
   sendable?: boolean;
+  /** Bench defect 010 addendum (2026-09-13), fix item 3: every pending
+   * link-scoped notice, keyed by `linkId` (`useLinkNotices()`, threaded
+   * down as a plain prop -- see `FrontPage`'s own doc comment, same
+   * reasoning as `sendable`/`onLinkConnect`). Defaults to an empty map
+   * so call sites (and this component's own tests) that don't care are
+   * unaffected. */
+  linkNotices?: ReadonlyMap<string, LinkNotice>;
 }
+
+/** Stable empty-map default for {@link DevicesListProps.linkNotices} --
+ * avoids allocating a fresh `Map` every render for every call site that
+ * does not pass one. */
+const EMPTY_LINK_NOTICES: ReadonlyMap<string, LinkNotice> = new Map();
 
 export function DevicesList({
   status,
@@ -209,7 +258,9 @@ export function DevicesList({
   robotOptions = [],
   onRelayConnect = () => {},
   onRelayDisconnect = () => {},
+  onLinkConnect = () => {},
   sendable = true,
+  linkNotices = EMPTY_LINK_NOTICES,
 }: DevicesListProps) {
   const empty = devices.length === 0 && unassigned.length === 0;
   return (
@@ -234,7 +285,9 @@ export function DevicesList({
                 robotOptions={robotOptions}
                 onRelayConnect={onRelayConnect}
                 onRelayDisconnect={onRelayDisconnect}
+                onLinkConnect={onLinkConnect}
                 sendable={sendable}
+                linkNotices={linkNotices}
               />
             </li>
           ))}
@@ -252,54 +305,50 @@ export function DevicesList({
   );
 }
 
-/** Which link a device card's main open-arrow should lead to: the one
- * with an open session, else the first link the host reports. This is
- * a display choice over links the host has *already* grouped under one
- * device (unlike the retired `linkScore`, which scored/grouped
- * possibly-different devices across transports itself) -- not a
- * re-implementation of host auto-switch policy. */
+/** Which link a device card's main open-arrow should lead to: a usable
+ * link (see `deviceDisplay.ts`'s `isLinkUsable`), preferring the first
+ * one. This is a display choice over links the host has *already*
+ * grouped under one device (unlike the retired `linkScore`, which
+ * scored/grouped possibly-different devices across transports itself)
+ * -- not a re-implementation of host auto-switch policy.
+ *
+ * **Extended scope (team-lead, 2026-09-13), item B**: before this
+ * change, a card with NO usable link still fell back to `links[0]`,
+ * producing an open arrow into a device the student could not actually
+ * use -- exactly the bench complaint ("How is it letting me go into it
+ * if it's not connected?"). Now, a non-relay device with no usable link
+ * gets no primary at all (`DeviceCard` renders no open arrow, and a
+ * per-link Connect row instead -- see its own doc comment). A relay
+ * device keeps the old fallback: its own connectivity link legitimately
+ * has no session most of the time (`RelayConnectControls` owns the
+ * actual bridge/session lifecycle, not this link directly), so relay
+ * cards must keep their existing open arrow and relay controls
+ * regardless. */
 function primaryLinkFor(device: SnapshotDevice): SnapshotLink | undefined {
-  return device.links.find((link) => link.session !== undefined) ?? device.links[0];
-}
-
-/** A short label for one link: the host-built `label` (e.g. "USB ·
- * /dev/tty.usbmodem1234", "Radio · ch41/grp3"), with the relay's own
- * name appended for a `via` link so a student doesn't have to resolve
- * `via.relayLinkId` themselves. */
-function connectionLabel(link: SnapshotLink): string {
-  return link.via ? `${link.label} (via relay ${link.via.relayName})` : link.label;
-}
-
-/** Per-link status text -- "Linked" / "Connecting" / "Unreachable: …" /
- * "Retrying in Ns" / "Not seen since …" / "Not linked", derived from
- * `state`/`reason`/`lastSeen`/`nextRetryAt` (`sprint.md`'s own wording
- * for this ticket). */
-export function linkStatusText(link: SnapshotLink, now: number = Date.now()): string {
-  switch (link.state) {
-    case "connected":
-      return "Linked";
-    case "connecting":
-      return "Connecting";
-    case "failed":
-      if (link.nextRetryAt !== null) {
-        const seconds = Math.max(0, Math.round((link.nextRetryAt - now) / 1000));
-        return `Retrying in ${seconds}s`;
-      }
-      return link.reason ? `Unreachable: ${link.reason}` : "Unreachable";
-    case "unresponsive":
-      return link.reason ? `Unreachable: ${link.reason}` : "Unresponsive";
-    case "stale":
-      return link.lastSeen !== null ? `Not seen since ${new Date(link.lastSeen).toLocaleString()}` : "Not linked";
-    case "discovered":
-    case "connectable":
-    case "closed_by_user":
-      return "Not linked";
-    default: {
-      const exhaustive: never = link.state;
-      return String(exhaustive);
-    }
+  const usable = device.links.find((link) => isLinkUsable(link));
+  if (usable) {
+    return usable;
   }
+  return device.kind === "relay" ? device.links[0] : undefined;
 }
+
+/** A link's state qualifying it for the per-link Connect button
+ * (extended scope, team-lead 2026-09-13, item B) -- every state a
+ * student could plausibly open a session from. Deliberately excludes
+ * `connecting` (already in flight); `connected` (a `connected`-but-no-
+ * session link is a brief in-between moment, not one to offer a second
+ * open for); and `closed_by_user` (the spec's own exact five-state list
+ * -- a student who deliberately closed a link is not offered it back
+ * from the front page; they can still reopen it from the device page
+ * itself). */
+const CONNECT_BUTTON_STATES = new Set<SnapshotLink["state"]>([
+  "connectable",
+  "discovered",
+  "failed",
+  "stale",
+  "unresponsive",
+]);
+
 
 /** An arrow glyph for the open buttons -- inline SVG so it needs no
  * icon font and inherits `currentColor`. */
@@ -323,10 +372,38 @@ function ArrowIcon({ direction }: { direction: "forward" | "back" }) {
 
 /** One device's card. Nothing in the informational region navigates:
  * the only way into a link's page is an open-arrow button (the card's
- * primary link on the right; every other link gets its own small arrow
- * in the Connections list), each a real `Link`. A relay device
- * additionally carries the robot picker + Connect/Switch/Disconnect
- * (`RelayQuickConnect`). */
+ * primary link on the right; every other *usable* link gets its own
+ * small arrow in the Connections list), each a real `Link`. A relay
+ * device additionally carries the robot picker + Connect/Switch/
+ * Disconnect (`RelayConnectControls`, ticket 017-007 -- shared with
+ * `RelayPage.tsx`).
+ *
+ * **Extended scope (team-lead, 2026-09-13), item B**: when
+ * `primaryLinkFor` finds no usable link for a non-relay device, this
+ * card renders no open arrow at all -- neither the main one nor any
+ * per-link one, since none of them lead anywhere the student could
+ * actually use right now (the bench complaint this fixes: "How is it
+ * letting me go into it if it's not connected?"). Each link row shows
+ * its own state text and (when present) its `reason` in plain words,
+ * plus a Connect button for any link whose state is one a session could
+ * plausibly be opened from ({@link CONNECT_BUTTON_STATES}) -- gated by
+ * `sendable` (this card's own `useSendable()`, threaded down as a plain
+ * prop like every other send-capable control on this page).
+ *
+ * **Ticket 017-010 fix (team-lead bench walk, 2026-09-13)**: the
+ * per-link arrow's condition was `primary && link !== primary`, which
+ * rendered an arrow into *any* non-primary link regardless of that
+ * link's own usability -- e.g. a `gopiv` WiFi row showing `Not linked`
+ * still got an arrow, because the card's mbserial link was primary and
+ * the WiFi link merely wasn't it. The arrow now requires
+ * `isLinkUsable(link)` directly, not just "isn't the primary". Likewise
+ * the per-link Connect button was gated `!primary && CONNECT_BUTTON_
+ * STATES.has(link.state)`, which hid Connect on a connectable link the
+ * moment *any other* link on the card became primary -- exactly the
+ * gopiv row, which had a usable mbserial primary and so was denied a
+ * Connect button on its own separately-connectable WiFi link. Connect
+ * is now offered on every link whose own state qualifies, independent
+ * of whether some other link on the card is primary. */
 function DeviceCard({
   device,
   devices,
@@ -334,7 +411,9 @@ function DeviceCard({
   robotOptions,
   onRelayConnect,
   onRelayDisconnect,
+  onLinkConnect,
   sendable,
+  linkNotices,
 }: {
   device: SnapshotDevice;
   devices: SnapshotDevice[];
@@ -342,7 +421,9 @@ function DeviceCard({
   robotOptions: string[];
   onRelayConnect: (relayLinkId: string, name: string) => void;
   onRelayDisconnect: (linkId: string) => void;
+  onLinkConnect: (linkId: string) => void;
   sendable: boolean;
+  linkNotices: ReadonlyMap<string, LinkNotice>;
 }) {
   const primary = primaryLinkFor(device);
   const linked = device.links.some((link) => link.state === "connected");
@@ -354,7 +435,7 @@ function DeviceCard({
       <div className="device-card-main">
         <div className="device-card-body">
           <div className="device-card-header">
-            <h3 className="device-name">{device.name}</h3>
+            <h3 className="device-name">{nameDisplay(device).text}</h3>
             {isCalibration && (
               <span className="device-calibration-badge" data-testid="calibration-badge">
                 {device.version ? `Calibration robot · ${device.version}` : "Calibration robot"}
@@ -372,27 +453,15 @@ function DeviceCard({
 
           <ul className="device-connections" aria-label={`Connections for ${device.name}`}>
             {device.links.map((link) => (
-              <li key={link.id} className="device-connection" data-testid={`device-link-${link.id}`}>
-                <span className="device-connection-label">{connectionLabel(link)}</span>
-                <span className={link.state === "connected" ? "device-connection-state device-connection-open" : "device-connection-state"}>
-                  {linkStatusText(link)}
-                </span>
-                {lastCheckedText(device, link) && (
-                  <span className="device-connection-last-checked" data-testid={`device-link-lastchecked-${link.id}`}>
-                    {lastCheckedText(device, link)}
-                  </span>
-                )}
-                {link !== primary && (
-                  <Link
-                    to={`/d/${link.id}`}
-                    className="device-connection-open-button"
-                    aria-label={`Open ${device.name} over ${connectionLabel(link)}`}
-                    data-testid={`device-link-open-${link.id}`}
-                  >
-                    <ArrowIcon direction="forward" />
-                  </Link>
-                )}
-              </li>
+              <DeviceConnectionRow
+                key={link.id}
+                device={device}
+                link={link}
+                primary={primary}
+                sendable={sendable}
+                onLinkConnect={onLinkConnect}
+                notice={linkNotices.get(link.id)}
+              />
             ))}
           </ul>
         </div>
@@ -411,7 +480,8 @@ function DeviceCard({
       </div>
 
       {isRelay && (
-        <RelayQuickConnect
+        <RelayConnectControls
+          variant="card"
           relay={device}
           devices={devices}
           relays={relays}
@@ -422,6 +492,132 @@ function DeviceCard({
         />
       )}
     </div>
+  );
+}
+
+/** One link row inside a `DeviceCard`'s Connections list -- split out
+ * from `DeviceCard` (bench defect 010 addendum, 2026-09-13, fix item 3)
+ * for readability; it takes no `WsProvider`-dependent hook of its own
+ * (`notice` arrives as a plain prop, `linkNotices.get(link.id)`, computed
+ * by its caller) -- `DevicesList`/`DeviceCard` deliberately take none
+ * (this file's own doc comment on `sendable`/`robotOptions`), and a hook
+ * called once per row inside `device.links.map()` would in any case call
+ * a varying number of hooks per `DeviceCard` render, violating the rules
+ * of hooks.
+ *
+ * **Ticket 017-010 defect (team-lead bench walk, 2026-09-13)**: a
+ * refused or failed Connect press produced no visible change on the
+ * card at all -- `reconciler.ts`'s `requestOpen` returning a
+ * `refusedReason` only ever reached the student as a `notice` broadcast
+ * (`server.ts`), which the front page never read (only the per-link
+ * device console did). This row now shows that notice's text directly
+ * underneath its own state line, via `WsProvider.tsx`'s existing
+ * link-scoped notice stream (`useLinkNotices`) -- no redesign, the
+ * notice disappears again once the link is next reported `connected`
+ * (`WsProvider.tsx`'s own `applySnapshot`).
+ *
+ * **Bench defect (team-lead walk 017-012, 2026-09-13)**: the `torture`
+ * relay card showed a row-level Connect button on the relay's own
+ * connectivity link. Opening a relay pool's own link is not a student
+ * action -- a relay card already gets its robot-picker Connect via
+ * `RelayConnectControls` below -- so the Connect button here is
+ * suppressed for `device.kind === "relay"` regardless of the link's
+ * own state.
+ *
+ * **Reason shown once (team-lead bench walk, 2026-09-13)**: this row
+ * used to also render `link.reason` verbatim in its own span whenever
+ * there was no primary link -- but `linkStateText` above it already
+ * folds a `failed`/`unresponsive` link's `reason` (plain-worded via
+ * `deviceDisplay.ts`'s `plainFailureReason`) straight into the state
+ * text, so the raw span duplicated the same sentence a second time,
+ * unmapped (the bench-reported `tovez` card: the reason text appearing
+ * twice, once with the internal `connector:`/`link "id"` plumbing still
+ * attached). That span is gone outright -- `linkStateText` is now the
+ * only place a link's reason is ever shown -- and `notice` (a distinct
+ * refused-Connect message from `useLinkNotices`, not derived from
+ * `link.reason` at all) remains the only *other* thing this row renders
+ * below the state line.
+ *
+ * **Retry countdown ticks (team-lead walk 017-012, 2026-09-13)**: when
+ * `linkStateText` does show a "· retrying in Ns" suffix (a genuinely
+ * future `nextRetryAt`), it must visibly count down rather than freeze
+ * at whatever number the row first rendered with -- a frozen countdown
+ * is exactly the "Retrying in 0s" staleness this same bench walk fixed
+ * for the past-`nextRetryAt` case, just one render later. `now` is this
+ * row's own local re-render clock (not `Date.now()` read fresh on every
+ * render, since nothing else re-renders this row once a second on its
+ * own): a `setInterval` armed only while `link.nextRetryAt` is set, and
+ * self-clearing once that moment has passed, so a link with no pending
+ * retry (the common case) never starts a timer at all. */
+function DeviceConnectionRow({
+  device,
+  link,
+  primary,
+  sendable,
+  onLinkConnect,
+  notice,
+}: {
+  device: SnapshotDevice;
+  link: SnapshotLink;
+  primary: SnapshotLink | undefined;
+  sendable: boolean;
+  onLinkConnect: (linkId: string) => void;
+  notice: LinkNotice | undefined;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const target = link.nextRetryAt;
+    if (target === null) {
+      return undefined;
+    }
+    const id = setInterval(() => {
+      const tick = Date.now();
+      setNow(tick);
+      if (tick >= target) {
+        clearInterval(id);
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [link.nextRetryAt]);
+
+  return (
+    <li className="device-connection" data-testid={`device-link-${link.id}`}>
+      <span className="device-connection-label">{connectionLabel(link)}</span>
+      <span className={link.state === "connected" ? "device-connection-state device-connection-open" : "device-connection-state"}>
+        {linkStateText(link, now)}
+      </span>
+      {notice && (
+        <span className="device-connection-notice" data-testid={`device-link-notice-${link.id}`} role="status">
+          {notice.text}
+        </span>
+      )}
+      {lastCheckedText(device, link) && (
+        <span className="device-connection-last-checked" data-testid={`device-link-lastchecked-${link.id}`}>
+          {lastCheckedText(device, link)}
+        </span>
+      )}
+      {isLinkUsable(link) && link !== primary && (
+        <Link
+          to={`/d/${link.id}`}
+          className="device-connection-open-button"
+          aria-label={`Open ${device.name} over ${connectionLabel(link)}`}
+          data-testid={`device-link-open-${link.id}`}
+        >
+          <ArrowIcon direction="forward" />
+        </Link>
+      )}
+      {device.kind !== "relay" && CONNECT_BUTTON_STATES.has(link.state) && (
+        <button
+          type="button"
+          className="device-connection-connect-button"
+          data-testid={`device-link-connect-${link.id}`}
+          disabled={!sendable}
+          onClick={() => onLinkConnect(link.id)}
+        >
+          Connect
+        </button>
+      )}
+    </li>
   );
 }
 
@@ -453,7 +649,7 @@ function UnassignedCard({ link }: { link: SnapshotLink }) {
             </div>
           </dl>
           <p className="device-connection-state" data-testid={`unassigned-status-${link.id}`}>
-            {linkStatusText(link)}
+            {linkStateText(link)}
           </p>
           <FlashDialog link={link} name={link.label} />
         </div>
@@ -466,111 +662,6 @@ function UnassignedCard({ link }: { link: SnapshotLink }) {
         >
           <ArrowIcon direction="forward" />
         </Link>
-      </div>
-    </div>
-  );
-}
-
-/** A relay card's own robot picker + Connect/Switch/Disconnect. Sends
- * exactly `{ type: "session-open", relayLinkId, name }` -- no `radio`
- * override (host-resolved, ticket 006) and no no-pick `autoRobot`
- * request (dropped from the wire contract entirely, see this module's
- * own doc comment). Uncontrolled selection state lives here, per card. */
-function RelayQuickConnect({
-  relay,
-  devices,
-  relays,
-  robotOptions,
-  onConnect,
-  onDisconnect,
-  sendable,
-}: {
-  relay: SnapshotDevice;
-  devices: SnapshotDevice[];
-  relays: SnapshotRelay[];
-  robotOptions: string[];
-  onConnect: (relayLinkId: string, name: string) => void;
-  onDisconnect: (linkId: string) => void;
-  /** Ticket 011 (carried from 009's send-gating sweep): gates the
-   * Connect/Switch button exactly like `RelayPage.tsx`'s own
-   * Connect/Switch does -- taken as a plain prop (see `FrontPage`'s own
-   * doc comment) rather than calling `useSendable()` here directly, so
-   * this component stays usable without a `WsProvider` in the tree. */
-  sendable: boolean;
-}) {
-  const relayLinkId = relay.links[0]?.id;
-  const relayInfo = relayLinkId ? relays.find((r) => r.linkId === relayLinkId) : undefined;
-  const bridging = relayInfo?.bridging;
-  const lease = relayInfo?.lease ?? null;
-  const child = relayLinkId ? findRelayChild(devices, relayLinkId) : undefined;
-  // Sprint 016 ticket 004: "idle · sweeping <name>" while the sweep
-  // lease is held and no child is bridged -- see `deviceDisplay.ts`'s
-  // own `findSweepingCandidateName` doc comment for why this is
-  // inferred client-side rather than carried as a new wire field.
-  const sweepingName = relayLinkId && lease === "sweep" ? findSweepingCandidateName(devices, relayLinkId, Date.now()) : undefined;
-
-  const [selectedName, setSelectedName] = useState<string>(child?.device.name ?? "");
-  useEffect(() => {
-    if (child) {
-      setSelectedName(child.device.name);
-    }
-  }, [child?.device.name]);
-
-  return (
-    <div className="device-relay-connect" data-testid={`relay-quick-connect-${relay.id}`}>
-      {child && child.link.state === "connected" && (
-        <p className="device-relay-connected">
-          Connected to {child.device.name}
-          {child.link.via ? ` on channel ${child.link.via.channel}, group ${child.link.via.group}` : ""}
-        </p>
-      )}
-      {child && child.link.state !== "connected" && (
-        <p className="device-relay-failed" data-testid={`relay-quick-lost-${relay.id}`}>
-          Connection to {child.device.name} lost{child.link.reason ? `: ${child.link.reason}` : ""}
-        </p>
-      )}
-      {!child && bridging?.state === "connecting" && (
-        <p className="device-relay-connecting" data-testid={`relay-quick-connecting-${relay.id}`}>
-          {bridging.robotName ? `Connecting to ${bridging.robotName}…` : "Connecting…"}
-        </p>
-      )}
-      {!child && bridging?.state === "failed" && (
-        <p className="device-relay-failed" data-testid={`relay-quick-failed-${relay.id}`}>
-          {bridging.error ?? `Could not reach ${bridging.robotName ?? "the robot"}`}
-        </p>
-      )}
-      {!child && !bridging && (
-        <p className="device-relay-idle" role="status" data-testid={`relay-quick-idle-${relay.id}`}>
-          {lease === "sweep" ? `idle · sweeping${sweepingName ? ` ${sweepingName}` : ""}${sweepRateSuffix(relayInfo)}` : "idle"}
-        </p>
-      )}
-      <div className="device-relay-connect-row">
-        <select
-          data-testid={`relay-quick-connect-select-${relay.id}`}
-          value={selectedName}
-          disabled={robotOptions.length === 0}
-          onChange={(event) => setSelectedName(event.target.value)}
-        >
-          <option value="">{robotOptions.length === 0 ? "No robots known yet" : "Choose a robot…"}</option>
-          {robotOptions.map((name) => (
-            <option key={name} value={name}>
-              {name}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          className="device-relay-connect-button"
-          disabled={selectedName === "" || relayLinkId === undefined || !sendable}
-          onClick={() => sendable && onConnect(relayLinkId!, selectedName)}
-        >
-          {child ? "Switch" : "Connect"}
-        </button>
-        {child && (
-          <button type="button" className="device-relay-disconnect-button" onClick={() => onDisconnect(child.link.id)}>
-            Disconnect
-          </button>
-        )}
       </div>
     </div>
   );
@@ -599,7 +690,7 @@ function NotSeenRecentlySection({
           <li key={device.id}>
             <div className="remembered-robot-card" data-testid={`not-seen-device-${device.id}`}>
               <div className="remembered-robot-header">
-                <h3 className="remembered-robot-name">{device.name}</h3>
+                <h3 className="remembered-robot-name">{nameDisplay(device).text}</h3>
               </div>
               <p className="remembered-robot-note">Last seen {new Date(device.lastSeen).toLocaleString()}</p>
               <button

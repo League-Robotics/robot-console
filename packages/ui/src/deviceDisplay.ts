@@ -11,16 +11,24 @@
  * could be `null` (naming not yet resolved or failed), and
  * `sessionError` doubled as an "unresponsive" signal. Under the new
  * `Snapshot` contract, `devices[]` only ever lists an *identified*
- * device (`SnapshotDevice.name` is always a resolved string --
- * `devices.name`, `deviceIdToName(id)`, never absent); a board that
+ * device (`SnapshotDevice.name` is always a resolved string -- read
+ * directly from `devices.name`, never absent, and never derived from
+ * `id` here: for a `kind='robot'` row or a grammar-named `kind='relay'`
+ * row, `devices.name` and `deviceIdToName(id)` agree by construction
+ * [`store/index.ts`'s consistency check], but a non-grammar-named mDNS
+ * relay (ticket 017-005, synthetic negative id) has no such relationship
+ * -- `nameDisplay` below must keep reading `device.name`, never
+ * `deviceIdToName(device.id)`, for exactly that reason); a board that
  * hasn't identified yet has no device row at all, and shows up in
  * `Snapshot.unassigned` as a bare `SnapshotLink` with no name to
  * display -- so `nameDisplay`'s old "flagged"/"Naming…" states have no
  * device-level equivalent any more. `roleDisplay`'s old
  * `sessionError`-driven "Unresponsive" case moves the same way: link
  * reachability (`state`/`reason`) is now a per-`SnapshotLink` concept,
- * rendered by `FrontPage.tsx`'s own `linkStatusText`, not folded into a
- * device's role text.
+ * rendered by `linkStateText` below (ticket 017-007: moved here from
+ * `FrontPage.tsx`'s own former local `linkStatusText`, the single
+ * shared copy every per-link status rendering site now reads), not
+ * folded into a device's role text.
  */
 import type { FirmwareAvailability, FirmwareKind, FlashPhase, SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
 
@@ -242,6 +250,163 @@ export function sweepRateSuffix(relay: SnapshotRelay | undefined): string {
     return "";
   }
   return ` (${relay.sweep.rate})`;
+}
+
+/**
+ * Whether a link is actually usable for sending right now -- the single
+ * predicate every send-capable control and every "is this link open"
+ * computation must read (extended scope, team-lead 2026-09-13; bench
+ * defect: `zapuz`/`tigez` showed drive controls ENABLED while the card
+ * read "Unreachable: no reply to 3 STATUS polls", because every call
+ * site gated on `link.session !== undefined` alone -- the harvester
+ * marks a link `unresponsive` while deliberately *keeping* its session
+ * row, so `session !== undefined` alone cannot tell "open and answering"
+ * from "open, but the device has stopped replying").
+ *
+ * `link.state === "connected"` is required in addition to `session !==
+ * undefined`: a link's own `session` field survives far more than a
+ * reconnect (see `useSendable`'s own doc comment) -- it also survives
+ * the link itself going `unresponsive`/`failed`/`stale` while the host
+ * keeps the (now-useless) session row around so a later good reply can
+ * resume it without a fresh handshake. Neither half alone is sufficient:
+ * `state === "connected"` with no `session` happens for the instant
+ * between a link resolving and its session actually opening; `session
+ * !== undefined` with `state !== "connected"` is exactly this bug.
+ *
+ * A caller that wants to gate an actual send (not just render "is this
+ * link open") must additionally check `useSendable()` -- this predicate
+ * says nothing about the host connection itself being live; see
+ * `useSendable`'s own doc comment.
+ */
+export function isLinkUsable(link: SnapshotLink): boolean {
+  return link.state === "connected" && link.session !== undefined;
+}
+
+/** A short label for one link: the host-built `label` (e.g. "USB ·
+ * /dev/tty.usbmodem1234", "Radio · ch41/grp3"), with the relay's own
+ * name appended for a `via` link so a student doesn't have to resolve
+ * `via.relayLinkId` themselves. Moved here from `FrontPage.tsx` (ticket
+ * 017-011) so `AppHeader` and `FrontPage` both read one shared
+ * definition, per this sprint's SUC-007 UI-dedupe goal, rather than each
+ * keeping its own copy. */
+export function connectionLabel(link: SnapshotLink): string {
+  return link.via ? `${link.label} (via relay ${link.via.relayName})` : link.label;
+}
+
+/**
+ * Strip internal plumbing from a raw `link.reason` before it is ever
+ * matched against {@link plainFailureReason}'s known shapes or shown to a
+ * student (ticket 017-010, team-lead bench walk 2026-09-13): a link's
+ * `reason` frequently comes straight from `connect/connector.ts`'s or
+ * `connect/relayBridger.ts`'s own thrown `Error.message`, which is
+ * engineer-facing by construction -- prefixed with the throwing module's
+ * own name (`"connector: "`, `"relayBridger: "`) and naming the internal
+ * `links.id`/candidate id in quotes (`link "usb-9906…2820"`, `candidate
+ * "radio-gopiv-via-mbrelay-torture"`). Neither the module name nor the
+ * internal id means anything to a student reading a front-page card --
+ * bench evidence showed both leaking straight through into "Couldn't
+ * connect: connector: link "usb-9906…2820" produced no banner…". Only the
+ * prefix and quoted id fragments are removed; the rest of the message
+ * (including a banner's own quoted `name`, which is student-meaningful)
+ * is untouched.
+ */
+function stripInternalIds(reason: string): string {
+  return reason
+    .replace(/^\s*(?:connector|relayBridger):\s*/, "")
+    .replace(/\b(?:link|candidate)\s+"[^"]*"\s*/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+/**
+ * Turn a raw `link.reason` (a `LineLink`/harvester/connector error
+ * message, engineer-facing) into a short, plain-word phrase a student
+ * can read -- after {@link stripInternalIds} removes the internal
+ * module-name prefix and any quoted link/candidate id. A handful of
+ * shapes are known well enough to name explicitly; anything else is
+ * shown verbatim (cleaned of ids, but otherwise untranslated) rather than
+ * swallowed, so an unanticipated reason is still visible rather than
+ * silently genericized.
+ *
+ * - No banner at all within the identify budget (`connector.ts`'s/
+ *   `relayBridger.ts`'s own "produced no banner within the identify
+ *   budget") reads as "the robot didn't answer when we said hello —
+ *   check the USB cable or that it's powered on" -- bench evidence
+ *   (2026-09-13): this was the literal, untranslated reason shown twice
+ *   on `tovez`'s card.
+ * - A banner/serial identity mismatch (`connector.ts`'s item-E checks,
+ *   both ending "... check the USB cable") is already a specific,
+ *   actionable instruction -- kept verbatim (once cleaned of ids) rather
+ *   than genericized.
+ * - A connect timeout (`LineLink.connect()`'s own `"... timed out after
+ *   Nms"`, or any other "timed out" message) reads as "no answer (timed
+ *   out)".
+ * - A harvester missed-poll reason (`"no reply to N STATUS polls --
+ *   link presumed dead"`) reads as "stopped answering".
+ */
+function plainFailureReason(reason: string): string {
+  const cleaned = stripInternalIds(reason);
+  if (/no banner within the identify budget/i.test(cleaned)) {
+    return "the robot didn't answer when we said hello — check the USB cable or that it's powered on";
+  }
+  if (cleaned.includes("check the USB cable")) {
+    return cleaned;
+  }
+  if (/STATUS poll/i.test(cleaned)) {
+    return "stopped answering";
+  }
+  if (/timed out/i.test(cleaned)) {
+    return "no answer (timed out)";
+  }
+  return cleaned;
+}
+
+/** Per-link status text -- "Linked" / "Connecting" / "Couldn't connect:
+ * …" (optionally "… · retrying in Ns") / "Not seen since …" / "Not
+ * linked", derived from `state`/`reason`/`lastSeen`/`nextRetryAt`
+ * (`sprint.md`'s own wording). Ticket 017-007: moved here from
+ * `FrontPage.tsx`'s own former `linkStatusText` (the single shared copy
+ * every per-link status rendering site now reads, rather than each
+ * re-deriving it from `link.state` itself).
+ *
+ * **Bench defect (team-lead walk 017-012, 2026-09-13)**: `gopiv`'s WiFi
+ * row read "Retrying in 0s" forever -- `state: "failed"` with a
+ * `nextRetryAt` that had already passed (the reconciler's `plan()`
+ * never schedules a second retry once the device has another connected
+ * link), so the old unconditional "Retrying in Ns" both lied about an
+ * active retry and hid `reason` entirely. Now: `failed`/`unresponsive`
+ * always lead with "Couldn't connect" plus a plain-word `reason` (via
+ * {@link plainFailureReason}) when one is recorded, and the "· retrying
+ * in Ns" suffix is appended only while `nextRetryAt` is still in the
+ * future -- never "0s" or a negative count (a past/absent
+ * `nextRetryAt` just omits the suffix, telling the truth: no retry is
+ * pending). */
+export function linkStateText(link: SnapshotLink, now: number = Date.now()): string {
+  switch (link.state) {
+    case "connected":
+      return "Linked";
+    case "connecting":
+      return "Connecting";
+    case "failed":
+    case "unresponsive": {
+      const base = link.reason ? `Couldn't connect: ${plainFailureReason(link.reason)}` : "Couldn't connect";
+      if (link.nextRetryAt !== null && link.nextRetryAt > now) {
+        const seconds = Math.max(1, Math.ceil((link.nextRetryAt - now) / 1000));
+        return `${base} · retrying in ${seconds}s`;
+      }
+      return base;
+    }
+    case "stale":
+      return link.lastSeen !== null ? `Not seen since ${new Date(link.lastSeen).toLocaleString()}` : "Not linked";
+    case "discovered":
+    case "connectable":
+    case "closed_by_user":
+      return "Not linked";
+    default: {
+      const exhaustive: never = link.state;
+      return String(exhaustive);
+    }
+  }
 }
 
 /** "Last checked `<time>`" text for a `via`-linked (radio/mbrelay) link

@@ -1,0 +1,14 @@
+/* Modal.tsx (ticket 017-007) intentionally owns no visual styling of its
+ * own -- each caller passes its own `className` (`FlashDialog.css`'s
+ * `.flash-dialog`, shared by all three current callers) so this
+ * extraction changes no dialog's appearance. This file exists only for
+ * the one property every native `<dialog>` needs reset regardless of
+ * which caller's class supplies the rest: the default user-agent
+ * border/padding/background, which would otherwise show through for an
+ * instant before a caller's own class rules apply. */
+dialog {
+  border: none;
+  padding: 0;
+  background: none;
+  color: inherit;
+}

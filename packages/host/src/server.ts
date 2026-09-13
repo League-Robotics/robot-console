@@ -67,6 +67,14 @@
  * `role`/`name`/`reidentify` fields (`wsMessages.ts`) are accordingly
  * never populated by this implementation — the next `snapshot` broadcast
  * carries the same information once the board reconnects.
+ *
+ * Sprint 017 ticket 003: `board_owner = 'flash'` exclusivity and the
+ * session-close-first handoff around the actual `flash.ts#flash()` call
+ * now live in `connect/flasher.ts`, not here — `runFlashTask` below
+ * still resolves the device and the hex bytes (this module's own job,
+ * per the paragraph above) but calls `flasher.flash(...)` rather than
+ * `flashFn(...)` directly, so a flash can never start while this link's
+ * session is still open on the wire.
  */
 
 import { createServer, type Server as HttpServer } from "node:http";
@@ -85,13 +93,14 @@ import { buildSnapshotFromRows } from "./projection.js";
 import { isValidRadioOverride, resolveDeviceRadio, type DeviceRadioOverride } from "./radioOverride.js";
 import type { RegistryLocation } from "./mbrelayRegistry.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
-import { FirmwareAvailabilityCache, type FirmwareStatusMap } from "./releases.js";
 import { resolveRelease as defaultResolveRelease, fetchAndVerifyHex as defaultFetchAndVerifyHex } from "./releases.js";
-import { LocalHexUploadManager } from "./localHexUpload.js";
+import { LocalHexUploadManager, MAX_UPLOAD_BYTE_LENGTH } from "./localHexUpload.js";
 import { flash as defaultFlash, type FlashOutcome } from "./flash.js";
+import { createFlasher } from "./connect/flasher.js";
 import { enumerateDaplinkDevices as defaultEnumerateDaplinkDevices, type DaplinkDeviceLister } from "./devices.js";
 import {
   parseClientMessage,
+  UPLOAD_ID_BYTE_LENGTH,
   type ClientMessage,
   type FirmwareSourceRef,
   type FlashPhase,
@@ -113,11 +122,18 @@ export const DEFAULT_PORT = 4795;
 const DEFAULT_HOST = "127.0.0.1";
 
 /** Bound on one incoming WebSocket frame (ticket 005 AC / review finding
- * `03-host-server-flash-releases.md` §1). Comfortably above the
- * local-hex upload's own {@link MAX_UPLOAD_BYTE_LENGTH} (4 MiB) plus its
- * `uploadId` prefix, well below anything that would let one client stall
- * the process parsing an oversized frame. */
-export const DEFAULT_MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
+ * `03-host-server-flash-releases.md` §1, F9). Sprint 017 ticket 003: tied
+ * directly to `localHexUpload.ts`'s own {@link MAX_UPLOAD_BYTE_LENGTH}
+ * cap (plus the `uploadId` prefix every binary upload frame carries and
+ * a small slack for ordinary JSON control-message framing overhead) so
+ * `WebSocketServer`'s own `maxPayload` is the *real* enforcement
+ * boundary for an oversized upload -- not a separately-chosen,
+ * coincidentally-larger magic number that happens to bound it (F9: "cap
+ * checks declared `byteLength` only ... `ws` default `maxPayload` (100
+ * MiB) is the real bound"). Every other incoming client message
+ * (`flash-start`, `session-open`, ...) is a small JSON object, well
+ * under this. */
+export const DEFAULT_MAX_PAYLOAD_BYTES = MAX_UPLOAD_BYTE_LENGTH + UPLOAD_ID_BYTE_LENGTH + 4096;
 
 /** `bufferedAmount` (bytes still queued in `ws`'s own send buffer, not
  * yet flushed to the OS socket) above which a stalled client stops
@@ -171,12 +187,15 @@ export interface StartServerOptions {
    * `packages/ui/dist`. If it does not exist, the server still starts —
    * it serves a plain status page instead of failing. */
   staticDir?: string;
-  /** Injectable firmware-source configuration; defaults to a real call
-   * to {@link getFirmwareConfig}. */
+  /** Injectable firmware-source configuration, used only to resolve a
+   * `flash-start` whose source is `kind: "release"` (module doc
+   * comment's "Flash orchestration" section). Defaults to a real call
+   * to {@link getFirmwareConfig}. Sprint 017 ticket 002: this module no
+   * longer polls firmware availability itself — that is
+   * `watchers/firmwareWatcher.ts`'s job now (composed in `runtime.ts`),
+   * writing `firmware` rows this server broadcasts through its existing
+   * `store.onChange` subscription with no firmware-specific glue here. */
   firmwareConfig?: FirmwareConfigMap;
-  /** Injectable {@link FirmwareAvailabilityCache}; defaults to one
-   * constructed from {@link StartServerOptions.firmwareConfig}. */
-  availabilityCache?: FirmwareAvailabilityCache;
   /** OOP 2026-09-10: injectable WiFi credential store (tests). */
   wifiCredentials?: WifiCredentialsStore;
   /** Injectable {@link LocalHexUploadManager}; defaults to a fresh
@@ -396,18 +415,21 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
 
   const localHexUpload = options.localHexUpload ?? new LocalHexUploadManager();
   const wifiCredentials = options.wifiCredentials ?? new WifiCredentialsStore();
-  const firmwareConfig = options.firmwareConfig ?? getFirmwareConfig();
-  const availabilityCache =
-    options.availabilityCache ??
-    new FirmwareAvailabilityCache(
-      firmwareConfig,
-      options.firmwareConfig === undefined ? { loadConfig: () => getFirmwareConfig() } : {},
-    );
+  // Sprint 017 ticket 001: getFirmwareConfig reads `settings` via
+  // `store`, not `env`/a `.env` file -- `store` is already in scope
+  // above.
+  const firmwareConfig = options.firmwareConfig ?? getFirmwareConfig(store);
 
   const enumerateDaplinkDevicesFn = options.enumerateDaplinkDevices ?? defaultEnumerateDaplinkDevices;
   const resolveReleaseFn = options.resolveRelease ?? defaultResolveRelease;
   const fetchAndVerifyHexFn = options.fetchAndVerifyHex ?? defaultFetchAndVerifyHex;
   const flashFn = options.flash ?? defaultFlash;
+  // Sprint 017 ticket 003: flash orchestration's board_owner exclusivity
+  // and session close-first handoff now live in `connect/flasher.ts`,
+  // not inline here -- see that module's own doc comment. `flashFn`
+  // (still the injectable seam `server.test.ts` uses) is what the
+  // flasher actually calls once it has acquired the owner.
+  const flasher = createFlasher(store, { reconciler: runtime.reconciler, flash: flashFn });
 
   const app = buildApp(staticDir);
   const httpServer = createServer(app);
@@ -491,14 +513,24 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     broadcast(buildCurrentSnapshot());
   }
 
-  // Every currently-open session gets a raw-line subscription exactly
-  // once, so the console log echoes inbound ("rx") device chatter --
-  // connect/harvester.ts's own onLine/onClose/onAckNack subscriptions on
-  // the same LineLink are independent of this one (LineLink's `onLine`/
-  // `onRawLine` support any number of listeners; see that module's own
-  // doc comment). A WeakSet, not a Set, so a session this module has
-  // subscribed to can still be garbage-collected once the reconciler
-  // itself drops it (a close, or a fresh session replacing it).
+  // Every currently-open session gets an inbound-line subscription
+  // exactly once, so the console log echoes inbound ("rx") device
+  // chatter -- connect/harvester.ts's own onLine/onClose/onAckNack
+  // subscriptions on the same LineLink are independent of this one
+  // (LineLink's `onLine`/`onRawLine`/`onInboundLine` support any number
+  // of listeners; see that module's own doc comment). A WeakSet, not a
+  // Set, so a session this module has subscribed to can still be
+  // garbage-collected once the reconciler itself drops it (a close, or a
+  // fresh session replacing it).
+  //
+  // **Item G (team-lead, 2026-09-13)**: this used to read `onRawLine`,
+  // which only fires for a line `receive()` could not route to a decoded
+  // shape (unrouted or malformed) -- so a real, successfully-decoded
+  // reply (`id`/`status`/`ack`/`nack`) never reached the student console
+  // at all; only unsolicited `DBG:` lines (also unroutable) ever showed.
+  // `onInboundLine` fires for every inbound line regardless of how
+  // `receive()` classified it, so every reply is now broadcast exactly
+  // once -- see `LineLink.onInboundLine`'s own doc comment.
   const subscribedSessions = new WeakSet<ConnectedSession>();
   function ensureLineSubscriptions(): void {
     for (const session of runtime.reconciler.sessions.values()) {
@@ -506,7 +538,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
         continue;
       }
       subscribedSessions.add(session);
-      session.link.onRawLine((line: string) => {
+      session.link.onInboundLine((line: string) => {
         broadcast({ type: "line", linkId: session.linkId, direction: "rx", line, seq: nextSeq() }, { throttle: true });
       });
     }
@@ -531,35 +563,6 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   });
   const unsubscribeNotice = runtime.telemetry.onNotice((linkId, message) => {
     sendNotice(linkId, "info", message);
-  });
-  // `FirmwareAvailabilityCache` is a self-contained in-memory poller
-  // with no `Store` of its own -- `projection.ts`'s `buildSnapshot`
-  // reads `store.projectionRows().firmware` (the `firmware` table), not
-  // this cache directly, so every poll result is written through
-  // `store.setFirmware` here. That write's own change-feed event is what
-  // triggers the next `snapshot` broadcast (`unsubscribeStoreChange`
-  // below) -- no separate broadcast call needed from this subscription.
-  function writeFirmwareStatusToStore(status: FirmwareStatusMap): void {
-    const checkedAt = Date.now();
-    for (const kind of ["relay", "robot"] as const) {
-      const availability = status[kind];
-      store.setFirmware(
-        availability.configured
-          ? {
-              kind,
-              repo: availability.repoUrl,
-              tag: availability.tag,
-              available: availability.available,
-              reason: availability.reason ?? null,
-              message: availability.message ?? null,
-              checkedAt,
-            }
-          : { kind, repo: null, tag: null, available: null, reason: null, message: null, checkedAt },
-      );
-    }
-  }
-  const unsubscribeAvailability = availabilityCache.onChange((status) => {
-    writeFirmwareStatusToStore(status);
   });
 
   // -----------------------------------------------------------------
@@ -648,7 +651,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
         hexText = uploaded.toString("utf-8");
       }
 
-      const outcome = await flashFn(device, hexText, (phase) => setFlashPhase(linkId, source, phase));
+      const outcome = await flasher.flash(linkId, usbSerial, device, hexText, (phase) => setFlashPhase(linkId, source, phase));
       finishFlash(linkId, source, outcome);
     } catch (error) {
       failFlash(linkId, source, errorMessage(error));
@@ -742,7 +745,15 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       return;
     }
     if ("linkId" in message) {
-      await runtime.reconciler.requestOpen(message.linkId);
+      // Bench defect 4 (2026-09-12): a refused open must not be silent
+      // -- see `reconciler.ts`'s own `describeUserOpenRefusal` doc
+      // comment (not owned yet, already open/connecting, or an unknown
+      // link) and `WsProvider.tsx`'s `appendNotice`, which already knows
+      // how to render a link-scoped notice on that card's own console.
+      const { refusedReason } = await runtime.reconciler.requestOpen(message.linkId);
+      if (refusedReason !== undefined) {
+        sendNotice(message.linkId, "warn", `connect refused: ${refusedReason}`);
+      }
       return;
     }
     // {relayLinkId, name}: route one of a relay's several robots (ticket
@@ -804,7 +815,12 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       address: { relayLinkId: message.relayLinkId, channel, group },
       at: Date.now(),
     });
-    await runtime.reconciler.requestOpen(childLinkId);
+    // Bench defect 4: same "never silent" rule as the plain {linkId}
+    // open above.
+    const { refusedReason } = await runtime.reconciler.requestOpen(childLinkId);
+    if (refusedReason !== undefined) {
+      sendNotice(childLinkId, "warn", `connect refused: ${refusedReason}`);
+    }
   });
 
   handlers.set("session-close", async (_ws, message) => {
@@ -1028,21 +1044,12 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     });
   });
 
-  availabilityCache.start();
-  // `onChange` above only fires when a poll's result differs from the
-  // cache's own prior status -- write the very first poll's result
-  // through unconditionally so a freshly-started host doesn't wait for
-  // a *second* differing poll to ever populate `store.firmware` at all.
-  void availabilityCache.pollOnce().then(writeFirmwareStatusToStore);
-
   try {
     await listen(httpServer, port, host);
   } catch (error) {
     unsubscribeStoreChange();
     unsubscribeTelemetry();
     unsubscribeNotice();
-    unsubscribeAvailability();
-    availabilityCache.stop();
     wss.close(() => {});
     throw error;
   }
@@ -1058,8 +1065,6 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       unsubscribeStoreChange();
       unsubscribeTelemetry();
       unsubscribeNotice();
-      unsubscribeAvailability();
-      availabilityCache.stop();
       // Stop accepting new connections/commands immediately (bounding
       // how long the drain below can run for), but do not yet sever
       // already-open clients -- they can still observe a final

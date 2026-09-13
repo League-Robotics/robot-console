@@ -86,6 +86,8 @@ describe("cli: main -- production startup composes runtime then server", () => {
     const startUsbWatcherMock = vi.fn().mockReturnValue({ stop: usbStopMock });
     const mdnsStopMock = vi.fn();
     const startMdnsWatcherMock = vi.fn().mockReturnValue({ stop: mdnsStopMock });
+    const firmwareStopMock = vi.fn();
+    const startFirmwareWatcherMock = vi.fn().mockReturnValue({ stop: firmwareStopMock });
     const fakeBackend = { find: vi.fn() };
     const createBonjourBackendMock = vi.fn(() => fakeBackend);
     const reconcilerStopMock = vi.fn();
@@ -105,6 +107,7 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startUsbWatcher: startUsbWatcherMock as unknown as StartRuntimeOptions["startUsbWatcher"],
       startMdnsWatcher: startMdnsWatcherMock as unknown as StartRuntimeOptions["startMdnsWatcher"],
       createBonjourBackend: createBonjourBackendMock as unknown as StartRuntimeOptions["createBonjourBackend"],
+      startFirmwareWatcher: startFirmwareWatcherMock as unknown as StartRuntimeOptions["startFirmwareWatcher"],
       createHarvester: createHarvesterMock as unknown as StartRuntimeOptions["createHarvester"],
       createConnector: createConnectorMock as unknown as StartRuntimeOptions["createConnector"],
       startReconciler: startReconcilerMock as unknown as StartRuntimeOptions["startReconciler"],
@@ -133,6 +136,7 @@ describe("cli: main -- production startup composes runtime then server", () => {
     expect(openStoreWithImportsMock).toHaveBeenCalledWith({ env });
     expect(startUsbWatcherMock).toHaveBeenCalled();
     expect(startMdnsWatcherMock).toHaveBeenCalled();
+    expect(startFirmwareWatcherMock).toHaveBeenCalled();
     expect(installUnhandledRejectionBackstopMock).toHaveBeenCalled();
     expect(startServerMock).toHaveBeenCalledWith(expect.objectContaining({ store: fakeStore }));
 

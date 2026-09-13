@@ -358,6 +358,208 @@ describe("AppHeader Flash / Set Wi-Fi send-gating (ticket 011, carried from 009)
   });
 });
 
+// ---------------------------------------------------------------------
+// Ticket 017-011 (+ extended scope, team-lead 2026-09-13, item C):
+// connection label + state under the name/back-link row, Connect when
+// not usable, "Use <label> instead" to a usable sibling link.
+// ---------------------------------------------------------------------
+
+const OPEN_SESSION = { seq: 3, pending: 0, lastDone: 3, lastDoneReason: "none", robotStatus: null, functions: null };
+
+function connectionText(el: HTMLDivElement): string | undefined {
+  return el.querySelector('[data-testid="app-header-connection"]')?.textContent ?? undefined;
+}
+
+describe("AppHeader connection label + state (ticket 017-011)", () => {
+  it("a USB link with an open session shows its connection label and 'Linked'", () => {
+    const { el } = mountAt("/d/usb-SERIAL-A", {
+      devices: [
+        device({
+          links: [
+            {
+              id: "usb-SERIAL-A",
+              transport: "usb",
+              label: "USB · /dev/cu.usbmodemA",
+              state: "connected",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              session: OPEN_SESSION,
+              capabilities: { open: false, close: true, flash: true, provisionWifi: true },
+            },
+          ],
+        }),
+      ],
+    });
+    expect(el.querySelector('[data-testid="app-header-connection-state"]')?.textContent).toBe("Linked");
+    expect(el.querySelector('[data-testid="app-header-connection"]')?.textContent).toContain("USB · /dev/cu.usbmodemA");
+    expect(el.querySelector('[data-testid="app-header-not-usable"]')).toBeNull();
+    expect(el.querySelector('[data-testid="app-header-connect"]')).toBeNull();
+  });
+
+  it("an mbserial link with an open session shows its connection label and 'Linked'", () => {
+    const { el } = mountAt("/d/mbserial-gopiv", {
+      devices: [
+        device({
+          links: [
+            {
+              id: "mbserial-gopiv",
+              transport: "mbserial",
+              label: "mbserial · gopiv",
+              state: "connected",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              session: OPEN_SESSION,
+              capabilities: { open: true, close: true, flash: false, provisionWifi: true },
+            },
+          ],
+        }),
+      ],
+    });
+    expect(connectionText(el)).toContain("mbserial · gopiv");
+    expect(el.querySelector('[data-testid="app-header-connection-state"]')?.textContent).toBe("Linked");
+  });
+
+  it("a via-relay (radio) link with an open session shows its 'via relay' label and 'Linked'", () => {
+    const { el } = mountAt("/d/radio-gopiv-via-torture", {
+      devices: [
+        device({
+          links: [
+            {
+              id: "radio-gopiv-via-torture",
+              transport: "radio",
+              label: "Radio · ch47/grp60",
+              state: "connected",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              session: OPEN_SESSION,
+              via: { relayLinkId: "mbrelay-torture", relayName: "torture", channel: 47, group: 60, addressSource: "derived" },
+              capabilities: { open: true, close: true, flash: false, provisionWifi: false },
+            },
+          ],
+        }),
+      ],
+    });
+    expect(connectionText(el)).toContain("Radio · ch47/grp60 (via relay torture)");
+    expect(el.querySelector('[data-testid="app-header-connection-state"]')?.textContent).toBe("Linked");
+  });
+
+  it("a link with no open session shows 'No open session on this link' plus a Connect button that sends session-open, gated by useSendable", () => {
+    const { el, socket } = mountAt("/d/usb-SERIAL-A", {
+      devices: [
+        device({
+          links: [
+            {
+              id: "usb-SERIAL-A",
+              transport: "usb",
+              label: "USB · /dev/cu.usbmodemA",
+              state: "connectable",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              capabilities: { open: true, close: false, flash: true, provisionWifi: false },
+            },
+          ],
+        }),
+      ],
+    });
+    expect(el.querySelector('[data-testid="app-header-not-usable"]')?.textContent).toBe("No open session on this link");
+    const connect = el.querySelector<HTMLButtonElement>('[data-testid="app-header-connect"]');
+    expect(connect).not.toBeNull();
+    expect(connect!.disabled).toBe(false);
+    act(() => {
+      connect!.click();
+    });
+    expect(socket().sent.map((raw) => JSON.parse(raw))).toContainEqual({ type: "session-open", linkId: "usb-SERIAL-A" });
+    // No sibling link exists on this device -- no switch offer.
+    expect(el.querySelector('[data-testid="app-header-switch-link"]')).toBeNull();
+  });
+
+  it("Connect is disabled once the socket closes (useSendable false)", () => {
+    const { el, socket } = mountAt("/d/usb-SERIAL-A", {
+      devices: [device()], // default link: state "connectable", no session
+    });
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="app-header-connect"]')!.disabled).toBe(false);
+    act(() => {
+      socket().close();
+    });
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="app-header-connect"]')!.disabled).toBe(true);
+  });
+
+  it("when a sibling link on the same device is usable, offers 'Use <label> instead' pointing at /d/<thatLinkId>", () => {
+    const { el } = mountAt("/d/usb-SERIAL-A", {
+      devices: [
+        device({
+          links: [
+            {
+              id: "usb-SERIAL-A",
+              transport: "usb",
+              label: "USB · /dev/cu.usbmodemA",
+              state: "connectable",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              capabilities: { open: true, close: false, flash: true, provisionWifi: false },
+            },
+            {
+              id: "mbserial-zeguz",
+              transport: "mbserial",
+              label: "mbserial · zeguz",
+              state: "connected",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              session: OPEN_SESSION,
+              capabilities: { open: true, close: true, flash: false, provisionWifi: true },
+            },
+          ],
+        }),
+      ],
+    });
+    const switchLink = el.querySelector<HTMLAnchorElement>('[data-testid="app-header-switch-link"]');
+    expect(switchLink).not.toBeNull();
+    expect(switchLink!.textContent).toBe("Use mbserial · zeguz instead");
+    expect(switchLink!.getAttribute("href")).toBe("/d/mbserial-zeguz");
+  });
+
+  it("extended scope (item C): a link whose session survived but is no longer usable (unresponsive) reads 'Not connected over <label>: <reason>', not the ticket's plain 'no session' text", () => {
+    const { el } = mountAt("/d/usb-SERIAL-A", {
+      devices: [
+        device({
+          links: [
+            {
+              id: "usb-SERIAL-A",
+              transport: "usb",
+              label: "USB · /dev/cu.usbmodemA",
+              state: "unresponsive",
+              reason: "no reply to 3 STATUS polls -- link presumed dead",
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              session: OPEN_SESSION,
+              capabilities: { open: false, close: true, flash: true, provisionWifi: true },
+            },
+          ],
+        }),
+      ],
+    });
+    expect(el.querySelector('[data-testid="app-header-not-usable"]')?.textContent).toBe(
+      "Not connected over USB · /dev/cu.usbmodemA: no reply to 3 STATUS polls -- link presumed dead",
+    );
+    // Still offered a way forward -- Connect -- exactly like the
+    // no-session case.
+    expect(el.querySelector('[data-testid="app-header-connect"]')).not.toBeNull();
+  });
+});
+
 describe("AppHeader Set Wi-Fi (sprint 015 ticket 008 restore)", () => {
   it("shows no Set Wi-Fi trigger on / or in the loading state", () => {
     expect(mountAt("/").el.querySelector('[data-testid="wifi-credentials-trigger"]')).toBeNull();

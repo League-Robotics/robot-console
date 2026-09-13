@@ -56,12 +56,17 @@
  * `kind='relay'` devices does not stay unassigned: ticket 016-005 mints
  * one with a synthetic, name-derived id (`nameToValue(name)`, the same
  * convention `store/importers/knownRobots.ts` already uses for a
- * chip-id-less device — see `handleMbrelay`'s own doc comment). This
- * gives a remote mbrelay pool this host has never identified over USB a
- * device row of its own (SUC-005) rather than requiring it to already be
- * a known local relay first. The ambiguous multiple-match case above is
- * unaffected — it still leaves the link unassigned, never minting a
- * third row to "resolve" it.
+ * chip-id-less device), or, when the mDNS instance name isn't a
+ * well-formed five-letter micro:bit name (e.g. `torture` — ticket
+ * 016-008's bench finding), a stable hash of `mbrelay:<instance>` into
+ * the negative id range instead (ticket 017-005; see `handleMbrelay`'s
+ * own doc comment and `store/index.ts`'s narrowed
+ * `deviceIdToName(id) === name` check). This gives a remote mbrelay pool
+ * this host has never identified over USB a device row of its own
+ * (SUC-005), whatever its advertised name looks like, rather than
+ * requiring it to already be a known local relay first. The ambiguous
+ * multiple-match case above is unaffected — it still leaves the link
+ * unassigned, never minting a third row to "resolve" it.
  *
  * ## Address changes without `down`/`up`
  *
@@ -92,6 +97,30 @@
  * map"), a `down` event is deliberately **not** treated as
  * authoritative here — this module ages everything off `last_seen`/TTL
  * instead, so `down` is a no-op below.
+ *
+ * ## Presence refresh for a continuously-advertised, idle instance
+ * (bench defect 1, 2026-09-12)
+ *
+ * A service that is still present but never changes and never goes
+ * away (the common case — a robot sitting idle on the network) fires
+ * neither a fresh `up` (bonjour-service only emits that for an instance
+ * it has not seen before) nor `onServiceChange` (nothing changed). Left
+ * alone, its `last_seen` would only ever have been set once, at first
+ * sight, and every such link/service would age to `stale` after one TTL
+ * regardless of how continuously it is actually still being answered on
+ * the wire — exactly the bench failure this fix addresses (`torture`,
+ * every idle `wifi-*` link). `backend.onAnnounce` (an existing seam —
+ * `discovery/mdnsDiscovery.ts` already defined and uses it for its own,
+ * now-superseded, WiFi-only liveness bookkeeping) reports every raw PTR
+ * answer heard on the wire, keyed by fqdn — a periodic re-query
+ * (`browser.update()`, above) reliably provokes one from anything still
+ * actually present. This module remembers, per fqdn, a small closure
+ * that replays the last `up`/`onServiceChange`'s own `services`/`links`
+ * touch (`knownByFqdn`, in `startMdnsWatcher` below); `onAnnounce`
+ * invokes it, refreshing `last_seen` without pretending anything
+ * changed. A backend without `onAnnounce` (or a fqdn this watcher never
+ * remembered) simply never touches anything this way — everything ages
+ * off `up`/`onServiceChange` alone, exactly as before this fix.
  *
  * ## Injectable seams
  *
@@ -225,6 +254,25 @@ export function startMdnsWatcher(
   const mbrelayTtlMs = opts.mbrelayTtlMs ?? DEFAULT_MBRELAY_TTL_MS;
   const mbflashTtlMs = opts.mbflashTtlMs ?? DEFAULT_MBFLASH_TTL_MS;
 
+  /** Bench defect 1 (2026-09-12): fqdn -> replay closure that redoes the
+   * last-known `services`/`links` touch for that instance. Populated by
+   * every `up`/`onServiceChange`; invoked by `backend.onAnnounce` below
+   * so a bare PTR answer for an already-known, otherwise-unchanged
+   * instance still counts as "seen" and refreshes `last_seen` -- this is
+   * what keeps a continuously-advertised, idle link from aging to
+   * `stale` (module doc comment's own aging section): `bonjour-service`
+   * never fires a fresh `up` for an instance it already knows (same
+   * principle the "Address changes without down/up" section already
+   * describes, applied here to "no change at all"). Keyed by fqdn,
+   * falling back to the service's own name for a backend/service that
+   * never sets one -- mirrors `discovery/mdnsDiscovery.ts`'s own
+   * `wifiLiveness` key convention exactly. `MdnsBackend.onAnnounce` is
+   * not a new seam -- that module already defined and uses it for its
+   * own (superseded, per this module's doc comment) WiFi-only aging;
+   * this is simply the first time `mdnsWatcher.ts` itself subscribes to
+   * it, for every browsed type, not only WiFi. */
+  const knownByFqdn = new Map<string, () => void>();
+
   function upsertServiceRow(find: MdnsFindOptions, service: MdnsService): void {
     store.upsertService({
       instance: service.name,
@@ -337,38 +385,66 @@ export function startMdnsWatcher(
     promoteOwnedLinkIfDiscovered(linkId, deviceId);
   }
 
+  /** `^[zvgpt][uoiea][zvgpt][uoiea][zvgpt]$` -- mirrors
+   * `@robot-console/protocol`'s own (private) `NAME_PATTERN` in
+   * `naming.ts` exactly, duplicated here rather than imported for the
+   * same reason `parseRegistryPort` above duplicates
+   * `mdnsDiscovery.ts`'s parser: a small, self-contained shape check
+   * rather than a shared dependency. Used to pre-validate a name's shape
+   * *before* calling `nameToValue` (never as try/catch control flow --
+   * ticket 016-008's bench finding, below). */
+  const FRIENDLY_NAME_PATTERN = /^[zvgpt][uoiea][zvgpt][uoiea][zvgpt]$/;
+
+  /** FNV-1a (32-bit) hash of `mbrelay:<instance>`, mapped into the
+   * negative id range. `devices.id` stays the same `INTEGER PRIMARY KEY`
+   * shape (no schema change; SQLite integers are 64-bit, so no overflow
+   * risk) -- only the id-generation formula differs from the fast path's
+   * `nameToValue`. Negative ids are never real chip ids
+   * (`FICR.DEVICEID[1]` is unsigned 32-bit) and never collide with the
+   * `nameToValue` fast path's `[0, 3124]` range either, so this is a
+   * disjoint, stable, per-name id: the same `name` always hashes to the
+   * same negative id, and `Store.upsertDevice` is idempotent for repeat
+   * observations. See `store/index.ts`'s narrowed
+   * `deviceIdToName(id) === name` check (ticket 017-005) for the other
+   * half of why this only works for `kind: 'relay'` rows. */
+  function hashRelayNameToNegativeId(name: string): number {
+    const key = `mbrelay:${name}`;
+    let hash = 0x811c9dc5; // FNV-1a 32-bit offset basis
+    for (let i = 0; i < key.length; i++) {
+      hash ^= key.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193); // FNV-1a 32-bit prime
+    }
+    const unsigned = hash >>> 0; // [0, 2^32 - 1]
+    return -unsigned - 1; // [-2^32, -1] -- always negative, never zero
+  }
+
   /** Ticket 016-005's device-creation fallback: when **zero** existing
    * `kind='relay'` devices share `name` (never the ambiguous
    * multiple-match case, which is `uniqueRelayDeviceIdByName`'s own
    * `null` too and stays unassigned exactly as before — module doc
-   * comment), mint one with a synthetic, name-derived id --
-   * `nameToValue(name)`, the unique value in `[0, 3124]` whose
-   * `deviceIdToName` is exactly `name` (`store/importers/knownRobots.ts`'s
-   * own convention for a chip-id-less device, reused rather than
-   * duplicated). Per sprint.md's own Design Rationale ("an mbrelay
-   * pool's device row uses a synthetic, name-derived id, not a
-   * chip-id placeholder that never gets 'merged' later"), this device
-   * has no future merge path — there is no physical chip that could
-   * later plug into this host over USB and reconcile against it, unlike
-   * a USB placeholder. `upsertDevice` is itself idempotent, so a repeat
-   * observation of an already-created pool is a no-op past its first.
+   * comment), mint one. Two id schemes, chosen by the name's own shape:
    *
-   * ## A name that isn't a well-formed micro:bit name (ticket 016-008
-   * bench finding)
+   * - A well-formed five-letter micro:bit name (`FRIENDLY_NAME_PATTERN`)
+   *   gets `nameToValue(name)`, the unique value in `[0, 3124]` whose
+   *   `deviceIdToName` is exactly `name`
+   *   (`store/importers/knownRobots.ts`'s own convention for a
+   *   chip-id-less device, reused rather than duplicated).
+   * - Any other shape (ticket 016-008's bench finding: a real bench
+   *   relay was observed advertising as `torture`, seven letters, not
+   *   that shape at all) gets {@link hashRelayNameToNegativeId}'s stable
+   *   hash instead (ticket 017-005; sprint.md's 2026-09-12 Revision and
+   *   Design Rationale) -- `nameToValue` cannot accept it (no id choice
+   *   can ever make `deviceIdToName(id) === name` true for a non-grammar
+   *   name), so the shape is checked *before* calling it, never via
+   *   try/catch as control flow.
    *
-   * `nameToValue` only accepts the standard 5-letter
-   * `[zvgpt][uoiea][zvgpt][uoiea][zvgpt]` micro:bit name shape and
-   * throws for anything else — but an mbrelay pool's own mDNS instance
-   * name is whatever hostname its operator gave it, with no such
-   * constraint (a real bench relay was observed advertising as
-   * `torture`, seven letters, not that shape at all). Before this fix,
-   * that throw propagated straight out of this synchronous mDNS `up`
-   * handler and crashed the whole host process — found live on the
-   * bench starting this exact ticket's own host against real hardware.
-   * A name `nameToValue` rejects is treated exactly like the ambiguous
-   * multiple-match case above: left unassigned (`null`) rather than
-   * crashing or guessing at an id, since there is no other id scheme
-   * this fallback can safely mint one from. */
+   * Per sprint.md's own Design Rationale ("an mbrelay pool's device row
+   * uses a synthetic id, not a chip-id placeholder that never gets
+   * 'merged' later"), this device has no future merge path — there is no
+   * physical chip that could later plug into this host over USB and
+   * reconcile against it, unlike a USB placeholder. `upsertDevice` is
+   * itself idempotent, so a repeat observation of an already-created
+   * pool is a no-op past its first. */
   function createRelayDeviceIfAbsent(name: string): number | null {
     const matches = store.snapshotRows().devices.filter((row) => row.name === name && row.kind === "relay");
     if (matches.length > 0) {
@@ -377,12 +453,7 @@ export function startMdnsWatcher(
       // minting a third row that would not resolve the ambiguity.
       return null;
     }
-    let id: number;
-    try {
-      id = nameToValue(name);
-    } catch {
-      return null;
-    }
+    const id = FRIENDLY_NAME_PATTERN.test(name) ? nameToValue(name) : hashRelayNameToNegativeId(name);
     store.upsertDevice({ id, name, kind: "relay", at: now() });
     return id;
   }
@@ -407,9 +478,20 @@ export function startMdnsWatcher(
    * browser so the caller can `update()`/`stop()` it later. */
   function subscribe(find: MdnsFindOptions, onObservation: (service: MdnsService) => void): MdnsBrowser {
     const browser = backend.find(find);
+    /** Remembers `service` under its own fqdn (module doc comment,
+     * `knownByFqdn`) so a later bare announce can replay the same touch
+     * without waiting for a fresh `up`/`onServiceChange`. */
+    function remember(service: MdnsService): void {
+      const key = service.fqdn ?? service.name;
+      knownByFqdn.set(key, () => {
+        upsertServiceRow(find, service);
+        onObservation(service);
+      });
+    }
     browser.on("up", (service) => {
       upsertServiceRow(find, service);
       onObservation(service);
+      remember(service);
     });
     browser.on("down", () => {
       // Intentionally not authoritative -- architecture.md §6.2: aging
@@ -421,6 +503,7 @@ export function startMdnsWatcher(
     browser.onServiceChange?.((service) => {
       upsertServiceRow(find, service);
       onObservation(service);
+      remember(service);
     });
     return browser;
   }
@@ -442,6 +525,20 @@ export function startMdnsWatcher(
     robotlinkTcpBrowser,
     robotlinkUdpBrowser,
   ];
+
+  /** Bench defect 1: replay the remembered touch for whatever fqdn this
+   * PTR answer named, refreshing `last_seen` without treating it as a
+   * fresh `up` (module doc comment). A fqdn this watcher never
+   * remembered (not one of the five browsed types, or announced before
+   * this watcher's first `up` for it) is simply not in the map --
+   * `Map.get` returns `undefined`, nothing happens, same as `onAnnounce`
+   * being entirely absent. Optional on {@link MdnsBackend} (same
+   * convention as `forget`/`update`/`onServiceChange`): a backend
+   * without it just never calls this, and every browsed link ages off
+   * `up`/`onServiceChange` alone, exactly as before this bench fix. */
+  const unsubscribeAnnounce = backend.onAnnounce?.((fqdn) => {
+    knownByFqdn.get(fqdn)?.();
+  });
 
   function ageAndPruneOnce(): void {
     const at = now();
@@ -477,6 +574,8 @@ export function startMdnsWatcher(
       for (const browser of browsers) {
         browser.stop();
       }
+      unsubscribeAnnounce?.();
+      knownByFqdn.clear();
     },
   };
 }

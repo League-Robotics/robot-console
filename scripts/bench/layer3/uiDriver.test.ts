@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { directPathLabelPrefix, isIdReplyLine, isRawIdLeak, looksLinked, parseRelayPoolName } from "./uiDriver.js";
+import { directPathLabelPrefix, isIdReplyLine, isRawIdLeak, isRelayStatusReplyLine, looksLinked, parseRelayPoolName } from "./uiDriver.js";
 
 describe("parseRelayPoolName", () => {
   it("extracts the pool name from a radio-via-mbrelay path", () => {
@@ -77,5 +77,25 @@ describe("isIdReplyLine", () => {
 
   it("does not match unrelated console chatter", () => {
     expect(isIdReplyLine("«DBG:wifi something")).toBe(false);
+  });
+});
+
+// 018-004: a relay has no `ID` verb -- probed with `?` instead, and its
+// own status reply (not an "id ..." reply, and not a second HELLO
+// banner either -- see isRelayStatusReplyLine's own doc comment) is the
+// expected match.
+describe("isRelayStatusReplyLine", () => {
+  it("recognizes a genuine rx relay status reply line (« prefix)", () => {
+    expect(isRelayStatusReplyLine("«# channel: 0 group: 10 mode: RAW250 power: 7")).toBe(true);
+  });
+
+  it("does not mistake the echoed tx '?' line for a reply", () => {
+    expect(isRelayStatusReplyLine("»?")).toBe(false);
+  });
+
+  it("does not match an id reply, a HELLO banner, or unrelated console chatter", () => {
+    expect(isRelayStatusReplyLine("«id gopiv NEZHA2 v1.2.3")).toBe(false);
+    expect(isRelayStatusReplyLine("«DEVICE:RADIOBRIDGE:relay:vitut:2198604104")).toBe(false);
+    expect(isRelayStatusReplyLine("«DBG:wifi something")).toBe(false);
   });
 });

@@ -100,14 +100,17 @@ function parseArgs(argv: readonly string[]): CliOptions {
  * check (per this ticket's own "a path failing Layer 2 or 3 is a
  * defect" framing: Layer 3 is independent evidence, not gated on
  * Layer 2 having passed). */
-function targetsFromLayer2(layer2: Layer2Report): Array<{ device: string; path: string }> {
-  const targets: Array<{ device: string; path: string }> = [];
+function targetsFromLayer2(layer2: Layer2Report): Array<{ device: string; path: string; deviceKind: string }> {
+  const targets: Array<{ device: string; path: string; deviceKind: string }> = [];
   for (const device of layer2.devices) {
     for (const entry of device.paths) {
       if (entry.layer2.status === "skipped") {
         continue;
       }
-      targets.push({ device: device.name, path: entry.path });
+      // 018-004: threaded through so `uiDriver.ts`'s `checkPath` can
+      // probe a relay-kind target with `HELLO` instead of `ID` (a relay
+      // has no `ID` verb) -- see that module's own doc comment.
+      targets.push({ device: device.name, path: entry.path, deviceKind: device.kind });
     }
   }
   return targets;

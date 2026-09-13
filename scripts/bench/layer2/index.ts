@@ -151,13 +151,13 @@ function resourceKey(resource: ExclusivityResource): string {
  * status-check row, which is not "a robot reached through a relay"). */
 function targetForPath(deviceName: string, deviceKind: string, path: PathResult): Layer2Target | undefined {
   if (path.path === "usb") {
-    return { kind: "direct", deviceName, transport: "usb" };
+    return { kind: "direct", deviceName, transport: "usb", deviceKind };
   }
   if (path.path === "mbserial") {
-    return { kind: "direct", deviceName, transport: "mbserial" };
+    return { kind: "direct", deviceName, transport: "mbserial", deviceKind };
   }
   if (path.path === "wifi") {
-    return { kind: "direct", deviceName, transport: "wifi" };
+    return { kind: "direct", deviceName, transport: "wifi", deviceKind };
   }
   const radioMatch = /^radio-via-mbrelay:(.+)$/.exec(path.path);
   if (radioMatch && deviceKind !== "pool") {

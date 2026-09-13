@@ -92,6 +92,24 @@ export function isIdReplyLine(line: string): boolean {
   return /^«\s*id\b/i.test(line.trim());
 }
 
+/** Whether a console log line is a genuine relay `?` status reply
+ * (018-004) -- same `«`/`»` rx/tx prefix convention as {@link
+ * isIdReplyLine}, matched against the live-observed shape (this
+ * ticket's own bench evidence): `# channel: 0 group: 10 mode: RAW250
+ * power: 7`. A relay has no `ID` verb (`!HELP` lists `HELLO` and `?`,
+ * not `ID`), so a path whose device kind is `"relay"` is probed with
+ * `?` instead and must match this predicate rather than {@link
+ * isIdReplyLine}. `?`, not `HELLO`, on purpose: live verification found
+ * a relay does not reliably repeat its full banner on a second `HELLO`
+ * sent after the link is already Linked (the connector's own identify
+ * already consumed the first one to reach Linked at all), while `?` is
+ * a status query the relay always answers regardless of session
+ * history -- see `layer2/pathChecks.ts`'s own doc comment for the full
+ * story (this module's own `checkPath` mirrors that fix exactly). Pure. */
+export function isRelayStatusReplyLine(line: string): boolean {
+  return /^«\s*#\s*channel:/i.test(line.trim());
+}
+
 const MOTION_BUTTON_TEXT = /Forward|Backward|Turn left|Turn right|rotate/i;
 
 export interface DriverOptions {
@@ -319,12 +337,18 @@ async function reachRobotPage(
  * (per {@link reachRobotPage}), then assert the header/console/
  * controls/card-text truthfulness this ticket's acceptance criteria
  * require. Never clicks a drive button or types a motion verb -- only
- * ever `ID`, matching every other layer's own "no motion" discipline.
+ * ever `ID` (or, for a relay-kind target, `?` -- 018-004: a relay has no
+ * `ID` verb, `!HELP` lists `HELLO` and `?` instead; see
+ * {@link isRelayStatusReplyLine}'s own doc comment for why `?` rather
+ * than a second `HELLO`), matching every other layer's own "no motion"
+ * discipline. `target.deviceKind` is threaded through from Layer 2's
+ * own report (`index.ts`'s `targetsFromLayer2`) so this module never
+ * has to re-derive it.
  */
 export async function checkPath(
   page: Page,
   baseUrl: string,
-  target: { device: string; path: string },
+  target: { device: string; path: string; deviceKind: string },
   options: DriverOptions,
 ): Promise<Layer3PathResult> {
   const screenshots: string[] = [];
@@ -392,18 +416,27 @@ export async function checkPath(
         : `page is not Linked but these controls are enabled: ${enabledMotionOrSend.join(", ")}`,
   });
 
+  // 018-004: a relay has no `ID` verb -- probe it with `?` instead and
+  // match its own status reply, matching Layer 2's own `pathChecks.ts`
+  // fix for the same underlying bug (see `isRelayStatusReplyLine`'s own
+  // doc comment for why `?`, not a second `HELLO`).
+  const isRelay = target.deviceKind === "relay";
+  const probeVerb = isRelay ? "?" : "ID";
+  const matchesReply = isRelay ? isRelayStatusReplyLine : isIdReplyLine;
+  const replyDescription = isRelay ? "'# channel: ...' status" : "'id ...'";
+
   let replyPass = false;
-  let replyDetail = "link is not Linked -- ID was not sent (per honest-state requirement, matching every other layer's own 'never assume' discipline)";
+  let replyDetail = `link is not Linked -- ${probeVerb} was not sent (per honest-state requirement, matching every other layer's own 'never assume' discipline)`;
   if (linked && !sendInputDisabled) {
     await sendInput.click();
-    await sendInput.fill("ID");
+    await sendInput.fill(probeVerb);
     await sendInput.press("Enter");
     const gotReply = await poll(async () => {
       const lines = await page.locator('[data-testid="console-log"] [data-testid^="console-line-"]').allInnerTexts().catch(() => [] as string[]);
-      return lines.some(isIdReplyLine);
+      return lines.some(matchesReply);
     }, options.replyTimeoutMs ?? 5_000, 250);
     replyPass = gotReply === true;
-    replyDetail = replyPass ? "an 'id ...' reply line appeared in the console within the bound" : `no 'id ...' reply line appeared within ${options.replyTimeoutMs ?? 5_000}ms`;
+    replyDetail = replyPass ? `a ${replyDescription} reply line appeared in the console within the bound` : `no ${replyDescription} reply line appeared within ${options.replyTimeoutMs ?? 5_000}ms`;
   }
   assertions.push({ name: "reply-within-5s", pass: replyPass, detail: replyDetail });
 

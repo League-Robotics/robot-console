@@ -1,8 +1,8 @@
 /**
- * pathChecks.ts — per-path `session-open` -> `send-command ID` ->
- * assert `line` reply -> `session-close` round trip against a real
- * host, for every path Layer 1 marked reachable (sprint 018 ticket
- * 002).
+ * pathChecks.ts — per-path `session-open` -> `send-command ID` (or, for
+ * a relay-kind direct target, `?` -- 018-004, see below) -> assert
+ * `line` reply -> `session-close` round trip against a real host, for
+ * every path Layer 1 marked reachable (sprint 018 ticket 002).
  *
  * The link-lookup helpers below are pure functions over a narrow,
  * structural slice of `@robot-console/host`'s `Snapshot` shape, so they
@@ -10,6 +10,33 @@
  * itself drives a real {@link BenchWsClient} and is exercised only by
  * the live bench run (same split Layer 1's own `index.ts` orchestration
  * vs. its pure probe/classifier modules uses).
+ *
+ * ## Relays have no `ID` verb (018-004)
+ *
+ * A relay's own `!HELP` lists `HELLO` and `?`, never `ID` -- live bench
+ * evidence (`vitut` via `usb`): `checkPath` used to send `ID` to every
+ * target regardless of the underlying device's own `kind`, so a
+ * usb-attached relay connected fine (Layer 1/the host's own identify
+ * already speak `HELLO` universally) but then failed here waiting for
+ * an `"id "` reply that a relay's command plane never sends. A
+ * `"direct"` target now carries the device's own `deviceKind` (threaded
+ * through from `index.ts`'s own Layer 1 report read) so this module can
+ * probe a relay with `?` instead, and match its `# channel: ...` status
+ * reply rather than `"id "`.
+ *
+ * `?`, not a second `HELLO`, on purpose: this module's own live-bench
+ * verification (2026-09-13) found a relay does not reliably repeat its
+ * full `DEVICE:RADIOBRIDGE:...` banner on a second `HELLO` sent *after*
+ * the link is already `connected` (the connector's own identify already
+ * consumed and answered the first one to reach that state at all --
+ * `robot-wire-protocol-facts` memory: "Links' identify() consumes the
+ * HELLO banner itself; it never reaches line listeners") -- `?` is a
+ * live status query the relay's command plane always answers regardless
+ * of session history, matching `layer1/usbProbe.ts`'s own already-proven
+ * "banner via HELLO, then confirm via `?`" sequence for the exact same
+ * hardware. A `"radio"` target's own `deviceName` is always a robot
+ * reached *through* a relay, never a relay itself, so that variant
+ * carries no `deviceKind` at all.
  */
 import type { Snapshot, SnapshotDevice, SnapshotLink } from "@robot-console/host";
 import type { BenchWsClient } from "./wsClient.js";
@@ -18,10 +45,30 @@ import type { Layer2Check } from "./types.js";
 /** A Layer 2 check target: either a device's own direct link
  * (`usb`/`mbserial`/`wifi`), or a robot reached over radio through a
  * named relay pool -- the two `session-open` shapes the wire contract
- * defines (`wsMessages.ts`'s own `SessionOpenMessage` doc comment). */
+ * defines (`wsMessages.ts`'s own `SessionOpenMessage` doc comment).
+ * `deviceKind` on the `"direct"` variant is the Layer 1 report's own
+ * `devices[].kind` string (`"robot"` | `"relay"` | ...) for this
+ * target's device -- see this module's own doc comment, "Relays have
+ * no ID verb". */
 export type Layer2Target =
-  | { kind: "direct"; deviceName: string; transport: "usb" | "mbserial" | "wifi" }
+  | { kind: "direct"; deviceName: string; transport: "usb" | "mbserial" | "wifi"; deviceKind: string }
   | { kind: "radio"; deviceName: string; relayName: string };
+
+/** Whether `target` names a relay -- see this module's own doc comment,
+ * "Relays have no ID verb". Only a `"direct"` target can ever be one; a
+ * `"radio"` target's `deviceName` is always the robot reached through
+ * the relay, never the relay itself. */
+export function isRelayTarget(target: Layer2Target): boolean {
+  return target.kind === "direct" && target.deviceKind === "relay";
+}
+
+/** A relay's `?` status reply, verbatim -- live-observed shape (this
+ * ticket's own bench evidence): `# channel: 0 group: 10 mode: RAW250
+ * power: 7`. Matched case-insensitively against the raw `line` rx text,
+ * same convention as the `"id "` match below. */
+export function isRelayStatusLine(line: string): boolean {
+  return /^#\s*channel:/i.test(line.trim());
+}
 
 export function describeTarget(target: Layer2Target): string {
   return target.kind === "direct" ? `${target.deviceName} via ${target.transport}` : `${target.deviceName} via radio through relay "${target.relayName}"`;
@@ -166,19 +213,29 @@ export async function checkPath(client: BenchWsClient, target: Layer2Target, opt
   }
 
   const linkId = watchLinkId;
-  client.sendCommand(linkId, "ID");
+  // 018-004: a relay has no `ID` verb (`!HELP` lists `HELLO` and `?`,
+  // not `ID`) -- probe it with `?` instead and match its own `# channel:
+  // ...` status reply rather than an `"id "` reply. See this module's
+  // own doc comment, "Relays have no ID verb", for why `?` and not a
+  // second `HELLO`.
+  const relay = isRelayTarget(target);
+  const probeVerb = relay ? "?" : "ID";
+  const matchesReply = relay ? isRelayStatusLine : (line: string) => line.trim().toLowerCase().startsWith("id ");
+  const expectedDescription = relay ? '"# channel:" (relay status reply)' : '"id "';
+
+  client.sendCommand(linkId, probeVerb);
   const replyStartedAt = Date.now();
-  const idLine = await client.waitForLine(linkId, (line) => line.trim().toLowerCase().startsWith("id "), replyTimeoutMs);
+  const replyLine = await client.waitForLine(linkId, matchesReply, replyTimeoutMs);
   const toReplyMs = Date.now() - replyStartedAt;
   const notices = client.noticesFor(linkId).map((n) => n.text);
 
   client.sessionClose(linkId);
 
-  if (idLine === undefined) {
+  if (replyLine === undefined) {
     const link = findLinkById(connectedSnapshot, linkId);
     return {
       status: "fail",
-      reason: `connected, but no "line" rx matching "id " within ${replyTimeoutMs}ms of send-command ID${link ? ` -- link state "${link.state}"${link.reason ? ` (${link.reason})` : ""}` : ""}`,
+      reason: `connected, but no "line" rx matching ${expectedDescription} within ${replyTimeoutMs}ms of send-command ${probeVerb}${link ? ` -- link state "${link.state}"${link.reason ? ` (${link.reason})` : ""}` : ""}`,
       timings: { toConnectedMs, toReplyMs },
       replies: {},
       notices,
@@ -187,9 +244,9 @@ export async function checkPath(client: BenchWsClient, target: Layer2Target, opt
 
   return {
     status: "pass",
-    reason: `session-open -> connected -> send-command ID -> matching line rx -> session-close (reply: ${idLine})`,
+    reason: `session-open -> connected -> send-command ${probeVerb} -> matching line rx -> session-close (reply: ${replyLine})`,
     timings: { toConnectedMs, toReplyMs },
-    replies: { line: idLine },
+    replies: { line: replyLine },
     notices,
   };
 }

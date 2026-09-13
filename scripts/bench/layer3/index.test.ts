@@ -54,8 +54,8 @@ describe("targetsFromLayer2", () => {
     ]);
     const targets = targetsFromLayer2(layer2);
     expect(targets).toEqual([
-      { device: "gopiv", path: "mbserial" },
-      { device: "gopiv", path: "radio-via-mbrelay:torture" },
+      { device: "gopiv", path: "mbserial", deviceKind: "robot" },
+      { device: "gopiv", path: "radio-via-mbrelay:torture", deviceKind: "robot" },
     ]);
   });
 
@@ -64,5 +64,16 @@ describe("targetsFromLayer2", () => {
       { name: "vitut", kind: "robot", paths: [{ path: "usb", layer1: { status: "pass", reason: "ok" }, layer2: { status: "skipped", reason: "held", timings: {}, replies: {}, notices: [] } }] },
     ]);
     expect(targetsFromLayer2(layer2)).toEqual([]);
+  });
+
+  it("carries a relay device's own kind through (018-004)", () => {
+    const layer2 = layer2Fixture([
+      {
+        name: "vitut",
+        kind: "relay",
+        paths: [{ path: "usb", layer1: { status: "pass", reason: "ok" }, layer2: { status: "fail", reason: "no id reply", timings: {}, replies: {}, notices: [] } }],
+      },
+    ]);
+    expect(targetsFromLayer2(layer2)).toEqual([{ device: "vitut", path: "usb", deviceKind: "relay" }]);
   });
 });

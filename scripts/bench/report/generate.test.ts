@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildRows, generateMarkdown, isMainTablePath, labelRow, type RowStatus } from "./generate.js";
 import type { Layer1Report } from "../layer1/types.js";
@@ -114,6 +115,32 @@ describe("buildRows", () => {
     const rows = buildRows(layer1, layer2, layer3);
     expect(rows[0]?.screenshots).toEqual(["01-front.png", "02-final.png"]);
     expect(rows[0]?.l3).toBe("pass" satisfies RowStatus);
+  });
+});
+
+describe("generateMarkdown screenshot links (018-004)", () => {
+  const layer1 = l1Report([{ name: "gopiv", kind: "robot", paths: [{ path: "wifi", endpoint: { host: "gopiv.local", port: 7654 }, status: "pass", reason: "ok", transcript: [] }] }]);
+  const layer2 = l2Report([
+    { name: "gopiv", kind: "robot", paths: [{ path: "wifi", layer1: { status: "pass", reason: "ok" }, layer2: { status: "pass", reason: "ok", timings: {}, replies: {}, notices: [] } }] },
+  ]);
+  const layer3: Layer3Report = {
+    startedAt: "t0",
+    finishedAt: "t1",
+    host: { os: "darwin", node: "v22" },
+    baseUrl: "http://127.0.0.1:4798/",
+    screenshotDir: "/reports/bench-report-screenshots/run-1",
+    results: [{ device: "gopiv", path: "wifi", status: "pass", reason: "every assertion passed", assertions: [], screenshots: ["01-front.png"] }],
+  };
+
+  it("links absolute (old behavior) when no reportDir is given", () => {
+    const markdown = generateMarkdown(layer1, layer2, layer3);
+    expect(markdown).toContain("[1](/reports/bench-report-screenshots/run-1/01-front.png)");
+  });
+
+  it("links relative to reportDir when given, so a durable screenshot dir next to the report keeps working links", () => {
+    const markdown = generateMarkdown(layer1, layer2, layer3, "/reports");
+    expect(markdown).toContain(`[1](${path.join("bench-report-screenshots", "run-1", "01-front.png")})`);
+    expect(markdown).not.toContain("/reports/bench-report-screenshots");
   });
 });
 

@@ -35,12 +35,18 @@ the UI's actual production bundle (`npm run vite:build -w
 @robot-console/ui` — the root `build` script only *typechecks* the UI,
 it does not produce `packages/ui/dist`), then runs Layer 1 -> Layer 2 ->
 Layer 3 in order, then the report generator, writing intermediate JSON
-and Layer 3's screenshots to a fresh `mktemp -d` work directory (printed
-at the end, kept — not cleaned up — so a reader can inspect the raw
-JSON/screenshots the report was built from). `--skip-held`/`--audit-db`
-are forwarded to Layer 1/2 exactly as documented below. Each layer's own
-script remains independently runnable (see each section below) for
-targeted re-runs.
+to a fresh `mktemp -d` work directory (printed at the end, kept — not
+cleaned up — so a reader can inspect the raw JSON the report was built
+from). Layer 3's screenshots go somewhere durable instead — 018-004: a
+`mktemp -d` work directory is exactly the kind of thing OS temp cleanup
+can reap at any time, which used to leave the report's own screenshot
+links dead — under `<report-dir>/<report-basename>-screenshots/<run-
+id>/`, next to `--report`'s own file, with the Markdown table's own
+links rendered relative to the report so the whole directory stays
+viewable if moved or committed elsewhere together. `--skip-held`/
+`--audit-db` are forwarded to Layer 1/2 exactly as documented below.
+Each layer's own script remains independently runnable (see each
+section below) for targeted re-runs.
 
 ## Requires exclusive access to the bench
 
@@ -168,12 +174,18 @@ compiled `packages/host/dist/` a student's `npx robot-console` actually
 runs, not a `tsx`-from-source shortcut — against a fresh, seeded state
 directory, waits for its watchers to settle, then for every path
 Layer 1's report marked reachable: `session-open` → `send-command
-{verb: "ID"}` → assert a matching `line` rx → `session-close` over the
-host's own WebSocket contract (`docs/design/architecture.md` §9). It
-also runs three card-truthfulness assertions directly against the live
-snapshot (no UI needed): no link is `stale`/"Not seen since ..." while
-its mDNS service is currently advertised (per Layer 1's own discovery);
-no device is recorded `kind: "robot"` while its role says relay; exactly
+{verb: "ID"}` (or, for a device whose own `kind` is `"relay"`, `{verb:
+"?"}` — 018-004: a relay has no `ID` verb, `!HELP` lists `HELLO` and `?`
+instead — matching its own `# channel: ...` status reply rather than an
+`"id "` reply; `?`, not a second `HELLO`, because live verification
+found a relay does not reliably repeat its full banner once the link is
+already connected — see `layer2/pathChecks.ts`'s own doc comment) →
+assert a matching `line` rx → `session-close` over the host's own
+WebSocket contract (`docs/design/architecture.md` §9). It also runs
+three card-truthfulness assertions directly against the live snapshot
+(no UI needed): no link is `stale`/"Not seen since ..." while its mDNS
+service is currently advertised (per Layer 1's own discovery); no
+device is recorded `kind: "robot"` while its role says relay; exactly
 one `devices` row per name.
 
 ```sh
@@ -246,7 +258,11 @@ For each path: reach the robot's page (front page -> Connect, or a
 relay card's own robot picker + Connect for `radio-via-mbrelay:<pool>`,
 or the card's arrow directly if already Linked) -> assert the header
 says `Linked` -> type `ID` into the console (`getByLabel("Line to
-send")`) -> assert an `id ...` reply renders within 5s -> assert no
+send")`) -- or, for a path whose own device `kind` is `"relay"`, `?`
+instead (018-004: a relay has no `ID` verb; `?`, not `HELLO`, since live
+verification found a relay does not reliably repeat its full banner
+once already connected) -> assert an `id ...` reply (or, for a relay,
+its own `# channel: ...` status reply) renders within 5s -> assert no
 enabled drive/send control on a page that isn't Linked -> assert no raw
 internal id (`connector:`, `relayBridger:`, `link "`, `candidate "`,
 `usb-9906`) appears anywhere in the page's own text -> (relay paths

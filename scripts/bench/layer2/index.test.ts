@@ -27,16 +27,16 @@ function pathResult(over: Partial<PathResult> = {}): PathResult {
 }
 
 describe("targetForPath", () => {
-  it("maps a usb path to a direct usb target", () => {
-    expect(targetForPath("vitut", "relay", pathResult({ path: "usb" }))).toEqual({ kind: "direct", deviceName: "vitut", transport: "usb" });
+  it("maps a usb path to a direct usb target, carrying the device's own kind (018-004)", () => {
+    expect(targetForPath("vitut", "relay", pathResult({ path: "usb" }))).toEqual({ kind: "direct", deviceName: "vitut", transport: "usb", deviceKind: "relay" });
   });
 
   it("maps an mbserial path to a direct mbserial target", () => {
-    expect(targetForPath("gopiv", "robot", pathResult({ path: "mbserial" }))).toEqual({ kind: "direct", deviceName: "gopiv", transport: "mbserial" });
+    expect(targetForPath("gopiv", "robot", pathResult({ path: "mbserial" }))).toEqual({ kind: "direct", deviceName: "gopiv", transport: "mbserial", deviceKind: "robot" });
   });
 
   it("maps a wifi path to a direct wifi target", () => {
-    expect(targetForPath("gopiv", "robot", pathResult({ path: "wifi" }))).toEqual({ kind: "direct", deviceName: "gopiv", transport: "wifi" });
+    expect(targetForPath("gopiv", "robot", pathResult({ path: "wifi" }))).toEqual({ kind: "direct", deviceName: "gopiv", transport: "wifi", deviceKind: "robot" });
   });
 
   it("maps a radio-via-mbrelay:<pool> path to a radio target for a robot", () => {

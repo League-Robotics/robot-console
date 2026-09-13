@@ -152,11 +152,30 @@ function statusCell(status: RowStatus): string {
   return status === "n/a" ? "n/a" : status;
 }
 
-function screenshotLinks(row: ReportRow, layer3?: Layer3Report): string {
+/**
+ * 018-004: a screenshot link used to be `path.join(layer3.screenshotDir,
+ * file)` unconditionally -- an *absolute* path, which is durable only as
+ * long as `layer3.screenshotDir` itself is (live bench evidence: `run.sh`
+ * wrote screenshots under a `mktemp -d` work directory that OS temp
+ * cleanup can reap at any time, so the report's own links quietly went
+ * dead). When `reportDir` is given (the report's own output directory --
+ * `main()` below always supplies it; direct callers/tests may omit it
+ * and get the old absolute-path behavior), the link is instead relative
+ * to `reportDir`, matching `run.sh`'s own new "screenshots live next to
+ * the report" layout -- a report copied or committed alongside its
+ * screenshots directory keeps working links.
+ */
+function screenshotLinks(row: ReportRow, layer3?: Layer3Report, reportDir?: string): string {
   if (row.screenshots.length === 0 || layer3 === undefined) {
     return "";
   }
-  return row.screenshots.map((file, i) => `[${i + 1}](${path.join(layer3.screenshotDir, file)})`).join(" ");
+  return row.screenshots
+    .map((file, i) => {
+      const absolute = path.join(layer3.screenshotDir, file);
+      const href = reportDir !== undefined ? path.relative(reportDir, absolute) : absolute;
+      return `[${i + 1}](${href})`;
+    })
+    .join(" ");
 }
 
 function escapeCell(text: string): string {
@@ -170,7 +189,7 @@ function escapeCell(text: string): string {
  * "Additional Layer 1 findings" (pool status rows, mbserial-contention)
  * and holders/skips. Pure given already-parsed reports.
  */
-export function generateMarkdown(layer1: Layer1Report, layer2?: Layer2Report, layer3?: Layer3Report): string {
+export function generateMarkdown(layer1: Layer1Report, layer2?: Layer2Report, layer3?: Layer3Report, reportDir?: string): string {
   const rows = buildRows(layer1, layer2, layer3);
   const lines: string[] = [];
 
@@ -186,7 +205,7 @@ export function generateMarkdown(layer1: Layer1Report, layer2?: Layer2Report, la
   for (const row of rows) {
     const label = labelRow(row.l1, row.l2, row.l3);
     lines.push(
-      `| ${row.device} | ${row.path} | ${statusCell(row.l1)} | ${statusCell(row.l2)} | ${statusCell(row.l3)} | ${label} | ${escapeCell(row.reason)} | ${screenshotLinks(row, layer3)} |`,
+      `| ${row.device} | ${row.path} | ${statusCell(row.l1)} | ${statusCell(row.l2)} | ${statusCell(row.l3)} | ${label} | ${escapeCell(row.reason)} | ${screenshotLinks(row, layer3, reportDir)} |`,
     );
   }
   lines.push("");
@@ -304,8 +323,9 @@ function main(): void {
   const layer2: Layer2Report | undefined = options.layer2Path && existsSync(options.layer2Path) ? JSON.parse(readFileSync(options.layer2Path, "utf8")) : undefined;
   const layer3: Layer3Report | undefined = options.layer3Path && existsSync(options.layer3Path) ? JSON.parse(readFileSync(options.layer3Path, "utf8")) : undefined;
 
-  const markdown = generateMarkdown(layer1, layer2, layer3);
-  mkdirSync(path.dirname(options.outPath), { recursive: true });
+  const reportDir = path.dirname(path.resolve(options.outPath));
+  const markdown = generateMarkdown(layer1, layer2, layer3, reportDir);
+  mkdirSync(reportDir, { recursive: true });
   writeFileSync(options.outPath, markdown, "utf8");
   console.log(`[bench:report] wrote report to ${options.outPath}`);
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveOpenPayload, findLinkById, findRadioChildLink, describeTarget, type SnapshotLike } from "./pathChecks.js";
+import { resolveOpenPayload, findLinkById, findRadioChildLink, describeTarget, isRelayTarget, isRelayStatusLine, type SnapshotLike } from "./pathChecks.js";
 
 /** Minimal fixture builder -- only the fields these pure helpers read. */
 function makeSnapshot(
@@ -47,7 +47,7 @@ function makeSnapshot(
 
 describe("describeTarget", () => {
   it("describes a direct target", () => {
-    expect(describeTarget({ kind: "direct", deviceName: "gopiv", transport: "mbserial" })).toBe("gopiv via mbserial");
+    expect(describeTarget({ kind: "direct", deviceName: "gopiv", transport: "mbserial", deviceKind: "robot" })).toBe("gopiv via mbserial");
   });
   it("describes a radio target", () => {
     expect(describeTarget({ kind: "radio", deviceName: "gopiv", relayName: "torture" })).toContain("torture");
@@ -57,17 +57,17 @@ describe("describeTarget", () => {
 describe("resolveOpenPayload", () => {
   it("direct: returns {linkId} when the device has a link of the requested transport", () => {
     const snapshot = makeSnapshot([{ name: "gopiv", links: [{ id: "mbserial-gopiv", transport: "mbserial" }] }]);
-    expect(resolveOpenPayload(snapshot, { kind: "direct", deviceName: "gopiv", transport: "mbserial" })).toEqual({ linkId: "mbserial-gopiv" });
+    expect(resolveOpenPayload(snapshot, { kind: "direct", deviceName: "gopiv", transport: "mbserial", deviceKind: "robot" })).toEqual({ linkId: "mbserial-gopiv" });
   });
 
   it("direct: undefined when the device exists but has no link of that transport", () => {
     const snapshot = makeSnapshot([{ name: "gopiv", links: [{ id: "mbserial-gopiv", transport: "mbserial" }] }]);
-    expect(resolveOpenPayload(snapshot, { kind: "direct", deviceName: "gopiv", transport: "wifi" })).toBeUndefined();
+    expect(resolveOpenPayload(snapshot, { kind: "direct", deviceName: "gopiv", transport: "wifi", deviceKind: "robot" })).toBeUndefined();
   });
 
   it("direct: undefined when the device is not in the snapshot at all", () => {
     const snapshot = makeSnapshot([]);
-    expect(resolveOpenPayload(snapshot, { kind: "direct", deviceName: "gopiv", transport: "usb" })).toBeUndefined();
+    expect(resolveOpenPayload(snapshot, { kind: "direct", deviceName: "gopiv", transport: "usb", deviceKind: "robot" })).toBeUndefined();
   });
 
   it("radio: returns {relayLinkId, name} from the relay pool's own mbrelay link", () => {
@@ -123,5 +123,36 @@ describe("findRadioChildLink", () => {
   it("undefined before the child link has ever been created", () => {
     const snapshot = makeSnapshot([{ name: "gopiv", links: [] }]);
     expect(findRadioChildLink(snapshot, "gopiv", "mbrelay-torture")).toBeUndefined();
+  });
+});
+
+// 018-004: a relay has no `ID` verb -- see pathChecks.ts's own doc
+// comment, "Relays have no ID verb".
+describe("isRelayTarget", () => {
+  it("true for a direct target whose deviceKind is relay", () => {
+    expect(isRelayTarget({ kind: "direct", deviceName: "vitut", transport: "usb", deviceKind: "relay" })).toBe(true);
+  });
+
+  it("false for a direct target whose deviceKind is robot", () => {
+    expect(isRelayTarget({ kind: "direct", deviceName: "gopiv", transport: "usb", deviceKind: "robot" })).toBe(false);
+  });
+
+  it("false for a radio target -- its deviceName is always the robot reached through the relay, never the relay itself", () => {
+    expect(isRelayTarget({ kind: "radio", deviceName: "gopiv", relayName: "torture" })).toBe(false);
+  });
+});
+
+describe("isRelayStatusLine", () => {
+  it("matches a relay's own '?' status reply", () => {
+    expect(isRelayStatusLine("# channel: 0 group: 10 mode: RAW250 power: 7")).toBe(true);
+  });
+
+  it("matches case-insensitively and with surrounding whitespace", () => {
+    expect(isRelayStatusLine("  # CHANNEL: 5 group: 2  ")).toBe(true);
+  });
+
+  it("does not match an id reply, a HELLO banner, or an unrelated line", () => {
+    expect(isRelayStatusLine("id gopiv NEZHA2 v1.2.3")).toBe(false);
+    expect(isRelayStatusLine("DEVICE:RADIOBRIDGE:relay:vitut:2198604104")).toBe(false);
   });
 });

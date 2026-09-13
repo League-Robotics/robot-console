@@ -70,7 +70,26 @@ echo "[bench:run] work dir: $WORK_DIR"
 LAYER1_JSON="$WORK_DIR/layer1.json"
 LAYER2_JSON="$WORK_DIR/layer2.json"
 LAYER3_JSON="$WORK_DIR/layer3.json"
-SCREENSHOT_DIR="$WORK_DIR/screenshots"
+
+# 018-004: screenshots used to live under $WORK_DIR (a `mktemp -d`
+# directory OS temp cleanup can reap at any time), so a report's own
+# screenshot links -- generated as absolute paths into that same
+# directory -- quietly went dead the moment the OS swept /tmp. Write
+# them instead under a directory *next to the report itself*
+# (`<report-dir>/<report-basename>-screenshots/<run-id>/`), which lives
+# exactly as long as the report does, and let `report/generate.ts`
+# render its links relative to the report's own directory (its own
+# `main()` does this whenever it is given an `--out` path) so the
+# report stays viewable if that whole directory is later moved or
+# committed elsewhere together.
+mkdir -p "$(dirname "$REPORT_PATH")"
+REPORT_DIR="$(cd "$(dirname "$REPORT_PATH")" && pwd)"
+REPORT_BASENAME="$(basename "$REPORT_PATH")"
+REPORT_STEM="${REPORT_BASENAME%.*}"
+RUN_ID="$(basename "$WORK_DIR")"
+SCREENSHOT_DIR="$REPORT_DIR/${REPORT_STEM}-screenshots/$RUN_ID"
+mkdir -p "$SCREENSHOT_DIR"
+echo "[bench:run] screenshots: $SCREENSHOT_DIR"
 
 echo "[bench:run] building protocol/host (typecheck) and the UI's production bundle..."
 npm run build
@@ -95,4 +114,5 @@ echo "[bench:run] generating report..."
 npx tsx scripts/bench/report/generate.ts --layer1 "$LAYER1_JSON" --layer2 "$LAYER2_JSON" --layer3 "$LAYER3_JSON" --out "$REPORT_PATH"
 
 echo "[bench:run] done. Report: $REPORT_PATH"
-echo "[bench:run] intermediate JSON + screenshots kept at: $WORK_DIR"
+echo "[bench:run] intermediate JSON kept at: $WORK_DIR"
+echo "[bench:run] screenshots kept at: $SCREENSHOT_DIR (durable -- next to the report, not under \$WORK_DIR)"

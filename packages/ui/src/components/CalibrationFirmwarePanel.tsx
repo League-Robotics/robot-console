@@ -45,6 +45,7 @@ import {
   firmwareDisabledReason,
   firmwareSourceText,
   isCalibrationProgram,
+  programVersionText,
   releaseDisplayName,
 } from "../deviceDisplay";
 import "./CalibrationPage.css";
@@ -89,7 +90,18 @@ export function CalibrationFirmwarePanel({ device, link }: CalibrationFirmwarePa
   }, [flashLink, onFlashResult]);
 
   const robotSource = firmwareSourceText(firmwareStatus.robot);
-  const robotReleaseName = releaseDisplayName(firmwareStatus.robot) ?? FIRMWARE_LABEL.robot;
+  const robotReleaseTagName = releaseDisplayName(firmwareStatus.robot);
+  const robotReleaseName = robotReleaseTagName ?? FIRMWARE_LABEL.robot;
+  // Ticket 018-017 (defect found the same day as the flash-modal work):
+  // the panel's own "is running"/"confirmed" text must name the
+  // firmware release version parsed from `device.program` (e.g.
+  // `calibration-0.20260913.1` -> `0.20260913.1`), never
+  // `device.version` -- that field is the pxt-nezha-diffdrive *library*
+  // version bundled into whatever program is running (moved to the
+  // Diagnostics tab as "Library version" by this same ticket), not the
+  // calibration release itself. See `deviceDisplay.ts`'s `roleDisplay`
+  // doc comment for the identical fix applied to the front-page card.
+  const calibrationVersion = device.program !== null ? programVersionText(device.program) : null;
 
   function flashCalibrationFirmware(): void {
     if (!flashLink || !sendable || robotFirmwareReason !== null || flashProgress) {
@@ -103,7 +115,7 @@ export function CalibrationFirmwarePanel({ device, link }: CalibrationFirmwarePa
     <div className="calibration-firmware-panel" aria-label="Calibration firmware">
       <h4>Calibration firmware</h4>
       {isCalibrationProgram(device.program) ? (
-        <p data-testid="calibration-firmware-running">Calibration firmware {device.version ?? "unknown"} is running.</p>
+        <p data-testid="calibration-firmware-running">{`Calibration firmware ${calibrationVersion ?? "unknown"} is running.`}</p>
       ) : (
         <p data-testid="calibration-firmware-not-running">Program: {device.program ?? "unknown"}</p>
       )}
@@ -158,7 +170,7 @@ export function CalibrationFirmwarePanel({ device, link }: CalibrationFirmwarePa
           </p>
         ) : isCalibrationProgram(device.program) ? (
           <p className="credentials-result credentials-result-ok" role="status" data-testid="calibration-flash-result">
-            Calibration firmware {device.version ?? "unknown"} confirmed.
+            {`Calibration firmware ${calibrationVersion ?? "unknown"} confirmed${robotReleaseTagName ? ` (${robotReleaseTagName})` : ""}.`}
           </p>
         ) : (
           <p className="device-note device-note-error" role="alert" data-testid="calibration-flash-result">

@@ -128,8 +128,8 @@ describe("CalibrationFirmwarePanel", () => {
     expect(el.querySelector('[data-testid="calibration-firmware-usb-required"]')).toBeNull();
   });
 
-  it("says the running calibration build's version when the current program is one", () => {
-    const { el } = mountPanel({ deviceOverrides: { program: "calibration-0.20260913.1", version: "0.20260913.1" } });
+  it("says the running calibration build's release version (from program) when the current program is one -- never device.version, the library version (018-017)", () => {
+    const { el } = mountPanel({ deviceOverrides: { program: "calibration-0.20260913.1", version: "1.20260912.8" } });
     expect(el.querySelector('[data-testid="calibration-firmware-running"]')?.textContent).toBe(
       "Calibration firmware 0.20260913.1 is running.",
     );
@@ -175,13 +175,24 @@ describe("CalibrationFirmwarePanel", () => {
     expect(el.querySelector('[data-testid="calibration-flash-firmware"]')).toBeNull();
   });
 
-  it("confirms the calibration build once the fresh post-flash snapshot actually reports one", () => {
-    const { el, socket } = mountPanel({ deviceOverrides: { program: "calibration-0.20260913.1", version: "0.20260913.1" } });
+  it("confirms the calibration build once the fresh post-flash snapshot actually reports one, using the program's release version -- never device.version, the library version (018-017)", () => {
+    const { el, socket } = mountPanel({ deviceOverrides: { program: "calibration-0.20260913.1", version: "1.20260912.8" } });
     act(() => {
       socket.emitMessage({ type: "flash-result", linkId: LINK_ID, source: { kind: "release", firmware: "robot" }, status: "ok", seq: 1 });
     });
     expect(el.querySelector('[data-testid="calibration-flash-result"]')?.textContent).toBe(
       "Calibration firmware 0.20260913.1 confirmed.",
+    );
+  });
+
+  it("018-017: appends the flashed release's own repo+tag to the confirmed text when it's known", () => {
+    const { el, socket } = mountPanel({ deviceOverrides: { program: "calibration-0.20260913.1", version: "1.20260912.8" } });
+    markRobotFirmwareAvailable(socket);
+    act(() => {
+      socket.emitMessage({ type: "flash-result", linkId: LINK_ID, source: { kind: "release", firmware: "robot" }, status: "ok", seq: 1 });
+    });
+    expect(el.querySelector('[data-testid="calibration-flash-result"]')?.textContent).toBe(
+      "Calibration firmware 0.20260913.1 confirmed (nezha-robot-template v0.20260913.1).",
     );
   });
 

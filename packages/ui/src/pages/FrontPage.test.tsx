@@ -195,19 +195,19 @@ describe("DevicesList", () => {
     expect(openArrow?.getAttribute("href")).toBe("/d/usb-1");
   });
 
-  it("shows a distinguishing calibration badge from device.program's calibration- prefix, with version", () => {
+  it("shows a distinguishing calibration badge with the program's release version, never device.version (018-017: the pxt-nezha-diffdrive library version)", () => {
     const el = mount(
-      withRouter(<DevicesList status="open" devices={[device(1, { program: "calibration-0.20260907.2", version: "0.20260907.2" })]} unassigned={[]} />),
+      withRouter(<DevicesList status="open" devices={[device(1, { program: "calibration-0.20260907.2", version: "1.20260912.8" })]} unassigned={[]} />),
     );
     const badge = el.querySelector('[data-testid="calibration-badge"]');
     expect(badge?.textContent).toBe("Calibration robot · 0.20260907.2");
   });
 
-  it("falls back to a version-less calibration badge when version is null", () => {
+  it("shows the program string as-is in the badge when it doesn't parse to a version, regardless of device.version", () => {
     const el = mount(
-      withRouter(<DevicesList status="open" devices={[device(1, { program: "calibration-x", version: null })]} unassigned={[]} />),
+      withRouter(<DevicesList status="open" devices={[device(1, { program: "calibration-x", version: "1.20260912.8" })]} unassigned={[]} />),
     );
-    expect(el.querySelector('[data-testid="calibration-badge"]')?.textContent).toBe("Calibration robot");
+    expect(el.querySelector('[data-testid="calibration-badge"]')?.textContent).toBe("Calibration robot · calibration-x");
   });
 
   it("shows no calibration badge for a plain program (regression)", () => {

@@ -95,7 +95,7 @@ import {
   useUnassigned,
   useWsActions,
 } from "../ws/WsProvider";
-import { cardLinks, connectionLabel, isCalibrationProgram, isLinkAnswering, isLinkUsable, lastCheckedText, linkStateText, nameDisplay, roleDisplay } from "../deviceDisplay";
+import { cardLinks, connectionLabel, isCalibrationProgram, isLinkAnswering, isLinkUsable, lastCheckedText, linkStateText, nameDisplay, programVersionText, roleDisplay } from "../deviceDisplay";
 import { TransportIcon, transportShortName } from "../components/TransportIcon";
 import { FlashDialog } from "../components/FlashDialog";
 import { RelayConnectControls } from "../components/RelayConnectControls";
@@ -513,7 +513,12 @@ function DeviceCard({
             <h3 className="device-name">{nameDisplay(device).text}</h3>
             {isCalibration && (
               <span className="device-calibration-badge" data-testid="calibration-badge">
-                {device.version ? `Calibration robot · ${device.version}` : "Calibration robot"}
+                {/* Ticket 018-017: the release version comes from
+                    `device.program` (e.g. `calibration-0.20260913.1` ->
+                    `0.20260913.1`), never `device.version` -- that's the
+                    pxt-nezha-diffdrive library version, not the
+                    calibration release. Same fix as `roleDisplay`'s. */}
+                {device.program !== null ? `Calibration robot · ${programVersionText(device.program)}` : "Calibration robot"}
               </span>
             )}
             {linked && <span className="device-linked-pill">Linked</span>}

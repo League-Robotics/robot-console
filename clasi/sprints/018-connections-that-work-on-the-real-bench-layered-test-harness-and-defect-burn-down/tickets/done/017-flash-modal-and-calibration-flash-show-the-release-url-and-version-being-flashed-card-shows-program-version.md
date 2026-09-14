@@ -78,6 +78,19 @@ being presented as "the" version.
       a scratch copy of the state DB (never the stakeholder's live
       `console.sqlite`); nothing is actually flashed to a device during
       verification.
+- [x] Reopened same day (team-lead live check, 2026-09-13): the
+      Calibration tab's firmware panel itself still read "Calibration
+      firmware 1.20260912.8 is running" -- `CalibrationFirmwarePanel.tsx`
+      used `device.version` (the library version) for its own "is
+      running"/"confirmed" text, the same defect this ticket already
+      fixed in `roleDisplay`. The Calibration tab's firmware panel now
+      shows the program's release version (via `programVersionText`),
+      never the library version, for both the "is running" and
+      "confirmed" lines; the confirmed line also names the flashed
+      release's own repo+tag when known (e.g. "Calibration firmware
+      0.20260914.2 confirmed (nezha-robot-template v0.20260914.2).").
+      The front-page calibration badge (`FrontPage.tsx`) had the
+      identical defect and is fixed the same way.
 
 ## Implementation Plan
 

@@ -87,9 +87,15 @@ significant lands at position `4-i`. Port of
 
 ### 3.2 `radioAddress.ts` — name → `(channel, group)`
 
-`n = base5(name)` with `name[0]` **most** significant.
-`channel = 25 + 2*(n%25)`. `group = 1 + n/25`, bumped past 10. Port of
-`microbit-radio-relay/server/src/mbrelay/naming.py`.
+`n = base5(name)` with `name[0]` **most** significant (after trimming
+whitespace and lower-casing). `channel = 11 + (n % 73)` (11–83),
+`group = 15 + (n % 241)` (15–255). Every name gets a distinct pair; most
+pairs belong to no name, and the reverse map rejects them. The normative
+spec is radio-robot-lib `docs/design/radio-addressing.md`; the reference
+implementation is `microbit-radio-relay/server/src/mbrelay/naming.py`.
+This map replaced the 25-channel one (`25 + 2*(n%25)`) in September 2026.
+A relay tune (`!CG`/`!CGT`) accepts any hardware pair (channel 0–83,
+group 0–255), not only derived ones.
 
 **Endianness trap**: `zuzuv` is n=1; a reversed encoder says `vuzuz` and
 would pass a sampled table. This is why verification (§9) requires the
@@ -304,7 +310,7 @@ discovered empirically per deployment:
 - **The radio is fire-and-forget, with no retransmit.** Keep every message
   in one frame: ≤16 bytes for MAKECODE mode, ≤247 bytes for RAW250 mode.
 - **A derived `(channel, group)` is a default, not an address, and there
-  are three outcomes, not two.** 125 names share each channel, so ask
+  are three outcomes, not two.** About 43 names share each channel, so ask
   mbrelay's registry (`GET /names/<name>` on :8761) where a robot
   actually is — but that call **mutates the shared registry and always
   answers 200**. `httpapi.py:146` returns `registry.resolve(name)`, and
@@ -471,9 +477,11 @@ already-provisioned robot.
 
 - `npm test` — protocol unit tests, run with `vitest`.
 - **Strongest single gate:** test `radioAddress.ts` against
-  `pxt-nezha-diffdrive/docs/radio-address-vectors.json`, asserting the
-  full 3125-name space against its published sha256. That file is an
-  existing three-repo contract, so this check is free correctness. It
+  `packages/protocol/src/radio-address-vectors.json` (copied from the
+  radio-robot-lib spec's vectors), asserting the full 3125-name space
+  against the spec's D2 sha256. Every repo in the fleet passes the same
+  digest through its `tools/radio-address-dump`, so this check is free
+  correctness. It
   also catches the documented endianness trap (§3.2) — `zuzuv` is n=1; a
   reversed encoder says `vuzuz` and would pass a sampled table but fail
   the full-space hash.

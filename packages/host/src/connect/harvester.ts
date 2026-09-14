@@ -66,6 +66,8 @@
  */
 import {
   TelemetryDecoder,
+  deviceIdToName,
+  parseIdReply,
   type AckNackEvent,
   type DecodedLine,
 } from "@robot-console/protocol";
@@ -350,8 +352,36 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
           syncSession({ functions });
           return;
         }
-        // Every other reply verb (`id`, `ack`/`nack`'s own decoded line,
-        // `ver`, `help`, `debug`, ...) still refreshes the session's own
+        // 018-016 (bench defect: `roleDisplay` never showed a version --
+        // `store.upsertDevice` was never called with one): the `ID`
+        // probe this module sends once per identify (below) gets its
+        // reply here, same as any other verb, but this is the one place
+        // that ever harvests it. `parseIdReply` returns `null` for a
+        // malformed reply (wrong field count) -- left alone, same as any
+        // other verb-specific parse failure elsewhere in this file. A
+        // reply that parses but names a *different* device than this
+        // session's own `deviceId` is also left alone -- debug note: this
+        // would mean the robot's own `ID` reply disagrees with the name
+        // `deviceIdToName(session.deviceId)` derives, which should never
+        // happen for a session already matched to this device, but this
+        // module must never write identity onto the wrong `devices` row
+        // on the strength of a single reply. Either way, execution still
+        // falls through to `syncSession()` below -- the sequencing
+        // counters still need to reflect that a reply arrived at all.
+        if (decoded.verb === "id") {
+          const idReply = parseIdReply(decoded.fields);
+          if (idReply !== null && idReply.name === deviceIdToName(session.deviceId)) {
+            store.upsertDevice({
+              id: session.deviceId,
+              name: idReply.name,
+              program: idReply.program,
+              version: idReply.version,
+              at: now(),
+            });
+          }
+        }
+        // Every other reply verb (`ack`/`nack`'s own decoded line, `ver`,
+        // `help`, `debug`, ...) still refreshes the session's own
         // sequencing counters even though this module harvests nothing
         // verb-specific from it -- matches this ticket's own acceptance
         // criteria ("id ... update the session row").

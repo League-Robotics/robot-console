@@ -272,6 +272,63 @@ describe("createHarvester -- unresponsive, exactly once", () => {
   );
 });
 
+// 018-016 (bench defect: robot cards never showed a version -- the
+// harvester's own `onLine` dropped the `id` verb entirely). `seededStore()`
+// wires device 1198504156 up as "vevov" -- the `ID` reply's own `name`
+// field must match that for the write to land.
+describe("createHarvester -- id reply stores program/version (018-016)", () => {
+  it("an id reply naming this session's own device stores program and version", async () => {
+    const store = seededStore();
+    const { link, stream } = await connectedLink();
+    const harvester = createHarvester(store, { statusPollIntervalMs: 0, now: () => 12345 });
+    harvester.attach(session(link));
+
+    stream.emitData("id diffdrive calibration-0.20260913.1 1.20260912.8 vevov\n");
+    await flush();
+
+    const device = store.snapshotRows().devices.find((d) => d.id === 1198504156);
+    expect(device?.program).toBe("calibration-0.20260913.1");
+    expect(device?.version).toBe("1.20260912.8");
+    store.close();
+  });
+
+  it("an id reply naming a different device is never written -- devices row stays untouched", async () => {
+    const store = seededStore();
+    const { link, stream } = await connectedLink();
+    const harvester = createHarvester(store, { statusPollIntervalMs: 0 });
+    harvester.attach(session(link));
+
+    // "tovez" decodes to a different device id than 1198504156 -- this
+    // reply must never be trusted to write identity onto the wrong row.
+    stream.emitData("id diffdrive tovez 1.20260912.8 tovez\n");
+    await flush();
+
+    const device = store.snapshotRows().devices.find((d) => d.id === 1198504156);
+    expect(device?.program).toBeNull();
+    expect(device?.version).toBeNull();
+    store.close();
+  });
+
+  it("a malformed id reply (too few fields) is ignored, no throw", async () => {
+    const store = seededStore();
+    const { link, stream } = await connectedLink();
+    const harvester = createHarvester(store, { statusPollIntervalMs: 0 });
+    harvester.attach(session(link));
+
+    stream.emitData("id diffdrive vevov\n");
+    await flush();
+
+    const device = store.snapshotRows().devices.find((d) => d.id === 1198504156);
+    expect(device?.program).toBeNull();
+    expect(device?.version).toBeNull();
+    // The reply still refreshed the session's own sequencing counters
+    // (this module's own "id ... update the session row" contract) --
+    // confirmed via answeredAt rather than throwing.
+    expect(store.snapshotRows().sessions.find((s) => s.link_id === "link-1")?.answered_at).not.toBeNull();
+    store.close();
+  });
+});
+
 describe("createHarvester -- resync notice (reportDesyncIfNeeded)", () => {
   it("a desynced nack reports once per episode, not once per send", async () => {
     const store = seededStore();

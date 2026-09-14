@@ -46,6 +46,15 @@ comes from the `ID` reply (`id diffdrive calibration-0.20260913.1
 - [x] Unit tests: migration, connector write, projection field,
       `roleDisplay` formatting for full/partial/empty robot data and
       unchanged relay text.
+- [x] Program and version are stored from the robot's `ID` reply
+      (bench defect, reopened 2026-09-13): `connect/harvester.ts`'s
+      `onLine` handles `decoded.verb === "id"`, parses it with
+      `parseIdReply`, and calls `store.upsertDevice` with the parsed
+      `program`/`version` only when the reply's `name` matches this
+      session's own device (`deviceIdToName(session.deviceId)`) — never
+      writing identity onto the wrong device. A malformed or
+      mismatched-name reply is left alone but still falls through to
+      `syncSession()`, same as any other reply verb.
 - [x] Evidence: `npx vitest run packages/host packages/ui
       packages/protocol`, `npm run typecheck`, `npm run build`,
       `npm run vite:build -w @robot-console/ui` green; headless-Chrome

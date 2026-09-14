@@ -71,7 +71,7 @@
  * itself.
  */
 
-import { validateRadioAddress } from "../radioAddress.js";
+import { validateHardwareRadioAddress } from "../radioAddress.js";
 import { parseIdReply, type IdReply } from "../deviceType.js";
 
 // ---------------------------------------------------------------------
@@ -118,11 +118,11 @@ export class RelayCommandError extends Error {
  * silently inherited by any carrier that does not restate it (see this
  * module's own doc comment / `link.py`'s `relay_setup_lines`).
  *
- * Range-checked via `radioAddress.ts`'s {@link validateRadioAddress}
- * (channel odd in `[25, 73]`, group in `[1, 126]` excluding the
- * reserved `10`) — a caller building an address should get it from
- * `nameToRadioAddress` in the first place, but this refuses a malformed
- * pair outright rather than silently sending it over the radio.
+ * Range-checked via `radioAddress.ts`'s {@link validateHardwareRadioAddress}
+ * (channel in `[0, 83]`, group in `[0, 255]`) — the radio's own limits,
+ * not the name-derived space: a registry-pinned or hand-moved robot sits
+ * outside that space and must still be reachable. A malformed pair is
+ * refused outright rather than silently sent over the radio.
  */
 export function buildSetChannelGroupLine(channel: number, group: number): string {
   if (!Number.isInteger(channel)) {
@@ -131,9 +131,9 @@ export function buildSetChannelGroupLine(channel: number, group: number): string
   if (!Number.isInteger(group)) {
     throw new RelayCommandError(`group must be an integer, got ${group}`);
   }
-  if (!validateRadioAddress(channel, group)) {
+  if (!validateHardwareRadioAddress(channel, group)) {
     throw new RelayCommandError(
-      `(${channel}, ${group}) is not a derived radio address -- channel must be odd in [25, 73], group in [1, 126] excluding the reserved value 10`,
+      `(${channel}, ${group}) is not a valid radio address -- channel must be in [0, 83], group in [0, 255]`,
     );
   }
   return `!CG ${channel} ${group}\n`;
@@ -158,9 +158,9 @@ export function buildTransientChannelGroupLine(channel: number, group: number): 
   if (!Number.isInteger(group)) {
     throw new RelayCommandError(`group must be an integer, got ${group}`);
   }
-  if (!validateRadioAddress(channel, group)) {
+  if (!validateHardwareRadioAddress(channel, group)) {
     throw new RelayCommandError(
-      `(${channel}, ${group}) is not a derived radio address -- channel must be odd in [25, 73], group in [1, 126] excluding the reserved value 10`,
+      `(${channel}, ${group}) is not a valid radio address -- channel must be in [0, 83], group in [0, 255]`,
     );
   }
   return `!CGT ${channel} ${group}\n`;

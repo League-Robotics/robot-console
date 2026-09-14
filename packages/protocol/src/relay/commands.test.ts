@@ -39,11 +39,13 @@ describe("relay command-plane line-builders", () => {
     expect(() => buildSetChannelGroupLine(47, NaN)).toThrow(RelayCommandError);
   });
 
-  it("range-checks channel/group via validateRadioAddress, rejecting an out-of-range pair", () => {
-    expect(() => buildSetChannelGroupLine(48, 60)).toThrow(RelayCommandError); // even channel
-    expect(() => buildSetChannelGroupLine(99, 60)).toThrow(RelayCommandError); // channel out of range
-    expect(() => buildSetChannelGroupLine(47, 10)).toThrow(RelayCommandError); // reserved group
-    expect(() => buildSetChannelGroupLine(47, 127)).toThrow(RelayCommandError); // group out of range
+  it("range-checks channel/group against the radio's limits, not the name-derived space", () => {
+    expect(() => buildSetChannelGroupLine(84, 60)).toThrow(RelayCommandError); // channel above 83
+    expect(() => buildSetChannelGroupLine(-1, 60)).toThrow(RelayCommandError); // negative channel
+    expect(() => buildSetChannelGroupLine(47, 256)).toThrow(RelayCommandError); // group above 255
+    expect(buildSetChannelGroupLine(48, 29)).toBe("!CG 48 29\n"); // tovez under the 2026-09-13 map
+    expect(buildSetChannelGroupLine(55, 108)).toBe("!CG 55 108\n"); // a registry-pinned pair
+    expect(buildSetChannelGroupLine(3, 10)).toBe("!CG 3 10\n"); // legacy hand-allocated address
   });
 
   it("builds the exact !CGT <ch> <grp> wire text (rearch-12 transient tune)", () => {
@@ -51,7 +53,7 @@ describe("relay command-plane line-builders", () => {
   });
 
   it("range-checks !CGT the same way as !CG", () => {
-    expect(() => buildTransientChannelGroupLine(48, 60)).toThrow(RelayCommandError);
+    expect(() => buildTransientChannelGroupLine(84, 60)).toThrow(RelayCommandError); // channel above 83
     expect(() => buildTransientChannelGroupLine(47.5, 60)).toThrow(RelayCommandError);
   });
 
@@ -294,7 +296,7 @@ describe("relayPreambleSteps", () => {
   });
 
   it("range-checks the !CG step's channel/group, same as buildSetChannelGroupLine", () => {
-    expect(() => relayPreambleSteps(48, 3)).toThrow(RelayCommandError);
+    expect(() => relayPreambleSteps(84, 3)).toThrow(RelayCommandError);
   });
 });
 

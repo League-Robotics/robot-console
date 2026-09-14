@@ -4,7 +4,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { deviceIdToName, nameToValue, NAME_SPACE } from "./naming.js";
-import { base5, nameToRadioAddress, radioAddressToName, validateRadioAddress } from "./radioAddress.js";
+import {
+  base5,
+  nameToRadioAddress,
+  radioAddressToName,
+  validateHardwareRadioAddress,
+  validateRadioAddress,
+} from "./radioAddress.js";
 
 // ---------------------------------------------------------------------
 // Conformance fixture: read from the vendored submodule, never copied
@@ -148,37 +154,52 @@ describe("nameToRadioAddress / radioAddressToName full-space conformance", () =>
 });
 
 describe("validateRadioAddress", () => {
-  it("accepts every channel/group value radioAddressToName itself accepts", () => {
-    expect(validateRadioAddress(25, 1)).toBe(true);
-    expect(validateRadioAddress(73, 126)).toBe(true);
-    expect(validateRadioAddress(47, 60)).toBe(true);
+  // radio-robot-lib docs/design/radio-addressing.md (adopted 2026-09-13):
+  // channel = 11 + (n % 73), group = 15 + (n % 241).
+  it("accepts every pair a name derives", () => {
+    expect(validateRadioAddress(11, 15)).toBe(true); // zuzuz, n = 0
+    expect(validateRadioAddress(69, 247)).toBe(true); // tatat, n = 3124
+    expect(validateRadioAddress(48, 29)).toBe(true); // tovez
+    expect(validateRadioAddress(12, 30)).toBe(true); // gopiv
   });
 
-  it("rejects an even channel", () => {
-    expect(validateRadioAddress(26, 1)).toBe(false);
+  it("rejects a pair inside the ranges that belongs to no name", () => {
+    expect(validateRadioAddress(11, 16)).toBe(false);
   });
 
-  it("rejects a channel outside [25, 73]", () => {
-    expect(validateRadioAddress(23, 1)).toBe(false);
-    expect(validateRadioAddress(75, 1)).toBe(false);
+  it("rejects a channel outside [11, 83]", () => {
+    expect(validateRadioAddress(10, 15)).toBe(false);
+    expect(validateRadioAddress(84, 15)).toBe(false);
   });
 
-  it("rejects the reserved group 10", () => {
-    expect(validateRadioAddress(25, 10)).toBe(false);
-  });
-
-  it("rejects a group outside [1, 126]", () => {
-    expect(validateRadioAddress(25, 0)).toBe(false);
-    expect(validateRadioAddress(25, 127)).toBe(false);
+  it("rejects a group outside [15, 255]", () => {
+    expect(validateRadioAddress(11, 14)).toBe(false);
+    expect(validateRadioAddress(11, 256)).toBe(false);
   });
 
   it("never throws, unlike radioAddressToName", () => {
-    expect(() => validateRadioAddress(26, 10)).not.toThrow();
-    expect(() => radioAddressToName(26, 10)).toThrow();
+    expect(() => validateRadioAddress(11, 16)).not.toThrow();
+    expect(() => radioAddressToName(11, 16)).toThrow();
   });
 
   it("rejects a non-integer channel/group", () => {
-    expect(validateRadioAddress(25.5, 1)).toBe(false);
-    expect(validateRadioAddress(25, NaN)).toBe(false);
+    expect(validateRadioAddress(11.5, 15)).toBe(false);
+    expect(validateRadioAddress(11, NaN)).toBe(false);
+  });
+});
+
+describe("validateHardwareRadioAddress", () => {
+  it("accepts any pair the radio can be tuned to, derived or not", () => {
+    expect(validateHardwareRadioAddress(0, 0)).toBe(true);
+    expect(validateHardwareRadioAddress(83, 255)).toBe(true);
+    expect(validateHardwareRadioAddress(55, 108)).toBe(true); // a pinned pair
+    expect(validateHardwareRadioAddress(11, 16)).toBe(true); // no name derives it
+  });
+
+  it("rejects values outside the radio's limits or non-integers", () => {
+    expect(validateHardwareRadioAddress(84, 0)).toBe(false);
+    expect(validateHardwareRadioAddress(0, 256)).toBe(false);
+    expect(validateHardwareRadioAddress(-1, 0)).toBe(false);
+    expect(validateHardwareRadioAddress(1.5, 0)).toBe(false);
   });
 });

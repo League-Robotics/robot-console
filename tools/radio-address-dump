@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""radio-address-dump -- protocol v1 (microbit-radio-relay tools/radio-address-dump).
+
+    tools/radio-address-dump --list
+    tools/radio-address-dump <id> [1|2]
+
+Prints the canonical form of radio-robot-lib docs/design/radio-addressing.md
+for n = 0..3124 (v2 default, whose sha256 is the spec's D2; "1" for D1).
+
+This repository's implementations:
+    ts   packages/protocol/src/radioAddress.ts (nameToRadioAddress,
+         radioAddressToName) and naming.ts, run through tsx by
+         tools/radio-address-dump.ts. Exits 3 when node_modules/.bin/tsx is
+         missing (run npm ci first).
+"""
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+UNAVAILABLE = 3
+
+
+def dump_ts(version):
+    tsx = ROOT / "node_modules" / ".bin" / "tsx"
+    if not tsx.exists():
+        print("ts: node_modules/.bin/tsx not found -- run npm ci", file=sys.stderr)
+        return UNAVAILABLE
+    run = subprocess.run([str(tsx), str(ROOT / "tools" / "radio-address-dump.ts"), str(version)],
+                         capture_output=True, text=True)
+    sys.stdout.write(run.stdout)
+    sys.stderr.write(run.stderr)
+    return run.returncode
+
+
+IMPLEMENTATIONS = {"ts": dump_ts}
+
+
+def main(argv):
+    if len(argv) == 2 and argv[1] == "--list":
+        print("\n".join(IMPLEMENTATIONS))
+        return 0
+    if len(argv) not in (2, 3) or argv[1] not in IMPLEMENTATIONS:
+        print(__doc__, file=sys.stderr)
+        return 2
+    version = int(argv[2]) if len(argv) == 3 else 2
+    if version not in (1, 2):
+        print("version must be 1 or 2", file=sys.stderr)
+        return 2
+    return IMPLEMENTATIONS[argv[1]](version)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

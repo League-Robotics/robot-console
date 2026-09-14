@@ -1,25 +1,24 @@
 import { deviceIdToName, nameToValue } from "./naming.js";
 
 /**
- * name -> default `(channel, group)`.
+ * name <-> radio `(channel, group)`.
  *
- * Normative spec: `vendor/pxt-nezha-diffdrive/docs/radio-addressing.md`,
- * with the machine-readable contract
- * `vendor/pxt-nezha-diffdrive/docs/radio-address-vectors.json` (see the
- * full-space conformance test in `radioAddress.test.ts`). Direct port
- * of `microbit-radio-relay/server/src/mbrelay/naming.py`:
+ * Normative spec: radio-robot-lib `docs/design/radio-addressing.md`
+ * (adopted 2026-09-13), transcribed into
+ * `microbit-radio-relay/server/tests/radio-address-vectors.json` and
+ * pxt-nezha-diffdrive's `docs/radio-address-vectors.json` (the vendored
+ * copy `radioAddress.test.ts` reads). If this file and the spec
+ * disagree, the spec wins.
  *
  * ```
  * n       = base5(name)          # name[0] is the MOST significant digit
- * channel = 25 + 2 * (n % 25)    # 25, 27, ... 73
- * group   = 1 + n // 25          # then: if group >= 10, group += 1
+ * channel = 11 + (n % 73)        # 11 .. 83
+ * group   = 15 + (n % 241)       # 15 .. 255
  * ```
  *
- * Group 10 is never emitted — it is microbit-radio-relay's `!C` /
- * button-A/B space — so any group that lands on or past 10 is bumped
- * up by one (per `mbrelay/naming.py`'s `address()`:
- * `if group >= RESERVED_GROUP: group += 1`). This produces groups
- * `1..9` and `11..126`.
+ * 73 and 241 are coprime and 73 * 241 > 3125, so every name has a
+ * distinct pair. Channels 0-10 and groups 0-14 are never emitted.
+ * Replaces the retired 25-channel map (`25 + 2 * (n % 25)`).
  *
  * **Endianness trap**: `zuzuv` is `n = 1`. A reversed (little-endian)
  * encoder produces `vuzuz` for the same input and would pass a sampled
@@ -27,13 +26,17 @@ import { deviceIdToName, nameToValue } from "./naming.js";
  * `radioAddress.test.ts`.
  */
 
-const CHANNEL_MIN = 25;
-const CHANNEL_MAX = 73;
-const CHANNEL_STEP = 2;
-const CHANNEL_COUNT = 25;
-const GROUP_MIN = 1;
-const GROUP_MAX = 126;
-const RESERVED_GROUP = 10;
+const CHANNEL_MIN = 11;
+const CHANNEL_COUNT = 73;
+const GROUP_MIN = 15;
+const GROUP_COUNT = 241;
+/** 73^-1 mod 241: the reverse map's multiplier. */
+const CHANNEL_COUNT_INVERSE = 208;
+const NAME_COUNT = 3125;
+
+/** The radio's own limits: `setFrequencyBand` 0..83, `setGroup` 0..255. */
+export const RADIO_CHANNEL_MAX = 83;
+export const RADIO_GROUP_MAX = 255;
 
 export interface RadioAddress {
   channel: number;
@@ -52,50 +55,55 @@ export { nameToValue as base5 };
  */
 export function nameToRadioAddress(name: string): RadioAddress {
   const n = nameToValue(name);
-  const channel = CHANNEL_MIN + CHANNEL_STEP * (n % CHANNEL_COUNT);
-  let group = 1 + Math.floor(n / CHANNEL_COUNT);
-  if (group >= RESERVED_GROUP) {
-    group += 1;
-  }
-  return { channel, group };
+  return { channel: CHANNEL_MIN + (n % CHANNEL_COUNT), group: GROUP_MIN + (n % GROUP_COUNT) };
+}
+
+/** The name value a derived pair decodes to, or -1 when it has none. */
+function derivedValue(channel: number, group: number): number {
+  if (!Number.isInteger(channel) || !Number.isInteger(group)) return -1;
+  if (channel < CHANNEL_MIN || channel > CHANNEL_MIN + CHANNEL_COUNT - 1) return -1;
+  if (group < GROUP_MIN || group > GROUP_MIN + GROUP_COUNT - 1) return -1;
+  const c = channel - CHANNEL_MIN;
+  const g = group - GROUP_MIN;
+  const n = c + CHANNEL_COUNT * (((g - c + GROUP_COUNT) * CHANNEL_COUNT_INVERSE) % GROUP_COUNT);
+  return n < NAME_COUNT ? n : -1;
 }
 
 /**
  * `(channel, group)` -> the one name that derives it, the inverse of
- * `nameToRadioAddress`. Port of `mbrelay/naming.py`'s `radio_to_name()`.
- * Throws for any pair outside the derived space (e.g. a hand-dialled
- * `!CG` link, or group 10's reserved button space) — never falls back
- * to a guess.
+ * `nameToRadioAddress` (the spec's reverse map). Throws for any pair that
+ * belongs to no name — most pairs don't, including every hand-dialled
+ * `!CG` pair outside 11..83 / 15..255 — and never falls back to a guess.
  */
 export function radioAddressToName(channel: number, group: number): string {
-  if (channel % 2 === 0 || channel < CHANNEL_MIN || channel > CHANNEL_MAX) {
-    throw new Error(`channel ${channel} is not a derived address`);
+  const n = derivedValue(channel, group);
+  if (n < 0) {
+    throw new Error(`(${channel}, ${group}) is not a derived address`);
   }
-  if (group === RESERVED_GROUP || group < GROUP_MIN || group > GROUP_MAX) {
-    throw new Error(`group ${group} is not a derived address`);
-  }
-  const g = group > RESERVED_GROUP ? group - 1 : group;
-  const n = CHANNEL_COUNT * (g - 1) + (channel - CHANNEL_MIN) / CHANNEL_STEP;
   return deviceIdToName(n);
 }
 
 /**
- * Non-throwing counterpart to {@link radioAddressToName}'s own range
- * check: is `(channel, group)` a well-formed *derived* radio address
- * (odd channel in `[25, 73]`, group in `[1, 126]` excluding the
- * reserved `10`)? Exported so a caller that just wants to validate an
- * address before building a `!CG` line, or before persisting a DB row,
- * does not need to wrap a throwing call in try/catch just to get a
- * boolean (`radioAddressToName`/`nameToRadioAddress` stay throwing --
- * they also have real work to do beyond validation, and their callers
- * already expect an exception for a caller-error case).
+ * Is `(channel, group)` a pair some name derives (channel 11..83, group
+ * 15..255, and the reverse map lands on a name)? Non-throwing
+ * counterpart to {@link radioAddressToName}. This is the DERIVED space;
+ * a relay tune or a registry pin must accept any hardware-valid pair —
+ * use {@link validateHardwareRadioAddress} for that.
  */
 export function validateRadioAddress(channel: number, group: number): boolean {
-  if (!Number.isInteger(channel) || channel % 2 === 0 || channel < CHANNEL_MIN || channel > CHANNEL_MAX) {
-    return false;
-  }
-  if (!Number.isInteger(group) || group === RESERVED_GROUP || group < GROUP_MIN || group > GROUP_MAX) {
-    return false;
-  }
-  return true;
+  return derivedValue(channel, group) >= 0;
+}
+
+/**
+ * Is `(channel, group)` something the radio can be tuned to (channel
+ * 0..83, group 0..255)? A robot pinned in the registry, or moved by hand
+ * after a name collision, sits outside the derived space but is still a
+ * legal address.
+ */
+export function validateHardwareRadioAddress(channel: number, group: number): boolean {
+  return (
+    Number.isInteger(channel) && Number.isInteger(group) &&
+    channel >= 0 && channel <= RADIO_CHANNEL_MAX &&
+    group >= 0 && group <= RADIO_GROUP_MAX
+  );
 }

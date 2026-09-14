@@ -16,7 +16,9 @@ ENTRY="$ROOT/app/bin/robot-console-supervisor.js"
 DEFAULT_PORT=4795
 PORT="${ROBOT_CONSOLE_PORT:-$DEFAULT_PORT}"
 URL="http://localhost:$PORT/"
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/robot-console"
+STATE_DIR="${ROBOT_CONSOLE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/robot-console}"
+SYSTEM_ENV_FILE=/etc/robot-console/robot-console.env
+USER_ENV_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/robot-console/robot-console.env"
 CHROME_PROFILE="${XDG_DATA_HOME:-$HOME/.local/share}/robot-console/chrome"
 WAIT_SECONDS="${ROBOT_CONSOLE_WAIT_SECONDS:-15}"
 
@@ -38,6 +40,8 @@ Environment:
 
 Server logs: journalctl --user -u robot-console
              (or $STATE_DIR/supervisor.log without systemd)
+Firmware sources: $SYSTEM_ENV_FILE
+                  (per user: $USER_ENV_FILE)
 EOF
 }
 
@@ -70,12 +74,30 @@ wait_for_server() {
   ' "$PORT" "$1"
 }
 
+# Export the KEY=value assignments of a robot-console env file, like the
+# unit's EnvironmentFile=. Skipped if unreadable; skipped with a warning if it
+# does not source cleanly (checked in a subshell first, since a sourcing error
+# would otherwise end this script).
+load_env_file() {
+  [ -r "$1" ] || return 0
+  if (set -a; . "$1") >/dev/null 2>&1; then
+    set -a
+    . "$1"
+    set +a
+  else
+    echo "robot-console: ignoring $1 (not a valid KEY=value file)" >&2
+  fi
+}
+
 start_server() {
   if [ "$PORT" = "$DEFAULT_PORT" ] && command -v systemctl >/dev/null 2>&1 &&
     systemctl --user start robot-console.service >/dev/null 2>&1; then
     how="systemd user service (journalctl --user -u robot-console)"
     return 0
   fi
+  # Same firmware sources, in the same order, as the unit's EnvironmentFile=.
+  load_env_file "$SYSTEM_ENV_FILE"
+  load_env_file "$USER_ENV_FILE"
   mkdir -p "$STATE_DIR"
   log="$STATE_DIR/supervisor.log"
   how="background process (log: $log)"

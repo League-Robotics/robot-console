@@ -11,7 +11,7 @@ set -euo pipefail
 
 : "${NODE_VERSION:?}" "${NODE_TARBALL:?}" "${NODE_SHA256:?}"
 : "${NFPM_TARBALL:?}" "${NFPM_SHA256:?}" "${NFPM_VERSION:?}"
-: "${ROBOT_CONSOLE_VERSION:?}" "${ROBOT_CONSOLE_MAINTAINER:?}"
+: "${ROBOT_CONSOLE_VERSION:?}" "${ROBOT_CONSOLE_DEB_RELEASE:?}" "${ROBOT_CONSOLE_MAINTAINER:?}"
 : "${GIT_SHA:?}" "${SOURCE_DATE_EPOCH:?}" "${BASE_IMAGE:?}"
 PACKAGING_DIRTY="${PACKAGING_DIRTY:-unknown}"
 
@@ -88,6 +88,8 @@ step "BUILD_INFO"
 cat >"$STAGE/BUILD_INFO" <<EOF
 name=robot-console
 version=$ROBOT_CONSOLE_VERSION
+deb_release=$ROBOT_CONSOLE_DEB_RELEASE
+deb_version=$ROBOT_CONSOLE_VERSION-$ROBOT_CONSOLE_DEB_RELEASE
 git_sha=$GIT_SHA
 git_commit_time=$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ)
 packaging_dirty=$PACKAGING_DIRTY
@@ -106,7 +108,7 @@ find /stage -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 du -sh "$STAGE/node" "$APP/node_modules" "$APP/packages" "$STAGE"
 
 step "nfpm pkg"
-DEB="/out/robot-console_${ROBOT_CONSOLE_VERSION}_amd64.deb"
+DEB="/out/robot-console_${ROBOT_CONSOLE_VERSION}-${ROBOT_CONSOLE_DEB_RELEASE}_amd64.deb"
 rm -f "$DEB"
 nfpm pkg --config /packaging/nfpm.yaml --packager deb --target "$DEB"
 ls -l "$DEB"

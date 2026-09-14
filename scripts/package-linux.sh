@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build dist/robot-console_<version>_amd64.deb for Ubuntu 24.04 x86_64.
+# Build dist/robot-console_<version>-<release>_amd64.deb for Ubuntu 24.04 x86_64.
 #
 # Runs on a workstation with Docker (macOS or Linux, any CPU: the build
 # container is linux/amd64, emulated if needed). The app is built from
@@ -10,6 +10,10 @@
 # Usage: scripts/package-linux.sh [--test] [--test-only] [--help]
 #   --test       build, then run packaging/linux/test-install.sh on the result
 #   --test-only  skip the build; test the existing dist/ package
+#
+# Environment:
+#   ROBOT_CONSOLE_DEB_RELEASE  Debian revision (default 1); bump it to rebuild
+#                              the same app version as an apt upgrade
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -26,7 +30,7 @@ for arg in "$@"; do
   case "$arg" in
     --test) run_test=1 ;;
     --test-only) run_build=0 run_test=1 ;;
-    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -63,7 +67,11 @@ upstream_lists() {
 }
 
 VERSION=$(git -C "$ROOT" show HEAD:package.json | sed -n 's/^  "version": "\([^"]*\)",*$/\1/p' | head -1)
-DEB="$OUT/robot-console_${VERSION}_amd64.deb"
+DEB_RELEASE="${ROBOT_CONSOLE_DEB_RELEASE:-1}"
+case "$DEB_RELEASE" in
+  '' | *[!0-9]* | 0) echo "ROBOT_CONSOLE_DEB_RELEASE must be a positive integer, got '$DEB_RELEASE'" >&2; exit 2 ;;
+esac
+DEB="$OUT/robot-console_${VERSION}-${DEB_RELEASE}_amd64.deb"
 
 if [ "$run_build" = 1 ]; then
   start=$(date +%s)
@@ -96,7 +104,8 @@ if [ "$run_build" = 1 ]; then
     -v "$OUT:/out" \
     -e NODE_VERSION -e NODE_TARBALL -e NODE_SHA256 \
     -e NFPM_VERSION -e NFPM_TARBALL -e NFPM_SHA256 -e BASE_IMAGE \
-    -e ROBOT_CONSOLE_VERSION="$VERSION" -e ROBOT_CONSOLE_MAINTAINER="$MAINTAINER" \
+    -e ROBOT_CONSOLE_VERSION="$VERSION" -e ROBOT_CONSOLE_DEB_RELEASE="$DEB_RELEASE" \
+    -e ROBOT_CONSOLE_MAINTAINER="$MAINTAINER" \
     -e GIT_SHA="$GIT_SHA" -e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
     -e PACKAGING_DIRTY="$PACKAGING_DIRTY" \
     "$BASE_IMAGE" bash /packaging/build-in-container.sh
@@ -104,7 +113,7 @@ if [ "$run_build" = 1 ]; then
   size=$(wc -c <"$DEB" | tr -d ' ')
   echo
   echo "package: $DEB"
-  echo "version: $VERSION  git: $GIT_SHA"
+  echo "version: $VERSION-$DEB_RELEASE  git: $GIT_SHA"
   echo "size:    $size bytes ($((size / 1024 / 1024)) MiB)"
   echo "sha256:  $(sha256 "$DEB")"
   echo "build:   $(($(date +%s) - start)) s"

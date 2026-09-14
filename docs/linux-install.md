@@ -71,6 +71,8 @@ build (version, git commit, Node version).
 | Launcher | `/usr/bin/robot-console` |
 | User service | `/usr/lib/systemd/user/robot-console.service` |
 | USB permission rule | `/usr/lib/udev/rules.d/70-robot-console-microbit.rules` |
+| Firmware release sources (all users) | `/etc/robot-console/robot-console.env` (see "Firmware sources") |
+| Firmware release sources (one user) | `~/.config/robot-console/robot-console.env` (optional) |
 | App menu entry and icons | `/usr/share/applications/robot-console.desktop`, `/usr/share/icons/hicolor/*/apps/robot-console.*` |
 | Supervisor and host log | `journalctl --user -u robot-console` (as the student) |
 | Log when started without systemd | `~/.local/state/robot-console/supervisor.log` |
@@ -95,6 +97,43 @@ The status endpoint returns JSON:
 
 (`curl` is not installed on a default Ubuntu desktop: `sudo apt install curl`,
 or use `wget -qO- localhost:4795/__supervisor/status`.)
+
+## Firmware sources
+
+The Flash buttons offer release builds from the GitHub repositories named in
+`/etc/robot-console/robot-console.env`:
+
+```sh
+ROBOT_CONSOLE_RELAY_FIRMWARE=https://github.com/League-Robotics/microbit-radio-relay:latest
+ROBOT_CONSOLE_ROBOT_FIRMWARE=https://github.com/League-Robotics/nezha-robot-template:latest
+```
+
+The format is `https://github.com/<owner>/<repo>:<release tag>`, or `:latest`
+for the newest release. This is a package configuration file, so your edits
+survive upgrades and reinstalls. `apt purge` deletes it. Put only public
+values in it: the file is readable by every user. WiFi credentials never go
+here.
+
+- **Applying edits.** The service reads the file when it starts, and each
+  robot host it starts gets those values. Closing the windows and waiting is
+  **not** enough. Restart the service as each logged-in user, or log out and
+  back in:
+
+  ```sh
+  systemctl --user restart robot-console
+  ```
+
+- **One user.** To give one user different sources, create
+  `~/.config/robot-console/robot-console.env` in the same format. It is read
+  after the system file, and the keys it sets win for that user. Restart the
+  service to apply it.
+- **Store state `.env`.** The per-user state file
+  `~/.local/state/robot-console/.env` is only consulted for a key that neither
+  file above sets. On a packaged install that means it has no effect for these
+  two keys unless you delete their lines from `/etc/robot-console/robot-console.env`.
+- **Deleting a line.** A value from an earlier start stays in the user's
+  robot store, so deleting a line doesn't clear it. To change a value, set a
+  new one.
 
 ## Checking USB permissions
 
@@ -121,7 +160,9 @@ Removing the package does the following:
 
 - stops running instances for logged-in users;
 - disables the service;
-- deletes `/opt/robot-console` and the files above.
+- deletes `/opt/robot-console` and the files above, except
+  `/etc/robot-console/robot-console.env`. `apt remove` keeps that file;
+  `apt purge` deletes it too.
 
 Per-user state in home directories (`~/.local/state/robot-console`,
 `~/.local/share/robot-console`) is kept. Delete it by hand if you don't need
@@ -151,6 +192,19 @@ google.com/chrome). The launcher looks for `google-chrome`,
 `google-chrome-stable`, `chromium` and `chromium-browser`, in that order. It
 falls back to `xdg-open`, which opens a normal browser tab. The Chromium snap
 may refuse the separate profile directory, so use Google Chrome.
+
+**The Flash buttons have nothing to offer ("not configured").** Check that
+`/etc/robot-console/robot-console.env` exists and has both lines. Then check
+what the running service actually got:
+
+```sh
+tr '\0' '\n' </proc/$(systemctl --user show -p MainPID --value robot-console)/environ | grep FIRMWARE
+```
+
+If the variables are missing there, the service started before the file
+existed or was edited. Run `systemctl --user restart robot-console`. A
+per-user `~/.config/robot-console/robot-console.env` overrides the system
+file, so check that too.
 
 **The micro:bit is not found, or flashing fails with a permission error.**
 Unplug and replug the board. If that doesn't help:

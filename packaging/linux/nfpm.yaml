@@ -7,6 +7,9 @@ arch: amd64
 platform: linux
 version: ${ROBOT_CONSOLE_VERSION}
 version_schema: none
+# Debian revision (package version <version>-<release>): bump it to rebuild
+# the same app version as an apt upgrade. Set by scripts/package-linux.sh.
+release: ${ROBOT_CONSOLE_DEB_RELEASE}
 section: education
 priority: optional
 maintainer: ${ROBOT_CONSOLE_MAINTAINER}
@@ -52,6 +55,14 @@ contents:
 
   - src: /packaging/robot-console.desktop
     dst: /usr/share/applications/robot-console.desktop
+    file_info:
+      mode: 0644
+
+  # Firmware release sources for the Flash buttons. A conffile: local edits
+  # survive upgrades and reinstalls; purge removes it.
+  - src: /packaging/robot-console.env
+    dst: /etc/robot-console/robot-console.env
+    type: config|noreplace
     file_info:
       mode: 0644
 

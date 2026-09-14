@@ -30,6 +30,9 @@ ICON_192=/usr/share/icons/hicolor/192x192/apps/robot-console.png
 ICON_512=/usr/share/icons/hicolor/512x512/apps/robot-console.png
 LAUNCHER=/usr/bin/robot-console
 WANTS=/etc/systemd/user/default.target.wants/robot-console.service
+CONF=/etc/robot-console/robot-console.env
+RELAY_SRC=https://github.com/League-Robotics/microbit-radio-relay:latest
+ROBOT_SRC=https://github.com/League-Robotics/nezha-robot-template:latest
 IDLE_MS=3000
 RESULTS=/tmp/results
 export DEBIAN_FRONTEND=noninteractive
@@ -144,7 +147,7 @@ wait_host_state() { # state seconds
 # /tmp/ws-snap-TAG on the first snapshot, closes when /tmp/ws-close-TAG
 # appears, and writes /tmp/ws-done-TAG once closed.
 ws_open() {
-  rm -f "/tmp/ws-snap-$1" "/tmp/ws-close-$1" "/tmp/ws-done-$1"
+  rm -f "/tmp/ws-snap-$1" "/tmp/ws-fw-$1" "/tmp/ws-close-$1" "/tmp/ws-done-$1"
   as_student "$NODE" -e '
     const fs = require("node:fs");
     const [port, tag] = process.argv.slice(1);
@@ -152,7 +155,11 @@ ws_open() {
     ws.onerror = (e) => { console.error(`ws ${tag} error`, e.message ?? ""); };
     ws.onmessage = (ev) => {
       const msg = JSON.parse(String(ev.data));
-      if (msg.type === "snapshot" && !fs.existsSync(`/tmp/ws-snap-${tag}`))
+      if (msg.type !== "snapshot") return;
+      // Firmware field of the latest snapshot (the first snapshot can precede
+      // the release lookups of the firmware watcher, so checks poll this file).
+      fs.writeFileSync(`/tmp/ws-fw-${tag}`, JSON.stringify(msg.firmware ?? null));
+      if (!fs.existsSync(`/tmp/ws-snap-${tag}`))
         fs.writeFileSync(`/tmp/ws-snap-${tag}`, Object.keys(msg).join(",") + "\n");
     };
     ws.onclose = (ev) => { fs.writeFileSync(`/tmp/ws-done-${tag}`, `${ev.code}\n`); process.exit(0); };
@@ -166,6 +173,41 @@ not_installed() { ! installed; }
 mode_is() { [ "$(stat -c %a "$2")" = "$1" ]; }
 no_native_errors() { ! grep -Eq 'ERR_DLOPEN|cannot open shared object' "$1"; }
 at_most() { [ "$1" -le "$2" ]; }
+dpkg_status_is() { [ "$(dpkg-query -W -f='${db:Status-Status}' robot-console 2>/dev/null)" = "$1" ]; }
+conffile_mode_ok() { [ "$(stat -c '%a %U:%G' "$CONF")" = "644 root:root" ]; }
+conffile_values_ok() { # exactly the two public firmware sources, nothing else assigned
+  grep -qxF "ROBOT_CONSOLE_RELAY_FIRMWARE=$RELAY_SRC" "$CONF" &&
+    grep -qxF "ROBOT_CONSOLE_ROBOT_FIRMWARE=$ROBOT_SRC" "$CONF" &&
+    [ "$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' "$CONF")" = 2 ]
+}
+conffile_listed() {
+  local c
+  c=$(dpkg-query -W -f='${Conffiles}\n' robot-console)
+  echo "    Conffiles:$c"
+  grep -qF " $CONF " <<<"$c"
+}
+# firmware_ok TAG JS-EXPRESSION: poll the latest snapshot's firmware field
+# (fw) from that client for up to 30 s until the expression holds. The first
+# snapshot is sent before the firmware watcher has resolved the release
+# sources, so a single-snapshot check would be wrong. (The host's environment
+# can't be inspected directly: under amd64 emulation /proc/<pid>/environ of
+# another process is unreadable even for root, so the snapshot is the proof.)
+firmware_ok() {
+  "$NODE" -e '
+    const fs = require("node:fs");
+    const [file, expr] = process.argv.slice(1);
+    const test = new Function("fw", `return (${expr});`);
+    const deadline = Date.now() + 30000;
+    let last = "(no snapshot)";
+    (function poll() {
+      try {
+        last = fs.readFileSync(file, "utf8");
+        if (test(JSON.parse(last))) { console.log("    firmware:", last); process.exit(0); }
+      } catch {}
+      if (Date.now() >= deadline) { console.log("    firmware (last seen):", last); process.exit(1); }
+      setTimeout(poll, 250);
+    })();' "/tmp/ws-fw-$1" "$2"
+}
 
 ########################################################################
 log "Phase A: install into a minimal container (nothing running)"
@@ -186,6 +228,17 @@ for f in "$NODE" "$ROOT/node/LICENSE" "$ROOT/BUILD_INFO" "$APP/package.json" "$S
   check "A: ships $f" test -e "$f"
 done
 check "A: BUILD_INFO entry is the supervisor" grep -qx 'entry=bin/robot-console-supervisor.js' "$ROOT/BUILD_INFO"
+deb_version=$(sed -n 's/^deb_version=//p' "$ROOT/BUILD_INFO")
+check "A: dpkg Version equals BUILD_INFO deb_version ($deb_version)" \
+  test "$(dpkg-query -W -f='${Version}' robot-console)" = "$deb_version"
+check "A: Debian revision is part of the version (<version>-<release>)" \
+  test "$deb_version" = "$(sed -n 's/^version=//p' "$ROOT/BUILD_INFO")-$(sed -n 's/^deb_release=//p' "$ROOT/BUILD_INFO")"
+log "firmware-source conffile"
+cat "$CONF"
+check "A: ships the conffile $CONF" test -f "$CONF"
+check "A: $CONF is 0644 root:root" conffile_mode_ok
+check "A: $CONF sets exactly the relay and robot firmware release sources" conffile_values_ok
+check "A: dpkg lists $CONF in Conffiles" conffile_listed
 check "A: every packaged path is owned by root:root" \
   test -z "$(dpkg -L robot-console | xargs -d '\n' stat -c '%U:%G %n' | grep -v '^root:root ')"
 check "A: nothing under /opt/robot-console is group/world-writable" \
@@ -215,6 +268,8 @@ check "A: unit ExecStart runs the supervisor with the bundled node" test "$exec_
 check "A: unit has Restart=on-failure" grep -qx 'Restart=on-failure' "$UNIT"
 check "A: unit has TimeoutStopSec=150" grep -qx 'TimeoutStopSec=150' "$UNIT"
 check "A: unit leaves KillMode at the default (control-group)" sh -c "! grep -q '^KillMode=' $UNIT"
+check "A: unit EnvironmentFile= lines: -$CONF, then the per-user -%E/robot-console/robot-console.env" \
+  test "$(sed -n 's/^EnvironmentFile=//p' "$UNIT" | tr '\n' ' ')" = "-$CONF -%E/robot-console/robot-console.env "
 check "A: launcher ENTRY is the supervisor" grep -qxF 'ENTRY="$ROOT/app/bin/robot-console-supervisor.js"' "$LAUNCHER"
 
 useradd -m -s /bin/bash student
@@ -236,7 +291,17 @@ check "A: native node-hid + @serialport/bindings-cpp load and enumerate; node:sq
 
 log "supervisor: the unit's ExecStart with ROBOT_CONSOLE_IDLE_MS=$IDLE_MS"
 state=$(as_student mktemp -d)
-as_student sh -c "ROBOT_CONSOLE_STATE_DIR=$state ROBOT_CONSOLE_IDLE_MS=$IDLE_MS exec $exec_start" \
+# Apply the unit's EnvironmentFile= list the way systemd does: in order, "-"
+# marks a file optional (%-specifier paths are per-user files the student
+# does not have), variables exported into the supervisor's environment.
+env_load="set -a;"
+for f in $(sed -n 's/^EnvironmentFile=-\{0,1\}//p' "$UNIT"); do
+  case "$f" in *%*) continue ;; esac
+  env_load="$env_load [ -r $f ] && . $f;"
+done
+env_load="$env_load set +a;"
+echo "    EnvironmentFile simulation: $env_load"
+as_student sh -c "$env_load ROBOT_CONSOLE_STATE_DIR=$state ROBOT_CONSOLE_IDLE_MS=$IDLE_MS exec $exec_start" \
   >/tmp/supervisor.log 2>&1 &
 sup_wrapper=$!
 check "A: supervisor answers on 127.0.0.1:$PORT within 90 s" wait_http 90
@@ -275,6 +340,13 @@ check "A(b): host listens on 127.0.0.1:$HOST_PORT" listening "$HOST_PORT"
 check "A(b): host wrote its store into ROBOT_CONSOLE_STATE_DIR" test -n "$(ls -A "$state")"
 ls -l "$state"
 check "A(b): no native-module load errors (ERR_DLOPEN) in the supervisor/host log" no_native_errors /tmp/supervisor.log
+# The fresh state dir has no .env and this is no checkout, so the supervisor's
+# environment (the unit's EnvironmentFile=, passed on to the host) is the only
+# possible source of these values.
+check "A(b): host snapshot reaches firmware.relay.configured === true and firmware.robot.configured === true (30 s)" \
+  firmware_ok c1 'fw.relay.configured === true && fw.robot.configured === true'
+check "A(b): snapshot firmware sources are the conffile's repositories (env passed supervisor -> host)" firmware_ok c1 \
+  'fw.relay.repoUrl === "https://github.com/League-Robotics/microbit-radio-relay" && fw.robot.repoUrl === "https://github.com/League-Robotics/nezha-robot-template"'
 
 log "(d) reconnect inside the ${IDLE_MS} ms grace keeps the host"
 check "A(d): client c1 disconnects" ws_close c1
@@ -320,6 +392,9 @@ check "A: robot-console --version prints BUILD_INFO" sh -c "runuser -u student -
 check "A: apt-get remove" apt-get remove -y -q robot-console
 check "A: package no longer installed" not_installed
 check "A: /opt/robot-console removed" test ! -e "$ROOT"
+conffile_kept_after_remove() { [ -f "$CONF" ] && dpkg_status_is config-files; }
+check "A: remove keeps $CONF (package in dpkg config-files state)" conffile_kept_after_remove
+echo "    dpkg status after remove: $(dpkg-query -W -f='${db:Status-Status}' robot-console 2>&1)"
 check "A: launcher, unit, rule, desktop file, icons removed" \
   sh -c "! ls $LAUNCHER $UNIT $RULES $DESKTOP $ICON_SVG $ICON_192 $ICON_512 2>/dev/null | grep -q ."
 
@@ -329,6 +404,13 @@ apt-get install -y -q --no-install-recommends systemd udev desktop-file-utils >/
 check "B: apt-get install ./deb with systemctl/udevadm present" apt-get install -y -q "$DEB"
 check "B: postinst enabled the user unit globally" test -L "$WANTS"
 ls -l "$WANTS"
+check "B: dpkg lists $CONF in Conffiles" conffile_listed
+echo '# local edit: lab admin' >>"$CONF"
+check "B: apt-get install ./deb again (same version) succeeds" apt-get install -y -q "$DEB"
+check "B: apt-get install --reinstall ./deb (unpacks the package again) succeeds" apt-get install --reinstall -y -q "$DEB"
+check "B: the locally edited conffile survives the reinstall (noreplace)" grep -qxF '# local edit: lab admin' "$CONF"
+check "B: no .dpkg-new/.dpkg-dist/.dpkg-old copies next to the conffile" \
+  test -z "$(ls /etc/robot-console | grep -F .dpkg-)"
 check "B: udevadm verify accepts the rules file" udevadm verify "$RULES"
 check "B: systemd-analyze verify accepts the user unit" systemd-analyze verify --man=no "$UNIT"
 check "B: desktop-file-validate accepts the .desktop file" desktop-file-validate "$DESKTOP"
@@ -343,6 +425,10 @@ EOF
 chmod 0755 /tmp/fakebin/google-chrome
 student_path="/tmp/fakebin:$student_path"
 SUP_LOG=/home/student/.local/state/robot-console/supervisor.log
+OVERRIDE_SRC=https://github.com/example/override-robot:v1
+USER_CONF=/home/student/.config/robot-console/robot-console.env
+as_student sh -c "mkdir -p /home/student/.config/robot-console &&
+  printf 'ROBOT_CONSOLE_ROBOT_FIRMWARE=%s\n' '$OVERRIDE_SRC' >$USER_CONF"
 check "B(f): launcher exits 0 after starting the server and opening Chrome" timeout 120 \
   runuser -u student -- env -i HOME=/home/student USER=student LOGNAME=student PATH="$student_path" \
   ROBOT_CONSOLE_WAIT_SECONDS=90 "$LAUNCHER"
@@ -362,6 +448,11 @@ check "B(f): second launch finds the running server and opens Chrome again" sh -
   timeout 30 runuser -u student -- env -i HOME=/home/student USER=student PATH='$student_path' \
     ROBOT_CONSOLE_WAIT_SECONDS=5 $LAUNCHER && test -s /tmp/chrome-args"
 check "B(f): still exactly one supervisor and no host after two launches" one_supervisor_no_host
+ws_open f1
+check "B(f): a window's WebSocket starts the host and receives a snapshot" wait_file /tmp/ws-snap-f1 90
+check "B(f): snapshot: relay from the conffile, robot from the per-user file, both configured" firmware_ok f1 \
+  'fw.relay.configured === true && fw.robot.configured === true && JSON.stringify(fw.relay).includes("League-Robotics/microbit-radio-relay") && JSON.stringify(fw.robot).includes("example/override-robot")'
+ws_close f1 >/dev/null
 echo "launcher log (tail):"
 tail -n 5 "$SUP_LOG" 2>/dev/null | sed 's/^/    /'
 stop_all
@@ -370,6 +461,7 @@ check "B: apt-get purge" apt-get purge -y -q robot-console
 check "B: package no longer installed" not_installed
 check "B: global enable symlink removed" test ! -e "$WANTS"
 check "B: /opt/robot-console removed" test ! -e "$ROOT"
+check "B: purge removes $CONF and /etc/robot-console" test ! -e /etc/robot-console
 
 ########################################################################
 log "SUMMARY"

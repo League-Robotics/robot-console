@@ -8,9 +8,9 @@
  * ## Why this validation is wider than `@robot-console/protocol`'s own
  *
  * `@robot-console/protocol`'s `validateRadioAddress` restricts to the
- * *derived* address space (odd channel in `[25, 73]`, group in `[1, 126]`
- * excluding the reserved `10`) — the space `nameToRadioAddress` can
- * actually produce. A user-dialled override is not limited to that
+ * *derived* address space (channel in `[11, 83]`, group in `[15, 255]`,
+ * and only pairs some name decodes to) — the space `nameToRadioAddress`
+ * can actually produce. A user-dialled override is not limited to that
  * space: an instructor may want any hardware-valid nRF24 address, not
  * only one a five-letter name could derive. So this module's own
  * {@link isValidRadioOverride} checks the raw hardware range instead

@@ -88,8 +88,12 @@ significant lands at position `4-i`. Port of
 ### 3.2 `radioAddress.ts` — name → `(channel, group)`
 
 `n = base5(name)` with `name[0]` **most** significant.
-`channel = 25 + 2*(n%25)`. `group = 1 + n/25`, bumped past 10. Port of
-`microbit-radio-relay/server/src/mbrelay/naming.py`.
+`channel = 11 + (n % 73)` (11-83), `group = 15 + (n % 241)` (15-255). The
+normative spec is radio-robot-lib `docs/design/radio-addressing.md`
+(adopted 2026-09-13, replacing `25 + 2*(n%25)`); `radioAddressToName` is
+its reverse map. Same arithmetic as
+`microbit-radio-relay/server/src/mbrelay/naming.py`, checked by
+`tools/radio-address-dump ts` against the spec's D2 digest.
 
 **Endianness trap**: `zuzuv` is n=1; a reversed encoder says `vuzuz` and
 would pass a sampled table. This is why verification (§9) requires the

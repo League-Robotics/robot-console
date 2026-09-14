@@ -202,7 +202,7 @@ function buildDevice(
  * fields and no name `nameToRadioAddress` can parse -- see this
  * module's "Radio address resolution" doc comment. Not a valid derived
  * address (`radioAddressToName` would reject `group: 0`, which is
- * outside `[1, 126]`), deliberately: this device has no radio identity
+ * outside `[15, 255]`), deliberately: this device has no radio identity
  * at all, so the value must never be mistaken for one. */
 const NO_RADIO_IDENTITY = { channel: 0, group: 0 } as const;
 

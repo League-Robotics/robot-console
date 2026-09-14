@@ -1,0 +1,66 @@
+# nfpm config for the robot-console Ubuntu 24.04 amd64 package.
+# Driven by packaging/linux/build-in-container.sh; paths are container paths:
+#   /stage     staged /opt/robot-console tree (Node runtime + app)
+#   /packaging this directory
+name: robot-console
+arch: amd64
+platform: linux
+version: ${ROBOT_CONSOLE_VERSION}
+version_schema: none
+section: education
+priority: optional
+maintainer: ${ROBOT_CONSOLE_MAINTAINER}
+homepage: https://github.com/League-Robotics/robot-console
+description: |-
+  Robot Console: manage, flash and drive micro:bit robots
+  Browser-based console for micro:bit robots on the Elecfreaks Nezha
+  differential-drive board. Bundles its own Node.js runtime under
+  /opt/robot-console, runs as a per-user systemd service on
+  127.0.0.1:4795 and opens as a Google Chrome app window. A udev rule
+  grants the logged-in user access to micro:bit (DAPLink) USB devices.
+umask: 0o022
+
+# libudev1 + libusb-1.0-0: both node-hid prebuilds (hidraw and libusb
+# backends) link libudev.so.1 and libusb-1.0.so.0. udev: serialport lists
+# ports by running `udevadm info -e`.
+depends:
+  - libudev1
+  - libusb-1.0-0
+  - udev
+recommends:
+  - google-chrome-stable
+
+contents:
+  - src: /stage/opt/robot-console
+    dst: /opt/robot-console
+    type: tree
+
+  - src: /packaging/robot-console.sh
+    dst: /usr/bin/robot-console
+    file_info:
+      mode: 0755
+
+  - src: /packaging/robot-console.service
+    dst: /usr/lib/systemd/user/robot-console.service
+    file_info:
+      mode: 0644
+
+  - src: /packaging/70-robot-console-microbit.rules
+    dst: /usr/lib/udev/rules.d/70-robot-console-microbit.rules
+    file_info:
+      mode: 0644
+
+  - src: /packaging/robot-console.desktop
+    dst: /usr/share/applications/robot-console.desktop
+    file_info:
+      mode: 0644
+
+  - src: /packaging/robot-console.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/robot-console.svg
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: /packaging/postinst.sh
+  preremove: /packaging/prerm.sh
+  postremove: /packaging/postrm.sh

@@ -1,0 +1,15 @@
+[Unit]
+Description=Robot Console (micro:bit robot manager, 127.0.0.1:4795)
+
+[Service]
+Type=simple
+# PHASE 1: runs the plain host directly. Phase 2 switches this to
+# /opt/robot-console/app/bin/robot-console-supervisor.js (keep in sync with
+# ENTRY in robot-console.sh).
+ExecStart=/opt/robot-console/node/bin/node /opt/robot-console/app/bin/robot-console.js --no-open
+Environment=ROBOT_CONSOLE_NO_OPEN=1
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

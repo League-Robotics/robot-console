@@ -1,0 +1,20 @@
+# robot-console: let the logged-in desktop user use BBC micro:bit boards
+# without sudo or group membership.
+#
+# micro:bit USB interface chip is Arm DAPLink, USB vendor id 0d28
+# (product 0204). robot-console uses:
+#   - hidraw  CMSIS-DAP over HID, for flashing and SWD (node-hid, hidraw backend)
+#   - tty     CDC ACM serial (/dev/ttyACM*), for the console
+#   - usb     the raw USB device node (libusb-style access), harmless to grant
+#
+# TAG+="uaccess" makes systemd-logind add an ACL for the user of the active
+# local seat. It must be set before 73-seat-late.rules, hence the 70- prefix.
+# ATTRS{} (plural) matches the attribute on the device or any parent, which
+# is how a hidraw or tty node reaches its USB device's idVendor.
+#
+# ID_MM_DEVICE_IGNORE keeps ModemManager from probing the serial port with
+# AT commands (it must be set before ModemManager's 77-mm-* rules).
+
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0d28", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0d28", TAG+="uaccess"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0d28", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"

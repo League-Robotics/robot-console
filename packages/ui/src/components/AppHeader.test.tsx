@@ -55,6 +55,7 @@ function device(
     name: "zeguz",
     kind: "robot",
     role: null,
+    commonName: null,
     program: null,
     version: null,
     owned: true,

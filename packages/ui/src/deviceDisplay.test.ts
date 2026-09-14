@@ -57,6 +57,7 @@ function device(overrides: Partial<Omit<SnapshotDevice, "links">> & { links?: Sn
     name: "zeguz",
     kind: "robot",
     role: null,
+    commonName: null,
     program: null,
     version: null,
     owned: true,
@@ -170,6 +171,34 @@ describe("nameDisplay / roleDisplay", () => {
 
   it("018-010 item 3: a robot with no announced role falls back to a plain 'Role unknown'", () => {
     expect(roleDisplay(device({ kind: "robot", role: null }))).toBe("Role unknown");
+  });
+
+  it("018-016: a robot with commonName, role, and version all known joins them with ' · '", () => {
+    expect(roleDisplay(device({ commonName: "robot", role: "NEZHA2", version: "1.20260912.8" }))).toBe(
+      "robot · NEZHA2 · 1.20260912.8",
+    );
+  });
+
+  it("018-016: a robot with no version yet omits it, joining just commonName and role", () => {
+    expect(roleDisplay(device({ commonName: "robot", role: "NEZHA2", version: null }))).toBe("robot · NEZHA2");
+  });
+
+  it("018-016: a robot with no commonName omits it, joining just role and version", () => {
+    expect(roleDisplay(device({ commonName: null, role: "NEZHA2", version: "1.20260912.8" }))).toBe(
+      "NEZHA2 · 1.20260912.8",
+    );
+  });
+
+  it("018-016: a robot with only commonName known shows just that", () => {
+    expect(roleDisplay(device({ commonName: "robot", role: null, version: null }))).toBe("robot");
+  });
+
+  it("018-016: a robot with nothing known at all (commonName, role, version all null) falls back to 'Role unknown'", () => {
+    expect(roleDisplay(device({ commonName: null, role: null, version: null }))).toBe("Role unknown");
+  });
+
+  it("018-016: relays are unaffected by commonName -- role text is unchanged even when commonName is set", () => {
+    expect(roleDisplay(device({ kind: "relay", role: "RADIOBRIDGE", commonName: "relay" }))).toBe("RADIOBRIDGE");
   });
 
   it("018-010 item 3: a relay with no announced role is labeled by its links' own transport -- mbrelay host", () => {

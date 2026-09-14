@@ -86,6 +86,7 @@ function device(id: number, overrides: Partial<Omit<SnapshotDevice, "links">> & 
     name: `name-${id}`,
     kind: "robot",
     role: null,
+    commonName: null,
     program: null,
     version: null,
     owned: true,

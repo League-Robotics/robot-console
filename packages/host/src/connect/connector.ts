@@ -966,6 +966,7 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
         name,
         kind,
         role: banner.role,
+        commonName: banner.commonName,
         ...(usbSerial !== undefined ? { usbSerial } : {}),
         at: now(),
       });

@@ -174,6 +174,14 @@ export interface UpsertDeviceInput {
    * comment for the exact conflict-resolution rule this drives. */
   kind?: DeviceKind;
   role?: string | null;
+  /** Banner `commonName` (`packages/protocol/src/banner.ts`'s
+   * `ParsedBanner.commonName`, e.g. `"robot"`/`"relay"`) -- written
+   * alongside `role` by the same banner-identify call sites
+   * (`connect/connector.ts`, `connect/relayBridger.ts`). Coalesced on
+   * conflict exactly like `role`: an omitted/null value here never
+   * clobbers an already-known common name (see {@link Store.upsertDevice}'s
+   * own SQL). */
+  commonName?: string | null;
   program?: string | null;
   version?: string | null;
   usbSerial?: string | null;
@@ -349,6 +357,9 @@ export interface ProjectionDeviceRow {
   readonly name: string;
   readonly kind: DeviceKind;
   readonly role: string | null;
+  /** `devices.common_name` -- see {@link UpsertDeviceInput.commonName}'s
+   * own doc comment. */
+  readonly commonName: string | null;
   readonly program: string | null;
   readonly version: string | null;
   readonly radioChannel: number | null;
@@ -662,12 +673,13 @@ export class Store {
         this.db
           .prepare(
             `INSERT INTO devices
-               (id, name, kind, role, program, version, usb_serial, radio_channel, radio_group, radio_source, owned, first_seen, last_seen)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+               (id, name, kind, role, common_name, program, version, usb_serial, radio_channel, radio_group, radio_source, owned, first_seen, last_seen)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                name = excluded.name,
                kind = COALESCE(?, devices.kind),
                role = COALESCE(excluded.role, devices.role),
+               common_name = COALESCE(excluded.common_name, devices.common_name),
                program = COALESCE(excluded.program, devices.program),
                version = COALESCE(excluded.version, devices.version),
                usb_serial = COALESCE(excluded.usb_serial, devices.usb_serial),
@@ -681,6 +693,7 @@ export class Store {
             input.name,
             insertKind,
             input.role ?? null,
+            input.commonName ?? null,
             input.program ?? null,
             input.version ?? null,
             input.usbSerial ?? null,
@@ -1670,13 +1683,14 @@ export class Store {
   projectionRows(): ProjectionRows {
     const deviceRows = this.db
       .prepare(
-        "SELECT id, name, kind, role, program, version, usb_serial, radio_channel, radio_group, radio_source, owned, last_seen FROM devices",
+        "SELECT id, name, kind, role, common_name, program, version, usb_serial, radio_channel, radio_group, radio_source, owned, last_seen FROM devices",
       )
       .all() as Array<{
       id: number;
       name: string;
       kind: DeviceKind;
       role: string | null;
+      common_name: string | null;
       program: string | null;
       version: string | null;
       usb_serial: string | null;
@@ -1782,6 +1796,7 @@ export class Store {
         name: d.name,
         kind: d.kind,
         role: d.role,
+        commonName: d.common_name,
         program: d.program,
         version: d.version,
         usbSerial: d.usb_serial,

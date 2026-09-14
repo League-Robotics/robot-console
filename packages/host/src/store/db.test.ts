@@ -105,9 +105,10 @@ describe("store/db: openStoreDb", () => {
     db = openStoreDb({ filePath: dbFile });
 
     // Sprint 018 ticket 010 added migration 0002 (`sessions.answered_at`)
-    // alongside 0001 -- a fresh database now lands on user_version 2.
+    // and ticket 016 added migration 0003 (`devices.common_name`)
+    // alongside 0001 -- a fresh database now lands on user_version 3.
     const userVersion = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-    expect(userVersion).toBe(2);
+    expect(userVersion).toBe(3);
 
     expect(listNames(db, "table")).toEqual([...EXPECTED_TABLES].sort());
     expect(listNames(db, "index")).toEqual([...EXPECTED_INDEXES].sort());
@@ -130,6 +131,7 @@ describe("store/db: openStoreDb", () => {
       "owned",
       "first_seen",
       "last_seen",
+      "common_name",
     ]);
 
     expect(columnNames(db, "links")).toEqual([
@@ -153,7 +155,7 @@ describe("store/db: openStoreDb", () => {
 
     db = openStoreDb({ filePath: dbFile });
     const userVersion = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-    expect(userVersion).toBe(2);
+    expect(userVersion).toBe(3);
     expect(listNames(db, "table")).toEqual([...EXPECTED_TABLES].sort());
 
     // Insert a row, close, and re-open again -- a second migration pass

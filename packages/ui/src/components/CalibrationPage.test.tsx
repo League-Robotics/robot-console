@@ -88,6 +88,7 @@ function device(theLink: SnapshotLink, overrides: Partial<Omit<SnapshotDevice, "
     name: NAME,
     kind: "robot",
     role: "NEZHA2",
+    commonName: null,
     program: null,
     version: null,
     owned: true,

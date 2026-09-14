@@ -64,6 +64,32 @@ describe("Store: upsertDevice", () => {
     }
   });
 
+  // 018-016: `common_name` (from the banner's `commonName`, written
+  // alongside `role`) follows the same COALESCE discipline as every
+  // other optional column here -- an identify that doesn't carry a
+  // common name (or a caller that omits it entirely) must never
+  // clobber an already-known value with null.
+  it("writes commonName from a banner-identify call and never overwrites a known value with a later omitted/null one", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", role: "NEZHA2", commonName: "robot", at: 100 });
+      expect(store.snapshotRows().devices[0]?.common_name).toBe("robot");
+
+      // A later upsert that omits commonName entirely (optional field) --
+      // COALESCE keeps the existing value.
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", role: "NEZHA2", at: 200 });
+      expect(store.snapshotRows().devices[0]?.common_name).toBe("robot");
+
+      // A later upsert that explicitly passes commonName: null -- same
+      // COALESCE rule applies (null is the SQL "no value" signal, not a
+      // request to clear the column).
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", role: "NEZHA2", commonName: null, at: 300 });
+      expect(store.snapshotRows().devices[0]?.common_name).toBe("robot");
+    } finally {
+      store.close();
+    }
+  });
+
   it("refuses a deviceIdToName(id) !== name mismatch with a typed error (RADIOBRIDGE fixture, protocol review §2 item 6)", () => {
     const { store } = freshStore();
     try {
@@ -1333,6 +1359,7 @@ describe("Store: projectionRows", () => {
         name: "vevov",
         kind: "robot",
         role: "NEZHA2",
+        commonName: "robot",
         radioChannel: 41,
         radioGroup: 3,
         radioSource: "override",
@@ -1379,6 +1406,7 @@ describe("Store: projectionRows", () => {
           name: "vevov",
           kind: "robot",
           role: "NEZHA2",
+          commonName: "robot",
           program: null,
           version: null,
           usbSerial: null,

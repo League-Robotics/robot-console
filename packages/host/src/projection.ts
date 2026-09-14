@@ -191,6 +191,7 @@ function buildDevice(
     name: device.name,
     kind: device.kind,
     role: device.role,
+    commonName: device.commonName,
     program: device.program,
     version: device.version,
     owned: device.owned,

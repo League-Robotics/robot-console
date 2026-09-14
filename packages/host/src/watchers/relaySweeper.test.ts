@@ -231,6 +231,7 @@ function deviceRow(partial: Partial<ProjectionDeviceRow> & { id: number; name: s
   return {
     kind: "robot",
     role: null,
+    commonName: null,
     program: null,
     version: null,
     radioChannel: null,

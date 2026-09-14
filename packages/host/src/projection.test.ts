@@ -214,7 +214,7 @@ describe("buildSnapshotFromRows: relays[] for a network (mbrelay) relay", () => 
     const rows = emptyRows();
     const relayName = deviceIdToName(20);
     rows.devices = [
-      { id: 20, name: relayName, kind: "relay", role: "RADIOBRIDGE", program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
+      { id: 20, name: relayName, kind: "relay", role: "RADIOBRIDGE", commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
     ];
     rows.links = [
       {
@@ -252,7 +252,7 @@ describe("buildSnapshotFromRows: relays[] for a network (mbrelay) relay", () => 
     const rows = emptyRows();
     const TORTURE_ID = -123456789;
     rows.devices = [
-      { id: TORTURE_ID, name: "torture", kind: "relay", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
+      { id: TORTURE_ID, name: "torture", kind: "relay", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
     ];
     rows.links = [
       {
@@ -316,7 +316,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
   it("a usb link with no open session: open/flash true, close/provisionWifi false", () => {
     const rows = emptyRows();
     rows.devices = [
-      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 10, transport: "usb", address: { path: "/dev/x" }, state: "connectable", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -329,7 +329,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
   it("a link with an open session: open false, close/provisionWifi true", () => {
     const rows = emptyRows();
     rows.devices = [
-      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 10, transport: "usb", address: { path: "/dev/x" }, state: "connected", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -345,7 +345,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
   it("a link in state connecting (no session row yet): close true, open false", () => {
     const rows = emptyRows();
     rows.devices = [
-      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 10, transport: "usb", address: { path: "/dev/x" }, state: "connecting", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -357,7 +357,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
   it("a wifi link on an un-owned device is hidden -- never reaches capabilities at all", () => {
     const rows = emptyRows();
     rows.devices = [
-      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
+      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 10, transport: "wifi", address: { host: "x", port: 1 }, state: "discovered", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -369,7 +369,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
   it("a wifi link on an owned device: open true (not gated by ownership once owned)", () => {
     const rows = emptyRows();
     rows.devices = [
-      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 10, transport: "wifi", address: { host: "x", port: 1 }, state: "discovered", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -382,7 +382,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
   it("a mbserial link on an un-owned device is hidden the same way wifi is", () => {
     const rows = emptyRows();
     rows.devices = [
-      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
+      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 10, transport: "mbserial", address: { host: "x", port: 1 }, state: "discovered", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -397,7 +397,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
     const rows = emptyRows();
     const name = deviceIdToName(10);
     rows.devices = [
-      { id: 10, name, kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 10, name, kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 10, transport: "mbserial", address: { host: "x", port: 1 }, state: "connectable", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -411,7 +411,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
     const rows = emptyRows();
     const name = deviceIdToName(11);
     rows.devices = [
-      { id: 11, name, kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 11, name, kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 11, transport: "wifi", address: { host: "x", port: 1 }, state: "connectable", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -425,7 +425,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
     const rows = emptyRows();
     const name = deviceIdToName(12);
     rows.devices = [
-      { id: 12, name, kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 12, name, kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 12, transport: "mbserial", address: { host: "x", port: 1 }, state: "connectable", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -441,7 +441,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
     const rows = emptyRows();
     const name = deviceIdToName(13);
     rows.devices = [
-      { id: 13, name, kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 13, name, kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 13, transport: "mbserial", address: { host: "x", port: 1 }, state: "connectable", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -455,7 +455,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
     const rows = emptyRows();
     const name = deviceIdToName(14);
     rows.devices = [
-      { id: 14, name, kind: "robot", role: null, program: null, version: null, usbSerial: "SERIAL-XYZ", radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 14, name, kind: "robot", role: null, commonName: null, program: null, version: null, usbSerial: "SERIAL-XYZ", radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 14, transport: "mbserial", address: { host: "x", port: 1 }, state: "connectable", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -469,7 +469,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
     const rows = emptyRows();
     const name = deviceIdToName(15);
     rows.devices = [
-      { id: 15, name, kind: "robot", role: null, program: null, version: null, usbSerial: "SERIAL-XYZ", radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 15, name, kind: "robot", role: null, commonName: null, program: null, version: null, usbSerial: "SERIAL-XYZ", radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 15, transport: "mbserial", address: { host: "x", port: 1 }, state: "connectable", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -483,8 +483,8 @@ describe("buildSnapshotFromRows: capabilities", () => {
     const rows = emptyRows();
     const name = deviceIdToName(16);
     rows.devices = [
-      { id: 16, name, kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
-      { id: 17, name: deviceIdToName(17), kind: "relay", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 16, name, kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 17, name: deviceIdToName(17), kind: "relay", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
     ];
     rows.links = [
       { id: "relay-link", deviceId: 17, transport: "usb", address: { path: "/dev/x" }, state: "connected", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -510,7 +510,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
     const rows = emptyRows();
     const derived = deviceIdToName(10);
     rows.devices = [
-      { id: 10, name: derived, kind: "robot", role: null, program: null, version: null, radioChannel: 55, radioGroup: 114, radioSource: "override", owned: true, lastSeen: 1 },
+      { id: 10, name: derived, kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: 55, radioGroup: 114, radioSource: "override", owned: true, lastSeen: 1 },
     ];
     const snapshot = buildSnapshotFromRows(rows, 1, 1);
     expect(snapshot.devices[0]?.radio).toEqual({ channel: 55, group: 114, source: "override" });
@@ -519,7 +519,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
   it("radio-address resolution: no stored value falls back to the name-derived default, reported as 'derived'", () => {
     const rows = emptyRows();
     rows.devices = [
-      { id: 10, name: "vevov", kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 10, name: "vevov", kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
     ];
     const snapshot = buildSnapshotFromRows(rows, 1, 1);
     expect(snapshot.devices[0]?.radio.source).toBe("derived");

@@ -118,6 +118,7 @@ function deviceFixture(
     name: `name-${id}`,
     kind: "robot",
     role: null,
+    commonName: null,
     program: null,
     version: null,
     owned: true,

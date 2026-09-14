@@ -56,6 +56,7 @@ function robot(
     name: "tigez",
     kind: "robot",
     role: "NEZHA2",
+    commonName: null,
     program: null,
     version: null,
     owned: true,

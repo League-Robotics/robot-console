@@ -85,6 +85,7 @@ function robotDevice(overrides: Partial<Omit<SnapshotDevice, "links">> = {}): Sn
     name: "vevav",
     kind: "robot",
     role: "NEZHA2",
+    commonName: null,
     program: null,
     version: null,
     owned: true,

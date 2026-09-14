@@ -43,12 +43,23 @@ export function nameDisplay(device: SnapshotDevice): { text: string; flagged: bo
   return { text: device.name, flagged: false };
 }
 
-/** A device's role text: the announced `role` when there is one.
- * Otherwise (ticket 018-010, item 3 -- "relay hosts are hosts, not 'No
- * role announced'"): for a `kind === "relay"` device with no announced
- * role, say what it *is* by the transport its own links actually use --
- * a `mbrelay` link means this device is only known as an mbrelay pool's
- * own host (`watchers/mdnsWatcher.ts`'s `handleMbrelay` minting, never
+/** A device's role text.
+ *
+ * For `kind === "robot"` (018-016, stakeholder verbatim: "show the
+ * common name, the role, and the version number all on the same
+ * line"): joins whichever of `commonName`, `role`, `version` are
+ * currently known with ` · `, e.g. `robot · NEZHA2 · 1.20260912.8` in
+ * full, `robot · NEZHA2` before a version is known, down to a bare
+ * `NEZHA2` for a robot identified before this ticket ever wrote
+ * `commonName` -- and "Role unknown" only once all three are absent
+ * (never yet identified at all).
+ *
+ * For `kind === "relay"`, unchanged from ticket 018-010, item 3 --
+ * "relay hosts are hosts, not 'No role announced'": the announced
+ * `role` when there is one; otherwise say what it *is* by the
+ * transport its own links actually use -- a `mbrelay` link means this
+ * device is only known as an mbrelay pool's own host
+ * (`watchers/mdnsWatcher.ts`'s `handleMbrelay` minting, never
  * identified over USB), so "mbrelay host"; a `mbserial` link means the
  * same for a serial-bridge farm host, "mbserial host". A relay
  * identified over USB always has a role by construction
@@ -56,23 +67,23 @@ export function nameDisplay(device: SnapshotDevice): { text: string; flagged: bo
  * banner, the instant it becomes `kind: "relay"` at all -- see
  * `repair/repairDeviceKindFromRole.ts`'s own doc comment) -- these two
  * transport labels are for the *other* way a relay row comes to exist,
- * mDNS-only, never plugged into this host directly. A robot with no
- * role (never yet identified/banner-less) has no transport-shaped
- * story to tell instead, so it keeps the old sessionError-era's
- * calm plain fallback, reworded to "Role unknown" (the old "No role
- * announced" phrasing is retired everywhere this module's callers
- * render it). */
+ * mDNS-only, never plugged into this host directly. A relay with
+ * neither falls back to "Role unknown", same as before. */
 export function roleDisplay(device: SnapshotDevice): string {
+  if (device.kind === "robot") {
+    const parts = [device.commonName, device.role, device.version].filter(
+      (part): part is string => part !== null && part !== undefined && part.length > 0,
+    );
+    return parts.length > 0 ? parts.join(" · ") : "Role unknown";
+  }
   if (device.role !== null) {
     return device.role;
   }
-  if (device.kind === "relay") {
-    if (device.links.some((link) => link.transport === "mbrelay")) {
-      return "mbrelay host";
-    }
-    if (device.links.some((link) => link.transport === "mbserial")) {
-      return "mbserial host";
-    }
+  if (device.links.some((link) => link.transport === "mbrelay")) {
+    return "mbrelay host";
+  }
+  if (device.links.some((link) => link.transport === "mbserial")) {
+    return "mbserial host";
   }
   return "Role unknown";
 }

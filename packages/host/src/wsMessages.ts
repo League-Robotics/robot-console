@@ -358,6 +358,13 @@ export interface SnapshotDevice {
   name: string;
   kind: "robot" | "relay";
   role: string | null;
+  /** Banner `commonName` (`packages/protocol/src/banner.ts`'s
+   * `ParsedBanner.commonName`, e.g. `"robot"`) -- `null` until this
+   * device has identified at least once since `devices.common_name`
+   * started being written (018-016). `packages/ui/src/deviceDisplay.ts`'s
+   * `roleDisplay` folds this into a robot's one-line identity alongside
+   * `role`/`version`; unused for relays. */
+  commonName: string | null;
   program: string | null;
   version: string | null;
   owned: boolean;

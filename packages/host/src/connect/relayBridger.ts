@@ -637,7 +637,7 @@ export function createRelayBridger(store: Store, deps: RelayBridgerDeps = {}, op
     const childTransport: Transport = relayTransport === "usb" ? "radio" : "mbrelay";
     const address: RelayAddress = { relayLinkId, channel: candidate.channel, group: candidate.group };
 
-    store.upsertDevice({ id: deviceId, name, kind, role: banner.role, at: now() });
+    store.upsertDevice({ id: deviceId, name, kind, role: banner.role, commonName: banner.commonName, at: now() });
     store.upsertLink({ id: candidate.childLinkId, transport: childTransport, address, deviceId, at: now() });
     store.openSession(candidate.childLinkId, now());
     store.setLinkState({ id: candidate.childLinkId, state: "connected", at: now() });

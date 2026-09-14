@@ -7,47 +7,38 @@
  * `0-83`/`0-255` integer-range check and the identical two error
  * strings).
  *
- * ## Why this mirrors `radioOverride.ts`'s range, not
- * `@robot-console/protocol`'s `validateRadioAddress`
+ * ## Why the hardware range, not `validateRadioAddress`
  *
  * Both `RadioAddressDialog` and `ConfigurationPage` send a
  * `set-radio-override` message -- a user-dialled *override*, not a
- * name-derived address. The host's own authority for that message,
+ * name-derived address. The host's authority for that message,
  * `packages/host/src/radioOverride.ts`'s `isValidRadioOverride`, checks
  * the raw hardware range (`channel` `0-83`, `group` `0-255`, both
- * integers, no oddness or reserved-group constraint) precisely because,
- * per that module's own doc comment, "an instructor may want any
- * hardware-valid nRF24 address, not only one a five-letter name could
- * derive." `@robot-console/protocol`'s `validateRadioAddress` checks a
- * narrower space instead -- the one `nameToRadioAddress` can actually
- * produce (odd channel `25-73`, group `1-126` excluding the reserved
- * `10`). Routing this override input through `validateRadioAddress`
- * would newly reject values the host accepts today (e.g. an even
- * channel, or `group: 10`) -- a real behavior change this ticket's
- * "pure extraction, no behavior change" mandate forbids, and it would
- * silently narrow the very case `isValidRadioOverride`'s own doc
- * comment says the wider range exists for. So this module re-states
- * `radioOverride.ts`'s two constants and its one check instead.
+ * integers) because an override may be any address the radio accepts,
+ * not only one a five-letter name derives. `validateRadioAddress` checks
+ * the narrower derived space (channel `11-83`, group `15-255`, a pair
+ * some name derives -- radio-robot-lib `docs/design/radio-addressing.md`)
+ * and would wrongly refuse overrides the host accepts.
  *
- * ## Why this isn't just imported from `@robot-console/host`
- *
- * `radioOverride.ts` itself imports `mbrelayRegistry.ts` (reaching into
- * `store/index.ts`), which pulls in the host's server-only dependency
- * graph -- unsuitable for a browser bundle. Duplicating the two
- * constants and the one small range check here (rather than the whole
- * module) keeps client and host enforcing the identical rule without
- * sharing that module graph; the host's own `set-radio-override`
- * handler remains the authority regardless -- this only gives the two
- * dialogs immediate feedback before sending anything, same as before.
+ * Both this module and the host take the range from
+ * `@robot-console/protocol`'s `isHardwareRadioPair` constants, so client
+ * and host enforce the identical rule without the browser bundle pulling
+ * in the host's server-only module graph. The host handler remains the
+ * authority; this only gives the dialogs immediate feedback.
  */
+import {
+  RADIO_HARDWARE_CHANNEL_MAX,
+  RADIO_HARDWARE_CHANNEL_MIN,
+  RADIO_HARDWARE_GROUP_MAX,
+  RADIO_HARDWARE_GROUP_MIN,
+} from "@robot-console/protocol";
 
-/** Raw nRF24 channel range a user-supplied override may occupy --
- * mirrors `radioOverride.ts`'s `RADIO_CHANNEL_MIN`/`RADIO_CHANNEL_MAX`. */
-export const RADIO_CHANNEL_MIN = 0;
-export const RADIO_CHANNEL_MAX = 83;
-/** Mirrors `radioOverride.ts`'s `RADIO_GROUP_MIN`/`RADIO_GROUP_MAX`. */
-export const RADIO_GROUP_MIN = 0;
-export const RADIO_GROUP_MAX = 255;
+/** Raw channel range a user-supplied override may occupy. */
+export const RADIO_CHANNEL_MIN = RADIO_HARDWARE_CHANNEL_MIN;
+export const RADIO_CHANNEL_MAX = RADIO_HARDWARE_CHANNEL_MAX;
+/** Raw group range a user-supplied override may occupy. */
+export const RADIO_GROUP_MIN = RADIO_HARDWARE_GROUP_MIN;
+export const RADIO_GROUP_MAX = RADIO_HARDWARE_GROUP_MAX;
 
 /**
  * `null` when `(channel, group)` is an acceptable override, else the

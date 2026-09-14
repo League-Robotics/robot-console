@@ -354,7 +354,7 @@ describe("sync/setChannelGroup/go -- individually callable steps (ticket 014-006
     const scheduler = controllableScheduler();
     const promise = setChannelGroupTransient(37, 3, { write: link.write, subscribe: link.subscribe, scheduler });
     await flush();
-    link.emit("# error: usage !CGT <ch 25-73> <group 1-126>");
+    link.emit("# error: usage !CGT <ch 0-83> <group 0-255>");
     await expect(promise).rejects.toThrow(RelayHandshakeError);
     await expect(promise).rejects.toThrow(/rejected !CGT 37 3/);
   });

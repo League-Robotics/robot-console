@@ -14,12 +14,13 @@ describe("validateRadioOverrideInput", () => {
   });
 
   it("accepts values outside the *derived*-address space that a stricter, name-derived check would reject", () => {
-    // Even channel: not a value `nameToRadioAddress` could ever produce,
-    // but a legal hardware override the host itself accepts.
-    expect(validateRadioOverrideInput(26, 5)).toBeNull();
-    // Group 10 is reserved in the derived-address space but plain legal
-    // here (`isValidRadioOverride` has no such exclusion).
+    // Channel 5 / group 5: below the name-derived 11-83 / 15-255, but a
+    // legal hardware override the host itself accepts.
+    expect(validateRadioOverrideInput(5, 5)).toBeNull();
+    // Group 10 (the relay's `!C` space) is never derived but legal here.
     expect(validateRadioOverrideInput(41, 10)).toBeNull();
+    // In range, but no name derives 11/16.
+    expect(validateRadioOverrideInput(11, 16)).toBeNull();
   });
 
   it("rejects a channel outside 0-83 before checking the group", () => {

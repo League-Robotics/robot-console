@@ -5,19 +5,18 @@
  * (sprint 015 ticket 006; issue `rearch-08-radio-address-overrides-in-host-db.md`;
  * `docs/design/architecture.md` §2/§9; SUC-007).
  *
- * ## Why this validation is wider than `@robot-console/protocol`'s own
+ * ## Why this validation is wider than `validateRadioAddress`
  *
  * `@robot-console/protocol`'s `validateRadioAddress` restricts to the
- * *derived* address space (odd channel in `[25, 73]`, group in `[1, 126]`
- * excluding the reserved `10`) — the space `nameToRadioAddress` can
- * actually produce. A user-dialled override is not limited to that
- * space: an instructor may want any hardware-valid nRF24 address, not
- * only one a five-letter name could derive. So this module's own
+ * *derived* address space (channel 11–83, group 15–255, and a pair some
+ * name actually derives, per radio-robot-lib's
+ * `docs/design/radio-addressing.md`). A user-dialled override is not
+ * limited to that space: an instructor may want any hardware-valid
+ * address, not only one a five-letter name could derive. So
  * {@link isValidRadioOverride} checks the raw hardware range instead
- * (`channel` `0–83`, `group` `0–255`, both integers) — the one place
- * that range check lives; `server.ts`'s `set-radio-override` handler is
- * this ticket's only caller, per the ticket's own "host-side, in one
- * place" instruction.
+ * (`channel` `0–83`, `group` `0–255`, both integers), using protocol's
+ * `isHardwareRadioPair`, the same check the relay `!CG`/`!CGT` builders
+ * use. `server.ts`'s `set-radio-override` handler is its caller.
  *
  * ## The resolver
  *
@@ -45,20 +44,27 @@
  * that bridging path has one resolver to call rather than reinventing
  * the order.
  */
+import {
+  isHardwareRadioPair,
+  RADIO_HARDWARE_CHANNEL_MAX,
+  RADIO_HARDWARE_CHANNEL_MIN,
+  RADIO_HARDWARE_GROUP_MAX,
+  RADIO_HARDWARE_GROUP_MIN,
+} from "@robot-console/protocol";
 import { resolveRobotAddress, type RegistryLocation, type ResolveRobotAddressOptions, type ResolvedAddress } from "./mbrelayRegistry.js";
 import type { RadioSource } from "./store/index.js";
 import type { RadioSourceWire } from "./wsMessages.js";
 
-/** Raw nRF24 channel range a user-supplied override may occupy — wider
- * than the derived-address space (see module doc comment). */
-export const RADIO_CHANNEL_MIN = 0;
-export const RADIO_CHANNEL_MAX = 83;
-/** Raw radio group/address-byte range a user-supplied override may
- * occupy — wider than the derived-address space (see module doc
- * comment); unlike the derived space, group `0` and the "reserved" `10`
- * are both legal here. */
-export const RADIO_GROUP_MIN = 0;
-export const RADIO_GROUP_MAX = 255;
+/** Raw channel range a user-supplied override may occupy — wider than
+ * the derived-address space (see module doc comment). Re-exported from
+ * protocol's single hardware-range definition. */
+export const RADIO_CHANNEL_MIN = RADIO_HARDWARE_CHANNEL_MIN;
+export const RADIO_CHANNEL_MAX = RADIO_HARDWARE_CHANNEL_MAX;
+/** Raw radio group range a user-supplied override may occupy — wider
+ * than the derived-address space (see module doc comment); groups below
+ * 15, including `0` and the relay's `10`, are legal here. */
+export const RADIO_GROUP_MIN = RADIO_HARDWARE_GROUP_MIN;
+export const RADIO_GROUP_MAX = RADIO_HARDWARE_GROUP_MAX;
 
 /**
  * Is `(channel, group)` a legal user-supplied radio override? Both must
@@ -69,14 +75,7 @@ export const RADIO_GROUP_MAX = 255;
  * `notice`, never persisted).
  */
 export function isValidRadioOverride(channel: number, group: number): boolean {
-  return (
-    Number.isInteger(channel) &&
-    channel >= RADIO_CHANNEL_MIN &&
-    channel <= RADIO_CHANNEL_MAX &&
-    Number.isInteger(group) &&
-    group >= RADIO_GROUP_MIN &&
-    group <= RADIO_GROUP_MAX
-  );
+  return isHardwareRadioPair(channel, group);
 }
 
 /** The slice of a `devices` row {@link resolveDeviceRadio} needs — a

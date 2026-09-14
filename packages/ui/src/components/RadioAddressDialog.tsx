@@ -153,7 +153,8 @@ export function RadioAddressDialog({ deviceId, name, radio, triggerClassName = "
             <p className="credentials-note">
               This is the address the console uses for {name} when connecting through a relay. The robot's own
               radio address is fixed when it is flashed (the name-derived default is {derived.channel}/{derived.group};
-              the shared template image uses 55/114), so set this to match the build on the robot.
+              a robot flashed before the fleet moved to the 73-channel map may still use its old pair), so set this to
+              match the build on the robot.
             </p>
             {error && (
               <p className="credentials-error" role="alert" data-testid="radio-error">

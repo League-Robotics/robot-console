@@ -6,16 +6,17 @@ import { describe, expect, it } from "vitest";
 /**
  * vendorSubmodules.test.ts — a single, fast-failing sanity check that the
  * two `vendor/` git submodules this repo's protocol fixtures read from
- * (`radioAddress.test.ts`, `v6/codec.test.ts`, `v6/session.test.ts`) are
- * actually initialized, per ticket 014-001's build-hygiene acceptance
- * criteria.
+ * (`v6/codec.test.ts`, `v6/session.test.ts`) are actually initialized,
+ * per ticket 014-001's build-hygiene acceptance criteria.
+ * (`radioAddress.test.ts` no longer reads a vendored fixture: the radio
+ * address vectors are copied into `radio-address-vectors.json` from the
+ * radio-robot-lib spec, and the vendored pxt-nezha-diffdrive radio doc,
+ * which still describes the retired 25-channel map, is not normative.)
  *
- * Those three test files already carry their own per-fixture
+ * Those test files already carry their own per-fixture
  * "submodule not initialized" error message at the point they read their
- * specific fixture file. This test is deliberately narrower and runs
- * first (alphabetically, `v` sorts before those files' own `radioAddress`/
- * `v6` paths only coincidentally -- the point is independence, not
- * ordering): it checks only that each submodule's `docs/` directory
+ * specific fixture file. This test is deliberately narrower (the point is
+ * independence, not ordering): it checks only that each submodule's `docs/` directory
  * exists at all, so a missing `git submodule update --init` is reported
  * here, clearly, rather than only surfacing as a confusing JSON-parse or
  * ENOENT failure deep inside an unrelated test's assertions.

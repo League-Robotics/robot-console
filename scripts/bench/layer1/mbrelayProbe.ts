@@ -42,17 +42,12 @@ import type { PathResult, ProbeStatus, TcpProbeEndpoint, TranscriptLine } from "
 
 /** The pool's own "return to defaults" tuning, sent once after every
  * command-plane sweep (ticket instruction: "Restore the pool relay to
- * `!CG 0 10` after command-plane probing"). `(0, 10)` is deliberately
- * built as a raw wire line below, never via
- * `@robot-console/protocol`'s `buildSetChannelGroupLine` -- that
- * builder's `validateRadioAddress` range check (channel odd in
- * [25, 73], group in [1, 126] excluding the reserved value 10) exists to
- * keep a *derived* radio address well-formed, but `(0, 10)` is not a
- * derived address at all -- it's the pool's own idle/default tuning,
- * outside that range on purpose. Confirmed live (2026-09-13 bench):
- * `buildSetChannelGroupLine(0, 10)` throws `RelayCommandError`, exactly
- * because Layer 1 must be able to send a raw wire command the
- * higher-level, business-validated builder correctly refuses. */
+ * `!CG 0 10` after command-plane probing"). Built as a raw wire line
+ * below so Layer 1 sends exactly the bytes it names, independent of
+ * `@robot-console/protocol`'s `buildSetChannelGroupLine`. That builder
+ * refused `(0, 10)` while it checked the name-derived space; since the
+ * move to the 73-channel map it checks only the hardware range
+ * (channel 0-83, group 0-255) and accepts it. */
 const DEFAULT_CHANNEL = 0;
 const DEFAULT_GROUP = 10;
 

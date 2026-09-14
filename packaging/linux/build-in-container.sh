@@ -94,7 +94,7 @@ packaging_dirty=$PACKAGING_DIRTY
 node=v$NODE_VERSION
 nfpm=v$NFPM_VERSION
 base_image=$BASE_IMAGE
-entry=bin/robot-console.js --no-open
+entry=bin/robot-console-supervisor.js
 EOF
 cat "$STAGE/BUILD_INFO"
 

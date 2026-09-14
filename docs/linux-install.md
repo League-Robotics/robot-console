@@ -20,7 +20,9 @@ sudo apt install ./robot-console_<version>_amd64.deb
 ```
 
 Keep the `./`: without it, `apt` searches the online repositories instead of
-using the file. To upgrade, install a newer `.deb` the same way.
+using the file. `apt` also installs the dependencies (`libudev1`,
+`libusb-1.0-0`, `udev`); a desktop install already has them. To upgrade,
+install a newer `.deb` the same way. Running instances restart on upgrade.
 
 **After installing, unplug and replug any micro:bit that was already
 connected.** The install tries to apply the USB permission rule to connected
@@ -28,32 +30,38 @@ boards, but replugging always works.
 
 ## First launch
 
-Open **Robot Console** from the app menu, or run `robot-console` in a
-terminal. The first start can take a few seconds. The console opens in its own
-Chrome window, with its own dock icon. It uses a separate Chrome profile, so
-it won't touch the student's normal browsing profile.
+Open **Robot Console** from the app grid, or run `robot-console` in a
+terminal. The console opens in its own Chrome window, with the Robot Console
+icon in the dock. It uses a separate Chrome profile, so it won't touch the
+student's normal browsing profile. The first window can take a few seconds,
+because the robot host starts when the window connects.
 
 `robot-console --help` lists the options. `robot-console --version` shows the
 build (version, git commit, Node version).
 
 ## How it works
 
-- `/usr/bin/robot-console` (the launcher) checks whether anything answers on
-  `http://127.0.0.1:4795/`. If nothing does, it starts the per-user
-  service `robot-console.service` (`systemctl --user start`) and waits for the
-  port. Then it opens `http://localhost:4795/` as a Chrome app window.
-- The service runs the supervisor. The supervisor listens on 127.0.0.1:4795
-  (local only, not reachable from the network) and serves the UI. It starts
-  the robot host process (port 4796) only while a Robot Console window is
-  connected, and stops it 30 s after the last window closes. That releases the
-  USB boards for other programs, such as MakeCode.
-- The service is enabled for every user (`systemctl --global enable`), so it
-  also starts at login. Each user who is logged in gets their own instance.
-
-> **Current build (Phase 1):** the service runs the robot host directly
-> (`bin/robot-console.js --no-open`) instead of the supervisor. The host keeps
-> running for the whole login session, and it holds the USB boards until
-> logout or `systemctl --user stop robot-console`.
+- **Launcher.** `/usr/bin/robot-console` checks whether anything answers on
+  `http://127.0.0.1:4795/`. If nothing does, it starts the per-user service
+  (`systemctl --user start robot-console`) and waits up to 15 s for the port.
+  Then it opens `http://localhost:4795/` as a Chrome app window. Without a
+  systemd user session, it starts the supervisor as a background process
+  instead.
+- **Supervisor.** `robot-console.service` runs the supervisor
+  (`/opt/robot-console/app/bin/robot-console-supervisor.js`). It is small and
+  holds no USB devices. It listens on 127.0.0.1:4795 (local only, not
+  reachable from the network) and serves the UI.
+- **Host.** When a window connects, the supervisor starts the robot host
+  (USB, flashing, radio) on 127.0.0.1:4796 and passes the window's
+  connection through to it. The host stops **30 s after the last window
+  closes**, which releases the micro:bits for other programs such as MakeCode.
+  Reopening a window within those 30 s keeps the same host running.
+- **Login.** The service is enabled for every user
+  (`systemctl --global enable`), so the supervisor starts at login. Each
+  logged-in user gets their own instance.
+- **Stopping.** Stopping the service (logout, `systemctl --user stop`,
+  uninstall) stops the host first. If a flash is in progress, the host
+  finishes it, so a stop can take up to about two minutes.
 
 ## Files, logs and state
 
@@ -63,16 +71,30 @@ build (version, git commit, Node version).
 | Launcher | `/usr/bin/robot-console` |
 | User service | `/usr/lib/systemd/user/robot-console.service` |
 | USB permission rule | `/usr/lib/udev/rules.d/70-robot-console-microbit.rules` |
-| Service log | `journalctl --user -u robot-console` (as the student) |
+| App menu entry and icons | `/usr/share/applications/robot-console.desktop`, `/usr/share/icons/hicolor/*/apps/robot-console.*` |
+| Supervisor and host log | `journalctl --user -u robot-console` (as the student) |
 | Log when started without systemd | `~/.local/state/robot-console/supervisor.log` |
 | Per-user state (robot store, settings) | `~/.local/state/robot-console/` |
 | Chrome profile for the app window | `~/.local/share/robot-console/chrome/` |
 
-Service status for the current user:
+Service and host status for the current user:
 
 ```sh
 systemctl --user status robot-console
+curl -s localhost:4795/__supervisor/status; echo
 ```
+
+The status endpoint returns JSON:
+
+- `hostState`: `stopped`, `starting`, `running` or `stopping`
+- `hostPid`
+- `connections`: open windows
+- `idleMsRemaining`: time left before an idle host stops
+- `restarts`: host crashes the supervisor recovered from
+- `lastExit`: how the host last stopped; `expected: true` means a normal idle stop
+
+(`curl` is not installed on a default Ubuntu desktop: `sudo apt install curl`,
+or use `wget -qO- localhost:4795/__supervisor/status`.)
 
 ## Checking USB permissions
 
@@ -95,9 +117,13 @@ not to probe the serial port.
 sudo apt remove robot-console     # or: sudo apt purge robot-console
 ```
 
-Removing the package stops running instances for logged-in users, disables
-the service, and deletes `/opt/robot-console` and the files above. Per-user
-state in home directories (`~/.local/state/robot-console`,
+Removing the package does the following:
+
+- stops running instances for logged-in users;
+- disables the service;
+- deletes `/opt/robot-console` and the files above.
+
+Per-user state in home directories (`~/.local/state/robot-console`,
 `~/.local/share/robot-console`) is kept. Delete it by hand if you don't need
 it.
 
@@ -106,9 +132,18 @@ it.
 **The window never opens / "server did not answer on 127.0.0.1:4795".**
 Look at `journalctl --user -u robot-console -n 50`. The most common cause is
 that port 4795 is already in use, for example by another copy of
-robot-console started from a checkout (`npm run dev`) or by an old
-`robot-console` process. Find it with `ss -ltnp 'sport = :4795'` and stop it.
-Then run `systemctl --user restart robot-console` and launch again.
+robot-console started from a checkout (`npm run dev`). The supervisor then
+logs one line saying the port is taken and exits. Find the other process with
+`ss -ltnp 'sport = :4795'` and stop it. Then run
+`systemctl --user restart robot-console` and launch again.
+
+**The window opens but shows no robots or keeps reconnecting.** Check
+`curl -s localhost:4795/__supervisor/status`:
+
+- **`hostState` stuck at `starting`, or growing `restarts`:** the host is
+  failing to start. The reason is in `journalctl --user -u robot-console`.
+- **Something else holds 127.0.0.1:4796:** the host can't bind its port.
+  Check with `ss -ltnp 'sport = :4796'`.
 
 **"Google Chrome not found".** Install Chrome
 (`sudo apt install ./google-chrome-stable_current_amd64.deb` from
@@ -118,15 +153,21 @@ falls back to `xdg-open`, which opens a normal browser tab. The Chromium snap
 may refuse the separate profile directory, so use Google Chrome.
 
 **The micro:bit is not found, or flashing fails with a permission error.**
-Unplug and replug the board. If that doesn't help, check the rule is installed
-(`ls /usr/lib/udev/rules.d/70-robot-console-microbit.rules`) and check the ACL
-(see "Checking USB permissions"). Access is granted only to the user at the
-local seat. It doesn't apply to SSH sessions or to a user who has switched
-away. MakeCode in another browser tab can also hold the board. Disconnect it
-there first.
+Unplug and replug the board. If that doesn't help:
+
+- Check the rule is installed:
+  `ls /usr/lib/udev/rules.d/70-robot-console-microbit.rules`.
+- Check the ACL (see "Checking USB permissions"). Access is granted only to
+  the user at the local seat. It doesn't apply to SSH sessions or to a user
+  who has switched away.
+- MakeCode in another browser tab can hold the board. Disconnect it there.
+
+**MakeCode can't reach a board while Robot Console is open.** The host holds
+the boards while a Robot Console window is open. Close the window. The boards
+are released 30 s later, when `hostState` goes back to `stopped`.
 
 **The service doesn't exist for a user who was already logged in during
 install.** Log out and back in, or run `systemctl --user daemon-reload`. The
 launcher still works in the meantime: if the service can't start, it runs the
-server as a background process and logs to
+supervisor as a background process and logs to
 `~/.local/state/robot-console/supervisor.log`.

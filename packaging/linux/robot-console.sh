@@ -10,9 +10,9 @@ set -u
 
 ROOT=/opt/robot-console
 NODE="$ROOT/node/bin/node"
-# PHASE 1: plain host. Phase 2 switches to bin/robot-console-supervisor.js
-# (keep in sync with ExecStart in robot-console.service).
-ENTRY="$ROOT/app/bin/robot-console.js"
+# The supervisor: serves the UI and starts the host only while a window is
+# connected. Keep in sync with ExecStart in robot-console.service.
+ENTRY="$ROOT/app/bin/robot-console-supervisor.js"
 DEFAULT_PORT=4795
 PORT="${ROBOT_CONSOLE_PORT:-$DEFAULT_PORT}"
 URL="http://localhost:$PORT/"
@@ -81,11 +81,9 @@ start_server() {
   how="background process (log: $log)"
   printf '\n--- %s robot-console launcher starting %s\n' "$(date -Is)" "$ENTRY" >>"$log"
   if command -v setsid >/dev/null 2>&1; then
-    ROBOT_CONSOLE_PORT="$PORT" ROBOT_CONSOLE_NO_OPEN=1 \
-      setsid nohup "$NODE" "$ENTRY" --no-open </dev/null >>"$log" 2>&1 &
+    ROBOT_CONSOLE_PORT="$PORT" setsid nohup "$NODE" "$ENTRY" </dev/null >>"$log" 2>&1 &
   else
-    ROBOT_CONSOLE_PORT="$PORT" ROBOT_CONSOLE_NO_OPEN=1 \
-      nohup "$NODE" "$ENTRY" --no-open </dev/null >>"$log" 2>&1 &
+    ROBOT_CONSOLE_PORT="$PORT" nohup "$NODE" "$ENTRY" </dev/null >>"$log" 2>&1 &
   fi
 }
 

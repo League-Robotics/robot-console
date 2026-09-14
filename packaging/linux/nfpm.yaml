@@ -55,8 +55,19 @@ contents:
     file_info:
       mode: 0644
 
-  - src: /packaging/robot-console.svg
+  # App icons: the UI's own icons, from the staged vite build.
+  - src: /stage/opt/robot-console/app/packages/ui/dist/icon.svg
     dst: /usr/share/icons/hicolor/scalable/apps/robot-console.svg
+    file_info:
+      mode: 0644
+
+  - src: /stage/opt/robot-console/app/packages/ui/dist/icon-192.png
+    dst: /usr/share/icons/hicolor/192x192/apps/robot-console.png
+    file_info:
+      mode: 0644
+
+  - src: /stage/opt/robot-console/app/packages/ui/dist/icon-512.png
+    dst: /usr/share/icons/hicolor/512x512/apps/robot-console.png
     file_info:
       mode: 0644
 

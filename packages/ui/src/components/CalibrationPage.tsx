@@ -54,6 +54,18 @@
  *     `CalibrationState.robotReportedSlip`, shown alongside this page's
  *     own computed `rotationalSlip` in `CalibrationTable.tsx` -- see that
  *     module's own doc comment for why the two numbers are never merged.
+ *
+ * ## Ticket 018-018: the right column is viewport-bound too
+ *
+ * The right column now carries `robot-page-column-console`
+ * (`RobotPage.css`), the same sticky/viewport-height class the Main
+ * tab's column already used -- previously this column had no height
+ * bound at all, so a long "Current calibration" table plus a growing
+ * console log pushed the send line down and eventually off screen
+ * (stakeholder report, 2026-09-14). The "Current calibration" panel
+ * above the console also carries `robot-page-column-top`, so it shrinks
+ * and scrolls internally before the console log's own floor gives; see
+ * `RobotPage.css`'s doc comment on both classes for the full mechanism.
  */
 import { useEffect, useMemo, useState } from "react";
 import type { RobotFunction, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
@@ -278,8 +290,8 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
         </div>
       </div>
 
-      <div className="robot-page-column robot-page-column-right">
-        <div className="robot-page-panel" aria-label="Current calibration">
+      <div className="robot-page-column robot-page-column-right robot-page-column-console">
+        <div className="robot-page-panel robot-page-column-top" aria-label="Current calibration">
           <h3>Current calibration</h3>
           <CalibrationTable variant="calibration" state={state} derived={derived} onPatch={update} />
           <button

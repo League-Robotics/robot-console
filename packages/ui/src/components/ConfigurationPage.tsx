@@ -74,6 +74,17 @@
  * ticket-017-008 already gave it: the Calibration *values* table (shared
  * per-robot state, editable here too), Wi-Fi, Radio, the footer actions,
  * and the generated code block.
+ *
+ * ## Ticket 018-018: the right column is viewport-bound too
+ *
+ * The right column now carries `robot-page-column-console`
+ * (`RobotPage.css`), the same sticky/viewport-height class the Main
+ * tab's column already used -- previously it had no height bound, so
+ * the generated-code block plus a growing console log could push the
+ * send line off screen (stakeholder report, 2026-09-14). The code
+ * block above the console also carries `robot-page-column-top`, so it
+ * shrinks and scrolls internally before the console log's own floor
+ * gives; see `RobotPage.css`'s doc comment on both classes.
  */
 import { useEffect, useMemo, useState } from "react";
 import { nameToRadioAddress } from "@robot-console/protocol";
@@ -376,8 +387,8 @@ export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
         </div>
       </div>
 
-      <div className="robot-page-column robot-page-column-right">
-        <div className="robot-page-panel calibration-code-panel" aria-label="Configuration code">
+      <div className="robot-page-column robot-page-column-right robot-page-column-console">
+        <div className="robot-page-panel calibration-code-panel robot-page-column-top" aria-label="Configuration code">
           <h3>Code for your program</h3>
           {code === "" ? (
             <p className="calibration-code-empty" data-testid="configuration-code-empty">

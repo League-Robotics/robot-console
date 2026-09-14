@@ -5,6 +5,22 @@
   max-width: 60rem;
 }
 
+/* Ticket 018-018: everything except the log itself keeps its natural
+ * height inside the flex column (`.device-console`) -- `flex: none` on
+ * the toolbar/hint/sequencing-indicator/send-form means only the log
+ * (`flex: 1` below) grows or shrinks when this component is mounted in
+ * a viewport-bound column (`RobotPage.css`'s `.robot-page-column-console`),
+ * so the send line at the bottom never gets squeezed. Harmless where
+ * `.device-console` is in plain document flow (`RelayPage`/
+ * `UnknownDevicePage`) -- `flex: none` is already every flex item's
+ * effective growth behavior there, just made explicit. */
+.console-toolbar,
+.console-hint,
+.sequencing-indicator,
+.console-send {
+  flex: none;
+}
+
 .console-toolbar {
   display: flex;
   align-items: center;
@@ -72,8 +88,19 @@
 
 .console-log {
   flex: 1;
-  /* Stakeholder (2026-09-13): the console never grows past the screen. */
-  min-height: 12rem;
+  /* Stakeholder (2026-09-13): the console never grows past the screen.
+   * Floor brought down from `12rem` to `8rem` (ticket 018-018) -- the
+   * viewport-bound column override (`RobotPage.css`'s
+   * `.robot-page-column-right .console-log`) repeats this same `8rem`
+   * floor so a short window (e.g. 700px tall) shrinks the log down to
+   * roughly this size rather than pushing the send line below it off
+   * screen. This `max-height` is the base (non-column-bound) rule still
+   * used by `RelayPage`/`UnknownDevicePage`, where `DeviceConsole` sits
+   * in plain document flow with no viewport-bound ancestor to defer to;
+   * on the three robot-page tabs the column override's own
+   * `max-height: none` wins (higher specificity), so the two rules
+   * never fight in practice. */
+  min-height: 8rem;
   max-height: calc(100vh - 22rem);
   overflow-y: auto;
   border: 1px solid var(--rc-border);

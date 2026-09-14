@@ -231,6 +231,17 @@ describe("RobotPage", () => {
     expect(el.querySelectorAll('[data-testid="console-log"]').length).toBe(1);
   });
 
+  it("ticket 018-018: the Main tab's right column carries the shared viewport-bound class, with CommandStrip directly under the console", () => {
+    const { el } = mountRobotPage();
+    const right = el.querySelector(".robot-page-column-right")!;
+    expect(right.classList.contains("robot-page-column-console")).toBe(true);
+
+    const consoleEl = right.querySelector('[aria-label="Console"]')!;
+    const strip = right.querySelector('[aria-label="Command strip"]')!;
+    expect(consoleEl.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+
   it("renders STOP/E-STOP inside DriveControls' pad in the left column, not as a page-level sibling (out-of-process, 2026-09-10)", () => {
     const { el } = mountRobotPage();
     const stop = el.querySelector('[data-testid="stop-button"]');

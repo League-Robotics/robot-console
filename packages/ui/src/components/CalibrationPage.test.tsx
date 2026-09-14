@@ -405,4 +405,21 @@ describe("CalibrationPage", () => {
       expect(el.querySelector('[data-testid="calibration-flash-result"]')?.textContent).toBe("sha256 mismatch on downloaded hex");
     });
   });
+
+  it("ticket 018-018: the right column is viewport-bound (shares RobotPage.css's `robot-page-column-console` with the Main tab), and the 'Current calibration' panel above the console carries the shrink/scroll wrapper class, in document order before the console", () => {
+    const { el } = mountPage();
+    const right = el.querySelector(".robot-page-column-right")!;
+    expect(right.classList.contains("robot-page-column-console")).toBe(true);
+
+    const top = el.querySelector('[aria-label="Current calibration"]')!;
+    expect(top.classList.contains("robot-page-column-top")).toBe(true);
+    expect(right.contains(top)).toBe(true);
+
+    const consoleEl = el.querySelector('[aria-label="Console"]')!;
+    expect(right.contains(consoleEl)).toBe(true);
+    // `robot-page-column-top`'s own `max-height` formula (RobotPage.css)
+    // reserves room for `.device-console` below it -- this only holds if
+    // the panel really does precede the console in the column.
+    expect(top.compareDocumentPosition(consoleEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
 });

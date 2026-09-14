@@ -119,12 +119,20 @@
 import { useCallback, useEffect, useState, type ChangeEvent } from "react";
 import { useNavigate } from "react-router";
 import type {
+  FirmwareAvailability,
   FirmwareKind,
   FlashLocalReadyMessage,
   SnapshotLink,
 } from "@robot-console/host/src/wsMessages.js";
 import { useFirmwareStatus, useFlashProgress, useSendable, useWsActions, type FlashProgressState } from "../ws/WsProvider";
-import { FIRMWARE_LABEL, PHASE_LABEL, firmwareDiagnosticDetail, firmwareDisabledReason } from "../deviceDisplay";
+import {
+  FIRMWARE_LABEL,
+  PHASE_LABEL,
+  firmwareDiagnosticDetail,
+  firmwareDisabledReason,
+  firmwareSourceText,
+  releaseDisplayName,
+} from "../deviceDisplay";
 import "./FlashControls.css";
 
 /** Hard cap on a local-hex upload, checked client-side before a single
@@ -146,7 +154,7 @@ type LocalHexState =
   | { phase: "idle" }
   | { phase: "oversize"; fileName: string; byteLength: number }
   | { phase: "awaiting-ready"; fileName: string; byteLength: number; sha256: string; bytes: ArrayBuffer }
-  | { phase: "uploaded"; uploadId: string; fileName: string; sha256: string };
+  | { phase: "uploaded"; uploadId: string; fileName: string; byteLength: number; sha256: string };
 
 async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
@@ -166,12 +174,23 @@ function buildUploadFrame(uploadId: string, bytes: ArrayBuffer): Uint8Array {
   return frame;
 }
 
-function sourceLabel(source: FlashProgressState["source"]): string {
-  return source.kind === "release" ? FIRMWARE_LABEL[source.firmware] : `"${source.fileName}"`;
+/** What a flash's `source` should be called in progress/result copy
+ * (ticket 018-017: "Flashing nezha-robot-template v0.20260913.1:
+ * writing…" rather than the old generic "Flashing relay: …") -- the
+ * configured release's own repo+tag name when one is known, falling
+ * back to {@link FIRMWARE_LABEL}'s generic word only in the edge case
+ * where `firmwareStatus` doesn't (yet, or any more) have that firmware
+ * configured. A local-hex flash is always named by its own file name --
+ * there is no release source to look up. */
+function flashSourceName(source: FlashProgressState["source"], firmwareStatus: Record<FirmwareKind, FirmwareAvailability>): string {
+  if (source.kind === "release") {
+    return releaseDisplayName(firmwareStatus[source.firmware]) ?? FIRMWARE_LABEL[source.firmware];
+  }
+  return source.fileName;
 }
 
-function flashProgressText(progress: FlashProgressState): string {
-  return `Flashing ${sourceLabel(progress.source)}: ${PHASE_LABEL[progress.phase]}…`;
+function flashProgressText(progress: FlashProgressState, firmwareStatus: Record<FirmwareKind, FirmwareAvailability>): string {
+  return `Flashing ${flashSourceName(progress.source, firmwareStatus)}: ${PHASE_LABEL[progress.phase]}…`;
 }
 
 export interface FlashControlsProps {
@@ -191,7 +210,13 @@ export function FlashControls({ link }: FlashControlsProps) {
   const sendable = useSendable();
 
   const [flashError, setFlashError] = useState<string | null>(null);
-  const [reidentifyTimedOut, setReidentifyTimedOut] = useState(false);
+  // Ticket 018-017: what to name in "Flashed <name>. Waiting …" -- `null`
+  // means no reidentify-timeout result is currently showing; a non-null
+  // value is the flash's own source name ({@link flashSourceName}),
+  // computed once at the moment the result arrives (not re-derived later
+  // from `firmwareStatus`, which can move on to a newer poll by the time
+  // this renders).
+  const [reidentifyName, setReidentifyName] = useState<string | null>(null);
   const [localHex, setLocalHex] = useState<LocalHexState>({ phase: "idle" });
 
   useEffect(() => {
@@ -208,12 +233,12 @@ export function FlashControls({ link }: FlashControlsProps) {
         // The write succeeded; the board just hasn't announced yet (see
         // this module's doc comment). Never worded as a failure, and
         // deliberately does not navigate away.
-        setReidentifyTimedOut(true);
+        setReidentifyName(flashSourceName(message.source, firmwareStatus));
         return;
       }
       navigate("/");
     });
-  }, [link.id, navigate, onFlashResult]);
+  }, [link.id, navigate, onFlashResult, firmwareStatus]);
 
   useEffect(() => {
     return onFlashLocalReady((message: FlashLocalReadyMessage) => {
@@ -225,7 +250,7 @@ export function FlashControls({ link }: FlashControlsProps) {
           return prev;
         }
         sendBinary(buildUploadFrame(message.uploadId, prev.bytes));
-        return { phase: "uploaded", uploadId: message.uploadId, fileName: prev.fileName, sha256: prev.sha256 };
+        return { phase: "uploaded", uploadId: message.uploadId, fileName: prev.fileName, byteLength: prev.byteLength, sha256: prev.sha256 };
       });
     });
   }, [onFlashLocalReady, sendBinary]);
@@ -236,7 +261,7 @@ export function FlashControls({ link }: FlashControlsProps) {
         return;
       }
       setFlashError(null);
-      setReidentifyTimedOut(false);
+      setReidentifyName(null);
       send({ type: "flash-start", linkId: link.id, source: { kind: "release", firmware } });
     },
     [link.id, send, sendable],
@@ -252,7 +277,7 @@ export function FlashControls({ link }: FlashControlsProps) {
         return;
       }
       setFlashError(null);
-      setReidentifyTimedOut(false);
+      setReidentifyName(null);
       if (file.size > MAX_LOCAL_HEX_BYTES) {
         setLocalHex({ phase: "oversize", fileName: file.name, byteLength: file.size });
         return;
@@ -272,7 +297,7 @@ export function FlashControls({ link }: FlashControlsProps) {
       return;
     }
     setFlashError(null);
-    setReidentifyTimedOut(false);
+    setReidentifyName(null);
     send({
       type: "flash-start",
       linkId: link.id,
@@ -285,13 +310,15 @@ export function FlashControls({ link }: FlashControlsProps) {
   const robotReason = firmwareDisabledReason(firmwareStatus.robot);
   const relayDetail = firmwareDiagnosticDetail(firmwareStatus.relay);
   const robotDetail = firmwareDiagnosticDetail(firmwareStatus.robot);
+  const relaySource = firmwareSourceText(firmwareStatus.relay);
+  const robotSource = firmwareSourceText(firmwareStatus.robot);
   const localHexBusy = localHex.phase === "awaiting-ready";
 
   return (
     <div className="flash-controls">
       {progress ? (
         <p className="device-flash-progress" role="status">
-          {flashProgressText(progress)}
+          {flashProgressText(progress, firmwareStatus)}
         </p>
       ) : (
         <div className="device-flash-section">
@@ -305,7 +332,21 @@ export function FlashControls({ link }: FlashControlsProps) {
               >
                 Flash relay firmware
               </button>
-              {relayReason && <p className="device-flash-hint">{relayReason}</p>}
+              {/* Ticket 018-017: mutually exclusive with the reason
+               * paragraph -- "if unavailable, show the plain reason
+               * instead" of the source line. */}
+              {relayReason ? (
+                <p className="device-flash-hint">{relayReason}</p>
+              ) : (
+                relaySource && (
+                  <p className="device-flash-source" data-testid="flash-source-relay">
+                    <a href={relaySource.href} target="_blank" rel="noreferrer noopener">
+                      {relaySource.repoName}
+                    </a>{" "}
+                    {relaySource.tag} · {relaySource.checkedText}
+                  </p>
+                )
+              )}
               {relayDetail && (
                 <details className="device-flash-detail">
                   <summary>Details for instructors</summary>
@@ -322,7 +363,18 @@ export function FlashControls({ link }: FlashControlsProps) {
               >
                 Flash robot firmware
               </button>
-              {robotReason && <p className="device-flash-hint">{robotReason}</p>}
+              {robotReason ? (
+                <p className="device-flash-hint">{robotReason}</p>
+              ) : (
+                robotSource && (
+                  <p className="device-flash-source" data-testid="flash-source-robot">
+                    <a href={robotSource.href} target="_blank" rel="noreferrer noopener">
+                      {robotSource.repoName}
+                    </a>{" "}
+                    {robotSource.tag} · {robotSource.checkedText}
+                  </p>
+                )
+              )}
               {robotDetail && (
                 <details className="device-flash-detail">
                   <summary>Details for instructors</summary>
@@ -359,7 +411,9 @@ export function FlashControls({ link }: FlashControlsProps) {
             )}
             {localHex.phase === "uploaded" && (
               <>
-                <p className="device-flash-hint">Ready to flash "{localHex.fileName}".</p>
+                <p className="device-flash-hint">
+                  Ready to flash "{localHex.fileName}" ({Math.ceil(localHex.byteLength / 1024)}KB).
+                </p>
                 <button
                   type="button"
                   className="device-button device-button-primary"
@@ -380,9 +434,9 @@ export function FlashControls({ link }: FlashControlsProps) {
         </p>
       )}
 
-      {reidentifyTimedOut && (
+      {reidentifyName !== null && (
         <p className="device-note" role="status">
-          Flashed. Waiting for the board to come back…
+          Flashed {reidentifyName}. Waiting for the board to come back…
         </p>
       )}
     </div>

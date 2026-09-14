@@ -430,6 +430,11 @@ export interface ProjectionFirmwareRow {
   readonly available: boolean | null;
   readonly reason: string | null;
   readonly message: string | null;
+  /** Ticket 018-017: `firmware.checked_at`, so the UI can show when a
+   * release was last resolved -- carried through unchanged to {@link
+   * FirmwareAvailability}'s own `checkedAt` field by
+   * `projection.ts`'s `buildFirmwareAvailability`. */
+  readonly checkedAt: number | null;
 }
 
 /** One `tasks` row, as {@link Store.projectionRows} needs it. */
@@ -1739,7 +1744,7 @@ export class Store {
     }>;
 
     const firmwareRows = this.db
-      .prepare("SELECT kind, repo, tag, available, reason, message FROM firmware")
+      .prepare("SELECT kind, repo, tag, available, reason, message, checked_at FROM firmware")
       .all() as Array<{
       kind: "relay" | "robot";
       repo: string | null;
@@ -1747,6 +1752,7 @@ export class Store {
       available: number | null;
       reason: string | null;
       message: string | null;
+      checked_at: number | null;
     }>;
 
     const taskRows = this.db.prepare("SELECT name, state, heartbeat_at FROM tasks").all() as Array<{
@@ -1837,6 +1843,7 @@ export class Store {
         available: f.available === null ? null : f.available !== 0,
         reason: f.reason,
         message: f.message,
+        checkedAt: f.checked_at,
       })),
       tasks: taskRows.map((t) => ({ name: t.name, state: t.state, heartbeatAt: t.heartbeat_at })),
       lastChecked: lastCheckedRows.map((r) => ({ deviceId: r.device_id, at: r.at })),

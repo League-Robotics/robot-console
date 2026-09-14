@@ -433,6 +433,7 @@ function buildFirmwareAvailability(row: ProjectionFirmwareRow | undefined): Firm
     repoUrl: row.repo,
     tag: row.tag,
     available,
+    checkedAt: row.checkedAt,
     ...(!available && row.reason !== null ? { reason: row.reason } : {}),
     ...(!available && row.message !== null ? { message: row.message } : {}),
   } as FirmwareAvailability;

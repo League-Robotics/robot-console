@@ -38,7 +38,15 @@
 import { useEffect, useState } from "react";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useFirmwareStatus, useFlashProgress, useSendable, useWsActions } from "../ws/WsProvider";
-import { FIRMWARE_LABEL, PHASE_LABEL, canBeFlashed, firmwareDisabledReason, isCalibrationProgram } from "../deviceDisplay";
+import {
+  FIRMWARE_LABEL,
+  PHASE_LABEL,
+  canBeFlashed,
+  firmwareDisabledReason,
+  firmwareSourceText,
+  isCalibrationProgram,
+  releaseDisplayName,
+} from "../deviceDisplay";
 import "./CalibrationPage.css";
 
 export interface CalibrationFirmwarePanelProps {
@@ -80,6 +88,9 @@ export function CalibrationFirmwarePanel({ device, link }: CalibrationFirmwarePa
     });
   }, [flashLink, onFlashResult]);
 
+  const robotSource = firmwareSourceText(firmwareStatus.robot);
+  const robotReleaseName = releaseDisplayName(firmwareStatus.robot) ?? FIRMWARE_LABEL.robot;
+
   function flashCalibrationFirmware(): void {
     if (!flashLink || !sendable || robotFirmwareReason !== null || flashProgress) {
       return;
@@ -103,7 +114,7 @@ export function CalibrationFirmwarePanel({ device, link }: CalibrationFirmwarePa
         </p>
       ) : flashProgress ? (
         <p className="device-flash-progress" role="status" data-testid="calibration-flash-progress">
-          Flashing {FIRMWARE_LABEL.robot}: {PHASE_LABEL[flashProgress.phase]}…
+          Flashing {robotReleaseName}: {PHASE_LABEL[flashProgress.phase]}…
         </p>
       ) : (
         <>
@@ -117,7 +128,21 @@ export function CalibrationFirmwarePanel({ device, link }: CalibrationFirmwarePa
           >
             Flash calibration firmware
           </button>
-          {robotFirmwareReason && <p className="device-flash-hint">{robotFirmwareReason}</p>}
+          {/* Ticket 018-017: mutually exclusive with the reason
+           * paragraph -- "if unavailable, show the plain reason instead"
+           * of the source line. */}
+          {robotFirmwareReason ? (
+            <p className="device-flash-hint">{robotFirmwareReason}</p>
+          ) : (
+            robotSource && (
+              <p className="device-flash-source" data-testid="calibration-flash-source">
+                <a href={robotSource.href} target="_blank" rel="noreferrer noopener">
+                  {robotSource.repoName}
+                </a>{" "}
+                {robotSource.tag} · {robotSource.checkedText}
+              </p>
+            )
+          )}
         </>
       )}
 
@@ -129,7 +154,7 @@ export function CalibrationFirmwarePanel({ device, link }: CalibrationFirmwarePa
           </p>
         ) : flashOutcome.reidentify === "timeout" ? (
           <p className="device-note" role="status" data-testid="calibration-flash-result">
-            Flashed. Waiting for the board to come back…
+            Flashed {robotReleaseName}. Waiting for the board to come back…
           </p>
         ) : isCalibrationProgram(device.program) ? (
           <p className="credentials-result credentials-result-ok" role="status" data-testid="calibration-flash-result">

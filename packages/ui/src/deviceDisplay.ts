@@ -43,15 +43,38 @@ export function nameDisplay(device: SnapshotDevice): { text: string; flagged: bo
   return { text: device.name, flagged: false };
 }
 
+/** The release version to show for a robot's `program` string -- ticket
+ * 018-017 (stakeholder-found defect the same day as 018-016): a
+ * calibration build's program is `calibration-0.20260913.1`, and the
+ * card should show the release version (`0.20260913.1`), not the whole
+ * program string. The pattern is `<word-or-hyphen-chars>-<version>`
+ * (one or more lowercase-letter/hyphen segments, a literal `-`, then a
+ * version starting with a digit) -- matched generically rather than
+ * hardcoding the `calibration-` prefix, so any future release-program
+ * naming scheme following the same shape is covered without a code
+ * change. A program string that doesn't match this shape (no parsing
+ * assumed for it) is returned unchanged -- there is nothing to strip
+ * out of it. */
+export function programVersionText(program: string): string {
+  const match = /^[a-z-]+-(\d[\w.]*)$/.exec(program);
+  return match ? match[1]! : program;
+}
+
 /** A device's role text.
  *
  * For `kind === "robot"` (018-016, stakeholder verbatim: "show the
  * common name, the role, and the version number all on the same
- * line"): joins whichever of `commonName`, `role`, `version` are
- * currently known with ` · `, e.g. `robot · NEZHA2 · 1.20260912.8` in
- * full, `robot · NEZHA2` before a version is known, down to a bare
- * `NEZHA2` for a robot identified before this ticket ever wrote
- * `commonName` -- and "Role unknown" only once all three are absent
+ * line"; corrected by 018-017, stakeholder-found defect the same day:
+ * the third part is the firmware release's own version, derived from
+ * `program` via {@link programVersionText} -- not `device.version`,
+ * which is the pxt-nezha-diffdrive *library* version bundled into
+ * whatever program is running, e.g. `1.20260912.8`, and moved to the
+ * Diagnostics tab as "Library version" instead of being shown here as
+ * "the" version): joins whichever of `commonName`, `role`, the parsed
+ * program version are currently known with ` · `, e.g. `robot · NEZHA2
+ * · 0.20260913.1` in full, `robot · NEZHA2` before a program is known,
+ * down to a bare `NEZHA2` for a robot identified before commonName was
+ * ever written -- and "Role unknown" only once all three are absent
  * (never yet identified at all).
  *
  * For `kind === "relay"`, unchanged from ticket 018-010, item 3 --
@@ -71,7 +94,8 @@ export function nameDisplay(device: SnapshotDevice): { text: string; flagged: bo
  * neither falls back to "Role unknown", same as before. */
 export function roleDisplay(device: SnapshotDevice): string {
   if (device.kind === "robot") {
-    const parts = [device.commonName, device.role, device.version].filter(
+    const programVersion = device.program !== null && device.program.length > 0 ? programVersionText(device.program) : null;
+    const parts = [device.commonName, device.role, programVersion].filter(
       (part): part is string => part !== null && part !== undefined && part.length > 0,
     );
     return parts.length > 0 ? parts.join(" · ") : "Role unknown";
@@ -166,6 +190,81 @@ export function firmwareDiagnosticDetail(availability: FirmwareAvailability | un
     return null;
   }
   return `Checked ${availability.repoUrl} (tag: ${availability.tag}): ${availability.message}`;
+}
+
+/** A GitHub repo URL's own short display name -- its final path segment
+ * (e.g. `https://github.com/League-Robotics/nezha-robot-template` ->
+ * `nezha-robot-template`). Ticket 018-017: this is the name flash
+ * progress/result copy and the modal/Calibration-panel source line both
+ * use in place of the generic `FIRMWARE_LABEL` word ("relay"/"robot"),
+ * so a student sees exactly what release is being flashed. Falls back
+ * to the full URL on the (never expected in practice) shape with no
+ * path segment at all. */
+export function repoShortName(repoUrl: string): string {
+  const segments = repoUrl.replace(/\/+$/, "").split("/").filter((segment) => segment.length > 0);
+  return segments.length > 0 ? segments[segments.length - 1]! : repoUrl;
+}
+
+/** "`<repo short name>` `<tag>`" for a configured release, e.g.
+ * `nezha-robot-template v0.20260913.1` -- the name flash progress/result
+ * copy names (ticket 018-017 acceptance: "Flashing nezha-robot-template
+ * v0.20260913.1: writing…", "Flashed nezha-robot-template
+ * v0.20260913.1"). `null` when nothing is configured for this firmware
+ * kind at all -- callers fall back to {@link FIRMWARE_LABEL}'s generic
+ * word in that case (there is nothing more specific to name). */
+export function releaseDisplayName(availability: FirmwareAvailability | undefined): string | null {
+  if (!availability || !availability.configured) {
+    return null;
+  }
+  return `${repoShortName(availability.repoUrl)} ${availability.tag}`;
+}
+
+/** Short, relative-time phrasing for "how long ago" `at` was --
+ * "just now" / "N minutes ago" / "N hours ago" -- falling back to a
+ * locale date/time string once it's a day or older, so a check from
+ * last week never reads as an absurd "168 hours ago". Used only by
+ * {@link firmwareSourceText}'s "checked …" text. */
+export function relativeTimeText(at: number, now: number = Date.now()): string {
+  const diffMs = Math.max(0, now - at);
+  if (diffMs < 45_000) {
+    return "just now";
+  }
+  const minutes = Math.round(diffMs / 60_000);
+  if (minutes < 60) {
+    return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  }
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) {
+    return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  }
+  return new Date(at).toLocaleString();
+}
+
+/** Repo link + tag + "checked …" info for one configured firmware
+ * release -- the small source line the flash modal (`FlashControls.tsx`)
+ * and `CalibrationFirmwarePanel.tsx` both render under each release
+ * button (ticket 018-017; one shared helper per the ticket's own
+ * instruction so the two surfaces can never drift). `href` points at the
+ * GitHub release page (`<repoUrl>/releases/tag/<tag>`), meant to be
+ * rendered as a link opened in a new tab. `null` when nothing is
+ * configured for this firmware kind -- callers already show {@link
+ * firmwareDisabledReason}'s plain text in that case (and whenever the
+ * firmware isn't currently available at all: each call site renders the
+ * reason paragraph and this source line as mutually exclusive, per the
+ * ticket's "if unavailable, show the plain reason instead"). */
+export function firmwareSourceText(
+  availability: FirmwareAvailability | undefined,
+  now: number = Date.now(),
+): { href: string; repoName: string; tag: string; checkedText: string } | null {
+  if (!availability || !availability.configured) {
+    return null;
+  }
+  return {
+    href: `${availability.repoUrl}/releases/tag/${availability.tag}`,
+    repoName: repoShortName(availability.repoUrl),
+    tag: availability.tag,
+    checkedText: availability.checkedAt === null ? "checked: never" : `checked ${relativeTimeText(availability.checkedAt, now)}`,
+  };
 }
 
 /** Student-facing label for a configured release firmware kind. */

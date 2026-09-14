@@ -44,6 +44,16 @@
   color: var(--rc-text-muted);
 }
 
+.device-flash-source {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--rc-text-muted);
+}
+
+.device-flash-source a {
+  color: inherit;
+}
+
 .device-flash-detail {
   margin: 0;
   font-size: 0.78rem;

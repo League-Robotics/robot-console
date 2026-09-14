@@ -265,10 +265,15 @@ export interface SendCommandMessage {
  * recent poll; `reason` is present only when `available` is `false`.
  * `message` is the specific diagnostic `releases.ts`'s `resolveRelease`
  * already computes for the failure, carried alongside `reason` so a
- * client can show *why*, not just which short token failed. */
+ * client can show *why*, not just which short token failed. `checkedAt`
+ * (ticket 018-017) is the store's `firmware.checked_at` for this kind's
+ * most recent poll (`null` if it has never been checked at all) -- the
+ * flash modal and Calibration tab firmware panel both show it next to
+ * the repo/tag so a student or instructor can tell how fresh the
+ * resolved release is. */
 export type FirmwareAvailability =
   | { configured: false }
-  | { configured: true; repoUrl: string; tag: string; available: boolean; reason?: string; message?: string };
+  | { configured: true; repoUrl: string; tag: string; available: boolean; checkedAt: number | null; reason?: string; message?: string };
 
 /** One link as rendered on the front page -- inside a {@link
  * SnapshotDevice.links} list when its `deviceId` is known, or inside

@@ -554,7 +554,7 @@ describe("useRelays / useFirmware / useWifiSetting / useTasks", () => {
       getSocket().emitMessage(
         snapshotFixture({
           relays: [{ linkId: "usb-relay-1", lease: "sweep" }],
-          firmware: { relay: { configured: false }, robot: { configured: true, repoUrl: "r", tag: "t", available: true } },
+          firmware: { relay: { configured: false }, robot: { configured: true, repoUrl: "r", tag: "t", available: true, checkedAt: null } },
           wifi: { ssid: "classroom-net", source: "stored" },
           tasks: [{ name: "usbWatcher", state: "running", heartbeatAt: 1 }],
         }),

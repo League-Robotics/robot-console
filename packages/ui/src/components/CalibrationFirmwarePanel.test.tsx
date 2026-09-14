@@ -104,7 +104,16 @@ function markRobotFirmwareAvailable(socket: FakeSocket): void {
       devices: [],
       unassigned: [],
       relays: [],
-      firmware: { relay: { configured: false }, robot: { configured: true, repoUrl: "https://x", tag: "latest", available: true } },
+      firmware: {
+        relay: { configured: false },
+        robot: {
+          configured: true,
+          repoUrl: "https://github.com/League-Robotics/nezha-robot-template",
+          tag: "v0.20260913.1",
+          available: true,
+          checkedAt: 1000,
+        },
+      },
       wifi: { ssid: null, source: null },
       tasks: [],
     });
@@ -214,7 +223,53 @@ describe("CalibrationFirmwarePanel", () => {
       });
     });
     expect(el.querySelector('[data-testid="calibration-flash-result"]')?.textContent).toBe(
-      "Flashed. Waiting for the board to come back…",
+      "Flashed robot. Waiting for the board to come back…",
+    );
+  });
+
+  it("018-017: shows a linked repo name, tag, and 'checked ...' text under the Flash button once the release is available", () => {
+    const { el, socket } = mountPanel();
+    markRobotFirmwareAvailable(socket);
+    const source = el.querySelector('[data-testid="calibration-flash-source"]')!;
+    expect(source).not.toBeNull();
+    const link = source.querySelector("a")!;
+    expect(link.getAttribute("href")).toBe("https://github.com/League-Robotics/nezha-robot-template/releases/tag/v0.20260913.1");
+    expect(link.textContent).toBe("nezha-robot-template");
+    expect(source.textContent).toContain("v0.20260913.1");
+    expect(source.textContent).toContain("checked");
+  });
+
+  it("018-017: shows the plain disabled reason instead of the source line while firmware isn't configured yet", () => {
+    const { el } = mountPanel();
+    expect(el.querySelector('[data-testid="calibration-flash-source"]')).toBeNull();
+  });
+
+  it("018-017: names the configured release's own repo+tag in the flash progress line", () => {
+    const { el, socket } = mountPanel();
+    markRobotFirmwareAvailable(socket);
+    act(() => {
+      socket.emitMessage({ type: "flash-progress", linkId: LINK_ID, source: { kind: "release", firmware: "robot" }, phase: "writing", seq: 1 });
+    });
+    expect(el.querySelector('[data-testid="calibration-flash-progress"]')?.textContent).toBe(
+      "Flashing nezha-robot-template v0.20260913.1: writing…",
+    );
+  });
+
+  it("018-017: names the configured release's own repo+tag in the reidentify-timeout result line", () => {
+    const { el, socket } = mountPanel();
+    markRobotFirmwareAvailable(socket);
+    act(() => {
+      socket.emitMessage({
+        type: "flash-result",
+        linkId: LINK_ID,
+        source: { kind: "release", firmware: "robot" },
+        status: "ok",
+        reidentify: "timeout",
+        seq: 1,
+      });
+    });
+    expect(el.querySelector('[data-testid="calibration-flash-result"]')?.textContent).toBe(
+      "Flashed nezha-robot-template v0.20260913.1. Waiting for the board to come back…",
     );
   });
 });

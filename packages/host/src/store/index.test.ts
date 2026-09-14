@@ -1456,7 +1456,7 @@ describe("Store: projectionRows", () => {
 
       expect(rows.relayLeases).toEqual([{ relayLinkId: "relay-1", owner: "sweep" }]);
       expect(rows.firmware).toEqual([
-        { kind: "robot", repo: "org/repo", tag: "v1", available: true, reason: null, message: null },
+        { kind: "robot", repo: "org/repo", tag: "v1", available: true, reason: null, message: null, checkedAt: 7 },
       ]);
       expect(rows.tasks).toEqual([{ name: "usbWatcher", state: "running", heartbeatAt: 8 }]);
       expect(rows.lastChecked).toEqual([{ deviceId: 1198504156, at: 11 }]);

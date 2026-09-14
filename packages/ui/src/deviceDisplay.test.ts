@@ -19,6 +19,7 @@ import {
   findSweepingCandidateName,
   firmwareDiagnosticDetail,
   firmwareDisabledReason,
+  firmwareSourceText,
   hiddenLinkCount,
   isCalibrationProgram,
   isLinkAnswering,
@@ -27,6 +28,10 @@ import {
   linkStateText,
   nameDisplay,
   plainFailureReason,
+  programVersionText,
+  relativeTimeText,
+  releaseDisplayName,
+  repoShortName,
   roleDisplay,
   stripInternalIds,
   sweepRateSuffix,
@@ -173,28 +178,49 @@ describe("nameDisplay / roleDisplay", () => {
     expect(roleDisplay(device({ kind: "robot", role: null }))).toBe("Role unknown");
   });
 
-  it("018-016: a robot with commonName, role, and version all known joins them with ' · '", () => {
-    expect(roleDisplay(device({ commonName: "robot", role: "NEZHA2", version: "1.20260912.8" }))).toBe(
-      "robot · NEZHA2 · 1.20260912.8",
-    );
+  it("018-016/018-017: a robot with commonName, role, and a program all known joins them with ' · ', using the program's own release version (not device.version)", () => {
+    expect(
+      roleDisplay(
+        device({ commonName: "robot", role: "NEZHA2", program: "calibration-0.20260913.1", version: "1.20260912.8" }),
+      ),
+    ).toBe("robot · NEZHA2 · 0.20260913.1");
   });
 
-  it("018-016: a robot with no version yet omits it, joining just commonName and role", () => {
-    expect(roleDisplay(device({ commonName: "robot", role: "NEZHA2", version: null }))).toBe("robot · NEZHA2");
+  it("018-016: a robot with no program yet omits the third part, joining just commonName and role", () => {
+    expect(roleDisplay(device({ commonName: "robot", role: "NEZHA2", program: null }))).toBe("robot · NEZHA2");
   });
 
-  it("018-016: a robot with no commonName omits it, joining just role and version", () => {
-    expect(roleDisplay(device({ commonName: null, role: "NEZHA2", version: "1.20260912.8" }))).toBe(
-      "NEZHA2 · 1.20260912.8",
+  it("018-016/018-017: a robot with no commonName omits it, joining just role and the program's release version", () => {
+    expect(roleDisplay(device({ commonName: null, role: "NEZHA2", program: "calibration-0.20260913.1" }))).toBe(
+      "NEZHA2 · 0.20260913.1",
     );
   });
 
   it("018-016: a robot with only commonName known shows just that", () => {
-    expect(roleDisplay(device({ commonName: "robot", role: null, version: null }))).toBe("robot");
+    expect(roleDisplay(device({ commonName: "robot", role: null, program: null }))).toBe("robot");
   });
 
-  it("018-016: a robot with nothing known at all (commonName, role, version all null) falls back to 'Role unknown'", () => {
-    expect(roleDisplay(device({ commonName: null, role: null, version: null }))).toBe("Role unknown");
+  it("018-016: a robot with nothing known at all (commonName, role, program all null) falls back to 'Role unknown'", () => {
+    expect(roleDisplay(device({ commonName: null, role: null, program: null }))).toBe("Role unknown");
+  });
+
+  // 018-017: stakeholder-found defect the same day as 018-016 -- the
+  // card was showing `device.version` (the pxt-nezha-diffdrive library
+  // version, e.g. "1.20260912.8") as "the" version. It must never
+  // appear in the identity line at all any more, regardless of what it
+  // is set to -- only the program-derived release version does.
+  it("018-017: device.version never appears in the identity line, even when it differs from the program's release version", () => {
+    expect(
+      roleDisplay(
+        device({ commonName: "robot", role: "NEZHA2", program: "calibration-0.20260913.1", version: "9.9.9" }),
+      ),
+    ).toBe("robot · NEZHA2 · 0.20260913.1");
+  });
+
+  it("018-017: a non-calibration program string is shown unchanged (no parsing assumed) as the third part", () => {
+    expect(roleDisplay(device({ commonName: "robot", role: "NEZHA2", program: "diffdrive" }))).toBe(
+      "robot · NEZHA2 · diffdrive",
+    );
   });
 
   it("018-016: relays are unaffected by commonName -- role text is unchanged even when commonName is set", () => {
@@ -522,6 +548,7 @@ describe("firmwareDiagnosticDetail", () => {
     repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive",
     tag: "v0.20260909.1",
     available: false,
+    checkedAt: 1000,
     reason: "no-asset",
     message: "release v0.20260909.1 is missing MICROBIT.hex",
   };
@@ -541,6 +568,7 @@ describe("firmwareDiagnosticDetail", () => {
       repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive",
       tag: "latest",
       available: false,
+      checkedAt: 1000,
       reason: "no-releases",
     };
     expect(firmwareDiagnosticDetail(noReleases)).toBeNull();
@@ -553,6 +581,7 @@ describe("firmwareDiagnosticDetail", () => {
         repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive",
         tag: "latest",
         available: true,
+        checkedAt: 1000,
       }),
     ).toBeNull();
   });
@@ -572,9 +601,108 @@ describe("firmwareDiagnosticDetail", () => {
         repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive",
         tag: "latest",
         available: false,
+        checkedAt: null,
         reason: "not-yet-checked",
       }),
     ).toBeNull();
+  });
+});
+
+describe("018-017: repoShortName / releaseDisplayName / relativeTimeText / firmwareSourceText", () => {
+  it("repoShortName returns a GitHub repo URL's final path segment", () => {
+    expect(repoShortName("https://github.com/League-Robotics/nezha-robot-template")).toBe("nezha-robot-template");
+    expect(repoShortName("https://github.com/League-Robotics/microbit-radio-relay")).toBe("microbit-radio-relay");
+  });
+
+  it("repoShortName tolerates a trailing slash", () => {
+    expect(repoShortName("https://github.com/League-Robotics/nezha-robot-template/")).toBe("nezha-robot-template");
+  });
+
+  it("releaseDisplayName joins the repo's short name and tag", () => {
+    expect(
+      releaseDisplayName({
+        configured: true,
+        repoUrl: "https://github.com/League-Robotics/nezha-robot-template",
+        tag: "v0.20260913.1",
+        available: true,
+        checkedAt: 1000,
+      }),
+    ).toBe("nezha-robot-template v0.20260913.1");
+  });
+
+  it("releaseDisplayName is null when nothing is configured, or the status is undefined", () => {
+    expect(releaseDisplayName({ configured: false })).toBeNull();
+    expect(releaseDisplayName(undefined)).toBeNull();
+  });
+
+  it("relativeTimeText reads 'just now' for anything under 45 seconds old", () => {
+    expect(relativeTimeText(1_000_000 - 10_000, 1_000_000)).toBe("just now");
+  });
+
+  it("relativeTimeText reads minutes, then hours, then falls back to a locale string past a day", () => {
+    const now = 1_000_000_000;
+    expect(relativeTimeText(now - 5 * 60_000, now)).toBe("5 minutes ago");
+    expect(relativeTimeText(now - 60_000, now)).toBe("1 minute ago");
+    expect(relativeTimeText(now - 3 * 60 * 60_000, now)).toBe("3 hours ago");
+    expect(relativeTimeText(now - 25 * 60 * 60_000, now)).toBe(new Date(now - 25 * 60 * 60_000).toLocaleString());
+  });
+
+  it("firmwareSourceText returns the release page link, tag, and 'checked ...' text for a configured release", () => {
+    const now = 1_000_000;
+    const info = firmwareSourceText(
+      {
+        configured: true,
+        repoUrl: "https://github.com/League-Robotics/nezha-robot-template",
+        tag: "v0.20260913.1",
+        available: true,
+        checkedAt: now - 5 * 60_000,
+      },
+      now,
+    );
+    expect(info).toEqual({
+      href: "https://github.com/League-Robotics/nezha-robot-template/releases/tag/v0.20260913.1",
+      repoName: "nezha-robot-template",
+      tag: "v0.20260913.1",
+      checkedText: "checked 5 minutes ago",
+    });
+  });
+
+  it("firmwareSourceText is null when nothing is configured, or the status is undefined", () => {
+    expect(firmwareSourceText({ configured: false })).toBeNull();
+    expect(firmwareSourceText(undefined)).toBeNull();
+  });
+
+  it("firmwareSourceText says 'checked: never' when checkedAt is null (configured but never polled)", () => {
+    expect(
+      firmwareSourceText({
+        configured: true,
+        repoUrl: "https://github.com/League-Robotics/nezha-robot-template",
+        tag: "latest",
+        available: false,
+        checkedAt: null,
+        reason: "not-yet-checked",
+      }),
+    ).toEqual({
+      href: "https://github.com/League-Robotics/nezha-robot-template/releases/tag/latest",
+      repoName: "nezha-robot-template",
+      tag: "latest",
+      checkedText: "checked: never",
+    });
+  });
+});
+
+describe("018-017: programVersionText", () => {
+  it("extracts the release version from a calibration-prefixed program string", () => {
+    expect(programVersionText("calibration-0.20260913.1")).toBe("0.20260913.1");
+  });
+
+  it("returns a non-calibration program string unchanged (no parsing assumed)", () => {
+    expect(programVersionText("diffdrive")).toBe("diffdrive");
+    expect(programVersionText("some-other-build")).toBe("some-other-build");
+  });
+
+  it("returns an already-bare version string unchanged (no leading word-hyphen to strip)", () => {
+    expect(programVersionText("0.20260913.1")).toBe("0.20260913.1");
   });
 });
 

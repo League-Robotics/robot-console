@@ -71,12 +71,14 @@ function firmwareStatusFixture(): Record<FirmwareKind, FirmwareAvailability> {
       repoUrl: "https://github.com/League-Robotics/microbit-radio-relay",
       tag: "v0.20260831.1",
       available: true,
+      checkedAt: 1000,
     },
     robot: {
       configured: true,
       repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive",
       tag: "latest",
       available: true,
+      checkedAt: 1000,
     },
   };
 }

@@ -348,7 +348,10 @@ describe("CalibrationPage", () => {
           devices: [],
           unassigned: [],
           relays: [],
-          firmware: { relay: { configured: false }, robot: { configured: true, repoUrl: "https://x", tag: "latest", available: true } },
+          firmware: {
+            relay: { configured: false },
+            robot: { configured: true, repoUrl: "https://x", tag: "latest", available: true, checkedAt: 1000 },
+          },
           wifi: { ssid: null, source: null },
           tasks: [],
         });

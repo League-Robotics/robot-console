@@ -32,7 +32,7 @@ export function DiagnosticsPanel({ device, current }: { device: SnapshotDevice; 
           <dd>{device.program ?? "—"}</dd>
         </div>
         <div>
-          <dt>Version</dt>
+          <dt>Library version</dt>
           <dd>{device.version ?? "—"}</dd>
         </div>
         <div>

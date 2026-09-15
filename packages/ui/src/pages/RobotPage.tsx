@@ -117,15 +117,12 @@ import { useState } from "react";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { nameDisplay } from "../deviceDisplay";
 import { CalibrationPage } from "../components/CalibrationPage";
-import { ChartsPanel } from "../components/ChartsPanel";
 import { CommandStrip } from "../components/CommandStrip";
 import { ConfigurationPage } from "../components/ConfigurationPage";
 import { DiagnosticsPanel } from "../components/DiagnosticsPanel";
 import { DeviceConsole } from "../components/DeviceConsole";
 import { DriveControls } from "../components/DriveControls";
 import { DriveTab } from "../components/DriveTab";
-import { FunctionsPanel } from "../components/FunctionsPanel";
-import { PathTracePanel } from "../components/PathTracePanel";
 import { StatusPanel } from "../components/StatusPanel";
 import "./RobotPage.css";
 
@@ -140,19 +137,19 @@ export interface RobotPageProps {
 
 /** OOP 2026-09-10: the robot page is split into tabs next to the
  * robot's name (stakeholder direction): Main (status, drive, console),
- * Drive (`DriveTab`: the pad alone, plus cursor keys and a gamepad),
+ * Drive (`DriveTab`: a larger pad with cursor keys, a gamepad, and a
+ * console on one side; functions, charts and the path trace on the other
+ * -- OOP 2026-09-14 folded the separate "Functions & charts" tab in),
  * Calibration (`CalibrationPage`: the Flash-calibration-firmware/verify
  * panel, the always-on Calibrate X/Calibrate A wizards plus any other
  * `cal*` function `FUNCS` reports, and the code block feeding one
  * calibration state -- always offered, ticket 018-013, not gated on the
- * robot currently running a calibration build), Functions & charts
- * (functions and the drive pad on one side, charts and the path trace on
- * the other), and Configuration (`ConfigurationPage`: per-robot settings,
+ * robot currently running a calibration build), and Configuration (`ConfigurationPage`: per-robot settings,
  * with the robot's full serial log under the code block -- see that
  * page's own doc comment). Sequencing state moved
  * into the console's own header (`DeviceConsole`) rather than a page
  * panel. */
-export type RobotTab = "main" | "drive" | "calibration" | "functions" | "configuration" | "diagnostics";
+export type RobotTab = "main" | "drive" | "calibration" | "configuration" | "diagnostics";
 
 export function RobotPage({ device, link }: RobotPageProps) {
   const [tab, setSelectedTab] = useState<RobotTab>("main");
@@ -160,7 +157,6 @@ export function RobotPage({ device, link }: RobotPageProps) {
     { id: "main", label: "Main" },
     { id: "drive", label: "Drive" },
     { id: "calibration", label: "Calibration" },
-    { id: "functions", label: "Functions & charts" },
     { id: "configuration", label: "Configuration" },
     { id: "diagnostics", label: "Diagnostics" },
   ];
@@ -214,40 +210,13 @@ export function RobotPage({ device, link }: RobotPageProps) {
         </div>
       )}
 
-      {tab === "drive" && <DriveTab link={link} />}
+      {tab === "drive" && <DriveTab link={link} name={device.name} />}
 
       {tab === "calibration" && <CalibrationPage link={link} name={device.name} device={device} />}
 
       {tab === "configuration" && <ConfigurationPage device={device} link={link} />}
 
       {tab === "diagnostics" && <DiagnosticsPanel device={device} current={link} />}
-
-      {tab === "functions" && (
-        <div className="robot-page-columns" data-testid="robot-tab-panel-functions">
-          <div className="robot-page-column robot-page-column-left">
-            <div className="robot-page-panel">
-              <h3>Functions</h3>
-              <FunctionsPanel link={link} name={device.name} />
-            </div>
-            {/* OOP 2026-09-10: the drive pad rides along on this tab too,
-                so a student can drive while watching functions/charts. */}
-            <div className="robot-page-panel">
-              <h3>Drive</h3>
-              <DriveControls link={link} />
-            </div>
-          </div>
-          <div className="robot-page-column robot-page-column-right">
-            <div className="robot-page-panel" aria-label="Charts">
-              <h3>Charts</h3>
-              <ChartsPanel linkId={link.id} />
-            </div>
-            <div className="robot-page-panel" aria-label="Path trace">
-              <h3>Path trace</h3>
-              <PathTracePanel linkId={link.id} />
-            </div>
-          </div>
-        </div>
-      )}
     </section>
   );
 }

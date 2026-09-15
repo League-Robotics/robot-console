@@ -683,6 +683,64 @@ describe("server.ts: session-open/session-close dispatch", () => {
       const link = h.store.snapshotRows().links.find((l) => l.id === childLinkId);
       expect(JSON.parse(link!.address as string)).toEqual({ relayLinkId: "usb-RELAY", channel: derived.channel, group: derived.group });
     });
+
+    // Stakeholder bench defect (2026-09-14): vevov moved to the 73-channel
+    // map (registry 20/82), but its old row through the USB bridge vitut
+    // still carried the old map's 37/43 -- and that row used to win, with
+    // the USB bridge never asking any registry at all.
+    it("a USB bridge asks a discovered pool's registry, and a registry answer beats the address left on an old link row", async () => {
+      const { registryServer, portPromise } = startFakeRegistry(20, 82, "derived");
+      const registryPort = await portPromise;
+
+      try {
+        const h = await harness();
+        h.store.upsertLink({ id: "mbrelay-POOL", transport: "mbrelay", address: { host: "127.0.0.1", port: 9, registryPort }, at: 1 });
+        h.store.upsertLink({ id: "usb-RELAY", transport: "usb", address: { path: "/dev/cu.relay" }, at: 1 });
+        const childLinkId = "radio-zeguz-via-usb-RELAY";
+        h.store.upsertLink({ id: childLinkId, transport: "radio", address: { relayLinkId: "usb-RELAY", channel: 37, group: 43 }, at: 1 });
+        const ws = fakeWebSocket();
+        h.wss.triggerConnection(ws);
+        await flush();
+
+        ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", relayLinkId: "usb-RELAY", name: "zeguz" })), false);
+        await waitFor(() => h.runtime.requestOpen.mock.calls.length > 0);
+        await flush();
+
+        expect(h.runtime.requestOpen).toHaveBeenCalledWith(childLinkId);
+        const link = h.store.snapshotRows().links.find((l) => l.id === childLinkId);
+        expect(JSON.parse(link!.address as string)).toEqual({ relayLinkId: "usb-RELAY", channel: 20, group: 82 });
+      } finally {
+        await new Promise<void>((resolve) => registryServer.close(() => resolve()));
+      }
+    });
+
+    it("with no registry answering, the address already on the link row still wins over the name-derived default", async () => {
+      // A port nothing listens on any more: the registry request is refused.
+      const closedServer = createServer();
+      const closedPort = await new Promise<number>((resolve) => {
+        closedServer.listen(0, "127.0.0.1", () => {
+          const address = closedServer.address();
+          resolve(typeof address === "object" && address !== null ? address.port : 0);
+        });
+      });
+      await new Promise<void>((resolve) => closedServer.close(() => resolve()));
+
+      const h = await harness();
+      h.store.upsertLink({ id: "mbrelay-POOL", transport: "mbrelay", address: { host: "127.0.0.1", port: 9, registryPort: closedPort }, at: 1 });
+      h.store.upsertLink({ id: "usb-RELAY", transport: "usb", address: { path: "/dev/cu.relay" }, at: 1 });
+      const childLinkId = "radio-zetuv-via-usb-RELAY";
+      h.store.upsertLink({ id: childLinkId, transport: "radio", address: { relayLinkId: "usb-RELAY", channel: 37, group: 43 }, at: 1 });
+      const ws = fakeWebSocket();
+      h.wss.triggerConnection(ws);
+      await flush();
+
+      ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", relayLinkId: "usb-RELAY", name: "zetuv" })), false);
+      await waitFor(() => h.runtime.requestOpen.mock.calls.length > 0);
+      await flush();
+
+      const link = h.store.snapshotRows().links.find((l) => l.id === childLinkId);
+      expect(JSON.parse(link!.address as string)).toEqual({ relayLinkId: "usb-RELAY", channel: 37, group: 43 });
+    });
   });
 });
 
@@ -799,6 +857,47 @@ describe("server.ts: line/send-command via runtime.reconciler.sessions", () => {
 
     const rx = ws.sent.find((m) => m.type === "line" && (m as { direction?: string }).direction === "rx");
     expect(rx).toMatchObject({ type: "line", linkId: "usb-1", direction: "rx", line: "beep boop overheard" });
+  });
+
+  it("tags a status reply origin: \"poll\" unless a student asked for STATUS -- the console's Show status polls toggle keys on it", async () => {
+    const h = await harness();
+    const session = fakeSession("usb-1");
+    h.runtime.sessionsByLink.set("usb-1", session);
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+    await flush();
+    const emitInbound = (line: string) =>
+      (session.link as unknown as { _emitInboundLine: (line: string) => void })._emitInboundLine(line);
+    const lastRx = () => ws.sent.filter((m) => m.type === "line" && (m as { direction?: string }).direction === "rx").at(-1) as
+      | { line: string; origin?: string }
+      | undefined;
+
+    // No student STATUS outstanding: the harvester's own poll answered.
+    emitInbound("status ready=1 active=0 flags=1 tlm=off next=4");
+    await flush();
+    expect(lastRx()).toMatchObject({ line: "status ready=1 active=0 flags=1 tlm=off next=4", origin: "poll" });
+
+    // Any other reply is never tagged.
+    emitInbound("ack 3 2 stop");
+    await flush();
+    expect(lastRx()!.origin).toBeUndefined();
+
+    // A student's own STATUS (send-command or a raw line): its one reply shows, the next poll reply is tagged again.
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "send-command", linkId: "usb-1", verb: "STATUS" })), false);
+    await flush();
+    emitInbound("status ready=1 active=0 flags=1 tlm=off next=5");
+    await flush();
+    expect(lastRx()!.origin).toBeUndefined();
+    emitInbound("status ready=1 active=0 flags=1 tlm=off next=5");
+    await flush();
+    expect(lastRx()!.origin).toBe("poll");
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "line", linkId: "usb-1", direction: "tx", line: "status" })), false);
+    await flush();
+    emitInbound("status ready=1 active=0 flags=1 tlm=off next=5");
+    await flush();
+    expect(lastRx()!.origin).toBeUndefined();
   });
 });
 

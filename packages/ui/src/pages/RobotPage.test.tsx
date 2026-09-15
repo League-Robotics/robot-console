@@ -152,7 +152,7 @@ describe("RobotPage", () => {
     expect(el.textContent).not.toContain("Hold a direction");
   });
 
-  it("ticket 018-013: tabs sit beside the name; every robot (including a plain, non-calibration one) gets Main, Drive, Calibration, Functions & charts, Configuration and Diagnostics", () => {
+  it("ticket 018-013: tabs sit beside the name; every robot (including a plain, non-calibration one) gets Main, Drive, Calibration, Configuration and Diagnostics", () => {
     const { el } = mountRobotPage();
     const row = el.querySelector(".robot-page-title-row")!;
     expect(row.querySelector("h2")?.textContent).toBe("vevav");
@@ -160,32 +160,35 @@ describe("RobotPage", () => {
       "Main",
       "Drive",
       "Calibration",
-      "Functions & charts",
       "Configuration",
       "Diagnostics",
     ]);
     expect(el.querySelector('[data-testid="robot-tab-main"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("OOP 2026-09-10: the Functions & charts tab shows functions and the drive pad on the left and charts plus path trace on the right", () => {
+  it("OOP 2026-09-14: the Drive tab (Functions & charts folded in) has the pad, keyboard/gamepad aids and a viewport-bound console on the left, and functions, charts and path trace on the right", () => {
     const { el } = mountRobotPage();
     act(() => {
-      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-functions"]')!.click();
+      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-drive"]')!.click();
     });
     expect(el.querySelector('[data-testid="robot-tab-panel-main"]')).toBeNull();
     const left = el.querySelector(".robot-page-column-left")!;
     const right = el.querySelector(".robot-page-column-right")!;
-    expect(left.querySelector('[aria-label="Functions"]')).not.toBeNull();
+    expect(left.classList.contains("robot-page-column-console")).toBe(true);
     expect(left.querySelector('[aria-label="Drive controls"]')).not.toBeNull();
-    expect(Array.from(left.querySelectorAll("h3")).map((h) => h.textContent)).toEqual(["Functions", "Drive"]);
+    expect(left.querySelector('[data-testid="drive-tab-keyboard"]')).not.toBeNull();
+    expect(left.querySelector('[aria-label="Console"]')).not.toBeNull();
+    expect(el.querySelectorAll('[aria-label="Console"]')).toHaveLength(1);
+    expect(left.querySelector('[aria-label="Functions"]')).not.toBeNull();
+    expect(right.classList.contains("robot-page-column-console")).toBe(true);
     expect(right.querySelector('[aria-label="Charts"]')).not.toBeNull();
     expect(right.querySelector('[aria-label="Path trace"]')).not.toBeNull();
-    expect(el.querySelector('[data-testid="robot-tab-functions"]')?.getAttribute("aria-selected")).toBe("true");
+    expect(el.querySelector('[data-testid="robot-tab-drive"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
   it("ticket 018-013: the Calibration tab (offered for any robot) shows both wizards, the code block, and the current calibration", () => {
     const { el } = mountRobotPage(robotDevice({ program: "calibration-1", version: "1" }));
-    expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Calibration", "Functions & charts", "Configuration", "Diagnostics"]);
+    expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Calibration", "Configuration", "Diagnostics"]);
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
     });

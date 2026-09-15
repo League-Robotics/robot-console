@@ -322,6 +322,15 @@ function currentRelayChildLinkId(rows: ReconcilerRows, relayLinkId: string, excl
   return sibling ? sibling.id : null;
 }
 
+/** Whether `relayLinkId` names an mbrelay pool's own link. A pool serves
+ * every TCP connection with a different relay board, so it carries as
+ * many bridges at once as it has boards: opening a second child through
+ * it never closes the first (no {@link Job} `switchRelayChild`). Only a
+ * directly-attached USB radio bridge is one robot at a time. */
+function isRelayPool(rows: ReconcilerRows, relayLinkId: string): boolean {
+  return rows.links.some((candidate) => candidate.id === relayLinkId && candidate.transport === "mbrelay");
+}
+
 /**
  * The user- (or ticket-001-connect-flow-)forwarded `session-open`
  * counterpart to {@link plan} — same ownership/precedence rules as an
@@ -363,7 +372,7 @@ export function planUserOpen(rows: ReconcilerRows, linkId: string): Job[] {
   }
 
   const relayLinkId = relayLinkIdOf(link);
-  if (relayLinkId !== null) {
+  if (relayLinkId !== null && !isRelayPool(rows, relayLinkId)) {
     const currentChildId = currentRelayChildLinkId(rows, relayLinkId, link.id);
     if (currentChildId !== null) {
       return [{ kind: "switchRelayChild", relayLinkId, closeLinkId: currentChildId, openLinkId: link.id }];

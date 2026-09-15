@@ -27,6 +27,14 @@
   --rc-danger-contrast: #ffffff;
   --rc-ok-bg: #e8f6ec;
   --rc-ok-text: #1c6b34;
+  /* Link status on a robot card (its name, its radio chip): yellow while
+     not linked, green once linked. */
+  --rc-link-off-bg: #fde68a;
+  --rc-link-off-border: #eab308;
+  --rc-link-off-text: #713f12;
+  --rc-link-on-bg: #bbf7d0;
+  --rc-link-on-border: #16a34a;
+  --rc-link-on-text: #14532d;
 
   font-family:
     system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -51,6 +59,12 @@
     --rc-danger-contrast: #ffffff;
     --rc-ok-bg: #123321;
     --rc-ok-text: #6fd28f;
+    --rc-link-off-bg: #4a3b08;
+    --rc-link-off-border: #ca8a04;
+    --rc-link-off-text: #fde68a;
+    --rc-link-on-bg: #14532d;
+    --rc-link-on-border: #22c55e;
+    --rc-link-on-text: #bbf7d0;
   }
 }
 

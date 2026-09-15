@@ -336,6 +336,18 @@ describe("planUserOpen", () => {
     ]);
   });
 
+  it("an mbrelay pool carries several children at once -- opening a second is a plain connect, never a switch", () => {
+    const input = rows({
+      links: [
+        linkRow({ id: "mbrelay-torture", transport: "mbrelay", address: { host: "torture.local", port: 8760 } }),
+        linkRow({ id: "radio-A", transport: "radio", address: { relayLinkId: "mbrelay-torture", channel: 1, group: 1 }, state: "connected" }),
+        linkRow({ id: "radio-B", transport: "radio", address: { relayLinkId: "mbrelay-torture", channel: 2, group: 1 } }),
+      ],
+      sessions: [{ linkId: "radio-A" }],
+    });
+    expect(planUserOpen(input, "radio-B")).toEqual([{ kind: "connect", linkId: "radio-B" }]);
+  });
+
   it("asking to open the link that already occupies its own relay is a no-op", () => {
     const input = rows({
       links: [linkRow({ id: "radio-A", transport: "radio", address: { relayLinkId: "relay-1", channel: 1, group: 1 }, state: "connected" })],

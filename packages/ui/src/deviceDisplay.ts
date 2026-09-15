@@ -866,3 +866,83 @@ export function cardLinks(device: SnapshotDevice): SnapshotLink[] {
 export function hiddenLinkCount(device: SnapshotDevice): number {
   return device.links.length - cardLinks(device).length;
 }
+
+// ---------------------------------------------------------------------
+// Radio bridge allocation (stakeholder, 2026-09-14): a robot card's radio
+// chip finds a bridge itself -- a free directly-attached USB radio bridge
+// first, then an mbrelay pool -- instead of a student picking a robot on
+// a bridge's card.
+// ---------------------------------------------------------------------
+
+/** Whether a link rides a radio bridge: a USB radio bridge (`radio`) or
+ * an mbrelay pool (`mbrelay`). */
+export function isRadioLink(link: SnapshotLink): boolean {
+  return link.transport === "radio" || link.transport === "mbrelay";
+}
+
+/** Whether a link holds a session (answering or not) or is mid-connect --
+ * what counts as a radio bridge being in use by it. */
+export function isLinkActive(link: SnapshotLink): boolean {
+  return link.state !== "stale" && (link.session !== undefined || link.state === "connecting");
+}
+
+/** The child link id `server.ts`'s `session-open {relayLinkId, name}`
+ * handler creates for one (robot, bridge) pair. */
+export function radioChildLinkId(name: string, relayLinkId: string): string {
+  return `radio-${name}-via-${relayLinkId}`;
+}
+
+/** The link with id `linkId` on any of `devices`. */
+export function findLink(devices: readonly SnapshotDevice[], linkId: string): SnapshotLink | undefined {
+  for (const device of devices) {
+    const found = device.links.find((link) => link.id === linkId);
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
+/** Every robot link currently bridged, or being bridged, through
+ * `relayLinkId` -- in host order. A USB radio bridge has at most one; an
+ * mbrelay pool can have several. */
+export function relayConnections(
+  devices: readonly SnapshotDevice[],
+  relayLinkId: string,
+): Array<{ device: SnapshotDevice; link: SnapshotLink }> {
+  const found: Array<{ device: SnapshotDevice; link: SnapshotLink }> = [];
+  for (const device of devices) {
+    for (const link of device.links) {
+      if (link.via?.relayLinkId === relayLinkId && isLinkActive(link)) {
+        found.push({ device, link });
+      }
+    }
+  }
+  return found;
+}
+
+/** A USB radio bridge link in one of these states cannot take a robot
+ * right now: gone, broken, or still identifying. */
+const USB_BRIDGE_UNAVAILABLE_STATES = new Set<SnapshotLink["state"]>(["stale", "failed", "unresponsive", "connecting"]);
+
+/**
+ * The radio bridge a robot's radio chip should connect through -- the
+ * relay link id to send in `session-open {relayLinkId, name}`, or
+ * `undefined` when none is available:
+ *
+ * 1. the first directly-attached USB radio bridge carrying no robot
+ *    (one serial port, one robot at a time);
+ * 2. otherwise the first mbrelay pool -- a pool serves each connection
+ *    with its own relay board, so it is never "in use" from here; a pool
+ *    with no free board fails the connect instead.
+ */
+export function allocateRadioBridge(devices: readonly SnapshotDevice[]): string | undefined {
+  const bridgeLinks = devices.filter((device) => device.kind === "relay").flatMap((device) => device.links);
+  const freeUsb = bridgeLinks.find(
+    (link) => link.transport === "usb" && !USB_BRIDGE_UNAVAILABLE_STATES.has(link.state) && relayConnections(devices, link.id).length === 0,
+  );
+  if (freeUsb) {
+    return freeUsb.id;
+  }
+  return bridgeLinks.find((link) => link.transport === "mbrelay" && link.state !== "stale")?.id;
+}

@@ -194,16 +194,29 @@
   color: var(--rc-warn-text);
 }
 
-.device-linked-pill {
-  font-size: 0.75rem;
-  padding: 0.1rem 0.5rem;
+/* Stakeholder (2026-09-14): a robot's name is its link status -- yellow
+   while no link answers, green once one does -- replacing the "Linked"
+   pill that popped in and out. */
+.device-name-link {
+  padding: 0.05rem 0.6rem;
+  border: 1px solid transparent;
   border-radius: 999px;
-  background: var(--rc-ok-bg);
-  color: var(--rc-ok-text);
+}
+
+.device-name-link[data-linked="false"] {
+  background: var(--rc-link-off-bg);
+  border-color: var(--rc-link-off-border);
+  color: var(--rc-link-off-text);
+}
+
+.device-name-link[data-linked="true"] {
+  background: var(--rc-link-on-bg);
+  border-color: var(--rc-link-on-border);
+  color: var(--rc-link-on-text);
 }
 
 /* Calibration-classification badge (sprint 011 ticket 002) -- same pill
- * shape as `.device-linked-pill`/`.device-flag`, distinguished by the
+ * shape as `.device-flag`, distinguished by the
  * accent color so it reads as "a fact about this device" rather than
  * "linked" or "a problem". */
 .device-calibration-badge {
@@ -434,7 +447,9 @@
   cursor: default;
 }
 
-a.device-chip-face {
+/* Stakeholder (2026-09-14): every robot's connection chip is an on/off
+   toggle; only the card's arrow goes into the robot. */
+button.device-chip-face:not([aria-disabled="true"]) {
   cursor: pointer;
 }
 
@@ -459,6 +474,51 @@ a.device-chip-face {
   background: var(--rc-warn-bg);
   border-color: var(--rc-warn-border);
   color: var(--rc-warn-text);
+}
+
+/* The radio chip every robot card carries: yellow while no bridge
+   carries the robot, green once one does, a red flash when a connect
+   could not happen (then back to yellow). */
+.device-chip-radio[data-state="idle"] .device-chip-face {
+  background: var(--rc-link-off-bg);
+  border-color: var(--rc-link-off-border);
+  color: var(--rc-link-off-text);
+}
+
+.device-chip-radio[data-state="linked"] .device-chip-face {
+  background: var(--rc-link-on-bg);
+  border-color: var(--rc-link-on-border);
+  color: var(--rc-link-on-text);
+}
+
+.device-chip[data-state="flash"] .device-chip-face {
+  background: var(--rc-danger-bg);
+  border-color: var(--rc-danger-border);
+  color: var(--rc-danger-contrast);
+  animation: device-chip-flash 0.4s ease-in-out 3;
+}
+
+@keyframes device-chip-flash {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* A radio bridge card's bottom line(s): what it carries right now. */
+.device-relay-connections {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin: 0;
+  padding: 0.5rem 0 0;
+  list-style: none;
+  border-top: 1px solid var(--rc-border);
+  font-size: 0.85rem;
+}
+
+.device-relay-connections li[data-state="busy"],
+.device-relay-unconnected {
+  color: var(--rc-text-muted);
 }
 
 .device-chip-face:hover,

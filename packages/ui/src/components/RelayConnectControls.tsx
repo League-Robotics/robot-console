@@ -32,7 +32,10 @@ import { currentRelayChild, findSweepingCandidateName, isLinkAnswering, isLinkUs
 import { RobotSelect } from "./RobotSelect";
 import "./RelayConnectControls.css";
 
-export type RelayConnectVariant = "card" | "page";
+/** Only `"page"` remains: the front page's `"card"` variant (robot picker
+ * on a bridge's card) was retired 2026-09-14 -- a robot's own radio chip
+ * now finds a bridge (`FrontPage.tsx`'s `RadioChip`). */
+export type RelayConnectVariant = "page";
 
 export type RelayStatusKind = "connected" | "lost" | "connecting" | "failed" | "idle";
 
@@ -186,71 +189,12 @@ export function RelayConnectControls({
     }
   }, [child?.device.name]);
 
-  // De-duplicated defensively (ticket 017-010, bench defect "the same
-  // robot appears twice", 2026-09-13) -- the `"card"` variant below
-  // renders its own inline `<select>` rather than reusing `RobotSelect`
-  // (which de-dupes on its own, see that component's own doc comment),
-  // so this variant needs the same defense independently.
-  const uniqueRobotOptions = Array.from(new Set(robotOptions));
-
   const connectDisabled = selectedName === "" || relayLinkId === undefined || !sendable;
   function handleConnect(): void {
     if (connectDisabled || !relayLinkId) {
       return;
     }
     onConnect(relayLinkId, selectedName);
-  }
-
-  if (variant === "card") {
-    const idSuffix = relay.id;
-    return (
-      <div className="device-relay-connect" data-testid={`relay-quick-connect-${idSuffix}`}>
-        {status.kind === "connected" && <p className="device-relay-connected">{status.text}</p>}
-        {status.kind === "lost" && (
-          <p className="device-relay-failed" data-testid={`relay-quick-lost-${idSuffix}`}>
-            {status.text}
-          </p>
-        )}
-        {status.kind === "connecting" && (
-          <p className="device-relay-connecting" data-testid={`relay-quick-connecting-${idSuffix}`}>
-            {status.text}
-          </p>
-        )}
-        {status.kind === "failed" && (
-          <p className="device-relay-failed" data-testid={`relay-quick-failed-${idSuffix}`}>
-            {status.text}
-          </p>
-        )}
-        {status.kind === "idle" && (
-          <p className="device-relay-idle" role="status" data-testid={`relay-quick-idle-${idSuffix}`}>
-            {status.text}
-          </p>
-        )}
-        <div className="device-relay-connect-row">
-          <select
-            data-testid={`relay-quick-connect-select-${idSuffix}`}
-            value={selectedName}
-            disabled={uniqueRobotOptions.length === 0}
-            onChange={(event) => setSelectedName(event.target.value)}
-          >
-            <option value="">{uniqueRobotOptions.length === 0 ? "No robots known yet" : "Choose a robot…"}</option>
-            {uniqueRobotOptions.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </select>
-          <button type="button" className="device-relay-connect-button" disabled={connectDisabled} onClick={handleConnect}>
-            {bridged ? "Switch" : "Connect"}
-          </button>
-          {bridged && child && (
-            <button type="button" className="device-relay-disconnect-button" onClick={() => onDisconnect(child.link.id)}>
-              Disconnect
-            </button>
-          )}
-        </div>
-      </div>
-    );
   }
 
   const connectRow = (

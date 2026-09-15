@@ -575,7 +575,17 @@ function getOrCreateTelemetrySlice(store: Store, linkId: string): TelemetrySlice
  * the field rename -- see that ticket's own doc comment. */
 function handleTelemetryMessage(store: Store, message: TelemetryMessage): void {
   const slice = getOrCreateTelemetrySlice(store, message.linkId);
-  if (message.header !== undefined) {
+  // The firmware re-announces an unchanged `thdr` every 20 frames
+  // (`wire_handler.h`'s `kHeaderRefreshFrames`). Treat a same-columns
+  // re-announce as a no-op: replacing the header (new array identity)
+  // and clearing the ring each time wiped the chart's history and its
+  // column selection about once a second.
+  const sameHeader =
+    message.header !== undefined &&
+    slice.header !== undefined &&
+    message.header.length === slice.header.length &&
+    message.header.every((column, index) => column === slice.header![index]);
+  if (message.header !== undefined && !sameHeader) {
     slice.header = message.header;
     slice.ring.clear();
     notify(store);

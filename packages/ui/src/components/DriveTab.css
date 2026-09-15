@@ -1,14 +1,99 @@
-.drive-tab {
+/* The left column reuses RobotPage.css's `.robot-page-column-console`
+ * (sticky, viewport-tall), and wraps pad + aids in its
+ * `.robot-page-column-top` (capped height, scrolls internally on a short
+ * window): the console takes the rest and its log is what shrinks, so
+ * the send line stays at the bottom of the screen. */
+.drive-tab-controls {
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  align-items: flex-start;
 }
 
+/* Functions shares the capped top block with the pad, so this column
+ * trades some of the console's floor for it: 14rem (the log floor drops
+ * from 8rem to 4rem) instead of RobotPage.css's 19rem, and the top
+ * block's cap is recomputed from that same 14rem. */
+.drive-tab-left > .robot-page-column-top {
+  max-height: calc(100vh - 12rem - 1rem - 1rem - 14rem);
+}
+
+.drive-tab-left .device-console {
+  flex: 1;
+  min-height: 14rem;
+  max-width: none;
+}
+
+.drive-tab-left .console-log {
+  flex: 1;
+  min-height: 4rem;
+  max-height: none;
+}
+
+/* Right column, also viewport-bound: Charts keeps its natural height
+ * and the path trace takes the rest down to the bottom of the screen.
+ * The plot's SVG fills that box with `preserveAspectRatio="xMidYMid
+ * meet"`, and PathTracePanel recomputes a square viewBox around the
+ * whole trail every draw -- so the entire trace always fits. */
+.drive-tab-right > .robot-page-panel {
+  flex: none;
+}
+
+.drive-tab-right > .drive-tab-trace {
+  flex: 1;
+  min-height: 12rem;
+}
+
+.drive-tab-trace .path-trace-panel {
+  flex: 1;
+  min-height: 0;
+}
+
+.drive-tab-trace .path-trace-panel-plot {
+  position: relative;
+  flex: 1;
+  min-height: 8rem;
+}
+
+.drive-tab-trace .path-trace-panel-svg {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+}
+
+/* Stacked single-column layout (RobotPage.css drops the viewport bound
+ * there): no remaining height to fill, so fall back to a fixed plot. */
+@media (max-width: 60rem) {
+  .drive-tab-trace .path-trace-panel-plot {
+    position: static;
+    flex: none;
+  }
+
+  .drive-tab-trace .path-trace-panel-svg {
+    position: static;
+    height: 18rem;
+  }
+}
+
+/* A larger pad than the Main tab's -- real grid sizes, not a transform,
+ * so the column's layout accounts for it. */
 .drive-tab-pad .drive-controls-pad {
-  transform: scale(1.35);
-  transform-origin: top left;
-  margin-bottom: 5rem;
+  grid-template-columns: repeat(3, minmax(0, 7.5rem));
+  grid-auto-rows: 3.75rem;
+  gap: 0.6rem;
+}
+
+.drive-tab-pad .drive-controls-button {
+  font-size: 1rem;
+}
+
+.drive-tab-pad .drive-controls-turn-degrees {
+  font-size: 0.9rem;
+}
+
+.drive-tab-pad .drive-controls-stop-button,
+.drive-tab-pad .drive-controls-estop-button {
+  width: 3.2rem;
+  height: 3.2rem;
 }
 
 .drive-tab-aids {

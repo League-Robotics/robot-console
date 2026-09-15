@@ -547,6 +547,28 @@ describe("createRelayBridger().bridge() -- TCP (mbrelay) reset via disconnect+re
     expect(leaseRows.find((l) => l.relayLinkId === relayLinkId)).toBeUndefined();
     store.close();
   }, 10_000);
+
+  it("a pool hands each connection its own relay board, so a lease held by another bridge never blocks a second one", async () => {
+    const store = freshStore();
+    const relayLinkId = "mbrelay-torture";
+    store.upsertLink({ id: relayLinkId, transport: "mbrelay", address: { host: "torture.local", port: 8760 }, at: 1 });
+    store.acquireRelayLease(relayLinkId, "session:mbrelay-other-via-relay", NOW);
+
+    const state = new RelayPlaneState();
+    const createTcpStream = (host: string, port: number) =>
+      tcpStream(host, port, { createSocket: () => new FakeMbrelayPoolSocket(state, true) });
+    const bridger = createRelayBridger(store, { createTcpStream, scheduler: realScheduler, now: () => NOW }, FAST_OPTIONS);
+
+    const session = await bridger.bridge(
+      { relayLinkId, candidates: [{ childLinkId: "mbrelay-vevov-via-relay", channel: 47, group: 60 }] },
+      new AbortController().signal,
+    );
+
+    expect(session.linkId).toBe("mbrelay-vevov-via-relay");
+    // The other bridge's lease is left exactly as it was.
+    expect(store.reconcilerRows().relayLeases).toEqual([{ relayLinkId, owner: "session:mbrelay-other-via-relay" }]);
+    store.close();
+  }, 10_000);
 });
 
 describe("createRelayBridger().bridge() -- relay identified via ticket 017-005's synthetic negative id", () => {

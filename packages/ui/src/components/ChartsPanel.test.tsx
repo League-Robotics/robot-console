@@ -211,6 +211,49 @@ describe("ChartsPanel — wheel-speed bars and chart with a known header", () =>
   });
 });
 
+describe("ChartsPanel — column selection", () => {
+  const FULL_POSE_HEADER = ["seq", "now", "flags", "x", "y", "h", "ox", "oy", "oh", "vl", "vr", "i2cf"];
+
+  function checkbox(el: HTMLElement, column: string): HTMLInputElement {
+    return el.querySelector<HTMLInputElement>(`[data-testid="chart-column-${column}"]`)!;
+  }
+
+  it("keeps the columns a person picked when the robot re-announces its header", () => {
+    const { el, socket } = mountPanel();
+    emitHeader(socket, FULL_POSE_HEADER);
+    act(() => {
+      checkbox(el, "x").click();
+    });
+    expect(checkbox(el, "x").checked).toBe(true);
+
+    emitHeader(socket, [...FULL_POSE_HEADER]);
+    expect(checkbox(el, "x").checked).toBe(true);
+    expect(checkbox(el, "vl").checked).toBe(true);
+  });
+
+  it("disables the unchecked columns and says why once four series are picked", () => {
+    const { el, socket } = mountPanel();
+    emitHeader(socket, FULL_POSE_HEADER);
+    expect(el.querySelector('[data-testid="chart-series-cap"]')).toBeNull();
+    act(() => {
+      checkbox(el, "x").click();
+      checkbox(el, "y").click();
+    });
+    expect(el.querySelector('[data-testid="chart-series-cap"]')).not.toBeNull();
+    expect(checkbox(el, "h").disabled).toBe(true);
+    expect(checkbox(el, "x").disabled).toBe(false);
+
+    act(() => {
+      checkbox(el, "vl").click();
+    });
+    expect(checkbox(el, "h").disabled).toBe(false);
+    act(() => {
+      checkbox(el, "h").click();
+    });
+    expect(["x", "y", "h", "vr"].every((column) => checkbox(el, column).checked)).toBe(true);
+  });
+});
+
 describe("ChartsPanel — header missing wheel-speed columns", () => {
   it("renders the explicit fallback text instead of guessing a column", () => {
     const { el, socket } = mountPanel();

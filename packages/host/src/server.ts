@@ -101,7 +101,7 @@ import type { ConnectedSession } from "./connect/connector.js";
 import type { HarvesterTelemetryEvent } from "./connect/harvester.js";
 import { buildSnapshotFromRows } from "./projection.js";
 import { isValidRadioOverride, resolveDeviceRadio, type DeviceRadioOverride } from "./radioOverride.js";
-import type { RegistryLocation } from "./mbrelayRegistry.js";
+import { resolveRobotAddress, type RegistryLocation } from "./mbrelayRegistry.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
 import { resolveRelease as defaultResolveRelease, fetchAndVerifyHex as defaultFetchAndVerifyHex } from "./releases.js";
 import { LocalHexUploadManager, MAX_UPLOAD_BYTE_LENGTH } from "./localHexUpload.js";
@@ -413,6 +413,57 @@ function resolveRegistryLocationForRelay(store: Store, relayLinkId: string): Reg
   return relayLink ? parseRegistryLocation(relayLink.address) : undefined;
 }
 
+/** Any discovered mbrelay pool's registry location, preferring a pool
+ * whose own link is not stale. The fleet shares one name registry, so a
+ * USB radio bridge -- which has no registry of its own -- asks the same
+ * one a pool would. `undefined` when no pool has ever been discovered. */
+function resolveFleetRegistryLocation(store: Store): RegistryLocation | undefined {
+  const pools = store.projectionRows().links.filter((link) => link.transport === "mbrelay");
+  const ordered = [...pools.filter((link) => link.state !== "stale"), ...pools.filter((link) => link.state === "stale")];
+  for (const pool of ordered) {
+    const location = parseRegistryLocation(pool.address);
+    if (location !== undefined) {
+      return location;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The radio address a `session-open {relayLinkId, name}` bridge dials, in
+ * this order:
+ *
+ * 1. the device's stored override;
+ * 2. mbrelay's name registry, whenever one answers -- the fleet's source
+ *    of truth for which address map each robot's firmware is on;
+ * 3. the address already on this (robot, bridge) pair's own link row --
+ *    what an earlier bridge or sweep confirmed (sprint 016 ticket 004);
+ * 4. the name-derived default.
+ *
+ * Stakeholder bench defect (2026-09-14): `vevov` moved to the 73-channel
+ * map (registry: 20/82) but its old `radio-vevov-via-<vitut>` row still
+ * carried the old map's 37/43. Step 3 used to win outright, and a USB
+ * bridge never asked the registry at all, so `vevov` never answered
+ * through `vitut` while it answered through `torture` just fine.
+ */
+async function resolveBridgeAddress(
+  name: string,
+  override: DeviceRadioOverride,
+  rowAddress: { channel: number; group: number } | undefined,
+  registry: RegistryLocation | undefined,
+): Promise<{ channel: number; group: number }> {
+  if (override.radioSource === "override" && override.radioChannel !== null && override.radioGroup !== null) {
+    return { channel: override.radioChannel, group: override.radioGroup };
+  }
+  if (registry !== undefined) {
+    const resolved = await resolveRobotAddress(name, registry);
+    if (resolved.outcome !== "local-derived") {
+      return { channel: resolved.channel, group: resolved.group };
+    }
+  }
+  return rowAddress ?? (await resolveDeviceRadio(name, override));
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -561,6 +612,31 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   // `receive()` classified it, so every reply is now broadcast exactly
   // once -- see `LineLink.onInboundLine`'s own doc comment.
   const subscribedSessions = new WeakSet<ConnectedSession>();
+
+  // A `status` reply answers the harvester's own periodic STATUS poll
+  // unless a student asked for STATUS themselves and has not had an
+  // answer yet -- `connect/harvester.ts` never polls while a student's
+  // unsequenced query is outstanding, so the next `status` line answers
+  // whichever side asked. Tagging the poll's replies `origin: "poll"`
+  // (`LineMessage.origin`) is what lets the console's "Show status polls"
+  // toggle hide them; the sprint 015 harvester rewrite had stopped
+  // setting it, so every poll reply showed regardless of the toggle.
+  const STUDENT_STATUS_REPLY_WINDOW_MS = 5000;
+  const studentStatusAskedAt = new WeakMap<ConnectedSession, number>();
+  function noteStudentStatus(session: ConnectedSession, verb: string | undefined): void {
+    if (verb !== undefined && verb.toUpperCase() === "STATUS") {
+      studentStatusAskedAt.set(session, Date.now());
+    }
+  }
+  function statusReplyOrigin(session: ConnectedSession, line: string): "poll" | undefined {
+    if (line.trim().split(/\s+/)[0] !== "status") {
+      return undefined;
+    }
+    const askedAt = studentStatusAskedAt.get(session);
+    studentStatusAskedAt.delete(session);
+    return askedAt !== undefined && Date.now() - askedAt <= STUDENT_STATUS_REPLY_WINDOW_MS ? undefined : "poll";
+  }
+
   function ensureLineSubscriptions(): void {
     for (const session of runtime.reconciler.sessions.values()) {
       if (subscribedSessions.has(session)) {
@@ -568,7 +644,11 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       }
       subscribedSessions.add(session);
       session.link.onInboundLine((line: string) => {
-        broadcast({ type: "line", linkId: session.linkId, direction: "rx", line, seq: nextSeq() }, { throttle: true });
+        const origin = statusReplyOrigin(session, line);
+        broadcast(
+          { type: "line", linkId: session.linkId, direction: "rx", line, seq: nextSeq(), ...(origin ? { origin } : {}) },
+          { throttle: true },
+        );
       });
     }
   }
@@ -947,13 +1027,19 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     // own override -> derived resolution.
     const existingLink = store.projectionRows().links.find((candidate) => candidate.id === childLinkId);
     const sightedAddress = existingLink ? parseChannelGroupAddress(existingLink.address) : undefined;
-    const registry = resolveRegistryLocationForRelay(store, message.relayLinkId);
-    const { channel, group } =
-      sightedAddress ?? (await resolveDeviceRadio(message.name, override, registry !== undefined ? { registry } : {}));
+    // Stakeholder (2026-09-14): a registry answer now outranks that row --
+    // see `resolveBridgeAddress`. A USB bridge asks any discovered pool's
+    // registry, since it has none of its own.
+    const registry = resolveRegistryLocationForRelay(store, message.relayLinkId) ?? resolveFleetRegistryLocation(store);
+    const { channel, group } = await resolveBridgeAddress(message.name, override, sightedAddress, registry);
+    // The named robot's own device row, when known, owns the child link
+    // from the first attempt -- so a failed bridge shows on that robot's
+    // card instead of on a link no card lists.
     store.upsertLink({
       id: childLinkId,
       transport: "radio",
       address: { relayLinkId: message.relayLinkId, channel, group },
+      ...(existingDevice ? { deviceId: existingDevice.id } : {}),
       at: Date.now(),
     });
     // Bench defect 4: same "never silent" rule as the plain {linkId}
@@ -984,6 +1070,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       // sending it as a raw line.
       throw new Error('"HELLO" cannot be sent as a raw line -- close and reopen the link instead');
     }
+    noteStudentStatus(session, verb);
     session.link.sendLine(message.line);
     broadcast({ type: "line", linkId: message.linkId, direction: "tx", line: message.line, seq: nextSeq() }, { throttle: true });
   });
@@ -1004,6 +1091,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     // defers to it while it is outstanding (see LineLink.ts's own module
     // doc comment, "Unsequenced query resend and poll/query
     // serialization", for the full rationale and bench evidence).
+    noteStudentStatus(session, message.verb);
     const sent = isSequencedVerb(message.verb) ? session.link.sendCommand(message.verb, fields) : session.link.sendUnsequencedQuery(message.verb, fields);
     broadcast({ type: "line", linkId: message.linkId, direction: "tx", line: sent.replace(/\n$/, ""), seq: nextSeq() }, { throttle: true });
   });

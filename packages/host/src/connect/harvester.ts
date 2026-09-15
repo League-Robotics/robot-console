@@ -193,7 +193,15 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
         }
         failed = true;
         stopPolling();
-        store.setLinkState({ id: linkId, state: "unresponsive", at: now(), reason });
+        // Stakeholder bench (2026-09-14): turning a link off closes its
+        // transport, and this `onClose` can land after the reconciler has
+        // already recorded `closed_by_user` -- which must stand, not read
+        // "unresponsive · link closed". Keyed on `state` alone: the
+        // `userClosed` flag outlives a later reopen.
+        const current = store.reconcilerRows().links.find((row) => row.id === linkId);
+        if (current?.state !== "closed_by_user") {
+          store.setLinkState({ id: linkId, state: "unresponsive", at: now(), reason });
+        }
         void link.close();
       }
 

@@ -693,8 +693,13 @@ export function createRelayBridger(store: Store, deps: RelayBridgerDeps = {}, op
       const relayTransport = relayLinkTransport(store, request.relayLinkId);
       const firstCandidate = request.candidates[0] as RelayBridgeCandidate;
       const owner = `session:${firstCandidate.childLinkId}`;
+      // An mbrelay pool hands every TCP connection its own relay board, so
+      // bridges through one pool never contend for a board and take no
+      // lease -- see `reconciler.ts`'s `isRelayPool`. Only a USB radio
+      // bridge (one serial port, one robot) is exclusive.
+      const needsLease = relayTransport === "usb";
 
-      let acquired = store.acquireRelayLease(request.relayLinkId, owner, now());
+      let acquired = !needsLease || store.acquireRelayLease(request.relayLinkId, owner, now());
       if (!acquired) {
         // Sprint 016 ticket 004 (SUC-004): a sweep-held lease is
         // preemptable -- see the module doc comment's "Sweep takeover"
@@ -735,7 +740,9 @@ export function createRelayBridger(store: Store, deps: RelayBridgerDeps = {}, op
           `relayBridger: no candidate identified on relay "${request.relayLinkId}" (${request.candidates.length} tried) -- last error: ${lastError.message}`,
         );
       } finally {
-        store.releaseRelayLease(request.relayLinkId, owner);
+        if (needsLease) {
+          store.releaseRelayLease(request.relayLinkId, owner);
+        }
       }
     },
   };

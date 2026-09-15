@@ -225,6 +225,25 @@ describe("createHarvester -- unresponsive, exactly once", () => {
     store.close();
   });
 
+  // Stakeholder bench (2026-09-14): a radio link turned off read
+  // "unresponsive · link closed" -- the transport's own close landed after
+  // the reconciler had already recorded `closed_by_user`.
+  it("a transport close after the user turned the link off leaves closed_by_user standing", async () => {
+    const store = seededStore();
+    const { link, stream } = await connectedLink();
+    const harvester = createHarvester(store, { statusPollIntervalMs: 0 });
+    harvester.attach(session(link));
+
+    store.setLinkState({ id: "link-1", state: "closed_by_user", at: 1, reason: "user-requested", userClosed: true });
+    stream.emitClose();
+    await flush();
+
+    const row = store.snapshotRows().links.find((l) => l.id === "link-1");
+    expect(row?.state).toBe("closed_by_user");
+    expect(row?.state_reason).toBe("user-requested");
+    store.close();
+  });
+
   it("three missed STATUS polls (a usb link, not just wifi) marks unresponsive exactly once and stops polling", async () => {
     const store = seededStore();
     const setLinkState = vi.spyOn(store, "setLinkState");

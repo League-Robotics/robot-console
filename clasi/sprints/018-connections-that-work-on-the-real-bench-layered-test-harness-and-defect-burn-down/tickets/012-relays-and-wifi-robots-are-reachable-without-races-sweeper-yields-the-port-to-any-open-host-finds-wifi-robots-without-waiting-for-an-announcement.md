@@ -2,7 +2,7 @@
 id: '012'
 title: 'Relays and WiFi robots are reachable without races: sweeper yields the port
   to any open; host finds WiFi robots without waiting for an announcement'
-status: open
+status: in-progress
 use-cases:
 - SUC-004
 - SUC-006

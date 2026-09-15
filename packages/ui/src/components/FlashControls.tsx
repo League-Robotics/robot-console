@@ -217,6 +217,13 @@ export function FlashControls({ link }: FlashControlsProps) {
   // from `firmwareStatus`, which can move on to a newer poll by the time
   // this renders).
   const [reidentifyName, setReidentifyName] = useState<string | null>(null);
+  // What to name in "Flashed <name>." after a plain `ok` result. The
+  // `navigate("/")` below only leaves this component when it was opened
+  // from a device page; opened from the front page (the card's Flash
+  // button) that navigation is a no-op and the dialog stays open, so
+  // without this line a finished flash just dropped back to the firmware
+  // choices with no confirmation (real-hardware finding, Ubuntu 24.04).
+  const [flashedName, setFlashedName] = useState<string | null>(null);
   const [localHex, setLocalHex] = useState<LocalHexState>({ phase: "idle" });
 
   useEffect(() => {
@@ -224,11 +231,15 @@ export function FlashControls({ link }: FlashControlsProps) {
       if (message.linkId !== link.id) {
         return;
       }
+      setFlashedName(null);
       if (message.status === "error") {
         setFlashError(message.message ?? "Flash failed.");
         return;
       }
       setFlashError(null);
+      if (message.reidentify !== "timeout") {
+        setFlashedName(flashSourceName(message.source, firmwareStatus));
+      }
       if (message.reidentify === "timeout") {
         // The write succeeded; the board just hasn't announced yet (see
         // this module's doc comment). Never worded as a failure, and
@@ -262,6 +273,7 @@ export function FlashControls({ link }: FlashControlsProps) {
       }
       setFlashError(null);
       setReidentifyName(null);
+      setFlashedName(null);
       send({ type: "flash-start", linkId: link.id, source: { kind: "release", firmware } });
     },
     [link.id, send, sendable],
@@ -278,6 +290,7 @@ export function FlashControls({ link }: FlashControlsProps) {
       }
       setFlashError(null);
       setReidentifyName(null);
+      setFlashedName(null);
       if (file.size > MAX_LOCAL_HEX_BYTES) {
         setLocalHex({ phase: "oversize", fileName: file.name, byteLength: file.size });
         return;
@@ -298,6 +311,7 @@ export function FlashControls({ link }: FlashControlsProps) {
     }
     setFlashError(null);
     setReidentifyName(null);
+    setFlashedName(null);
     send({
       type: "flash-start",
       linkId: link.id,
@@ -431,6 +445,12 @@ export function FlashControls({ link }: FlashControlsProps) {
       {!progress && flashError && (
         <p className="device-note device-note-error" role="alert">
           {flashError}
+        </p>
+      )}
+
+      {!progress && flashedName !== null && (
+        <p className="credentials-result credentials-result-ok" role="status" data-testid="flash-success">
+          Flashed {flashedName}.
         </p>
       )}
 

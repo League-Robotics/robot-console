@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DAPLink } from "./vendor/dapjs/index.js";
 import {
   defaultResolveVolumePath,
@@ -555,12 +555,135 @@ describe("flashViaDapLink", () => {
 
     const result = await flashViaDapLink(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
       createDapLink: () => dapLink,
-      flashTimeoutMs: 15,
+      flashIdleTimeoutMs: 15,
     });
 
     expect(result).toMatchObject({ status: "error", method: "swd", reason: "timeout" });
-    expect((result as { error: string }).error).toMatch(/daplink\.flash\(\) timed out after 15ms/);
+    expect((result as { error: string }).error).toBe("daplink.flash() made no progress for 15 ms");
     expect(disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  // Real-hardware finding (Ubuntu 24.04, micro:bit v2 over hidraw): a
+  // full flash takes ~86 s. The bound on daplink.flash() is therefore an
+  // inactivity watchdog on progress events plus a 5-minute ceiling, not
+  // a 30 s total -- these drive the real defaults with fake timers.
+  describe("progress watchdog (default bounds, fake timers)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** A fake whose flash() emits progress every `everyMs` for
+     * `forMs` (forever if omitted), then resolves -- or, with `hang`,
+     * never settles after its last event. */
+    function slowDapLink(opts: { everyMs: number; forMs?: number; hang?: boolean; disconnect?: () => Promise<void> }) {
+      const dapLink = createFakeDapLink({
+        flash: async () => {
+          for (let elapsed = 0; opts.forMs === undefined || elapsed < opts.forMs; elapsed += opts.everyMs) {
+            await new Promise((resolve) => setTimeout(resolve, opts.everyMs));
+            dapLink.emitProgress();
+          }
+          if (opts.hang) {
+            await new Promise<void>(() => {});
+          }
+        },
+        ...(opts.disconnect ? { disconnect: opts.disconnect } : {}),
+      });
+      return dapLink;
+    }
+
+    function track<T>(promise: Promise<T>): { settled: () => boolean } {
+      let settled = false;
+      void promise.then(() => (settled = true));
+      return { settled: () => settled };
+    }
+
+    it("succeeds for a slow flash that reports progress every 5 s for 90 s", async () => {
+      vi.useFakeTimers();
+      const phases: FlashPhase[] = [];
+      const dapLink = slowDapLink({ everyMs: 5_000, forMs: 90_000 });
+
+      const pending = flashViaDapLink(device(), PLAIN_INTEL_HEX_FIXTURE, (phase) => phases.push(phase), {
+        createDapLink: () => dapLink,
+      });
+      await vi.advanceTimersByTimeAsync(90_000);
+
+      await expect(pending).resolves.toEqual({ status: "ok", method: "swd" });
+      expect(phases[0]).toBe("erasing");
+      expect(phases.filter((phase) => phase === "writing")).toHaveLength(18);
+      expect(phases.at(-1)).toBe("resetting");
+    });
+
+    it("times out with the no-progress message when flash() reports nothing for 30 s", async () => {
+      vi.useFakeTimers();
+      const disconnect = vi.fn(async () => {});
+      const dapLink = createFakeDapLink({ flash: () => new Promise<void>(() => {}), disconnect });
+
+      const pending = flashViaDapLink(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, { createDapLink: () => dapLink });
+      const tracked = track(pending);
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(tracked.settled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+
+      await expect(pending).resolves.toEqual({
+        status: "error",
+        method: "swd",
+        reason: "timeout",
+        error: "daplink.flash() made no progress for 30 s",
+      });
+      expect(disconnect).toHaveBeenCalledTimes(1);
+      expect(dapLink.offCalls).toEqual([DAPLink.EVENT_PROGRESS]);
+    });
+
+    it("restarts the no-progress window on every progress event, timing out 30 s after the last one", async () => {
+      vi.useFakeTimers();
+      const disconnect = vi.fn(async () => {});
+      const dapLink = slowDapLink({ everyMs: 5_000, forMs: 60_000, hang: true, disconnect });
+
+      const pending = flashViaDapLink(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, { createDapLink: () => dapLink });
+      const tracked = track(pending);
+      await vi.advanceTimersByTimeAsync(89_999);
+      expect(tracked.settled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+
+      await expect(pending).resolves.toMatchObject({ reason: "timeout", error: "daplink.flash() made no progress for 30 s" });
+      expect(disconnect).toHaveBeenCalledTimes(1);
+    });
+
+    it("hits the 300 s ceiling for a flash that keeps reporting progress but never finishes, and still disconnects", async () => {
+      vi.useFakeTimers();
+      const disconnect = vi.fn(async () => {});
+      const dapLink = slowDapLink({ everyMs: 5_000, disconnect });
+
+      const pending = flashViaDapLink(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, { createDapLink: () => dapLink });
+      const tracked = track(pending);
+      await vi.advanceTimersByTimeAsync(299_999);
+      expect(tracked.settled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+
+      await expect(pending).resolves.toEqual({
+        status: "error",
+        method: "swd",
+        reason: "timeout",
+        error: "daplink.flash() exceeded 300 s",
+      });
+      expect(disconnect).toHaveBeenCalledTimes(1);
+    });
+
+    it("honours flashTimeoutMs and flashIdleTimeoutMs overrides", async () => {
+      vi.useFakeTimers();
+      const idle = flashViaDapLink(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
+        createDapLink: () => createFakeDapLink({ flash: () => new Promise<void>(() => {}) }),
+        flashIdleTimeoutMs: 2_000,
+      });
+      const ceiling = flashViaDapLink(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
+        createDapLink: () => slowDapLink({ everyMs: 1_000 }),
+        flashTimeoutMs: 10_000,
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      await expect(idle).resolves.toMatchObject({ error: "daplink.flash() made no progress for 2 s" });
+      await expect(ceiling).resolves.toMatchObject({ error: "daplink.flash() exceeded 10 s" });
+    });
   });
 
   it("returns a typed timeout failure and disconnects the HID handle best-effort when daplink.connect() never resolves within the configured budget", async () => {
@@ -599,7 +722,7 @@ function createFakeDapLink(overrides?: {
   disconnect?: () => Promise<void>;
   flash?: (buffer: Buffer) => Promise<void>;
   reset?: () => Promise<boolean>;
-}): DAPLink & { offCalls: string[] } {
+}): DAPLink & { offCalls: string[]; emitProgress: () => void } {
   const progressListeners: Array<() => void> = [];
   const offCalls: string[] = [];
   const removeProgressListener = (event: string, listener: () => void) => {
@@ -625,6 +748,13 @@ function createFakeDapLink(overrides?: {
       offCalls.push(event);
       removeProgressListener(event, listener);
       return fake;
+    },
+    /** Fire every registered `EVENT_PROGRESS` listener, as a real
+     * `DAPLink#flash()` does once per written page. */
+    emitProgress() {
+      for (const listener of [...progressListeners]) {
+        listener();
+      }
     },
     flash:
       overrides?.flash ??
@@ -1072,5 +1202,20 @@ describe("flash", () => {
     });
 
     expect(result).toMatchObject({ status: "error", method: "swd", reason: "timeout" });
+  });
+
+  it("forwards flashIdleTimeoutMs through to flashViaDapLink", async () => {
+    const result = await flash(device(), PLAIN_INTEL_HEX_FIXTURE, () => {}, {
+      createDapLink: () => createFakeDapLink({ flash: () => new Promise<void>(() => {}) }),
+      flashIdleTimeoutMs: 15,
+      resolveVolumePath: async () => undefined,
+    });
+
+    expect(result).toEqual({
+      status: "error",
+      method: "swd",
+      reason: "timeout",
+      error: "daplink.flash() made no progress for 15 ms",
+    });
   });
 });

@@ -244,6 +244,55 @@ describe("createHarvester -- unresponsive, exactly once", () => {
     store.close();
   });
 
+  // Stakeholder bench (2026-09-14): tovez was declared dead over Wi-Fi
+  // while it was still sending lines -- its STATUS replies were queued
+  // behind a FUNCS reply.
+  it("any line from the robot, not only a STATUS reply, keeps the link alive", async () => {
+    const store = seededStore();
+    const { link, stream } = await connectedLink(); // never answers STATUS itself
+    const harvester = createHarvester(store, { statusPollIntervalMs: 10, missedPollLimit: 3 });
+    harvester.attach(session(link));
+
+    for (let i = 0; i < 60; i++) {
+      stream.emitData(`ack ${i + 1} 0 none\n`);
+      await new Promise((resolve) => setTimeout(resolve, 3));
+    }
+
+    expect(store.snapshotRows().links.find((l) => l.id === "link-1")?.state).not.toBe("unresponsive");
+    store.close();
+  });
+
+  it("a Wi-Fi link gets a 5-poll window before it is declared dead, and says so in the reason", async () => {
+    const store = seededStore();
+    const { link } = await connectedLink(); // never answers anything
+    const harvester = createHarvester(store, { statusPollIntervalMs: 20, missedPollLimit: 3 });
+    harvester.attach(session(link, { transport: "wifi" }));
+
+    // By 100 ms at most 5 polls have gone out -- 4 misses: a usb link
+    // (limit 3) would already be dead, a Wi-Fi link is not.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(store.snapshotRows().links.find((l) => l.id === "link-1")?.state).not.toBe("unresponsive");
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const row = store.snapshotRows().links.find((l) => l.id === "link-1");
+    expect(row?.state).toBe("unresponsive");
+    expect(row?.state_reason).toBe("no reply to 5 STATUS polls -- link presumed dead");
+    store.close();
+  });
+
+  it("a telemetry frame refreshes answered_at, so a link that only streams telemetry still reads as Linked", async () => {
+    const store = seededStore();
+    const { link, stream } = await connectedLink();
+    const harvester = createHarvester(store, { statusPollIntervalMs: 0, now: () => 5000 });
+    harvester.attach(session(link));
+
+    stream.emitData("thdr ox oy oh\n");
+    await flush();
+
+    expect(store.snapshotRows().sessions.find((s) => s.link_id === "link-1")?.answered_at).toBe(5000);
+    store.close();
+  });
+
   it("three missed STATUS polls (a usb link, not just wifi) marks unresponsive exactly once and stops polling", async () => {
     const store = seededStore();
     const setLinkState = vi.spyOn(store, "setLinkState");
@@ -285,7 +334,11 @@ describe("createHarvester -- unresponsive, exactly once", () => {
       expect(stream.closeCallCount).toBeGreaterThanOrEqual(1);
       expect(link.isOpen).toBe(false);
       expect(closeFired).toBe(true);
-      expect(closed).toBeUndefined(); // no ByteStream "error" was ever emitted
+      // No ByteStream "error" was ever emitted, so the reason onClose
+      // reports is the harvester's own (stakeholder bench, 2026-09-14:
+      // this used to be undefined and reached the store as "transport
+      // closed").
+      expect(closed?.message).toBe("no reply to 3 STATUS polls -- link presumed dead");
       store.close();
     },
   );

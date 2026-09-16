@@ -83,6 +83,17 @@ export const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
  * transport per this module's own doc comment. */
 export const DEFAULT_MISSED_POLL_LIMIT = 3;
 
+/** Missed-poll ceiling for a `wifi` link (never lower than the configured
+ * one). Stakeholder bench (2026-09-14): a Wi-Fi robot's module can hold
+ * a queued reply for several seconds while the robot is still alive, and
+ * 3 x 2 s declared tovez dead mid-reply. */
+export const WIFI_MISSED_POLL_LIMIT = 5;
+
+/** At most this often a telemetry frame refreshes `sessions.answered_at`
+ * -- often enough that a link only streaming telemetry still reads as
+ * Linked, rarely enough to stay off the 20 Hz write path. */
+export const TELEMETRY_ALIVE_SYNC_MS = 2000;
+
 /** One decoded `thdr`/`t` event, forwarded to {@link HarvesterDeps.onTelemetry} —
  * mirrors `wsMessages.ts`'s own `TelemetryMessage` shape minus the
  * envelope (`type`/`endpointId`), which is ticket 004's concern, not
@@ -155,6 +166,8 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
   return {
     attach(session: ConnectedSession): void {
       const { linkId, link, classification } = session;
+      const pollLimit = session.transport === "wifi" ? Math.max(missedPollLimit, WIFI_MISSED_POLL_LIMIT) : missedPollLimit;
+      let lastAliveSync = 0;
 
       let functions: RobotFunction[] = [];
       let pollAwaitingStatus = false;
@@ -202,7 +215,7 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
         if (current?.state !== "closed_by_user") {
           store.setLinkState({ id: linkId, state: "unresponsive", at: now(), reason });
         }
-        void link.close();
+        void link.close(new Error(reason));
       }
 
       function pollStatus(): void {
@@ -225,8 +238,8 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
         }
         if (pollAwaitingStatus) {
           pollMisses += 1;
-          if (pollMisses >= missedPollLimit) {
-            fail(`no reply to ${missedPollLimit} STATUS polls -- link presumed dead`);
+          if (pollMisses >= pollLimit) {
+            fail(`no reply to ${pollLimit} STATUS polls -- link presumed dead`);
             return;
           }
         }
@@ -281,6 +294,7 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
        * ticket's own Description) -- alongside whatever verb-specific
        * patch a caller also supplies. */
       function syncSession(patch: { robotStatus?: RobotStatus; functions?: RobotFunction[] } = {}): void {
+        lastAliveSync = now();
         store.updateSession(linkId, {
           seq: link.session.seq,
           pending: link.session.pendingCount,
@@ -316,15 +330,24 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
         if (failed) {
           return;
         }
+        // Any line at all proves the robot is alive, not only a STATUS
+        // reply. Stakeholder bench (2026-09-14): tovez, part-way through a
+        // FUNCS reply over Wi-Fi, was declared dead because its STATUS
+        // replies were queued behind the other lines.
+        pollAwaitingStatus = false;
+        pollMisses = 0;
         if (decoded.verb === "thdr" || decoded.verb === "t") {
-          // Deliberately never reaches `syncSession` -- see the module
-          // doc comment's "no `emitDevices` on the 20 Hz path" note.
+          // Never `syncSession` per frame (the module doc comment's "no
+          // `emitDevices` on the 20 Hz path"), but refresh `answeredAt` at
+          // most every TELEMETRY_ALIVE_SYNC_MS so a link that only streams
+          // telemetry still reads as Linked.
           handleTelemetryLine(decoded);
+          if (now() - lastAliveSync >= TELEMETRY_ALIVE_SYNC_MS) {
+            syncSession();
+          }
           return;
         }
         if (decoded.verb === "status") {
-          pollAwaitingStatus = false;
-          pollMisses = 0;
           const status = parseStatusReply(decoded.fields, now());
           syncSession({ robotStatus: status });
           adoptStatusNext(status);

@@ -411,10 +411,18 @@ export class LineLink {
 
   /** Close the transport. Idempotent — calling it again, or before
    * {@link connect} ever succeeded, is a no-op. Never rejects; {@link
-   * onClose} fires once the underlying {@link ByteStream} closes. */
-  async close(): Promise<void> {
+   * onClose} fires once the underlying {@link ByteStream} closes.
+   *
+   * `reason`, when given, is what {@link onClose} reports -- unless a
+   * stream error already recorded one. Without it a deliberate close
+   * (e.g. the harvester giving up on a silent robot) reached the
+   * reconciler as a bare "transport closed". */
+  async close(reason?: Error): Promise<void> {
     if (this.state === "closed" || this.state === "closing") {
       return;
+    }
+    if (reason !== undefined && this.lastError === undefined) {
+      this.lastError = reason;
     }
     if (this.state === "idle") {
       this.state = "closed";

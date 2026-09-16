@@ -667,7 +667,12 @@ export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler 
       return Promise.resolve();
     }
     inFlight.add(linkId);
-    store.setLinkState({ id: linkId, state: "connecting", at: now() });
+    // A connect only reaches a user-closed link through an explicit ask
+    // (`plan()` skips them), so the link is no longer user-closed. Left
+    // set, `userClosed` outlived the reopen and kept `plan()` from ever
+    // reconnecting that link on its own again (stakeholder bench,
+    // 2026-09-14: tovez's usb and wifi links both stuck at user_closed=1).
+    store.setLinkState({ id: linkId, state: "connecting", at: now(), userClosed: false });
     const controller = new AbortController();
     return connectLink(toConnectorLinkRow(raw), controller.signal)
       .then(

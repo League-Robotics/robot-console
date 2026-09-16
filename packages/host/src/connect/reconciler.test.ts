@@ -1043,3 +1043,43 @@ describe("startReconciler -- dead-transport session teardown (bench defect 010 a
     }
   });
 });
+
+// Stakeholder bench (2026-09-14): tovez's usb and wifi links were reopened
+// by hand but kept user_closed=1, so `plan()` never reconnected them on its
+// own again.
+describe("startReconciler -- an explicit reopen clears userClosed", () => {
+  let dir: string;
+  let store: Store;
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), "robot-console-reconciler-test-"));
+    store = new Store(openStoreDb({ filePath: path.join(dir, "console.sqlite") }));
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("requestOpen on a user-closed link clears the flag, so later automatic reconnects are allowed", async () => {
+    store.upsertDevice({ id: ROBOT_SERIAL, name: deviceIdToName(ROBOT_SERIAL), kind: "robot", at: 1 });
+    store.setOwned(ROBOT_SERIAL, true, 1);
+    store.upsertLink({ id: "wifi-1", transport: "wifi", address: { host: "10.0.0.5", port: 4000 }, deviceId: ROBOT_SERIAL, at: 1 });
+    store.setLinkState({ id: "wifi-1", state: "closed_by_user", at: 1, reason: "user-requested", userClosed: true });
+
+    const connector: Connector = {
+      connectAndIdentify: () => new Promise<ConnectedSession>(() => {}),
+    };
+    const reconciler = startReconciler(store, { connector, now: () => NOW, tickIntervalMs: 1_000_000 });
+    try {
+      expect(store.reconcilerRows().links.find((l) => l.id === "wifi-1")?.userClosed).toBe(true);
+      void reconciler.requestOpen("wifi-1");
+      await flush();
+      const row = store.reconcilerRows().links.find((l) => l.id === "wifi-1");
+      expect(row?.state).toBe("connecting");
+      expect(row?.userClosed).toBe(false);
+    } finally {
+      reconciler.stop();
+    }
+  });
+});

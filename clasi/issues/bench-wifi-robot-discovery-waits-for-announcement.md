@@ -84,3 +84,27 @@ keeping:
 Both defects share a shape worth restating: something the host already does
 correctly in one path needs to also happen in a second path that currently
 has no such guarantee.
+
+### `tigez` is in scope too (team-lead, 2026-09-17, second run)
+
+Two full harness runs the same evening, ~15 minutes apart on the same
+exclusive bench, disagreed about `tigez / wifi`:
+
+- Run 1 (22:46Z): `tigez / wifi` **passed** all three layers — robot page
+  header `WiFi · tigez.local:7654  Linked`, robot answered `id diffdrive
+  tigez 1.20260914.1 tigez`.
+- Run 2 (23:02Z): `tigez / wifi` **failed** L3 with the identical reason
+  as gopiv — "no live-snapshot link of transport 'wifi' found for
+  'tigez'".
+
+No code affecting discovery changed between the runs (only
+`scripts/bench/layer3/uiDriver.ts` and `scripts/bench/README.md`). That
+intermittency is the clearest evidence yet that this is a race against
+the announcement interval and not a per-robot configuration problem:
+whether a WiFi link exists at probe time depends on where host start
+falls relative to the next unsolicited announcement.
+
+**Scope note**: the original report named only `gopiv`. Fix and test this
+for **every owned robot with a WiFi path**, `tigez` included — and use
+`tigez` as the regression fixture, since it demonstrably both succeeds
+and fails under the current code.

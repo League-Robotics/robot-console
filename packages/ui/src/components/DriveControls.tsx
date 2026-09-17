@@ -122,6 +122,44 @@
  * `link.session` being absent or the host connection not being sendable
  * (nothing to send at all).
  *
+ * **Nudge strips (out-of-process, 2026-09-16, stakeholder direction).**
+ * Each of the four cardinal cells is split: the left 75% is the held
+ * drive button described above, unchanged, and the right 25% is a
+ * one-shot "nudge" that inches the robot a fixed {@link
+ * NUDGE_DISTANCE_MM}/{@link NUDGE_ROTATION_DEG} in that direction.
+ *
+ *  - **Two sibling buttons, not one split button.** A `<button>` may not
+ *    contain another `<button>`, so a single control with a clickable
+ *    sub-region is not expressible in valid HTML. The cell is a flex
+ *    container holding two real buttons (`flex: 3` and `flex: 1`),
+ *    which is also what keeps each independently focusable, labelled,
+ *    and disableable -- the same shape the centre cell already uses for
+ *    STOP/E-STOP. The drive half keeps `data-testid="drive-<direction>"`
+ *    (asserted by `App.test.tsx`, which checks its `disabled` state).
+ *  - **`MOVE_X`, not a `RUN` function.** The stakeholder's premise was
+ *    that upstream ships a nudge function; it does not. There is no
+ *    `NUDGE` verb in `protocol.md` (its `HELP` verb list is complete and
+ *    closed), no nudge in the `pxt-nezha-diffdrive` extension, and the
+ *    one `onRun("nudge", ...)` that exists lives in
+ *    `nezha-robot-template/tools/linefollow-diagnostics.ts.txt`, which
+ *    that template's own `pxt.json` `files` list excludes -- so it never
+ *    reaches a robot. The shipped `test/obstacle1.ts` does register
+ *    `push(mm)`/`turn(deg)`, but `DiffDriveAdapter` registers nothing
+ *    and answers every unrecognized `RUN` with `ERR_UNKNOWN`, so those
+ *    exist only while that one program is flashed. `MOVE_X` is
+ *    adapter-level and bench-proven (`MOVE_X 300 0 150 4000` straight
+ *    legs in the acceptance captures), so a nudge works whatever program
+ *    the robot is running -- and this pad already speaks `MOVE_X` for
+ *    its fixed turns.
+ *  - **Disabled while a direction is held.** A sequenced `MOVE_X`
+ *    arriving mid-motion is refused by the firmware (`err 10`, seen in
+ *    the captures' "MOVE_X mid-tour refused" cases), so offering the
+ *    nudge during a hold would only ever produce a rejected command.
+ *    Guarded twice: the button is `disabled`, and {@link nudge} itself
+ *    returns early if a direction is active -- the strip sits directly
+ *    against a held button, so a finger sliding off the drive half
+ *    mid-hold must not fire one.
+ *
  * **Hardware-deferred claim.** This component's own tests (fake
  * `WsProvider` socket) prove only that pressing a button sends the
  * exact wire line at the right time, under the right conditions. They
@@ -166,6 +204,32 @@ const TURN_90_TIMEOUT_MS = 4000;
  * finish it before the adapter gives up). */
 const TURN_180_TIMEOUT_MS = 6000;
 
+/** [mm] -- how far one forward/backward nudge travels (stakeholder
+ * choice, out-of-process 2026-09-16).
+ *
+ * [deg] -- how far one left/right nudge pivots.
+ *
+ * **These two are meant to be retuned on the bench, which is why they
+ * are named constants rather than inline literals.** A caveat was
+ * raised when they were chosen and is recorded here rather than lost:
+ * `vendor/radio-robot-lib/docs/design/motion-api.md` §5.2 reports that
+ * 333 measured trim nudges found the low-speed corrective pivot to be
+ * *bimodal* with a roughly 1.8 degree quantum -- 26% of them deliver
+ * under 0.25 degrees because the wheels never break static friction at
+ * all. {@link NUDGE_ROTATION_DEG} of 2 sits only just above that
+ * quantum, so some left/right nudges may visibly do nothing on real
+ * hardware. That is a property of the drivetrain, not of this code: if
+ * it shows up on the bench, raise this number (5 degrees clears the
+ * measured quantum comfortably) rather than looking for a bug here. The
+ * distance nudge has no equivalent published threshold. */
+export const NUDGE_DISTANCE_MM = 10;
+export const NUDGE_ROTATION_DEG = 2;
+/** [ms] -- `timeout` for a nudge's `MOVE_X`. Far shorter than a fixed
+ * turn's ({@link TURN_90_TIMEOUT_MS}) because the movement commanded is
+ * a fraction of one: a nudge that has not completed in two seconds is
+ * stuck, not slow. */
+export const NUDGE_TIMEOUT_MS = 2000;
+
 /** Converts a signed API-level angle in whole degrees to the signed
  * wire-level integer milliradians `MOVE_X`'s `rotation` field actually
  * wants -- see this module's doc comment for why this conversion has to
@@ -200,6 +264,41 @@ function wheelVelocities(direction: DriveDirection): [number, number] {
       return [DRIVE_VELOCITY_MM_S, -DRIVE_VELOCITY_MM_S];
   }
 }
+
+/** The `MOVE_X` displacement one nudge of each direction commands, plus
+ * the accessible name that describes it. `rotationDeg` is CCW-positive
+ * in degrees at this level, exactly like {@link FixedTurn.rotation} --
+ * {@link degreesToMilliradians} converts it only at the point of
+ * sending. A translation nudge carries no rotation and a pivot nudge no
+ * distance; nothing here ever commands both at once. */
+interface NudgeSpec {
+  distanceMm: number;
+  rotationDeg: number;
+  ariaLabel: string;
+}
+
+const NUDGE_BY_DIRECTION: Record<DriveDirection, NudgeSpec> = {
+  forward: {
+    distanceMm: NUDGE_DISTANCE_MM,
+    rotationDeg: 0,
+    ariaLabel: `Nudge forward ${NUDGE_DISTANCE_MM} mm`,
+  },
+  backward: {
+    distanceMm: -NUDGE_DISTANCE_MM,
+    rotationDeg: 0,
+    ariaLabel: `Nudge backward ${NUDGE_DISTANCE_MM} mm`,
+  },
+  left: {
+    distanceMm: 0,
+    rotationDeg: NUDGE_ROTATION_DEG,
+    ariaLabel: `Nudge left ${NUDGE_ROTATION_DEG} degrees`,
+  },
+  right: {
+    distanceMm: 0,
+    rotationDeg: -NUDGE_ROTATION_DEG,
+    ariaLabel: `Nudge right ${NUDGE_ROTATION_DEG} degrees`,
+  },
+};
 
 /** One entry per fixed-turn button. `rotation` is the signed `[deg]`
  * field sent as `MOVE_X`'s second argument -- CCW-positive, so every
@@ -412,25 +511,53 @@ export function DriveControls({ link }: DriveControlsProps) {
     };
   }, []);
 
+  /** One-shot fixed nudge -- a click, not a hold, and deliberately inert
+   * while any direction is held (see this module's doc comment). */
+  function nudge(direction: DriveDirection): void {
+    if (!linkOpen || activeRef.current !== null) {
+      return;
+    }
+    const spec = NUDGE_BY_DIRECTION[direction];
+    sendCommand(linkId, "MOVE_X", [
+      spec.distanceMm,
+      degreesToMilliradians(spec.rotationDeg),
+      TURN_CRUISE_MM_S,
+      NUDGE_TIMEOUT_MS,
+    ]);
+  }
+
   function directionButton(direction: DriveDirection) {
+    const spec = NUDGE_BY_DIRECTION[direction];
     return (
-      <button
-        key={direction}
-        type="button"
-        className={`drive-controls-button drive-controls-button-${direction}`}
-        data-testid={`drive-${direction}`}
-        disabled={!linkOpen}
-        onMouseDown={() => press(direction)}
-        onMouseUp={release}
-        onMouseLeave={release}
-        onTouchStart={(event) => {
-          event.preventDefault();
-          press(direction);
-        }}
-        onTouchEnd={release}
-      >
-        {DIRECTION_LABELS[direction]}
-      </button>
+      <div key={direction} className={`drive-controls-dir-cell drive-controls-dir-cell-${direction}`}>
+        <button
+          type="button"
+          className="drive-controls-button drive-controls-drive-button"
+          data-testid={`drive-${direction}`}
+          disabled={!linkOpen}
+          onMouseDown={() => press(direction)}
+          onMouseUp={release}
+          onMouseLeave={release}
+          onTouchStart={(event) => {
+            event.preventDefault();
+            press(direction);
+          }}
+          onTouchEnd={release}
+        >
+          {DIRECTION_LABELS[direction]}
+        </button>
+        <button
+          type="button"
+          className="drive-controls-button drive-controls-nudge-button"
+          data-testid={`drive-nudge-${direction}`}
+          aria-label={spec.ariaLabel}
+          title={spec.ariaLabel}
+          disabled={!linkOpen || activeDirection !== null}
+          onClick={() => nudge(direction)}
+        >
+          <span aria-hidden="true">N</span>
+        </button>
+      </div>
     );
   }
 

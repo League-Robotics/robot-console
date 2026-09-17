@@ -1,8 +1,5 @@
 ---
 status: pending
-sprint: 018
-tickets:
-- 018-012
 ---
 
 # WiFi robot discovery waits for the mDNS announcement interval instead of resolving on demand
@@ -33,3 +30,57 @@ tickets:
 - A robot whose mDNS announcement has not yet arrived still gets a
   `wifi` link within a bounded time, rather than waiting out however
   long the announcement interval happens to be.
+
+
+## Reproduced on an exclusive bench (team-lead, 2026-09-17)
+
+Sprint 018 closed without this fix; the issue returns to the pool for the
+next sprint. The full harness ran on a genuinely exclusive bench that day
+(the stakeholder stopped his own `npm run dev`, pid 38933; the report's
+"Holders / skips" section reads "No resources held by another process at
+Layer 1 run time" — 0 skipped, 0 contention), so the evidence below is
+free of the contention that muddied every earlier attempt.
+
+**`gopiv / wifi` → L1 pass, L2 pass, L3 fail**: _"no live-snapshot link of
+transport 'wifi' found for 'gopiv'"_. The telling detail: gopiv's wifi chip
+**is** present and green on a front-page screenshot taken later in the same
+run (`01-front-torture-before.png`) — the link did arrive, just after Layer
+3 had already given up waiting. That is this issue's exact shape: discovery
+is waiting on the next unsolicited announcement rather than resolving on
+demand. Layer 1 passed only because the harness itself grew a name-lookup
+fallback to route around the gap (see the original evidence above).
+
+Note the fleet has moved since this issue was written: on this run `tigez`
+has a working WiFi path (it passed L1/L2/L3, header `WiFi ·
+tigez.local:7654 Linked`), while `192.168.1.193` (gopiv) and
+`192.168.1.184` (vevov) did not answer ICMP at all. Re-confirm the current
+WiFi robot roster and addresses before implementing.
+
+
+## Carried forward from sprint 018, ticket 012 (team-lead, 2026-09-17)
+
+Sprint 018 planned this work as ticket 012 ("Relays and WiFi robots are
+reachable without races"). **No implementation ever landed** — only the
+planner's ticket-creation commit (`cc0e868`). At the stakeholder's
+direction the sprint closed on what was actually done and this work moves
+to the next sprint, where it will be re-ticketed from this issue. The
+retired ticket's own analysis and implementation plan are preserved in git
+history at that commit, and the design direction it settled on is worth
+keeping:
+
+- **Relay contention**: extend the `relayLeaseRevocation` takeover seam
+  (016-004) so a *direct* console `session-open {linkId: <relay usb link>}`
+  goes through the same lease-takeover path bridging already uses, instead
+  of opening the raw port independently and racing the sweeper's ~30 s
+  probe. Distinguish "our own sweeper holds it" (take over, no error) from
+  "another *process* holds it" (a distinct plain-language reason — "another
+  app has this relay open", never "Cannot lock port").
+- **WiFi discovery**: give whichever module owns "an owned robot has no
+  `wifi` link" a bounded, off-hot-path `dns.lookup(<name>.local, {family:
+  4})` fallback, confirmed by dialing TCP 7654 and checking for `HELLO`
+  before creating the link — the same IPv4-first approach 018-007 / SUC-004
+  established for dialing an *existing* link, applied to creating one.
+
+Both defects share a shape worth restating: something the host already does
+correctly in one path needs to also happen in a second path that currently
+has no such guarantee.

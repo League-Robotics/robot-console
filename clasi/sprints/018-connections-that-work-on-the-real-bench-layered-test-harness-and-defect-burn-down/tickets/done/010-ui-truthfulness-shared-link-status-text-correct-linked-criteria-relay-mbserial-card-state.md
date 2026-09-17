@@ -2,7 +2,7 @@
 id: '010'
 title: 'UI truthfulness: shared link-status text, correct Linked criteria, relay/mbserial
   card state'
-status: in-progress
+status: done
 use-cases:
 - SUC-007
 depends-on:
@@ -75,7 +75,7 @@ patch each component's text independently):
       failure-reason combination named in the issue's "Expected" list;
       component tests confirming `DeviceCard`/`RelayPage` call the
       shared module rather than formatting text inline.
-- [ ] **Harness command and evidence**: `scripts/bench/run.sh --report
+- [x] **Harness command and evidence**: `scripts/bench/run.sh --report
       /tmp/bench-report.md` run against the real bench; the Layer 3
       screenshots in the report show, for every card checked: the right
       robot name, no raw internal ids, "Linked" only where a session has
@@ -247,3 +247,74 @@ Scoped run: `npx vitest run packages/ui`. Bench pass per the harness
 command above.
 
 **Documentation updates**: none beyond this ticket's completion notes.
+
+
+## Harness evidence, finally obtained (team-lead, 2026-09-17)
+
+The one bullet this ticket stayed open on for three passes — a real
+`scripts/bench/run.sh` run against the bench — **has now run, on an
+exclusive bench**. The stakeholder stopped his own `npm run dev`
+(pid 38933) for exactly this purpose, so the contention that blocked
+passes 1-3 is gone: the report's own "Holders / skips" section reads
+_"No resources held by another process at Layer 1 run time."_ Nothing
+was skipped, nothing was labeled `contention`.
+
+**Command**: `scripts/bench/run.sh --report <scratchpad>/bench-final-report.md`
+(scratchpad = `/private/tmp/claude-501/-Volumes-Proj-proj-league-projects-microbit-robot-console/6bf21790-2015-49cb-920c-f51e1b81fc20/scratchpad`;
+the ticket text said `/tmp/bench-report.md` — the run used the session
+scratchpad instead, same command otherwise).
+
+**Layers**: L1 2026-09-17T22:45:43Z-22:46:39Z, L2 22:46:40Z-22:46:57Z,
+L3 22:46:59Z-22:48:54Z. 10 rows: **4 pass, 4 defect, 2 environment, 0
+skipped, 0 contention.**
+
+**This ticket's own criterion — truthful cards in the Layer 3
+screenshots — is met.** All 15 of Layer 2's truthfulness assertions
+passed on the live snapshot: `no-stale-while-advertised` (vevov, gopiv,
+tigez), `no-relay-as-robot` (torture, vitut, tovez, vevov, gopiv,
+tigez), `one-row-per-name` (all six). Team-lead visual inspection of
+the screenshots:
+
+- `01-front-torture-before.png` (the full front page): Robots group
+  shows `vevov`, `gopiv`, `tigez`, each as name + `robot · NEZHA2 ·
+  <program>` + icon chips only. Radio bridges group shows `torture` as
+  "mbrelay host" with one chip and **no Switch/Disconnect and no robot
+  picker** — correct: nothing was bridged through it at that moment.
+  "Not seen recently" correctly holds `vitut` and `tovez` with plain
+  last-seen timestamps. **No raw internal ids anywhere on the page, no
+  "lost" banners, no stale link rows, no contradictory "Not seen
+  since" on an advertised link** — every defect the first two passes
+  were rejected for is absent.
+- `02-tigez-wifi-wifi-tigez-final.png` (a robot page): header reads
+  `WiFi · tigez.local:7654  Linked` — and the console below it shows
+  the robot actually answering (`» ID` / `« id diffdrive tigez
+  1.20260914.1 tigez`). **"Linked" alongside a session that has
+  genuinely answered**, which is precisely the criterion this ticket
+  redefined. (Incidentally confirms the 018-019 radio map is live:
+  the status table reads `channel 52`, `group 179` — tigez's new
+  73-map pair.)
+- `02-gopiv-mbserial-*.png`, `02-tigez-mbserial-*.png`,
+  `02-vevov-mbserial-*.png`: the three mbserial paths passed L1, L2
+  **and L3**, each with its own card and robot page screenshot.
+
+**The four `defect` rows in this run are not this ticket's.** Recorded
+here so the evidence is not mistaken for a 010 failure:
+- `gopiv / wifi` — L1 and L2 passed, L3 found no `wifi` link in the
+  live snapshot. This is **ticket 012's** mDNS-discovery defect
+  (`bench-wifi-robot-discovery-waits-for-announcement.md`), reproduced
+  cleanly on an exclusive bench for the first time. Note that gopiv's
+  wifi chip *is* present and green on the later
+  `01-front-torture-before.png`, i.e. the link did appear — just after
+  L3 had already given up on it, which is exactly the "waits for the
+  announcement interval" shape.
+- `gopiv`, `tigez`, `vevov` / `radio-via-mbrelay:torture` — all three
+  failed L3 with the identical `relay card "torture" has no robot
+  picker`, while passing L1 and L2 (the radio path itself works). This
+  is a **stale harness driver**, not a product defect: the front-page
+  relay card's robot picker was deliberately retired 2026-09-14
+  (`RelayConnectControls.tsx:35`, `FrontPage.tsx`'s `RelayBridgeStatus`)
+  in favor of a robot's own radio chip, and `scripts/bench/layer3/
+  uiDriver.ts` still drives the retired control. Being fixed under
+  ticket 011.
+
+**Status**: all acceptance criteria met. Closing.

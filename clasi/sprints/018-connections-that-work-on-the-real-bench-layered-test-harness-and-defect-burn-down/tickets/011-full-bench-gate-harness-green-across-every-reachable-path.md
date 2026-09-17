@@ -1,7 +1,7 @@
 ---
 id: '011'
 title: 'Full-bench gate: harness green across every reachable path'
-status: open
+status: in-progress
 use-cases:
 - SUC-001
 depends-on:

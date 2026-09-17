@@ -82,7 +82,7 @@ function mountTab(link: SnapshotLink = openLink()): { el: HTMLDivElement; socket
   let socket: FakeSocket | null = null;
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <DriveTab link={link} />
+      <DriveTab link={link} name="vevav" />
     </WsProvider>,
   );
   act(() => {

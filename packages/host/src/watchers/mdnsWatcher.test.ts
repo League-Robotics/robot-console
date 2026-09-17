@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import os from "node:os";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { deviceIdToName, nameToValue } from "@robot-console/protocol";
 import { openStoreDb } from "../store/db.js";
@@ -11,6 +12,7 @@ import {
   DEFAULT_MBSERIAL_TTL_MS,
   DEFAULT_MBRELAY_TTL_MS,
   DEFAULT_MBFLASH_TTL_MS,
+  DEFAULT_RADIO_TTL_MS,
   type MdnsWatcherDeps,
   type MdnsWatcherOptions,
 } from "./mdnsWatcher.js";
@@ -122,16 +124,30 @@ function fakeBackend() {
   return backend;
 }
 
-function wifiService(name: string, host: string, port: number): MdnsService {
-  return { name: `${name} robot link`, host, port, txt: { name, role: "robot", link: "v6" }, fqdn: `${name}.local` };
+function wifiService(name: string, host: string, port: number, addresses?: string[]): MdnsService {
+  return {
+    name: `${name} robot link`,
+    host,
+    port,
+    txt: { name, role: "robot", link: "v6" },
+    fqdn: `${name}.local`,
+    ...(addresses !== undefined ? { addresses } : {}),
+  };
 }
 
-function mbserialService(name: string, host: string, port: number): MdnsService {
-  return { name, host, port, fqdn: `${name}.local` };
+function mbserialService(name: string, host: string, port: number, addresses?: string[]): MdnsService {
+  return { name, host, port, fqdn: `${name}.local`, ...(addresses !== undefined ? { addresses } : {}) };
 }
 
-function mbrelayService(name: string, host: string, port: number, registryPort: number): MdnsService {
-  return { name, host, port, txt: { registry: String(registryPort) }, fqdn: `${name}.local` };
+function mbrelayService(name: string, host: string, port: number, registryPort: number, addresses?: string[]): MdnsService {
+  return {
+    name,
+    host,
+    port,
+    txt: { registry: String(registryPort) },
+    fqdn: `${name}.local`,
+    ...(addresses !== undefined ? { addresses } : {}),
+  };
 }
 
 function mbflashService(name: string, host: string, port: number): MdnsService {
@@ -265,6 +281,113 @@ describe("startMdnsWatcher", () => {
     },
   );
 
+  // 018-007: mdnsWatcher.ts stores the resolved IPv4 address (`ip`)
+  // alongside `host`/`port`, picked out of the A/AAAA answers
+  // `bonjour-service` itself already parses (`MdnsService.addresses`) --
+  // this is the address `tcpStream.ts` dials directly instead of ever
+  // resolving the `.local` hostname itself.
+  describe("018-007: resolved IPv4 address (ip) storage", () => {
+    it("stores the resolved ip alongside host/port for a wifi link's first observation", () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const handle = start(store, backend);
+      try {
+        backend.robotlinkTcp.emitUp(wifiService("eeeee", "eeeee.local", 7654, ["fe80::1", "192.168.1.193"]));
+        const row = store.snapshotRows().links.find((l) => l.id === "wifi-eeeee");
+        expect(row?.address).toBe(JSON.stringify({ host: "eeeee.local", port: 7654, ip: "192.168.1.193" }));
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    });
+
+    it("stores the resolved ip for a mbserial link", () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const handle = start(store, backend);
+      try {
+        backend.serial.emitUp(mbserialService("fffff", "fffff.local", 37317, ["192.168.1.148"]));
+        const row = store.snapshotRows().links.find((l) => l.id === "mbserial-fffff");
+        expect(row?.address).toBe(JSON.stringify({ host: "fffff.local", port: 37317, ip: "192.168.1.148" }));
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    });
+
+    it("stores the resolved ip for a mbrelay link, alongside registryPort", () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const handle = start(store, backend);
+      try {
+        backend.relay.emitUp(mbrelayService("torture", "torture.local", 12345, 8080, ["192.168.1.12"]));
+        const row = store.snapshotRows().links.find((l) => l.id === "mbrelay-torture");
+        expect(row?.address).toBe(JSON.stringify({ host: "torture.local", port: 12345, ip: "192.168.1.12", registryPort: 8080 }));
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    });
+
+    it("omits ip entirely (never stores it as null/undefined) when the observation carries no IPv4 address", () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const handle = start(store, backend);
+      try {
+        backend.robotlinkTcp.emitUp(wifiService("ggggg", "ggggg.local", 7654, ["fe80::2"]));
+        const row = store.snapshotRows().links.find((l) => l.id === "wifi-ggggg");
+        expect(row?.address).toBe(JSON.stringify({ host: "ggggg.local", port: 7654 }));
+
+        backend.robotlinkTcp.emitUp(wifiService("hhhhh", "hhhhh.local", 7654));
+        const rowNoAddresses = store.snapshotRows().links.find((l) => l.id === "wifi-hhhhh");
+        expect(rowNoAddresses?.address).toBe(JSON.stringify({ host: "hhhhh.local", port: 7654 }));
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    });
+
+    it("an ip-only change (host/port unchanged) still marks an open session unresponsive, same as a host/port change", () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const handle = start(store, backend);
+      try {
+        backend.robotlinkTcp.emitUp(wifiService("iiiii", "iiiii.local", 7654, ["192.168.1.10"]));
+        const linkId = "wifi-iiiii";
+        store.openSession(linkId, Date.now());
+
+        backend.robotlinkTcp.emitServiceChange(wifiService("iiiii", "iiiii.local", 7654, ["192.168.1.11"]));
+
+        const row = store.snapshotRows().links.find((l) => l.id === linkId);
+        expect(row?.address).toBe(JSON.stringify({ host: "iiiii.local", port: 7654, ip: "192.168.1.11" }));
+        expect(row?.state).toBe("unresponsive");
+        expect(row?.state_reason).toBe("address changed");
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    });
+
+    it("re-announcing the same ip on an unchanged instance does not mark an open session unresponsive", () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const handle = start(store, backend);
+      try {
+        backend.robotlinkTcp.emitUp(wifiService("jjjjj", "jjjjj.local", 7654, ["192.168.1.20"]));
+        const linkId = "wifi-jjjjj";
+        store.openSession(linkId, Date.now());
+
+        backend.robotlinkTcp.emitServiceChange(wifiService("jjjjj", "jjjjj.local", 7654, ["192.168.1.20"]));
+
+        const row = store.snapshotRows().links.find((l) => l.id === linkId);
+        expect(row?.state).not.toBe("unresponsive");
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    });
+  });
+
   it(
     "advancing the fake clock past each TTL with no further traffic ages links(wifi|mbserial|mbrelay) stale and deletes their services rows",
     () => {
@@ -304,6 +427,37 @@ describe("startMdnsWatcher", () => {
   );
 
   it(
+    "018-005: the same aging tick also ages radio links past their ttl (relay gone), even though this module never creates radio rows itself",
+    () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      // A radio link whose relay no longer exists -- `ageRadioLinks`'s
+      // own store-level unit tests (`store/index.test.ts`) cover the
+      // full aging rule; this test's only job is proving the wiring:
+      // this watcher's tick calls it at all, with no sweeper involved.
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 0 });
+      store.upsertLink({
+        id: "radio-gopiv-via-usb-gone",
+        transport: "radio",
+        address: { relayLinkId: "usb-gone", channel: 1, group: 1 },
+        deviceId: 1198504156,
+        at: 0,
+      });
+      const handle = start(store, backend);
+      try {
+        expect(store.snapshotRows().links.find((l) => l.id === "radio-gopiv-via-usb-gone")?.state).toBe("discovered");
+
+        vi.advanceTimersByTime(DEFAULT_REQUERY_INTERVAL_MS);
+
+        expect(store.snapshotRows().links.find((l) => l.id === "radio-gopiv-via-usb-gone")?.state).toBe("stale");
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    },
+  );
+
+  it(
     "a continuously-present service survives past its TTL when the backend keeps reporting announce packets for it (bench defect 1: presence refresh)",
     () => {
       const store = freshStore();
@@ -334,6 +488,27 @@ describe("startMdnsWatcher", () => {
       }
     },
   );
+
+  it("a link that aged to stale is revived on its next sighting (bench: torture advertised every tick but stuck under Not seen recently)", () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const handle = start(store, backend);
+    try {
+      const service = wifiService("kkkkk", "kkkkk.local", 7654);
+      backend.robotlinkTcp.emitUp(service);
+      const linkId = "wifi-kkkkk";
+      vi.advanceTimersByTime(DEFAULT_WIFI_TTL_MS + DEFAULT_REQUERY_INTERVAL_MS * 2);
+      expect(store.snapshotRows().links.find((l) => l.id === linkId)?.state).toBe("stale");
+
+      backend.robotlinkTcp.emitUp(service);
+      const revived = store.snapshotRows().links.find((l) => l.id === linkId);
+      expect(revived?.state).not.toBe("stale");
+      expect(revived?.state).toBe("discovered");
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
 
   it(
     "the same continuously-present service goes stale anyway once announce packets stop arriving too (regression guard: presence refresh is not a permanent exemption)",
@@ -663,6 +838,82 @@ describe("startMdnsWatcher", () => {
     },
   );
 
+  // ---------------------------------------------------------------------
+  // 018-010, item 2: this very machine must never mint (or even
+  // observe) itself as a relay/serial-bridge device -- the stakeholder's
+  // own front page showed a card named after his Mac's own hostname
+  // ("gala") with "No role announced" once something local advertised
+  // an `_mbrelay._tcp`/`_mbserial._tcp` service whose SRV host resolved
+  // back to that same machine. `os.hostname()` (never a hardcoded
+  // stand-in for "gala") is used here so this suite proves the real
+  // rule against whatever machine actually runs it, in CI included.
+  // ---------------------------------------------------------------------
+  it("018-010: never mints a relay device for an mbrelay service whose host is this very machine", () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const handle = start(store, backend);
+    try {
+      backend.relay.emitUp(mbrelayService(os.hostname(), `${os.hostname()}.local`, 8760, 8761));
+
+      expect(store.snapshotRows().links.find((l) => l.id === `mbrelay-${os.hostname()}`)).toBeUndefined();
+      expect(store.snapshotRows().devices.filter((d) => d.kind === "relay")).toHaveLength(0);
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it("018-010: never mints a relay device for an mbrelay service resolved to one of this machine's own addresses, even when the host label doesn't textually match", () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const handle = start(store, backend);
+    try {
+      backend.relay.emitUp(mbrelayService("someOtherLabel", "some-other-label.local", 8760, 8761, ["127.0.0.1"]));
+
+      expect(store.snapshotRows().links.find((l) => l.id === "mbrelay-someOtherLabel")).toBeUndefined();
+      expect(store.snapshotRows().devices.filter((d) => d.kind === "relay")).toHaveLength(0);
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it("018-010: still mints a relay device for a different machine's mbrelay service (regression guard -- the filter is not over-broad)", () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const handle = start(store, backend);
+    try {
+      backend.relay.emitUp(mbrelayService("torture", "torture.local", 8760, 8761, ["192.168.1.12"]));
+
+      expect(store.snapshotRows().links.find((l) => l.id === "mbrelay-torture")).toBeDefined();
+      expect(store.snapshotRows().devices.filter((d) => d.kind === "relay")).toHaveLength(1);
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it("018-010: never observes an mbserial service whose host is this very machine (defensive symmetry with handleMbrelay)", () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const owned = namedDevice(3);
+    // Coincidentally-matching name isn't the point here -- this proves
+    // the guard runs before any owned-device attachment would even be
+    // attempted, using this machine's own hostname as the mbserial
+    // instance name (the shape a locally-running bridge would actually
+    // advertise under).
+    store.upsertDevice({ id: owned.id, name: owned.name, kind: "robot", owned: true, at: 1 });
+    const handle = start(store, backend);
+    try {
+      backend.serial.emitUp(mbserialService(os.hostname(), `${os.hostname()}.local`, 8760));
+
+      expect(store.snapshotRows().links.find((l) => l.id === `mbserial-${os.hostname()}`)).toBeUndefined();
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
   it("heartbeats a tasks row every browse cycle", () => {
     const store = freshStore();
     const backend = fakeBackend();
@@ -687,6 +938,7 @@ describe("mdnsWatcher TTL/interval constants block", () => {
       DEFAULT_MBSERIAL_TTL_MS,
       DEFAULT_MBRELAY_TTL_MS,
       DEFAULT_MBFLASH_TTL_MS,
+      DEFAULT_RADIO_TTL_MS,
     ]) {
       expect(value).toBeGreaterThan(0);
     }
@@ -696,5 +948,6 @@ describe("mdnsWatcher TTL/interval constants block", () => {
     expect(DEFAULT_REQUERY_INTERVAL_MS).toBeLessThan(DEFAULT_MBSERIAL_TTL_MS);
     expect(DEFAULT_REQUERY_INTERVAL_MS).toBeLessThan(DEFAULT_MBRELAY_TTL_MS);
     expect(DEFAULT_REQUERY_INTERVAL_MS).toBeLessThan(DEFAULT_MBFLASH_TTL_MS);
+    expect(DEFAULT_REQUERY_INTERVAL_MS).toBeLessThan(DEFAULT_RADIO_TTL_MS);
   });
 });

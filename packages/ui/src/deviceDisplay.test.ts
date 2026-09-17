@@ -12,18 +12,32 @@ import { describe, expect, it } from "vitest";
 import type { FirmwareAvailability, SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
 import {
   canBeFlashed,
+  cardLinks,
   connectionLabel,
+  currentRelayChild,
   findRelayChild,
   findSweepingCandidateName,
   firmwareDiagnosticDetail,
   firmwareDisabledReason,
+  firmwareSourceText,
+  hiddenLinkCount,
   isCalibrationProgram,
+  isLinkAnswering,
   isLinkUsable,
   lastCheckedText,
   linkStateText,
   nameDisplay,
+  plainFailureReason,
+  programVersionText,
+  relativeTimeText,
+  releaseDisplayName,
+  repoShortName,
   roleDisplay,
+  stripInternalIds,
   sweepRateSuffix,
+  LINK_ANSWERED_FRESH_MS,
+  RELAY_CHILD_RECENT_MS,
+  STALE_ADVERTISED_GRACE_MS,
   SWEEP_LABEL_FRESH_MS,
 } from "./deviceDisplay";
 
@@ -48,6 +62,7 @@ function device(overrides: Partial<Omit<SnapshotDevice, "links">> & { links?: Sn
     name: "zeguz",
     kind: "robot",
     role: null,
+    commonName: null,
     program: null,
     version: null,
     owned: true,
@@ -60,6 +75,15 @@ function device(overrides: Partial<Omit<SnapshotDevice, "links">> & { links?: Sn
 }
 
 const OPEN_SESSION = { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null };
+
+/** A session that has genuinely answered recently -- ticket 018-010's
+ * own "Linked" criterion. `answeredAt` defaults to `Date.now()` at call
+ * time (not a fixed constant) so it stays fresh regardless of when a
+ * test happens to run; pass `now`/`answeredAt` explicitly wherever a
+ * test needs both pinned to the same fixed clock. */
+function answeredSession(answeredAt: number = Date.now()): NonNullable<SnapshotLink["session"]> {
+  return { ...OPEN_SESSION, answeredAt };
+}
 
 describe("isLinkUsable (extended scope, team-lead 2026-09-13, item A)", () => {
   it("true only when state is 'connected' AND session is defined", () => {
@@ -78,6 +102,39 @@ describe("isLinkUsable (extended scope, team-lead 2026-09-13, item A)", () => {
 
   it("false when neither connected nor a session exists", () => {
     expect(isLinkUsable(link({ state: "connectable" }))).toBe(false);
+  });
+});
+
+/**
+ * `isLinkAnswering` (ticket 018-010): the "Linked"/green-pill criterion
+ * -- stricter than `isLinkUsable`, which only checks the transport is
+ * open and a session object exists.
+ */
+describe("isLinkAnswering", () => {
+  const now = 1_000_000;
+
+  it("true when connected, session exists, and answeredAt is within the fresh window", () => {
+    expect(isLinkAnswering(link({ state: "connected", session: answeredSession(now - 1000) }), now)).toBe(true);
+  });
+
+  it("false when not isLinkUsable at all (e.g. not connected)", () => {
+    expect(isLinkAnswering(link({ state: "unresponsive", session: answeredSession(now) }), now)).toBe(false);
+  });
+
+  // Bench defect (vevov): a bridge that accepts TCP and flips state to
+  // "connected" while the robot behind it never once answers HELLO --
+  // `session` exists (opened) but has never actually answered anything.
+  it("false when connected with a session that has never answered (answeredAt null/absent)", () => {
+    expect(isLinkAnswering(link({ state: "connected", session: OPEN_SESSION }), now)).toBe(false);
+    expect(isLinkAnswering(link({ state: "connected", session: { ...OPEN_SESSION, answeredAt: null } }), now)).toBe(false);
+  });
+
+  it("false once answeredAt has gone stale (beyond LINK_ANSWERED_FRESH_MS)", () => {
+    expect(isLinkAnswering(link({ state: "connected", session: answeredSession(now - LINK_ANSWERED_FRESH_MS - 1) }), now)).toBe(false);
+  });
+
+  it("true right at the edge of the fresh window", () => {
+    expect(isLinkAnswering(link({ state: "connected", session: answeredSession(now - LINK_ANSWERED_FRESH_MS) }), now)).toBe(true);
   });
 });
 
@@ -112,9 +169,80 @@ describe("nameDisplay / roleDisplay", () => {
     expect(nameDisplay(device({ name: "tigez" }))).toEqual({ text: "tigez", flagged: false });
   });
 
-  it("roleDisplay returns the announced role, or a calm placeholder when none has been announced", () => {
+  it("roleDisplay returns the announced role, whatever the device's kind", () => {
     expect(roleDisplay(device({ role: "NEZHA2" }))).toBe("NEZHA2");
-    expect(roleDisplay(device({ role: null }))).toBe("No role announced");
+    expect(roleDisplay(device({ kind: "relay", role: "RADIOBRIDGE" }))).toBe("RADIOBRIDGE");
+  });
+
+  it("018-010 item 3: a robot with no announced role falls back to a plain 'Role unknown'", () => {
+    expect(roleDisplay(device({ kind: "robot", role: null }))).toBe("Role unknown");
+  });
+
+  it("018-016/018-017: a robot with commonName, role, and a program all known joins them with ' · ', using the program's own release version (not device.version)", () => {
+    expect(
+      roleDisplay(
+        device({ commonName: "robot", role: "NEZHA2", program: "calibration-0.20260913.1", version: "1.20260912.8" }),
+      ),
+    ).toBe("robot · NEZHA2 · 0.20260913.1");
+  });
+
+  it("018-016: a robot with no program yet omits the third part, joining just commonName and role", () => {
+    expect(roleDisplay(device({ commonName: "robot", role: "NEZHA2", program: null }))).toBe("robot · NEZHA2");
+  });
+
+  it("018-016/018-017: a robot with no commonName omits it, joining just role and the program's release version", () => {
+    expect(roleDisplay(device({ commonName: null, role: "NEZHA2", program: "calibration-0.20260913.1" }))).toBe(
+      "NEZHA2 · 0.20260913.1",
+    );
+  });
+
+  it("018-016: a robot with only commonName known shows just that", () => {
+    expect(roleDisplay(device({ commonName: "robot", role: null, program: null }))).toBe("robot");
+  });
+
+  it("018-016: a robot with nothing known at all (commonName, role, program all null) falls back to 'Role unknown'", () => {
+    expect(roleDisplay(device({ commonName: null, role: null, program: null }))).toBe("Role unknown");
+  });
+
+  // 018-017: stakeholder-found defect the same day as 018-016 -- the
+  // card was showing `device.version` (the pxt-nezha-diffdrive library
+  // version, e.g. "1.20260912.8") as "the" version. It must never
+  // appear in the identity line at all any more, regardless of what it
+  // is set to -- only the program-derived release version does.
+  it("018-017: device.version never appears in the identity line, even when it differs from the program's release version", () => {
+    expect(
+      roleDisplay(
+        device({ commonName: "robot", role: "NEZHA2", program: "calibration-0.20260913.1", version: "9.9.9" }),
+      ),
+    ).toBe("robot · NEZHA2 · 0.20260913.1");
+  });
+
+  it("018-017: a non-calibration program string is shown unchanged (no parsing assumed) as the third part", () => {
+    expect(roleDisplay(device({ commonName: "robot", role: "NEZHA2", program: "diffdrive" }))).toBe(
+      "robot · NEZHA2 · diffdrive",
+    );
+  });
+
+  it("018-016: relays are unaffected by commonName -- role text is unchanged even when commonName is set", () => {
+    expect(roleDisplay(device({ kind: "relay", role: "RADIOBRIDGE", commonName: "relay" }))).toBe("RADIOBRIDGE");
+  });
+
+  it("018-010 item 3: a relay with no announced role is labeled by its links' own transport -- mbrelay host", () => {
+    expect(
+      roleDisplay(device({ kind: "relay", role: null, links: [link({ id: "mbrelay-torture", transport: "mbrelay" })] })),
+    ).toBe("mbrelay host");
+  });
+
+  it("018-010 item 3: ... or mbserial host, for a serial-bridge farm host", () => {
+    expect(
+      roleDisplay(device({ kind: "relay", role: null, links: [link({ id: "mbserial-gopiv", transport: "mbserial" })] })),
+    ).toBe("mbserial host");
+  });
+
+  it("018-010 item 3: a relay with no announced role and no mbrelay/mbserial link falls back to 'Role unknown' too", () => {
+    expect(roleDisplay(device({ kind: "relay", role: null, links: [link({ id: "usb-SERIAL-A", transport: "usb" })] }))).toBe(
+      "Role unknown",
+    );
   });
 });
 
@@ -126,9 +254,18 @@ describe("nameDisplay / roleDisplay", () => {
 describe("linkStateText", () => {
   const now = 1_000_000;
 
-  it("renders Linked/Connecting for the live states", () => {
-    expect(linkStateText(link({ state: "connected" }), now)).toBe("Linked");
+  it("renders Linked only once the session has actually answered; Connecting otherwise", () => {
+    expect(linkStateText(link({ state: "connected", session: answeredSession(now) }), now)).toBe("Linked");
     expect(linkStateText(link({ state: "connecting" }), now)).toBe("Connecting");
+  });
+
+  // Ticket 018-010 bench defect: `vevov`'s mbserial bridge accepted a
+  // TCP connection and flipped `state` to "connected" while the robot
+  // behind it never once answered HELLO -- the old criterion (`state ===
+  // "connected"` alone) still called this "Linked".
+  it("renders Connecting (not Linked) for a connected link whose session has never answered", () => {
+    expect(linkStateText(link({ state: "connected", session: OPEN_SESSION }), now)).toBe("Connecting");
+    expect(linkStateText(link({ state: "connected" }), now)).toBe("Connecting");
   });
 
   // Ticket 017-010 defect (team-lead walk 017-012, 2026-09-13): `gopiv`'s
@@ -213,15 +350,179 @@ describe("linkStateText", () => {
     expect(text).not.toContain('link "usb-9906…2820"');
   });
 
-  it("renders Not seen since <date> for a stale link with a lastSeen", () => {
+  it("renders Not seen since <date> for a stale link with a long-past lastSeen", () => {
     const lastSeen = Date.UTC(2026, 0, 1, 12, 0, 0);
     expect(linkStateText(link({ state: "stale", lastSeen }), now)).toContain("Not seen since");
+  });
+
+  // Ticket 018-010 bench defect: the `torture` relay's own row read "Not
+  // seen since 9/13/2026, 12:16:31 AM" although it was advertising right
+  // now (`state: "stale"`, `last_seen` 0 minutes old) -- the aging
+  // watcher marked it stale on its own schedule moments before (or
+  // regardless of) a fresh observation of the still-present service.
+  it("never renders Not seen since for a stale link whose lastSeen is still fresh (advertised right now)", () => {
+    expect(linkStateText(link({ state: "stale", lastSeen: now }), now)).toBe("Not linked");
+    expect(linkStateText(link({ state: "stale", lastSeen: now - STALE_ADVERTISED_GRACE_MS }), now)).toBe("Not linked");
+  });
+
+  it("renders Not seen since once lastSeen has actually gone beyond the advertised grace window", () => {
+    expect(linkStateText(link({ state: "stale", lastSeen: now - STALE_ADVERTISED_GRACE_MS - 1 }), now)).toContain("Not seen since");
   });
 
   it("renders Not linked for discovered/connectable/closed_by_user", () => {
     expect(linkStateText(link({ state: "discovered" }), now)).toBe("Not linked");
     expect(linkStateText(link({ state: "connectable" }), now)).toBe("Not linked");
     expect(linkStateText(link({ state: "closed_by_user" }), now)).toBe("Not linked");
+  });
+
+  // Ticket 018-010 bench defect: `vevav`'s own front-page card row read
+  // the robot-shaped "check the USB cable or that it's powered on" for a
+  // relay's own no-answer link. `kind` (the owning device's own kind,
+  // threaded from `FrontPage.tsx`'s `DeviceConnectionRow`/`AppHeader.tsx`)
+  // picks relay-shaped wording instead when passed "relay", and defaults
+  // to "robot" wording (every test above, which never passes it) when
+  // omitted.
+  it("gives relay-shaped advice when kind is 'relay', leaving every other call site's default untouched", () => {
+    const reason = 'connector: link "usb-1" produced no banner within the identify budget';
+    expect(linkStateText(link({ state: "failed", reason }), now, "relay")).toBe(
+      "Couldn't connect: the relay didn't answer when we said hello — it may be parked in the data plane; unplug and replug it to reset",
+    );
+    expect(linkStateText(link({ state: "failed", reason }), now, "robot")).toBe(
+      "Couldn't connect: the robot didn't answer when we said hello — check the USB cable or that it's powered on",
+    );
+    expect(linkStateText(link({ state: "failed", reason }), now)).toBe(
+      "Couldn't connect: the robot didn't answer when we said hello — check the USB cable or that it's powered on",
+    );
+  });
+});
+
+/**
+ * `stripInternalIds`/`plainFailureReason` (ticket 018-010): exported so
+ * `RelayConnectControls.tsx` shares the exact same cleaning/wording
+ * `linkStateText` above already used internally, instead of showing a
+ * relay card's `reason`/bridging-error text raw. Every transport x
+ * failure-reason combination named in the issue's own "Expected"
+ * section is covered here directly (not only indirectly through
+ * `linkStateText`), since `RelayConnectControls`'s own "Connection to
+ * `<name>` lost" text calls `plainFailureReason` directly rather than
+ * going through `linkStateText`.
+ */
+describe("plainFailureReason (transport-aware failure advice, ticket 018-010)", () => {
+  it("gives USB-specific cable/power advice for a no-banner failure on a usb link", () => {
+    expect(plainFailureReason("connector: link \"usb-1\" produced no banner within the identify budget", "usb")).toBe(
+      "the robot didn't answer when we said hello — check the USB cable or that it's powered on",
+    );
+  });
+
+  it("gives mbserial-specific bridge/farm advice for the same failure shape on an mbserial link", () => {
+    expect(plainFailureReason('connector: link "mbserial-1" produced no banner within the identify budget', "mbserial")).toBe(
+      "the bridge answered but the robot didn't — is the robot plugged into the farm and powered?",
+    );
+  });
+
+  it("gives WiFi-specific network advice for the same failure shape on a wifi link", () => {
+    expect(plainFailureReason('connector: link "wifi-1" produced no banner within the identify budget', "wifi")).toBe(
+      "no answer from the robot over WiFi — is it on the network?",
+    );
+  });
+
+  it("gives radio/relay-specific range advice for the same failure shape on radio/mbrelay links", () => {
+    expect(
+      plainFailureReason('relayBridger: candidate "radio-tigez-via-mbrelay-torture" produced no banner within the identify budget', "radio"),
+    ).toBe("no radio reply — is the robot on and in range?");
+    expect(
+      plainFailureReason('relayBridger: candidate "mbrelay-tigez-via-mbrelay-torture" produced no banner within the identify budget', "mbrelay"),
+    ).toBe("no radio reply — is the robot on and in range?");
+  });
+
+  // Ticket 018-010's own bench evidence: the quoted candidate id can
+  // name a *different* robot than the one the link legitimately belongs
+  // to -- must be stripped outright, never surfaced, regardless of
+  // which name it happens to contain.
+  it("strips a candidate id even when it names a different robot than the link's own device", () => {
+    const reason = 'relayBridger: candidate "radio-tigez-via-mbrelay-torture" produced no banner within the identify budget';
+    const text = plainFailureReason(reason, "radio");
+    expect(text).not.toContain("tigez");
+    expect(text).not.toContain("radio-tigez-via-mbrelay-torture");
+  });
+
+  it("keeps 018-008's own bridge-contention text verbatim for bridges, and says 'robot over Wi-Fi' for a wifi link", () => {
+    expect(plainFailureReason("another app is connected to this bridge", "mbserial")).toBe(
+      "another app is connected to this bridge",
+    );
+    expect(plainFailureReason("another app is connected to this bridge", "wifi")).toBe(
+      "another connection is already open to this robot over Wi-Fi",
+    );
+  });
+
+  it("recognizes a USB port-lock error and gives port-lock advice, only for usb", () => {
+    expect(plainFailureReason("Error: Opening /dev/tty.usbmodem1234: Resource busy", "usb")).toBe("another app has this board open");
+    expect(plainFailureReason("Error: Opening COM3: Access denied, EBUSY", "usb")).toBe("another app has this board open");
+  });
+
+  // Bench evidence: a relay card read "Connection to <name> lost: Error:
+  // No such file or directory..." verbatim -- a raw Node error with no
+  // recognizable shape must still fall back to plain per-transport
+  // advice, never be shown as-is.
+  it("falls back to per-transport no-answer advice for an unrecognized raw system error", () => {
+    expect(plainFailureReason("Error: No such file or directory, open '/dev/tty.usbmodem-relay-1'", "radio")).toBe(
+      "no radio reply — is the robot on and in range?",
+    );
+    expect(plainFailureReason("Error: connect ECONNREFUSED 192.168.1.50:7654", "wifi")).toBe(
+      "no answer from the robot over WiFi — is it on the network?",
+    );
+  });
+
+  it("keeps a banner/serial identity-mismatch reason verbatim regardless of transport", () => {
+    const reason = "banner identity gopiv disagrees with SWD name zeguz -- serial data corrupted, check the USB cable";
+    expect(plainFailureReason(reason, "usb")).toBe(reason);
+  });
+
+  it("maps a missed-STATUS-poll reason to 'stopped answering' regardless of transport", () => {
+    expect(plainFailureReason("no reply to 3 STATUS polls -- link presumed dead", "wifi")).toBe("stopped answering");
+  });
+
+  it("shows an unrecognized, already-plain reason verbatim", () => {
+    expect(plainFailureReason("no reply", "radio")).toBe("no reply");
+  });
+
+  // Ticket 018-010 bench defect: `vevav`, a RADIOBRIDGE relay plugged in
+  // over USB, showed the robot-shaped "check the USB cable or that it's
+  // powered on" advice for its own no-answer USB failure. `kind` (a
+  // device's own kind, not the link's transport) picks relay-shaped
+  // advice instead, for both a no-banner failure and an unrecognized raw
+  // system error, and regardless of whether the relay's own link is
+  // usb or mbrelay -- and defaults to "robot" wording when omitted, so
+  // every pre-existing call site above is unaffected.
+  it("gives relay-shaped 'parked in the data plane' advice for a relay device's own no-answer link, regardless of transport", () => {
+    const relayAdvice = "the relay didn't answer when we said hello — it may be parked in the data plane; unplug and replug it to reset";
+    expect(
+      plainFailureReason('connector: link "usb-1" produced no banner within the identify budget', "usb", "relay"),
+    ).toBe(relayAdvice);
+    expect(
+      plainFailureReason("Error: No such file or directory, open '/dev/cu.usbmodem-vevav'", "usb", "relay"),
+    ).toBe(relayAdvice);
+    expect(
+      plainFailureReason('connector: link "mbrelay-1" produced no banner within the identify budget', "mbrelay", "relay"),
+    ).toBe(relayAdvice);
+    expect(plainFailureReason('connector: link "usb-1" produced no banner within the identify budget', "usb", "robot")).not.toBe(
+      relayAdvice,
+    );
+  });
+});
+
+describe("stripInternalIds", () => {
+  it("removes a connector:/relayBridger: prefix and any quoted link/candidate id", () => {
+    expect(stripInternalIds('connector: link "usb-9906…2820" produced no banner within the identify budget')).toBe(
+      "produced no banner within the identify budget",
+    );
+    expect(stripInternalIds('relayBridger: candidate "radio-gopiv-via-mbrelay-torture" produced no banner within the identify budget')).toBe(
+      "produced no banner within the identify budget",
+    );
+  });
+
+  it("leaves an already-plain reason untouched", () => {
+    expect(stripInternalIds("another app is connected to this bridge")).toBe("another app is connected to this bridge");
   });
 });
 
@@ -247,6 +548,7 @@ describe("firmwareDiagnosticDetail", () => {
     repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive",
     tag: "v0.20260909.1",
     available: false,
+    checkedAt: 1000,
     reason: "no-asset",
     message: "release v0.20260909.1 is missing MICROBIT.hex",
   };
@@ -266,6 +568,7 @@ describe("firmwareDiagnosticDetail", () => {
       repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive",
       tag: "latest",
       available: false,
+      checkedAt: 1000,
       reason: "no-releases",
     };
     expect(firmwareDiagnosticDetail(noReleases)).toBeNull();
@@ -278,6 +581,7 @@ describe("firmwareDiagnosticDetail", () => {
         repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive",
         tag: "latest",
         available: true,
+        checkedAt: 1000,
       }),
     ).toBeNull();
   });
@@ -297,9 +601,108 @@ describe("firmwareDiagnosticDetail", () => {
         repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive",
         tag: "latest",
         available: false,
+        checkedAt: null,
         reason: "not-yet-checked",
       }),
     ).toBeNull();
+  });
+});
+
+describe("018-017: repoShortName / releaseDisplayName / relativeTimeText / firmwareSourceText", () => {
+  it("repoShortName returns a GitHub repo URL's final path segment", () => {
+    expect(repoShortName("https://github.com/League-Robotics/nezha-robot-template")).toBe("nezha-robot-template");
+    expect(repoShortName("https://github.com/League-Robotics/microbit-radio-relay")).toBe("microbit-radio-relay");
+  });
+
+  it("repoShortName tolerates a trailing slash", () => {
+    expect(repoShortName("https://github.com/League-Robotics/nezha-robot-template/")).toBe("nezha-robot-template");
+  });
+
+  it("releaseDisplayName joins the repo's short name and tag", () => {
+    expect(
+      releaseDisplayName({
+        configured: true,
+        repoUrl: "https://github.com/League-Robotics/nezha-robot-template",
+        tag: "v0.20260913.1",
+        available: true,
+        checkedAt: 1000,
+      }),
+    ).toBe("nezha-robot-template v0.20260913.1");
+  });
+
+  it("releaseDisplayName is null when nothing is configured, or the status is undefined", () => {
+    expect(releaseDisplayName({ configured: false })).toBeNull();
+    expect(releaseDisplayName(undefined)).toBeNull();
+  });
+
+  it("relativeTimeText reads 'just now' for anything under 45 seconds old", () => {
+    expect(relativeTimeText(1_000_000 - 10_000, 1_000_000)).toBe("just now");
+  });
+
+  it("relativeTimeText reads minutes, then hours, then falls back to a locale string past a day", () => {
+    const now = 1_000_000_000;
+    expect(relativeTimeText(now - 5 * 60_000, now)).toBe("5 minutes ago");
+    expect(relativeTimeText(now - 60_000, now)).toBe("1 minute ago");
+    expect(relativeTimeText(now - 3 * 60 * 60_000, now)).toBe("3 hours ago");
+    expect(relativeTimeText(now - 25 * 60 * 60_000, now)).toBe(new Date(now - 25 * 60 * 60_000).toLocaleString());
+  });
+
+  it("firmwareSourceText returns the release page link, tag, and 'checked ...' text for a configured release", () => {
+    const now = 1_000_000;
+    const info = firmwareSourceText(
+      {
+        configured: true,
+        repoUrl: "https://github.com/League-Robotics/nezha-robot-template",
+        tag: "v0.20260913.1",
+        available: true,
+        checkedAt: now - 5 * 60_000,
+      },
+      now,
+    );
+    expect(info).toEqual({
+      href: "https://github.com/League-Robotics/nezha-robot-template/releases/tag/v0.20260913.1",
+      repoName: "nezha-robot-template",
+      tag: "v0.20260913.1",
+      checkedText: "checked 5 minutes ago",
+    });
+  });
+
+  it("firmwareSourceText is null when nothing is configured, or the status is undefined", () => {
+    expect(firmwareSourceText({ configured: false })).toBeNull();
+    expect(firmwareSourceText(undefined)).toBeNull();
+  });
+
+  it("firmwareSourceText says 'checked: never' when checkedAt is null (configured but never polled)", () => {
+    expect(
+      firmwareSourceText({
+        configured: true,
+        repoUrl: "https://github.com/League-Robotics/nezha-robot-template",
+        tag: "latest",
+        available: false,
+        checkedAt: null,
+        reason: "not-yet-checked",
+      }),
+    ).toEqual({
+      href: "https://github.com/League-Robotics/nezha-robot-template/releases/tag/latest",
+      repoName: "nezha-robot-template",
+      tag: "latest",
+      checkedText: "checked: never",
+    });
+  });
+});
+
+describe("018-017: programVersionText", () => {
+  it("extracts the release version from a calibration-prefixed program string", () => {
+    expect(programVersionText("calibration-0.20260913.1")).toBe("0.20260913.1");
+  });
+
+  it("returns a non-calibration program string unchanged (no parsing assumed)", () => {
+    expect(programVersionText("diffdrive")).toBe("diffdrive");
+    expect(programVersionText("some-other-build")).toBe("some-other-build");
+  });
+
+  it("returns an already-bare version string unchanged (no leading word-hyphen to strip)", () => {
+    expect(programVersionText("0.20260913.1")).toBe("0.20260913.1");
   });
 });
 
@@ -343,6 +746,78 @@ describe("findRelayChild", () => {
 
   it("returns undefined when no device has a via link to this relay", () => {
     expect(findRelayChild([device({ id: 5, links: [link()] })], RELAY_LINK_ID)).toBeUndefined();
+  });
+
+  // Ticket 018-010 bench evidence (`torture` relay card naming the wrong
+  // robot): two different devices can each carry their own qualifying
+  // via-linked link to the same relay at once (one bridged long ago and
+  // now stale/failed, one bridged more recently and also now failed).
+  // The freshest (`since`) one must win, not whichever happens to come
+  // first in `devices[]`.
+  it("picks the freshest (newest since) qualifying link when more than one device qualifies", () => {
+    const older = device({ id: 5, name: "gopiv", links: [viaLink({ id: "radio-gopiv-via-usb-relay-1", state: "failed", since: 100 })] });
+    const newer = device({ id: 6, name: "tigez", links: [viaLink({ id: "radio-tigez-via-usb-relay-1", state: "failed", since: 200 })] });
+    // Order in `devices[]` deliberately puts the stale one first --
+    // the old "first match wins" rule would have picked `gopiv`.
+    expect(findRelayChild([older, newer], RELAY_LINK_ID)?.device.name).toBe("tigez");
+    expect(findRelayChild([newer, older], RELAY_LINK_ID)?.device.name).toBe("tigez");
+  });
+});
+
+/**
+ * `currentRelayChild` (ticket 018-010): `findRelayChild`'s own match,
+ * additionally required to still be "current" -- see that function's
+ * own doc comment for the bench defects this fixes (`torture`'s card
+ * reading "Connection to gopiv lost: ttl-expired", `vitut`'s reading a
+ * bare "Connection to tigez lost", both for a bridge that had genuinely
+ * ended long before this host process ever started).
+ */
+describe("currentRelayChild", () => {
+  const now = 1_000_000;
+
+  it("returns the same match as findRelayChild when it is genuinely live (answering)", () => {
+    const answering = device({ id: 5, name: "vevov", links: [viaLink({ state: "connected", session: answeredSession(now) })] });
+    expect(currentRelayChild([answering], RELAY_LINK_ID, now)?.device.name).toBe("vevov");
+  });
+
+  it("returns undefined for a stale match -- old bridge history, never resurrected", () => {
+    const staleChild = device({
+      id: 5,
+      name: "gopiv",
+      links: [viaLink({ state: "stale", reason: "ttl-expired", since: now - 10 * 60_000 })],
+    });
+    expect(currentRelayChild([staleChild], RELAY_LINK_ID, now)).toBeUndefined();
+  });
+
+  it("returns undefined for a failed/unresponsive match with no session that dropped longer ago than RELAY_CHILD_RECENT_MS", () => {
+    const longAgo = device({
+      id: 6,
+      name: "tigez",
+      links: [viaLink({ state: "unresponsive", reason: "no reply", since: now - RELAY_CHILD_RECENT_MS - 1 })],
+    });
+    expect(currentRelayChild([longAgo], RELAY_LINK_ID, now)).toBeUndefined();
+  });
+
+  it("still returns a failed/unresponsive match with no session that dropped recently", () => {
+    const recent = device({
+      id: 6,
+      name: "tigez",
+      links: [viaLink({ state: "unresponsive", reason: "no reply", since: now - 1000 })],
+    });
+    expect(currentRelayChild([recent], RELAY_LINK_ID, now)?.device.name).toBe("tigez");
+  });
+
+  it("never expires a match that still carries a live session, however old its since", () => {
+    const oldButSessioned = device({
+      id: 6,
+      name: "tigez",
+      links: [viaLink({ state: "unresponsive", reason: "no reply", since: now - 10 * RELAY_CHILD_RECENT_MS, session: OPEN_SESSION })],
+    });
+    expect(currentRelayChild([oldButSessioned], RELAY_LINK_ID, now)?.device.name).toBe("tigez");
+  });
+
+  it("returns undefined when findRelayChild itself finds nothing", () => {
+    expect(currentRelayChild([device({ id: 5, links: [link()] })], RELAY_LINK_ID, now)).toBeUndefined();
   });
 });
 
@@ -420,5 +895,64 @@ describe("sweepRateSuffix (ticket 016-007)", () => {
 
   it("is empty when relay itself is undefined (no relays[] entry at all)", () => {
     expect(sweepRateSuffix(undefined)).toBe("");
+  });
+});
+
+/**
+ * `cardLinks`/`hiddenLinkCount` (ticket 018-010): the device-card link
+ * filter for the bench defect where every card was cluttered with aged
+ * rows -- `vevov`/`gopiv`/`tovez`/`tigez` each showing one or more
+ * `Not seen since …` rows from hours or days ago, and `tovez` showing a
+ * USB row for a port a different device (`vitut`) now physically holds.
+ */
+describe("cardLinks / hiddenLinkCount", () => {
+  it("keeps a usable, connecting, discovered, connectable, failed, unresponsive, or closed_by_user link", () => {
+    const kept: SnapshotLink["state"][] = ["connectable", "discovered", "connecting", "connected", "failed", "unresponsive", "closed_by_user"];
+    const d = device({ links: kept.map((state, i) => link({ id: `link-${i}`, state })) });
+    expect(cardLinks(d)).toHaveLength(kept.length);
+    expect(hiddenLinkCount(d)).toBe(0);
+  });
+
+  it("hides a stale link entirely -- never rendered as a row, regardless of its own lastSeen/reason text", () => {
+    const d = device({
+      links: [
+        link({ id: "usb-live", state: "connectable" }),
+        link({ id: "radio-aged", state: "stale", reason: "ttl-expired", lastSeen: 0 }),
+      ],
+    });
+    const kept = cardLinks(d);
+    expect(kept).toHaveLength(1);
+    expect(kept[0]?.id).toBe("usb-live");
+    expect(hiddenLinkCount(d)).toBe(1);
+  });
+
+  // The `tovez` bench defect: a USB link whose physical path a different
+  // device (`vitut`) now holds. `usbWatcher.ts`'s `handleRemoved` marks
+  // the departed board's own link `stale` immediately (event-driven, not
+  // TTL-based) the instant it is unplugged -- so this is exactly the
+  // same `stale` filter above, not a separate path-collision check.
+  it("hides an old device's own USB link once its path has been taken over by a different device (state: stale)", () => {
+    const tovez = device({
+      name: "tovez",
+      links: [link({ id: "usb-old-serial", state: "stale", transport: "usb", label: "USB · /dev/cu.usbmodem2121102" })],
+    });
+    expect(cardLinks(tovez)).toHaveLength(0);
+    expect(hiddenLinkCount(tovez)).toBe(1);
+  });
+
+  it("hiddenLinkCount is 0 when nothing was hidden", () => {
+    expect(hiddenLinkCount(device({ links: [link({ state: "connectable" })] }))).toBe(0);
+  });
+
+  it("counts more than one hidden link", () => {
+    const d = device({
+      links: [
+        link({ id: "a", state: "stale" }),
+        link({ id: "b", state: "stale" }),
+        link({ id: "c", state: "connectable" }),
+      ],
+    });
+    expect(hiddenLinkCount(d)).toBe(2);
+    expect(cardLinks(d)).toHaveLength(1);
   });
 });

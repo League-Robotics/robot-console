@@ -55,6 +55,7 @@ function device(
     name: "zeguz",
     kind: "robot",
     role: null,
+    commonName: null,
     program: null,
     version: null,
     owned: true,
@@ -364,7 +365,12 @@ describe("AppHeader Flash / Set Wi-Fi send-gating (ticket 011, carried from 009)
 // not usable, "Use <label> instead" to a usable sibling link.
 // ---------------------------------------------------------------------
 
-const OPEN_SESSION = { seq: 3, pending: 0, lastDone: 3, lastDoneReason: "none", robotStatus: null, functions: null };
+// Ticket 018-010: `linkStateText`'s "connected" case now reads "Linked"
+// only once the session has actually answered (`isLinkAnswering`), not
+// merely `state === "connected"` -- this fixture's own uses all mean to
+// exercise the header's "Linked" text, so it needs a fresh `answeredAt`
+// too, matching a session that has genuinely replied.
+const OPEN_SESSION = { seq: 3, pending: 0, lastDone: 3, lastDoneReason: "none", robotStatus: null, functions: null, answeredAt: Date.now() };
 
 function connectionText(el: HTMLDivElement): string | undefined {
   return el.querySelector('[data-testid="app-header-connection"]')?.textContent ?? undefined;
@@ -449,7 +455,7 @@ describe("AppHeader connection label + state (ticket 017-011)", () => {
     expect(el.querySelector('[data-testid="app-header-connection-state"]')?.textContent).toBe("Linked");
   });
 
-  it("a link with no open session shows 'No open session on this link' plus a Connect button that sends session-open, gated by useSendable", () => {
+  it("a link with no open session shows plain 'Not connected' plus a Connect button that sends session-open, gated by useSendable (018-010: the stakeholder rejected the old 'No open session on this link' wording)", () => {
     const { el, socket } = mountAt("/d/usb-SERIAL-A", {
       devices: [
         device({
@@ -469,7 +475,7 @@ describe("AppHeader connection label + state (ticket 017-011)", () => {
         }),
       ],
     });
-    expect(el.querySelector('[data-testid="app-header-not-usable"]')?.textContent).toBe("No open session on this link");
+    expect(el.querySelector('[data-testid="app-header-not-usable"]')?.textContent).toBe("Not connected");
     const connect = el.querySelector<HTMLButtonElement>('[data-testid="app-header-connect"]');
     expect(connect).not.toBeNull();
     expect(connect!.disabled).toBe(false);
@@ -530,7 +536,7 @@ describe("AppHeader connection label + state (ticket 017-011)", () => {
     expect(switchLink!.getAttribute("href")).toBe("/d/mbserial-zeguz");
   });
 
-  it("extended scope (item C): a link whose session survived but is no longer usable (unresponsive) reads 'Not connected over <label>: <reason>', not the ticket's plain 'no session' text", () => {
+  it("extended scope (item C): a link whose session survived but is no longer usable (unresponsive) reads 'Not connected over <label>: <plain reason>', not the ticket's plain 'no session' text", () => {
     const { el } = mountAt("/d/usb-SERIAL-A", {
       devices: [
         device({
@@ -551,12 +557,143 @@ describe("AppHeader connection label + state (ticket 017-011)", () => {
         }),
       ],
     });
+    // 018-010: the raw harvester reason is routed through
+    // `plainFailureReason` (never shown verbatim -- "no raw reasons"),
+    // which reads this exact shape as "stopped answering".
     expect(el.querySelector('[data-testid="app-header-not-usable"]')?.textContent).toBe(
-      "Not connected over USB · /dev/cu.usbmodemA: no reply to 3 STATUS polls -- link presumed dead",
+      "Not connected over USB · /dev/cu.usbmodemA: stopped answering",
     );
     // Still offered a way forward -- Connect -- exactly like the
     // no-session case.
     expect(el.querySelector('[data-testid="app-header-connect"]')).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------
+// Ticket 018-010, second pass: relay header text (defect 2) and Flash
+// gating by transport (defect 4).
+// ---------------------------------------------------------------------
+
+function relayDevice(overrides: Partial<Omit<SnapshotDevice, "links">> & { links?: SnapshotDevice["links"] } = {}): SnapshotDevice {
+  return device({
+    id: 9,
+    name: "torture",
+    kind: "relay",
+    role: "RADIOBRIDGE",
+    links: [
+      {
+        id: "mbrelay-torture",
+        transport: "mbrelay",
+        label: "mbrelay · torture.local:8760",
+        state: "connected",
+        reason: null,
+        since: 0,
+        lastSeen: 0,
+        nextRetryAt: null,
+        capabilities: { open: false, close: true, flash: false, provisionWifi: false },
+      },
+    ],
+    ...overrides,
+  });
+}
+
+describe("AppHeader relay connection text (ticket 018-010, defect 2)", () => {
+  it("an idle relay (no bridge, no lease) reads plain 'idle' -- no session wording, no Connect button, no switch link", () => {
+    const { el } = mountAt("/d/mbrelay-torture", { devices: [relayDevice()] });
+    expect(el.querySelector('[data-testid="app-header-connection-state"]')?.textContent).toBe("idle");
+    expect(el.querySelector('[data-testid="app-header-not-usable"]')).toBeNull();
+    expect(el.querySelector('[data-testid="app-header-connect"]')).toBeNull();
+    expect(el.querySelector('[data-testid="app-header-switch-link"]')).toBeNull();
+    expect(el.textContent).not.toContain("session");
+  });
+
+  it("a relay currently bridging a robot names that robot, not raw ids", () => {
+    const robot = device({
+      id: 42,
+      name: "tigez",
+      kind: "robot",
+      links: [
+        {
+          id: "radio-tigez-via-mbrelay-torture",
+          transport: "radio",
+          label: "Radio · ch55/grp114",
+          state: "connected",
+          reason: null,
+          since: 0,
+          lastSeen: 0,
+          nextRetryAt: null,
+          session: OPEN_SESSION,
+          via: { relayLinkId: "mbrelay-torture", relayName: "torture", channel: 55, group: 114, addressSource: "derived" },
+          capabilities: { open: true, close: true, flash: false, provisionWifi: false },
+        },
+      ],
+    });
+    const { el } = mountAt("/d/mbrelay-torture", { devices: [relayDevice(), robot] });
+    // Exactly `relayStatusText`'s own "connected" text (the one shared
+    // module every relay bridging-status render reads) -- names the
+    // robot and its channel/group, never the raw link/candidate id.
+    expect(el.querySelector('[data-testid="app-header-connection-state"]')?.textContent).toBe(
+      "Connected to tigez on channel 55, group 114",
+    );
+  });
+
+  it("a relay whose own link cannot be reached shows a plain, relay-shaped failure reason, no raw ids", () => {
+    const { el } = mountAt("/d/mbrelay-torture", {
+      devices: [
+        relayDevice({
+          links: [
+            {
+              id: "mbrelay-torture",
+              transport: "mbrelay",
+              label: "mbrelay · torture.local:8760",
+              state: "failed",
+              reason: 'relayBridger: candidate "radio-tigez-via-mbrelay-torture" produced no banner within the identify budget',
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              capabilities: { open: true, close: false, flash: false, provisionWifi: false },
+            },
+          ],
+        }),
+      ],
+    });
+    const text = el.querySelector('[data-testid="app-header-connection-state"]')?.textContent ?? "";
+    expect(text).not.toContain("radio-tigez-via-mbrelay-torture");
+    expect(text).not.toContain("relayBridger");
+    expect(text).toContain("the relay didn't answer");
+  });
+});
+
+describe("AppHeader Flash gating by transport (ticket 018-010, defect 4)", () => {
+  it("offers no Flash trigger for an identified relay reached over mbrelay/TCP -- flashing can never work there", () => {
+    const { el } = mountAt("/d/mbrelay-torture", { devices: [relayDevice()] });
+    expect(flashTrigger(el)).toBeUndefined();
+  });
+
+  it("offers no Flash trigger for an identified robot reached over WiFi -- flashing can never work there", () => {
+    const { el } = mountAt("/d/wifi-gopiv", {
+      devices: [
+        device({
+          id: 7,
+          name: "gopiv",
+          links: [
+            {
+              id: "wifi-gopiv",
+              transport: "wifi",
+              label: "WiFi · gopiv.local:7654",
+              state: "connected",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              session: OPEN_SESSION,
+              capabilities: { open: false, close: true, flash: false, provisionWifi: true },
+            },
+          ],
+        }),
+      ],
+    });
+    expect(flashTrigger(el)).toBeUndefined();
   });
 });
 

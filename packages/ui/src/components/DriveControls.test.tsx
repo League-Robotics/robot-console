@@ -504,6 +504,99 @@ describe("DriveControls Clear E-STOP (ported from EstopControl.test.tsx, out-of-
   });
 });
 
+/**
+ * Nudge strips (out-of-process, 2026-09-16). Each cardinal cell's right
+ * 25% is a one-shot `MOVE_X` nudge. Like the fixed turns above, field 2
+ * is milliradians: 35 == round(2 * pi / 180 * 1000). Field 3 (cruise) is
+ * the wire's 0 "configured default" sentinel, not an mm/s value.
+ */
+describe("DriveControls nudge strips (MOVE_X one-shot, out-of-process 2026-09-16)", () => {
+  const cases: Array<{ testId: string; fields: [number, number, number, number] }> = [
+    { testId: "drive-nudge-forward", fields: [10, 0, 0, 2000] },
+    { testId: "drive-nudge-backward", fields: [-10, 0, 0, 2000] },
+    { testId: "drive-nudge-left", fields: [0, 35, 0, 2000] },
+    { testId: "drive-nudge-right", fields: [0, -35, 0, 2000] },
+  ];
+
+  for (const { testId, fields } of cases) {
+    it(`${testId} sends exactly one MOVE_X with fields ${JSON.stringify(fields)} on click`, () => {
+      const { el, socket } = mountControls(openLink());
+      const button = el.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`)!;
+
+      act(() => {
+        button.click();
+      });
+
+      expect(sentMessages(socket)).toEqual([{ type: "send-command", linkId: LINK_ID, verb: "MOVE_X", fields }]);
+    });
+
+    it(`${testId} never starts a held drive -- no WHEELS_V, no STOP`, () => {
+      const { el, socket } = mountControls(openLink());
+      const button = el.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`)!;
+
+      act(() => {
+        button.click();
+      });
+
+      const verbs = sentMessages(socket).map((message) => (message as { verb: string }).verb);
+      expect(verbs).toEqual(["MOVE_X"]);
+    });
+
+    it(`${testId} is disabled with no session open`, () => {
+      const { el } = mountControls(closedLink());
+      expect(el.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`)!.disabled).toBe(true);
+    });
+  }
+
+  it("disables every nudge strip while a direction is held, and sends nothing if one is clicked anyway", () => {
+    // A sequenced MOVE_X arriving mid-motion is refused by the firmware
+    // (err 10), so the strip must be inert during a hold -- it sits
+    // directly against the held button. Guarded by `disabled` and by
+    // `nudge()`'s own early return; this asserts both.
+    const { el, socket } = mountControls(openLink());
+    const forward = el.querySelector<HTMLButtonElement>('[data-testid="drive-forward"]')!;
+    const nudgeForward = el.querySelector<HTMLButtonElement>('[data-testid="drive-nudge-forward"]')!;
+
+    act(() => {
+      forward.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+
+    expect(nudgeForward.disabled).toBe(true);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="drive-nudge-left"]')!.disabled).toBe(true);
+
+    const beforeClick = sentMessages(socket).length;
+    act(() => {
+      nudgeForward.click();
+    });
+    const afterClick = sentMessages(socket);
+    expect(afterClick.length).toBe(beforeClick);
+    expect(afterClick.every((message) => (message as { verb: string }).verb !== "MOVE_X")).toBe(true);
+  });
+
+  it("re-enables the nudge strips once the held direction is released", () => {
+    const { el } = mountControls(openLink());
+    const forward = el.querySelector<HTMLButtonElement>('[data-testid="drive-forward"]')!;
+
+    act(() => {
+      forward.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="drive-nudge-forward"]')!.disabled).toBe(true);
+
+    act(() => {
+      forward.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    });
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="drive-nudge-forward"]')!.disabled).toBe(false);
+  });
+
+  it("keeps the drive half's own testid and disabled contract intact (App.test.tsx depends on it)", () => {
+    const { el } = mountControls(openLink());
+    const forward = el.querySelector<HTMLButtonElement>('[data-testid="drive-forward"]')!;
+    expect(forward.tagName).toBe("BUTTON");
+    expect(forward.disabled).toBe(false);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="drive-forward"]')!.textContent).toBe("Forward");
+  });
+});
+
 describe("DriveControls fixed-angle turns (MOVE_X, added out-of-process 2026-09-10)", () => {
   // Field 2 is milliradians, not degrees (`MOVE_X`'s wire contract --
   // see DriveControls.tsx's doc comment and the bench capture that

@@ -14,9 +14,14 @@
  *   serial, read its SWD name with a timeout (`swdName.ts`'s
  *   `readSwdName`, which never rejects on its own but is not itself
  *   bounded — this module adds the timeout), upsert `devices` (if
- *   named) and `links(usb, discovered)`, release the owner. A named
- *   device also merges any `known-robots.json` placeholder sharing its
- *   name (`store/placeholderMerge.ts`'s `mergeNamePlaceholderIfAny`,
+ *   named) and `links(usb, discovered)`, release the owner. This upsert
+ *   never asserts or overwrites `kind` (018-004: a chip id read cannot
+ *   itself tell a robot from a relay apart — see `store/index.ts`'s own
+ *   "kind is never guessed" doc comment); a device already known to be
+ *   a relay is also skipped for the placeholder merge below. A named
+ *   device that is not already known as a relay also merges any
+ *   `known-robots.json` placeholder sharing its name
+ *   (`store/placeholderMerge.ts`'s `mergeNamePlaceholderIfAny`,
  *   bench defect 010, 2026-09-13 — SWD naming is trustworthy identity
  *   the instant it succeeds, so this must not wait on a later banner
  *   identify that a flaky cable may never produce cleanly). Sprint 015
@@ -100,6 +105,12 @@ const DEFAULT_NAME_TIMEOUT_MS = 2000;
 const NAMING_OWNER = "naming";
 /** `tasks.name` this watcher heartbeats every poll. */
 const TASK_NAME = "usbWatcher";
+
+/** Inverse of {@link usbLinkId}: the USB serial a `usb-<serial>` link
+ * id names, or `undefined` for any other id. */
+export function usbSerialFromLinkId(linkId: string): string | undefined {
+  return linkId.startsWith("usb-") ? linkId.slice("usb-".length) : undefined;
+}
 
 /** Stable `links.id` for a USB device, derived from the DAPLink
  * interface chip's own USB serial number (the join key that survives a
@@ -227,10 +238,21 @@ export function startUsbWatcher(
 
       if (swdResult.status === "named") {
         namedDeviceId = swdResult.deviceId;
+        // 018-004: a chip id read over the debug interface cannot itself
+        // tell a robot from a relay apart (both expose the same SWD/DAP
+        // interface) -- `kind` is deliberately omitted here so this
+        // upsert never asserts or overwrites it. A pre-existing row (a
+        // relay already identified by a banner, e.g. `mdnsWatcher.ts`'s
+        // own relay discovery) keeps its own `kind` unchanged; only a
+        // genuinely brand-new row gets the store's own required-column
+        // default. See `store/index.ts`'s own "kind is never guessed"
+        // doc comment for the full mechanism this replaces (the previous
+        // unconditional `kind: "robot"` here silently downgraded a known
+        // relay, `vevav`, the instant it was next seen over USB).
+        const existingKind = store.getDeviceKind(swdResult.deviceId);
         store.upsertDevice({
           id: swdResult.deviceId,
           name: swdResult.name,
-          kind: "robot",
           usbSerial: device.serialNumber,
           at: now(),
         });
@@ -245,7 +267,15 @@ export function startUsbWatcher(
         // (the exact `tovez` bench case) would otherwise stay a
         // duplicate row forever. See `store/placeholderMerge.ts`'s own
         // doc comment for the shared helper and why it lives there.
-        mergeNamePlaceholderIfAny(store, swdResult.name, swdResult.deviceId, now());
+        //
+        // 018-004: never run this merge for a device already known to be
+        // a relay -- `known-robots.json` never seeds a relay placeholder
+        // in the first place, so this is defensive, but a relay's own
+        // name must never become eligible for a robot-placeholder merge
+        // on the strength of a name match alone.
+        if (existingKind !== "relay") {
+          mergeNamePlaceholderIfAny(store, swdResult.name, swdResult.deviceId, now());
+        }
       }
       store.upsertLink({
         id: linkId,
@@ -315,13 +345,30 @@ export function startUsbWatcher(
   function handleUpdated(device: DaplinkDevice): void {
     const linkId = usbLinkId(device.serialNumber);
     const existing = store.reconcilerRows().links.find((link) => link.id === linkId);
+    const existingAddress = existing?.address as { path?: string } | null | undefined;
+    const address = usbLinkAddress(device);
 
     store.upsertLink({
       id: linkId,
       transport: "usb",
-      address: usbLinkAddress(device),
+      address,
       at: now(),
     });
+
+    // 018-005: a relay that has moved USB ports (`vevav`, evidenced live
+    // on the stakeholder's real state dir) leaves stale failure text on
+    // any `radio` link riding it -- e.g. "cannot open
+    // /dev/cu.usbmodem2121202" naming a path this relay no longer dials.
+    // Clear it the instant the path actually changes, regardless of this
+    // usb link's own state (a relay's own usb link is normally
+    // `connectable`/`connected`, not `discovered` -- unlike the
+    // `discovered`-only gate just below, which is a naming concern, not
+    // an address-change one). A no-op if nothing riding this link id
+    // currently carries failure text (most usb devices are robots, never
+    // named as a `relayLinkId` by any `radio` link's own address).
+    if (existingAddress?.path !== undefined && address.path !== undefined && existingAddress.path !== address.path) {
+      store.clearRadioLinkStaleText(linkId);
+    }
 
     if (!existing || existing.state !== "discovered" || attachTasks.has(device.serialNumber)) {
       // Nothing to reconsider: no prior row, a state this handler must
@@ -331,7 +378,6 @@ export function startUsbWatcher(
       return;
     }
 
-    const address = usbLinkAddress(device);
     if (address.path === undefined) {
       // Still no serial port -- nothing new for the reconciler yet.
       return;
@@ -344,7 +390,6 @@ export function startUsbWatcher(
       return;
     }
 
-    const existingAddress = existing.address as { path?: string } | null | undefined;
     if (existingAddress?.path === undefined) {
       // Never named, and the earlier attach had no serial path to offer
       // either -- give naming one more try now that one has appeared.
@@ -382,8 +427,35 @@ export function startUsbWatcher(
     store.releaseBoardOwner(device.serialNumber, NAMING_OWNER);
   }
 
+  /** Stakeholder (2026-09-13): "Zapig is in a box. It is not connected
+   * to anything. Why is it showing up as a robot here?" A board unplugged
+   * while no host was running never gets a `removed` event, so its
+   * `usb` link stayed `connectable` across restarts. On the first poll,
+   * every `usb` link whose board is not enumerated right now is treated
+   * exactly as if it had just been removed (stale, session closed,
+   * naming owner released). */
+  function reconcileAbsentBoards(enumerated: readonly DaplinkDevice[]): void {
+    const presentSerials = new Set(enumerated.map((device) => device.serialNumber));
+    for (const link of store.reconcilerRows().links) {
+      if (link.transport !== "usb" || link.state === "stale") {
+        continue;
+      }
+      const serialNumber = usbSerialFromLinkId(link.id);
+      if (serialNumber === undefined || presentSerials.has(serialNumber)) {
+        continue;
+      }
+      handleRemoved({ serialNumber, displaySerial: serialNumber.slice(-8), availability: "hid-only" });
+    }
+  }
+
+  let reconciledAtStart = false;
+
   async function pollOnce(): Promise<void> {
     const next = await listDevices();
+    if (!reconciledAtStart) {
+      reconciledAtStart = true;
+      reconcileAbsentBoards(next);
+    }
     // Opt into the `updated` bucket (ticket 014-010): this watcher is
     // the consumer `diffDaplinkDevices`'s `updated` behaviour was built
     // for (ticket 014-007) -- refresh address, keep everything else

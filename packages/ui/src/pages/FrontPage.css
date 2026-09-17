@@ -2,7 +2,6 @@
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  max-width: 46rem;
 }
 
 .connection-banner {
@@ -20,13 +19,24 @@
   font-size: 0.95rem;
 }
 
+/* Stakeholder (2026-09-13): cards are ~400px wide and float into rows. */
 .devices-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 0.75rem;
+  align-items: stretch;
+}
+
+.devices-list > li {
+  flex: 0 0 400px;
+  max-width: 100%;
+}
+
+.devices-list > li > .device-card {
+  height: 100%;
 }
 
 /* The whole card is the navigation affordance (a real `Link`, not a
@@ -103,6 +113,56 @@
   outline-offset: 2px;
 }
 
+/* Ticket 018-015: the open arrow and the lightning Flash trigger share
+   this column -- arrow at the top, Flash at the bottom
+   (`justify-content: space-between`), so a card with only one of the
+   two (or the arrow alone, the common case with no usb link) keeps that
+   one control in its original upper-right position instead of shifting
+   toward the middle: with a single flex item, `space-between` packs it
+   at the start, same as the old bare `.device-open-button` placement. */
+.device-card-side {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.device-flash-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  align-self: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid var(--rc-border);
+  border-radius: 999px;
+  background: var(--rc-surface);
+  color: var(--rc-accent);
+  cursor: pointer;
+  transition: border-color 0.1s ease, background 0.1s ease;
+}
+
+.device-flash-button:hover,
+.device-flash-button:focus-visible {
+  border-color: var(--rc-accent);
+  background: var(--rc-accent);
+  color: var(--rc-accent-contrast);
+}
+
+.device-flash-button:focus-visible {
+  outline: 2px solid var(--rc-accent);
+  outline-offset: 2px;
+}
+
+.device-flash-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 /* Ticket 017-007: the relay quick-connect card's own `.device-relay-*`
  * rules moved to `components/RelayConnectControls.css` (imported by
  * `RelayConnectControls.tsx`, which now owns this card's markup). */
@@ -134,16 +194,29 @@
   color: var(--rc-warn-text);
 }
 
-.device-linked-pill {
-  font-size: 0.75rem;
-  padding: 0.1rem 0.5rem;
+/* Stakeholder (2026-09-14): a robot's name is its link status -- yellow
+   while no link answers, green once one does -- replacing the "Linked"
+   pill that popped in and out. */
+.device-name-link {
+  padding: 0.05rem 0.6rem;
+  border: 1px solid transparent;
   border-radius: 999px;
-  background: var(--rc-ok-bg);
-  color: var(--rc-ok-text);
+}
+
+.device-name-link[data-linked="false"] {
+  background: var(--rc-link-off-bg);
+  border-color: var(--rc-link-off-border);
+  color: var(--rc-link-off-text);
+}
+
+.device-name-link[data-linked="true"] {
+  background: var(--rc-link-on-bg);
+  border-color: var(--rc-link-on-border);
+  color: var(--rc-link-on-text);
 }
 
 /* Calibration-classification badge (sprint 011 ticket 002) -- same pill
- * shape as `.device-linked-pill`/`.device-flag`, distinguished by the
+ * shape as `.device-flag`, distinguished by the
  * accent color so it reads as "a fact about this device" rather than
  * "linked" or "a problem". */
 .device-calibration-badge {
@@ -226,8 +299,13 @@
   margin: 0;
   padding: 0;
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 0.5rem;
+}
+
+.remembered-robots-list > li {
+  flex: 0 0 400px;
+  max-width: 100%;
 }
 
 .remembered-robot-card {
@@ -318,4 +396,200 @@
 .device-connection-notice {
   color: var(--rc-warn-text);
   flex-basis: 100%;
+}
+
+/* Ticket 018-010: the quiet "N older connections hidden" summary line
+   for whatever `deviceDisplay.ts`'s `cardLinks` filtered out of the
+   Connections list above -- deliberately muted/small, matching
+   `.device-connection-state`'s own muted color, so it reads as
+   background information rather than another row worth alarm. */
+.device-connections-hidden {
+  margin: 0.35rem 0 0;
+  font-size: 0.8rem;
+  color: var(--rc-text-muted);
+}
+
+/* Stakeholder (2026-09-13): the card shows the role as one quiet line
+   and one icon chip per live connection; every detail lives in the
+   chip's hover/focus popover, and history on the Diagnostics tab. */
+.device-role {
+  margin: 0.15rem 0 0;
+  font-size: 0.8rem;
+  color: var(--rc-text-muted);
+}
+
+.device-connections {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.7rem;
+}
+
+.device-chip {
+  position: relative;
+}
+
+.device-chip-face {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text-muted);
+  font: inherit;
+  font-size: 0.82rem;
+  line-height: 1;
+  text-decoration: none;
+  cursor: default;
+}
+
+/* Stakeholder (2026-09-14): every robot's connection chip is an on/off
+   toggle; only the card's arrow goes into the robot. */
+button.device-chip-face:not([aria-disabled="true"]) {
+  cursor: pointer;
+}
+
+.device-chip[data-state="linked"] .device-chip-face {
+  background: var(--rc-ok-bg);
+  border-color: transparent;
+  color: var(--rc-ok-text);
+  font-weight: 600;
+}
+
+.device-chip[data-state="open"] .device-chip-face {
+  border-color: var(--rc-accent);
+  color: var(--rc-accent);
+}
+
+.device-chip[data-state="busy"] .device-chip-face {
+  border-style: dashed;
+  color: var(--rc-text);
+}
+
+.device-chip[data-state="failed"] .device-chip-face {
+  background: var(--rc-warn-bg);
+  border-color: var(--rc-warn-border);
+  color: var(--rc-warn-text);
+}
+
+/* The radio chip every robot card carries: yellow while no bridge
+   carries the robot, green once one does, a red flash when a connect
+   could not happen (then back to yellow). */
+.device-chip-radio[data-state="idle"] .device-chip-face {
+  background: var(--rc-link-off-bg);
+  border-color: var(--rc-link-off-border);
+  color: var(--rc-link-off-text);
+}
+
+.device-chip-radio[data-state="linked"] .device-chip-face {
+  background: var(--rc-link-on-bg);
+  border-color: var(--rc-link-on-border);
+  color: var(--rc-link-on-text);
+}
+
+.device-chip[data-state="flash"] .device-chip-face {
+  background: var(--rc-danger-bg);
+  border-color: var(--rc-danger-border);
+  color: var(--rc-danger-contrast);
+  animation: device-chip-flash 0.4s ease-in-out 3;
+}
+
+@keyframes device-chip-flash {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* A radio bridge card's bottom line(s): what it carries right now. */
+.device-relay-connections {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin: 0;
+  padding: 0.5rem 0 0;
+  list-style: none;
+  border-top: 1px solid var(--rc-border);
+  font-size: 0.85rem;
+}
+
+.device-relay-connections li[data-state="busy"],
+.device-relay-unconnected {
+  color: var(--rc-text-muted);
+}
+
+.device-chip-face:hover,
+.device-chip-face:focus-visible {
+  outline: 2px solid var(--rc-accent);
+  outline-offset: 1px;
+}
+
+.device-chip-popover {
+  display: none;
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 0.4rem);
+  left: 0;
+  min-width: 18rem;
+  max-width: min(32rem, 90vw);
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+  font-size: 0.85rem;
+}
+
+.device-chip:hover .device-chip-popover,
+.device-chip:focus-within .device-chip-popover {
+  display: block;
+}
+
+/* keep the popover open while the pointer crosses the gap */
+.device-chip-popover::before {
+  content: "";
+  position: absolute;
+  top: -0.5rem;
+  left: 0;
+  right: 0;
+  height: 0.5rem;
+}
+
+.device-chip-popover .device-connection {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+}
+
+/* Stakeholder (2026-09-13): the home page lists things in groups --
+   Robots, Radio bridges, Not seen recently. */
+.devices-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.devices-group + .devices-group {
+  margin-top: 1.25rem;
+}
+
+.devices-group-heading {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--rc-text-muted);
+}
+
+.device-chip-popover-title {
+  margin: 0 0 0.35rem;
+  font-weight: 600;
+}
+
+/* Stakeholder (2026-09-13): cards in a row share one height. */
+.devices-list > li > .device-card {
+  min-height: 7.5rem;
+  box-sizing: border-box;
 }

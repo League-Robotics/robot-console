@@ -48,9 +48,26 @@
  * A resync notice ({@link reportDesyncIfNeeded}'s old text) is forwarded
  * the same way, via {@link HarvesterDeps.onNotice}; both default to a
  * no-op so this module has no hard dependency on either not existing yet.
+ *
+ * ## `STATUS` poll defers to a foreign query in flight (018-009)
+ *
+ * `pollStatus()` checks `link.hasPendingUnsequencedQuery` before every
+ * tick and skips sending `STATUS` entirely while it is `true` — see
+ * `link/LineLink.ts`'s own module doc comment, "Unsequenced query resend
+ * and poll/query serialization", for the full rationale and the bench
+ * evidence (a student's own `send-command ID` racing this poll's
+ * `STATUS` on the same lossy radio hop) that motivated it. A skipped
+ * tick is not counted as a missed poll. This module's own two
+ * `sendUnsequenced` calls (the initial `ID` probe just below, and the
+ * poll's own `STATUS` a few lines down) deliberately stay on that plain
+ * method rather than `sendUnsequencedQuery` — gating the poll on its own
+ * prior send would let a link that never answers at all starve every
+ * later tick indefinitely, defeating the missed-poll watchdog below.
  */
 import {
   TelemetryDecoder,
+  deviceIdToName,
+  parseIdReply,
   type AckNackEvent,
   type DecodedLine,
 } from "@robot-console/protocol";
@@ -65,6 +82,17 @@ export const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
  * `deviceRegistry.ts`'s own `WIFI_POLL_MISS_LIMIT`, generalized to every
  * transport per this module's own doc comment. */
 export const DEFAULT_MISSED_POLL_LIMIT = 3;
+
+/** Missed-poll ceiling for a `wifi` link (never lower than the configured
+ * one). Stakeholder bench (2026-09-14): a Wi-Fi robot's module can hold
+ * a queued reply for several seconds while the robot is still alive, and
+ * 3 x 2 s declared tovez dead mid-reply. */
+export const WIFI_MISSED_POLL_LIMIT = 5;
+
+/** At most this often a telemetry frame refreshes `sessions.answered_at`
+ * -- often enough that a link only streaming telemetry still reads as
+ * Linked, rarely enough to stay off the 20 Hz write path. */
+export const TELEMETRY_ALIVE_SYNC_MS = 2000;
 
 /** One decoded `thdr`/`t` event, forwarded to {@link HarvesterDeps.onTelemetry} —
  * mirrors `wsMessages.ts`'s own `TelemetryMessage` shape minus the
@@ -138,6 +166,8 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
   return {
     attach(session: ConnectedSession): void {
       const { linkId, link, classification } = session;
+      const pollLimit = session.transport === "wifi" ? Math.max(missedPollLimit, WIFI_MISSED_POLL_LIMIT) : missedPollLimit;
+      let lastAliveSync = 0;
 
       let functions: RobotFunction[] = [];
       let pollAwaitingStatus = false;
@@ -176,18 +206,40 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
         }
         failed = true;
         stopPolling();
-        store.setLinkState({ id: linkId, state: "unresponsive", at: now(), reason });
-        void link.close();
+        // Stakeholder bench (2026-09-14): turning a link off closes its
+        // transport, and this `onClose` can land after the reconciler has
+        // already recorded `closed_by_user` -- which must stand, not read
+        // "unresponsive · link closed". Keyed on `state` alone: the
+        // `userClosed` flag outlives a later reopen.
+        const current = store.reconcilerRows().links.find((row) => row.id === linkId);
+        if (current?.state !== "closed_by_user") {
+          store.setLinkState({ id: linkId, state: "unresponsive", at: now(), reason });
+        }
+        void link.close(new Error(reason));
       }
 
       function pollStatus(): void {
         if (failed || !link.isOpen) {
           return;
         }
+        // 018-009: never send our own STATUS poll while a foreign
+        // (student-originated, `server.ts`'s `send-command`) unsequenced
+        // query is still awaiting its own reply/resend on this same
+        // link -- bench evidence against the real `torture` radio pool
+        // showed two near-simultaneous unprefixed sends (a student's own
+        // `ID` racing this poll's own `STATUS`) can be merged or dropped
+        // by a lossy relay hop. Skipping here is not a miss: nothing was
+        // sent, so nothing could have gone unanswered -- the next tick,
+        // `statusPollIntervalMs` later, tries again once the foreign
+        // query has settled. See `LineLink.hasPendingUnsequencedQuery`'s
+        // own doc comment.
+        if (link.hasPendingUnsequencedQuery) {
+          return;
+        }
         if (pollAwaitingStatus) {
           pollMisses += 1;
-          if (pollMisses >= missedPollLimit) {
-            fail(`no reply to ${missedPollLimit} STATUS polls -- link presumed dead`);
+          if (pollMisses >= pollLimit) {
+            fail(`no reply to ${pollLimit} STATUS polls -- link presumed dead`);
             return;
           }
         }
@@ -242,11 +294,19 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
        * ticket's own Description) -- alongside whatever verb-specific
        * patch a caller also supplies. */
       function syncSession(patch: { robotStatus?: RobotStatus; functions?: RobotFunction[] } = {}): void {
+        lastAliveSync = now();
         store.updateSession(linkId, {
           seq: link.session.seq,
           pending: link.session.pendingCount,
           lastDone: link.session.lastDone,
           lastDoneReason: link.session.lastDoneReason,
+          // Sprint 018 ticket 010 (SUC-007): every call to this function
+          // is from inside `onLine` below (never a bare poll timeout --
+          // see `pollStatus`'s own miss-counting, which never reaches
+          // here), so a call happening at all *is* the robot having just
+          // answered something. This is the one write the UI's "Linked"
+          // criterion (`deviceDisplay.ts`'s `isLinkAnswering`) reads.
+          answeredAt: now(),
           // `Store.updateSession`'s own `robotStatus`/`functions` fields
           // are pre-serialized JSON text (it JSON-encodes `functions`
           // itself but not `robotStatus` -- see `UpdateSessionInput`'s
@@ -270,15 +330,24 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
         if (failed) {
           return;
         }
+        // Any line at all proves the robot is alive, not only a STATUS
+        // reply. Stakeholder bench (2026-09-14): tovez, part-way through a
+        // FUNCS reply over Wi-Fi, was declared dead because its STATUS
+        // replies were queued behind the other lines.
+        pollAwaitingStatus = false;
+        pollMisses = 0;
         if (decoded.verb === "thdr" || decoded.verb === "t") {
-          // Deliberately never reaches `syncSession` -- see the module
-          // doc comment's "no `emitDevices` on the 20 Hz path" note.
+          // Never `syncSession` per frame (the module doc comment's "no
+          // `emitDevices` on the 20 Hz path"), but refresh `answeredAt` at
+          // most every TELEMETRY_ALIVE_SYNC_MS so a link that only streams
+          // telemetry still reads as Linked.
           handleTelemetryLine(decoded);
+          if (now() - lastAliveSync >= TELEMETRY_ALIVE_SYNC_MS) {
+            syncSession();
+          }
           return;
         }
         if (decoded.verb === "status") {
-          pollAwaitingStatus = false;
-          pollMisses = 0;
           const status = parseStatusReply(decoded.fields, now());
           syncSession({ robotStatus: status });
           adoptStatusNext(status);
@@ -314,8 +383,36 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
           syncSession({ functions });
           return;
         }
-        // Every other reply verb (`id`, `ack`/`nack`'s own decoded line,
-        // `ver`, `help`, `debug`, ...) still refreshes the session's own
+        // 018-016 (bench defect: `roleDisplay` never showed a version --
+        // `store.upsertDevice` was never called with one): the `ID`
+        // probe this module sends once per identify (below) gets its
+        // reply here, same as any other verb, but this is the one place
+        // that ever harvests it. `parseIdReply` returns `null` for a
+        // malformed reply (wrong field count) -- left alone, same as any
+        // other verb-specific parse failure elsewhere in this file. A
+        // reply that parses but names a *different* device than this
+        // session's own `deviceId` is also left alone -- debug note: this
+        // would mean the robot's own `ID` reply disagrees with the name
+        // `deviceIdToName(session.deviceId)` derives, which should never
+        // happen for a session already matched to this device, but this
+        // module must never write identity onto the wrong `devices` row
+        // on the strength of a single reply. Either way, execution still
+        // falls through to `syncSession()` below -- the sequencing
+        // counters still need to reflect that a reply arrived at all.
+        if (decoded.verb === "id") {
+          const idReply = parseIdReply(decoded.fields);
+          if (idReply !== null && idReply.name === deviceIdToName(session.deviceId)) {
+            store.upsertDevice({
+              id: session.deviceId,
+              name: idReply.name,
+              program: idReply.program,
+              version: idReply.version,
+              at: now(),
+            });
+          }
+        }
+        // Every other reply verb (`ack`/`nack`'s own decoded line, `ver`,
+        // `help`, `debug`, ...) still refreshes the session's own
         // sequencing counters even though this module harvests nothing
         // verb-specific from it -- matches this ticket's own acceptance
         // criteria ("id ... update the session row").

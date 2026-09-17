@@ -4,8 +4,9 @@
  * distance-calibration wizard (SUC-003; migrated to the `Snapshot`
  * contract and its on-open probe removed, sprint 015 ticket 009).
  *
- * Covers every acceptance criterion: the `calx`-gated availability split
- * into two distinct "not asked yet" / "answered without calx" messages,
+ * Covers every acceptance criterion: `calx`-known-missing shows a
+ * non-blocking hint but never disables Go (stakeholder correction,
+ * 2026-09-13 -- `FUNCS` must never hide or block a calibration run),
  * the setup instructions, the `RUN calx` dispatch on Go, progressive
  * rendering of `CALX:` lines via `CalibrationReport`, the terminal
  * `apply` line rendered verbatim as the snippet, a `CALX:fail` line's
@@ -111,20 +112,23 @@ function emitLine(socket: FakeSocket, line: string): void {
 }
 
 describe("DistanceCalibrationWizard availability", () => {
-  it("shows an idle 'checking' message and disables Go before any FUNCS reply", () => {
+  it("stakeholder 2026-09-13: before any FUNCS reply the Calibrate X button is present and enabled (an unanswered FUNCS never blocks the run)", () => {
     const { el } = mountWizard(linkWithFunctions(undefined));
-    expect(el.querySelector('[data-testid="distance-calibration-idle"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="distance-calibration-idle"]')).toBeNull();
     expect(el.querySelector('[data-testid="distance-calibration-unavailable"]')).toBeNull();
-    expect(el.querySelector<HTMLButtonElement>('[data-testid="distance-calibration-go"]')!.disabled).toBe(true);
+    const go = el.querySelector<HTMLButtonElement>('[data-testid="distance-calibration-go"]')!;
+    expect(go.textContent).toBe("Calibrate X");
+    expect(go.disabled).toBe(false);
   });
 
-  it("shows the non-alarming unavailable message and keeps Go disabled when FUNCS answers without calx", () => {
+  it("stakeholder correction 2026-09-13: a FUNCS reply missing calx shows a non-blocking hint and leaves Go enabled -- a dropped Wi-Fi burst line must never hide or block a run", () => {
     const { el } = mountWizard(linkWithFunctions([{ name: "abort" }, { name: "sense" }]));
     const hint = el.querySelector('[data-testid="distance-calibration-unavailable"]');
     expect(hint).not.toBeNull();
-    expect(hint!.textContent).toContain("doesn't support calibration yet");
+    expect(hint!.textContent).toContain("didn't include calx");
+    expect(hint!.textContent).toContain("you can still try");
     expect(el.querySelector('[data-testid="distance-calibration-idle"]')).toBeNull();
-    expect(el.querySelector<HTMLButtonElement>('[data-testid="distance-calibration-go"]')!.disabled).toBe(true);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="distance-calibration-go"]')!.disabled).toBe(false);
     // Never a spinner -- this is a plain status paragraph, not a
     // loading/progress element.
     expect(el.querySelector('[role="progressbar"]')).toBeNull();

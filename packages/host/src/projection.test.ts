@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { deviceIdToName } from "@robot-console/protocol";
 import { describe, expect, it } from "vitest";
 import { buildSnapshot, buildSnapshotFromRows } from "./projection.js";
-import { openStore, type ProjectionRows, type Store } from "./store/index.js";
+import { MBFLASH_SERVICE_TYPE, openStore, type ProjectionRows, type Store } from "./store/index.js";
 
 const FIXTURES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "projection.fixtures");
 
@@ -128,6 +128,18 @@ describe("buildSnapshot: golden fixture", () => {
     }
   });
 
+  it("drops a stale unassigned usb link (board no longer enumerated) from unassigned", () => {
+    const store = openStore({ filePath: ":memory:" });
+    try {
+      seedGoldenScenario(store);
+      store.setLinkState({ id: "usb-unknown-1", state: "stale", at: 200 });
+      const snapshot = buildSnapshot(store, 1, 1);
+      expect(snapshot.unassigned).toHaveLength(0);
+    } finally {
+      store.close();
+    }
+  });
+
   it("lists the unnamed USB board under unassigned, not under any device", () => {
     const store = openStore({ filePath: ":memory:" });
     try {
@@ -202,7 +214,7 @@ describe("buildSnapshotFromRows: relays[] for a network (mbrelay) relay", () => 
     const rows = emptyRows();
     const relayName = deviceIdToName(20);
     rows.devices = [
-      { id: 20, name: relayName, kind: "relay", role: "RADIOBRIDGE", program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
+      { id: 20, name: relayName, kind: "relay", role: "RADIOBRIDGE", commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
     ];
     rows.links = [
       {
@@ -240,7 +252,7 @@ describe("buildSnapshotFromRows: relays[] for a network (mbrelay) relay", () => 
     const rows = emptyRows();
     const TORTURE_ID = -123456789;
     rows.devices = [
-      { id: TORTURE_ID, name: "torture", kind: "relay", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
+      { id: TORTURE_ID, name: "torture", kind: "relay", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
     ];
     rows.links = [
       {
@@ -296,6 +308,7 @@ function emptyRows(): ProjectionRows {
     lastChecked: [],
     wifiCredentials: null,
     fastSweepByRelayLinkId: new Map(),
+    services: [],
   };
 }
 
@@ -303,7 +316,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
   it("a usb link with no open session: open/flash true, close/provisionWifi false", () => {
     const rows = emptyRows();
     rows.devices = [
-      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 10, transport: "usb", address: { path: "/dev/x" }, state: "connectable", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -316,7 +329,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
   it("a link with an open session: open false, close/provisionWifi true", () => {
     const rows = emptyRows();
     rows.devices = [
-      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 10, transport: "usb", address: { path: "/dev/x" }, state: "connected", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -332,7 +345,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
   it("a link in state connecting (no session row yet): close true, open false", () => {
     const rows = emptyRows();
     rows.devices = [
-      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 10, transport: "usb", address: { path: "/dev/x" }, state: "connecting", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -344,7 +357,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
   it("a wifi link on an un-owned device is hidden -- never reaches capabilities at all", () => {
     const rows = emptyRows();
     rows.devices = [
-      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
+      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 10, transport: "wifi", address: { host: "x", port: 1 }, state: "discovered", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -356,7 +369,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
   it("a wifi link on an owned device: open true (not gated by ownership once owned)", () => {
     const rows = emptyRows();
     rows.devices = [
-      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 10, transport: "wifi", address: { host: "x", port: 1 }, state: "discovered", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
@@ -369,13 +382,118 @@ describe("buildSnapshotFromRows: capabilities", () => {
   it("a mbserial link on an un-owned device is hidden the same way wifi is", () => {
     const rows = emptyRows();
     rows.devices = [
-      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
+      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: false, lastSeen: 1 },
     ];
     rows.links = [
       { id: "l1", deviceId: 10, transport: "mbserial", address: { host: "x", port: 1 }, state: "discovered", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
     ];
     const snapshot = buildSnapshotFromRows(rows, 1, 1);
     expect(snapshot.devices).toHaveLength(0);
+  });
+
+  // Ticket 018-014: capabilities.flash for a mbserial/wifi link, gated
+  // on the device's own current `_mbflash._tcp` service row.
+  it("a mbserial link on an owned device with a current _mbflash._tcp service (instance = device name): flash true", () => {
+    const rows = emptyRows();
+    const name = deviceIdToName(10);
+    rows.devices = [
+      { id: 10, name, kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+    ];
+    rows.links = [
+      { id: "l1", deviceId: 10, transport: "mbserial", address: { host: "x", port: 1 }, state: "connectable", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
+    ];
+    rows.services = [{ instance: name, type: MBFLASH_SERVICE_TYPE, host: "x.local", port: 9000, txt: { role: "NEZHA2" } }];
+    const snapshot = buildSnapshotFromRows(rows, 1, 1);
+    expect(snapshot.devices[0]?.links[0]?.capabilities.flash).toBe(true);
+  });
+
+  it("a wifi link on an owned device with a current _mbflash._tcp service: flash true (wifi, not only mbserial)", () => {
+    const rows = emptyRows();
+    const name = deviceIdToName(11);
+    rows.devices = [
+      { id: 11, name, kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+    ];
+    rows.links = [
+      { id: "l1", deviceId: 11, transport: "wifi", address: { host: "x", port: 1 }, state: "connectable", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
+    ];
+    rows.services = [{ instance: name, type: MBFLASH_SERVICE_TYPE, host: "x.local", port: 9000, txt: null }];
+    const snapshot = buildSnapshotFromRows(rows, 1, 1);
+    expect(snapshot.devices[0]?.links[0]?.capabilities.flash).toBe(true);
+  });
+
+  it("a mbserial link on an owned device with NO matching service row: flash stays false", () => {
+    const rows = emptyRows();
+    const name = deviceIdToName(12);
+    rows.devices = [
+      { id: 12, name, kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+    ];
+    rows.links = [
+      { id: "l1", deviceId: 12, transport: "mbserial", address: { host: "x", port: 1 }, state: "connectable", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
+    ];
+    // A service row exists, but for a different instance name entirely
+    // -- must not be mistaken for this device's own advertisement.
+    rows.services = [{ instance: "someone-else", type: MBFLASH_SERVICE_TYPE, host: "x.local", port: 9000, txt: null }];
+    const snapshot = buildSnapshotFromRows(rows, 1, 1);
+    expect(snapshot.devices[0]?.links[0]?.capabilities.flash).toBe(false);
+  });
+
+  it("a service row of a different services.type (e.g. mbserial.tcp) never counts as a flash service", () => {
+    const rows = emptyRows();
+    const name = deviceIdToName(13);
+    rows.devices = [
+      { id: 13, name, kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+    ];
+    rows.links = [
+      { id: "l1", deviceId: 13, transport: "mbserial", address: { host: "x", port: 1 }, state: "connectable", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
+    ];
+    rows.services = [{ instance: name, type: "mbserial.tcp", host: "x.local", port: 9000, txt: null }];
+    const snapshot = buildSnapshotFromRows(rows, 1, 1);
+    expect(snapshot.devices[0]?.links[0]?.capabilities.flash).toBe(false);
+  });
+
+  it("device usbSerial and service TXT uid both present and matching: flash true", () => {
+    const rows = emptyRows();
+    const name = deviceIdToName(14);
+    rows.devices = [
+      { id: 14, name, kind: "robot", role: null, commonName: null, program: null, version: null, usbSerial: "SERIAL-XYZ", radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+    ];
+    rows.links = [
+      { id: "l1", deviceId: 14, transport: "mbserial", address: { host: "x", port: 1 }, state: "connectable", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
+    ];
+    rows.services = [{ instance: name, type: MBFLASH_SERVICE_TYPE, host: "x.local", port: 9000, txt: { uid: "SERIAL-XYZ" } }];
+    const snapshot = buildSnapshotFromRows(rows, 1, 1);
+    expect(snapshot.devices[0]?.links[0]?.capabilities.flash).toBe(true);
+  });
+
+  it("device usbSerial and service TXT uid both present but disagreeing: flash false, even though the instance name matches", () => {
+    const rows = emptyRows();
+    const name = deviceIdToName(15);
+    rows.devices = [
+      { id: 15, name, kind: "robot", role: null, commonName: null, program: null, version: null, usbSerial: "SERIAL-XYZ", radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+    ];
+    rows.links = [
+      { id: "l1", deviceId: 15, transport: "mbserial", address: { host: "x", port: 1 }, state: "connectable", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
+    ];
+    rows.services = [{ instance: name, type: MBFLASH_SERVICE_TYPE, host: "x.local", port: 9000, txt: { uid: "SOME-OTHER-SERIAL" } }];
+    const snapshot = buildSnapshotFromRows(rows, 1, 1);
+    expect(snapshot.devices[0]?.links[0]?.capabilities.flash).toBe(false);
+  });
+
+  it("a radio link on a device with a current _mbflash._tcp service: flash stays false (network flash never applies through a relay)", () => {
+    const rows = emptyRows();
+    const name = deviceIdToName(16);
+    rows.devices = [
+      { id: 16, name, kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 17, name: deviceIdToName(17), kind: "relay", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+    ];
+    rows.links = [
+      { id: "relay-link", deviceId: 17, transport: "usb", address: { path: "/dev/x" }, state: "connected", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
+      { id: "l1", deviceId: 16, transport: "radio", address: { relayLinkId: "relay-link", channel: 1, group: 1 }, state: "connectable", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
+    ];
+    rows.services = [{ instance: name, type: MBFLASH_SERVICE_TYPE, host: "x.local", port: 9000, txt: null }];
+    const snapshot = buildSnapshotFromRows(rows, 1, 1);
+    const radioDevice = snapshot.devices.find((d) => d.id === 16);
+    expect(radioDevice?.links[0]?.capabilities.flash).toBe(false);
   });
 
   it("an unassigned usb link (no device yet) is still open-able and flashable", () => {
@@ -392,7 +510,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
     const rows = emptyRows();
     const derived = deviceIdToName(10);
     rows.devices = [
-      { id: 10, name: derived, kind: "robot", role: null, program: null, version: null, radioChannel: 55, radioGroup: 114, radioSource: "override", owned: true, lastSeen: 1 },
+      { id: 10, name: derived, kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: 55, radioGroup: 114, radioSource: "override", owned: true, lastSeen: 1 },
     ];
     const snapshot = buildSnapshotFromRows(rows, 1, 1);
     expect(snapshot.devices[0]?.radio).toEqual({ channel: 55, group: 114, source: "override" });
@@ -401,7 +519,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
   it("radio-address resolution: no stored value falls back to the name-derived default, reported as 'derived'", () => {
     const rows = emptyRows();
     rows.devices = [
-      { id: 10, name: "vevov", kind: "robot", role: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 10, name: "vevov", kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
     ];
     const snapshot = buildSnapshotFromRows(rows, 1, 1);
     expect(snapshot.devices[0]?.radio.source).toBe("derived");

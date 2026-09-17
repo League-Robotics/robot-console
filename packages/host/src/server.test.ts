@@ -29,13 +29,14 @@ import {
 } from "./server.js";
 import { deviceIdToName, nameToRadioAddress } from "@robot-console/protocol";
 import { openStoreDb } from "./store/db.js";
-import { Store } from "./store/index.js";
+import { MBFLASH_SERVICE_TYPE, Store } from "./store/index.js";
 import { MAX_UPLOAD_BYTE_LENGTH } from "./localHexUpload.js";
 import { UPLOAD_ID_BYTE_LENGTH } from "./wsMessages.js";
 import type { ConnectedSession } from "./connect/connector.js";
 import type { HarvesterTelemetryEvent } from "./connect/harvester.js";
 import type { Snapshot, ServerMessage, FirmwareSourceRef } from "./wsMessages.js";
 import type { FlashOutcome } from "./flash.js";
+import type { MbflashOutcome } from "./connect/mbflashClient.js";
 import type { DaplinkDevice } from "./devices.js";
 
 // ---------------------------------------------------------------------
@@ -101,6 +102,10 @@ function fakeLink(overrides: Partial<Record<string, unknown>> = {}) {
     sendLine: vi.fn(),
     sendCommand: vi.fn((verb: string, fields: readonly unknown[] = []) => `${verb} ${fields.join(" ")}\n`),
     sendUnsequenced: vi.fn((verb: string, fields: readonly unknown[] = []) => `${verb} ${fields.join(" ")}\n`),
+    // 018-010: a student's own unsequenced query goes through
+    // `sendUnsequencedQuery` (one bounded resend), not plain `sendUnsequenced`.
+    sendUnsequencedQuery: vi.fn((verb: string, fields: readonly unknown[] = []) => `${verb} ${fields.join(" ")}\n`),
+    hasPendingUnsequencedQuery: vi.fn(() => false),
     onLine: vi.fn((listener: (decoded: { verb: string; fields: readonly string[] }) => void) => {
       lineListeners.push(listener);
       return () => {
@@ -678,6 +683,64 @@ describe("server.ts: session-open/session-close dispatch", () => {
       const link = h.store.snapshotRows().links.find((l) => l.id === childLinkId);
       expect(JSON.parse(link!.address as string)).toEqual({ relayLinkId: "usb-RELAY", channel: derived.channel, group: derived.group });
     });
+
+    // Stakeholder bench defect (2026-09-14): vevov moved to the 73-channel
+    // map (registry 20/82), but its old row through the USB bridge vitut
+    // still carried the old map's 37/43 -- and that row used to win, with
+    // the USB bridge never asking any registry at all.
+    it("a USB bridge asks a discovered pool's registry, and a registry answer beats the address left on an old link row", async () => {
+      const { registryServer, portPromise } = startFakeRegistry(20, 82, "derived");
+      const registryPort = await portPromise;
+
+      try {
+        const h = await harness();
+        h.store.upsertLink({ id: "mbrelay-POOL", transport: "mbrelay", address: { host: "127.0.0.1", port: 9, registryPort }, at: 1 });
+        h.store.upsertLink({ id: "usb-RELAY", transport: "usb", address: { path: "/dev/cu.relay" }, at: 1 });
+        const childLinkId = "radio-zeguz-via-usb-RELAY";
+        h.store.upsertLink({ id: childLinkId, transport: "radio", address: { relayLinkId: "usb-RELAY", channel: 37, group: 43 }, at: 1 });
+        const ws = fakeWebSocket();
+        h.wss.triggerConnection(ws);
+        await flush();
+
+        ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", relayLinkId: "usb-RELAY", name: "zeguz" })), false);
+        await waitFor(() => h.runtime.requestOpen.mock.calls.length > 0);
+        await flush();
+
+        expect(h.runtime.requestOpen).toHaveBeenCalledWith(childLinkId);
+        const link = h.store.snapshotRows().links.find((l) => l.id === childLinkId);
+        expect(JSON.parse(link!.address as string)).toEqual({ relayLinkId: "usb-RELAY", channel: 20, group: 82 });
+      } finally {
+        await new Promise<void>((resolve) => registryServer.close(() => resolve()));
+      }
+    });
+
+    it("with no registry answering, the address already on the link row still wins over the name-derived default", async () => {
+      // A port nothing listens on any more: the registry request is refused.
+      const closedServer = createServer();
+      const closedPort = await new Promise<number>((resolve) => {
+        closedServer.listen(0, "127.0.0.1", () => {
+          const address = closedServer.address();
+          resolve(typeof address === "object" && address !== null ? address.port : 0);
+        });
+      });
+      await new Promise<void>((resolve) => closedServer.close(() => resolve()));
+
+      const h = await harness();
+      h.store.upsertLink({ id: "mbrelay-POOL", transport: "mbrelay", address: { host: "127.0.0.1", port: 9, registryPort: closedPort }, at: 1 });
+      h.store.upsertLink({ id: "usb-RELAY", transport: "usb", address: { path: "/dev/cu.relay" }, at: 1 });
+      const childLinkId = "radio-zetuv-via-usb-RELAY";
+      h.store.upsertLink({ id: childLinkId, transport: "radio", address: { relayLinkId: "usb-RELAY", channel: 37, group: 43 }, at: 1 });
+      const ws = fakeWebSocket();
+      h.wss.triggerConnection(ws);
+      await flush();
+
+      ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", relayLinkId: "usb-RELAY", name: "zetuv" })), false);
+      await waitFor(() => h.runtime.requestOpen.mock.calls.length > 0);
+      await flush();
+
+      const link = h.store.snapshotRows().links.find((l) => l.id === childLinkId);
+      expect(JSON.parse(link!.address as string)).toEqual({ relayLinkId: "usb-RELAY", channel: 37, group: 43 });
+    });
   });
 });
 
@@ -717,7 +780,7 @@ describe("server.ts: line/send-command via runtime.reconciler.sessions", () => {
     expect(notice).toMatchObject({ type: "notice", level: "error" });
   });
 
-  it("routes send-command through sendCommand for a sequenced verb and sendUnsequenced otherwise", async () => {
+  it("routes send-command through sendCommand for a sequenced verb and sendUnsequencedQuery otherwise", async () => {
     const h = await harness();
     const session = fakeSession("usb-1");
     h.runtime.sessionsByLink.set("usb-1", session);
@@ -730,7 +793,8 @@ describe("server.ts: line/send-command via runtime.reconciler.sessions", () => {
 
     ws.emit("message", Buffer.from(JSON.stringify({ type: "send-command", linkId: "usb-1", verb: "STATUS" })), false);
     await flush();
-    expect(session.link.sendUnsequenced).toHaveBeenCalledWith("STATUS", []);
+    expect(session.link.sendUnsequencedQuery).toHaveBeenCalledWith("STATUS", []);
+    expect(session.link.sendUnsequenced).not.toHaveBeenCalled();
   });
 
   it("rejects HELLO via send-command rather than forwarding it raw", async () => {
@@ -745,6 +809,7 @@ describe("server.ts: line/send-command via runtime.reconciler.sessions", () => {
 
     expect(session.link.sendCommand).not.toHaveBeenCalled();
     expect(session.link.sendUnsequenced).not.toHaveBeenCalled();
+    expect(session.link.sendUnsequencedQuery).not.toHaveBeenCalled();
   });
 
   // -------------------------------------------------------------------
@@ -792,6 +857,47 @@ describe("server.ts: line/send-command via runtime.reconciler.sessions", () => {
 
     const rx = ws.sent.find((m) => m.type === "line" && (m as { direction?: string }).direction === "rx");
     expect(rx).toMatchObject({ type: "line", linkId: "usb-1", direction: "rx", line: "beep boop overheard" });
+  });
+
+  it("tags a status reply origin: \"poll\" unless a student asked for STATUS -- the console's Show status polls toggle keys on it", async () => {
+    const h = await harness();
+    const session = fakeSession("usb-1");
+    h.runtime.sessionsByLink.set("usb-1", session);
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+    await flush();
+    const emitInbound = (line: string) =>
+      (session.link as unknown as { _emitInboundLine: (line: string) => void })._emitInboundLine(line);
+    const lastRx = () => ws.sent.filter((m) => m.type === "line" && (m as { direction?: string }).direction === "rx").at(-1) as
+      | { line: string; origin?: string }
+      | undefined;
+
+    // No student STATUS outstanding: the harvester's own poll answered.
+    emitInbound("status ready=1 active=0 flags=1 tlm=off next=4");
+    await flush();
+    expect(lastRx()).toMatchObject({ line: "status ready=1 active=0 flags=1 tlm=off next=4", origin: "poll" });
+
+    // Any other reply is never tagged.
+    emitInbound("ack 3 2 stop");
+    await flush();
+    expect(lastRx()!.origin).toBeUndefined();
+
+    // A student's own STATUS (send-command or a raw line): its one reply shows, the next poll reply is tagged again.
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "send-command", linkId: "usb-1", verb: "STATUS" })), false);
+    await flush();
+    emitInbound("status ready=1 active=0 flags=1 tlm=off next=5");
+    await flush();
+    expect(lastRx()!.origin).toBeUndefined();
+    emitInbound("status ready=1 active=0 flags=1 tlm=off next=5");
+    await flush();
+    expect(lastRx()!.origin).toBe("poll");
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "line", linkId: "usb-1", direction: "tx", line: "status" })), false);
+    await flush();
+    emitInbound("status ready=1 active=0 flags=1 tlm=off next=5");
+    await flush();
+    expect(lastRx()!.origin).toBeUndefined();
   });
 });
 
@@ -938,6 +1044,189 @@ describe("server.ts: flash-start", () => {
     expect(h.store.acquireBoardOwner("SERIAL123", "someone-else", Date.now())).toBe(true);
     const result = ws.sent.find((m) => m.type === "flash-result");
     expect(result).toMatchObject({ type: "flash-result", status: "ok" });
+  });
+});
+
+// ---------------------------------------------------------------------
+// flash-start: network flash over _mbflash._tcp (ticket 018-014)
+// ---------------------------------------------------------------------
+
+describe("server.ts: flash-start routes a mbserial/wifi link with a current _mbflash._tcp service to the network flasher", () => {
+  /** Drives the same flash-local-begin -> binary-frame handshake every
+   * USB flash-start test above already uses, returning the resulting
+   * `uploadId`/`sha256` for a `flash-start` `source`. */
+  async function uploadLocalHex(ws: ReturnType<typeof fakeWebSocket>, bytes: string): Promise<{ uploadId: string; sha256: string }> {
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    ws.emit(
+      "message",
+      Buffer.from(JSON.stringify({ type: "flash-local-begin", fileName: "a.hex", byteLength: bytes.length, sha256 })),
+      false,
+    );
+    await flush();
+    const ready = ws.sent.find((m) => m.type === "flash-local-ready") as { uploadId: string } | undefined;
+    const uploadId = ready!.uploadId;
+    ws.emit("message", Buffer.concat([Buffer.from(uploadId, "ascii"), Buffer.from(bytes)]), true);
+    await flush();
+    return { uploadId, sha256 };
+  }
+
+  it("closes the session, dials the service's host/port, reports writing/resetting/reidentifying, reopens on success", async () => {
+    const flashOverMbflashMock = vi.fn(async (_target: unknown, _hexBytes: Buffer, onProgress: (line: string) => void) => {
+      onProgress("LOG writing page 1");
+      return { status: "ok" } satisfies MbflashOutcome;
+    });
+    const h = await harness({ flashOverMbflash: flashOverMbflashMock });
+
+    const name = deviceIdToName(1198504156);
+    h.store.upsertDevice({ id: 1198504156, name, kind: "robot", at: 1 });
+    h.store.setOwned(1198504156, true, 1);
+    h.store.upsertLink({ id: "mbserial-gopiv", transport: "mbserial", address: { host: "gopiv.local", port: 4000 }, deviceId: 1198504156, at: 1 });
+    h.store.upsertService({ instance: name, type: MBFLASH_SERVICE_TYPE, host: "gopiv.local", port: 34567, txt: { role: "NEZHA2" }, at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const { uploadId, sha256 } = await uploadLocalHex(ws, "hello");
+    const source: FirmwareSourceRef = { kind: "local-hex", uploadId, fileName: "a.hex", sha256 };
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId: "mbserial-gopiv", source })), false);
+    await flush();
+    await flush();
+
+    expect(h.runtime.requestClose).toHaveBeenCalledWith("mbserial-gopiv");
+    expect(flashOverMbflashMock).toHaveBeenCalledTimes(1);
+    const [target, hexBytes] = flashOverMbflashMock.mock.calls[0] as [{ host: string; port: number }, Buffer, unknown];
+    // The service's own host/port (34567), never the mbserial link's own
+    // session address (4000) -- the flash service is a distinct TCP
+    // endpoint from the mbserial bridge port.
+    expect(target).toEqual({ host: "gopiv.local", port: 34567 });
+    expect(hexBytes.toString("utf-8")).toBe("hello");
+
+    expect(h.runtime.requestOpen).toHaveBeenCalledWith("mbserial-gopiv");
+
+    const phases = ws.sent.filter((m) => m.type === "flash-progress").map((m) => (m as { phase: string }).phase);
+    expect(phases).toContain("writing");
+    expect(phases).toContain("resetting");
+    expect(phases).toContain("reidentifying");
+    // reidentifying must be the last progress phase reported, before the
+    // terminal flash-result.
+    expect(phases[phases.length - 1]).toBe("reidentifying");
+
+    const result = ws.sent.find((m) => m.type === "flash-result");
+    expect(result).toMatchObject({ type: "flash-result", linkId: "mbserial-gopiv", status: "ok" });
+  });
+
+  it("a wifi link with a current _mbflash._tcp service routes the same way (not only mbserial)", async () => {
+    const flashOverMbflashMock = vi.fn(async () => ({ status: "ok" }) satisfies MbflashOutcome);
+    const h = await harness({ flashOverMbflash: flashOverMbflashMock });
+
+    const name = deviceIdToName(1198504156);
+    h.store.upsertDevice({ id: 1198504156, name, kind: "robot", at: 1 });
+    h.store.setOwned(1198504156, true, 1);
+    h.store.upsertLink({ id: "wifi-vevov", transport: "wifi", address: { host: "vevov.local", port: 81 }, deviceId: 1198504156, at: 1 });
+    h.store.upsertService({ instance: name, type: MBFLASH_SERVICE_TYPE, host: "vevov.local", port: 9100, txt: null, at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const { uploadId, sha256 } = await uploadLocalHex(ws, "hello");
+    const source: FirmwareSourceRef = { kind: "local-hex", uploadId, fileName: "a.hex", sha256 };
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId: "wifi-vevov", source })), false);
+    await flush();
+    await flush();
+
+    expect(flashOverMbflashMock).toHaveBeenCalledTimes(1);
+    const result = ws.sent.find((m) => m.type === "flash-result");
+    expect(result).toMatchObject({ type: "flash-result", status: "ok" });
+  });
+
+  it("reports a plain flash-result error, never calls flashOverMbflash, when the device has no current _mbflash._tcp service", async () => {
+    const flashOverMbflashMock = vi.fn();
+    const h = await harness({ flashOverMbflash: flashOverMbflashMock });
+
+    const name = deviceIdToName(1198504156);
+    h.store.upsertDevice({ id: 1198504156, name, kind: "robot", at: 1 });
+    h.store.setOwned(1198504156, true, 1);
+    h.store.upsertLink({ id: "mbserial-gopiv", transport: "mbserial", address: { host: "gopiv.local", port: 4000 }, deviceId: 1198504156, at: 1 });
+    // Deliberately no upsertService call -- nothing currently advertises
+    // _mbflash._tcp for this device.
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const source: FirmwareSourceRef = { kind: "release", firmware: "robot" };
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId: "mbserial-gopiv", source })), false);
+    await flush();
+
+    expect(flashOverMbflashMock).not.toHaveBeenCalled();
+    expect(h.runtime.requestClose).not.toHaveBeenCalled();
+    const result = ws.sent.find((m) => m.type === "flash-result");
+    expect(result).toMatchObject({ type: "flash-result", status: "error" });
+    expect((result as { message: string }).message).toMatch(/_mbflash\._tcp/);
+  });
+
+  it("reports a plain flash-result error for an unsupported transport (radio/mbrelay), even with a service row present", async () => {
+    const flashOverMbflashMock = vi.fn();
+    const h = await harness({ flashOverMbflash: flashOverMbflashMock });
+
+    const name = deviceIdToName(1198504156);
+    h.store.upsertDevice({ id: 1198504156, name, kind: "robot", at: 1 });
+    h.store.setOwned(1198504156, true, 1);
+    h.store.upsertLink({ id: "radio-1", transport: "radio", address: { relayLinkId: "relay-1", channel: 1, group: 1 }, deviceId: 1198504156, at: 1 });
+    h.store.upsertService({ instance: name, type: MBFLASH_SERVICE_TYPE, host: "gopiv.local", port: 34567, txt: null, at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const source: FirmwareSourceRef = { kind: "release", firmware: "robot" };
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId: "radio-1", source })), false);
+    await flush();
+
+    expect(flashOverMbflashMock).not.toHaveBeenCalled();
+    const result = ws.sent.find((m) => m.type === "flash-result");
+    expect(result).toMatchObject({ type: "flash-result", status: "error" });
+  });
+
+  it("a network flash failure (e.g. ERR busy) is reported plainly and never triggers a reopen", async () => {
+    const flashOverMbflashMock = vi.fn(
+      async () => ({ status: "error", reason: "busy", error: "mbflash reported \"ERR busy\"" }) satisfies MbflashOutcome,
+    );
+    const h = await harness({ flashOverMbflash: flashOverMbflashMock });
+
+    const name = deviceIdToName(1198504156);
+    h.store.upsertDevice({ id: 1198504156, name, kind: "robot", at: 1 });
+    h.store.setOwned(1198504156, true, 1);
+    h.store.upsertLink({ id: "mbserial-gopiv", transport: "mbserial", address: { host: "gopiv.local", port: 4000 }, deviceId: 1198504156, at: 1 });
+    h.store.upsertService({ instance: name, type: MBFLASH_SERVICE_TYPE, host: "gopiv.local", port: 34567, txt: null, at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const { uploadId, sha256 } = await uploadLocalHex(ws, "hello");
+    const source: FirmwareSourceRef = { kind: "local-hex", uploadId, fileName: "a.hex", sha256 };
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId: "mbserial-gopiv", source })), false);
+    await flush();
+    await flush();
+
+    expect(h.runtime.requestClose).toHaveBeenCalledWith("mbserial-gopiv");
+    expect(h.runtime.requestOpen).not.toHaveBeenCalled();
+    const result = ws.sent.find((m) => m.type === "flash-result");
+    expect(result).toMatchObject({ type: "flash-result", status: "error" });
+    expect((result as { message: string }).message).toContain("ERR busy");
   });
 });
 

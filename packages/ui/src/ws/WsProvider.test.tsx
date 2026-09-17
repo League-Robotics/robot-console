@@ -118,6 +118,7 @@ function deviceFixture(
     name: `name-${id}`,
     kind: "robot",
     role: null,
+    commonName: null,
     program: null,
     version: null,
     owned: true,
@@ -553,7 +554,7 @@ describe("useRelays / useFirmware / useWifiSetting / useTasks", () => {
       getSocket().emitMessage(
         snapshotFixture({
           relays: [{ linkId: "usb-relay-1", lease: "sweep" }],
-          firmware: { relay: { configured: false }, robot: { configured: true, repoUrl: "r", tag: "t", available: true } },
+          firmware: { relay: { configured: false }, robot: { configured: true, repoUrl: "r", tag: "t", available: true, checkedAt: null } },
           wifi: { ssid: "classroom-net", source: "stored" },
           tasks: [{ name: "usbWatcher", state: "running", heartbeatAt: 1 }],
         }),
@@ -757,6 +758,35 @@ describe("useTelemetry / useTelemetryHeader", () => {
     });
     expect(handle!.snapshot()).toEqual([]);
     expect(handle!.header).toEqual(["x"]);
+  });
+
+  it("an unchanged, re-announced header (firmware re-sends thdr every 20 frames) keeps the ring and the header's identity; a changed one resets both", () => {
+    let handle: TelemetryHandle | undefined;
+    const headers: Array<readonly string[] | undefined> = [];
+    function Probe() {
+      handle = useTelemetry("usb-1");
+      headers.push(useTelemetryHeader("usb-1"));
+      return null;
+    }
+
+    const { getSocket } = mountWithSocket(<Probe />);
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", linkId: "usb-1", header: ["x", "y"] });
+    });
+    const first = headers.at(-1);
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", linkId: "usb-1", frame: { x: "1", y: "2" } });
+      getSocket().emitMessage({ type: "telemetry", linkId: "usb-1", header: ["x", "y"] });
+      getSocket().emitMessage({ type: "telemetry", linkId: "usb-1", frame: { x: "3", y: "4" } });
+    });
+    expect(handle!.snapshot()).toHaveLength(2);
+    expect(headers.at(-1)).toBe(first);
+
+    act(() => {
+      getSocket().emitMessage({ type: "telemetry", linkId: "usb-1", header: ["x", "y", "h"] });
+    });
+    expect(handle!.snapshot()).toEqual([]);
+    expect(headers.at(-1)).toEqual(["x", "y", "h"]);
   });
 
   it("useTelemetryHeader reflects the current header once one arrives", () => {

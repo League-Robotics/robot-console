@@ -224,20 +224,26 @@ export function ChartsPanel({ linkId }: ChartsPanelProps) {
   const hasHeader = header !== undefined;
   const wheelCandidate = useMemo(() => findWheelCandidate(header), [header]);
 
-  // Reset the chart's column selection whenever the header itself
+  // Re-check the chart's column selection whenever the header itself
   // changes (a fresh `thdr` can carry a completely different column
-  // set, per `handleTelemetryMessage`'s header-changed reset) — an old
-  // selection naming a column the new header doesn't have would
-  // silently draw nothing. Default to the wheel-speed pair when
-  // present (the panel's headline series), else the header's first
-  // column, so the chart never opens empty when there is anything to
-  // show.
+  // set, per `handleTelemetryMessage`'s header-changed reset): keep
+  // every picked column the new header still has, and drop the rest --
+  // a column the header lacks would silently draw nothing. Only when
+  // nothing survives, default to the wheel-speed pair when present (the
+  // panel's headline series), else the header's first column, so the
+  // chart never opens empty when there is anything to show.
   useEffect(() => {
     if (!header) {
       setSelectedColumns([]);
       return;
     }
-    setSelectedColumns(wheelCandidate ? [wheelCandidate.left, wheelCandidate.right] : header.slice(0, 1));
+    setSelectedColumns((previous) => {
+      const kept = previous.filter((column) => header.includes(column));
+      if (kept.length > 0) {
+        return kept;
+      }
+      return wheelCandidate ? [wheelCandidate.left, wheelCandidate.right] : header.slice(0, 1);
+    });
     // wheelCandidate is derived from header, so depending on header alone
     // is sufficient and avoids re-running this reset on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -458,12 +464,18 @@ export function ChartsPanel({ linkId }: ChartsPanelProps) {
                     type="checkbox"
                     data-testid={`chart-column-${column}`}
                     checked={selectedColumns.includes(column)}
+                    disabled={!selectedColumns.includes(column) && selectedColumns.length >= MAX_CHART_SERIES}
                     onChange={() => toggleColumn(column)}
                   />
                   {column}
                 </label>
               ))}
             </div>
+            {selectedColumns.length >= MAX_CHART_SERIES && (
+              <p className="charts-panel-unavailable" data-testid="chart-series-cap">
+                Up to {MAX_CHART_SERIES} series at once — uncheck one to add another.
+              </p>
+            )}
 
             {selectedColumns.length === 0 ? (
               <p className="charts-panel-unavailable" data-testid="chart-no-columns">

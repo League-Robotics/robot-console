@@ -19,9 +19,10 @@
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
-import type { Snapshot, SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Snapshot, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { DevicesList, FrontPage, RadioMigrationOffers } from "./FrontPage";
+import { allocateRadioBridge } from "../deviceDisplay";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 import { withRouter } from "../testing/renderWithRouter";
@@ -75,6 +76,7 @@ function device(id: number, overrides: Partial<Omit<SnapshotDevice, "links">> & 
     name: `name-${id}`,
     kind: "robot",
     role: null,
+    commonName: null,
     program: null,
     version: null,
     owned: true,
@@ -106,6 +108,16 @@ function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
 // function itself, out of this module's former local copy). Not
 // re-tested here.
 
+/** The lightning Flash trigger inside a card (ticket 018-015) -- an
+ * icon-only button now, so it's found by its accessible name ("Flash
+ * <name>") rather than by visible text, unlike `FlashDialog`'s default
+ * text trigger (`AppHeader.test.tsx`'s own `flashTrigger` helper, which
+ * still matches on `textContent === "Flash"` for its own, un-iconified,
+ * call site). */
+function findFlashTrigger(container: Element): HTMLButtonElement | undefined {
+  return Array.from(container.querySelectorAll("button")).find((b) => b.getAttribute("aria-label")?.startsWith("Flash")) ?? undefined;
+}
+
 describe("DevicesList", () => {
   it("renders a device card with name, role, and its one connection", () => {
     const el = mount(
@@ -117,9 +129,28 @@ describe("DevicesList", () => {
     expect(text).toContain("USB · /dev/tty.usbmodem-usb-1");
   });
 
-  it("shows 'No role announced' when role is null", () => {
+  it("018-010 item 3: shows a plain 'Role unknown' for a robot with no announced role", () => {
     const el = mount(withRouter(<DevicesList status="open" devices={[device(1, { role: null })]} unassigned={[]} />));
-    expect(el.textContent ?? "").toContain("No role announced");
+    expect(el.textContent ?? "").toContain("Role unknown");
+  });
+
+  it("018-010 item 3: labels a roleless relay by its own links' transport instead of 'Role unknown'", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              kind: "relay",
+              role: null,
+              links: [link("mbrelay-torture", { transport: "mbrelay" })],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
+    expect(el.textContent ?? "").toContain("mbrelay host");
   });
 
   it("shows a connecting banner without dropping the last-known device list", () => {
@@ -165,19 +196,19 @@ describe("DevicesList", () => {
     expect(openArrow?.getAttribute("href")).toBe("/d/usb-1");
   });
 
-  it("shows a distinguishing calibration badge from device.program's calibration- prefix, with version", () => {
+  it("shows a distinguishing calibration badge with the program's release version, never device.version (018-017: the pxt-nezha-diffdrive library version)", () => {
     const el = mount(
-      withRouter(<DevicesList status="open" devices={[device(1, { program: "calibration-0.20260907.2", version: "0.20260907.2" })]} unassigned={[]} />),
+      withRouter(<DevicesList status="open" devices={[device(1, { program: "calibration-0.20260907.2", version: "1.20260912.8" })]} unassigned={[]} />),
     );
     const badge = el.querySelector('[data-testid="calibration-badge"]');
     expect(badge?.textContent).toBe("Calibration robot · 0.20260907.2");
   });
 
-  it("falls back to a version-less calibration badge when version is null", () => {
+  it("shows the program string as-is in the badge when it doesn't parse to a version, regardless of device.version", () => {
     const el = mount(
-      withRouter(<DevicesList status="open" devices={[device(1, { program: "calibration-x", version: null })]} unassigned={[]} />),
+      withRouter(<DevicesList status="open" devices={[device(1, { program: "calibration-x", version: "1.20260912.8" })]} unassigned={[]} />),
     );
-    expect(el.querySelector('[data-testid="calibration-badge"]')?.textContent).toBe("Calibration robot");
+    expect(el.querySelector('[data-testid="calibration-badge"]')?.textContent).toBe("Calibration robot · calibration-x");
   });
 
   it("shows no calibration badge for a plain program (regression)", () => {
@@ -185,15 +216,76 @@ describe("DevicesList", () => {
     expect(el.querySelector('[data-testid="calibration-badge"]')).toBeNull();
   });
 
-  it("shows the Linked pill only when some link is connected", () => {
-    const linked = mount(withRouter(<DevicesList status="open" devices={[device(1, { links: [link("usb-1", { state: "connected" })] })]} unassigned={[]} />));
-    expect(linked.querySelector(".device-linked-pill")).not.toBeNull();
+  it("colours the robot's name green only when some link is connected AND has answered, yellow otherwise (ticket 018-010; stakeholder 2026-09-14)", () => {
+    const linked = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              links: [
+                link("usb-1", {
+                  state: "connected",
+                  session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null, answeredAt: Date.now() },
+                }),
+              ],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
+    expect(linked.querySelector('[data-testid="device-name-1"]')?.getAttribute("data-linked")).toBe("true");
+    expect(linked.querySelector(".device-linked-pill")).toBeNull();
 
     if (root) act(() => root!.unmount());
     if (container) container.remove();
 
     const notLinked = mount(withRouter(<DevicesList status="open" devices={[device(1, { links: [link("usb-1", { state: "connectable" })] })]} unassigned={[]} />));
-    expect(notLinked.querySelector(".device-linked-pill")).toBeNull();
+    expect(notLinked.querySelector('[data-testid="device-name-1"]')?.getAttribute("data-linked")).toBe("false");
+  });
+
+  // Ticket 018-010 bench defect: `vevov`'s mbserial bridge accepted a
+  // TCP connection and flipped its link to `connected` while its own
+  // robot never once replied to `HELLO` -- the pill must not show for
+  // merely `state === "connected"` with no session, or a session that
+  // has never answered.
+  it("keeps the name yellow for a connected link that has no session, or a session that has never answered", () => {
+    const noSession = mount(withRouter(<DevicesList status="open" devices={[device(1, { links: [link("usb-1", { state: "connected" })] })]} unassigned={[]} />));
+    expect(noSession.querySelector('[data-testid="device-name-1"]')?.getAttribute("data-linked")).toBe("false");
+
+    if (root) act(() => root!.unmount());
+    if (container) container.remove();
+
+    const neverAnswered = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              links: [link("usb-1", { state: "connected", session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null } })],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
+    expect(neverAnswered.querySelector('[data-testid="device-name-1"]')?.getAttribute("data-linked")).toBe("false");
+  });
+
+  it("gives a radio bridge's name no link colour -- a bridge has no link of its own to show", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[device(7, { name: "vitut", kind: "relay", role: "RADIOBRIDGE", links: [link("usb-vitut", { state: "connectable" })] })]}
+          unassigned={[]}
+        />,
+      ),
+    );
+    const name = el.querySelector('[data-testid="device-name-7"]');
+    expect(name?.textContent).toBe("vitut");
+    expect(name?.hasAttribute("data-linked")).toBe(false);
   });
 });
 
@@ -202,7 +294,10 @@ describe("multi-link device (host already groups links under one device)", () =>
     return device(1, {
       name: "vevov",
       links: [
-        link("usb-vevov", { state: "connected", session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null } }),
+        link("usb-vevov", {
+          state: "connected",
+          session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null, answeredAt: Date.now() },
+        }),
         link("wifi-vevov", { transport: "wifi", label: "WiFi · vevov.local:7654", state: "failed", reason: "could not reach vevov.local:7654" }),
       ],
     });
@@ -215,85 +310,64 @@ describe("multi-link device (host already groups links under one device)", () =>
   // itself, not merely "isn't the primary", so the non-usable wifi row
   // gets no arrow -- only a Connect button, since `failed` is in
   // `CONNECT_BUTTON_STATES`.
-  it("gives only the usable (primary) link a card open arrow; the non-usable link gets a row Connect button, no arrow", () => {
+  it("stakeholder 2026-09-13/14: each live link is an icon chip that toggles its link; the failed chip carries the details in its popover", () => {
     const opens: string[] = [];
-    const el = mount(
-      withRouter(
-        <DevicesList status="open" devices={[multiLinkDevice()]} unassigned={[]} sendable={true} onLinkConnect={(linkId) => opens.push(linkId)} />,
-      ),
-    );
-
-    expect(el.querySelectorAll("h3.device-name")).toHaveLength(1);
-    expect(el.querySelector('[data-testid="device-open-1"]')?.getAttribute("href")).toBe("/d/usb-vevov");
-
-    const rows = el.querySelectorAll(".device-connections li");
-    expect(rows).toHaveLength(2);
-    const wifiRow = el.querySelector('[data-testid="device-link-wifi-vevov"]');
-    expect(wifiRow?.textContent).toContain("WiFi · vevov.local:7654");
-    expect(wifiRow?.textContent).toContain("Couldn't connect: could not reach vevov.local:7654");
-
-    // No arrow anywhere except the card's own, into the usable link.
-    expect(el.querySelectorAll('[data-testid^="device-link-open-"]')).toHaveLength(0);
-    expect(el.querySelector('[data-testid="device-link-open-wifi-vevov"]')).toBeNull();
-    expect(el.querySelector('[data-testid="device-link-open-usb-vevov"]')).toBeNull();
-    expect(el.querySelector('[data-testid="device-link-usb-vevov"]')?.textContent).toContain("Linked");
-    expect(el.querySelectorAll("a a")).toHaveLength(0);
-
-    // The non-usable wifi link is still `failed`, one of
-    // `CONNECT_BUTTON_STATES`, so it gets a Connect button that sends
-    // session-open for its own link id -- regardless of the card
-    // already having a usable primary link on usb-vevov.
-    const connect = el.querySelector<HTMLButtonElement>('[data-testid="device-link-connect-wifi-vevov"]');
-    expect(connect).not.toBeNull();
-    expect(connect!.disabled).toBe(false);
-    act(() => {
-      connect!.click();
-    });
-    expect(opens).toEqual(["wifi-vevov"]);
-
-    // The usable primary link itself gets no Connect button: "connected"
-    // is not in CONNECT_BUTTON_STATES.
-    expect(el.querySelector('[data-testid="device-link-connect-usb-vevov"]')).toBeNull();
-  });
-
-  it("gives every usable link its own row arrow when a card has two usable links, plus the card's own arrow to the primary", () => {
+    const closes: string[] = [];
     const el = mount(
       withRouter(
         <DevicesList
           status="open"
-          devices={[
-            device(1, {
-              name: "vevov",
-              links: [
-                link("usb-vevov", {
-                  state: "connected",
-                  session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
-                }),
-                link("wifi-vevov", {
-                  transport: "wifi",
-                  label: "WiFi · vevov.local:7654",
-                  state: "connected",
-                  session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
-                }),
-              ],
-            }),
-          ]}
+          devices={[multiLinkDevice()]}
           unassigned={[]}
+          sendable={true}
+          onLinkConnect={(linkId) => opens.push(linkId)}
+          onLinkClose={(linkId) => closes.push(linkId)}
         />,
       ),
     );
+    const usbChip = el.querySelector('[data-testid="device-chip-usb-vevov"]');
+    const wifiChip = el.querySelector('[data-testid="device-chip-wifi-vevov"]');
+    expect(usbChip?.getAttribute("data-state")).toBe("linked");
+    expect(usbChip?.querySelector("a")).toBeNull();
+    expect(usbChip?.querySelector('svg[data-icon="usb"]')).not.toBeNull();
+    expect(wifiChip?.getAttribute("data-state")).toBe("failed");
+    expect(wifiChip?.querySelector('svg[data-icon="wifi"]')).not.toBeNull();
+    expect(wifiChip?.querySelector(".device-chip-popover")?.textContent).toContain("Couldn't connect: could not reach vevov.local:7654");
+    expect(el.querySelector('[data-testid="device-role-1"]')?.textContent).toBe("Role unknown");
 
-    // Primary is the first usable link (usb-vevov) -- the card's own
-    // arrow leads there, and it gets no extra row arrow.
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="device-chip-toggle-usb-vevov"]')!.click();
+    });
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="device-chip-toggle-wifi-vevov"]')!.click();
+    });
+    expect(closes).toEqual(["usb-vevov"]);
+    expect(opens).toEqual(["wifi-vevov"]);
+  });
+
+  it("stakeholder 2026-09-13: the home page groups robots first, then radio bridges", () => {
+    const relay = device(7, { name: "vitut", kind: "relay", role: "RADIOBRIDGE", links: [link("usb-vitut", { state: "connectable", transport: "usb" })] });
+    const el = mount(withRouter(<DevicesList status="open" devices={[relay, multiLinkDevice()]} unassigned={[]} />));
+    const groups = Array.from(el.querySelectorAll(".devices-group")).map((g) => g.getAttribute("data-testid"));
+    expect(groups).toEqual(["devices-group-robots", "devices-group-bridges"]);
+    expect(el.querySelector('[data-testid="devices-group-robots"] [data-testid="device-card-1"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="devices-group-bridges"] [data-testid="device-card-7"]')).not.toBeNull();
+  });
+
+  it("stakeholder 2026-09-14: the card's own arrow, into the usable (primary) link, is the only way in -- no link row carries an arrow or a Connect button", () => {
+    const el = mount(withRouter(<DevicesList status="open" devices={[multiLinkDevice()]} unassigned={[]} sendable={true} />));
+
+    expect(el.querySelectorAll("h3.device-name")).toHaveLength(1);
     expect(el.querySelector('[data-testid="device-open-1"]')?.getAttribute("href")).toBe("/d/usb-vevov");
-    expect(el.querySelector('[data-testid="device-link-open-usb-vevov"]')).toBeNull();
+    expect(el.querySelectorAll("a")).toHaveLength(1);
 
-    // The second usable link is not the primary, so it gets its own
-    // small row arrow.
-    expect(el.querySelector('[data-testid="device-link-open-wifi-vevov"]')?.getAttribute("href")).toBe("/d/wifi-vevov");
-
-    // Exactly one card arrow + one row arrow across the whole card.
-    expect(el.querySelectorAll('[data-testid^="device-link-open-"], [data-testid^="device-open-"]')).toHaveLength(2);
+    // usb + wifi chips, plus the radio chip every robot carries.
+    expect(el.querySelectorAll(".device-connections > li")).toHaveLength(3);
+    const wifiRow = el.querySelector('[data-testid="device-link-wifi-vevov"]');
+    expect(wifiRow?.textContent).toContain("WiFi · vevov.local:7654");
+    expect(wifiRow?.textContent).toContain("Couldn't connect: could not reach vevov.local:7654");
+    expect(el.querySelector('[data-testid="device-link-usb-vevov"]')?.textContent).toContain("Linked");
+    expect(Array.from(el.querySelectorAll("button")).some((b) => b.textContent === "Connect")).toBe(false);
   });
 });
 
@@ -323,7 +397,7 @@ describe("extended scope (team-lead, 2026-09-13), item B: a card with no usable 
     expect(el.querySelector('[data-testid="device-link-open-usb-zapuz"]')).toBeNull();
   });
 
-  it("shows each link's state text (with its reason in plain words folded in, once) plus a Connect button that sends session-open, gated by sendable", () => {
+  it("shows each link's state text (with its reason in plain words folded in, once), and pressing the chip sends session-open", () => {
     const opens: string[] = [];
     const el = mount(
       withRouter(
@@ -356,16 +430,14 @@ describe("extended scope (team-lead, 2026-09-13), item B: a card with no usable 
     expect(row?.textContent).toContain("Couldn't connect: stopped answering");
     expect(row?.textContent?.match(/stopped answering/g)).toHaveLength(1);
     expect(el.querySelector('[data-testid="device-link-reason-usb-zapuz"]')).toBeNull();
-    const connect = el.querySelector<HTMLButtonElement>('[data-testid="device-link-connect-usb-zapuz"]');
-    expect(connect).not.toBeNull();
-    expect(connect!.disabled).toBe(false);
     act(() => {
-      connect!.click();
+      el.querySelector<HTMLButtonElement>('[data-testid="device-chip-toggle-usb-zapuz"]')!.click();
     });
     expect(opens).toEqual(["usb-zapuz"]);
   });
 
-  it("disables the Connect button when sendable is false", () => {
+  it("a chip press sends nothing when sendable is false", () => {
+    const opens: string[] = [];
     const el = mount(
       withRouter(
         <DevicesList
@@ -373,19 +445,35 @@ describe("extended scope (team-lead, 2026-09-13), item B: a card with no usable 
           devices={[device(1, { links: [link("usb-1", { state: "failed", reason: "boom" })] })]}
           unassigned={[]}
           sendable={false}
+          onLinkConnect={(linkId) => opens.push(linkId)}
         />,
       ),
     );
-    expect(el.querySelector<HTMLButtonElement>('[data-testid="device-link-connect-usb-1"]')!.disabled).toBe(true);
+    const toggle = el.querySelector<HTMLButtonElement>('[data-testid="device-chip-toggle-usb-1"]')!;
+    expect(toggle.getAttribute("aria-disabled")).toBe("true");
+    act(() => {
+      toggle.click();
+    });
+    expect(opens).toEqual([]);
   });
 
-  it("offers no Connect button for a state not in the connectable set (e.g. connecting)", () => {
+  it("a chip press mid-connect sends nothing", () => {
+    const sent: string[] = [];
     const el = mount(
       withRouter(
-        <DevicesList status="open" devices={[device(1, { links: [link("usb-1", { state: "connecting" })] })]} unassigned={[]} />,
+        <DevicesList
+          status="open"
+          devices={[device(1, { links: [link("usb-1", { state: "connecting" })] })]}
+          unassigned={[]}
+          onLinkConnect={(linkId) => sent.push(`open ${linkId}`)}
+          onLinkClose={(linkId) => sent.push(`close ${linkId}`)}
+        />,
       ),
     );
-    expect(el.querySelector('[data-testid="device-link-connect-usb-1"]')).toBeNull();
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="device-chip-toggle-usb-1"]')!.click();
+    });
+    expect(sent).toEqual([]);
   });
 
   it("a relay card keeps its existing open arrow regardless of its own link having no usable session", () => {
@@ -401,19 +489,17 @@ describe("extended scope (team-lead, 2026-09-13), item B: a card with no usable 
     expect(el.querySelector('[data-testid="device-open-2"]')?.getAttribute("href")).toBe("/d/mbrelay-torture");
   });
 
-  // Bench defect (team-lead walk 017-012, 2026-09-13): the `torture`
-  // relay card showed a row-level Connect button on its own mbrelay
-  // link -- opening a relay pool's own link is not a student action,
-  // the relay card already gets its robot-picker Connect via
-  // `RelayConnectControls`. The button must stay suppressed for every
-  // state in `CONNECT_BUTTON_STATES`, not just the `connected` case the
-  // pre-existing open-arrow test above happens to use.
-  it("never shows a row-level Connect button on a relay card's own link, in any connectable state", () => {
+  // Bench defect (team-lead walk 017-012, 2026-09-13): opening a relay
+  // pool's own link is not a student action -- a bridge is used from a
+  // robot's radio chip (stakeholder, 2026-09-14).
+  it("a relay card's own chip toggles nothing", () => {
+    const opens: string[] = [];
     const el = mount(
       withRouter(
         <DevicesList
           status="open"
           sendable={true}
+          onLinkConnect={(linkId) => opens.push(linkId)}
           devices={[
             device(2, {
               name: "torture",
@@ -425,8 +511,129 @@ describe("extended scope (team-lead, 2026-09-13), item B: a card with no usable 
         />,
       ),
     );
-    expect(el.querySelector('[data-testid="device-link-connect-mbrelay-torture"]')).toBeNull();
+    const toggle = el.querySelector<HTMLButtonElement>('[data-testid="device-chip-toggle-mbrelay-torture"]')!;
+    expect(toggle.getAttribute("aria-disabled")).toBe("true");
+    act(() => {
+      toggle.click();
+    });
+    expect(opens).toEqual([]);
     expect(el.querySelector('[data-testid="device-link-mbrelay-torture"]')?.textContent).toContain("mbrelay · torture.local:8760");
+  });
+});
+
+describe("front-page lightning Flash button (ticket 018-015)", () => {
+  it("shows a lightning Flash trigger, with an accessible 'Flash <name>' label, on a device card with a current usb link", () => {
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
+          <DevicesList status="open" devices={[device(1, { name: "zeguz" })]} unassigned={[]} />
+        </WsProvider>,
+      ),
+    );
+    const card = el.querySelector('[data-testid="device-card-1"]')!;
+    const flashTrigger = findFlashTrigger(card);
+    expect(flashTrigger).toBeDefined();
+    expect(flashTrigger!.getAttribute("aria-label")).toBe("Flash zeguz");
+    // Icon-only -- no visible "Flash" text.
+    expect(flashTrigger!.textContent).toBe("");
+  });
+
+  it("shows no lightning Flash trigger when the device has no usb link at all", () => {
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
+          <DevicesList
+            status="open"
+            devices={[device(1, { name: "zeguz", links: [link("radio-1", { transport: "radio", state: "connected" })] })]}
+            unassigned={[]}
+          />
+        </WsProvider>,
+      ),
+    );
+    const card = el.querySelector('[data-testid="device-card-1"]')!;
+    expect(findFlashTrigger(card)).toBeUndefined();
+  });
+
+  it("shows no lightning Flash trigger when the device's only usb link has gone stale", () => {
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
+          <DevicesList status="open" devices={[device(1, { name: "zeguz", links: [link("usb-1", { state: "stale" })] })]} unassigned={[]} />
+        </WsProvider>,
+      ),
+    );
+    const card = el.querySelector('[data-testid="device-card-1"]')!;
+    expect(findFlashTrigger(card)).toBeUndefined();
+  });
+
+  it("does not shift the open arrow, and reserves no empty flash slot, on a card with no usb link", () => {
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
+          <DevicesList
+            status="open"
+            devices={[
+              device(1, {
+                name: "zeguz",
+                links: [
+                  link("wifi-1", {
+                    transport: "wifi",
+                    state: "connected",
+                    session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+                  }),
+                ],
+              }),
+            ]}
+            unassigned={[]}
+          />
+        </WsProvider>,
+      ),
+    );
+    const card = el.querySelector('[data-testid="device-card-1"]')!;
+    expect(card.querySelector('[data-testid="device-open-1"]')).not.toBeNull();
+    expect(findFlashTrigger(card)).toBeUndefined();
+  });
+
+  it("clicking the lightning trigger opens the flash modal offering relay firmware, robot/calibration firmware, and a local .hex upload", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <DevicesList status="open" devices={[device(1, { name: "zeguz" })]} unassigned={[]} />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    const card = el.querySelector('[data-testid="device-card-1"]')!;
+    const flashTrigger = findFlashTrigger(card)!;
+    act(() => {
+      flashTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const text = el.textContent ?? "";
+    expect(text).toContain("Flash zeguz");
+    expect(text).toContain("Flash relay firmware");
+    expect(text).toContain("Flash robot firmware");
+    expect(text).toContain("Flash a hex file from disk");
+  });
+
+  it("gives the unassigned-board card's Flash trigger the same lightning-icon treatment as a device card's", () => {
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
+          <DevicesList
+            status="open"
+            devices={[]}
+            unassigned={[link("usb-unknown-1", { state: "discovered", label: "USB · /dev/tty.usbmodem-unknown" })]}
+          />
+        </WsProvider>,
+      ),
+    );
+    const card = el.querySelector('[data-testid="unassigned-card-usb-unknown-1"]')!;
+    const flashTrigger = findFlashTrigger(card);
+    expect(flashTrigger).toBeDefined();
+    expect(flashTrigger!.getAttribute("aria-label")).toBe("Flash USB · /dev/tty.usbmodem-unknown");
   });
 });
 
@@ -456,7 +663,7 @@ describe("bench defect 010 addendum (2026-09-13): a refused/failed Connect shows
       );
     });
 
-    const connect = el.querySelector<HTMLButtonElement>('[data-testid="device-link-connect-usb-tovez"]');
+    const connect = el.querySelector<HTMLButtonElement>('[data-testid="device-chip-toggle-usb-tovez"]');
     expect(connect).not.toBeNull();
     act(() => {
       connect!.click();
@@ -546,7 +753,7 @@ describe("unassigned USB boards (acceptance: un-owned WiFi absent, unassigned pr
     expect(el.querySelector('[data-testid="unassigned-open-usb-unknown-1"]')?.getAttribute("href")).toBe("/d/usb-unknown-1");
   });
 
-  it("restores the Flash trigger on an unassigned board's card (sprint 015 ticket 008)", () => {
+  it("restores the Flash trigger on an unassigned board's card (sprint 015 ticket 008), now a lightning icon (ticket 018-015)", () => {
     const el = mount(
       withRouter(
         <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
@@ -559,8 +766,12 @@ describe("unassigned USB boards (acceptance: un-owned WiFi absent, unassigned pr
       ),
     );
     const card = el.querySelector('[data-testid="unassigned-card-usb-unknown-1"]')!;
-    const flashTrigger = Array.from(card.querySelectorAll("button")).find((b) => b.textContent === "Flash");
+    const flashTrigger = findFlashTrigger(card);
     expect(flashTrigger).toBeDefined();
+    // Ticket 018-015: the trigger is icon-only now -- no visible "Flash"
+    // text -- so its accessible name is what a screen reader (and this
+    // test) has to go on.
+    expect(flashTrigger!.textContent).toBe("");
   });
 
   it("offers no Flash trigger for an unassigned board whose link capabilities say flash is unavailable", () => {
@@ -582,8 +793,7 @@ describe("unassigned USB boards (acceptance: un-owned WiFi absent, unassigned pr
       ),
     );
     const card = el.querySelector('[data-testid="unassigned-card-usb-unknown-1"]')!;
-    const flashTrigger = Array.from(card.querySelectorAll("button")).find((b) => b.textContent === "Flash");
-    expect(flashTrigger).toBeUndefined();
+    expect(findFlashTrigger(card)).toBeUndefined();
   });
 
   // Ticket 011 (carried from 009's send-gating sweep): the Flash trigger
@@ -607,7 +817,7 @@ describe("unassigned USB boards (acceptance: un-owned WiFi absent, unassigned pr
       socket!.emitOpen();
     });
     const card = el.querySelector('[data-testid="unassigned-card-usb-unknown-1"]')!;
-    const flashTrigger = Array.from(card.querySelectorAll("button")).find((b) => b.textContent === "Flash")!;
+    const flashTrigger = findFlashTrigger(card)!;
     expect(flashTrigger.disabled).toBe(false);
 
     act(() => {
@@ -686,6 +896,33 @@ describe("not seen recently (devices the host still knows about with zero curren
     expect(socket!.sent).toEqual([JSON.stringify({ type: "forget-device", deviceId: 9 })]);
   });
 
+  it("FrontPage lists a device whose every link is stale under not-seen-recently, not as an available card", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage(
+        snapshot({
+          devices: [
+            device(9, { name: "zapig", links: [link("usb-z", { state: "stale", transport: "usb" })] }),
+            device(10, { name: "gopiv", links: [link("wifi-g", { state: "connectable", transport: "wifi" })] }),
+          ],
+        }),
+      );
+    });
+    expect(el.querySelector('[data-testid="not-seen-device-9"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="not-seen-device-10"]')).toBeNull();
+    expect(el.textContent).toContain("gopiv");
+  });
+
   it("the row disappears once the next snapshot omits the device (no optimistic local removal needed)", () => {
     let socket: FakeSocket | null = null;
     const el = mount(
@@ -753,195 +990,73 @@ describe("not seen recently (devices the host still knows about with zero curren
   });
 });
 
-describe("relay quick-connect", () => {
-  function relayDevice(overrides: Partial<Omit<SnapshotDevice, "links">> = {}): SnapshotDevice {
-    return device(3, {
-      name: "rly01",
+describe("radio chip and radio bridge cards (stakeholder, 2026-09-14)", () => {
+  const SESSION = { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null, answeredAt: Date.now() };
+
+  function usbBridge(id: number, name: string, overrides: Partial<SnapshotLink> = {}): SnapshotDevice {
+    return device(id, { name, kind: "relay", role: "RADIOBRIDGE", links: [link(`usb-${name}`, { state: "connectable", ...overrides })] });
+  }
+
+  function pool(id: number, name: string): SnapshotDevice {
+    return device(id, {
+      name,
       kind: "relay",
-      role: "RADIOBRIDGE",
-      links: [link("usb-relay-1", { state: "connected" })],
+      links: [link(`mbrelay-${name}`, { transport: "mbrelay", label: `mbrelay · ${name}.local:8760`, state: "connectable" })],
+    });
+  }
+
+  function radioLink(robot: string, relayLinkId: string, relayName: string, overrides: Partial<SnapshotLink> = {}): SnapshotLink {
+    return link(`radio-${robot}-via-${relayLinkId}`, {
+      transport: "radio",
+      label: "Radio · ch1/grp1",
+      state: "connectable",
+      via: { relayLinkId, relayName, channel: 1, group: 1, addressSource: "derived" },
       ...overrides,
     });
   }
 
-  it("carries a robot picker and Connect that reports {relayLinkId, name}", () => {
-    const connects: Array<[string, string]> = [];
-    const el = mount(
-      withRouter(
-        <DevicesList
-          status="open"
-          devices={[relayDevice()]}
-          unassigned={[]}
-          robotOptions={["gopiv", "vevav"]}
-          onRelayConnect={(relayLinkId, name) => connects.push([relayLinkId, name])}
-        />,
-      ),
-    );
-    const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-quick-connect-select-3"]');
-    expect(select).not.toBeNull();
-    expect(Array.from(select!.options).map((o) => o.textContent)).toEqual(["Choose a robot…", "gopiv", "vevav"]);
+  function chipState(el: Element, deviceId: number): string | null | undefined {
+    return el.querySelector(`[data-testid="device-radio-chip-${deviceId}"]`)?.getAttribute("data-state");
+  }
 
+  function pressRadio(el: Element, deviceId: number): void {
     act(() => {
-      select!.value = "vevav";
-      select!.dispatchEvent(new Event("change", { bubbles: true }));
+      el.querySelector<HTMLButtonElement>(`[data-testid="device-radio-toggle-${deviceId}"]`)!.click();
     });
-    const connect = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Connect");
-    act(() => {
-      connect!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(connects).toEqual([["usb-relay-1", "vevav"]]);
+  }
+
+  it("allocateRadioBridge picks a free USB radio bridge first, then an mbrelay pool, else nothing", () => {
+    const bridged = device(10, { name: "gopiv", links: [radioLink("gopiv", "usb-vevav", "vevav", { state: "connected", session: SESSION })] });
+    expect(allocateRadioBridge([pool(1, "torture"), usbBridge(2, "vevav")])).toBe("usb-vevav");
+    expect(allocateRadioBridge([pool(1, "torture"), usbBridge(2, "vevav"), bridged])).toBe("mbrelay-torture");
+    expect(allocateRadioBridge([usbBridge(2, "vevav"), bridged])).toBeUndefined();
+    expect(allocateRadioBridge([usbBridge(2, "vevav", { state: "failed" })])).toBeUndefined();
+    expect(allocateRadioBridge([])).toBeUndefined();
   });
 
-  it("Connect is disabled until a robot is picked (no auto/no-pick request in the new contract)", () => {
-    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice()]} unassigned={[]} robotOptions={["vevav"]} />));
-    const connect = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Connect");
-    expect(connect?.disabled).toBe(true);
+  it("every robot card carries a yellow radio chip, with no radio link needed; a bridge card carries none", () => {
+    const el = mount(withRouter(<DevicesList status="open" devices={[device(1, { name: "tovez" }), usbBridge(2, "vevav")]} unassigned={[]} />));
+    expect(chipState(el, 1)).toBe("idle");
+    expect(el.querySelector('[data-testid="device-radio-chip-2"]')).toBeNull();
   });
 
-  it("with a child already bridged, shows Connected to <name> on channel/group and offers Switch/Disconnect", () => {
-    const disconnects: string[] = [];
-    const child = device(4, {
-      name: "vevav",
-      links: [
-        link("usb-relay-1-via-vevav", {
-          transport: "radio",
-          state: "connected",
-          via: { relayLinkId: "usb-relay-1", relayName: "rly01", channel: 55, group: 114, addressSource: "derived" },
-        }),
-      ],
+  it("folds a robot's radio links into its radio chip: green once bridged, and pressing it closes that link", () => {
+    const closes: string[] = [];
+    const robot = device(1, {
+      name: "gopiv",
+      links: [link("usb-gopiv", { state: "connectable" }), radioLink("gopiv", "usb-vevav", "vevav", { state: "connected", session: SESSION })],
     });
     const el = mount(
-      withRouter(
-        <DevicesList
-          status="open"
-          devices={[relayDevice(), child]}
-          unassigned={[]}
-          robotOptions={["vevav"]}
-          onRelayDisconnect={(linkId) => disconnects.push(linkId)}
-        />,
-      ),
+      withRouter(<DevicesList status="open" devices={[robot, usbBridge(2, "vevav")]} unassigned={[]} onLinkClose={(linkId) => closes.push(linkId)} />),
     );
-    const quick = el.querySelector('[data-testid="relay-quick-connect-3"]');
-    expect(quick?.textContent).toContain("Connected to vevav on channel 55, group 114");
-    expect(quick?.querySelector<HTMLSelectElement>("select")?.value).toBe("vevav");
-
-    const disconnect = Array.from(quick?.querySelectorAll("button") ?? []).find((b) => b.textContent === "Disconnect");
-    act(() => {
-      disconnect!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(disconnects).toEqual(["usb-relay-1-via-vevav"]);
-
-    // The bridged robot is its own device-list card, listing the radio link.
-    expect(el.querySelector('[data-testid="device-link-usb-relay-1-via-vevav"]')?.textContent).toContain(
-      "via relay rly01",
-    );
+    expect(el.querySelector('[data-testid="device-chip-radio-gopiv-via-usb-vevav"]')).toBeNull();
+    expect(chipState(el, 1)).toBe("linked");
+    expect(el.querySelector('[data-testid="device-radio-chip-1"]')?.textContent).toContain("Radio via vevav");
+    pressRadio(el, 1);
+    expect(closes).toEqual(["radio-gopiv-via-usb-vevav"]);
   });
 
-  it("a child whose link has dropped shows 'Connection to <name> lost', not 'Connected to'", () => {
-    const child = device(4, {
-      name: "vevav",
-      links: [
-        link("usb-relay-1-via-vevav", {
-          transport: "radio",
-          state: "failed",
-          reason: "no reply from vevav",
-          via: { relayLinkId: "usb-relay-1", relayName: "rly01", channel: 55, group: 114, addressSource: "derived" },
-        }),
-      ],
-    });
-    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice(), child]} unassigned={[]} />));
-    const quick = el.querySelector('[data-testid="relay-quick-connect-3"]');
-    const lost = quick?.querySelector('[data-testid="relay-quick-lost-3"]');
-    expect(lost).not.toBeNull();
-    expect(lost?.textContent).toBe("Connection to vevav lost: no reply from vevav");
-    const buttons = Array.from(quick?.querySelectorAll("button") ?? []).map((b) => b.textContent);
-    expect(buttons).toContain("Switch");
-    expect(buttons).toContain("Disconnect");
-  });
-
-  it("renders 'Connecting to <name>…' from relays[].bridging with no child link present yet", () => {
-    const relays: SnapshotRelay[] = [{ linkId: "usb-relay-1", lease: null, bridging: { state: "connecting", robotName: "GoPiv" } }];
-    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice()]} unassigned={[]} relays={relays} />));
-    expect(el.querySelector('[data-testid="relay-quick-connecting-3"]')?.textContent).toBe("Connecting to GoPiv…");
-  });
-
-  it("renders the failure reason from relays[].bridging.error", () => {
-    const relays: SnapshotRelay[] = [{ linkId: "usb-relay-1", lease: null, bridging: { state: "failed", robotName: "GoPiv", error: "GoPiv did not respond" } }];
-    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice()]} unassigned={[]} relays={relays} />));
-    expect(el.querySelector('[data-testid="relay-quick-failed-3"]')?.textContent).toBe("GoPiv did not respond");
-  });
-
-  // Sprint 016 ticket 004 (SUC-004): idle/sweeping rendering, mirroring
-  // RelayPage.tsx's own identical label.
-  it("renders 'idle' when relays[] reports lease: null and no bridging", () => {
-    const relays: SnapshotRelay[] = [{ linkId: "usb-relay-1", lease: null }];
-    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice()]} unassigned={[]} relays={relays} />));
-    expect(el.querySelector('[data-testid="relay-quick-idle-3"]')?.textContent).toBe("idle");
-  });
-
-  it("renders 'idle' when the snapshot has no relays[] entry for this relay at all", () => {
-    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice()]} unassigned={[]} />));
-    expect(el.querySelector('[data-testid="relay-quick-idle-3"]')?.textContent).toBe("idle");
-  });
-
-  it("renders 'idle · sweeping' (no name known) when relays[] reports lease: 'sweep' and no candidate can be inferred", () => {
-    const relays: SnapshotRelay[] = [{ linkId: "usb-relay-1", lease: "sweep" }];
-    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice()]} unassigned={[]} relays={relays} />));
-    expect(el.querySelector('[data-testid="relay-quick-idle-3"]')?.textContent).toBe("idle · sweeping");
-  });
-
-  it("renders 'idle · sweeping <name>' when a recently-sighted candidate can be inferred from lastChecked, and does NOT mistake that sighting for a live child", () => {
-    const recentlyChecked = Date.now() - 5000;
-    const swept = device(5, {
-      name: "vevav",
-      lastChecked: recentlyChecked,
-      links: [
-        link("radio-vevav-via-usb-relay-1", {
-          transport: "radio",
-          state: "connectable",
-          via: { relayLinkId: "usb-relay-1", relayName: "rly01", channel: 41, group: 3, addressSource: "derived" },
-        }),
-      ],
-    });
-    const relays: SnapshotRelay[] = [{ linkId: "usb-relay-1", lease: "sweep" }];
-    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice(), swept]} unassigned={[]} relays={relays} />));
-    expect(el.querySelector('[data-testid="relay-quick-idle-3"]')?.textContent).toBe("idle · sweeping vevav");
-    expect(el.querySelector('[data-testid="relay-quick-lost-3"]')).toBeNull();
-  });
-
-  it("ticket 016-007: renders 'idle · sweeping (fast)' once the sweeper has detected the relay's non-persisting-tune capability", () => {
-    const relays: SnapshotRelay[] = [{ linkId: "usb-relay-1", lease: "sweep", sweep: { rate: "fast" } }];
-    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice()]} unassigned={[]} relays={relays} />));
-    expect(el.querySelector('[data-testid="relay-quick-idle-3"]')?.textContent).toBe("idle · sweeping (fast)");
-  });
-
-  it("ticket 016-007: renders 'idle · sweeping (slow)' once a sync has completed and found no capability advertised", () => {
-    const relays: SnapshotRelay[] = [{ linkId: "usb-relay-1", lease: "sweep", sweep: { rate: "slow" } }];
-    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice()]} unassigned={[]} relays={relays} />));
-    expect(el.querySelector('[data-testid="relay-quick-idle-3"]')?.textContent).toBe("idle · sweeping (slow)");
-  });
-
-  it("a device carrying a 'last checked' timestamp on its via-linked radio row renders it in the device card's own connection list", () => {
-    const at = Date.now() - 60_000;
-    const swept = device(5, {
-      name: "vevav",
-      lastChecked: at,
-      links: [
-        link("radio-vevav-via-usb-relay-1", {
-          transport: "radio",
-          state: "connectable",
-          via: { relayLinkId: "usb-relay-1", relayName: "rly01", channel: 41, group: 3, addressSource: "derived" },
-        }),
-      ],
-    });
-    const el = mount(withRouter(<DevicesList status="open" devices={[relayDevice(), swept]} unassigned={[]} />));
-    const row = el.querySelector('[data-testid="device-link-lastchecked-radio-vevav-via-usb-relay-1"]');
-    expect(row).not.toBeNull();
-    expect(row?.textContent).toContain("Last checked");
-    expect(row?.textContent).toContain(new Date(at).toLocaleString());
-  });
-
-  it("FrontPage wires Connect to send exactly {type: 'session-open', relayLinkId, name}", () => {
+  it("FrontPage: pressing a yellow radio chip bridges through a free USB bridge before the mbrelay pool, goes busy, then green", () => {
     let socket: FakeSocket | null = null;
     const el = mount(
       withRouter(
@@ -954,85 +1069,30 @@ describe("relay quick-connect", () => {
       socket!.emitOpen();
     });
     act(() => {
-      socket!.emitMessage(snapshot({ devices: [relayDevice(), device(5, { name: "vevav", kind: "robot" })] }));
+      socket!.emitMessage(snapshot({ devices: [device(1, { name: "gopiv" }), pool(2, "torture"), usbBridge(3, "vevav")] }));
     });
 
-    const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-quick-connect-select-3"]');
+    pressRadio(el, 1);
+    expect(socket!.sent).toContainEqual(JSON.stringify({ type: "session-open", relayLinkId: "usb-vevav", name: "gopiv" }));
+    expect(chipState(el, 1)).toBe("busy");
+
     act(() => {
-      select!.value = "vevav";
-      select!.dispatchEvent(new Event("change", { bubbles: true }));
+      socket!.emitMessage(
+        snapshot({
+          seq: 2,
+          devices: [
+            device(1, { name: "gopiv", links: [link("usb-1"), radioLink("gopiv", "usb-vevav", "vevav", { state: "connected", session: SESSION })] }),
+            pool(2, "torture"),
+            usbBridge(3, "vevav"),
+          ],
+        }),
+      );
     });
-    const connect = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Connect");
-    act(() => {
-      connect!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(socket!.sent).toEqual([JSON.stringify({ type: "session-open", relayLinkId: "usb-relay-1", name: "vevav" })]);
+    expect(chipState(el, 1)).toBe("linked");
+    expect(el.querySelector('[data-testid="relay-connections-3"]')?.textContent).toBe("Connected to gopiv");
   });
 
-  // Ticket 011 (carried from 009's send-gating sweep): the quick-connect
-  // Connect/Switch button gates on `useSendable()` the same way
-  // `RelayPage.tsx`'s own Connect/Switch does.
-  it("Connect disables once the socket closes, and no message is sent while disabled", () => {
-    let socket: FakeSocket | null = null;
-    const el = mount(
-      withRouter(
-        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-          <FrontPage />
-        </WsProvider>,
-      ),
-    );
-    act(() => {
-      socket!.emitOpen();
-    });
-    act(() => {
-      socket!.emitMessage(snapshot({ devices: [relayDevice(), device(5, { name: "vevav", kind: "robot" })] }));
-    });
-
-    const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-quick-connect-select-3"]');
-    act(() => {
-      select!.value = "vevav";
-      select!.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    const connect = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Connect")!;
-    expect(connect.disabled).toBe(false);
-
-    act(() => {
-      socket!.close();
-    });
-    expect(connect.disabled).toBe(true);
-
-    act(() => {
-      connect.click();
-    });
-    expect(socket!.sent).toEqual([]);
-  });
-
-  it("FrontPage's robotOptions never include the relay device itself, only kind: robot devices", () => {
-    let socket: FakeSocket | null = null;
-    const el = mount(
-      withRouter(
-        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-          <FrontPage />
-        </WsProvider>,
-      ),
-    );
-    act(() => {
-      socket!.emitOpen();
-    });
-    act(() => {
-      socket!.emitMessage(snapshot({ devices: [relayDevice(), device(5, { name: "vevav", kind: "robot" })] }));
-    });
-    const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-quick-connect-select-3"]');
-    expect(Array.from(select!.options).map((o) => o.textContent)).toEqual(["Choose a robot…", "vevav"]);
-  });
-
-  // Ticket 017-010 (team-lead bench evidence, 2026-09-13): the relay
-  // quick-connect picker listed "tovez" twice -- two `kind: "robot"`
-  // device rows sharing one name (the unmerged known-robots.json
-  // placeholder plus its real, SWD-named row) each contributed their own
-  // name to `robotOptions`. `FrontPage` now de-dupes by name before
-  // handing the list to the picker.
-  it("de-duplicates a robot name that currently has two device rows (an unmerged placeholder + its real row)", () => {
+  it("FrontPage: with the USB bridge already carrying a robot, the next radio chip goes to the mbrelay pool", () => {
     let socket: FakeSocket | null = null;
     const el = mount(
       withRouter(
@@ -1048,15 +1108,118 @@ describe("relay quick-connect", () => {
       socket!.emitMessage(
         snapshot({
           devices: [
-            relayDevice(),
-            device(2314287040, { name: "tovez", kind: "robot", links: [link("usb-tovez")] }),
-            device(2665, { name: "tovez", kind: "robot", links: [] }),
+            device(1, { name: "gopiv", links: [link("usb-1"), radioLink("gopiv", "usb-vevav", "vevav", { state: "connected", session: SESSION })] }),
+            device(4, { name: "tovez" }),
+            pool(2, "torture"),
+            usbBridge(3, "vevav"),
           ],
         }),
       );
     });
-    const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-quick-connect-select-3"]');
-    expect(Array.from(select!.options).map((o) => o.textContent)).toEqual(["Choose a robot…", "tovez"]);
+    pressRadio(el, 4);
+    expect(socket!.sent).toContainEqual(JSON.stringify({ type: "session-open", relayLinkId: "mbrelay-torture", name: "tovez" }));
+  });
+
+  it("a radio chip with no free bridge flashes red, sends nothing, then settles back to yellow with the reason in its popover", () => {
+    const connects: Array<[string, string]> = [];
+    const el = mount(
+      withRouter(<DevicesList status="open" devices={[device(1, { name: "gopiv" })]} unassigned={[]} onRadioConnect={(relayLinkId, name) => connects.push([relayLinkId, name])} />),
+    );
+    vi.useFakeTimers();
+    try {
+      pressRadio(el, 1);
+      expect(connects).toEqual([]);
+      expect(chipState(el, 1)).toBe("flash");
+      act(() => {
+        vi.advanceTimersByTime(1300);
+      });
+      expect(chipState(el, 1)).toBe("idle");
+      expect(el.querySelector('[data-testid="device-radio-state-1"]')?.textContent).toBe("Couldn't connect: no radio bridge is free");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("FrontPage: a bridge that fails flashes the radio chip red, then back to yellow with the failure in its popover", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage(snapshot({ devices: [device(1, { name: "gopiv" }), usbBridge(3, "vevav")] }));
+    });
+    vi.useFakeTimers();
+    try {
+      pressRadio(el, 1);
+      expect(chipState(el, 1)).toBe("busy");
+      act(() => {
+        socket!.emitMessage(
+          snapshot({
+            seq: 2,
+            devices: [
+              device(1, {
+                name: "gopiv",
+                links: [
+                  link("usb-1"),
+                  radioLink("gopiv", "usb-vevav", "vevav", {
+                    state: "failed",
+                    since: 5000,
+                    reason: 'relayBridger: candidate "radio-gopiv-via-usb-vevav" produced no banner within the identify budget',
+                  }),
+                ],
+              }),
+              usbBridge(3, "vevav"),
+            ],
+          }),
+        );
+      });
+      expect(chipState(el, 1)).toBe("flash");
+      act(() => {
+        vi.advanceTimersByTime(1300);
+      });
+      expect(chipState(el, 1)).toBe("idle");
+      expect(el.querySelector('[data-testid="device-radio-state-1"]')?.textContent).toBe(
+        "Couldn't connect: no radio reply — is the robot on and in range?",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a USB radio bridge card reads 'Unconnected', with no robot picker; an idle mbrelay pool card shows nothing", () => {
+    const el = mount(withRouter(<DevicesList status="open" devices={[usbBridge(2, "vevav"), pool(3, "torture")]} unassigned={[]} />));
+    expect(el.querySelector('[data-testid="relay-connections-2"]')?.textContent).toBe("Unconnected");
+    expect(el.querySelector('[data-testid="relay-connections-3"]')).toBeNull();
+    expect(el.querySelector("select")).toBeNull();
+  });
+
+  it("an mbrelay pool card lists one line per robot this console has bridged through it", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              name: "gopiv",
+              links: [link("usb-1"), radioLink("gopiv", "mbrelay-torture", "torture", { transport: "mbrelay", state: "connected", session: SESSION })],
+            }),
+            device(4, { name: "tovez", links: [link("usb-4"), radioLink("tovez", "mbrelay-torture", "torture", { transport: "mbrelay", state: "connecting" })] }),
+            device(5, { name: "tigez", links: [link("usb-5"), radioLink("tigez", "mbrelay-torture", "torture", { transport: "mbrelay", state: "failed" })] }),
+            pool(3, "torture"),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
+    const lines = Array.from(el.querySelectorAll('[data-testid="relay-connections-3"] li')).map((li) => li.textContent);
+    expect(lines).toEqual(["Connected to gopiv", "Connecting to tovez…"]);
   });
 });
 

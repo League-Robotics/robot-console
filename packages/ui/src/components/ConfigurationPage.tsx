@@ -52,17 +52,44 @@
  * flow (Save updates the in-memory draft feeding the code panel; Write
  * to robot provisions Wi-Fi) -- only the fields/math/validation
  * themselves are shared, per `04-ui.md` §4.
+ *
+ * ## Ticket 018-013, corrected 2026-09-13: the firmware flash/run pieces
+ * live on the Calibration tab, not here
+ *
+ * Commit `f1b0e8d` put a calibration-firmware panel, `cal*` run buttons,
+ * and a filtered console on the Calibration tab, mis-labelled as ticket
+ * "018-010". A same-day follow-up pass moved that feature here, to the
+ * Configuration tab, reading its own placement text ("put this as a
+ * flash button under the calibration section in the Configuration tab")
+ * literally. The stakeholder's own same-day correction reverses that:
+ * "If we have a Calibrate tab, then we don't need calibration under the
+ * Configuration tab. You can just put it under Calibrate. Also, we still
+ * need flash." So this page no longer renders a "Calibration firmware"
+ * block or calx/cala run buttons, and no longer requests `FUNCS` -- all
+ * of that (see `CalibrationPage.tsx`'s own doc comment) lives on the
+ * Calibration tab now, including the flash button. This page still
+ * takes `link` -- not for flashing/running any more, only to mount the
+ * unfiltered `DeviceConsole` in the right column, unchanged from ticket
+ * 018-013's own addition. Otherwise this page keeps only what
+ * ticket-017-008 already gave it: the Calibration *values* table (shared
+ * per-robot state, editable here too), Wi-Fi, Radio, the footer actions,
+ * and the generated code block.
+ *
+ * ## Ticket 018-018: the right column is viewport-bound too
+ *
+ * The right column now carries `robot-page-column-console`
+ * (`RobotPage.css`), the same sticky/viewport-height class the Main
+ * tab's column already used -- previously it had no height bound, so
+ * the generated-code block plus a growing console log could push the
+ * send line off screen (stakeholder report, 2026-09-14). The code
+ * block above the console also carries `robot-page-column-top`, so it
+ * shrinks and scrolls internally before the console log's own floor
+ * gives; see `RobotPage.css`'s doc comment on both classes.
  */
 import { useEffect, useMemo, useState } from "react";
 import { nameToRadioAddress } from "@robot-console/protocol";
-import type { SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
-import {
-  useConnectionStatus,
-  useSendable,
-  useWifiCredentials,
-  useWifiProvisionResult,
-  useWsActions,
-} from "../ws/WsProvider";
+import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import { useConnectionStatus, useSendable, useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
 import type { RadioAddress } from "../pages/RelayPage";
 import {
   applyCalibrationPatch,
@@ -78,8 +105,8 @@ import { validateRadioOverrideInput } from "../lib/radioAddress";
 import { isLinkUsable } from "../deviceDisplay";
 import { AddressSourceChip } from "./AddressSourceChip";
 import { CalibrationTable } from "./CalibrationTable";
+import { DeviceConsole } from "./DeviceConsole";
 import { WifiCredentialsForm, validateWifiInput } from "./WifiCredentialsForm";
-import "./CalibrationPage.css";
 import "./CalibrationTable.css";
 import "./ConfigurationPage.css";
 
@@ -119,9 +146,15 @@ export function configurationCode(input: ConfigurationCodeInput): string {
 
 export interface ConfigurationPageProps {
   device: SnapshotDevice;
+  /** The specific link this page is showing a session for -- the routed
+   * link `RobotPage.tsx` already resolves for every other tab. Used here
+   * only to mount the unfiltered `DeviceConsole` in the right column
+   * (ticket 018-013); flashing and running calx/cala moved to the
+   * Calibration tab (stakeholder correction, 2026-09-13). */
+  link: SnapshotLink;
 }
 
-export function ConfigurationPage({ device }: ConfigurationPageProps) {
+export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
   const robotName = device.name;
   const { send } = useWsActions();
   // Ticket 011 (carried from 009's send-gating sweep): Save (via
@@ -354,8 +387,8 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
         </div>
       </div>
 
-      <div className="robot-page-column robot-page-column-right">
-        <div className="robot-page-panel calibration-code-panel" aria-label="Configuration code">
+      <div className="robot-page-column robot-page-column-right robot-page-column-console">
+        <div className="robot-page-panel calibration-code-panel robot-page-column-top" aria-label="Configuration code">
           <h3>Code for your program</h3>
           {code === "" ? (
             <p className="calibration-code-empty" data-testid="configuration-code-empty">
@@ -379,6 +412,8 @@ export function ConfigurationPage({ device }: ConfigurationPageProps) {
             </>
           )}
         </div>
+
+        <DeviceConsole link={link} name={robotName} />
       </div>
     </div>
   );

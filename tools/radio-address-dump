@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# radio-address-dump -- protocol v1, one file per repository.
+#
+# Contract: microbit-radio-relay tools/radio-address-dump. The canonical form
+# and its digests are defined by radio-robot-lib docs/design/radio-addressing.md.
+#
+#     tools/radio-address-dump --list
+#         one implementation id per line
+#     tools/radio-address-dump <id> [1|2]
+#         the canonical form for n = 0..3124 on stdout, 3125 lines, exit 0.
+#         2 (default): <name>,<channel>,<group>,<decode(name)>,<reverse(channel,group)>  (D2)
+#         1:           <name>,<channel>,<group>                                           (D1)
+#         Exit 3 with one stderr line if the implementation cannot run here.
+#
+# This repository's implementations:
+#     ts   packages/protocol/src/radioAddress.ts (nameToRadioAddress,
+#          radioAddressToName via radioAddressCanonicalForm), run from source
+#          with the repo's tsx so a stale dist can't be dumped by mistake.
+
+set -u
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+UNAVAILABLE=3
+
+usage() {
+  sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+}
+
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+  usage
+  exit 2
+fi
+
+case "$1" in
+  --list)
+    echo "ts"
+    exit 0
+    ;;
+  -h|--help)
+    usage
+    exit 2
+    ;;
+  ts)
+    ;;
+  *)
+    echo "unknown implementation '$1'; try --list" >&2
+    exit 2
+    ;;
+esac
+
+version="${2:-2}"
+if [ "$version" != "1" ] && [ "$version" != "2" ]; then
+  echo "version must be 1 or 2" >&2
+  exit 2
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "ts: node is not on PATH" >&2
+  exit "$UNAVAILABLE"
+fi
+TSX="$ROOT/node_modules/.bin/tsx"
+if [ ! -x "$TSX" ]; then
+  echo "ts: $TSX not found; run 'npm ci' in $ROOT" >&2
+  exit "$UNAVAILABLE"
+fi
+
+exec "$TSX" "$ROOT/tools/radio-address-dump.ts" "$version"

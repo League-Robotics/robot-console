@@ -51,6 +51,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void
 }
 
 const SERIAL_A = "9900000031864e451111111111111111000000000000001";
+const SERIAL_B = "9900000031864e452222222222222222000000000000002";
 const VEVOV_ID = 1198504156;
 
 function serialOnlyDevice(serialNumber: string, path: string): DaplinkDevice {
@@ -85,6 +86,28 @@ const NAMED_VEVOV: SwdNameResult = { status: "named", name: "vevov", deviceId: V
 const NEVER_NAMED: SwdNameResult = { status: "unnamed", reason: "no-hid-path", error: "no HID path" };
 
 describe("startUsbWatcher", () => {
+  it("first poll marks a remembered usb link stale when its board is not enumerated (unplugged while no host ran)", async () => {
+    const store = freshStore();
+    store.upsertDevice({ id: VEVOV_ID, name: "vevov", kind: "relay", role: "RADIOBRIDGE", at: 0 });
+    store.upsertLink({ id: `usb-${SERIAL_A}`, transport: "usb", address: { path: "/dev/cu.usbmodemA" }, deviceId: VEVOV_ID, at: 0 });
+    store.setLinkState({ id: `usb-${SERIAL_A}`, state: "connectable", at: 0 });
+    store.upsertLink({ id: `usb-${SERIAL_B}`, transport: "usb", address: { path: "/dev/cu.usbmodemB" }, deviceId: null, at: 0 });
+    store.setLinkState({ id: `usb-${SERIAL_B}`, state: "connectable", at: 0 });
+
+    const listDevices = vi.fn(async () => [serialOnlyDevice(SERIAL_B, "/dev/cu.usbmodemB")]);
+    const deps: UsbWatcherDeps = { listDevices, readSwdName: async () => NEVER_NAMED };
+    const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+    try {
+      await waitFor(() => store.snapshotRows().links.find((link) => link.id === `usb-${SERIAL_A}`)?.state === "stale");
+      const rows = store.snapshotRows();
+      expect(rows.links.find((link) => link.id === `usb-${SERIAL_B}`)?.state).toBe("connectable");
+      expect(boardOwnerIsFree(store, SERIAL_A)).toBe(true);
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
   it("added + SWD naming success yields one devices row and a connectable links row (no connect of its own)", async () => {
     const store = freshStore();
     const listDevices = vi.fn(async () => [serialOnlyDevice(SERIAL_A, "/dev/cu.usbmodemA")]);
@@ -100,6 +123,69 @@ describe("startUsbWatcher", () => {
       expect(rows.links[0]).toMatchObject({ id: `usb-${SERIAL_A}`, device_id: VEVOV_ID, state: "connectable" });
       expect(rows.sessions).toHaveLength(0);
       expect(boardOwnerIsFree(store, SERIAL_A)).toBe(true);
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  // 018-004: `usbWatcher.ts`'s SWD-naming upsert used to hardcode
+  // `kind: "robot"` on every successful read, silently downgrading a
+  // known relay (`vevav`, real bench evidence) the next time it was seen
+  // over USB -- a chip id read cannot itself tell a robot from a relay
+  // apart. These three cases are this ticket's own acceptance criteria.
+  it("018-004: a device row seeded kind: 'relay' survives a fresh SWD read with kind unchanged", async () => {
+    const store = freshStore();
+    store.upsertDevice({ id: VEVOV_ID, name: "vevov", kind: "relay", role: "RADIOBRIDGE", at: 0 });
+
+    const listDevices = vi.fn(async () => [serialOnlyDevice(SERIAL_A, "/dev/cu.usbmodemA")]);
+    const deps: UsbWatcherDeps = { listDevices, readSwdName: async () => NAMED_VEVOV };
+    const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+    try {
+      await waitFor(() => store.snapshotRows().links[0]?.state === "connectable");
+
+      const rows = store.snapshotRows();
+      expect(rows.devices).toHaveLength(1);
+      expect(rows.devices[0]).toMatchObject({ id: VEVOV_ID, name: "vevov", kind: "relay", role: "RADIOBRIDGE" });
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it("018-004: a brand-new device's SWD upsert never asserts kind itself -- only the store's own required-column default applies", async () => {
+    const store = freshStore();
+    const upsertSpy = vi.spyOn(store, "upsertDevice");
+    const listDevices = vi.fn(async () => [serialOnlyDevice(SERIAL_A, "/dev/cu.usbmodemA")]);
+    const deps: UsbWatcherDeps = { listDevices, readSwdName: async () => NAMED_VEVOV };
+    const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+    try {
+      await waitFor(() => store.snapshotRows().links[0]?.state === "connectable");
+
+      expect(upsertSpy).toHaveBeenCalledTimes(1);
+      expect(upsertSpy.mock.calls[0]?.[0]).not.toHaveProperty("kind");
+      // The row still exists (the schema's own NOT NULL default applies),
+      // but that default is the store's, not an assertion this watcher made.
+      const rows = store.snapshotRows();
+      expect(rows.devices[0]).toMatchObject({ id: VEVOV_ID, kind: "robot" });
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it("018-004: a relay's usb link is never scheduled for auto-connect after a fresh SWD read (016-001's relay-idle rule keeps holding)", async () => {
+    const store = freshStore();
+    store.upsertDevice({ id: VEVOV_ID, name: "vevov", kind: "relay", role: "RADIOBRIDGE", at: 0 });
+
+    const listDevices = vi.fn(async () => [serialOnlyDevice(SERIAL_A, "/dev/cu.usbmodemA")]);
+    const deps: UsbWatcherDeps = { listDevices, readSwdName: async () => NAMED_VEVOV };
+    const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+    try {
+      await waitFor(() => store.snapshotRows().links[0]?.state === "connectable");
+
+      const jobs = plan(store.reconcilerRows(), Date.now());
+      expect(jobs).toEqual([]);
     } finally {
       handle.stop();
       store.close();
@@ -354,6 +440,54 @@ describe("startUsbWatcher", () => {
 
       expect(readSwdName).toHaveBeenCalledTimes(1);
       expect(store.snapshotRows().links[0]).toMatchObject({ state: "closed_by_user" });
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  // 018-005: a relay that moves USB ports (bench evidence: `vevav`) must
+  // not leave a `radio` link's failure text naming a path the relay no
+  // longer dials. `usbLinkId` is keyed by serial number (stable across a
+  // replug), so the relay's own `links(usb)` row id never changes -- only
+  // its `address.path` does, via this same `handleUpdated` path.
+  it("018-005: a relay's own usb path change clears stale failure text on radio links riding it", async () => {
+    const store = freshStore();
+    store.upsertDevice({ id: VEVOV_ID, name: "vevov", kind: "robot", at: 0 });
+    const relayLinkId = `usb-${SERIAL_A}`;
+    store.upsertLink({ id: relayLinkId, transport: "usb", address: { path: "/dev/cu.usbmodemA" }, deviceId: VEVOV_ID, at: 0 });
+    store.upsertLink({
+      id: "radio-gopiv-via-usb-relay",
+      transport: "radio",
+      address: { relayLinkId, channel: 47, group: 60 },
+      deviceId: VEVOV_ID,
+      at: 0,
+    });
+    store.setLinkState({ id: "radio-gopiv-via-usb-relay", state: "failed", at: 0, reason: "cannot open /dev/cu.usbmodemA", failCount: 7 });
+
+    let poll = 0;
+    const listDevices = vi.fn(async () => {
+      poll++;
+      return poll === 1
+        ? [fullDevice(SERIAL_A, "/dev/cu.usbmodemA", "IOHIDDevice@A")]
+        : [fullDevice(SERIAL_A, "/dev/cu.usbmodemB", "IOHIDDevice@A")];
+    });
+    const deps: UsbWatcherDeps = { listDevices, readSwdName: async () => NAMED_VEVOV };
+    const handle = startUsbWatcher(store, deps, { pollIntervalMs: 10 });
+    try {
+      await waitFor(() => store.snapshotRows().links.find((l) => l.id === relayLinkId)?.state === "connectable");
+      // Let the path-changing `updated` poll happen.
+      await waitFor(
+        () => JSON.parse(store.snapshotRows().links.find((l) => l.id === relayLinkId)?.address as string).path === "/dev/cu.usbmodemB",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      const radioRow = store.snapshotRows().links.find((l) => l.id === "radio-gopiv-via-usb-relay");
+      expect(radioRow?.state_reason).toBeNull();
+      // Only the text is cleared -- state/fail_count are somebody else's
+      // concern (the aging pass, or a fresh sweep outcome).
+      expect(radioRow?.state).toBe("failed");
+      expect(radioRow?.fail_count).toBe(7);
     } finally {
       handle.stop();
       store.close();

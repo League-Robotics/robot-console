@@ -1,7 +1,15 @@
 import { EventEmitter } from "node:events";
 import { createServer, type Server, type Socket } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { tcpStream, type TcpSocketLike } from "./tcpStream.js";
+
+/** Flush pending microtasks (the fallback `dns.lookup` promise chain
+ * inside `resolveIpv4`) so its own resolution/rejection has settled
+ * before assertions run -- same macrotask-boundary idiom as
+ * `LineLink.test.ts`'s own `flush()`. */
+async function flush(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 // A fully synthetic fake drives the wiring assertions this adapter
 // actually owns (NODELAY-before-any-write, destroy()-not-end() on
@@ -36,7 +44,14 @@ class FakeSocket extends EventEmitter implements TcpSocketLike {
 describe("tcpStream -- open()", () => {
   it("sets NODELAY immediately after connect, before any write, then resolves", async () => {
     const socket = new FakeSocket();
-    const stream = tcpStream("relay.local", 8080, { createSocket: () => socket });
+    // `ip` given -- see the "018-007: dial ip / dns fallback" describe
+    // block below for the resolution-path tests. Every test in this
+    // block passes `ip` so `createSocket` runs synchronously (skipping
+    // the fallback `dns.lookup` `await` entirely, per `??`'s own
+    // short-circuit), preserving these tests' own "emit connect/error
+    // immediately after calling open()" timing, unchanged from before
+    // this ticket.
+    const stream = tcpStream("relay.local", 8080, { createSocket: () => socket, ip: "192.168.1.1" });
     const openPromise = stream.open(new AbortController().signal);
     expect(socket.noDelayCalls).toEqual([]);
     socket.emit("connect");
@@ -47,7 +62,7 @@ describe("tcpStream -- open()", () => {
 
   it("rejects if the socket errors before connecting", async () => {
     const socket = new FakeSocket();
-    const stream = tcpStream("relay.local", 8080, { createSocket: () => socket });
+    const stream = tcpStream("relay.local", 8080, { createSocket: () => socket, ip: "192.168.1.1" });
     const openPromise = stream.open(new AbortController().signal);
     socket.emit("error", new Error("ECONNREFUSED"));
     await expect(openPromise).rejects.toThrow(/ECONNREFUSED/);
@@ -63,7 +78,7 @@ describe("tcpStream -- open()", () => {
 
   it("destroy()s the half-open socket and rejects when the signal aborts mid-connect (connect timeout)", async () => {
     const socket = new FakeSocket();
-    const stream = tcpStream("relay.local", 8080, { createSocket: () => socket });
+    const stream = tcpStream("relay.local", 8080, { createSocket: () => socket, ip: "192.168.1.1" });
     const controller = new AbortController();
     const openPromise = stream.open(controller.signal);
     controller.abort(new Error("LineLink.connect() timed out after 5000ms"));
@@ -75,10 +90,105 @@ describe("tcpStream -- open()", () => {
   });
 });
 
+// ---------------------------------------------------------------------
+// 018-007: dial the stored ip directly; bounded dns.lookup(family: 4)
+// fallback when absent; never a raw hostname straight to net.connect.
+// ---------------------------------------------------------------------
+
+describe("tcpStream -- 018-007 ip / dns.lookup(family: 4) resolution", () => {
+  it("dials the stored ip directly when given -- never calls the injected lookup", async () => {
+    const socket = new FakeSocket();
+    const seenHosts: string[] = [];
+    const lookupSpy = vi.fn();
+    const stream = tcpStream("gopiv.local", 7654, {
+      createSocket: (host) => {
+        seenHosts.push(host);
+        return socket;
+      },
+      ip: "192.168.1.193",
+      lookup: lookupSpy,
+    });
+    const openPromise = stream.open(new AbortController().signal);
+    // No await needed before this assertion -- `this.ip ?? (await ...)`
+    // short-circuits the await entirely when `ip` is given, so
+    // `createSocket` already ran synchronously.
+    expect(seenHosts).toEqual(["192.168.1.193"]);
+    socket.emit("connect");
+    await openPromise;
+    expect(lookupSpy).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a bounded dns.lookup(host, {family: 4}) when no ip is given, then dials the resolved address", async () => {
+    const socket = new FakeSocket();
+    const seenHosts: string[] = [];
+    const stream = tcpStream("gopiv.local", 7654, {
+      createSocket: (host) => {
+        seenHosts.push(host);
+        return socket;
+      },
+      lookup: async (hostname, options) => {
+        expect(hostname).toBe("gopiv.local");
+        expect(options).toEqual({ family: 4 });
+        return { address: "192.168.1.193", family: 4 };
+      },
+    });
+    const openPromise = stream.open(new AbortController().signal);
+    await flush();
+    expect(seenHosts).toEqual(["192.168.1.193"]);
+    socket.emit("connect");
+    await openPromise;
+    expect(socket.noDelayCalls).toEqual([true]);
+  });
+
+  it("rejects, without ever dialing a socket, when the fallback dns.lookup exceeds its own bound", async () => {
+    let createSocketCalls = 0;
+    const stream = tcpStream("gopiv.local", 7654, {
+      createSocket: () => {
+        createSocketCalls++;
+        return new FakeSocket();
+      },
+      lookup: () => new Promise(() => undefined), // never resolves
+      dnsLookupTimeoutMs: 10,
+    });
+    await expect(stream.open(new AbortController().signal)).rejects.toThrow(/did not resolve within 10ms/);
+    expect(createSocketCalls).toBe(0);
+  });
+
+  it("propagates a dns.lookup rejection (e.g. ENOTFOUND) without ever dialing a socket", async () => {
+    let createSocketCalls = 0;
+    const stream = tcpStream("tigez.local", 7654, {
+      createSocket: () => {
+        createSocketCalls++;
+        return new FakeSocket();
+      },
+      lookup: () => Promise.reject(new Error("getaddrinfo ENOTFOUND tigez.local")),
+    });
+    await expect(stream.open(new AbortController().signal)).rejects.toThrow(/ENOTFOUND/);
+    expect(createSocketCalls).toBe(0);
+  });
+
+  it("is bounded by an aborting signal while waiting on the fallback dns.lookup, before any socket is ever created", async () => {
+    let createSocketCalls = 0;
+    const controller = new AbortController();
+    const stream = tcpStream("gopiv.local", 7654, {
+      createSocket: () => {
+        createSocketCalls++;
+        return new FakeSocket();
+      },
+      lookup: () => new Promise(() => undefined),
+      dnsLookupTimeoutMs: 5_000,
+    });
+    const openPromise = stream.open(controller.signal);
+    controller.abort(new Error("LineLink.connect() timed out after 5000ms"));
+    await expect(openPromise).rejects.toThrow(/timed out after 5000ms/);
+    expect(createSocketCalls).toBe(0);
+  });
+});
+
 describe("tcpStream -- listener wiring, write, and close", () => {
   it("wires on('data'/'error'/'close') listeners registered before open() onto the real socket once it exists", async () => {
     const socket = new FakeSocket();
-    const stream = tcpStream("relay.local", 8080, { createSocket: () => socket });
+    const stream = tcpStream("relay.local", 8080, { createSocket: () => socket, ip: "192.168.1.1" });
     const dataChunks: Array<Buffer | string> = [];
     const errors: Error[] = [];
     let closed = false;
@@ -103,7 +213,7 @@ describe("tcpStream -- listener wiring, write, and close", () => {
 
   it("write() delegates to the socket and reports the callback's result", async () => {
     const socket = new FakeSocket();
-    const stream = tcpStream("relay.local", 8080, { createSocket: () => socket });
+    const stream = tcpStream("relay.local", 8080, { createSocket: () => socket, ip: "192.168.1.1" });
     const openPromise = stream.open(new AbortController().signal);
     socket.emit("connect");
     await openPromise;
@@ -127,7 +237,7 @@ describe("tcpStream -- listener wiring, write, and close", () => {
 
   it("close() calls destroy() -- never end() -- and resolves immediately without waiting for the close event", async () => {
     const socket = new FakeSocket();
-    const stream = tcpStream("relay.local", 8080, { createSocket: () => socket });
+    const stream = tcpStream("relay.local", 8080, { createSocket: () => socket, ip: "192.168.1.1" });
     const openPromise = stream.open(new AbortController().signal);
     socket.emit("connect");
     await openPromise;

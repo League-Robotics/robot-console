@@ -265,10 +265,54 @@ export interface SendCommandMessage {
  * recent poll; `reason` is present only when `available` is `false`.
  * `message` is the specific diagnostic `releases.ts`'s `resolveRelease`
  * already computes for the failure, carried alongside `reason` so a
- * client can show *why*, not just which short token failed. */
+ * client can show *why*, not just which short token failed. `checkedAt`
+ * (ticket 018-017) is the store's `firmware.checked_at` for this kind's
+ * most recent poll (`null` if it has never been checked at all) -- the
+ * flash modal and Calibration tab firmware panel both show it next to
+ * the repo/tag so a student or instructor can tell how fresh the
+ * resolved release is.
+ *
+ * Out-of-process, 2026-09-16: a configured firmware may now be a hex
+ * file on the host's own disk instead of a GitHub release (see
+ * `config.ts`'s `LocalHexFirmwareSource`), so `configured: true` has a
+ * second arm discriminated by `kind`. `kind` is **optional and absent**
+ * on the release arm, which is what every pre-existing client literal
+ * and test fixture already constructs; only the local-file arm states it
+ * explicitly. Clients branch with `kind === "local-file"`, never by
+ * probing for a field. The local arm carries no `repoUrl` at all --
+ * there is no repo and no release page to link to -- so a client cannot
+ * accidentally render a filesystem path as a URL. Its `tag` is the
+ * file's build stamp (`localFirmware.ts`'s `formatBuildStamp`, derived
+ * from the hex's mtime): for a locally built image, *which build this
+ * is* is exactly what a tag names. */
 export type FirmwareAvailability =
   | { configured: false }
-  | { configured: true; repoUrl: string; tag: string; available: boolean; reason?: string; message?: string };
+  | {
+      configured: true;
+      kind?: "release";
+      repoUrl: string;
+      tag: string;
+      available: boolean;
+      checkedAt: number | null;
+      reason?: string;
+      message?: string;
+    }
+  | {
+      configured: true;
+      kind: "local-file";
+      /** Absolute path to the hex this firmware kind flashes. */
+      hexPath: string;
+      /** `hexPath`'s basename -- what the UI names, so it never has to
+       * split a path itself. */
+      fileName: string;
+      /** Human-readable build stamp from the file's mtime (e.g.
+       * `"built 2026-09-13 10:52"`), shown where a release's tag is. */
+      tag: string;
+      available: boolean;
+      checkedAt: number | null;
+      reason?: string;
+      message?: string;
+    };
 
 /** One link as rendered on the front page -- inside a {@link
  * SnapshotDevice.links} list when its `deviceId` is known, or inside
@@ -321,6 +365,19 @@ export interface SnapshotLink {
     lastDoneReason: string | null;
     robotStatus: RobotStatus | null;
     functions: RobotFunction[] | null;
+    /** Sprint 018 ticket 010 (SUC-007): wall-clock time this session
+     * last actually answered something (any decoded reply -- see
+     * `connect/harvester.ts`'s `syncSession`), `null` if it never has.
+     * The UI's "Linked" criterion (`deviceDisplay.ts`'s
+     * `isLinkAnswering`) needs this to tell "the transport is open" from
+     * "the robot is actually there and answering" -- `state ===
+     * 'connected'` alone cannot (bench evidence: a bridge that accepts
+     * TCP but never replies to `HELLO` still flips its link to
+     * `connected`). Optional (like {@link SnapshotRelay.bridging}) so a
+     * pre-018-010 snapshot literal — most existing test fixtures — need
+     * not be updated to keep type-checking; a fixture that omits it is
+     * simply never "Linked" under the new criterion. */
+    answeredAt?: number | null;
   };
   /** Present only while a flash is in flight for this link. Flash
    * progress is held in server-side memory, not in the store
@@ -345,6 +402,13 @@ export interface SnapshotDevice {
   name: string;
   kind: "robot" | "relay";
   role: string | null;
+  /** Banner `commonName` (`packages/protocol/src/banner.ts`'s
+   * `ParsedBanner.commonName`, e.g. `"robot"`) -- `null` until this
+   * device has identified at least once since `devices.common_name`
+   * started being written (018-016). `packages/ui/src/deviceDisplay.ts`'s
+   * `roleDisplay` folds this into a robot's one-line identity alongside
+   * `role`/`version`; unused for relays. */
+  commonName: string | null;
   program: string | null;
   version: string | null;
   owned: boolean;

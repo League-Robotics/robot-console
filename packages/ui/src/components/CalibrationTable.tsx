@@ -14,6 +14,26 @@
  * exact prior text/DOM (ids, `data-testid`s, and copy) rather than
  * picking one -- a pure extraction, not a redesign, same discipline as
  * ticket 007's `RelayConnectControls` "card"/"page" variants.
+ *
+ * ## Ticket 018-013: "wheel track" vs "measured track width (robot-reported)"
+ *
+ * The stakeholder's own vocabulary ("wheel diameter, wheel track,
+ * measured track width, effective track width, and rotational slip")
+ * names two distinct track-width facts this table used to collapse
+ * under one ambiguous label: the row that used to read "Measured track
+ * width" is the student's own ruler measurement
+ * (`CalibrationState.measuredTrackWidthCm`, always manually entered) --
+ * renamed here to "Wheel track" to match the stakeholder's own term and
+ * to free up "Measured track width" for the row this ticket adds: the
+ * robot's own `CALA:measured b=...` reading
+ * (`CalibrationState.reportedTrackWidthCm`, sourced from the rotation
+ * calibration, never typed in) -- labelled "Measured track width
+ * (robot-reported)" so the two are never confused again. Rotational slip
+ * additionally shows the robot's own `CALA:derived slip=...` value
+ * (`CalibrationState.robotReportedSlip`) alongside this table's own
+ * computed slip, when the robot has reported one -- see
+ * `RotationCalibrationWizard.tsx`'s `robotReportedSlip` doc comment for
+ * why the two numbers are never merged into one.
  */
 import { parsePositiveNumber, type CalibrationPatch, type CalibrationState, type DerivedCalibration } from "../lib/calibration";
 import "./CalibrationTable.css";
@@ -30,6 +50,7 @@ export interface CalibrationTableProps {
 export function CalibrationTable({ variant, state, derived, onPatch }: CalibrationTableProps) {
   const idPrefix = variant;
   const tableTestId = variant === "calibration" ? "calibration-table" : "configuration-calibration";
+  const reportedTestId = `${variant}-reported-track-width`;
   const effectiveTestId = `${variant}-effective-track`;
   const slipTestId = `${variant}-slip`;
 
@@ -62,7 +83,7 @@ export function CalibrationTable({ variant, state, derived, onPatch }: Calibrati
         </tr>
         <tr>
           <th scope="row">
-            <label htmlFor={`${idPrefix}-track-width`}>Measured track width</label>
+            <label htmlFor={`${idPrefix}-track-width`}>Wheel track</label>
           </th>
           <td>
             <input
@@ -78,6 +99,19 @@ export function CalibrationTable({ variant, state, derived, onPatch }: Calibrati
             cm
             {variant === "calibration" && (
               <span className="calibration-source"> wheel centre to wheel centre, if you measured it</span>
+            )}
+          </td>
+        </tr>
+        <tr>
+          <th scope="row">Measured track width</th>
+          <td data-testid={reportedTestId}>
+            {state.reportedTrackWidthCm !== undefined
+              ? `${state.reportedTrackWidthCm} cm`
+              : variant === "calibration"
+                ? "not measured yet — run the rotation calibration"
+                : "run the rotation calibration"}
+            {variant === "calibration" && state.reportedTrackWidthCm !== undefined && (
+              <span className="calibration-source"> robot-reported, from rotation calibration</span>
             )}
           </td>
         </tr>
@@ -101,6 +135,12 @@ export function CalibrationTable({ variant, state, derived, onPatch }: Calibrati
                   : "1 (no measured track width, so the effective width is used directly)"
                 : "—"
               : (derived.rotationalSlip ?? "—")}
+            {variant === "calibration" && state.robotReportedSlip !== undefined && (
+              <span className="calibration-source" data-testid={`${variant}-robot-reported-slip`}>
+                {" "}
+                (robot reported {state.robotReportedSlip})
+              </span>
+            )}
           </td>
         </tr>
       </tbody>

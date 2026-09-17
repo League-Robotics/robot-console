@@ -94,19 +94,28 @@
  * console makes sense for a link with no session while a child owns the
  * port) -- a one-line note says it returns after Disconnect.
  *
- * **"Connected to `<name>`" requires the child's link to actually be
- * `connected`, not just present** (mirrors sprint 013's own follow-up):
- * the child device is not removed from `devices[]` when its radio link
- * drops (`links.state` moves to `failed`/`unresponsive` instead;
- * `harvester`/watchers age it out separately) -- only a deliberate
- * Disconnect removes the bridge. So the status line reads "Connected to
- * `<name>` …" only when `child.link.state === "connected"`; otherwise
- * this page renders "Connection to `<name>` lost" (plus `child.link
- * .reason` when present, `data-testid="relay-lost"`) in its place -- the
- * connect bar and Disconnect stay available in that state (the
- * connected layout, including `RobotPage` for the child, stays mounted
- * throughout, driven by the child's existence, not its link's state) so
- * the student can retry or clean up.
+ * **"Connected to `<name>`" requires the child's link to actually have
+ * answered, not just be present** (mirrors sprint 013's own follow-up;
+ * tightened by ticket 018-010 from "state === connected" to
+ * `isLinkAnswering` -- see `RelayConnectControls.tsx`'s own doc comment,
+ * "a link that is merely TCP-connected but has never actually answered
+ * anything is never 'Connected to `<name>`'"): the child device is not
+ * removed from `devices[]` when its radio link drops (`links.state`
+ * moves to `failed`/`unresponsive` instead; `harvester`/watchers age it
+ * out separately) -- only a deliberate Disconnect removes the bridge. So
+ * the status line reads "Connected to `<name>` …" only once answering,
+ * "Connecting to `<name>`…" while a session exists but has not yet
+ * answered (or the link is still `connecting`), and "Connection to
+ * `<name>` lost" (plus a plain-word `reason` when present,
+ * `data-testid="relay-lost"`) once neither -- the connect bar stays
+ * mounted throughout (the connected layout, including `RobotPage` for
+ * the child, stays driven by the child's existence, not its link's
+ * state), but **Disconnect** now shows only while a bridge session
+ * genuinely exists (`RelayConnectControls.tsx`'s own `hasBridgeSession`
+ * -- ticket 018-010's fix for the bench defect where Switch/Disconnect
+ * showed "as if bridging" for a link that was never actually bridged);
+ * a `lost` child with no session left offers Connect, not Disconnect,
+ * to retry.
  */
 import type { SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
 import { AddressSourceChip } from "../components/AddressSourceChip";
@@ -114,7 +123,7 @@ import { DeviceConsole } from "../components/DeviceConsole";
 import { RelayConnectControls } from "../components/RelayConnectControls";
 import { RobotPage } from "./RobotPage";
 import { useDevices, useRelays, useSendable, useWsActions } from "../ws/WsProvider";
-import { findRelayChild, isLinkUsable, nameDisplay } from "../deviceDisplay";
+import { currentRelayChild, isLinkUsable, nameDisplay, roleDisplay } from "../deviceDisplay";
 import "./RelayPage.css";
 
 export interface RelayPageProps {
@@ -142,10 +151,14 @@ export function RelayPage({ device }: RelayPageProps) {
   // Still needed here (in addition to `RelayConnectControls`' own
   // identical derivation) to pick this page's own layout -- connected
   // vs. not -- and to gate `AddressSourceChip`/`RobotPage`/the relay's
-  // own `DeviceConsole` accordingly. A plain `findRelayChild` call is
-  // cheap and pure; this is not the kind of duplicated business-rule or
-  // user-facing copy this ticket's extraction targets.
-  const child = relayLinkId ? findRelayChild(devices, relayLinkId) : undefined;
+  // own `DeviceConsole` accordingly. `currentRelayChild` (ticket 018-010,
+  // not the bare `findRelayChild`) so this page's own mount decision
+  // never disagrees with `RelayConnectControls`' status text about
+  // whether an old, long-dropped bridge still counts as "the" child --
+  // see that function's own doc comment. Still a cheap, pure call; not
+  // the kind of duplicated business-rule or user-facing copy this
+  // ticket's extraction targets.
+  const child = relayLinkId ? currentRelayChild(devices, relayLinkId) : undefined;
 
   const robotOptions = devices
     .filter((candidate) => candidate.kind === "robot")
@@ -157,6 +170,14 @@ export function RelayPage({ device }: RelayPageProps) {
   return (
     <section className={`relay-page${child ? " relay-page-connected" : ""}`} aria-label="Relay device">
       <h2>{relayName}</h2>
+      {/* 018-010 item 3: a relay device is a host, not "No role
+          announced" -- `roleDisplay` names what it is by its links'
+          own transport (mbrelay/mbserial host) when no banner role has
+          been announced, or keeps a USB relay's own announced role
+          (RADIOBRIDGE/RADIORELAY) unchanged. */}
+      <p className="relay-page-role" data-testid="relay-page-role">
+        {roleDisplay(device)}
+      </p>
 
       <RelayConnectControls
         variant="page"

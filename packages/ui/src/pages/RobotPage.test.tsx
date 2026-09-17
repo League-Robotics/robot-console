@@ -85,6 +85,7 @@ function robotDevice(overrides: Partial<Omit<SnapshotDevice, "links">> = {}): Sn
     name: "vevav",
     kind: "robot",
     role: "NEZHA2",
+    commonName: null,
     program: null,
     version: null,
     owned: true,
@@ -151,33 +152,43 @@ describe("RobotPage", () => {
     expect(el.textContent).not.toContain("Hold a direction");
   });
 
-  it("OOP 2026-09-10: tabs sit beside the name; a plain robot gets Main, Drive, Functions & charts and Configuration", () => {
+  it("ticket 018-013: tabs sit beside the name; every robot (including a plain, non-calibration one) gets Main, Drive, Calibration, Configuration and Diagnostics", () => {
     const { el } = mountRobotPage();
     const row = el.querySelector(".robot-page-title-row")!;
     expect(row.querySelector("h2")?.textContent).toBe("vevav");
-    expect(Array.from(row.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Functions & charts", "Configuration"]);
+    expect(Array.from(row.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual([
+      "Main",
+      "Drive",
+      "Calibration",
+      "Configuration",
+      "Diagnostics",
+    ]);
     expect(el.querySelector('[data-testid="robot-tab-main"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("OOP 2026-09-10: the Functions & charts tab shows functions and the drive pad on the left and charts plus path trace on the right", () => {
+  it("OOP 2026-09-14: the Drive tab (Functions & charts folded in) has the pad, keyboard/gamepad aids and a viewport-bound console on the left, and functions, charts and path trace on the right", () => {
     const { el } = mountRobotPage();
     act(() => {
-      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-functions"]')!.click();
+      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-drive"]')!.click();
     });
     expect(el.querySelector('[data-testid="robot-tab-panel-main"]')).toBeNull();
     const left = el.querySelector(".robot-page-column-left")!;
     const right = el.querySelector(".robot-page-column-right")!;
-    expect(left.querySelector('[aria-label="Functions"]')).not.toBeNull();
+    expect(left.classList.contains("robot-page-column-console")).toBe(true);
     expect(left.querySelector('[aria-label="Drive controls"]')).not.toBeNull();
-    expect(Array.from(left.querySelectorAll("h3")).map((h) => h.textContent)).toEqual(["Functions", "Drive"]);
+    expect(left.querySelector('[data-testid="drive-tab-keyboard"]')).not.toBeNull();
+    expect(left.querySelector('[aria-label="Console"]')).not.toBeNull();
+    expect(el.querySelectorAll('[aria-label="Console"]')).toHaveLength(1);
+    expect(left.querySelector('[aria-label="Functions"]')).not.toBeNull();
+    expect(right.classList.contains("robot-page-column-console")).toBe(true);
     expect(right.querySelector('[aria-label="Charts"]')).not.toBeNull();
     expect(right.querySelector('[aria-label="Path trace"]')).not.toBeNull();
-    expect(el.querySelector('[data-testid="robot-tab-functions"]')?.getAttribute("aria-selected")).toBe("true");
+    expect(el.querySelector('[data-testid="robot-tab-drive"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("OOP 2026-09-10: a calibration robot gets a Calibration tab with both wizards, the code block, and the current calibration", () => {
+  it("ticket 018-013: the Calibration tab (offered for any robot) shows both wizards, the code block, and the current calibration", () => {
     const { el } = mountRobotPage(robotDevice({ program: "calibration-1", version: "1" }));
-    expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Calibration", "Functions & charts", "Configuration"]);
+    expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Calibration", "Configuration", "Diagnostics"]);
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
     });
@@ -187,6 +198,27 @@ describe("RobotPage", () => {
     expect(el.querySelector(".robot-page-column-left [aria-label=\"Rotation calibration\"]")).not.toBeNull();
     expect(el.querySelector(".robot-page-column-left [aria-label=\"Calibration code\"]")).not.toBeNull();
     expect(el.querySelector(".robot-page-column-right [aria-label=\"Current calibration\"]")).not.toBeNull();
+  });
+
+  it("stakeholder correction 2026-09-13: a plain, non-calibration robot's Calibration tab shows the Calibration firmware block (flash button, program/version text)", () => {
+    const { el } = mountRobotPage(robotDevice({ program: null, version: null }));
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
+    });
+    expect(el.querySelector('[data-testid="robot-tab-panel-calibration"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="calibration-firmware-not-running"]')?.textContent).toBe("Program: unknown");
+    const flashButton = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash calibration firmware");
+    expect(flashButton).not.toBeUndefined();
+  });
+
+  it("stakeholder correction 2026-09-13: the Configuration tab no longer shows the Calibration firmware block", () => {
+    const { el } = mountRobotPage(robotDevice({ program: null, version: null }));
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-configuration"]')!.click();
+    });
+    expect(el.querySelector('[data-testid="robot-tab-panel-configuration"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="calibration-firmware-not-running"]')).toBeNull();
+    expect(Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash calibration firmware")).toBeUndefined();
   });
 
   it("renders exactly one console and a command strip in the right column", () => {
@@ -201,6 +233,17 @@ describe("RobotPage", () => {
     expect(el.querySelectorAll('[aria-label="Console"]').length).toBe(1);
     expect(el.querySelectorAll('[data-testid="console-log"]').length).toBe(1);
   });
+
+  it("ticket 018-018: the Main tab's right column carries the shared viewport-bound class, with CommandStrip directly under the console", () => {
+    const { el } = mountRobotPage();
+    const right = el.querySelector(".robot-page-column-right")!;
+    expect(right.classList.contains("robot-page-column-console")).toBe(true);
+
+    const consoleEl = right.querySelector('[aria-label="Console"]')!;
+    const strip = right.querySelector('[aria-label="Command strip"]')!;
+    expect(consoleEl.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
 
   it("renders STOP/E-STOP inside DriveControls' pad in the left column, not as a page-level sibling (out-of-process, 2026-09-10)", () => {
     const { el } = mountRobotPage();

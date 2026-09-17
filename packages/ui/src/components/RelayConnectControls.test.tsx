@@ -66,6 +66,7 @@ function device(id: number, overrides: Partial<Omit<SnapshotDevice, "links">> & 
     name: `name-${id}`,
     kind: "robot",
     role: null,
+    commonName: null,
     program: null,
     version: null,
     owned: true,
@@ -81,13 +82,33 @@ function relayDevice(overrides: Partial<Omit<SnapshotDevice, "links">> = {}): Sn
   return device(3, { name: "rly01", kind: "relay", links: [link(RELAY_LINK_ID)], ...overrides });
 }
 
+/** A session that has just answered -- ticket 018-010's "Linked"/
+ * "connected" criterion (`isLinkAnswering`). `childLinkFor`'s own
+ * default state is "connected", so it needs a fresh `answeredAt` by
+ * default too, or every existing "bridged and connected" fixture in
+ * this file would silently regress to the "Connecting…" kind. */
+function answeredSession(): NonNullable<SnapshotLink["session"]> {
+  return { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null, answeredAt: Date.now() };
+}
+
 function childLinkFor(overrides: Partial<SnapshotLink> = {}): SnapshotLink {
-  return link("radio-vevav-via-usb-relay-1", {
+  const merged = link("radio-vevav-via-usb-relay-1", {
     transport: "radio",
     state: "connected",
     via: { relayLinkId: RELAY_LINK_ID, relayName: "rly01", channel: 55, group: 114, addressSource: "derived" },
     ...overrides,
   });
+  // `exactOptionalPropertyTypes` forbids a call site writing `session:
+  // undefined` explicitly (there is no way to say "omit this default" in
+  // an object-literal override under that flag), so the "no session"
+  // fixtures in this file simply omit `session` from their overrides --
+  // only default it here, after merging, and only for the "connected"
+  // shape the default represents (every "no session" fixture below
+  // overrides `state` away from "connected").
+  if (merged.state === "connected" && merged.session === undefined) {
+    merged.session = answeredSession();
+  }
+  return merged;
 }
 
 function childDevice(overrides: Partial<Omit<SnapshotDevice, "links">> = {}, linkOverrides: Partial<SnapshotLink> = {}): SnapshotDevice {
@@ -111,12 +132,60 @@ describe("relayStatusText", () => {
     });
   });
 
-  it("renders 'Connection to <name> lost' (with reason) when the child's link is not connected", () => {
+  it("renders 'Connection to <name> lost' (with reason) when the child's link is not connected and has no session", () => {
     const child = { device: childDevice(), link: childLinkFor({ state: "unresponsive", reason: "no reply" }) };
     expect(relayStatusText({ relayInfo: undefined, devices: [], relayLinkId: RELAY_LINK_ID }, child).text).toBe(
       "Connection to vevav lost: no reply",
     );
     expect(relayStatusText({ relayInfo: undefined, devices: [], relayLinkId: RELAY_LINK_ID }, child).kind).toBe("lost");
+  });
+
+  // Ticket 018-010 bench defects (`torture`/`vevav`): a raw
+  // `relayBridger:`-prefixed message naming an internal candidate id (
+  // which can even name a *different* robot than the one the link
+  // legitimately belongs to), and a raw Node `Error: No such file or
+  // directory…`, both used to be interpolated into "Connection to
+  // `<name>` lost" verbatim. Both must now route through
+  // `deviceDisplay.ts`'s `plainFailureReason`, keyed by the child link's
+  // own transport.
+  it("cleans a raw relayBridger/candidate-id reason to plain, transport-aware words -- never showing raw ids", () => {
+    const reason = 'relayBridger: candidate "radio-tigez-via-mbrelay-torture" produced no banner within the identify budget';
+    const child = { device: childDevice({ name: "gopiv" }), link: childLinkFor({ state: "failed", reason }) };
+    const text = relayStatusText({ relayInfo: undefined, devices: [], relayLinkId: RELAY_LINK_ID }, child).text;
+    expect(text).toBe("Connection to gopiv lost: no radio reply — is the robot on and in range?");
+    expect(text).not.toContain("tigez");
+    expect(text).not.toContain("relayBridger");
+    expect(text).not.toContain('"');
+  });
+
+  it("cleans a raw Node system error the same way, instead of showing it verbatim", () => {
+    const child = {
+      device: childDevice(),
+      link: childLinkFor({ state: "failed", reason: "Error: No such file or directory, open '/dev/tty.usbmodem-relay-1'" }),
+    };
+    expect(relayStatusText({ relayInfo: undefined, devices: [], relayLinkId: RELAY_LINK_ID }, child).text).toBe(
+      "Connection to vevav lost: no radio reply — is the robot on and in range?",
+    );
+  });
+
+  // Ticket 018-010: "Connected to <name>" requires the session to have
+  // actually answered (`isLinkAnswering`), not merely `state ===
+  // "connected"` -- a session that exists but has never answered reads
+  // "Connecting to <name>…" instead (still true, not yet proven).
+  it("renders 'Connecting to <name>…' for a child whose session exists but has never answered", () => {
+    const child = { device: childDevice(), link: childLinkFor({ session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null } }) };
+    expect(relayStatusText({ relayInfo: undefined, devices: [], relayLinkId: RELAY_LINK_ID }, child)).toEqual({
+      kind: "connecting",
+      text: "Connecting to vevav…",
+    });
+  });
+
+  it("renders 'Connecting to <name>…' for a child link still in the connecting state", () => {
+    const child = { device: childDevice(), link: childLinkFor({ state: "connecting" }) };
+    expect(relayStatusText({ relayInfo: undefined, devices: [], relayLinkId: RELAY_LINK_ID }, child)).toEqual({
+      kind: "connecting",
+      text: "Connecting to vevav…",
+    });
   });
 
   it("renders the in-flight connecting/failed bridging state when no child is bridged", () => {
@@ -151,75 +220,6 @@ describe("relayStatusText", () => {
     expect(relayStatusText({ relayInfo: sweeping, devices: [swept], relayLinkId: RELAY_LINK_ID, now }, undefined).text).toBe(
       "idle · sweeping vevav",
     );
-  });
-});
-
-describe("RelayConnectControls variant=card", () => {
-  function renderCard(overrides: Partial<Parameters<typeof RelayConnectControls>[0]> = {}) {
-    const onConnect = vi.fn();
-    const onDisconnect = vi.fn();
-    const el = mount(
-      <RelayConnectControls
-        variant="card"
-        relay={relayDevice()}
-        devices={[relayDevice()]}
-        relays={[]}
-        robotOptions={["gopiv", "vevav"]}
-        onConnect={onConnect}
-        onDisconnect={onDisconnect}
-        sendable={true}
-        {...overrides}
-      />,
-    );
-    return { el, onConnect, onDisconnect };
-  }
-
-  it("renders the per-relay-id container and idle status by default", () => {
-    const { el } = renderCard();
-    expect(el.querySelector('[data-testid="relay-quick-connect-3"]')).not.toBeNull();
-    expect(el.querySelector('[data-testid="relay-quick-idle-3"]')?.textContent).toBe("idle");
-  });
-
-  it("shows Connect (not Switch) with no child, and Connect sends the picked name", () => {
-    const { el, onConnect } = renderCard();
-    const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-quick-connect-select-3"]')!;
-    act(() => {
-      select.value = "vevav";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    const button = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Connect")!;
-    act(() => {
-      button.click();
-    });
-    expect(onConnect).toHaveBeenCalledWith(RELAY_LINK_ID, "vevav");
-  });
-
-  it("shows Switch and a Disconnect button once a child is bridged", () => {
-    const { el, onDisconnect } = renderCard({ devices: [relayDevice(), childDevice()] });
-    expect(el.querySelector('[data-testid="relay-quick-connect-3"]')?.textContent).toContain("Switch");
-    const disconnect = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Disconnect")!;
-    act(() => {
-      disconnect.click();
-    });
-    expect(onDisconnect).toHaveBeenCalledWith("radio-vevav-via-usb-relay-1");
-  });
-
-  it("disables Connect until a robot is picked", () => {
-    const { el } = renderCard();
-    const button = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Connect") as HTMLButtonElement;
-    expect(button.disabled).toBe(true);
-  });
-
-  // Ticket 017-010 (team-lead bench evidence, 2026-09-13): "the same
-  // robot appears twice" -- the card variant renders its own inline
-  // `<select>` (not `RobotSelect`), so it needs its own defensive
-  // de-dupe of `robotOptions` for a name currently shared by two device
-  // rows (an unmerged known-robots.json placeholder plus its real row).
-  it("de-duplicates a repeated name in robotOptions", () => {
-    const { el } = renderCard({ robotOptions: ["gopiv", "tovez", "tovez", "vevav"] });
-    const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-quick-connect-select-3"]')!;
-    const values = Array.from(select.options).map((o) => o.value);
-    expect(values).toEqual(["", "gopiv", "tovez", "vevav"]);
   });
 });
 
@@ -262,10 +262,42 @@ describe("RelayConnectControls variant=page", () => {
     expect(connect?.textContent).toBe("Switch");
   });
 
-  it("renders 'relay-lost' when the child's link is not connected, keeping Disconnect available", () => {
-    const { el } = renderPage({ devices: [relayDevice(), childDevice({}, { state: "unresponsive", reason: "no reply" })] });
+  // `connect/harvester.ts` keeps a session row open while a link is
+  // merely `unresponsive` (not yet reaped) -- `RelayPage.tsx`'s own
+  // design intent is that Disconnect stays offered in exactly that
+  // case, "so the student can retry or clean up" (ticket 018-010's
+  // `hasBridgeSession`).
+  it("renders 'relay-lost' when the child's link is unresponsive but its session is kept, keeping Disconnect available", () => {
+    const { el } = renderPage({
+      devices: [
+        relayDevice(),
+        childDevice(
+          {},
+          { state: "unresponsive", reason: "no reply", session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null } },
+        ),
+      ],
+    });
     expect(el.querySelector('[data-testid="relay-lost"]')?.textContent).toBe("Connection to vevav lost: no reply");
     expect(el.querySelector('[data-testid="relay-disconnect"]')).not.toBeNull();
+  });
+
+  // The no-session counterpart: a persisted `failed`/stale child link
+  // that never got a real bridge session must NOT offer Disconnect --
+  // the `torture`/`vevav` bench defect ("shown with Switch/Disconnect as
+  // if bridging").
+  it("renders 'relay-lost' with only Connect (no Switch/Disconnect) when the child link never had a session", () => {
+    // `since` recent (ticket 018-010's own `currentRelayChild` recency
+    // gate -- see that function's own doc comment): a session-less
+    // dropped child only counts as "the" child worth showing lost status
+    // for when it dropped recently; this test is about the
+    // Switch/Disconnect gating, not about staleness, so it pins `since`
+    // to just now.
+    const { el } = renderPage({
+      devices: [relayDevice(), childDevice({}, { state: "unresponsive", reason: "no reply", since: Date.now() - 1000 })],
+    });
+    expect(el.querySelector('[data-testid="relay-lost"]')?.textContent).toBe("Connection to vevav lost: no reply");
+    expect(el.querySelector('[data-testid="relay-disconnect"]')).toBeNull();
+    expect(el.querySelector('[data-testid="relay-connect"]')?.textContent).toBe("Connect");
   });
 
   it("Connect sends exactly the picked name for the relay's own link id", () => {

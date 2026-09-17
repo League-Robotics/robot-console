@@ -28,13 +28,26 @@
  * then upserts the type's `links` row:
  *
  * - `_robotlink.*` → `links(wifi)`, keyed by TXT `name` (falling back to
- *   the instance name), address `{host, port}`. Both protocols collapse
- *   to the same link id, mirroring `mdnsDiscovery.ts`'s own
+ *   the instance name), address `{host, port, ip?}`. Both protocols
+ *   collapse to the same link id, mirroring `mdnsDiscovery.ts`'s own
  *   `wifiRobotKey` rule.
  * - `_mbserial._tcp` → `links(mbserial)`; the instance name **is** the
  *   robot's name directly (`wsMessages.ts:572-575`).
  * - `_mbrelay._tcp` → `links(mbrelay)`, address including `registryPort`
  *   parsed from TXT `registry=<port>`.
+ *
+ * 018-007: `wifi`/`mbserial`/`mbrelay` addresses above all gain an
+ * optional `ip` field — the first IPv4-shaped string in this
+ * observation's own `MdnsService.addresses` (`firstIpv4`, below;
+ * `undefined` when no A/AAAA answer came with this particular
+ * observation). `tcpStream.ts` dials this directly instead of ever
+ * resolving the `.local` `host` itself — root cause: macOS's dual-stack
+ * `net.connect`-by-hostname path can stall ~5s past `LineLink`'s own
+ * connect timeout, or return a dead/unscoped IPv6 link-local address,
+ * before ever trying IPv4 (confirmed against real hardware — see
+ * `sprint.md`). `host`/`port` are kept unconditionally alongside it, for
+ * `tcpStream.ts`'s own bounded fallback lookup when no `ip` is stored
+ * yet.
  * - `_mbflash._tcp` → `services` only, no `links` row (per the issue:
  *   "not browsed" today, added here, but nothing yet connects to it).
  *
@@ -135,6 +148,7 @@
  * module's own suite.
  */
 import { nameToValue } from "@robot-console/protocol";
+import { isLocalMdnsService } from "../localHost.js";
 import { Store, type Transport } from "../store/index.js";
 import type { MdnsBackend, MdnsBrowser, MdnsFindOptions, MdnsService } from "../discovery/mdnsDiscovery.js";
 
@@ -159,6 +173,18 @@ export const DEFAULT_MBRELAY_TTL_MS = 180_000;
  * the module doc comment) — same TTL family, applied to the `services`
  * prune pass only. */
 export const DEFAULT_MBFLASH_TTL_MS = 180_000;
+/** `links(radio)` TTL for {@link Store.ageRadioLinks} (ticket 018-005;
+ * `docs/design/architecture.md` §6.2's aging rule, extended to `radio`).
+ * Run from this same watcher's re-query/aging tick, not
+ * `watchers/relaySweeper.ts`'s own scan tick, even though that module
+ * is what actually creates/updates `links(radio)` rows
+ * (`recordCandidateOutcome`) — deliberately, so radio-link aging keeps
+ * running even when the sweeper itself is disabled
+ * (`--no-sweep`/`ROBOT_CONSOLE_DISABLE_SWEEP=1`, `runtime.ts`'s own
+ * `disableSweep`), exactly the bench harness's own Layer 2/3 host
+ * instances (018-005 Step 0b). Matches the other TTLs above (180s) —
+ * bench-tunable, not final. */
+export const DEFAULT_RADIO_TTL_MS = 180_000;
 
 /** `tasks.name` this watcher heartbeats every browse cycle. */
 const TASK_NAME = "mdnsWatcher";
@@ -175,6 +201,27 @@ const ROBOTLINK_UDP_FIND: MdnsFindOptions = { type: "robotlink", protocol: "udp"
  * though `_robotlink.*` collapses to one `links(wifi)` row. */
 function serviceRowType(find: MdnsFindOptions): string {
   return `${find.type}.${find.protocol}`;
+}
+
+/** `^\d{1,3}(\.\d{1,3}){3}$` — a plain dotted-quad shape check, not a
+ * full validator (no per-octet 0-255 range check): `MdnsService.addresses`
+ * only ever carries what `bonjour-service` itself parsed out of a real
+ * A/AAAA answer, so an IPv4-shaped string here is already a real
+ * address, never attacker- or user-supplied text this needs to defend
+ * against. */
+const IPV4_PATTERN = /^\d{1,3}(\.\d{1,3}){3}$/;
+
+/**
+ * 018-007: the first IPv4-shaped address in `addresses` (mixed IPv4/
+ * IPv6 strings — `MdnsService.addresses`'s own doc comment), or
+ * `undefined` if none is present (e.g. a response this cycle carried
+ * only an AAAA answer, or none at all). This is exactly the address
+ * `tcpStream.ts` dials directly instead of ever resolving `host` (a
+ * `.local` hostname) itself — root-causing the WiFi/mbserial connect
+ * hang this ticket fixes (`sprint.md`'s own root-cause section).
+ */
+function firstIpv4(addresses: readonly string[] | undefined): string | undefined {
+  return addresses?.find((address) => IPV4_PATTERN.test(address));
 }
 
 /**
@@ -221,6 +268,9 @@ export interface MdnsWatcherOptions {
   /** `_mbflash._tcp` `services`-only TTL. Defaults to
    * {@link DEFAULT_MBFLASH_TTL_MS}. */
   mbflashTtlMs?: number;
+  /** `links(radio)` TTL (018-005). Defaults to
+   * {@link DEFAULT_RADIO_TTL_MS}. */
+  radioTtlMs?: number;
 }
 
 export interface MdnsWatcherHandle {
@@ -253,6 +303,7 @@ export function startMdnsWatcher(
   const mbserialTtlMs = opts.mbserialTtlMs ?? DEFAULT_MBSERIAL_TTL_MS;
   const mbrelayTtlMs = opts.mbrelayTtlMs ?? DEFAULT_MBRELAY_TTL_MS;
   const mbflashTtlMs = opts.mbflashTtlMs ?? DEFAULT_MBFLASH_TTL_MS;
+  const radioTtlMs = opts.radioTtlMs ?? DEFAULT_RADIO_TTL_MS;
 
   /** Bench defect 1 (2026-09-12): fqdn -> replay closure that redoes the
    * last-known `services`/`links` touch for that instance. Populated by
@@ -321,7 +372,17 @@ export function startMdnsWatcher(
     deviceId: number | null,
   ): void {
     const previous = storedAddress(linkId);
+    const previousState = store.snapshotRows().links.find((link) => link.id === linkId)?.state;
     store.upsertLink({ id: linkId, transport, address, deviceId, at: now() });
+    // Stakeholder bench (2026-09-13): `torture` was being advertised
+    // and seen every tick, yet sat under "Not seen recently" -- its link
+    // had aged to `stale` once and `upsertLink` never touches `state`,
+    // so nothing ever brought it back. A fresh sighting of a stale link
+    // revives it to `discovered`; the owned-link promotion below (and
+    // the reconciler) take it from there.
+    if (previousState === "stale") {
+      store.setLinkState({ id: linkId, state: "discovered", at: now(), reason: "seen again" });
+    }
     if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(address)) {
       markUnresponsiveIfSessionOpen(linkId, "address changed");
     }
@@ -369,19 +430,37 @@ export function startMdnsWatcher(
     }
   }
 
+  /** 018-007: `{host, port}` plus the resolved IPv4 address (`ip`), when
+   * this observation's own `addresses` carried one — additive, never
+   * replacing `host`/`port` (`tcpStream.ts` still needs `host` for its
+   * own bounded fallback lookup when no `ip` is stored yet). Shared by
+   * `handleWifi`/`handleMbserial`/`handleMbrelay`, the three transports
+   * this ticket's own address-shape change applies to. */
+  function tcpAddress(service: MdnsService): { host: string; port: number; ip?: string } {
+    const ip = firstIpv4(service.addresses);
+    return { host: service.host, port: service.port, ...(ip !== undefined ? { ip } : {}) };
+  }
+
   function handleWifi(service: MdnsService): void {
     const name = service.txt?.name ?? service.name;
     const linkId = `wifi-${name}`;
     const deviceId = uniqueOwnedDeviceIdByName(name);
-    upsertLinkAndDetectChange(linkId, "wifi", { host: service.host, port: service.port }, deviceId);
+    upsertLinkAndDetectChange(linkId, "wifi", tcpAddress(service), deviceId);
     promoteOwnedLinkIfDiscovered(linkId, deviceId);
   }
 
   function handleMbserial(service: MdnsService): void {
+    // 018-010: never observe a service that resolves back to this very
+    // machine (own hostname/loopback/own interface address) — see
+    // `localHost.ts`'s own doc comment. Mirrors `handleMbrelay`'s
+    // identical guard below.
+    if (isLocalMdnsService(service)) {
+      return;
+    }
     const name = service.name;
     const linkId = `mbserial-${name}`;
     const deviceId = uniqueOwnedDeviceIdByName(name);
-    upsertLinkAndDetectChange(linkId, "mbserial", { host: service.host, port: service.port }, deviceId);
+    upsertLinkAndDetectChange(linkId, "mbserial", tcpAddress(service), deviceId);
     promoteOwnedLinkIfDiscovered(linkId, deviceId);
   }
 
@@ -459,6 +538,14 @@ export function startMdnsWatcher(
   }
 
   function handleMbrelay(service: MdnsService): void {
+    // 018-010: never mint (or even observe) a relay device for a
+    // service that resolves back to this very machine -- "you're going
+    // to plug something in, and it's going to show up in the list; you
+    // don't need to identify the host" (the stakeholder's own framing).
+    // See `localHost.ts`'s own doc comment for the two signals checked.
+    if (isLocalMdnsService(service)) {
+      return;
+    }
     const name = service.name;
     // The existing name-match fast path stays first, unchanged
     // (regression guard); the fallback below is additive, not a
@@ -467,7 +554,7 @@ export function startMdnsWatcher(
     upsertLinkAndDetectChange(
       `mbrelay-${name}`,
       "mbrelay",
-      { host: service.host, port: service.port, registryPort: parseRegistryPort(service.txt?.registry) },
+      { ...tcpAddress(service), registryPort: parseRegistryPort(service.txt?.registry) },
       deviceId,
     );
   }
@@ -545,6 +632,11 @@ export function startMdnsWatcher(
     store.ageLinks("wifi", wifiTtlMs, at);
     store.ageLinks("mbserial", mbserialTtlMs, at);
     store.ageLinks("mbrelay", mbrelayTtlMs, at);
+    // 018-005: radio-link aging runs from this tick (not
+    // `relaySweeper.ts`'s own scan tick) so it keeps running even with
+    // the sweeper disabled -- see `DEFAULT_RADIO_TTL_MS`'s own doc
+    // comment above for why.
+    store.ageRadioLinks(radioTtlMs, at);
     store.pruneServices(serviceRowType(RELAY_FIND), mbrelayTtlMs, at);
     store.pruneServices(serviceRowType(SERIAL_FIND), mbserialTtlMs, at);
     store.pruneServices(serviceRowType(FLASH_FIND), mbflashTtlMs, at);

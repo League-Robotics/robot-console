@@ -206,6 +206,32 @@ export function reportedTrackWidthCm(run: RotationCalibrationRun): number | unde
   return undefined;
 }
 
+/** The robot's own `CALA:derived slip=<n> = track <a> / b <b>` line
+ * (ticket 018-013, item 4) -- the firmware's own slip computation,
+ * already on the wire (it is where `deriveRotationCalibrationRun`'s own
+ * `derivedSnippet` fallback reads the number from, when the `apply` line
+ * itself is dropped over WiFi). Never folded into `lib/calibration.ts`'s
+ * own `DerivedCalibration.rotationalSlip`: the firmware divides its own
+ * hard-coded 11.5 cm anchor by the reported width, not this robot's
+ * actual measured track width, so the two numbers answer different
+ * questions and both are shown, side by side, in the "Current
+ * calibration" table (`CalibrationTable.tsx`) -- see this module's own
+ * doc comment's "The image's own `derived slip` is ignored" note in
+ * `lib/calibration.ts`. */
+export function robotReportedSlip(run: RotationCalibrationRun): number | undefined {
+  if (run.kind !== "succeeded" && run.kind !== "running") {
+    return undefined;
+  }
+  const texts = [...run.leadingEvents, ...run.stages.flatMap((stage) => stage.events)];
+  for (const text of texts) {
+    const match = /^derived slip=\s*(-?\d+(?:\.\d+)?)/.exec(text.trim());
+    if (match) {
+      return Number(match[1]);
+    }
+  }
+  return undefined;
+}
+
 export interface RotationCalibrationWizardProps {
   link: SnapshotLink;
   /** OOP 2026-09-10: called whenever the current run's derived state
@@ -226,7 +252,13 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
   const { sendCommand } = useWsActions();
   const log = useLinkLog(linkId);
   const functions = link.session?.functions ?? undefined;
-  const available = functions?.some((fn) => fn.name === "cala") ?? false;
+  // Stakeholder (2026-09-13, and reaffirmed the same day root-causing
+  // "only CalX" on a robot that genuinely has `cala`): `FUNCS` must
+  // never hide or block a calibration run. A Wi-Fi burst can drop a
+  // line from the middle of the reply while the ack still arrives, so
+  // an absent name proves nothing -- the button stays enabled either
+  // way, and a known-missing name only earns a non-blocking hint below.
+  const functionKnownMissing = functions !== undefined && !functions.some((fn) => fn.name === "cala");
 
   // OOP 2026-09-10: the run's window is anchored on the log entry *id*
   // minted at Go, not an array index. `useLinkLog` is a bounded ring
@@ -252,7 +284,7 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
   const run =
     derived?.kind === "running" && latched && latched.startId === runStartId ? latched.run : derived;
 
-  const goDisabled = !linkOpen || !available || disabled || run?.kind === "running";
+  const goDisabled = !linkOpen || disabled || run?.kind === "running";
 
   const onRunRef = useRef(onRun);
   onRunRef.current = onRun;
@@ -275,25 +307,26 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
 
   return (
     <section className="rotation-calibration-wizard" aria-label="Rotation calibration">
-      {functions === undefined && (
+      {!linkOpen && (
         <p className="rotation-calibration-hint" data-testid="rotation-calibration-idle" role="status">
-          Checking whether this robot supports calibration…
+          Not connected — open a link to this robot first.
         </p>
       )}
 
-      {functions !== undefined && !available && (
+      {functionKnownMissing && (
         <p className="rotation-calibration-hint" data-testid="rotation-calibration-unavailable" role="status">
-          This robot doesn't support calibration yet.
+          The robot's function list didn't include cala (lines can drop over Wi-Fi) — you can still try; the robot
+          will say err if it's missing.
         </p>
       )}
 
-      {available && disabled && (
+      {disabled && (
         <p className="rotation-calibration-hint" data-testid="rotation-calibration-blocked" role="status">
           {disabledReason ?? "Not available yet."}
         </p>
       )}
 
-      {available && !disabled && run === undefined && (
+      {!disabled && run === undefined && (
         <ol className="rotation-calibration-setup" data-testid="rotation-calibration-setup">
           <li>Lay two strips of black tape crossing at right angles on the floor.</li>
           <li>Place the robot at the centre of the cross, then press Go.</li>
@@ -307,7 +340,7 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
         disabled={goDisabled}
         onClick={handleGo}
       >
-        Go
+        Calibrate A
       </button>
 
       {(run?.kind === "running" || run?.kind === "succeeded") && (

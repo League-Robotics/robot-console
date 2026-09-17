@@ -48,6 +48,8 @@ import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { resolveStateDir, type StateDirOptions } from "./stateDir.js";
 import { MIGRATION_0001_INITIAL } from "./migrations/0001-initial.js";
+import { MIGRATION_0002_SESSION_ANSWERED_AT } from "./migrations/0002-session-answered-at.js";
+import { MIGRATION_0003_DEVICE_COMMON_NAME } from "./migrations/0003-device-common-name.js";
 
 const DB_FILENAME = "console.sqlite";
 
@@ -62,7 +64,11 @@ export const DEFAULT_BUSY_TIMEOUT_MS = 5000;
  * database from `user_version n` to `user_version n + 1`. Append here,
  * never edit an already-shipped entry — the same discipline as any other
  * migration list. */
-const MIGRATIONS: readonly string[] = [MIGRATION_0001_INITIAL];
+const MIGRATIONS: readonly string[] = [
+  MIGRATION_0001_INITIAL,
+  MIGRATION_0002_SESSION_ANSWERED_AT,
+  MIGRATION_0003_DEVICE_COMMON_NAME,
+];
 
 export interface StoreDbOptions extends StateDirOptions {
   /** Exact file path to use, overriding directory resolution entirely.

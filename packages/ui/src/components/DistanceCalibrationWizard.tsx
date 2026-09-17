@@ -182,7 +182,13 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
   const { sendCommand } = useWsActions();
   const log = useLinkLog(linkId);
   const functions = link.session?.functions ?? undefined;
-  const available = functions?.some((fn) => fn.name === "calx") ?? false;
+  // Stakeholder (2026-09-13, and reaffirmed the same day root-causing
+  // "only CalX" on a robot that genuinely has `cala`): `FUNCS` must
+  // never hide or block a calibration run. A Wi-Fi burst can drop a
+  // line from the middle of the reply while the ack still arrives, so
+  // an absent name proves nothing -- the button stays enabled either
+  // way, and a known-missing name only earns a non-blocking hint below.
+  const functionKnownMissing = functions !== undefined && !functions.some((fn) => fn.name === "calx");
 
   // OOP 2026-09-10: the run's window is anchored on the log entry *id*
   // minted at Go, not an array index. `useLinkLog` is a bounded ring
@@ -208,7 +214,7 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
   const run =
     derived?.kind === "running" && latched && latched.startId === runStartId ? latched.run : derived;
 
-  const goDisabled = !linkOpen || !available || run?.kind === "running";
+  const goDisabled = !linkOpen || run?.kind === "running";
 
   function handleGo(): void {
     if (goDisabled) {
@@ -232,19 +238,20 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
 
   return (
     <section className="distance-calibration-wizard" aria-label="Distance calibration">
-      {functions === undefined && (
+      {!linkOpen && (
         <p className="distance-calibration-hint" data-testid="distance-calibration-idle" role="status">
-          Checking whether this robot supports calibration…
+          Not connected — open a link to this robot first.
         </p>
       )}
 
-      {functions !== undefined && !available && (
+      {functionKnownMissing && (
         <p className="distance-calibration-hint" data-testid="distance-calibration-unavailable" role="status">
-          This robot doesn't support calibration yet.
+          The robot's function list didn't include calx (lines can drop over Wi-Fi) — you can still try; the robot
+          will say err if it's missing.
         </p>
       )}
 
-      {available && run === undefined && (
+      {run === undefined && (
         <ol className="distance-calibration-setup" data-testid="distance-calibration-setup">
           <li>Lay two black lines 90 cm apart on the floor.</li>
           <li>Place the robot just behind the first line, facing forward, then press Go.</li>
@@ -258,7 +265,7 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
         disabled={goDisabled}
         onClick={handleGo}
       >
-        Go
+        Calibrate X
       </button>
 
       {run?.kind === "running" && (

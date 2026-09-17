@@ -89,6 +89,17 @@ export interface MdnsService {
    * default, non-binary decode). Absent or empty if the service
    * advertised no TXT record. */
   txt?: Record<string, string>;
+  /** 018-007: the A/AAAA record data `bonjour-service`'s own `Browser`
+   * already parses out of the *same* mDNS response packet this
+   * observation came from (`Service.addresses`, IPv4 and IPv6 strings
+   * mixed, in no particular order) -- free to carry through, since this
+   * module's browse/re-query already receives it; `mdnsWatcher.ts`
+   * picks the IPv4 one out to store on the link (root cause: macOS's
+   * dual-stack `net.connect`-by-hostname path can stall on an absent
+   * route or return a dead IPv6 link-local address before ever trying
+   * IPv4). Absent if the service's response carried no A/AAAA answer
+   * (a "not necessarily present in every packet" case, not an error). */
+  addresses?: readonly string[];
   /** The instance's fully-qualified mDNS name (e.g.
    * `gopiv robot link._robotlink._tcp.local`) -- the key
    * {@link MdnsBackend.onAnnounce} reports and {@link MdnsBrowser.forget}
@@ -205,6 +216,7 @@ export function createBonjourBackend(): MdnsBackend {
               port: service.port,
               ...(service.txt !== undefined ? { txt: service.txt as Record<string, string> } : {}),
               fqdn: service.fqdn,
+              ...(service.addresses !== undefined && service.addresses.length > 0 ? { addresses: service.addresses } : {}),
             });
           });
         },
@@ -236,6 +248,7 @@ export function createBonjourBackend(): MdnsBackend {
             port: number;
             txt?: Record<string, string>;
             fqdn: string;
+            addresses?: string[];
           }): void => {
             listener({
               name: service.name,
@@ -243,6 +256,7 @@ export function createBonjourBackend(): MdnsBackend {
               port: service.port,
               ...(service.txt !== undefined ? { txt: service.txt } : {}),
               fqdn: service.fqdn,
+              ...(service.addresses !== undefined && service.addresses.length > 0 ? { addresses: service.addresses } : {}),
             });
           };
           browser.on("srv-update", (newService) => translate(newService));

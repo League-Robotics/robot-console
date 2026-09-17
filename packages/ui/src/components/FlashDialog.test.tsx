@@ -23,7 +23,7 @@
  * `FlashControls`' own release/local-hex/progress/navigation behavior
  * is exercised in `FlashControls.test.tsx`, not duplicated here.
  */
-import { act, type ReactElement } from "react";
+import { act, type ReactElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
@@ -75,13 +75,13 @@ function baseLink(overrides: Partial<SnapshotLink> = {}): SnapshotLink {
 
 function mountFlashDialog(
   link: SnapshotLink,
-  props: { forceShow?: boolean; name?: string } = {},
+  props: { forceShow?: boolean; name?: string; triggerIcon?: ReactNode } = {},
 ): { el: HTMLDivElement; socket: () => FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     withRouter(
       <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-        <FlashDialog link={link} name={props.name ?? "zeguz"} forceShow={props.forceShow ?? false} />
+        <FlashDialog link={link} name={props.name ?? "zeguz"} forceShow={props.forceShow ?? false} triggerIcon={props.triggerIcon} />
       </WsProvider>,
       { initialEntries: [`/d/${link.id}`] },
     ),
@@ -159,6 +159,55 @@ describe("FlashDialog trigger gating", () => {
       trigger(el)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(el.textContent).not.toContain("will interrupt");
+  });
+});
+
+// Ticket 018-015: the front-page lightning Flash button passes
+// `triggerIcon` instead of relying on the default text label -- these
+// pin that the icon replaces the text, the accessible name/tooltip
+// switch to "Flash <name>" (an icon has no text of its own to
+// announce), and the dialog still opens normally.
+describe("FlashDialog icon trigger (triggerIcon, ticket 018-015)", () => {
+  function iconTrigger(el: HTMLDivElement): HTMLButtonElement | null {
+    return el.querySelector("button[aria-haspopup='dialog']");
+  }
+
+  it("renders the icon instead of the text label, with an accessible 'Flash <name>' name and matching title", () => {
+    const { el } = mountFlashDialog(baseLink(), { name: "vevov", triggerIcon: <svg data-testid="bolt" /> });
+    const button = iconTrigger(el)!;
+    expect(button.textContent).toBe("");
+    expect(button.querySelector('[data-testid="bolt"]')).not.toBeNull();
+    expect(button.getAttribute("aria-label")).toBe("Flash vevov");
+    expect(button.getAttribute("title")).toBe("Flash vevov");
+  });
+
+  it("still gates on canBeFlashed and useSendable exactly like the text trigger", () => {
+    const { el } = mountFlashDialog(
+      baseLink({ capabilities: { open: false, close: true, flash: false, provisionWifi: true } }),
+      { triggerIcon: <svg /> },
+    );
+    expect(iconTrigger(el)).toBeNull();
+  });
+
+  it("opens the same dialog (relay/robot/local-hex sources) when the icon trigger is clicked", () => {
+    const { el } = mountFlashDialog(baseLink(), { name: "vevov", triggerIcon: <svg /> });
+    act(() => {
+      iconTrigger(el)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(el.textContent).toContain("Flash vevov");
+    expect(el.textContent).toContain("Flash relay firmware");
+    expect(el.textContent).toContain("Flash robot firmware");
+    expect(el.textContent).toContain("Flash a hex file from disk");
+  });
+
+  it("disables the icon trigger once the socket closes, same as the text trigger", () => {
+    const { el, socket } = mountFlashDialog(baseLink(), { triggerIcon: <svg /> });
+    expect(iconTrigger(el)!.disabled).toBe(false);
+    act(() => {
+      socket().close();
+    });
+    expect(iconTrigger(el)!.disabled).toBe(true);
+    expect(iconTrigger(el)!.getAttribute("title")).toBe("Disconnected from the host");
   });
 });
 

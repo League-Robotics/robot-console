@@ -39,20 +39,50 @@ describe("relay command-plane line-builders", () => {
     expect(() => buildSetChannelGroupLine(47, NaN)).toThrow(RelayCommandError);
   });
 
-  it("range-checks channel/group via validateRadioAddress, rejecting an out-of-range pair", () => {
-    expect(() => buildSetChannelGroupLine(48, 60)).toThrow(RelayCommandError); // even channel
-    expect(() => buildSetChannelGroupLine(99, 60)).toThrow(RelayCommandError); // channel out of range
-    expect(() => buildSetChannelGroupLine(47, 10)).toThrow(RelayCommandError); // reserved group
-    expect(() => buildSetChannelGroupLine(47, 127)).toThrow(RelayCommandError); // group out of range
+  // A tune accepts any hardware-valid pair, not only name-derived ones:
+  // during the fleet's move to the 73-channel map, robots are pinned to
+  // their old pairs, and overrides can be anything in range.
+  const acceptedPairs: ReadonlyArray<readonly [number, number, string]> = [
+    [37, 43, "old-map pair (vevov before reflash)"],
+    [55, 108, "old-map pair (tovez before reflash)"],
+    [48, 29, "new-map pair (tovez)"],
+    [20, 82, "new-map pair (vevov)"],
+    [0, 0, "hardware minimum"],
+    [83, 255, "hardware maximum"],
+    [0, 10, "the relay's idle tuning"],
+  ];
+  const rejectedPairs: ReadonlyArray<readonly [number, number, string]> = [
+    [84, 60, "channel above 83"],
+    [-1, 60, "negative channel"],
+    [47, 256, "group above 255"],
+    [47, -1, "negative group"],
+    [47.5, 60, "non-integer channel"],
+    [47, 60.5, "non-integer group"],
+    [NaN, 60, "NaN channel"],
+  ];
+
+  for (const [build, verb] of [
+    [buildSetChannelGroupLine, "!CG"],
+    [buildTransientChannelGroupLine, "!CGT"],
+  ] as const) {
+    for (const [channel, group, why] of acceptedPairs) {
+      it(`${verb} accepts ${channel}/${group}: ${why}`, () => {
+        expect(build(channel, group)).toBe(`${verb} ${channel} ${group}\n`);
+      });
+    }
+    for (const [channel, group, why] of rejectedPairs) {
+      it(`${verb} rejects ${channel}/${group}: ${why}`, () => {
+        expect(() => build(channel, group)).toThrow(RelayCommandError);
+      });
+    }
+  }
+
+  it("names the hardware range in the rejection message", () => {
+    expect(() => buildSetChannelGroupLine(84, 60)).toThrow(/channel must be 0-83 and group 0-255/);
   });
 
   it("builds the exact !CGT <ch> <grp> wire text (rearch-12 transient tune)", () => {
     expect(buildTransientChannelGroupLine(47, 60)).toBe("!CGT 47 60\n");
-  });
-
-  it("range-checks !CGT the same way as !CG", () => {
-    expect(() => buildTransientChannelGroupLine(48, 60)).toThrow(RelayCommandError);
-    expect(() => buildTransientChannelGroupLine(47.5, 60)).toThrow(RelayCommandError);
   });
 
   it("builds the exact '> <text>' wire text for a one-shot radio send", () => {
@@ -294,7 +324,8 @@ describe("relayPreambleSteps", () => {
   });
 
   it("range-checks the !CG step's channel/group, same as buildSetChannelGroupLine", () => {
-    expect(() => relayPreambleSteps(48, 3)).toThrow(RelayCommandError);
+    expect(() => relayPreambleSteps(84, 3)).toThrow(RelayCommandError);
+    expect(() => relayPreambleSteps(37, 256)).toThrow(RelayCommandError);
   });
 });
 

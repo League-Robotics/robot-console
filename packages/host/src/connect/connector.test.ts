@@ -255,6 +255,58 @@ describe("connectAndIdentify -- success path, every transport", () => {
     store.close();
   });
 
+  // 018-007: `TcpAddress.ip` (from `watchers/mdnsWatcher.ts`'s stored
+  // A-record capture) is threaded through to `createTcpStream` as its
+  // third argument for wifi/mbserial, and for the physical hop under a
+  // `mbrelay` relay -- never silently dropped, and `host` is still
+  // passed too (for `tcpStream.ts`'s own bounded fallback lookup when a
+  // link predates this ticket and carries no `ip` yet).
+  it("wifi: passes the link's stored ip through to createTcpStream, alongside host/port", async () => {
+    const store = freshStore();
+    const stream = new BannerByteStream(ROBOT_BANNER);
+    const calls: Array<{ host: string; port: number; ip: string | undefined }> = [];
+    const connector = createConnector(store, {
+      ...baseDeps(stream),
+      createTcpStream: (host: string, port: number, ip?: string) => {
+        calls.push({ host, port, ip });
+        return stream;
+      },
+    });
+    const link: LinkRow = { id: "wifi-gopiv", transport: "wifi", address: { host: "gopiv.local", port: 7654, ip: "192.168.1.193" } };
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await promise;
+
+    expect(calls).toEqual([{ host: "gopiv.local", port: 7654, ip: "192.168.1.193" }]);
+    store.close();
+  });
+
+  it("mbserial: createTcpStream receives host/port with ip undefined for a link stored before this ticket (no ip yet)", async () => {
+    const store = freshStore();
+    const stream = new BannerByteStream(ROBOT_BANNER);
+    const calls: Array<{ host: string; port: number; ip: string | undefined }> = [];
+    const connector = createConnector(store, {
+      ...baseDeps(stream),
+      createTcpStream: (host: string, port: number, ip?: string) => {
+        calls.push({ host, port, ip });
+        return stream;
+      },
+    });
+    const link = mbserialLink(); // address: { host, port } -- no ip
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await promise;
+
+    expect(calls).toEqual([{ host: "10.0.0.6", port: 4001, ip: undefined }]);
+    store.close();
+  });
+
   it("radio: rides a local usb relay, running the RelayCommandPlane preamble before HELLO", async () => {
     const store = freshStore();
     const relayLinkId = "usb-RELAY-SERIAL";
@@ -296,6 +348,80 @@ describe("connectAndIdentify -- success path, every transport", () => {
     expect(session.deviceId).toBe(ROBOT_SERIAL);
     const bytesWritten = stream.writes.map((w) => w.bytes.trim());
     expect(bytesWritten).toEqual(["?", "!ECHO OFF", "!MODE RAW250", "!CG 47 60", "!P 7", "!GO", "HELLO"]);
+    store.close();
+  });
+
+  // 018-007: the relay pool's own stored `ip` (its `mbrelay`-transport
+  // link's address, from `watchers/mdnsWatcher.ts`) is threaded to
+  // createTcpStream for the physical hop too, not only a direct
+  // wifi/mbserial link.
+  it("mbrelay: passes the relay pool's own stored ip through to createTcpStream for the physical hop", async () => {
+    const store = freshStore();
+    const relayLinkId = "mbrelay-POOL";
+    store.upsertLink({ id: relayLinkId, transport: "mbrelay", address: { host: "10.0.0.9", port: 5000, ip: "192.168.1.12" }, at: 1 });
+
+    const stream = new RelayByteStream(ROBOT_BANNER);
+    const calls: Array<{ host: string; port: number; ip: string | undefined }> = [];
+    const connector = createConnector(store, {
+      ...baseDeps(stream, realScheduler),
+      createTcpStream: (host: string, port: number, ip?: string) => {
+        calls.push({ host, port, ip });
+        return stream;
+      },
+    });
+    const link = mbrelayLink(relayLinkId);
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await promise;
+
+    expect(calls).toEqual([{ host: "10.0.0.9", port: 5000, ip: "192.168.1.12" }]);
+    store.close();
+  });
+
+  // 018-005: a radio link's own `address` only ever carries
+  // `{relayLinkId, channel, group}` (never a physical usb path -- see
+  // `radioLink()`'s own fixture above); `buildStreamPlan`'s
+  // `resolveRelayPhysical(store, relay.relayLinkId, ...)` call resolves
+  // the relay's *current* `links` row fresh, every single connect
+  // attempt, rather than any value cached when the radio link's own row
+  // was created. This is the bench-evidenced fix's other half (the
+  // aging half lives in `store/index.test.ts`'s own `ageRadioLinks`
+  // suite): `vevav` moved usb ports (`/dev/cu.usbmodem2121202` ->
+  // `/dev/cu.usbmodem2121402`) and any radio link riding it must dial
+  // the new path, not the one recorded at radio-link-creation time.
+  it("radio: resolves the relay's CURRENT usb path at connect time, not a value cached when the radio link's own row was created", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY-SERIAL";
+    store.upsertLink({ id: relayLinkId, transport: "usb", address: { path: "/dev/cu.usbmodem2121202" }, at: 1 });
+
+    const link = radioLink(relayLinkId);
+    seedLink(store, link); // the radio link's own address never names a usb path at all
+
+    // The relay moves usb ports before this connect attempt --
+    // `watchers/usbWatcher.ts`'s `handleUpdated` patches this SAME
+    // `relayLinkId` row's address in place (its id is stable across a
+    // replug, keyed by usb serial, not path).
+    store.upsertLink({ id: relayLinkId, transport: "usb", address: { path: "/dev/cu.usbmodem2121402" }, at: 2 });
+
+    const stream = new RelayByteStream(ROBOT_BANNER);
+    let openedPath: string | undefined;
+    const connector = createConnector(store, {
+      ...baseDeps(stream, realScheduler),
+      createSerialStream: (path: string) => {
+        openedPath = path;
+        return stream;
+      },
+    });
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await promise;
+
+    expect(openedPath).toBe("/dev/cu.usbmodem2121402");
     store.close();
   });
 
@@ -682,6 +808,129 @@ describe("connectAndIdentify -- failure path", () => {
     await expect(promise).rejects.toThrow(/no banner/i);
     const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
     expect(linkRow?.state).toBe("failed");
+    store.close();
+  });
+
+  // -------------------------------------------------------------------
+  // 018-008: mbserial/WiFi bridge contention -- `ERR busy` (or a bare
+  // close/reset with no banner and no busy text at all) recognized as
+  // "another app is connected to this bridge", never the generic
+  // "produced no banner" this ticket's own bench evidence found
+  // (`mbserial-gopiv` "failed ... produced no banner", fail_count 1, no
+  // retry -- evidenced live while another host process was still
+  // connected).
+  // -------------------------------------------------------------------
+
+  /** A `FakeByteStream` that answers `HELLO` with a raw `ERR busy` line
+   * instead of a banner -- the farm bridge's own reply text (raw
+   * evidence: "a second client to loki gets ERR busy then a reset"). */
+  class BusyByteStream extends FakeByteStream {
+    override write(bytes: string, callback: (err?: Error | null) => void): void {
+      super.write(bytes, callback);
+      if (bytes.startsWith("HELLO")) {
+        this.emitData("ERR busy\n");
+      }
+    }
+  }
+
+  it("mbserial: ERR busy then a reset records contention, never 'no banner' (fixture transcript ending in ERR busy)", async () => {
+    const store = freshStore();
+    const stream = new BusyByteStream();
+    const connector = createConnector(store, baseDeps(stream), { identifyBudgetMs: 50 });
+    const link = mbserialLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await flush();
+    // The bridge resets the connection right after `ERR busy` -- the
+    // live-bench shape this ticket's own bench facts describe.
+    stream.emitClose();
+
+    await expect(promise).rejects.toThrow(/another app is connected to this bridge/);
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("failed");
+    expect(linkRow?.state_reason).toBe("another app is connected to this bridge");
+    store.close();
+  });
+
+  it("wifi: the same ERR busy + reset shape is recognized as contention too (a WiFi robot's own single listener can be held the same way)", async () => {
+    const store = freshStore();
+    const stream = new BusyByteStream();
+    const connector = createConnector(store, baseDeps(stream), { identifyBudgetMs: 50 });
+    const link = wifiLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await flush();
+    stream.emitClose();
+
+    await expect(promise).rejects.toThrow(/another app is connected to this bridge/);
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state_reason).toBe("another app is connected to this bridge");
+    store.close();
+  });
+
+  it("mbserial: a close/reset immediately after connect with no banner and no ERR busy text at all still records contention", async () => {
+    const store = freshStore();
+    const stream = new FakeByteStream(); // never answers HELLO, never prints ERR busy
+    const connector = createConnector(store, baseDeps(stream), { identifyBudgetMs: 50 });
+    const link = mbserialLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await flush();
+    stream.emitClose();
+
+    await expect(promise).rejects.toThrow(/another app is connected to this bridge/);
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state_reason).toBe("another app is connected to this bridge");
+    store.close();
+  });
+
+  it("mbserial: a genuine no-banner timeout with the connection still open (no close, no busy line) stays 'no banner', not contention -- tigez via magni's own live-bench shape", async () => {
+    const store = freshStore();
+    const stream = new FakeByteStream(); // never answers HELLO, never closes
+    const connector = createConnector(store, baseDeps(stream), { identifyBudgetMs: 20 });
+    const link = mbserialLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    // The identify budget's own internal timer fires on its own -- the
+    // stream never closes, mirroring tigez via magni: ~3000ms of silence
+    // with the TCP connection still open the entire time, confirmed live
+    // by this ticket's own dispatch (pid 82496 held no connection to
+    // magni's bridge port at all -- an environment fact, not contention).
+    // `expect(...).rejects` itself awaits `promise`, however long that
+    // takes -- no separate timer wait racing it (which would otherwise
+    // let the rejection settle before anything is listening for it).
+    await expect(promise).rejects.toThrow(/produced no banner/i);
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state_reason).not.toMatch(/another app is connected/);
+    store.close();
+  });
+
+  it("usb identify-time closes stay 'no banner' -- usb is out of scope for contention detection (regression guard)", async () => {
+    const store = freshStore();
+    const stream = new FakeByteStream();
+    const connector = createConnector(store, baseDeps(stream), { identifyBudgetMs: 50 });
+    const link = usbLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await flush();
+    stream.emitClose();
+
+    await expect(promise).rejects.toThrow(/produced no banner/i);
     store.close();
   });
 

@@ -1,8 +1,18 @@
 // @vitest-environment jsdom
+/**
+ * ConfigurationPage.test.tsx — ticket 018-013 added the "Calibration
+ * firmware" flash/verify block, the calx/cala run buttons, and the
+ * unfiltered `DeviceConsole` under "Code for your program"; a same-day
+ * stakeholder correction ("put it under Calibrate") moved the firmware
+ * block and the run buttons to `CalibrationPage.test.tsx`, leaving only
+ * the `DeviceConsole` mount here. This page still takes `link` (see
+ * `mountPage` below) -- now only to mount that console, not to flash or
+ * run calx/cala.
+ */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
+import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { ConfigurationPage, MASKED_PASSWORD, configurationCode } from "./ConfigurationPage";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
@@ -37,12 +47,16 @@ afterEach(() => {
   }
 });
 
-function robot(overrides: Partial<Omit<SnapshotDevice, "links">> = {}): SnapshotDevice {
+function robot(
+  overrides: Partial<Omit<SnapshotDevice, "links">> = {},
+  linkOverrides: Partial<SnapshotLink> = {},
+): SnapshotDevice {
   return {
     id: 1198504156,
     name: "tigez",
     kind: "robot",
     role: "NEZHA2",
+    commonName: null,
     program: null,
     version: null,
     owned: true,
@@ -61,23 +75,28 @@ function robot(overrides: Partial<Omit<SnapshotDevice, "links">> = {}): Snapshot
         nextRetryAt: null,
         capabilities: { open: false, close: true, flash: true, provisionWifi: true },
         session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+        ...linkOverrides,
       },
     ],
     ...overrides,
   };
 }
 
-function mountPage(): { el: HTMLDivElement; socket: FakeSocket } {
+function mountPage(
+  overrides: Partial<Omit<SnapshotDevice, "links">> = {},
+  linkOverrides: Partial<SnapshotLink> = {},
+): { el: HTMLDivElement; socket: FakeSocket; device: SnapshotDevice } {
   let socket: FakeSocket | null = null;
+  const device = robot(overrides, linkOverrides);
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <ConfigurationPage device={robot()} />
+      <ConfigurationPage device={device} link={device.links[0]!} />
     </WsProvider>,
   );
   act(() => {
     socket!.emitOpen();
   });
-  return { el, socket: socket! };
+  return { el, socket: socket!, device };
 }
 
 function type(el: HTMLDivElement, selector: string, value: string): void {
@@ -204,9 +223,10 @@ describe("ConfigurationPage", () => {
   });
 
   it("seeds the radio draft from device.radio and shows its source via the shared AddressSourceChip", () => {
+    const device = robot({ radio: { channel: 55, group: 114, source: "override" } });
     const el = mount(
       <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
-        <ConfigurationPage device={robot({ radio: { channel: 55, group: 114, source: "override" } })} />
+        <ConfigurationPage device={device} link={device.links[0]!} />
       </WsProvider>,
     );
     expect(el.querySelector<HTMLInputElement>('[data-testid="configuration-radio-channel"]')!.value).toBe("55");
@@ -221,5 +241,34 @@ describe("ConfigurationPage", () => {
     type(el, "#configuration-wheel-diameter", "91.5");
     expect(JSON.parse(window.localStorage.getItem("robot-console:calibration:tigez") ?? "{}")).toMatchObject({ wheelDiameterMm: 91.5, wheelDiameterSource: "entered" });
     expect(el.querySelector('[data-testid="configuration-code"]')?.textContent).toContain("diffDrive.setWheelCalibration(91.5 * Math.PI / 360)");
+  });
+
+  describe("ticket 018-013: the full serial log under the code", () => {
+    it("mounts the unfiltered DeviceConsole in the right column, showing every line (not just calibration traffic)", () => {
+      const { el, socket } = mountPage();
+      act(() => {
+        socket.emitMessage({ type: "line", linkId: "usb-ROBOT-A", direction: "rx", line: "status a=1" });
+      });
+      const right = el.querySelector(".robot-page-column-right")!;
+      expect(right.querySelector('[aria-label="Console"]')).not.toBeNull();
+      expect(right.querySelector('[data-testid="console-log"]')?.textContent).toContain("status a=1");
+    });
+
+    it("ticket 018-018: the right column is viewport-bound (shares RobotPage.css's `robot-page-column-console` with the Main tab), and the 'Code for your program' panel above the console carries the shrink/scroll wrapper class, in document order before the console", () => {
+      const { el } = mountPage();
+      const right = el.querySelector(".robot-page-column-right")!;
+      expect(right.classList.contains("robot-page-column-console")).toBe(true);
+
+      const top = el.querySelector('[aria-label="Configuration code"]')!;
+      expect(top.classList.contains("robot-page-column-top")).toBe(true);
+      expect(right.contains(top)).toBe(true);
+
+      const consoleEl = el.querySelector('[aria-label="Console"]')!;
+      expect(right.contains(consoleEl)).toBe(true);
+      // `robot-page-column-top`'s own `max-height` formula (RobotPage.css)
+      // reserves room for `.device-console` below it -- this only holds
+      // if the panel really does precede the console in the column.
+      expect(top.compareDocumentPosition(consoleEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
   });
 });

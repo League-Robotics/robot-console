@@ -30,8 +30,33 @@
  * `on()` is called by `LineLink.connect()` *before* `open()` resolves --
  * see `serialStream.ts`'s own doc comment for why listener registration
  * is kept in plain arrays independent of whether a socket exists yet.
+ *
+ * ## 018-007: dial the resolved IPv4 address, never a raw `.local`
+ * hostname
+ *
+ * Root cause, confirmed against real hardware: `dns.lookup("gopiv.local")`
+ * took ~5,013ms on the bench Mac (past `LineLink`'s own 5,000ms connect
+ * timeout) despite the robot answering `HELLO` in ~30ms once actually
+ * connected by IP; `dns.lookup("loki.local")` (a farm mbserial bridge)
+ * returned the IPv6 link-local address `fe80::...` *first*, and
+ * `net.connect` by that hostname errored after 338ms with an empty
+ * message — macOS's dual-stack resolution path can stall on an absent
+ * route, or hand back a dead/unscoped address, before ever trying IPv4.
+ * `TcpStreamOptions.ip` (from the link's own stored address —
+ * `watchers/mdnsWatcher.ts`'s A-record capture, via `connector.ts`'s
+ * `TcpAddress.ip`) is dialed directly when present; when absent (a link
+ * observed before this ticket, or one whose service has not
+ * re-announced yet), this module resolves one itself via a *bounded*
+ * `dns.lookup(host, {family: 4})` — explicit `family: 4` so the
+ * IPv6-link-local trap above can never recur, and bounded (default
+ * {@link DEFAULT_DNS_LOOKUP_TIMEOUT_MS}, well under `LineLink`'s 5,000ms
+ * connect budget) so a slow resolution cannot eat the whole connect
+ * attempt the way the raw-hostname path did. Either way, `net.connect`
+ * (via `createSocket`) is only ever handed a resolved address — a raw
+ * `.local` hostname never reaches it.
  */
 import { connect as netConnect } from "node:net";
+import { lookup as dnsLookup } from "node:dns/promises";
 import type { ByteStream } from "../LineLink.js";
 
 /** The slice of `net.Socket` this module actually uses -- mirrors
@@ -57,11 +82,39 @@ function defaultCreateSocket(host: string, port: number): TcpSocketLike {
   return netConnect({ host, port }) as unknown as TcpSocketLike;
 }
 
+/** Injectable `dns.lookup(hostname, {family: 4})` shape -- matches
+ * `node:dns/promises`' own `lookup` signature exactly, so the real one
+ * is the default and a test substitutes a fake that resolves/rejects/
+ * hangs on demand without a real DNS query anywhere in this module's
+ * own suite. */
+export type Ipv4Lookup = (hostname: string, options: { family: 4 }) => Promise<{ address: string; family: number }>;
+
+/** Bound for the fallback `dns.lookup(host, {family: 4})`, when no `ip`
+ * is given in {@link TcpStreamOptions}. Short enough that a bad/slow
+ * resolution does not eat `LineLink`'s own 5,000ms default connect
+ * budget -- see the module doc comment's 018-007 section for the live
+ * ~5,013ms hang this bound exists to cut off well before it reaches
+ * that ceiling. */
+export const DEFAULT_DNS_LOOKUP_TIMEOUT_MS = 2_000;
+
 export interface TcpStreamOptions {
   /** Injectable socket factory. Defaults to real `net.connect`; tests
    * substitute a fake implementing {@link TcpSocketLike}, or point it at
    * a real loopback server. */
   createSocket?: (host: string, port: number) => TcpSocketLike;
+  /** Resolved IPv4 address to dial directly, when already known
+   * (018-007 -- typically the link's own stored `ip`, from
+   * `watchers/mdnsWatcher.ts`'s A-record capture). When absent, `open()`
+   * resolves one itself via a bounded `dns.lookup(host, {family: 4})`
+   * before ever creating a socket -- never a raw `.local` hostname
+   * straight to `net.connect`. */
+  ip?: string;
+  /** Bound for the fallback `dns.lookup`, when no `ip` is given. Defaults
+   * to {@link DEFAULT_DNS_LOOKUP_TIMEOUT_MS}. */
+  dnsLookupTimeoutMs?: number;
+  /** Injectable `dns.lookup`, for tests. Defaults to `node:dns/promises`'
+   * own `lookup`. */
+  lookup?: Ipv4Lookup;
 }
 
 function abortReason(signal: AbortSignal): Error {
@@ -69,8 +122,67 @@ function abortReason(signal: AbortSignal): Error {
   return reason instanceof Error ? reason : new Error(String(reason ?? "aborted"));
 }
 
+/**
+ * Resolves `host` to an IPv4 address, bounded by both `timeoutMs` and
+ * `signal` -- whichever comes first. Never lets a slow/hanging
+ * resolution outlive either bound; a lookup that eventually settles
+ * after this function has already rejected is simply ignored (this
+ * module never passes a raw hostname to `net.connect` as a fallback, so
+ * there is nothing left for a late resolution to feed into anyway).
+ */
+function resolveIpv4(host: string, timeoutMs: number, lookup: Ipv4Lookup, signal: AbortSignal): Promise<string> {
+  if (signal.aborted) {
+    return Promise.reject(abortReason(signal));
+  }
+  return new Promise<string>((resolve, reject) => {
+    let settled = false;
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+    };
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      reject(new Error(`tcpStream: dns.lookup("${host}", {family: 4}) did not resolve within ${timeoutMs}ms`));
+    }, timeoutMs);
+    const onAbort = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      reject(abortReason(signal));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    lookup(host, { family: 4 }).then(
+      (result) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(result.address);
+      },
+      (error: unknown) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
 class TcpByteStream implements ByteStream {
   private readonly createSocket: (host: string, port: number) => TcpSocketLike;
+  private readonly ip: string | undefined;
+  private readonly dnsLookupTimeoutMs: number;
+  private readonly lookup: Ipv4Lookup;
   private socket: TcpSocketLike | undefined;
   private readonly dataListeners: Array<(chunk: Buffer | string) => void> = [];
   private readonly errorListeners: Array<(err: Error) => void> = [];
@@ -82,14 +194,26 @@ class TcpByteStream implements ByteStream {
     options: TcpStreamOptions,
   ) {
     this.createSocket = options.createSocket ?? defaultCreateSocket;
+    this.ip = options.ip;
+    this.dnsLookupTimeoutMs = options.dnsLookupTimeoutMs ?? DEFAULT_DNS_LOOKUP_TIMEOUT_MS;
+    this.lookup = options.lookup ?? dnsLookup;
   }
 
-  open(signal: AbortSignal): Promise<void> {
+  async open(signal: AbortSignal): Promise<void> {
     if (signal.aborted) {
-      return Promise.reject(abortReason(signal));
+      throw abortReason(signal);
     }
 
-    const socket = this.createSocket(this.host, this.port);
+    // 018-007: dial the stored IPv4 address when known; otherwise
+    // resolve one ourselves, bounded -- see the module doc comment.
+    // Never falls through to dialing `this.host` (a raw `.local`
+    // hostname) directly.
+    const target = this.ip ?? (await resolveIpv4(this.host, this.dnsLookupTimeoutMs, this.lookup, signal));
+    if (signal.aborted) {
+      throw abortReason(signal);
+    }
+
+    const socket = this.createSocket(target, this.port);
     this.socket = socket;
     for (const listener of this.dataListeners) {
       socket.on("data", listener);

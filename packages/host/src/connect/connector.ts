@@ -192,8 +192,11 @@ export interface ConnectorDeps {
   createSerialStream?: (path: string) => ByteStream;
   /** Injectable TCP adapter factory (wifi/mbserial direct, and the
    * physical transport under a `radio`/`mbrelay` relay hop). Defaults to
-   * the real {@link tcpStream}. */
-  createTcpStream?: (host: string, port: number) => ByteStream;
+   * the real {@link tcpStream}. `ip`, when given, is the resolved IPv4
+   * address `watchers/mdnsWatcher.ts` already stored on the link
+   * (018-007) — dialed directly instead of ever resolving `host` again
+   * here. */
+  createTcpStream?: (host: string, port: number, ip?: string) => ByteStream;
   /** Builds the `LineLink` wrapping a {@link ByteStream}. Defaults to
    * `new LineLink(stream, options)`; overridable so a test can spy on
    * the link the connector drives. */
@@ -265,6 +268,13 @@ export interface UsbAddress {
 export interface TcpAddress {
   readonly host: string;
   readonly port: number;
+  /** Resolved IPv4 address (018-007), when `watchers/mdnsWatcher.ts` has
+   * observed one for this service — see that module's own doc comment.
+   * Absent for a link stored before this ticket landed, or if no A
+   * record was ever seen; `buildStreamPlan` below falls back to
+   * `tcpStream`'s own bounded `dns.lookup` in that case, never a raw
+   * `.local` hostname straight to `net.connect`. */
+  readonly ip?: string;
 }
 export interface RelayAddress {
   readonly relayLinkId: string;
@@ -300,7 +310,7 @@ export function parseLinkAddress(transport: Transport, raw: unknown): ParsedAddr
       if (typeof rec.host !== "string" || typeof rec.port !== "number") {
         throw new Error(`connector: ${transport} address missing string "host"/number "port" (got ${JSON.stringify(rec)})`);
       }
-      return { host: rec.host, port: rec.port };
+      return { host: rec.host, port: rec.port, ...(typeof rec.ip === "string" ? { ip: rec.ip } : {}) };
     }
     case "radio":
     case "mbrelay": {
@@ -416,7 +426,7 @@ export function resolveRelayPhysical(store: Store, relayLinkId: string, expected
   if (typeof rec.host !== "string" || typeof rec.port !== "number") {
     throw new Error(`connector: relay link "${relayLinkId}" (mbrelay) address missing string "host"/number "port"`);
   }
-  return { transport: "mbrelay", address: { host: rec.host, port: rec.port } };
+  return { transport: "mbrelay", address: { host: rec.host, port: rec.port, ...(typeof rec.ip === "string" ? { ip: rec.ip } : {}) } };
 }
 
 // ---------------------------------------------------------------------
@@ -487,7 +497,7 @@ function buildStreamPlan(
   address: ParsedAddress,
   store: Store,
   createSerialStream: (path: string) => ByteStream,
-  createTcpStream: (host: string, port: number) => ByteStream,
+  createTcpStream: (host: string, port: number, ip?: string) => ByteStream,
   getLink: () => LineLink,
   scheduler: Scheduler,
   relayHandshakeTimeoutMs: number | undefined,
@@ -500,7 +510,7 @@ function buildStreamPlan(
     case "wifi":
     case "mbserial": {
       const tcp = address as TcpAddress;
-      return { stream: createTcpStream(tcp.host, tcp.port) };
+      return { stream: createTcpStream(tcp.host, tcp.port, tcp.ip) };
     }
     case "radio":
     case "mbrelay": {
@@ -510,7 +520,7 @@ function buildStreamPlan(
       const stream =
         physical.transport === "usb"
           ? createSerialStream((physical.address as UsbAddress).path)
-          : createTcpStream((physical.address as TcpAddress).host, (physical.address as TcpAddress).port);
+          : createTcpStream((physical.address as TcpAddress).host, (physical.address as TcpAddress).port, (physical.address as TcpAddress).ip);
       const preamble = buildRelayPreamble(relay.channel, relay.group, getLink, scheduler, relayHandshakeTimeoutMs);
       return { stream, preamble };
     }
@@ -592,6 +602,88 @@ export function recordFailure(store: Store, linkId: string, reason: string, at: 
 
 export function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
+}
+
+// ---------------------------------------------------------------------
+// 018-008: mbserial/WiFi bridge contention -- distinct from a genuine
+// no-banner failure. See sprint 018's own bench facts: the farm bridges
+// this ticket hardens (`loki` for `gopiv`, `magni` for `tigez`, `hodr`
+// for `vevov`) are single-client -- a second concurrent client gets
+// `ERR busy` (sometimes only right before the bridge resets the
+// connection, sometimes the reset alone with no reply text at all)
+// instead of a banner, and the host used to misreport either shape as a
+// generic "produced no banner" failure with no way for a student (or
+// the UI) to tell "this bridge is busy, try again" from "this robot is
+// truly unreachable". A WiFi robot's own single TCP listener can be held
+// the same way by another host process (live-bench evidence: the
+// stakeholder's own `scripts/dev.mjs`, pid 82496, holding
+// `192.168.1.184:7654` for the whole of a bench run) -- both transports
+// ride a plain TCP stream to something a second client can find already
+// held, so both are in scope here.
+// ---------------------------------------------------------------------
+
+/** `radio`/`mbrelay` are deliberately excluded -- ticket 009's own
+ * mbrelay-bridging defect ("produced no banner" / "transport closed"
+ * against the `torture` pool) is a different failure shape on a
+ * different pool, not this ticket's concern. `usb` is excluded too: a
+ * serial port closing during identify is never "another app is
+ * connected" -- there is no second client to contend with a local
+ * serial port the way there is with a shared network bridge. */
+const CONTENTION_DETECTABLE_TRANSPORTS: ReadonlySet<Transport> = new Set<Transport>(["wifi", "mbserial"]);
+
+export function isContentionDetectableTransport(transport: Transport): boolean {
+  return CONTENTION_DETECTABLE_TRANSPORTS.has(transport);
+}
+
+/** `ERR busy` exactly, ignoring surrounding whitespace -- kept in sync
+ * deliberately with `scripts/bench/layer1/mbserialProbe.ts`'s own
+ * `BUSY_PATTERN`, this ticket's own live-bench reproduction of the
+ * bridge's actual reply text. */
+export const BRIDGE_BUSY_LINE_PATTERN = /^ERR\s+busy\s*$/i;
+
+/** Reported verbatim in `links.state_reason` -- plain words, used by the
+ * UI as-is (this ticket's own acceptance criteria: "another app is
+ * connected to this bridge", never "no banner"/"transport closed"). */
+export const BRIDGE_CONTENTION_REASON = "another app is connected to this bridge";
+
+/** What `attempt()` observed while waiting for a banner that never
+ * arrived -- either signal alone is enough to call it contention: a
+ * bridge that prints `ERR busy` and keeps the connection open a while
+ * longer is just as much "another app is connected" as one that resets
+ * instantly with no text at all. */
+export interface IdentifyFailureSignals {
+  readonly sawBusyLine: boolean;
+  readonly closedBeforeBanner: boolean;
+}
+
+/**
+ * Classify a `!banner` (no banner arrived within the identify budget)
+ * outcome into the reason text `recordFailure` stores. Pure -- easy to
+ * unit-test against a scripted transcript, per this ticket's own
+ * acceptance criteria ("a fixture transcript ending in `ERR busy`
+ * classifies as contention, not no-banner").
+ *
+ * `closedBeforeBanner` alone (no `ERR busy` text at all) is also treated
+ * as contention for a contention-detectable transport: the distinguishing
+ * signal is *not* a fixed time threshold on "immediately" but the shape
+ * itself -- `LineLink.handleStreamClose` only resolves a pending
+ * `identify()` wait early when the transport actually closes; a genuine
+ * "the device never replied" timeout (this ticket's own live-bench
+ * `tigez` finding: 3000ms of silence with the TCP connection still open
+ * the entire time, no close, no `ERR busy`) leaves the connection open
+ * and lets `identify()`'s own internal timer expire instead. Only a real
+ * close event ever sets `closedBeforeBanner`, so the two cases can never
+ * be confused.
+ */
+export function classifyIdentifyFailureReason(
+  linkId: string,
+  contentionDetectable: boolean,
+  signals: IdentifyFailureSignals,
+): string {
+  if (contentionDetectable && (signals.sawBusyLine || signals.closedBeforeBanner)) {
+    return BRIDGE_CONTENTION_REASON;
+  }
+  return `connector: link "${linkId}" produced no banner within the identify budget`;
 }
 
 // ---------------------------------------------------------------------
@@ -697,7 +789,7 @@ function mergeUsbPlaceholderIfAny(store: Store, usbSerial: string | undefined, d
  */
 export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: ConnectorOptions = {}): Connector {
   const createSerialStream = deps.createSerialStream ?? ((path: string) => serialStream(path));
-  const createTcpStream = deps.createTcpStream ?? ((host: string, port: number) => tcpStream(host, port));
+  const createTcpStream = deps.createTcpStream ?? ((host: string, port: number, ip?: string) => tcpStream(host, port, ip !== undefined ? { ip } : {}));
   const createLineLink = deps.createLineLink ?? ((stream: ByteStream, options: LineLinkOptions) => new LineLink(stream, options));
   const scheduler = deps.scheduler ?? realScheduler;
   const now = deps.now ?? (() => Date.now());
@@ -775,19 +867,51 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
         throw err;
       }
 
+      // 018-008: watch for the two shapes a single-client bridge's
+      // contention takes -- an `ERR busy` line, or the bridge simply
+      // resetting the connection with no reply at all -- for exactly the
+      // two transports that ride a plain TCP stream to something that
+      // may already be held by another client (a farm `mbserial` bridge;
+      // a WiFi robot's own single listener, observed live-bench held by
+      // the stakeholder's own `scripts/dev.mjs`). Never for `radio`/
+      // `mbrelay` (ticket 009's own, different mbrelay-pool defect) or
+      // `usb` (a closed serial port during identify is never contention
+      // -- see `classifyIdentifyFailureReason`'s own doc comment).
+      const contentionDetectable = isContentionDetectableTransport(link.transport);
+      let sawBusyLine = false;
+      let closedBeforeBanner = false;
+      const unsubscribeInbound = contentionDetectable
+        ? lineLink.onInboundLine((raw) => {
+            if (BRIDGE_BUSY_LINE_PATTERN.test(raw.trim())) {
+              sawBusyLine = true;
+            }
+          })
+        : undefined;
+      const unsubscribeClose = contentionDetectable
+        ? lineLink.onClose(() => {
+            closedBeforeBanner = true;
+          })
+        : undefined;
+
       let banner: ParsedBanner | null;
       try {
         banner = await identifyWithAbort(lineLink, signal, identifySchedule, scheduler);
       } catch (error) {
+        unsubscribeInbound?.();
+        unsubscribeClose?.();
         void lineLink.close();
         const err = toError(error);
         recordFailure(store, link.id, err.message, now(), backoffCapMs);
         throw err;
       }
+      unsubscribeInbound?.();
+      unsubscribeClose?.();
 
       if (!banner) {
         void lineLink.close();
-        const err = new Error(`connector: link "${link.id}" produced no banner within the identify budget`);
+        const err = new Error(
+          classifyIdentifyFailureReason(link.id, contentionDetectable, { sawBusyLine, closedBeforeBanner }),
+        );
         recordFailure(store, link.id, err.message, now(), backoffCapMs);
         throw err;
       }
@@ -842,6 +966,7 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
         name,
         kind,
         role: banner.role,
+        commonName: banner.commonName,
         ...(usbSerial !== undefined ? { usbSerial } : {}),
         at: now(),
       });

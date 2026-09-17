@@ -50,11 +50,70 @@
  * hash-derived fallback for a non-grammar mDNS relay name) rather than a
  * mis-radixed serial. Every other row shape still enforces the check
  * exactly as before.
+ *
+ * ## `kind` is never guessed (018-004)
+ *
+ * `upsertDevice`'s `kind` is optional; omitting it means "I don't know
+ * yet" — the write never asserts or overwrites an existing row's `kind`
+ * in that case (a brand-new row still gets the schema's own required-
+ * column default, `"robot"`, since `devices.kind` is `NOT NULL`, but
+ * that default is the *store's*, not the caller's assertion). Only a
+ * caller that has just positively identified the device — a banner
+ * reply (`connect/connector.ts`), mDNS relay discovery
+ * (`watchers/mdnsWatcher.ts`), or a seeded `known-robots.json` entry
+ * (`store/importers/knownRobots.ts`) — passes an explicit `kind`, which
+ * still always overwrites. This closes the bench-evidenced bug where
+ * `watchers/usbWatcher.ts`'s SWD-naming step (a chip id read, which
+ * cannot itself distinguish a robot from a relay) unconditionally wrote
+ * `kind: "robot"` on every successful read, silently downgrading an
+ * already-known relay the moment it was next seen over USB. See
+ * {@link UpsertDeviceInput.kind}'s and {@link Store.upsertDevice}'s own
+ * doc comments for the exact mechanism.
  */
 import type { DatabaseSync } from "node:sqlite";
 import { EventEmitter } from "node:events";
-import { deviceIdToName } from "@robot-console/protocol";
+import { deviceIdToName, nameToValue } from "@robot-console/protocol";
 import { openStoreDb, type StoreDbOptions } from "./db.js";
+import { clearDeadProcessState } from "./repair/clearDeadProcessState.js";
+import { mergeDuplicateDeviceRows } from "./repair/mergeDuplicateDeviceRows.js";
+import { removeLocalHostDeviceRows } from "./repair/removeLocalHostDeviceRows.js";
+import { repairDeviceKindFromRole } from "./repair/repairDeviceKindFromRole.js";
+import { repairRadioLinkDeviceAssociation } from "./repair/repairRadioLinkDeviceAssociation.js";
+
+/**
+ * Parses the robot name a `radio`/`mbrelay` "child" link's own id encodes
+ * -- `connect/relayBridger.ts`'s `defaultFailoverChildLinkId` convention,
+ * `<transport>-<name>-via-<relayLinkId>` (`watchers/relaySweeper.ts`'s
+ * `radioChildLinkId` mints the identical shape). Returns `undefined` for
+ * any link id not shaped this way (a relay's own connectivity link, a
+ * usb/wifi/mbserial link, or anything else) -- including one whose
+ * captured segment merely *looks* name-shaped but is not one of the
+ * well-formed five-letter names {@link nameToValue} accepts (a relay's
+ * own synthetic name, e.g. `mbrelay-torture`, never matches the `-via-`
+ * shape at all, but this still guards against a coincidental false
+ * match).
+ *
+ * Ticket 018-010 (bench defect: `radio-tigez-via-mbrelay-torture` carried
+ * `gopiv`'s own `device_id` in the stakeholder's real store) -- this is
+ * the one parsing rule both {@link Store.upsertLink}'s write-time guard
+ * below and `repair/repairRadioLinkDeviceAssociation.ts`'s one-time
+ * backfill apply; duplicated (not imported) in that repair module purely
+ * to avoid a runtime import cycle between the two files -- see that
+ * module's own doc comment for why, and keep both copies in sync by name
+ * if this one ever changes. */
+function radioChildLinkName(linkId: string): string | undefined {
+  const match = /^(?:radio|mbrelay)-([a-z]+?)-via-.+$/.exec(linkId);
+  if (!match) {
+    return undefined;
+  }
+  const candidate = match[1] as string;
+  try {
+    nameToValue(candidate);
+    return candidate;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Thrown by {@link Store.upsertDevice} when `deviceIdToName(id)` does
  * not equal the supplied `name` — a mis-radixed serial or an invented
@@ -97,8 +156,32 @@ export type LinkState =
 export interface UpsertDeviceInput {
   id: number;
   name: string;
-  kind: DeviceKind;
+  /** Omit to never assert a kind at all -- 018-004: `devices.kind` is
+   * `NOT NULL` (the schema forces *some* value on a brand-new row), but
+   * a caller that does not yet know whether this board is a robot or a
+   * relay (`watchers/usbWatcher.ts`'s SWD-naming step, which reads a
+   * chip id directly over the debug interface -- a signal that exists
+   * identically on both) must never *guess*. Omitting `kind` here means:
+   * on conflict (a row already exists), the existing `kind` is kept
+   * unchanged, whatever it is; on a brand-new row, the schema's own
+   * required-column default (`"robot"`) is used, exactly like every
+   * other unset optional column, but that default is the *store's*, not
+   * an assertion the caller made. Only a caller that has just positively
+   * identified the device (`connect/connector.ts`'s banner-based
+   * identify, `watchers/mdnsWatcher.ts`'s relay discovery,
+   * `store/importers/knownRobots.ts`'s seeded roster) should ever pass
+   * an explicit `kind` — see {@link Store.upsertDevice}'s own doc
+   * comment for the exact conflict-resolution rule this drives. */
+  kind?: DeviceKind;
   role?: string | null;
+  /** Banner `commonName` (`packages/protocol/src/banner.ts`'s
+   * `ParsedBanner.commonName`, e.g. `"robot"`/`"relay"`) -- written
+   * alongside `role` by the same banner-identify call sites
+   * (`connect/connector.ts`, `connect/relayBridger.ts`). Coalesced on
+   * conflict exactly like `role`: an omitted/null value here never
+   * clobbers an already-known common name (see {@link Store.upsertDevice}'s
+   * own SQL). */
+  commonName?: string | null;
   program?: string | null;
   version?: string | null;
   usbSerial?: string | null;
@@ -163,6 +246,12 @@ export interface UpdateSessionInput {
   robotStatus?: string | null;
   /** Serialized to JSON when provided. */
   functions?: unknown;
+  /** Sprint 018 ticket 010 (SUC-007): wall-clock time of the most
+   * recent actual reply on this session's link -- distinct from
+   * `lastDone` (only a *sequenced* command's own completion). See
+   * `connect/harvester.ts`'s `syncSession` and this column's own
+   * migration doc comment (`migrations/0002-session-answered-at.ts`). */
+  answeredAt?: number | null;
 }
 
 export interface SetFirmwareInput {
@@ -268,6 +357,9 @@ export interface ProjectionDeviceRow {
   readonly name: string;
   readonly kind: DeviceKind;
   readonly role: string | null;
+  /** `devices.common_name` -- see {@link UpsertDeviceInput.commonName}'s
+   * own doc comment. */
+  readonly commonName: string | null;
   readonly program: string | null;
   readonly version: string | null;
   readonly radioChannel: number | null;
@@ -275,6 +367,17 @@ export interface ProjectionDeviceRow {
   readonly radioSource: RadioSource;
   readonly owned: boolean;
   readonly lastSeen: number;
+  /** `devices.usb_serial` -- the KL27 interface-chip serial, "display
+   * hint only" per the schema's own column comment, reused (ticket
+   * 018-014) as the other half of {@link findCurrentMbflashService}'s
+   * match rule: a device's `_mbflash._tcp` service is trusted by
+   * instance name alone unless TXT `uid` is present *and* this field is
+   * present, in which case both must agree. Optional on this interface
+   * (not just nullable) purely so the many existing
+   * `projection.test.ts`/`store/index.test.ts` fixture literals that
+   * predate this ticket need not all be updated to keep type-checking —
+   * `Store.projectionRows()` itself always populates it concretely. */
+  readonly usbSerial?: string | null;
 }
 
 /** One `links` row, as {@link Store.projectionRows} needs it — every
@@ -306,6 +409,8 @@ export interface ProjectionSessionRow {
   readonly lastDoneReason: string | null;
   readonly robotStatus: unknown;
   readonly functions: unknown;
+  /** See {@link UpdateSessionInput.answeredAt}'s own doc comment. */
+  readonly answeredAt: number | null;
 }
 
 /** One `relay_leases` row, as {@link Store.projectionRows} needs it —
@@ -325,6 +430,11 @@ export interface ProjectionFirmwareRow {
   readonly available: boolean | null;
   readonly reason: string | null;
   readonly message: string | null;
+  /** Ticket 018-017: `firmware.checked_at`, so the UI can show when a
+   * release was last resolved -- carried through unchanged to {@link
+   * FirmwareAvailability}'s own `checkedAt` field by
+   * `projection.ts`'s `buildFirmwareAvailability`. */
+  readonly checkedAt: number | null;
 }
 
 /** One `tasks` row, as {@link Store.projectionRows} needs it. */
@@ -353,6 +463,63 @@ export interface ProjectionLastCheckedRow {
 export interface RadioSightingRow {
   readonly deviceId: number;
   readonly at: number;
+}
+
+/** One `services` row, as {@link Store.projectionRows} needs it —
+ * `txt` is left as `unknown` (parsed JSON; shape depends entirely on
+ * whatever the advertiser put in its TXT record), matching every other
+ * JSON column's convention in this file's read models
+ * ({@link ProjectionLinkRow.address}, etc). Ticket 018-014: this is what
+ * lets `projection.ts`'s `capabilities.flash` and `server.ts`'s
+ * `runFlashTask` both find a device's current `_mbflash._tcp`
+ * advertisement without either one running raw SQL of its own. */
+export interface ProjectionServiceRow {
+  readonly instance: string;
+  readonly type: string;
+  readonly host: string | null;
+  readonly port: number | null;
+  readonly txt: unknown;
+}
+
+/** `services.type` value for `_mbflash._tcp` rows — must equal
+ * `watchers/mdnsWatcher.ts`'s own `serviceRowType({type: "mbflash",
+ * protocol: "tcp"})` (`"mbflash.tcp"`). Duplicated here as a literal
+ * rather than imported: `mdnsWatcher.ts` already depends on this module
+ * (not the other way around) — same dependency-direction reasoning as
+ * {@link ProjectionRows.wifiCredentials}'s own
+ * `WIFI_CREDENTIALS_SETTING_KEY` doc comment. */
+export const MBFLASH_SERVICE_TYPE = "mbflash.tcp";
+
+/**
+ * The `services` row for `device`'s current `_mbflash._tcp`
+ * advertisement, or `undefined` if none is currently present (aged out
+ * by {@link Store.pruneServices}, or never observed at all) — ticket
+ * 018-014's own matching rule: instance name equal to `device.name`,
+ * and (only when *both* sides have a value to compare) TXT `uid` equal
+ * to `device.usbSerial`. A device with no stored `usbSerial`, or a
+ * service whose TXT carries no `uid` at all, matches on the name alone
+ * — this is deliberately not "both must be present", since plenty of
+ * devices (e.g. a `known-robots.json` import never yet seen over USB on
+ * this host) never get a `usbSerial` at all. Pure and store-free —
+ * unit-testable directly against fixture rows.
+ */
+export function findCurrentMbflashService(
+  services: readonly ProjectionServiceRow[],
+  device: { readonly name: string; readonly usbSerial?: string | null },
+): ProjectionServiceRow | undefined {
+  return services.find((service) => {
+    if (service.type !== MBFLASH_SERVICE_TYPE || service.instance !== device.name) {
+      return false;
+    }
+    const txt = service.txt;
+    const uid = txt !== null && typeof txt === "object" ? (txt as Record<string, unknown>).uid : undefined;
+    if (device.usbSerial != null && typeof uid === "string" && uid !== device.usbSerial) {
+      // Both sides carry a value and they disagree -- not this device's
+      // service, even though the instance name happened to match.
+      return false;
+    }
+    return true;
+  });
 }
 
 /** The read model `projection.ts`'s `buildSnapshot` (sprint 015 ticket
@@ -397,6 +564,13 @@ export interface ProjectionRows {
    * would point a dependency from `store/index.ts` at a `watchers/*`
    * module, which itself depends on `store/index.ts` (a cycle). */
   readonly fastSweepByRelayLinkId: ReadonlyMap<string, boolean>;
+  /** Every raw `services` row (ticket 018-014) — `projection.ts`'s
+   * `capabilities.flash` and `server.ts`'s `runFlashTask` both filter
+   * this down to `_mbflash._tcp` rows via {@link findCurrentMbflashService}
+   * rather than this module exposing a narrower, type-specific list;
+   * mirrors {@link StoreSnapshot.services}'s own "every row, callers
+   * narrow" shape, just camelCased and `txt`-parsed for a typed reader. */
+  readonly services: readonly ProjectionServiceRow[];
 }
 
 function toJson(value: unknown): string | null {
@@ -406,6 +580,36 @@ function toJson(value: unknown): string | null {
 function toInt(value: boolean | undefined): number | null {
   return value === undefined ? null : value ? 1 : 0;
 }
+
+/** Best-effort `address.relayLinkId` read off a raw (still-JSON-string)
+ * `links.address` column value — used only by {@link
+ * Store.ageRadioLinks}/{@link Store.clearRadioLinkStaleText} below, which
+ * read `links` directly rather than through {@link Store.snapshotRows}
+ * (that method's own parsed-JSON contract is for callers outside this
+ * class; these two operate inside a single `withChangeBatch` transaction
+ * over a raw `SELECT`, matching {@link Store.ageLinks}'s own style).
+ * Never throws — a malformed/missing `relayLinkId` just means this row
+ * cannot be resolved to a relay, mirroring `connect/connector.ts`'s own
+ * `parseRelayAddress` "never throws on a bad row" discipline. */
+function parseRelayLinkIdFromAddress(raw: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) {
+      return undefined;
+    }
+    const relayLinkId = (parsed as Record<string, unknown>).relayLinkId;
+    return typeof relayLinkId === "string" ? relayLinkId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** {@link Store.upsertDevice}'s fallback for a brand-new row when the
+ * caller omitted `kind` -- `devices.kind` is `NOT NULL`, so *something*
+ * must be written, but this is the schema's own required-column
+ * default, never a classification the caller asserted (018-004; see
+ * {@link UpsertDeviceInput.kind}'s own doc comment). */
+const DEFAULT_INSERT_KIND: DeviceKind = "robot";
 
 /**
  * The one object every watcher/reconciler/dump-CLI writes and reads the
@@ -453,15 +657,34 @@ export class Store {
       "devices",
       () => String(input.id),
       () => {
+        // 018-004: `devices.kind` is `NOT NULL`, so a brand-new row must
+        // get *some* value even when `input.kind` was omitted --
+        // `DEFAULT_INSERT_KIND`, the schema-forced fallback (never an
+        // assertion the caller made; see {@link UpsertDeviceInput.kind}'s
+        // own doc comment). On conflict (a row already exists), `kind` is
+        // `COALESCE(?, devices.kind)` against the *raw*, possibly-`null`
+        // `input.kind` -- never `excluded.kind` (which would already
+        // have been coerced to `DEFAULT_INSERT_KIND` and so could never
+        // tell "explicitly asked for robot" apart from "didn't say") --
+        // so an omitted `kind` always keeps whatever the row already has
+        // (a relay stays a relay), while every existing caller that
+        // *does* pass an explicit `kind` (`connect/connector.ts`'s
+        // banner-based identify, `watchers/mdnsWatcher.ts`'s relay
+        // discovery, `store/importers/knownRobots.ts`'s seeded roster)
+        // still overwrites it exactly as before -- this is the one and
+        // only behavior change this ticket makes to this method.
+        const insertKind = input.kind ?? DEFAULT_INSERT_KIND;
+        const conflictKind = input.kind ?? null;
         this.db
           .prepare(
             `INSERT INTO devices
-               (id, name, kind, role, program, version, usb_serial, radio_channel, radio_group, radio_source, owned, first_seen, last_seen)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+               (id, name, kind, role, common_name, program, version, usb_serial, radio_channel, radio_group, radio_source, owned, first_seen, last_seen)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                name = excluded.name,
-               kind = excluded.kind,
+               kind = COALESCE(?, devices.kind),
                role = COALESCE(excluded.role, devices.role),
+               common_name = COALESCE(excluded.common_name, devices.common_name),
                program = COALESCE(excluded.program, devices.program),
                version = COALESCE(excluded.version, devices.version),
                usb_serial = COALESCE(excluded.usb_serial, devices.usb_serial),
@@ -473,8 +696,9 @@ export class Store {
           .run(
             input.id,
             input.name,
-            input.kind,
+            insertKind,
             input.role ?? null,
+            input.commonName ?? null,
             input.program ?? null,
             input.version ?? null,
             input.usbSerial ?? null,
@@ -483,9 +707,22 @@ export class Store {
             input.radioSource ?? null,
             input.at,
             input.at,
+            conflictKind,
           );
       },
     );
+  }
+
+  /** The stored `kind` for `id`, or `undefined` if no `devices` row
+   * exists yet -- 018-004: `watchers/usbWatcher.ts`'s SWD-naming step
+   * reads this *before* upserting, so it can skip the name-placeholder
+   * merge for a device already known to be a relay (see that module's
+   * own doc comment) without pulling a full {@link snapshotRows} dump
+   * just to look up one column. A plain read, no transaction, same
+   * "always re-derive" reasoning as {@link reconcilerRows}. */
+  getDeviceKind(id: number): DeviceKind | undefined {
+    const row = this.db.prepare("SELECT kind FROM devices WHERE id = ?").get(id) as { kind: DeviceKind } | undefined;
+    return row?.kind;
   }
 
   /** Sets `devices.owned` — the WiFi gate (architecture.md §4). A no-op
@@ -496,6 +733,31 @@ export class Store {
       () => String(id),
       () => {
         this.db.prepare("UPDATE devices SET owned = ?, last_seen = ? WHERE id = ?").run(owned ? 1 : 0, at, id);
+      },
+    );
+  }
+
+  /** Sets `devices.kind` directly — the write primitive
+   * `repair/repairDeviceKindFromRole.ts` (ticket 018-010) uses to
+   * promote an already-persisted row whose `role` is a relay-only
+   * firmware token (`RADIOBRIDGE`/`RADIORELAY`) but whose `kind` still
+   * says `"robot"`. Deliberately distinct from {@link upsertDevice}'s
+   * own `kind` handling (optional, and only ever asserted by a caller
+   * that has just positively identified the device — see that method's
+   * own doc comment, "kind is never guessed") — a one-time repair over
+   * already-persisted, already-contradictory data is not "guessing", it
+   * is correcting a row against a rule (`role` implies `kind`) the store
+   * itself cannot otherwise enforce at write time (a device's `role` can
+   * be written by the very same call that sets `kind` — `connect/
+   * connector.ts`'s successful-identify path always does both together —
+   * so the inconsistency this fixes is necessarily historical). A no-op
+   * if `id` has no row yet. */
+  setDeviceKind(id: number, kind: DeviceKind): void {
+    this.withChange(
+      "devices",
+      () => String(id),
+      () => {
+        this.db.prepare("UPDATE devices SET kind = ? WHERE id = ?").run(kind, id);
       },
     );
   }
@@ -637,18 +899,22 @@ export class Store {
    * non-unique `name`). `links.device_id REFERENCES devices(id)` with no
    * `ON DELETE CASCADE` (this module's own doc comment, "Foreign keys are
    * enforced"), so every `links`/`sightings` row pointing at `id` is
-   * re-pointed to `NULL` first — a link is a physical-port observation,
-   * not owned by any one device identity, so forgetting the device
-   * leaves the link row itself in place (an unnamed/un-owned link,
-   * exactly like one that has never identified) rather than deleting it
-   * too. A no-op if `id` has no row.
+   * handled first: the device's own `links` rows (and their `sessions`/
+   * `relay_leases`) are deleted with it, and `sightings` are re-pointed
+   * to `NULL`. A no-op if `id` has no row.
    */
   deleteDevice(id: number): void {
+    // Stakeholder (2026-09-13): forgetting zapig left its USB link row
+    // behind, which then surfaced as an "Unidentified board" card and
+    // was retried against a port that no longer exists. Forgetting a
+    // device removes its links (and anything keyed on them) too.
     this.withChange(
       "devices",
       () => String(id),
       () => {
-        this.db.prepare("UPDATE links SET device_id = NULL WHERE device_id = ?").run(id);
+        this.db.prepare("DELETE FROM sessions WHERE link_id IN (SELECT id FROM links WHERE device_id = ?)").run(id);
+        this.db.prepare("DELETE FROM relay_leases WHERE relay_link_id IN (SELECT id FROM links WHERE device_id = ?)").run(id);
+        this.db.prepare("DELETE FROM links WHERE device_id = ?").run(id);
         this.db.prepare("UPDATE sightings SET device_id = NULL WHERE device_id = ?").run(id);
         this.db.prepare("DELETE FROM devices WHERE id = ?").run(id);
       },
@@ -657,13 +923,65 @@ export class Store {
 
   // ---- links -------------------------------------------------------
 
+  /** Deletes `id`'s `links` row outright — unlike {@link deleteDevice}
+   * (which only detaches links from a forgotten device, keeping the
+   * link row itself as a still-observable physical/network endpoint),
+   * this is for a link that should never have existed at all: ticket
+   * 018-010's own local-host mDNS filter
+   * (`repair/removeLocalHostDeviceRows.ts`, `watchers/mdnsWatcher.ts`'s
+   * `isLocalMdnsService` guard) uses this to clean up a `mbrelay`/
+   * `mbserial` link row that turned out to name this very machine, not
+   * a real relay or robot. `sessions`/`relay_leases` both carry a
+   * `REFERENCES links(id)` foreign key (`db.ts`'s schema) with no
+   * `ON DELETE CASCADE`, so any row there for `id` is deleted first — in
+   * ordinary use both are already empty by the time this runs (`ticket
+   * 018-010`'s own `clearDeadProcessState` always runs first at
+   * `openStore`), but this method does not assume that. `sightings.
+   * via_link_id` is a plain `TEXT` column, not a foreign key (`db.ts`'s
+   * schema has no `REFERENCES` on it), so a leftover sighting row naming
+   * a since-deleted link is harmless and left alone, exactly like a
+   * sighting naming a since-forgotten device already is. A no-op if `id`
+   * has no row. */
+  deleteLink(id: string): void {
+    this.withChange(
+      "links",
+      () => id,
+      () => {
+        this.db.prepare("DELETE FROM sessions WHERE link_id = ?").run(id);
+        this.db.prepare("DELETE FROM relay_leases WHERE relay_link_id = ?").run(id);
+        this.db.prepare("DELETE FROM links WHERE id = ?").run(id);
+      },
+    );
+  }
+
   /** Records a watcher's observation of a link. On first sight, creates
    * the row in the `discovered` state (see architecture.md §5 for the
    * state machine `setLinkState` drives from there); on every later
    * call, refreshes `device_id`/`address`/`last_seen` only — state is
-   * exclusively {@link setLinkState}'s concern. */
+   * exclusively {@link setLinkState}'s concern.
+   *
+   * **Ticket 018-010's own write-time guard**: when `input.id` is a
+   * `radio`/`mbrelay` child link (see {@link radioChildLinkName}) and
+   * `input.deviceId` is being written at all (an actual value, not the
+   * "don't touch it" `null`/`undefined` this method already treats as a
+   * no-op via `COALESCE`) and a `kind = 'robot'` device is already known
+   * by the link id's own `<name>` segment, that device — never the
+   * caller's own `input.deviceId` — is what actually gets written; see
+   * {@link resolveRadioLinkDeviceId}'s own doc comment for why an
+   * as-yet-unmatched name is left as the caller supplied it here, rather
+   * than dropped to `null` (that stronger rule is exclusively the
+   * one-time repair's own — see `repair/repairRadioLinkDeviceAssociation
+   * .ts`). This is what keeps a `links.id` and its `device_id` from
+   * ever *newly* disagreeing when the correct device is already on hand
+   * — the bench-evidenced defect this ticket fixes had
+   * `radio-tigez-via-mbrelay-torture` (a link id that names `tigez`, an
+   * already-known robot) carrying `gopiv`'s own `device_id`, from a
+   * relay-bridge identify that wrote the actually-answering device's id
+   * under the *requested* candidate's link id rather than checking the
+   * two agreed. */
   upsertLink(input: UpsertLinkInput): void {
     const addressJson = JSON.stringify(input.address);
+    const deviceId = this.resolveRadioLinkDeviceId(input.id, input.deviceId);
     this.withChange(
       "links",
       () => input.id,
@@ -677,7 +995,62 @@ export class Store {
                address = excluded.address,
                last_seen = excluded.last_seen`,
           )
-          .run(input.id, input.deviceId ?? null, input.transport, addressJson, input.at, input.at);
+          .run(input.id, deviceId ?? null, input.transport, addressJson, input.at, input.at);
+      },
+    );
+  }
+
+  /** {@link upsertLink}'s own write-time guard -- see that method's doc
+   * comment. Returns `input.deviceId` unchanged whenever there is
+   * nothing to correct: `deviceId` is `null`/`undefined` (this call
+   * isn't writing `device_id` at all), `linkId` isn't a `radio`/
+   * `mbrelay` child link id in the first place, or no `kind = 'robot'`
+   * device is named by the link id's own `<name>` segment yet (deferring
+   * to `input.deviceId` in that last case, rather than dropping it to
+   * `null` outright, is deliberate -- see below). Otherwise returns that
+   * named device's own id, regardless of what `deviceId` the caller
+   * supplied.
+   *
+   * **Never `null`s out an unmatched name at write time** -- unlike
+   * `repair/repairRadioLinkDeviceAssociation.ts`'s one-time backfill
+   * (which does, once, for an already-corrupted row -- see that module's
+   * own doc comment), this live guard only *re-points* a write to an
+   * already-known conflicting device; it never *clears* one on the
+   * strength of "no device named `<name>` exists yet" alone. A brand-new
+   * radio/mbrelay sighting legitimately upserts a link before its
+   * matching `devices` row exists in some call orders — dropping
+   * `deviceId` to `null` here on every such ordinary first-sight write
+   * would be actively wrong, not merely overcautious. */
+  private resolveRadioLinkDeviceId(linkId: string, deviceId: number | null | undefined): number | null | undefined {
+    if (deviceId === null || deviceId === undefined) {
+      return deviceId;
+    }
+    const name = radioChildLinkName(linkId);
+    if (name === undefined) {
+      return deviceId;
+    }
+    const named = this.db.prepare(`SELECT id FROM devices WHERE kind = 'robot' AND name = ?`).get(name) as
+      | { id: number }
+      | undefined;
+    return named?.id ?? deviceId;
+  }
+
+  /** Re-points (or clears) a single `links` row's `device_id` directly —
+   * the write primitive `repair/repairRadioLinkDeviceAssociation.ts`
+   * (ticket 018-010) uses to fix an already-persisted radio/mbrelay link
+   * whose `device_id` names a different device than its own `links.id`
+   * does. Deliberately distinct from {@link upsertLink} (whose
+   * `device_id` write is otherwise `COALESCE`-merged, add-only per that
+   * method's own doc comment) since a repair must be able to *clear* a
+   * wrong `device_id` back to `NULL` when no correctly-named device
+   * exists, not merely add one. `state`/`address`/etc. are left
+   * untouched — only `device_id` moves. */
+  setLinkDeviceId(linkId: string, deviceId: number | null): void {
+    this.withChange(
+      "links",
+      () => linkId,
+      () => {
+        this.db.prepare(`UPDATE links SET device_id = ? WHERE id = ?`).run(deviceId, linkId);
       },
     );
   }
@@ -751,6 +1124,140 @@ export class Store {
       const keys: (string | null)[] = [];
       for (const row of stale) {
         stmt.run(now, row.id);
+        keys.push(row.id);
+      }
+      return keys;
+    });
+  }
+
+  /** Radio-transport counterpart to {@link ageLinks} (architecture.md
+   * §6.2's aging rule, extended to `radio` — ticket 018-005, issue
+   * `bench-stale-radio-links-and-duplicate-rows-persist.md`). Marks a
+   * `radio` link `stale` when either:
+   *
+   * - its relay link (named by its own `address.relayLinkId`) no longer
+   *   exists among current `links` rows, or is itself `stale`; or
+   * - it has had no *successful* sighting (`sightings.ok = 1`, matched
+   *   by `via_link_id = <relayLinkId>` and the same `device_id`) within
+   *   `ttlMs` **and** at least `ttlMs` has passed since the link's own
+   *   `state_since` (018-006 grace period — see below).
+   *
+   * Never ages a link in the `connecting` state, and — 018-006,
+   * bench-evidenced race — never ages a link on the "no successful
+   * sighting yet" branch until `ttlMs` has passed since its own
+   * `state_since`: a radio link that `connect/relayBridger.ts` or a
+   * `server.ts` session-open just created, or that is actively
+   * `connecting`, has no `sessions` row yet (that only appears once a
+   * session actually opens) and no successful sighting yet either,
+   * since the sweeper is deliberately off during a harness/bench run —
+   * without this exemption, an aging tick landing in that window marked
+   * the link `stale` mid-connect, before it ever got a chance to
+   * succeed. This grace period applies only to the "no sighting yet"
+   * reason: a link whose relay is provably gone or `stale` still ages
+   * immediately regardless of how new the link itself is (018-005's own
+   * already-covered case) — only "nothing has had a chance to prove
+   * itself yet" waits out a full `ttlMs` from the link's last state
+   * transition first.
+   *
+   * Deliberately not `last_seen`-based like {@link ageLinks}:
+   * `watchers/relaySweeper.ts`'s own `recordCandidateOutcome` bumps a
+   * radio link's `last_seen` via `upsertLink` on *every* sweep attempt,
+   * success or failure — so a name that keeps being probed and keeps
+   * failing every single pass would never age under a plain `last_seen
+   * < now - ttl` rule. This is exactly the bench-evidenced bug this
+   * ticket fixes: `radio-gopiv-via-usb-…`/`radio-vevov-via-usb-…` sat in
+   * `failed`/`discovered` for 849 minutes because nothing else ever
+   * re-touched them, and a `last_seen`-based TTL cannot tell "hasn't
+   * been probed in a while" apart from "keeps being probed and keeps
+   * failing." Never ages a link with an open `sessions` row, mirroring
+   * {@link ageLinks}'s own safety net (a bridged radio session outlives
+   * whatever its own `last_seen`/last-successful-sighting says).
+   * Returns the number of links aged. */
+  ageRadioLinks(ttlMs: number, now: number): number {
+    const cutoff = now - ttlMs;
+    return this.withChangeBatch("links", () => {
+      const allLinks = this.db
+        .prepare(`SELECT id, transport, address, state, state_since, device_id FROM links`)
+        .all() as Array<{
+        id: string;
+        transport: string;
+        address: string;
+        state: string;
+        state_since: number;
+        device_id: number | null;
+      }>;
+      const linkById = new Map(allLinks.map((l) => [l.id, l] as const));
+      const sessionLinkIds = new Set(
+        (this.db.prepare(`SELECT link_id FROM sessions`).all() as Array<{ link_id: string }>).map((r) => r.link_id),
+      );
+      const lastOkStmt = this.db.prepare(
+        `SELECT MAX(at) as maxAt FROM sightings WHERE transport = 'radio' AND via_link_id = ? AND ok = 1 AND device_id IS ?`,
+      );
+      const staleStmt = this.db.prepare(
+        "UPDATE links SET state = 'stale', state_reason = 'ttl-expired', state_since = ? WHERE id = ?",
+      );
+      const keys: (string | null)[] = [];
+      for (const link of allLinks) {
+        if (
+          link.transport !== "radio" ||
+          link.state === "stale" ||
+          link.state === "connecting" ||
+          sessionLinkIds.has(link.id)
+        ) {
+          // 018-006: a link actively `connecting` is exempt outright,
+          // regardless of relay/sighting state -- it has not yet had a
+          // chance to reach a session or a sighting at all.
+          continue;
+        }
+        const relayLinkId = parseRelayLinkIdFromAddress(link.address);
+        const relay = relayLinkId !== undefined ? linkById.get(relayLinkId) : undefined;
+        const relayGoneOrStale = relayLinkId === undefined || relay === undefined || relay.state === "stale";
+        let shouldAge = relayGoneOrStale;
+        if (!shouldAge) {
+          const row = lastOkStmt.get(relayLinkId as string, link.device_id) as { maxAt: number | null } | undefined;
+          const lastOk = row?.maxAt ?? null;
+          if (lastOk === null) {
+            // 018-006 grace period: nothing has had a chance to prove
+            // itself yet -- only age once a full ttlMs has passed since
+            // this link's own last state transition, not the instant it
+            // (or its current state) was created.
+            shouldAge = now - link.state_since >= ttlMs;
+          } else {
+            shouldAge = lastOk < cutoff;
+          }
+        }
+        if (shouldAge) {
+          staleStmt.run(now, link.id);
+          keys.push(link.id);
+        }
+      }
+      return keys;
+    });
+  }
+
+  /** Clears `state_reason` on every `radio`-transport link riding
+   * `relayLinkId` that currently carries failure text — called
+   * (`watchers/usbWatcher.ts`'s `handleUpdated`) the moment a relay's
+   * own physical USB address actually changes (ticket 018-005: a radio
+   * link's stale failure text, e.g. `"cannot open
+   * /dev/cu.usbmodem2121202"`, must not keep naming a USB path the relay
+   * no longer dials once it has moved to a new one). Leaves
+   * `state`/`state_since`/`fail_count` untouched — only the
+   * human-readable reason text is what actually goes stale here; the
+   * link's own state transitions (if any) are still exclusively {@link
+   * setLinkState}'s concern. Returns the number of links cleared. */
+  clearRadioLinkStaleText(relayLinkId: string): number {
+    return this.withChangeBatch("links", () => {
+      const rows = this.db
+        .prepare(`SELECT id, address FROM links WHERE transport = 'radio' AND state_reason IS NOT NULL`)
+        .all() as Array<{ id: string; address: string }>;
+      const stmt = this.db.prepare(`UPDATE links SET state_reason = NULL WHERE id = ?`);
+      const keys: (string | null)[] = [];
+      for (const row of rows) {
+        if (parseRelayLinkIdFromAddress(row.address) !== relayLinkId) {
+          continue;
+        }
+        stmt.run(row.id);
         keys.push(row.id);
       }
       return keys;
@@ -863,7 +1370,7 @@ export class Store {
              ON CONFLICT(link_id) DO UPDATE SET
                opened_at = excluded.opened_at,
                seq = NULL, pending = NULL, last_done = NULL, last_done_reason = NULL,
-               robot_status = NULL, functions = NULL`,
+               robot_status = NULL, functions = NULL, answered_at = NULL`,
           )
           .run(linkId, at);
       },
@@ -885,7 +1392,8 @@ export class Store {
                last_done = COALESCE(?, last_done),
                last_done_reason = COALESCE(?, last_done_reason),
                robot_status = COALESCE(?, robot_status),
-               functions = COALESCE(?, functions)
+               functions = COALESCE(?, functions),
+               answered_at = COALESCE(?, answered_at)
              WHERE link_id = ?`,
           )
           .run(
@@ -895,6 +1403,7 @@ export class Store {
             patch.lastDoneReason ?? null,
             patch.robotStatus ?? null,
             toJson(patch.functions),
+            patch.answeredAt ?? null,
             linkId,
           );
       },
@@ -1116,6 +1625,53 @@ export class Store {
     };
   }
 
+  /** Rows `repair/clearDeadProcessState.ts` (018-010) needs to find every
+   * table entry whose validity depends on being written by the
+   * currently-running process — see that module's own doc comment for
+   * the bench evidence and exact rule. A dedicated grouped read (like
+   * {@link reconcilerRows}'s own shape) rather than reusing
+   * `reconcilerRows()` itself: that method is scoped to what
+   * `connect/reconciler.ts`'s `plan()` needs (a different, unrelated
+   * caller), and does not expose `board_owner` at all. `boardOwners`/
+   * `relayLeases` keep their `owner` column (the repair releases each
+   * row by its own current owner, whatever value that is — every value
+   * either table can hold names an activity only the running process
+   * performs, so there is no "is this one actually dead" check to make
+   * beyond "the process that wrote it cannot possibly be this one,
+   * since it just started"). `liveLinks` is only the two `links.state`
+   * values `connect/reconciler.ts`'s own `deviceHasActiveLink`/
+   * `isAutoConnectEligible` treat as "already has a connection" —
+   * `connecting` (a connect attempt with no session yet) and `connected`
+   * (a transport that reported success) — since a stale row in either
+   * state left by a dead process permanently blocks that function from
+   * ever reconnecting the device (it believes a connection already
+   * exists), not merely a display bug. */
+  deadProcessStateRows(): {
+    readonly boardOwners: readonly { usbSerial: string; owner: string }[];
+    readonly relayLeases: readonly { relayLinkId: string; owner: string }[];
+    readonly openSessions: readonly { linkId: string }[];
+    readonly liveLinks: readonly { id: string }[];
+  } {
+    const boardOwners = this.db.prepare("SELECT usb_serial, owner FROM board_owner").all() as Array<{
+      usb_serial: string;
+      owner: string;
+    }>;
+    const relayLeases = this.db.prepare("SELECT relay_link_id, owner FROM relay_leases").all() as Array<{
+      relay_link_id: string;
+      owner: string;
+    }>;
+    const openSessions = this.db.prepare("SELECT link_id FROM sessions").all() as Array<{ link_id: string }>;
+    const liveLinks = this.db.prepare("SELECT id FROM links WHERE state IN ('connecting', 'connected')").all() as Array<{
+      id: string;
+    }>;
+    return {
+      boardOwners: boardOwners.map((r) => ({ usbSerial: r.usb_serial, owner: r.owner })),
+      relayLeases: relayLeases.map((r) => ({ relayLinkId: r.relay_link_id, owner: r.owner })),
+      openSessions: openSessions.map((r) => ({ linkId: r.link_id })),
+      liveLinks: liveLinks.map((r) => ({ id: r.id })),
+    };
+  }
+
   /** The `settings.key` a stored WiFi network is imported/saved under —
    * see {@link ProjectionRows.wifiCredentials}'s own doc comment for why
    * this is a duplicated literal, not an import. */
@@ -1132,15 +1688,17 @@ export class Store {
   projectionRows(): ProjectionRows {
     const deviceRows = this.db
       .prepare(
-        "SELECT id, name, kind, role, program, version, radio_channel, radio_group, radio_source, owned, last_seen FROM devices",
+        "SELECT id, name, kind, role, common_name, program, version, usb_serial, radio_channel, radio_group, radio_source, owned, last_seen FROM devices",
       )
       .all() as Array<{
       id: number;
       name: string;
       kind: DeviceKind;
       role: string | null;
+      common_name: string | null;
       program: string | null;
       version: string | null;
+      usb_serial: string | null;
       radio_channel: number | null;
       radio_group: number | null;
       radio_source: RadioSource;
@@ -1168,7 +1726,7 @@ export class Store {
     }>;
 
     const sessionRows = this.db
-      .prepare("SELECT link_id, seq, pending, last_done, last_done_reason, robot_status, functions FROM sessions")
+      .prepare("SELECT link_id, seq, pending, last_done, last_done_reason, robot_status, functions, answered_at FROM sessions")
       .all() as Array<{
       link_id: string;
       seq: number | null;
@@ -1177,6 +1735,7 @@ export class Store {
       last_done_reason: string | null;
       robot_status: string | null;
       functions: string | null;
+      answered_at: number | null;
     }>;
 
     const relayLeaseRows = this.db.prepare("SELECT relay_link_id, owner FROM relay_leases").all() as Array<{
@@ -1185,7 +1744,7 @@ export class Store {
     }>;
 
     const firmwareRows = this.db
-      .prepare("SELECT kind, repo, tag, available, reason, message FROM firmware")
+      .prepare("SELECT kind, repo, tag, available, reason, message, checked_at FROM firmware")
       .all() as Array<{
       kind: "relay" | "robot";
       repo: string | null;
@@ -1193,6 +1752,7 @@ export class Store {
       available: number | null;
       reason: string | null;
       message: string | null;
+      checked_at: number | null;
     }>;
 
     const taskRows = this.db.prepare("SELECT name, state, heartbeat_at FROM tasks").all() as Array<{
@@ -1204,6 +1764,17 @@ export class Store {
     const lastCheckedRows = this.db
       .prepare("SELECT device_id, MAX(at) AS at FROM sightings WHERE device_id IS NOT NULL GROUP BY device_id")
       .all() as Array<{ device_id: number; at: number }>;
+
+    // Ticket 018-014: every raw `services` row -- see
+    // `ProjectionRows.services`'s own doc comment for why this exposes
+    // all types rather than pre-filtering to `_mbflash._tcp` here.
+    const serviceRows = this.db.prepare("SELECT instance, type, host, port, txt FROM services").all() as Array<{
+      instance: string;
+      type: string;
+      host: string | null;
+      port: number | null;
+      txt: string | null;
+    }>;
 
     const wifiSetting = this.getSetting(Store.WIFI_CREDENTIALS_SETTING_KEY);
     let wifiCredentials: { ssid: string; password: string } | null = null;
@@ -1231,8 +1802,10 @@ export class Store {
         name: d.name,
         kind: d.kind,
         role: d.role,
+        commonName: d.common_name,
         program: d.program,
         version: d.version,
+        usbSerial: d.usb_serial,
         radioChannel: d.radio_channel,
         radioGroup: d.radio_group,
         radioSource: d.radio_source,
@@ -1260,6 +1833,7 @@ export class Store {
         lastDoneReason: s.last_done_reason,
         robotStatus: s.robot_status !== null ? (JSON.parse(s.robot_status) as unknown) : null,
         functions: s.functions !== null ? (JSON.parse(s.functions) as unknown) : null,
+        answeredAt: s.answered_at,
       })),
       relayLeases: relayLeaseRows.map((r) => ({ relayLinkId: r.relay_link_id, owner: r.owner })),
       firmware: firmwareRows.map((f) => ({
@@ -1269,11 +1843,19 @@ export class Store {
         available: f.available === null ? null : f.available !== 0,
         reason: f.reason,
         message: f.message,
+        checkedAt: f.checked_at,
       })),
       tasks: taskRows.map((t) => ({ name: t.name, state: t.state, heartbeatAt: t.heartbeat_at })),
       lastChecked: lastCheckedRows.map((r) => ({ deviceId: r.device_id, at: r.at })),
       wifiCredentials,
       fastSweepByRelayLinkId,
+      services: serviceRows.map((s) => ({
+        instance: s.instance,
+        type: s.type,
+        host: s.host,
+        port: s.port,
+        txt: s.txt !== null ? (JSON.parse(s.txt) as unknown) : null,
+      })),
     };
   }
 
@@ -1395,7 +1977,32 @@ export class Store {
 }
 
 /** Opens (creating/migrating as needed — see `db.ts`) the console's
- * store and wraps it as a {@link Store}. */
+ * store and wraps it as a {@link Store}. Runs five one-time-per-open
+ * repairs, right here — after migrations have applied but before this
+ * function returns to any caller that goes on to start
+ * watchers/importers, so every production caller (`store/bootstrap.ts`'s
+ * `openStoreWithImports`, this module's own tests) gets a repaired store
+ * with no extra wiring: the dead-process-state reset (018-010, {@link
+ * clearDeadProcessState} — run first, since a process-restart reset
+ * logically precedes any data-correctness repair, though the two are
+ * otherwise independent), the duplicate device-row repair (018-006,
+ * {@link mergeDuplicateDeviceRows}), the device-kind-from-role repair
+ * (018-010, {@link repairDeviceKindFromRole}), the radio/mbrelay link
+ * device-association repair (018-010, {@link
+ * repairRadioLinkDeviceAssociation}), and the local-host device-row
+ * repair (018-010, {@link removeLocalHostDeviceRows} — removes a device
+ * row this very machine minted for itself before `mdnsWatcher.ts`'s own
+ * `isLocalMdnsService` guard existed). `debug/dumpStore.ts` deliberately
+ * does not call `openStore` at all (it opens a read-only connection
+ * directly) and so never runs any of them — a read-only inspector must
+ * never write, and all five, on an already-affected database, always
+ * do. */
 export function openStore(options: StoreDbOptions = {}): Store {
-  return new Store(openStoreDb(options));
+  const store = new Store(openStoreDb(options));
+  clearDeadProcessState(store, Date.now());
+  mergeDuplicateDeviceRows(store, Date.now());
+  repairDeviceKindFromRole(store);
+  repairRadioLinkDeviceAssociation(store);
+  removeLocalHostDeviceRows(store);
+  return store;
 }

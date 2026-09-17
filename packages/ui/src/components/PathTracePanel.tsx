@@ -4,6 +4,12 @@
  * `useTelemetryHeader` (SUC-002), mounted below `ChartsPanel` on
  * `RobotPage`.
  *
+ * **Pose columns (OOP 2026-09-14).** The trail follows the firmware's
+ * own pose, `x`/`y`/`h`, and falls back to the OTOS `ox`/`oy`/`oh` only
+ * for a header without it -- see {@link POSE_COLUMN_SETS}. Both sets are
+ * mm and centidegrees, so everything below applies to either; the plot
+ * group flips y so +y (left of forward) is drawn up.
+ *
  * **`ox`/`oy` are already millimetres — never scaled.** Per
  * `packages/protocol/src/v6/telemetry.ts`'s own doc comment ("Unit
  * conversion... `ox`/`oy` already mm... NOT divided") and the firmware
@@ -81,6 +87,28 @@ export interface PathTracePanelProps {
 interface TracePoint {
   x: number;
   y: number;
+}
+
+/** Which header columns carry the pose, in preference order. The
+ * firmware's own pose (`x`/`y` mm, `h` centidegrees -- what a student's
+ * `poseX()`/`poseY()`/`heading()` read) is in every POSE/FULL header
+ * and moves on any robot; `ox`/`oy`/`oh` are the raw OTOS sensor and
+ * read a constant `0 0 0` on a robot without one (bench capture
+ * `gopiv-acceptance-028-20260902/step_e_transcript.txt`), which is why
+ * a trace keyed on them alone never moved. The OTOS set remains a
+ * fallback for a header that carries only those. */
+const POSE_COLUMN_SETS = [
+  { x: "x", y: "y", h: "h" },
+  { x: "ox", y: "oy", h: "oh" },
+] as const;
+
+type PoseColumns = (typeof POSE_COLUMN_SETS)[number];
+
+function findPoseColumns(header: readonly string[] | undefined): PoseColumns | undefined {
+  if (!header) {
+    return undefined;
+  }
+  return POSE_COLUMN_SETS.find((set) => header.includes(set.x) && header.includes(set.y));
 }
 
 /** One decoded pose, kept separately from {@link TraceRing} since the
@@ -204,15 +232,16 @@ export function PathTracePanel({ linkId }: PathTracePanelProps) {
   const { clearTelemetry } = useWsActions();
 
   const hasHeader = header !== undefined;
-  const hasPosition = useMemo(() => !!header && header.includes("ox") && header.includes("oy"), [header]);
+  const poseColumns = useMemo(() => findPoseColumns(header), [header]);
+  const hasPosition = poseColumns !== undefined;
 
   // Mirrors ChartsPanel's ref-mirroring pattern: the rAF-driven draw
   // closure below is set up once per mount (see the effect further
-  // down) and reads this ref on every draw rather than closing over a
-  // render's `hasPosition`, so a header change takes effect on the very
+  // down) and reads this ref on every frame rather than closing over a
+  // render's `poseColumns`, so a header change takes effect on the very
   // next frame without re-subscribing.
-  const hasPositionRef = useRef(hasPosition);
-  hasPositionRef.current = hasPosition;
+  const poseColumnsRef = useRef(poseColumns);
+  poseColumnsRef.current = poseColumns;
 
   const traceRingRef = useRef<TraceRing | null>(null);
   if (!traceRingRef.current) {
@@ -232,7 +261,12 @@ export function PathTracePanel({ linkId }: PathTracePanelProps) {
     const viewBox = computeViewBox(points, current);
 
     if (svgRef.current) {
-      svgRef.current.setAttribute("viewBox", `${viewBox.minX} ${viewBox.minY} ${viewBox.range} ${viewBox.range}`);
+      // The plot's `<g>` flips y (robot frame: +y is left of forward,
+      // drawn up), so the view's top edge is the data's max y, negated.
+      svgRef.current.setAttribute(
+        "viewBox",
+        `${viewBox.minX} ${-(viewBox.minY + viewBox.range)} ${viewBox.range} ${viewBox.range}`,
+      );
     }
 
     if (trailRef.current) {
@@ -292,16 +326,17 @@ export function PathTracePanel({ linkId }: PathTracePanelProps) {
     }
 
     const unsubscribe = telemetry.subscribe((frame: TelemetryFrame) => {
-      if (!hasPositionRef.current) {
+      const columns = poseColumnsRef.current;
+      if (!columns) {
         return;
       }
-      const x = frame.values["ox"];
-      const y = frame.values["oy"];
+      const x = frame.values[columns.x];
+      const y = frame.values[columns.y];
       if (x === undefined || y === undefined || !Number.isFinite(x) || !Number.isFinite(y)) {
         return;
       }
       traceRingRef.current!.push({ x, y });
-      latestPoseRef.current = { x, y, headingCentidegrees: frame.values["oh"] };
+      latestPoseRef.current = { x, y, headingCentidegrees: frame.values[columns.h] };
       scheduleDraw();
     });
 
@@ -336,7 +371,7 @@ export function PathTracePanel({ linkId }: PathTracePanelProps) {
 
       {hasHeader && !hasPosition && (
         <p className="path-trace-panel-unavailable" data-testid="path-trace-unavailable">
-          Position (ox/oy) not available on this firmware.
+          Position (x/y) not available on this firmware.
         </p>
       )}
 
@@ -356,31 +391,33 @@ export function PathTracePanel({ linkId }: PathTracePanelProps) {
               role="img"
               aria-label="Path trace"
             >
-              <circle
-                ref={originRef}
-                className="path-trace-panel-origin"
-                data-testid="path-trace-origin"
-                cx={0}
-                cy={0}
-              />
-              <polyline
-                ref={trailRef}
-                className="path-trace-panel-trail"
-                data-testid="path-trace-trail"
-                points=""
-              />
-              <line
-                ref={headingTickRef}
-                className="path-trace-panel-heading-tick"
-                data-testid="path-trace-heading-tick"
-                style={{ visibility: "hidden" }}
-              />
-              <circle
-                ref={currentPoseRef}
-                className="path-trace-panel-current-pose"
-                data-testid="path-trace-current-pose"
-                style={{ visibility: "hidden" }}
-              />
+              <g transform="scale(1 -1)">
+                <circle
+                  ref={originRef}
+                  className="path-trace-panel-origin"
+                  data-testid="path-trace-origin"
+                  cx={0}
+                  cy={0}
+                />
+                <polyline
+                  ref={trailRef}
+                  className="path-trace-panel-trail"
+                  data-testid="path-trace-trail"
+                  points=""
+                />
+                <line
+                  ref={headingTickRef}
+                  className="path-trace-panel-heading-tick"
+                  data-testid="path-trace-heading-tick"
+                  style={{ visibility: "hidden" }}
+                />
+                <circle
+                  ref={currentPoseRef}
+                  className="path-trace-panel-current-pose"
+                  data-testid="path-trace-current-pose"
+                  style={{ visibility: "hidden" }}
+                />
+              </g>
             </svg>
           </div>
         </>

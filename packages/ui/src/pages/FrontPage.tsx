@@ -80,30 +80,46 @@
  * `<name>`)" label (`connectionLabel`, unchanged) -- architecture.md
  * §7.3's "Radio via `<relay>`" row.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
-import type { SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
+import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import type { ConnectionStatus, LinkNotice, PendingRadioMigration } from "../ws/WsProvider";
 import {
   useConnectionStatus,
   useDevices,
+  useHasWsStore,
   useLinkNotices,
   useRadioMigrationOffers,
-  useRelays,
   useSendable,
   useUnassigned,
   useWsActions,
 } from "../ws/WsProvider";
-import { connectionLabel, isCalibrationProgram, isLinkUsable, lastCheckedText, linkStateText, nameDisplay } from "../deviceDisplay";
+import {
+  allocateRadioBridge,
+  cardLinks,
+  connectionLabel,
+  findLink,
+  isCalibrationProgram,
+  isLinkActive,
+  isLinkAnswering,
+  isLinkUsable,
+  isRadioLink,
+  lastCheckedText,
+  linkStateText,
+  nameDisplay,
+  programVersionText,
+  radioChildLinkId,
+  relayConnections,
+  roleDisplay,
+} from "../deviceDisplay";
+import { TransportIcon, transportShortName } from "../components/TransportIcon";
 import { FlashDialog } from "../components/FlashDialog";
-import { RelayConnectControls } from "../components/RelayConnectControls";
 import "./FrontPage.css";
 
 export function FrontPage() {
   const status = useConnectionStatus();
   const devices = useDevices();
   const unassigned = useUnassigned();
-  const relays = useRelays();
   const radioMigrationOffers = useRadioMigrationOffers();
   const { send, resolveRadioMigration } = useWsActions();
   // Extended scope (team-lead, 2026-09-13), item B: a per-link Connect
@@ -124,7 +140,14 @@ export function FrontPage() {
   // could never call without a variable number of hooks per render.
   const linkNotices = useLinkNotices();
 
-  const present = devices.filter((device) => device.links.length > 0);
+  // Stakeholder (2026-09-13): "pay attention to things that are
+  // connected or disconnected ... put it in a list of things we've seen
+  // before, but don't put it on my list of things that are available."
+  // A device is listed as available only when it has at least one link
+  // that is not `stale` (`cardLinks`); a device whose every link has
+  // aged out (unplugged, powered off, no longer advertised) goes to
+  // "Not seen recently" instead of a card full of hidden connections.
+  const present = devices.filter((device) => cardLinks(device).length > 0);
   // Ticket 017-010 fix (team-lead bench evidence, 2026-09-13): a
   // known-robots.json placeholder that hasn't merged with its real,
   // currently-linked row yet (e.g. `mergeNamePlaceholderIfAny` hasn't
@@ -136,14 +159,7 @@ export function FrontPage() {
   // deliberate: the whole point is to hide a *different* device row that
   // merely shares a name with one already on screen.
   const presentNames = new Set(present.map((device) => device.name));
-  const notSeenRecently = devices.filter((device) => device.links.length === 0 && !presentNames.has(device.name));
-  // De-duplicated (`Set`) for the same reason (ticket 017-010): an
-  // unmerged placeholder sharing a name with a real device must not
-  // offer that name twice in the relay picker.
-  const robotOptions = Array.from(
-    new Set(devices.filter((device) => device.kind === "robot").map((device) => device.name)),
-  ).sort((a, b) => a.localeCompare(b));
-
+  const notSeenRecently = devices.filter((device) => cardLinks(device).length === 0 && !presentNames.has(device.name));
   return (
     <>
       <RadioMigrationOffers offers={radioMigrationOffers} onResolve={resolveRadioMigration} />
@@ -151,13 +167,11 @@ export function FrontPage() {
         status={status}
         devices={present}
         unassigned={unassigned}
-        relays={relays}
         notSeenRecently={notSeenRecently}
-        robotOptions={robotOptions}
         sendable={sendable}
         onForgetDevice={(deviceId) => send({ type: "forget-device", deviceId })}
-        onRelayConnect={(relayLinkId, name) => send({ type: "session-open", relayLinkId, name })}
-        onRelayDisconnect={(linkId) => send({ type: "session-close", linkId })}
+        onRadioConnect={(relayLinkId, name) => send({ type: "session-open", relayLinkId, name })}
+        onLinkClose={(linkId) => send({ type: "session-close", linkId })}
         onLinkConnect={onLinkConnect}
         linkNotices={linkNotices}
       />
@@ -206,31 +220,24 @@ export interface DevicesListProps {
    * split. */
   devices: SnapshotDevice[];
   unassigned: SnapshotLink[];
-  relays?: SnapshotRelay[];
   /** Devices the host still knows about (`owned: true`) but with no
    * current link -- rendered as "not seen recently", not folded into
    * the main list. Defaults to `[]` so call sites that don't care don't
    * have to pass it. */
   notSeenRecently?: SnapshotDevice[];
   onForgetDevice?: (deviceId: number) => void;
-  /** Names a relay card's own robot picker offers -- every `kind:
-   * "robot"` device's name, host order sorted. Defaults to `[]`, which
-   * renders the picker disabled with its "no robots known yet"
-   * placeholder. */
-  robotOptions?: string[];
-  /** A relay card's Connect/Switch press. */
-  onRelayConnect?: (relayLinkId: string, name: string) => void;
-  /** A relay card's Disconnect press for its currently-bridged link. */
-  onRelayDisconnect?: (linkId: string) => void;
-  /** Extended scope (team-lead, 2026-09-13), item B: a card with no
-   * usable link shows a Connect button per link instead of an open
-   * arrow -- this is its press, sending exactly `{ type: "session-open",
-   * linkId }`. Defaults to a no-op so call sites/tests that don't care
-   * are unaffected. */
+  /** A robot's radio chip press: bridge the robot named `name` through
+   * the radio bridge `allocateRadioBridge` picked. */
+  onRadioConnect?: (relayLinkId: string, name: string) => void;
+  /** A connection chip's press on a link that is on: close it. */
+  onLinkClose?: (linkId: string) => void;
+  /** A connection chip's press on a link that is off: open it, sending
+   * exactly `{ type: "session-open", linkId }`. Defaults to a no-op so
+   * call sites/tests that don't care are unaffected. */
   onLinkConnect?: (linkId: string) => void;
   /** Whether a send is currently meaningful (`useSendable()`, threaded
    * down as a plain prop -- see `FrontPage`'s own doc comment). Gates
-   * the relay quick-connect Connect/Switch button. Defaults to `true`
+   * every connection chip's toggle. Defaults to `true`
    * so call sites (and this component's own tests) that don't care
    * about disconnection state are unaffected. */
   sendable?: boolean;
@@ -252,17 +259,30 @@ export function DevicesList({
   status,
   devices,
   unassigned,
-  relays = [],
   notSeenRecently = [],
   onForgetDevice = () => {},
-  robotOptions = [],
-  onRelayConnect = () => {},
-  onRelayDisconnect = () => {},
+  onRadioConnect = () => {},
+  onLinkClose = () => {},
   onLinkConnect = () => {},
   sendable = true,
   linkNotices = EMPTY_LINK_NOTICES,
 }: DevicesListProps) {
   const empty = devices.length === 0 && unassigned.length === 0;
+  const robots = devices.filter((device) => device.kind !== "relay");
+  const bridges = devices.filter((device) => device.kind === "relay");
+  const renderCard = (device: SnapshotDevice) => (
+    <li key={device.id}>
+      <DeviceCard
+        device={device}
+        devices={devices}
+        onRadioConnect={onRadioConnect}
+        onLinkClose={onLinkClose}
+        onLinkConnect={onLinkConnect}
+        sendable={sendable}
+        linkNotices={linkNotices}
+      />
+    </li>
+  );
   return (
     <section className="front-page" aria-label="Devices">
       {status !== "open" && (
@@ -275,28 +295,31 @@ export function DevicesList({
       {empty ? (
         <p className="devices-empty">No devices detected yet. Plug a micro:bit into a USB port.</p>
       ) : (
-        <ul className="devices-list">
-          {devices.map((device) => (
-            <li key={device.id}>
-              <DeviceCard
-                device={device}
-                devices={devices}
-                relays={relays}
-                robotOptions={robotOptions}
-                onRelayConnect={onRelayConnect}
-                onRelayDisconnect={onRelayDisconnect}
-                onLinkConnect={onLinkConnect}
-                sendable={sendable}
-                linkNotices={linkNotices}
-              />
-            </li>
-          ))}
-          {unassigned.map((link) => (
-            <li key={link.id}>
-              <UnassignedCard link={link} />
-            </li>
-          ))}
-        </ul>
+        <>
+          {/* Stakeholder (2026-09-13): the home page lists things in
+              groups -- robots of any sort (however connected, plus
+              unidentified boards), then radio bridges, then not seen
+              recently. */}
+          {(robots.length > 0 || unassigned.length > 0) && (
+            <section className="devices-group" aria-label="Robots" data-testid="devices-group-robots">
+              <h2 className="devices-group-heading">Robots</h2>
+              <ul className="devices-list">
+                {robots.map(renderCard)}
+                {unassigned.map((link) => (
+                  <li key={link.id}>
+                    <UnassignedCard link={link} />
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+          {bridges.length > 0 && (
+            <section className="devices-group" aria-label="Radio bridges" data-testid="devices-group-bridges">
+              <h2 className="devices-group-heading">Radio bridges</h2>
+              <ul className="devices-list">{bridges.map(renderCard)}</ul>
+            </section>
+          )}
+        </>
       )}
       {notSeenRecently.length > 0 && (
         <NotSeenRecentlySection devices={notSeenRecently} onForget={onForgetDevice} />
@@ -332,23 +355,35 @@ function primaryLinkFor(device: SnapshotDevice): SnapshotLink | undefined {
   return device.kind === "relay" ? device.links[0] : undefined;
 }
 
-/** A link's state qualifying it for the per-link Connect button
- * (extended scope, team-lead 2026-09-13, item B) -- every state a
- * student could plausibly open a session from. Deliberately excludes
- * `connecting` (already in flight); `connected` (a `connected`-but-no-
- * session link is a brief in-between moment, not one to offer a second
- * open for); and `closed_by_user` (the spec's own exact five-state list
- * -- a student who deliberately closed a link is not offered it back
- * from the front page; they can still reopen it from the device page
- * itself). */
-const CONNECT_BUTTON_STATES = new Set<SnapshotLink["state"]>([
-  "connectable",
-  "discovered",
-  "failed",
-  "stale",
-  "unresponsive",
-]);
 
+/** A device's current (non-stale) usb link, if it has one -- the gate
+ * for the front-page lightning Flash trigger (ticket 018-015). A usb
+ * link's `capabilities.flash` is unconditionally true
+ * (`projection.ts`'s own comment, "a usb link can always be flashed
+ * (unchanged)"), so finding one here is sufficient to know
+ * `FlashDialog`'s own `canBeFlashed` gate will pass -- no need to
+ * duplicate that check here. */
+function currentUsbLink(device: SnapshotDevice): SnapshotLink | undefined {
+  return device.links.find((link) => link.transport === "usb" && link.state !== "stale");
+}
+
+/** A lightning-bolt glyph for the Flash trigger buttons -- inline SVG,
+ * `currentColor` stroke, matching `ArrowIcon`'s/`TransportIcon.tsx`'s
+ * own pattern so it needs no icon font. */
+function LightningIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+      <polygon
+        points="13 2 4 14 11 14 9 22 20 10 13 10 13 2"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
 
 /** An arrow glyph for the open buttons -- inline SVG so it needs no
  * icon font and inherits `currentColor`. */
@@ -407,90 +442,139 @@ function ArrowIcon({ direction }: { direction: "forward" | "back" }) {
 function DeviceCard({
   device,
   devices,
-  relays,
-  robotOptions,
-  onRelayConnect,
-  onRelayDisconnect,
+  onRadioConnect,
+  onLinkClose,
   onLinkConnect,
   sendable,
   linkNotices,
 }: {
   device: SnapshotDevice;
   devices: SnapshotDevice[];
-  relays: SnapshotRelay[];
-  robotOptions: string[];
-  onRelayConnect: (relayLinkId: string, name: string) => void;
-  onRelayDisconnect: (linkId: string) => void;
+  onRadioConnect: (relayLinkId: string, name: string) => void;
+  onLinkClose: (linkId: string) => void;
   onLinkConnect: (linkId: string) => void;
   sendable: boolean;
   linkNotices: ReadonlyMap<string, LinkNotice>;
 }) {
   const primary = primaryLinkFor(device);
-  const linked = device.links.some((link) => link.state === "connected");
+  // Ticket 018-010: "Linked" requires a session that has actually
+  // answered, not just `state === "connected"` -- bench defect:
+  // `vevov`'s mbserial bridge accepted a TCP connection and flipped its
+  // link to `connected` while its own robot never once replied to
+  // `HELLO`, and this pill still showed green. See `deviceDisplay.ts`'s
+  // `isLinkAnswering` doc comment.
+  const linked = device.links.some((link) => isLinkAnswering(link));
   const isRelay = device.kind === "relay";
   const isCalibration = isCalibrationProgram(device.program);
+  // Ticket 018-015: "Make the flash button pop up when the device is
+  // on USB ... the flash button shows below the open arrow; arrow in
+  // the upper corner, flash button lower right." Gated on the device's
+  // own current usb link (`currentUsbLink`), independent of `primary`
+  // -- a device can be flashable over usb while its primary/open arrow
+  // leads over a different transport (or not exist at all). Also
+  // gated on `useHasWsStore()` -- see that hook's own doc comment --
+  // so a `DeviceCard`-focused test with no `WsProvider` in the tree
+  // keeps working exactly as before.
+  const usbLink = currentUsbLink(device);
+  const hasWsStore = useHasWsStore();
 
   return (
     <div className="device-card" data-testid={`device-card-${device.id}`}>
       <div className="device-card-main">
         <div className="device-card-body">
           <div className="device-card-header">
-            <h3 className="device-name">{nameDisplay(device).text}</h3>
+            {/* Stakeholder (2026-09-14): the name itself shows link status
+                -- yellow while no link answers, green once one does --
+                instead of a "Linked" pill popping in and out. A bridge's
+                own card has no link of its own to show. */}
+            <h3
+              className={isRelay ? "device-name" : "device-name device-name-link"}
+              data-linked={isRelay ? undefined : String(linked)}
+              title={isRelay ? undefined : linked ? "Linked" : "Not linked"}
+              data-testid={`device-name-${device.id}`}
+            >
+              {nameDisplay(device).text}
+            </h3>
             {isCalibration && (
               <span className="device-calibration-badge" data-testid="calibration-badge">
-                {device.version ? `Calibration robot · ${device.version}` : "Calibration robot"}
+                {/* Ticket 018-017: the release version comes from
+                    `device.program` (e.g. `calibration-0.20260913.1` ->
+                    `0.20260913.1`), never `device.version` -- that's the
+                    pxt-nezha-diffdrive library version, not the
+                    calibration release. Same fix as `roleDisplay`'s. */}
+                {device.program !== null ? `Calibration robot · ${programVersionText(device.program)}` : "Calibration robot"}
               </span>
             )}
-            {linked && <span className="device-linked-pill">Linked</span>}
           </div>
 
-          <dl className="device-fields">
-            <div>
-              <dt>Role</dt>
-              <dd>{device.role ?? "No role announced"}</dd>
-            </div>
-          </dl>
+          <p className="device-role" data-testid={`device-role-${device.id}`}>
+            {roleDisplay(device)}
+          </p>
 
+          {/* Stakeholder (2026-09-13): "I don't care if there's MB serial
+              and radio. I just want to get to the device ... make a
+              little card that's got a radio icon / server icon / Wi-Fi
+              icon / USB icon. If I hover over the icon, give me a pop-up
+              with all the details." One chip per live link; the full
+              row (state, reason, last checked, Connect) lives in the
+              chip's hover/focus popover. Everything older is on the
+              robot page's Diagnostics tab. */}
           <ul className="device-connections" aria-label={`Connections for ${device.name}`}>
-            {device.links.map((link) => (
-              <DeviceConnectionRow
-                key={link.id}
+            {/* Stakeholder (2026-09-14): a robot's radio links fold into
+                one always-present radio chip, which finds a bridge
+                itself; a bridge's own card still lists its own link. */}
+            {cardLinks(device)
+              .filter((link) => isRelay || !isRadioLink(link))
+              .map((link) => (
+                <LinkChip
+                  key={link.id}
+                  device={device}
+                  link={link}
+                  sendable={sendable}
+                  onLinkConnect={onLinkConnect}
+                  onLinkClose={onLinkClose}
+                  notice={linkNotices.get(link.id)}
+                />
+              ))}
+            {!isRelay && (
+              <RadioChip
                 device={device}
-                link={link}
-                primary={primary}
+                devices={devices}
                 sendable={sendable}
-                onLinkConnect={onLinkConnect}
-                notice={linkNotices.get(link.id)}
+                onRadioConnect={onRadioConnect}
+                onLinkClose={onLinkClose}
+                linkNotices={linkNotices}
               />
-            ))}
+            )}
           </ul>
         </div>
 
-        {primary && (
-          <Link
-            to={`/d/${primary.id}`}
-            className="device-open-button"
-            aria-label={`Open ${device.name}`}
-            title={`Open ${device.name}`}
-            data-testid={`device-open-${device.id}`}
-          >
-            <ArrowIcon direction="forward" />
-          </Link>
+        {(primary || (usbLink && hasWsStore)) && (
+          <div className="device-card-side">
+            {primary && (
+              <Link
+                to={`/d/${primary.id}`}
+                className="device-open-button"
+                aria-label={`Open ${device.name}`}
+                title={`Open ${device.name}`}
+                data-testid={`device-open-${device.id}`}
+              >
+                <ArrowIcon direction="forward" />
+              </Link>
+            )}
+            {usbLink && hasWsStore && (
+              <FlashDialog
+                link={usbLink}
+                name={device.name}
+                triggerIcon={<LightningIcon />}
+                triggerClassName="device-flash-button"
+              />
+            )}
+          </div>
         )}
       </div>
 
-      {isRelay && (
-        <RelayConnectControls
-          variant="card"
-          relay={device}
-          devices={devices}
-          relays={relays}
-          robotOptions={robotOptions}
-          onConnect={onRelayConnect}
-          onDisconnect={onRelayDisconnect}
-          sendable={sendable}
-        />
-      )}
+      {isRelay && <RelayBridgeStatus relay={device} devices={devices} />}
     </div>
   );
 }
@@ -549,19 +633,299 @@ function DeviceCard({
  * own): a `setInterval` armed only while `link.nextRetryAt` is set, and
  * self-clearing once that moment has passed, so a link with no pending
  * retry (the common case) never starts a timer at all. */
-function DeviceConnectionRow({
+/** The chip's own state class: linked (answering session), open
+ * (connected but not yet answering), busy (connecting), failed, or
+ * idle (connectable/discovered/closed). */
+function chipState(link: SnapshotLink): "linked" | "open" | "busy" | "failed" | "idle" {
+  if (isLinkAnswering(link)) {
+    return "linked";
+  }
+  if (link.state === "connected") {
+    return "open";
+  }
+  if (link.state === "connecting") {
+    return "busy";
+  }
+  if (link.state === "failed" || link.state === "unresponsive") {
+    return "failed";
+  }
+  return "idle";
+}
+
+/** One connection chip: the transport icon, with the full
+ * `DeviceConnectionRow` in a popover shown on hover or keyboard focus.
+ *
+ * Stakeholder (2026-09-14): the chip is an on/off toggle -- pressing a
+ * link that is on (a session, or connected) closes it; pressing any other
+ * opens it; a press mid-connect does nothing. Only the card's arrow goes
+ * into the robot. A relay's own chips toggle nothing: a bridge is used
+ * from a robot's radio chip ({@link RadioChip}), never opened itself. */
+function LinkChip({
   device,
   link,
-  primary,
   sendable,
   onLinkConnect,
+  onLinkClose,
   notice,
 }: {
   device: SnapshotDevice;
   link: SnapshotLink;
-  primary: SnapshotLink | undefined;
   sendable: boolean;
   onLinkConnect: (linkId: string) => void;
+  onLinkClose: (linkId: string) => void;
+  notice: LinkNotice | undefined;
+}) {
+  const state = chipState(link);
+  // Stakeholder (2026-09-13): "reduce this down to just the icons and
+  // not the name" -- the chip is the icon alone; the short name ("Radio
+  // via vevav") is the popover's title and the accessible label.
+  const short = link.via ? `${transportShortName(link.transport)} via ${link.via.relayName}` : transportShortName(link.transport);
+  const toggleable = device.kind !== "relay";
+  const on = link.session !== undefined || link.state === "connected";
+  const verb = link.state === "connecting" ? "Connecting" : on ? "Disconnect" : "Connect";
+  const label = toggleable
+    ? `${verb} ${device.name} over ${connectionLabel(link)}`
+    : `${connectionLabel(link)}: ${linkStateText(link, undefined, device.kind)}`;
+
+  function handleClick(): void {
+    if (!toggleable || !sendable || link.state === "connecting") {
+      return;
+    }
+    if (on) {
+      onLinkClose(link.id);
+    } else {
+      onLinkConnect(link.id);
+    }
+  }
+
+  return (
+    <li className="device-chip" data-state={state} data-testid={`device-chip-${link.id}`}>
+      <button
+        type="button"
+        className="device-chip-face"
+        aria-label={label}
+        aria-disabled={!toggleable || !sendable}
+        data-testid={`device-chip-toggle-${link.id}`}
+        onClick={handleClick}
+      >
+        <TransportIcon transport={link.transport} size={20} />
+      </button>
+      <div className="device-chip-popover" role="tooltip">
+        <p className="device-chip-popover-title">{short}</p>
+        <DeviceConnectionRow device={device} link={link} notice={notice} />
+      </div>
+    </li>
+  );
+}
+
+/** How long a radio chip flashes red after a connect that could not
+ * happen, before settling back to yellow. */
+const RADIO_FLASH_MS = 1200;
+
+/** A radio connect neither connected nor failed after this long is given
+ * up on (flashes red) -- well past a bridge's own reset, sync, and
+ * identify budget. */
+const RADIO_CONNECT_GIVE_UP_MS = 60_000;
+
+/** The radio connect a {@link RadioChip} press started and is waiting on. */
+interface PendingRadioConnect {
+  childLinkId: string;
+  /** The child link's `since` at press time (`null` if it did not exist
+   * yet): a `failed` state only counts once the link has moved past it,
+   * so an old failure is never mistaken for this attempt's. */
+  since: number | null;
+  /** The child link's notice at press time: a different one is the
+   * host refusing this attempt. */
+  notice: LinkNotice | undefined;
+}
+
+/**
+ * The radio chip every robot card carries (stakeholder, 2026-09-14),
+ * whether or not any radio link exists yet:
+ *
+ * - **yellow** (`idle`): no radio bridge carries this robot. Pressing it
+ *   allocates one (`allocateRadioBridge`: a free USB radio bridge first,
+ *   then an mbrelay pool) and sends `session-open {relayLinkId, name}`.
+ * - **dashed** (`busy`) while that connect is in flight.
+ * - **green** (`linked`) once the bridged link is usable. Pressing it
+ *   closes that link, back to yellow.
+ * - **red flash** (`flash`) when no bridge is free, the host refuses, the
+ *   bridge fails, or nothing settles within {@link
+ *   RADIO_CONNECT_GIVE_UP_MS} -- then back to yellow, with the reason
+ *   left in the popover.
+ */
+function RadioChip({
+  device,
+  devices,
+  sendable,
+  onRadioConnect,
+  onLinkClose,
+  linkNotices,
+}: {
+  device: SnapshotDevice;
+  devices: SnapshotDevice[];
+  sendable: boolean;
+  onRadioConnect: (relayLinkId: string, name: string) => void;
+  onLinkClose: (linkId: string) => void;
+  linkNotices: ReadonlyMap<string, LinkNotice>;
+}) {
+  const radioLinks = cardLinks(device).filter(isRadioLink);
+  const active = radioLinks.find((link) => isLinkUsable(link)) ?? radioLinks.find((link) => isLinkActive(link));
+  const [pending, setPending] = useState<PendingRadioConnect | null>(null);
+  const [flashing, setFlashing] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(() => () => clearTimeout(flashTimer.current), []);
+
+  function fail(reason: string): void {
+    setPending(null);
+    setProblem(reason);
+    setFlashing(true);
+    clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => setFlashing(false), RADIO_FLASH_MS);
+  }
+
+  const childLink = pending ? findLink(devices, pending.childLinkId) : undefined;
+  const childNotice = pending ? linkNotices.get(pending.childLinkId) : undefined;
+  useEffect(() => {
+    if (!pending) {
+      return;
+    }
+    if (childLink && isLinkUsable(childLink)) {
+      setPending(null);
+      return;
+    }
+    if (childNotice !== undefined && childNotice !== pending.notice) {
+      fail(childNotice.text);
+      return;
+    }
+    if (childLink && (childLink.state === "failed" || childLink.state === "unresponsive") && childLink.since !== pending.since) {
+      fail(linkStateText(childLink, Date.now(), device.kind));
+    }
+  }, [pending, childLink, childNotice]);
+
+  useEffect(() => {
+    if (!pending) {
+      return undefined;
+    }
+    const timer = setTimeout(() => fail("Couldn't connect: no answer through the radio bridge"), RADIO_CONNECT_GIVE_UP_MS);
+    return () => clearTimeout(timer);
+  }, [pending]);
+
+  function handleClick(): void {
+    if (!sendable || pending !== null || flashing) {
+      return;
+    }
+    if (active) {
+      if (active.state !== "connecting") {
+        onLinkClose(active.id);
+      }
+      return;
+    }
+    const relayLinkId = allocateRadioBridge(devices);
+    if (relayLinkId === undefined) {
+      fail("Couldn't connect: no radio bridge is free");
+      return;
+    }
+    const childLinkId = radioChildLinkId(device.name, relayLinkId);
+    setProblem(null);
+    setPending({ childLinkId, since: findLink(devices, childLinkId)?.since ?? null, notice: linkNotices.get(childLinkId) });
+    onRadioConnect(relayLinkId, device.name);
+  }
+
+  const state = flashing
+    ? "flash"
+    : active && isLinkUsable(active)
+      ? "linked"
+      : pending !== null || active?.state === "connecting"
+        ? "busy"
+        : active
+          ? "failed"
+          : "idle";
+  const detail = active
+    ? linkStateText(active, undefined, device.kind)
+    : pending
+      ? "Connecting through a radio bridge…"
+      : (problem ?? "Not linked · press to connect through a free radio bridge");
+  const verb = state === "linked" || state === "failed" ? "Disconnect" : state === "busy" ? "Connecting" : "Connect";
+
+  return (
+    <li className="device-chip device-chip-radio" data-state={state} data-testid={`device-radio-chip-${device.id}`}>
+      <button
+        type="button"
+        className="device-chip-face"
+        aria-label={`${verb} ${device.name} over radio`}
+        aria-disabled={!sendable}
+        data-testid={`device-radio-toggle-${device.id}`}
+        onClick={handleClick}
+      >
+        <TransportIcon transport="radio" size={20} />
+      </button>
+      <div className="device-chip-popover" role="tooltip">
+        <p className="device-chip-popover-title">{active?.via ? `Radio via ${active.via.relayName}` : "Radio"}</p>
+        <div className="device-connection">
+          {active && <span className="device-connection-label">{connectionLabel(active)}</span>}
+          <span className="device-connection-state" data-testid={`device-radio-state-${device.id}`}>
+            {detail}
+          </span>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+/** One robot's line on a radio bridge card. */
+function relayConnectionText(device: SnapshotDevice, link: SnapshotLink): string {
+  if (isLinkUsable(link)) {
+    return `Connected to ${device.name}`;
+  }
+  if (link.state === "connecting") {
+    return `Connecting to ${device.name}…`;
+  }
+  return `${device.name} stopped answering`;
+}
+
+/**
+ * The bottom of a radio bridge's card (stakeholder, 2026-09-14): what the
+ * bridge carries right now, replacing the old robot picker -- connections
+ * are made from a robot's radio chip, never here.
+ *
+ * - A directly-attached USB radio bridge carries one robot: "Unconnected"
+ *   or "Connected to `<robot>`".
+ * - An mbrelay pool is shared with other consoles, so it shows nothing
+ *   while this console has no robot on it, and one line per robot this
+ *   console has bridged through it otherwise.
+ */
+function RelayBridgeStatus({ relay, devices }: { relay: SnapshotDevice; devices: SnapshotDevice[] }) {
+  const bridgeLinks = cardLinks(relay).filter((link) => link.transport === "usb" || link.transport === "mbrelay");
+  const pool = bridgeLinks.some((link) => link.transport === "mbrelay");
+  const connections = bridgeLinks.flatMap((link) => relayConnections(devices, link.id));
+  if (pool && connections.length === 0) {
+    return null;
+  }
+  return (
+    <ul className="device-relay-connections" data-testid={`relay-connections-${relay.id}`}>
+      {connections.length === 0 ? (
+        <li className="device-relay-unconnected">Unconnected</li>
+      ) : (
+        connections.map(({ device, link }) => (
+          <li key={link.id} data-state={chipState(link)}>
+            {relayConnectionText(device, link)}
+          </li>
+        ))
+      )}
+    </ul>
+  );
+}
+
+function DeviceConnectionRow({
+  device,
+  link,
+  notice,
+}: {
+  device: SnapshotDevice;
+  link: SnapshotLink;
   notice: LinkNotice | undefined;
 }) {
   const [now, setNow] = useState(() => Date.now());
@@ -581,10 +945,10 @@ function DeviceConnectionRow({
   }, [link.nextRetryAt]);
 
   return (
-    <li className="device-connection" data-testid={`device-link-${link.id}`}>
+    <div className="device-connection" data-testid={`device-link-${link.id}`}>
       <span className="device-connection-label">{connectionLabel(link)}</span>
       <span className={link.state === "connected" ? "device-connection-state device-connection-open" : "device-connection-state"}>
-        {linkStateText(link, now)}
+        {linkStateText(link, now, device.kind)}
       </span>
       {notice && (
         <span className="device-connection-notice" data-testid={`device-link-notice-${link.id}`} role="status">
@@ -596,28 +960,7 @@ function DeviceConnectionRow({
           {lastCheckedText(device, link)}
         </span>
       )}
-      {isLinkUsable(link) && link !== primary && (
-        <Link
-          to={`/d/${link.id}`}
-          className="device-connection-open-button"
-          aria-label={`Open ${device.name} over ${connectionLabel(link)}`}
-          data-testid={`device-link-open-${link.id}`}
-        >
-          <ArrowIcon direction="forward" />
-        </Link>
-      )}
-      {device.kind !== "relay" && CONNECT_BUTTON_STATES.has(link.state) && (
-        <button
-          type="button"
-          className="device-connection-connect-button"
-          data-testid={`device-link-connect-${link.id}`}
-          disabled={!sendable}
-          onClick={() => onLinkConnect(link.id)}
-        >
-          Connect
-        </button>
-      )}
-    </li>
+    </div>
   );
 }
 
@@ -651,7 +994,7 @@ function UnassignedCard({ link }: { link: SnapshotLink }) {
           <p className="device-connection-state" data-testid={`unassigned-status-${link.id}`}>
             {linkStateText(link)}
           </p>
-          <FlashDialog link={link} name={link.label} />
+          <FlashDialog link={link} name={link.label} triggerIcon={<LightningIcon />} triggerClassName="device-flash-button" />
         </div>
         <Link
           to={`/d/${link.id}`}

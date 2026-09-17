@@ -84,6 +84,7 @@ function device(id: number, overrides: Partial<Omit<SnapshotDevice, "links">> & 
     name: `name-${id}`,
     kind: "robot",
     role: null,
+    commonName: null,
     program: null,
     version: null,
     owned: true,
@@ -148,6 +149,31 @@ describe("RelayPage: not connected", () => {
     const { el, socket } = mountRelayPage(relayDevice({ name: "rly01" }));
     pushSnapshot(socket, { devices: [relayDevice({ name: "rly01" })] });
     expect(el.querySelector("h2")?.textContent).toBe("rly01");
+  });
+
+  // 018-010 item 3: "relay hosts are hosts, not 'No role announced'" --
+  // `roleDisplay` (`deviceDisplay.ts`) drives this page's own role line
+  // the same way it drives `FrontPage.tsx`'s card.
+  it("018-010 item 3: labels a roleless relay by its own mbrelay link", () => {
+    const { el, socket } = mountRelayPage(
+      device(3, { name: "rly01", kind: "relay", role: null, links: [link(RELAY_LINK_ID, { transport: "mbrelay", state: "connected" })] }),
+    );
+    pushSnapshot(socket, { devices: [relayDevice()] });
+    expect(el.querySelector('[data-testid="relay-page-role"]')?.textContent).toBe("mbrelay host");
+  });
+
+  it("018-010 item 3: labels a roleless relay by its own mbserial link", () => {
+    const { el, socket } = mountRelayPage(
+      device(3, { name: "rly01", kind: "relay", role: null, links: [link(RELAY_LINK_ID, { transport: "mbserial", state: "connected" })] }),
+    );
+    pushSnapshot(socket, { devices: [relayDevice()] });
+    expect(el.querySelector('[data-testid="relay-page-role"]')?.textContent).toBe("mbserial host");
+  });
+
+  it("018-010 item 3: a USB relay keeps its own announced role (RADIOBRIDGE/RADIORELAY)", () => {
+    const { el, socket } = mountRelayPage(relayDevice({ role: "RADIOBRIDGE" }));
+    pushSnapshot(socket, { devices: [relayDevice({ role: "RADIOBRIDGE" })] });
+    expect(el.querySelector('[data-testid="relay-page-role"]')?.textContent).toBe("RADIOBRIDGE");
   });
 
   it("renders 'idle' when relays[] reports lease: null and no bridging", () => {
@@ -335,6 +361,11 @@ describe("RelayPage: connected", () => {
     return link("radio-vevav-via-usb-relay-1", {
       transport: "radio",
       state: "connected",
+      // Ticket 018-010: "Connected to <name>" now requires the session
+      // to have actually answered (`isLinkAnswering`), not merely
+      // `state === "connected"` -- this fixture's default represents a
+      // genuinely live, answering bridge.
+      session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null, answeredAt: Date.now() },
       via: { relayLinkId: RELAY_LINK_ID, relayName: "rly01", channel: 55, group: 114, addressSource: "derived" },
       ...overrides,
     });

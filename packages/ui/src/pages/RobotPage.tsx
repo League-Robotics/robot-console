@@ -55,6 +55,21 @@
  * own doc comment for the full rationale; the `stop-button`/
  * `estop-button`/`estop-clear-button` `data-testid`s are unchanged.
  *
+ * **Calibration tab always offered (ticket 018-013).** Previously gated
+ * on `isCalibrationProgram(device.program)` -- a robot not currently
+ * running the calibration build had no way to reach the tab that runs
+ * `calx`/`cala`. This page mounts the tab unconditionally, passing
+ * `device` through so its firmware panel/wizards can read
+ * `program`/`version`/`links`. **The Flash/verify panel lives here**
+ * (`CalibrationPage` now also takes `device`, not just `link`, for
+ * exactly that panel -- stakeholder correction, 2026-09-13: "If we have
+ * a Calibrate tab, then we don't need calibration under the
+ * Configuration tab. You can just put it under Calibrate." A same-day
+ * earlier pass had briefly moved it to the Configuration tab under
+ * ticket "018-010"'s mislabeled placement; see `CalibrationPage.tsx`'s
+ * own doc comment for the full history and the root-caused Wi-Fi
+ * FUNCS-drop bug this correction also fixes.)
+ *
  * **`program`/`version` diagnostics (sprint 011 ticket 002).** Shown
  * verbatim, near the `<h2>` name heading, whenever `device.program` is
  * non-null -- a robot that never answered `ID` (older firmware, or the
@@ -100,16 +115,14 @@
  */
 import { useState } from "react";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { isCalibrationProgram, nameDisplay } from "../deviceDisplay";
+import { nameDisplay } from "../deviceDisplay";
 import { CalibrationPage } from "../components/CalibrationPage";
-import { ChartsPanel } from "../components/ChartsPanel";
 import { CommandStrip } from "../components/CommandStrip";
 import { ConfigurationPage } from "../components/ConfigurationPage";
+import { DiagnosticsPanel } from "../components/DiagnosticsPanel";
 import { DeviceConsole } from "../components/DeviceConsole";
 import { DriveControls } from "../components/DriveControls";
 import { DriveTab } from "../components/DriveTab";
-import { FunctionsPanel } from "../components/FunctionsPanel";
-import { PathTracePanel } from "../components/PathTracePanel";
 import { StatusPanel } from "../components/StatusPanel";
 import "./RobotPage.css";
 
@@ -124,23 +137,28 @@ export interface RobotPageProps {
 
 /** OOP 2026-09-10: the robot page is split into tabs next to the
  * robot's name (stakeholder direction): Main (status, drive, console),
- * Drive (`DriveTab`: the pad alone, plus cursor keys and a gamepad),
- * Calibration (`CalibrationPage`: both wizards feeding one code block
- * -- only offered for a calibration-classified robot), and Functions & charts (functions and the drive pad on one side,
- * charts and the path trace on the other). Sequencing state moved into the console's
- * own header (`DeviceConsole`) rather than a page panel. */
-export type RobotTab = "main" | "drive" | "calibration" | "functions" | "configuration";
+ * Drive (`DriveTab`: a larger pad with cursor keys, a gamepad, and a
+ * console on one side; functions, charts and the path trace on the other
+ * -- OOP 2026-09-14 folded the separate "Functions & charts" tab in),
+ * Calibration (`CalibrationPage`: the Flash-calibration-firmware/verify
+ * panel, the always-on Calibrate X/Calibrate A wizards plus any other
+ * `cal*` function `FUNCS` reports, and the code block feeding one
+ * calibration state -- always offered, ticket 018-013, not gated on the
+ * robot currently running a calibration build), and Configuration (`ConfigurationPage`: per-robot settings,
+ * with the robot's full serial log under the code block -- see that
+ * page's own doc comment). Sequencing state moved
+ * into the console's own header (`DeviceConsole`) rather than a page
+ * panel. */
+export type RobotTab = "main" | "drive" | "calibration" | "configuration" | "diagnostics";
 
 export function RobotPage({ device, link }: RobotPageProps) {
-  const hasCalibration = isCalibrationProgram(device.program);
-  const [selectedTab, setSelectedTab] = useState<RobotTab>("main");
-  const tab: RobotTab = selectedTab === "calibration" && !hasCalibration ? "main" : selectedTab;
+  const [tab, setSelectedTab] = useState<RobotTab>("main");
   const tabs: Array<{ id: RobotTab; label: string }> = [
     { id: "main", label: "Main" },
     { id: "drive", label: "Drive" },
-    ...(hasCalibration ? [{ id: "calibration" as const, label: "Calibration" }] : []),
-    { id: "functions", label: "Functions & charts" },
+    { id: "calibration", label: "Calibration" },
     { id: "configuration", label: "Configuration" },
+    { id: "diagnostics", label: "Diagnostics" },
   ];
 
   return (
@@ -192,38 +210,13 @@ export function RobotPage({ device, link }: RobotPageProps) {
         </div>
       )}
 
-      {tab === "drive" && <DriveTab link={link} />}
+      {tab === "drive" && <DriveTab link={link} name={device.name} />}
 
-      {tab === "calibration" && <CalibrationPage link={link} name={device.name} />}
+      {tab === "calibration" && <CalibrationPage link={link} name={device.name} device={device} />}
 
-      {tab === "configuration" && <ConfigurationPage device={device} />}
+      {tab === "configuration" && <ConfigurationPage device={device} link={link} />}
 
-      {tab === "functions" && (
-        <div className="robot-page-columns" data-testid="robot-tab-panel-functions">
-          <div className="robot-page-column robot-page-column-left">
-            <div className="robot-page-panel">
-              <h3>Functions</h3>
-              <FunctionsPanel link={link} name={device.name} />
-            </div>
-            {/* OOP 2026-09-10: the drive pad rides along on this tab too,
-                so a student can drive while watching functions/charts. */}
-            <div className="robot-page-panel">
-              <h3>Drive</h3>
-              <DriveControls link={link} />
-            </div>
-          </div>
-          <div className="robot-page-column robot-page-column-right">
-            <div className="robot-page-panel" aria-label="Charts">
-              <h3>Charts</h3>
-              <ChartsPanel linkId={link.id} />
-            </div>
-            <div className="robot-page-panel" aria-label="Path trace">
-              <h3>Path trace</h3>
-              <PathTracePanel linkId={link.id} />
-            </div>
-          </div>
-        </div>
-      )}
+      {tab === "diagnostics" && <DiagnosticsPanel device={device} current={link} />}
     </section>
   );
 }

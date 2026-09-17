@@ -423,4 +423,19 @@ describe("DeviceConsole", () => {
       expect(rxLines[1]!.getAttribute("data-host-error")).toBe("true");
     });
   });
+
+  describe("ticket 018-018: the log is the only flexible row, floored at 8rem, so the send row never gets squeezed off screen", () => {
+    it("renders the log and the send form as the elements RobotPage.css's/DeviceConsole.css's viewport-bound column rules target, send last so nothing renders after it that could push it down", () => {
+      const { el } = mountConsole(baseLink());
+      const log = el.querySelector('[data-testid="console-log"]')!;
+      expect(log.classList.contains("console-log")).toBe(true);
+      const send = el.querySelector('[data-testid="console-send-input"]')!.closest("form")!;
+      expect(send.classList.contains("console-send")).toBe(true);
+      expect(el.querySelector(".device-console")!.lastElementChild).toBe(send);
+      // The log precedes the send form -- `.console-log`'s `flex: 1`
+      // fills whatever room is left above the (flex: none) send row,
+      // rather than the two competing in the other order.
+      expect(log.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+  });
 });

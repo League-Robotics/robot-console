@@ -96,6 +96,7 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
   type SyntheticEvent,
 } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
@@ -118,7 +119,9 @@ export interface FlashDialogProps {
   forceShow?: boolean;
   /** Trigger button's visible label. Every call site uses the default
    * ("Flash") per the stakeholder's own phrasing; overridable for a
-   * call site whose surrounding chrome wants different wording. */
+   * call site whose surrounding chrome wants different wording.
+   * Ignored when `triggerIcon` is given -- the icon replaces the text
+   * label entirely (see that prop's own doc comment). */
   triggerLabel?: string;
   /** Trigger button's `className`, so each call site's trigger can
    * match its surrounding chrome (a device card's action row vs. the
@@ -126,6 +129,16 @@ export interface FlashDialogProps {
    * one. Defaults to the same `device-button` class `FlashControls`'
    * own buttons use. */
   triggerClassName?: string;
+  /** Ticket 018-015 (front-page lightning Flash button): render this
+   * icon as the trigger's entire visible content instead of
+   * `triggerLabel`'s text -- an icon-only button needs a name a screen
+   * reader can announce, so this also switches the button's accessible
+   * name to `Flash <name>` (an icon carries no text of its own) and
+   * gives it a matching `title` tooltip, mirroring the accessible-name
+   * pattern the open-arrow button (`FrontPage.tsx`'s `ArrowIcon`
+   * trigger) already uses. Text-trigger call sites (`AppHeader`,
+   * `UnknownDevicePage`) are unaffected -- they simply don't pass this. */
+  triggerIcon?: ReactNode;
 }
 
 /** Focusable elements inside `container`, in DOM order -- used by the
@@ -148,6 +161,7 @@ export function FlashDialog({
   forceShow = false,
   triggerLabel = "Flash",
   triggerClassName = "device-button",
+  triggerIcon,
 }: FlashDialogProps) {
   const progress = useFlashProgress(link.id);
   const inProgress = progress !== undefined;
@@ -252,6 +266,10 @@ export function FlashDialog({
   // never mid-mission, so it gets no warning line.
   const showReflashWarning = !canBeFlashed(link);
   const deviceLabel = name;
+  // Icon-only trigger has no visible text of its own to announce, so
+  // its accessible name/tooltip are derived from `name` instead -- see
+  // `triggerIcon`'s own doc comment.
+  const iconTriggerName = triggerIcon ? `Flash ${deviceLabel}` : undefined;
 
   return (
     <>
@@ -261,11 +279,12 @@ export function FlashDialog({
         className={triggerClassName}
         aria-haspopup="dialog"
         aria-expanded={open}
+        aria-label={iconTriggerName}
         disabled={!sendable}
-        title={sendable ? undefined : "Disconnected from the host"}
+        title={sendable ? iconTriggerName : "Disconnected from the host"}
         onClick={() => sendable && setOpen(true)}
       >
-        {triggerLabel}
+        {triggerIcon ?? triggerLabel}
       </button>
       <Modal
         open={open}

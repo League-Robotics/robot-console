@@ -8,12 +8,13 @@
       "name": "zuzug",
       "kind": "relay",
       "role": "RADIOBRIDGE",
+      "commonName": null,
       "program": null,
       "version": null,
       "owned": false,
       "radio": {
-        "channel": 29,
-        "group": 1,
+        "channel": 13,
+        "group": 17,
         "source": "derived"
       },
       "lastSeen": 90,
@@ -42,12 +43,13 @@
       "name": "vevov",
       "kind": "robot",
       "role": "NEZHA2",
+      "commonName": null,
       "program": "diffdrive",
       "version": "1.20260907.5",
       "owned": true,
       "radio": {
-        "channel": 37,
-        "group": 43,
+        "channel": 20,
+        "group": 82,
         "source": "derived"
       },
       "lastSeen": 100,
@@ -73,6 +75,7 @@
             "pending": 1,
             "lastDone": 4,
             "lastDoneReason": "ok",
+            "answeredAt": null,
             "robotStatus": {
               "receivedAt": 120,
               "fields": {
@@ -167,7 +170,8 @@
       "configured": true,
       "repoUrl": "League-Robotics/nezha-diffdrive",
       "tag": "v1.2.3",
-      "available": true
+      "available": true,
+      "checkedAt": 200
     }
   },
   "wifi": {

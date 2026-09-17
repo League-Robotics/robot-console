@@ -50,7 +50,7 @@
  */
 
 import { createHash } from "node:crypto";
-import type { FirmwareSource } from "./config.js";
+import type { ReleaseFirmwareSource } from "./config.js";
 
 /** GitHub's REST API base. Not itself injectable -- tests inject
  * `fetch` and assert against fixture responses keyed by whatever URL
@@ -233,7 +233,7 @@ function parseGithubReleaseBody(body: unknown): ParsedGithubRelease | undefined 
  * {@link ReleaseError}.
  */
 export async function resolveRelease(
-  source: FirmwareSource,
+  source: ReleaseFirmwareSource,
   options?: ReleasesOptions,
 ): Promise<ResolvedRelease | ReleaseError> {
   const fetchFn = options?.fetch ?? defaultFetch;
@@ -382,7 +382,7 @@ export async function fetchAndVerifyHex(
  * any caller that only needs a yes/no answer. Never throws.
  */
 export async function checkAvailability(
-  source: FirmwareSource,
+  source: ReleaseFirmwareSource,
   options?: ReleasesOptions,
 ): Promise<boolean> {
   const result = await resolveRelease(source, options);

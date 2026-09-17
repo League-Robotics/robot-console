@@ -118,6 +118,14 @@ function fakeDeps() {
     createRelayLeaseRevocation: createRelayLeaseRevocationMock,
     startRelaySweeper: startRelaySweeperMock,
     installUnhandledRejectionBackstop: installUnhandledRejectionBackstopMock,
+    // 018-010: `disableSweep` now defaults to `true` (sweeper off) when
+    // omitted -- every fixture here explicitly opts back in so the
+    // composition/telemetry/stop() suites below (which exist to test
+    // wiring OTHER than the sweeper's own on/off default) keep
+    // exercising `startRelaySweeperMock` exactly as before. The
+    // dedicated "disableSweep default" describe block below is the one
+    // place that omits this override on purpose.
+    disableSweep: false,
   };
 
   return {
@@ -331,5 +339,48 @@ describe("startRuntime -- stop()", () => {
     expect(f.mdnsStopMock).toHaveBeenCalledTimes(1);
     expect(f.firmwareStopMock).toHaveBeenCalledTimes(1);
     expect(f.fakeStore.close).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("startRuntime -- disableSweep (018-005 Step 0b)", () => {
+  it("never calls startRelaySweeper when disableSweep: true -- no scan tick, no relay lease, ever", () => {
+    const f = fakeDeps();
+    startRuntime({ ...f.options, disableSweep: true });
+
+    expect(f.startRelaySweeperMock).not.toHaveBeenCalled();
+    // The shared revocation seam is still constructed -- the bridger
+    // still needs it even with the sweeper disabled.
+    expect(f.createRelayLeaseRevocationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("stop() still resolves cleanly with the sweeper disabled (its stub stop() is a no-op, never the real relaySweeperStopMock)", async () => {
+    const f = fakeDeps();
+    const runtime = startRuntime({ ...f.options, disableSweep: true });
+    f.calls.length = 0;
+
+    await expect(runtime.stop()).resolves.toBeUndefined();
+
+    expect(f.relaySweeperStopMock).not.toHaveBeenCalled();
+    expect(f.calls).toEqual(["uninstallUnhandledRejectionBackstop", "reconciler.stop", "usbWatcher.stop", "mdnsWatcher.stop", "firmwareWatcher.stop", "store.close"]);
+  });
+
+  it("starts the sweeper when disableSweep: false is passed explicitly", () => {
+    const f = fakeDeps();
+    startRuntime({ ...f.options, disableSweep: false });
+    expect(f.startRelaySweeperMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("startRuntime -- disableSweep defaults to true (018-010: sweeper off by default)", () => {
+  it("never calls startRelaySweeper when disableSweep is omitted entirely -- not just when it's explicitly true. Mirrors scripts/dev.mjs's own bare startRuntime() call, which has no opinion on disableSweep at all", () => {
+    const f = fakeDeps();
+    const { disableSweep: _drop, ...optionsWithoutDisableSweep } = f.options;
+
+    startRuntime(optionsWithoutDisableSweep);
+
+    expect(f.startRelaySweeperMock).not.toHaveBeenCalled();
+    // The shared revocation seam is still constructed -- the bridger
+    // still needs it even with the sweeper off by default.
+    expect(f.createRelayLeaseRevocationMock).toHaveBeenCalledTimes(1);
   });
 });

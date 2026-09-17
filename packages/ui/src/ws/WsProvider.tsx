@@ -575,7 +575,17 @@ function getOrCreateTelemetrySlice(store: Store, linkId: string): TelemetrySlice
  * the field rename -- see that ticket's own doc comment. */
 function handleTelemetryMessage(store: Store, message: TelemetryMessage): void {
   const slice = getOrCreateTelemetrySlice(store, message.linkId);
-  if (message.header !== undefined) {
+  // The firmware re-announces an unchanged `thdr` every 20 frames
+  // (`wire_handler.h`'s `kHeaderRefreshFrames`). Treat a same-columns
+  // re-announce as a no-op: replacing the header (new array identity)
+  // and clearing the ring each time wiped the chart's history and its
+  // column selection about once a second.
+  const sameHeader =
+    message.header !== undefined &&
+    slice.header !== undefined &&
+    message.header.length === slice.header.length &&
+    message.header.every((column, index) => column === slice.header![index]);
+  if (message.header !== undefined && !sameHeader) {
     slice.header = message.header;
     slice.ring.clear();
     notify(store);
@@ -1012,6 +1022,23 @@ function useStore(): Store {
     throw new Error("this hook must be called within a WsProvider");
   }
   return store;
+}
+
+/** Whether a `WsProvider` ancestor is mounted, without the hard throw
+ * every other hook in this module uses via {@link useStore} -- ticket
+ * 018-015's `FlashDialog` gate: `FrontPage.tsx`'s `DeviceCard` mounts
+ * `FlashDialog` (which does call `useFlashProgress`/`useSendable`,
+ * hence `useStore`, unconditionally) for any device with a current usb
+ * link, and most `DeviceCard`-focused tests deliberately mount
+ * `DevicesList` standalone with no `WsProvider` in the tree (this
+ * file's own doc comment on `sendable`/`linkNotices`, "matching how
+ * `onRelayConnect` etc. already reach them"). Gating the new
+ * `FlashDialog` mount on this lets those tests go on doing that: no
+ * usable Flash trigger without a real host connection would make sense
+ * anyway, and the real app (`main.tsx`) always has a `WsProvider`
+ * ancestor, so this is never false there. */
+export function useHasWsStore(): boolean {
+  return useContext(StoreContext) !== undefined;
 }
 
 export function useConnectionStatus(): ConnectionStatus {

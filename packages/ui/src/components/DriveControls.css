@@ -44,20 +44,50 @@
   cursor: not-allowed;
 }
 
-.drive-controls-button-forward {
+/* Cardinal cells are split 75/25 (out-of-process, 2026-09-16): the held
+ * drive button and a one-shot nudge strip, as two sibling buttons in a
+ * flex row -- a <button> cannot nest inside another, so a single control
+ * with a clickable sub-region is not expressible. See DriveControls.tsx's
+ * doc comment. The grid-area now lives on the cell rather than on the
+ * drive button itself. */
+.drive-controls-dir-cell {
+  display: flex;
+  align-items: stretch;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.drive-controls-dir-cell-forward {
   grid-area: forward;
 }
 
-.drive-controls-button-backward {
+.drive-controls-dir-cell-backward {
   grid-area: backward;
 }
 
-.drive-controls-button-left {
+.drive-controls-dir-cell-left {
   grid-area: left;
 }
 
-.drive-controls-button-right {
+.drive-controls-dir-cell-right {
   grid-area: right;
+}
+
+/* The 75/25 split itself. `min-width: 0` on both so a long direction
+ * label ("Backward") shrinks with the cell instead of forcing it wider
+ * than its grid column. */
+.drive-controls-drive-button {
+  flex: 3 1 0;
+  min-width: 0;
+}
+
+.drive-controls-nudge-button {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0.6rem 0.2rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--rc-text-muted);
 }
 
 /* Corner fixed-turn buttons -- square-ish, icon above the degree

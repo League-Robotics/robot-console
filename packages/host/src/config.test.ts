@@ -4,7 +4,14 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openStoreDb } from "./store/db.js";
 import { Store } from "./store/index.js";
-import { getFirmwareConfig, loadEnvFile, parseEnvFile, parseFirmwareSource, SETTINGS_KEY_BY_FIRMWARE } from "./config.js";
+import {
+  getFirmwareConfig,
+  isLocalHexPath,
+  loadEnvFile,
+  parseEnvFile,
+  parseFirmwareSource,
+  SETTINGS_KEY_BY_FIRMWARE,
+} from "./config.js";
 
 /** A path that never resolves to a real file, so `parseEnvFile`/
  * `loadEnvFile` calls in tests that don't care about `.env` reading
@@ -57,6 +64,76 @@ describe("parseFirmwareSource", () => {
   it("never throws on an empty string", () => {
     expect(() => parseFirmwareSource("")).not.toThrow();
     expect(parseFirmwareSource("")).toEqual({ repoUrl: "", tag: "latest" });
+  });
+});
+
+/**
+ * Out-of-process, 2026-09-16: the two `ROBOT_CONSOLE_*_FIRMWARE`
+ * variables also accept a path to a hex file on this machine, so the
+ * console can flash a locally built image instead of a GitHub release.
+ * These pin the detection rule itself -- the thing both
+ * `parseFirmwareSource` and `projection.ts` depend on agreeing about.
+ */
+describe("isLocalHexPath / local-file firmware sources", () => {
+  it("treats absolute, ~-relative, and ./-relative paths as local", () => {
+    expect(isLocalHexPath("/Volumes/Proj/microbit-radio-relay/MICROBIT.hex")).toBe(true);
+    expect(isLocalHexPath("~/builds/MICROBIT.hex")).toBe(true);
+    expect(isLocalHexPath("./built/binary.hex")).toBe(true);
+    expect(isLocalHexPath("../built/binary.hex")).toBe(true);
+  });
+
+  it("treats a bare path ending in .hex as local, so build/MICROBIT.hex needs no ./", () => {
+    expect(isLocalHexPath("build/MICROBIT.hex")).toBe(true);
+    expect(isLocalHexPath("BINARY.HEX")).toBe(true);
+  });
+
+  it("never treats a URL as local -- including one that somehow ends in .hex", () => {
+    expect(isLocalHexPath("https://github.com/League-Robotics/microbit-radio-relay")).toBe(false);
+    expect(isLocalHexPath("http://example.com/org/repo")).toBe(false);
+    expect(isLocalHexPath("https://example.com/builds/MICROBIT.hex")).toBe(false);
+  });
+
+  it("does not treat an empty or bare repo-shaped value as local", () => {
+    expect(isLocalHexPath("")).toBe(false);
+    expect(isLocalHexPath("   ")).toBe(false);
+    expect(isLocalHexPath("League-Robotics/microbit-radio-relay")).toBe(false);
+  });
+
+  it("parses an absolute path into a local-file source, never splitting it on a colon", () => {
+    expect(parseFirmwareSource("/Volumes/Proj/microbit-radio-relay/MICROBIT.hex")).toEqual({
+      kind: "local-file",
+      hexPath: "/Volumes/Proj/microbit-radio-relay/MICROBIT.hex",
+    });
+  });
+
+  it("expands ~ and resolves a relative path to an absolute one", () => {
+    const expanded = parseFirmwareSource("~/builds/MICROBIT.hex");
+    expect(expanded.kind).toBe("local-file");
+    const home = expanded as { kind: "local-file"; hexPath: string };
+    expect(home.hexPath.startsWith("~")).toBe(false);
+    expect(path.isAbsolute(home.hexPath)).toBe(true);
+    expect(home.hexPath.endsWith(path.join("builds", "MICROBIT.hex"))).toBe(true);
+
+    const relative = parseFirmwareSource("./built/binary.hex") as { kind: "local-file"; hexPath: string };
+    expect(path.isAbsolute(relative.hexPath)).toBe(true);
+  });
+
+  it("still parses a repo URL as a release source, with no kind discriminant", () => {
+    // The historical shape stays byte-for-byte what it always was --
+    // every existing construction site and fixture depends on it.
+    expect(parseFirmwareSource("https://github.com/League-Robotics/microbit-radio-relay:v1.2.3")).toEqual({
+      repoUrl: "https://github.com/League-Robotics/microbit-radio-relay",
+      tag: "v1.2.3",
+    });
+  });
+
+  it("resolves a configured local path through getFirmwareConfig", () => {
+    const store = freshStore();
+    store.setSetting(SETTINGS_KEY_BY_FIRMWARE.relay, "/Volumes/Proj/microbit-radio-relay/MICROBIT.hex");
+    expect(getFirmwareConfig(store).relay).toEqual({
+      kind: "local-file",
+      hexPath: "/Volumes/Proj/microbit-radio-relay/MICROBIT.hex",
+    });
   });
 });
 

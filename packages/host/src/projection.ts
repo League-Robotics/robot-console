@@ -67,14 +67,16 @@
  * `RadioAddressDialog`/`WifiCredentialsDialog` on `kind !== "relay"`).
  */
 import { nameToRadioAddress } from "@robot-console/protocol";
-import type {
-  ProjectionDeviceRow,
-  ProjectionFirmwareRow,
-  ProjectionLinkRow,
-  ProjectionRows,
-  ProjectionSessionRow,
-  Store,
-  Transport,
+import {
+  findCurrentMbflashService,
+  type ProjectionDeviceRow,
+  type ProjectionFirmwareRow,
+  type ProjectionLinkRow,
+  type ProjectionRows,
+  type ProjectionServiceRow,
+  type ProjectionSessionRow,
+  type Store,
+  type Transport,
 } from "./store/index.js";
 import type {
   FirmwareAvailability,
@@ -87,6 +89,8 @@ import type {
   SnapshotLink,
   SnapshotRelay,
 } from "./wsMessages.js";
+import path from "node:path";
+import { isLocalHexPath } from "./config.js";
 
 const FIRMWARE_KINDS: readonly FirmwareKind[] = ["relay", "robot"];
 
@@ -105,7 +109,7 @@ export function buildSnapshotFromRows(rows: ProjectionRows, seq: number, at: num
   const linkById = new Map(rows.links.map((l) => [l.id, l] as const));
   const sessionByLink = new Map(rows.sessions.map((s) => [s.linkId, s] as const));
   const lastCheckedByDevice = new Map(rows.lastChecked.map((r) => [r.deviceId, r.at] as const));
-  const ctx: LinkContext = { deviceById, linkById, sessionByLink };
+  const ctx: LinkContext = { deviceById, linkById, sessionByLink, services: rows.services };
 
   const linksByDevice = new Map<number, ProjectionLinkRow[]>();
   const unassignedLinks: ProjectionLinkRow[] = [];
@@ -117,12 +121,13 @@ export function buildSnapshotFromRows(rows: ProjectionRows, seq: number, at: num
       } else {
         linksByDevice.set(link.deviceId, [link]);
       }
-    } else if (link.transport === "usb") {
+    } else if (link.transport === "usb" && link.state !== "stale") {
       // A usb link with no device_id yet is an unnamed/unidentified USB
       // board -- architecture.md §9's `unassigned` list. A non-usb link
       // with no device_id has no device to attach to and nothing
       // displayable of its own; it is simply dropped (see this module's
-      // own doc comment, "The owned gate").
+      // own doc comment, "The owned gate"). A `stale` one (board no
+      // longer enumerated) is dropped too -- there is no board to show.
       unassignedLinks.push(link);
     }
   }
@@ -188,6 +193,7 @@ function buildDevice(
     name: device.name,
     kind: device.kind,
     role: device.role,
+    commonName: device.commonName,
     program: device.program,
     version: device.version,
     owned: device.owned,
@@ -229,6 +235,10 @@ interface LinkContext {
   readonly deviceById: ReadonlyMap<number, ProjectionDeviceRow>;
   readonly linkById: ReadonlyMap<string, ProjectionLinkRow>;
   readonly sessionByLink: ReadonlyMap<string, ProjectionSessionRow>;
+  /** Ticket 018-014: every raw `services` row, so {@link buildLink} can
+   * derive `capabilities.flash` for a `mbserial`/`wifi` link via
+   * {@link findCurrentMbflashService} without a second store read. */
+  readonly services: readonly ProjectionServiceRow[];
 }
 
 function buildLink(link: ProjectionLinkRow, ctx: LinkContext): SnapshotLink {
@@ -249,7 +259,16 @@ function buildLink(link: ProjectionLinkRow, ctx: LinkContext): SnapshotLink {
     capabilities: {
       open: !hasSession && !isConnecting && (!requiresOwned(link.transport) || (device?.owned ?? false)),
       close: hasSession || isConnecting,
-      flash: link.transport === "usb",
+      // Ticket 018-014: a usb link can always be flashed (unchanged);
+      // a mbserial/wifi link can be flashed too, but only once its
+      // device currently advertises `_mbflash._tcp` (a farm robot's
+      // mbdeploy daemon) -- radio/mbrelay links never get this (the
+      // flash service is dialed directly, never through a relay).
+      flash:
+        link.transport === "usb" ||
+        ((link.transport === "mbserial" || link.transport === "wifi") &&
+          device !== undefined &&
+          findCurrentMbflashService(ctx.services, device) !== undefined),
       provisionWifi: hasSession,
     },
   };
@@ -266,6 +285,12 @@ function buildLink(link: ProjectionLinkRow, ctx: LinkContext): SnapshotLink {
       lastDoneReason: session.lastDoneReason,
       robotStatus: (session.robotStatus as RobotStatus | null | undefined) ?? null,
       functions: (session.functions as RobotFunction[] | null | undefined) ?? null,
+      // Sprint 018 ticket 010 (SUC-007): when this session last actually
+      // answered something -- see `store/index.ts`'s own
+      // `ProjectionSessionRow.answeredAt` doc comment and
+      // `deviceDisplay.ts`'s `isLinkAnswering`, the "Linked" criterion
+      // this field exists for.
+      answeredAt: session.answeredAt,
     };
   }
   return result;
@@ -405,12 +430,37 @@ function buildFirmwareAvailability(row: ProjectionFirmwareRow | undefined): Firm
     return { configured: false };
   }
   const available = row.available ?? false;
+  const failure = {
+    ...(!available && row.reason !== null ? { reason: row.reason } : {}),
+    ...(!available && row.message !== null ? { message: row.message } : {}),
+  };
+
+  // `firmware.repo` stores verbatim whatever was configured for this
+  // kind, so deciding what a stored string *means* is exactly the
+  // question `config.ts`'s `isLocalHexPath` already answers when it
+  // parses that same string (out-of-process, 2026-09-16). Reusing the
+  // one predicate here -- rather than persisting a second discriminator
+  // column that could drift out of step with the value it describes --
+  // is what guarantees the parse and the projection can never disagree.
+  if (isLocalHexPath(row.repo)) {
+    return {
+      configured: true,
+      kind: "local-file",
+      hexPath: row.repo,
+      fileName: path.basename(row.repo),
+      tag: row.tag,
+      available,
+      checkedAt: row.checkedAt,
+      ...failure,
+    } as FirmwareAvailability;
+  }
+
   return {
     configured: true,
     repoUrl: row.repo,
     tag: row.tag,
     available,
-    ...(!available && row.reason !== null ? { reason: row.reason } : {}),
-    ...(!available && row.message !== null ? { message: row.message } : {}),
+    checkedAt: row.checkedAt,
+    ...failure,
   } as FirmwareAvailability;
 }

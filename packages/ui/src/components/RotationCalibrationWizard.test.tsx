@@ -39,7 +39,7 @@ import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RobotFunction, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { RotationCalibrationWizard, deriveRotationCalibrationRun, reportedTrackWidthCm } from "./RotationCalibrationWizard";
+import { RotationCalibrationWizard, deriveRotationCalibrationRun, reportedTrackWidthCm, robotReportedSlip } from "./RotationCalibrationWizard";
 import { WsProvider, useWsActions } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 
@@ -154,20 +154,23 @@ function emitLine(socket: FakeSocket, line: string): void {
 }
 
 describe("RotationCalibrationWizard availability", () => {
-  it("shows an idle 'checking' message and disables Go before any FUNCS reply", () => {
+  it("stakeholder 2026-09-13: before any FUNCS reply the Calibrate A button is present and enabled (an unanswered FUNCS never blocks the run)", () => {
     const { el } = mountWizard(linkWithFunctions(undefined));
-    expect(el.querySelector('[data-testid="rotation-calibration-idle"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="rotation-calibration-idle"]')).toBeNull();
     expect(el.querySelector('[data-testid="rotation-calibration-unavailable"]')).toBeNull();
-    expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(true);
+    const go = el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!;
+    expect(go.textContent).toBe("Calibrate A");
+    expect(go.disabled).toBe(false);
   });
 
-  it("shows the non-alarming unavailable message and keeps Go disabled when FUNCS answers without cala", () => {
+  it("stakeholder correction 2026-09-13: a FUNCS reply missing cala shows a non-blocking hint and leaves Go enabled -- this is the exact 'robot has cala but FUNCS dropped the line over Wi-Fi' failure mode the correction fixes", () => {
     const { el } = mountWizard(linkWithFunctions([{ name: "calx" }, { name: "abort" }]));
     const hint = el.querySelector('[data-testid="rotation-calibration-unavailable"]');
     expect(hint).not.toBeNull();
-    expect(hint!.textContent).toContain("doesn't support calibration yet");
+    expect(hint!.textContent).toContain("didn't include cala");
+    expect(hint!.textContent).toContain("you can still try");
     expect(el.querySelector('[data-testid="rotation-calibration-idle"]')).toBeNull();
-    expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(true);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(false);
     expect(el.querySelector('[role="progressbar"]')).toBeNull();
   });
 
@@ -620,5 +623,18 @@ describe("RotationCalibrationWizard as CalibrationPage drives it (OOP 2026-09-10
         deriveRotationCalibrationRun([{ direction: "rx", line: "CALA:measured b=8.84cm  (anchor was 12.08)" }]),
       ),
     ).toBe(8.84);
+  });
+
+  it("ticket 018-013: robotReportedSlip reads the firmware's own CALA:derived slip= line, distinct from reportedTrackWidthCm", () => {
+    const run = deriveRotationCalibrationRun([
+      { direction: "rx", line: "CALA:measured b=8.84cm  (anchor was 12.08)" },
+      { direction: "rx", line: "CALA:derived slip=1.301 = track 11.5 / b 8.84" },
+    ]);
+    expect(robotReportedSlip(run)).toBe(1.301);
+    expect(reportedTrackWidthCm(run)).toBe(8.84);
+    // Absent entirely (no `derived slip=` line yet) reads `undefined`, not 0.
+    expect(
+      robotReportedSlip(deriveRotationCalibrationRun([{ direction: "rx", line: "CALA:measured b=8.84cm" }])),
+    ).toBeUndefined();
   });
 });

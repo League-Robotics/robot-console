@@ -10,6 +10,19 @@
  * watchers, ports, browser, or process exit is ever touched here.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// Stakeholder instruction (018-010): `main()`'s default browser opener
+// must launch Google Chrome, not whatever the OS default happens to be
+// (Safari, on the macOS benches this project runs on). Mocked here so
+// the "default opener" tests below can assert on the real, non-injected
+// `openBrowser` default (`openInChrome` in `cli.ts`) without touching a
+// real browser.
+const openMock = vi.fn().mockResolvedValue(undefined);
+vi.mock("open", () => ({
+  default: (...args: unknown[]) => openMock(...args),
+  apps: { chrome: "google chrome" },
+}));
+
 import { main, type CliDeps } from "./cli.js";
 import type { StartRuntimeOptions } from "./runtime.js";
 import type { StoreSnapshot } from "./store/index.js";
@@ -163,6 +176,126 @@ describe("cli: main -- production startup composes runtime then server", () => {
     logSpy.mockRestore();
   });
 
+  it("--no-open skips the browser launch entirely (018-002 Layer 2 bench harness)", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await main(["--no-open"], {} as NodeJS.ProcessEnv, deps);
+
+    expect(openBrowserMock).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+  });
+
+  it("ROBOT_CONSOLE_NO_OPEN (any non-empty value) skips the browser launch the same way --no-open does", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await main([], { ROBOT_CONSOLE_NO_OPEN: "1" } as unknown as NodeJS.ProcessEnv, deps);
+
+    expect(openBrowserMock).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+  });
+
+  it("018-010: without --sweep/ROBOT_CONSOLE_ENABLE_SWEEP, disableSweep is true -- the sweeper is off by default", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await main([], {} as NodeJS.ProcessEnv, deps);
+
+    expect(startRuntimeMock).toHaveBeenCalledWith(expect.objectContaining({ disableSweep: true }));
+
+    logSpy.mockRestore();
+  });
+
+  it("018-010: --sweep passes disableSweep: false to startRuntime -- the explicit opt back in", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await main(["--sweep"], {} as NodeJS.ProcessEnv, deps);
+
+    expect(startRuntimeMock).toHaveBeenCalledWith(expect.objectContaining({ disableSweep: false }));
+
+    logSpy.mockRestore();
+  });
+
+  it("018-010: ROBOT_CONSOLE_ENABLE_SWEEP (any non-empty value) passes disableSweep: false the same way --sweep does", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await main([], { ROBOT_CONSOLE_ENABLE_SWEEP: "1" } as unknown as NodeJS.ProcessEnv, deps);
+
+    expect(startRuntimeMock).toHaveBeenCalledWith(expect.objectContaining({ disableSweep: false }));
+
+    logSpy.mockRestore();
+  });
+
+  it("018-010: --no-sweep / ROBOT_CONSOLE_DISABLE_SWEEP are accepted as a silent no-op for compatibility -- disableSweep is still true (already the default) either way", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await main(["--no-sweep"], { ROBOT_CONSOLE_DISABLE_SWEEP: "1" } as unknown as NodeJS.ProcessEnv, deps);
+
+    expect(startRuntimeMock).toHaveBeenCalledWith(expect.objectContaining({ disableSweep: true }));
+
+    logSpy.mockRestore();
+  });
+
   it("logs a warning, but does not throw, when opening the browser fails", async () => {
     const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
     const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
@@ -179,6 +312,51 @@ describe("cli: main -- production startup composes runtime then server", () => {
 
     await expect(main([], {} as NodeJS.ProcessEnv, deps)).resolves.toBeUndefined();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("no display"));
+
+    logSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it("default opener (no deps.openBrowser override) passes the Chrome app option to `open`", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    openMock.mockClear();
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // openBrowser deliberately omitted -- this exercises the real
+      // default (`openInChrome`), not a test fake.
+    };
+
+    await main([], {} as NodeJS.ProcessEnv, deps);
+
+    expect(openMock).toHaveBeenCalledWith("http://127.0.0.1:4795", { app: { name: "google chrome" } });
+
+    logSpy.mockRestore();
+  });
+
+  it("default opener falls back to the plain default browser, and warns once, when Chrome is not found", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    openMock.mockClear();
+    openMock.mockRejectedValueOnce(new Error("Chrome not installed")).mockResolvedValueOnce(undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await main([], {} as NodeJS.ProcessEnv, deps);
+
+    expect(openMock).toHaveBeenNthCalledWith(1, "http://127.0.0.1:4795", { app: { name: "google chrome" } });
+    expect(openMock).toHaveBeenNthCalledWith(2, "http://127.0.0.1:4795");
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Chrome not installed"));
 
     logSpy.mockRestore();
     warnSpy.mockRestore();

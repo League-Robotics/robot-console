@@ -115,12 +115,14 @@ function firmwareStatusFixture(
       repoUrl: "https://github.com/League-Robotics/microbit-radio-relay",
       tag: "v0.20260831.1",
       available: true,
+      checkedAt: 1000,
     },
     robot: {
       configured: true,
       repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive",
       tag: "latest",
       available: false,
+      checkedAt: 1000,
       reason: "no-releases",
     },
     ...overrides,
@@ -233,6 +235,7 @@ describe("FlashControls release-flash rendering", () => {
           repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive",
           tag: "latest",
           available: true,
+          checkedAt: 1000,
         },
       }),
     });
@@ -249,6 +252,7 @@ describe("FlashControls release-flash rendering", () => {
           repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive",
           tag: "v0.20260909.1",
           available: false,
+          checkedAt: 1000,
           reason: "no-asset",
           message: "release v0.20260909.1 is missing MICROBIT.hex",
         },
@@ -279,6 +283,7 @@ describe("FlashControls release-flash rendering", () => {
           repoUrl: "https://github.com/League-Robotics/pxt-nezha-diffdrive",
           tag: "latest",
           available: false,
+          checkedAt: null,
           reason: "not-yet-checked",
         },
       }),
@@ -317,6 +322,24 @@ describe("FlashControls release-flash rendering", () => {
 
     expect(el.textContent).not.toContain("Flash relay firmware");
     expect(el.textContent).not.toContain("Flash robot firmware");
+    // Ticket 018-017: named by the configured release's own repo+tag,
+    // not the generic "relay"/"robot" word.
+    expect(el.textContent).toContain("Flashing microbit-radio-relay v0.20260831.1: writing…");
+  });
+
+  it("018-017: falls back to the generic firmware word when the release isn't (or isn't yet) configured", () => {
+    const { el, socket } = mountFlashControls(baseLink(), {
+      firmwareStatus: { relay: { configured: false }, robot: { configured: false } },
+    });
+    act(() => {
+      socket().emitMessage({
+        type: "flash-progress",
+        linkId: "usb-SERIAL-UNRESPONSIVE",
+        source: { kind: "release", firmware: "relay" },
+        phase: "writing",
+        seq: 1,
+      });
+    });
     expect(el.textContent).toContain("Flashing relay: writing…");
   });
 
@@ -332,7 +355,8 @@ describe("FlashControls release-flash rendering", () => {
       });
     });
 
-    expect(el.textContent).toContain('Flashing "custom.hex": erasing…');
+    // Ticket 018-017: a local file is named by its own file name.
+    expect(el.textContent).toContain("Flashing custom.hex: erasing…");
   });
 
   it("surfaces a terminal flash-result error's message", () => {
@@ -400,6 +424,9 @@ describe("FlashControls local-hex flow", () => {
     expect(new TextDecoder().decode(frame.subarray(0, UPLOAD_ID_BYTE_LENGTH))).toBe(uploadId);
     expect(new TextDecoder().decode(frame.subarray(UPLOAD_ID_BYTE_LENGTH))).toBe(content);
 
+    // Ticket 018-017: file name and size (KB) shown before confirming.
+    expect(el.textContent).toContain(`Ready to flash "custom.hex" (${Math.ceil(content.length / 1024)}KB).`);
+
     const flashButton = Array.from(el.querySelectorAll("button")).find(
       (b) => b.textContent === "Flash this file",
     );
@@ -465,7 +492,7 @@ describe("FlashControls post-flash navigation", () => {
     expect(location(el)).toBe("/d/usb-SERIAL-UNRESPONSIVE");
   });
 
-  it("renders 'Flashed. Waiting for the board to come back…' and does not navigate when reidentify times out", () => {
+  it("renders 'Flashed <generic word>. Waiting for the board to come back…' and does not navigate when reidentify times out (no firmwareStatus configured, so no repo/tag to name)", () => {
     const { el, socket } = mountFlashControls(baseLink());
     act(() => {
       socket().emitMessage({
@@ -478,8 +505,68 @@ describe("FlashControls post-flash navigation", () => {
       });
     });
 
-    expect(el.textContent).toContain("Flashed. Waiting for the board to come back…");
+    expect(el.textContent).toContain("Flashed relay. Waiting for the board to come back…");
     expect(el.textContent).not.toMatch(/failed/i);
     expect(location(el)).toBe("/d/usb-SERIAL-UNRESPONSIVE");
+  });
+
+  it("018-017: names the configured release's own repo+tag in the reidentify-timeout result line", () => {
+    const { el, socket } = mountFlashControls(baseLink(), { firmwareStatus: firmwareStatusFixture() });
+    act(() => {
+      socket().emitMessage({
+        type: "flash-result",
+        linkId: "usb-SERIAL-UNRESPONSIVE",
+        source: { kind: "release", firmware: "relay" },
+        status: "ok",
+        reidentify: "timeout",
+        seq: 1,
+      });
+    });
+
+    expect(el.textContent).toContain("Flashed microbit-radio-relay v0.20260831.1. Waiting for the board to come back…");
+  });
+
+  it("018-017: names the local file itself in the reidentify-timeout result line for a local-hex flash", () => {
+    const { el, socket } = mountFlashControls(baseLink(), { firmwareStatus: firmwareStatusFixture() });
+    act(() => {
+      socket().emitMessage({
+        type: "flash-result",
+        linkId: "usb-SERIAL-UNRESPONSIVE",
+        source: { kind: "local-hex", uploadId: "u-1", fileName: "custom.hex", sha256: "abc" },
+        status: "ok",
+        reidentify: "timeout",
+        seq: 1,
+      });
+    });
+
+    expect(el.textContent).toContain("Flashed custom.hex. Waiting for the board to come back…");
+  });
+});
+
+describe("018-017: firmware source line (repo link, tag, checked-at)", () => {
+  it("shows a linked repo name, tag, and 'checked ...' text under an available release's button", () => {
+    const { el } = mountFlashControls(baseLink({ state: "connectable", reason: null }), { firmwareStatus: firmwareStatusFixture() });
+    const relaySource = el.querySelector('[data-testid="flash-source-relay"]')!;
+    expect(relaySource).not.toBeNull();
+    const link = relaySource.querySelector("a")!;
+    expect(link.getAttribute("href")).toBe("https://github.com/League-Robotics/microbit-radio-relay/releases/tag/v0.20260831.1");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.textContent).toBe("microbit-radio-relay");
+    expect(relaySource.textContent).toContain("v0.20260831.1");
+    expect(relaySource.textContent).toContain("checked");
+  });
+
+  it("shows the plain disabled reason instead of the source line for an unavailable release", () => {
+    const { el } = mountFlashControls(baseLink(), { firmwareStatus: firmwareStatusFixture() });
+    expect(el.querySelector('[data-testid="flash-source-robot"]')).toBeNull();
+    expect(el.textContent).toContain("No build has been published yet");
+  });
+
+  it("shows no source line at all when nothing is configured for this classroom", () => {
+    const { el } = mountFlashControls(baseLink(), {
+      firmwareStatus: { relay: { configured: false }, robot: { configured: false } },
+    });
+    expect(el.querySelector('[data-testid="flash-source-relay"]')).toBeNull();
+    expect(el.querySelector('[data-testid="flash-source-robot"]')).toBeNull();
   });
 });

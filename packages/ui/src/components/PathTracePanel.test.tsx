@@ -194,6 +194,29 @@ describe("PathTracePanel — trail and current-pose marker with a known header",
     expect(x1 !== x2 || y1 !== y2).toBe(true);
   });
 
+  it("plots the firmware pose (x/y/h) rather than the OTOS columns, which read 0 0 0 on a robot without the sensor", () => {
+    const { el, socket } = mountPanel();
+    emitHeader(socket, ["seq", "now", "flags", "x", "y", "h", "ox", "oy", "oh", "vl", "vr", "i2cf"]);
+    const base = { seq: "1", now: "1000", flags: "1f", ox: "0", oy: "0", oh: "0", vl: "0", vr: "0", i2cf: "0" };
+    emitFrame(socket, { ...base, x: "0", y: "0", h: "0" });
+    emitFrame(socket, { ...base, x: "120", y: "35", h: "9000" });
+    // The firmware's periodic re-announce of the same header must not
+    // interrupt the trail.
+    emitHeader(socket, ["seq", "now", "flags", "x", "y", "h", "ox", "oy", "oh", "vl", "vr", "i2cf"]);
+    emitFrame(socket, { ...base, x: "130", y: "90", h: "9000" });
+    flushRaf();
+
+    const trail = el.querySelector('[data-testid="path-trace-trail"]')!;
+    expect(parsePoints(trail.getAttribute("points") ?? "")).toEqual([
+      { x: 0, y: 0 },
+      { x: 120, y: 35 },
+      { x: 130, y: 90 },
+    ]);
+    const currentPose = el.querySelector('[data-testid="path-trace-current-pose"]')!;
+    expect(currentPose.getAttribute("cx")).toBe("130");
+    expect(currentPose.getAttribute("cy")).toBe("90");
+  });
+
   it("a burst of several frames still leaves the current pose reflecting only the latest one after a single rAF tick", () => {
     const { el, socket } = mountPanel();
     emitHeader(socket, ["seq", "ox", "oy"]);

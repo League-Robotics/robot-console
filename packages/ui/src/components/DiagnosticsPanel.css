@@ -1,0 +1,63 @@
+.diagnostics-panel {
+  padding: 0.5rem 0;
+}
+
+.diagnostics-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.5rem 1.25rem;
+  margin: 0 0 1rem;
+}
+
+.diagnostics-facts div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.diagnostics-facts dt {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--rc-text-muted);
+}
+
+.diagnostics-facts dd {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.diagnostics-table-wrap {
+  overflow-x: auto;
+}
+
+.diagnostics-table {
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  min-width: 100%;
+}
+
+.diagnostics-table th,
+.diagnostics-table td {
+  text-align: left;
+  padding: 0.35rem 0.6rem;
+  border-bottom: 1px solid var(--rc-border);
+  vertical-align: top;
+}
+
+.diagnostics-table th {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--rc-text-muted);
+}
+
+.diagnostics-current {
+  background: color-mix(in srgb, var(--rc-accent) 8%, transparent);
+}
+
+.diagnostics-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  word-break: break-all;
+}

@@ -43,11 +43,31 @@
  * touched in tests.
  */
 
-import open from "open";
+import open, { apps } from "open";
 import { startServer, type RunningServer, type StartServerOptions } from "./server.js";
 import { startRuntime, type Runtime, type StartRuntimeOptions } from "./runtime.js";
 import { getFirmwareConfig } from "./config.js";
 import { dumpStore, formatStoreDump } from "./debug/dumpStore.js";
+
+/** Default {@link CliDeps.openBrowser}: the stakeholder does not want
+ * `main()` popping up whatever the OS default browser happens to be
+ * (Safari, on the macOS benches this project runs on) -- it should open
+ * Google Chrome specifically. Falls back to the plain OS-default
+ * `open(url)` (and warns once) if Chrome itself is not installed, so a
+ * missing Chrome degrades to the old behavior rather than failing
+ * startup outright. */
+async function openInChrome(url: string): Promise<void> {
+  try {
+    await open(url, { app: { name: apps.chrome } });
+  } catch (error) {
+    console.warn(
+      `robot-console: Google Chrome not found (${
+        error instanceof Error ? error.message : String(error)
+      }) -- opening the default browser instead.`,
+    );
+    await open(url);
+  }
+}
 
 /** Injectable seams for {@link main}. Every field defaults to the real
  * implementation; `cli.test.ts` substitutes fakes for whichever fields
@@ -68,10 +88,11 @@ export interface CliDeps {
   runtimeOptions?: StartRuntimeOptions;
   startServer?: (options: StartServerOptions) => Promise<RunningServer>;
   getFirmwareConfig?: typeof getFirmwareConfig;
-  /** Opens a browser to `url`. Defaults to the `open` package. Rejects
-   * the same way a real browser-launch failure would, so {@link main}'s
-   * own try/catch around it is exercised the same way in tests as in
-   * production. */
+  /** Opens a browser to `url`. Defaults to {@link openInChrome} (Chrome,
+   * falling back to the OS default browser if Chrome is not installed).
+   * Rejects the same way a real browser-launch failure would, so
+   * {@link main}'s own try/catch around it is exercised the same way in
+   * tests as in production. */
   openBrowser?: (url: string) => Promise<void>;
   /** Terminates the process. Defaults to `process.exit`. Injectable so
    * `cli.test.ts` can observe a clean `SIGINT`/`SIGTERM` shutdown
@@ -107,6 +128,51 @@ function parsePortEnv(env: NodeJS.ProcessEnv): number | undefined {
   }
   const value = Number(raw);
   return Number.isInteger(value) ? value : undefined;
+}
+
+/** `--no-open` from argv, or `ROBOT_CONSOLE_NO_OPEN` (any non-empty
+ * value) from env: skip the automatic browser launch entirely.
+ *
+ * Added for sprint 018 ticket 002's Layer 2 bench harness, which starts
+ * a real host against a scratch state dir on a headless bench run --
+ * without this, {@link main} would try to launch a real desktop browser
+ * every time the harness starts a host, which is both unwanted (no
+ * student is at this bench run) and, on a CI/headless box, itself a
+ * source of a hung or failing `open()` call unrelated to anything this
+ * harness is testing. No pre-existing flag/env covered this ("dev.mjs"
+ * launches a full graphical session for its own bench sessions, not a
+ * headless one), so this ticket adds it. */
+function hasNoOpenFlag(argv: readonly string[], env: NodeJS.ProcessEnv): boolean {
+  if (argv.includes("--no-open")) {
+    return true;
+  }
+  const raw = env.ROBOT_CONSOLE_NO_OPEN;
+  return raw !== undefined && raw.length > 0;
+}
+
+/** `--sweep` from argv, or `ROBOT_CONSOLE_ENABLE_SWEEP` (any non-empty
+ * value) from env: start the relay sweeper (`runtime.ts`'s own
+ * `StartRuntimeOptions.disableSweep`, which now defaults to `true` --
+ * see that field's own doc comment).
+ *
+ * Ticket 018-010 ("you're not going to sweep when you're idle
+ * RadioRelay, so turn that off") inverts sprint 018 ticket 005 Step
+ * 0b's original `--no-sweep`/`ROBOT_CONSOLE_DISABLE_SWEEP` flag: the
+ * sweeper now defaults OFF for every caller (production startup
+ * included, not just the bench harness), and this flag is the opt back
+ * IN for anyone who still wants a relay's idle radio periodically swept
+ * for reachable robots. `--no-sweep`/`ROBOT_CONSOLE_DISABLE_SWEEP` are
+ * still accepted as plain, silently-ignored argv/env tokens (never an
+ * error) purely for compatibility -- `scripts/bench`'s Layer 2/3 still
+ * pass `--no-sweep` on their own command line, and there is no reason to
+ * make that a hard error now that it is simply already the default.
+ * Mirrors {@link hasNoOpenFlag}'s exact shape. */
+function hasSweepFlag(argv: readonly string[], env: NodeJS.ProcessEnv): boolean {
+  if (argv.includes("--sweep")) {
+    return true;
+  }
+  const raw = env.ROBOT_CONSOLE_ENABLE_SWEEP;
+  return raw !== undefined && raw.length > 0;
 }
 
 /** `--dump-store` from argv (ticket 014-009 / SUC-006): print the store
@@ -197,7 +263,7 @@ export async function main(
   const startRuntimeFn = deps.startRuntime ?? startRuntime;
   const startServerFn = deps.startServer ?? startServer;
   const getFirmwareConfigFn = deps.getFirmwareConfig ?? getFirmwareConfig;
-  const openBrowser = deps.openBrowser ?? open;
+  const openBrowser = deps.openBrowser ?? openInChrome;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
   const port = parsePortFlag(argv) ?? parsePortEnv(env);
@@ -205,7 +271,11 @@ export async function main(
   // Ticket 005: production startup now actually opens the store and
   // starts both watchers (until this ticket, only the retired
   // `--watch-store` flag did) -- see the module doc comment.
-  const runtime = startRuntimeFn({ storeOptions: { env }, ...deps.runtimeOptions });
+  // 018-010: the sweeper defaults off; `--sweep`/`ROBOT_CONSOLE_ENABLE_SWEEP`
+  // is the explicit opt back in (`hasSweepFlag`'s own doc comment). An
+  // explicit `deps.runtimeOptions.disableSweep` (a test's own override)
+  // still wins, since it spreads last.
+  const runtime = startRuntimeFn({ storeOptions: { env }, disableSweep: !hasSweepFlag(argv, env), ...deps.runtimeOptions });
 
   // Sprint 017 ticket 001: `getFirmwareConfig` reads `settings` via the
   // store, not `env`/a `.env` file directly, so it must be called after
@@ -222,6 +292,10 @@ export async function main(
   console.log(`robot-console: listening on ${server.url}`);
 
   installShutdownHandlers(server, runtime, exit);
+
+  if (hasNoOpenFlag(argv, env)) {
+    return;
+  }
 
   try {
     await openBrowser(server.url);

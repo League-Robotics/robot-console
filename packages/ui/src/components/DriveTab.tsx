@@ -1,7 +1,12 @@
 /**
  * DriveTab.tsx — the robot page's Drive tab (OOP 2026-09-10,
- * stakeholder direction): just the drive pad, plus two more ways to
- * hold a direction while this tab is showing:
+ * stakeholder direction). OOP 2026-09-14 folded the retired "Functions &
+ * charts" tab in: the left column is an enlarged drive pad, the
+ * keyboard/gamepad aids, and a console that fills the rest of the
+ * screen with its send line pinned at the bottom (the same
+ * viewport-bound column pattern as the Main tab); the right column is
+ * functions, charts, and the path trace. Besides the pad, two more ways
+ * to hold a direction while this tab is showing:
  *
  *  - **Cursor keys** (and WASD): up/down drive, left/right turn in
  *    place, a diagonal arcs. Space or Escape stops. Keys are ignored
@@ -27,7 +32,11 @@ import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useSendable, useWsActions } from "../ws/WsProvider";
 import { isLinkUsable } from "../deviceDisplay";
 import { useHeldDrive, type WheelTarget as HeldDriveTarget } from "../hooks/useHeldDrive";
+import { ChartsPanel } from "./ChartsPanel";
+import { DeviceConsole } from "./DeviceConsole";
 import { DriveControls } from "./DriveControls";
+import { FunctionsPanel } from "./FunctionsPanel";
+import { PathTracePanel } from "./PathTracePanel";
 import "./DriveTab.css";
 
 /** Same number `DriveControls` drives at -- one dialect for every held
@@ -142,9 +151,12 @@ function useDriveEngine(linkId: string, linkOpen: boolean) {
 
 export interface DriveTabProps {
   link: SnapshotLink;
+  /** The owning device's already-resolved name, for the console's hint
+   * and the functions panel's remembered-arguments key. */
+  name: string;
 }
 
-export function DriveTab({ link }: DriveTabProps) {
+export function DriveTab({ link, name }: DriveTabProps) {
   const linkId = link.id;
   const sendable = useSendable();
   const linkOpen = isLinkUsable(link) && sendable;
@@ -247,21 +259,40 @@ export function DriveTab({ link }: DriveTabProps) {
   const keyLabel = heldKeys.length > 0 ? heldKeys.map((code) => code.replace(/^Arrow|^Key/, "")).join(" + ") : null;
 
   return (
-    <div className="drive-tab" data-testid="robot-tab-panel-drive">
-      <div className="drive-tab-pad">
-        <DriveControls link={link} />
+    <div className="robot-page-columns drive-tab" data-testid="robot-tab-panel-drive">
+      <div className="robot-page-column robot-page-column-left robot-page-column-console drive-tab-left">
+        <div className="robot-page-column-top drive-tab-controls">
+          <div className="drive-tab-pad">
+            <DriveControls link={link} />
+          </div>
+          <div className="drive-tab-aids">
+            <p className="drive-tab-aid" data-testid="drive-tab-keyboard">
+              <strong>Keyboard:</strong> arrow keys (or WASD) drive and turn; space stops.
+              {keyLabel ? ` Holding ${keyLabel}.` : ""}
+            </p>
+            <p className="drive-tab-aid" data-testid="drive-tab-gamepad">
+              <strong>Gamepad:</strong>{" "}
+              {gamepadId
+                ? `${gamepadId} — left stick drives with proportional speed.${stick ? ` Wheels ${stick[0]} / ${stick[1]} mm/s.` : ""}`
+                : "none detected — plug in a controller and move its stick."}
+            </p>
+          </div>
+          <div className="robot-page-panel">
+            <h3>Functions</h3>
+            <FunctionsPanel link={link} name={name} />
+          </div>
+        </div>
+        <DeviceConsole link={link} name={name} />
       </div>
-      <div className="drive-tab-aids">
-        <p className="drive-tab-aid" data-testid="drive-tab-keyboard">
-          <strong>Keyboard:</strong> arrow keys (or WASD) drive and turn; space stops.
-          {keyLabel ? ` Holding ${keyLabel}.` : ""}
-        </p>
-        <p className="drive-tab-aid" data-testid="drive-tab-gamepad">
-          <strong>Gamepad:</strong>{" "}
-          {gamepadId
-            ? `${gamepadId} — left stick drives with proportional speed.${stick ? ` Wheels ${stick[0]} / ${stick[1]} mm/s.` : ""}`
-            : "none detected — plug in a controller and move its stick."}
-        </p>
+      <div className="robot-page-column robot-page-column-right robot-page-column-console drive-tab-right">
+        <div className="robot-page-panel" aria-label="Charts">
+          <h3>Charts</h3>
+          <ChartsPanel linkId={linkId} />
+        </div>
+        <div className="robot-page-panel drive-tab-trace" aria-label="Path trace">
+          <h3>Path trace</h3>
+          <PathTracePanel linkId={linkId} />
+        </div>
       </div>
     </div>
   );

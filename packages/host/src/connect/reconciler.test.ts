@@ -111,6 +111,78 @@ describe("plan() -- pure per-device connect decisions", () => {
     expect(plan(input, NOW + 1000)).toEqual([{ kind: "connect", linkId: "usb-1" }]);
   });
 
+  // -------------------------------------------------------------------
+  // 018-008: mbserial retries on backoff, and the rule this module's own
+  // doc comment writes down ("018-008: falling through past an
+  // ineligible higher-priority link") -- a device with no connected
+  // link retries its best *eligible* link, falling through past a
+  // higher-priority transport that exists but isn't actionable right
+  // now; a device that already has a connected link never opens a
+  // second one automatically.
+  // -------------------------------------------------------------------
+
+  it("018-008: a failed, owned mbserial link with no other link on the device retries on backoff, same as any other transport (bench defect 5 -- 'does not retry at all')", () => {
+    const failed = linkRow({ id: "mbserial-1", transport: "mbserial", deviceId: 1, state: "failed", nextRetryAt: NOW + 1000 });
+    const input = rows({ devices: [deviceRow(1, true)], links: [failed] });
+    expect(plan(input, NOW)).toEqual([]);
+    expect(plan(input, NOW + 999)).toEqual([]);
+    expect(plan(input, NOW + 1000)).toEqual([{ kind: "connect", linkId: "mbserial-1" }]);
+  });
+
+  it("018-008: a non-actionable wifi link (discovered, not yet connectable) no longer starves a failed, backoff-elapsed mbserial link -- falls through to it", () => {
+    const wifiDiscovered = linkRow({ id: "wifi-1", transport: "wifi", deviceId: 1, state: "discovered" });
+    const mbserialFailed = linkRow({ id: "mbserial-1", transport: "mbserial", deviceId: 1, state: "failed", nextRetryAt: NOW });
+    const input = rows({ devices: [deviceRow(1, true)], links: [wifiDiscovered, mbserialFailed] });
+    expect(plan(input, NOW)).toEqual([{ kind: "connect", linkId: "mbserial-1" }]);
+  });
+
+  it("018-008: an unresponsive wifi link (session already gone) also falls through to a ready mbserial retry", () => {
+    const wifiUnresponsive = linkRow({ id: "wifi-1", transport: "wifi", deviceId: 1, state: "unresponsive" });
+    const mbserialFailed = linkRow({ id: "mbserial-1", transport: "mbserial", deviceId: 1, state: "failed", nextRetryAt: NOW - 1 });
+    const input = rows({ devices: [deviceRow(1, true)], links: [wifiUnresponsive, mbserialFailed] });
+    expect(plan(input, NOW)).toEqual([{ kind: "connect", linkId: "mbserial-1" }]);
+  });
+
+  it("018-008: neither link's backoff has elapsed yet -- no job from either, even with the fall-through change", () => {
+    const wifiFailed = linkRow({ id: "wifi-1", transport: "wifi", deviceId: 1, state: "failed", nextRetryAt: NOW + 5000 });
+    const mbserialFailed = linkRow({ id: "mbserial-1", transport: "mbserial", deviceId: 1, state: "failed", nextRetryAt: NOW + 5000 });
+    const input = rows({ devices: [deviceRow(1, true)], links: [wifiFailed, mbserialFailed] });
+    // Falling through past an ineligible higher-priority link (this
+    // ticket's own fix) only ever finds a job when SOME link is
+    // actually eligible -- it must never manufacture one out of two
+    // links that are both still waiting out their own backoff.
+    expect(plan(input, NOW)).toEqual([]);
+  });
+
+  it("018-008: wifi's own backoff elapses first -- wifi wins over an mbserial link still in its own, later-elapsing backoff window", () => {
+    const wifiFailed = linkRow({ id: "wifi-1", transport: "wifi", deviceId: 1, state: "failed", nextRetryAt: NOW });
+    const mbserialFailed = linkRow({ id: "mbserial-1", transport: "mbserial", deviceId: 1, state: "failed", nextRetryAt: NOW + 5000 });
+    const input = rows({ devices: [deviceRow(1, true)], links: [wifiFailed, mbserialFailed] });
+    expect(plan(input, NOW)).toEqual([{ kind: "connect", linkId: "wifi-1" }]);
+  });
+
+  it("018-008: a device with an already-connected wifi link never opens a second (mbserial) link automatically, even though mbserial is failed with its backoff long elapsed", () => {
+    const wifiConnected = linkRow({ id: "wifi-1", transport: "wifi", deviceId: 1, state: "connected" });
+    const mbserialFailed = linkRow({ id: "mbserial-1", transport: "mbserial", deviceId: 1, state: "failed", nextRetryAt: NOW - 1 });
+    const input = rows({
+      devices: [deviceRow(1, true)],
+      links: [wifiConnected, mbserialFailed],
+      sessions: [{ linkId: "wifi-1" }],
+    });
+    expect(plan(input, NOW)).toEqual([]);
+  });
+
+  it("018-008: preference order is still honored when both links are equally eligible -- wifi wins over mbserial (regression guard against the fall-through change)", () => {
+    const input = rows({
+      devices: [deviceRow(1, true)],
+      links: [
+        linkRow({ id: "wifi-1", transport: "wifi", deviceId: 1 }),
+        linkRow({ id: "mbserial-1", transport: "mbserial", deviceId: 1 }),
+      ],
+    });
+    expect(plan(input, NOW)).toEqual([{ kind: "connect", linkId: "wifi-1" }]);
+  });
+
   it("a radio link is never auto-connected, even when connectable and it is the only link the device has", () => {
     const input = rows({
       devices: [deviceRow(1, true)],
@@ -262,6 +334,18 @@ describe("planUserOpen", () => {
     expect(planUserOpen(input, "radio-B")).toEqual([
       { kind: "switchRelayChild", relayLinkId: "relay-1", closeLinkId: "radio-A", openLinkId: "radio-B" },
     ]);
+  });
+
+  it("an mbrelay pool carries several children at once -- opening a second is a plain connect, never a switch", () => {
+    const input = rows({
+      links: [
+        linkRow({ id: "mbrelay-torture", transport: "mbrelay", address: { host: "torture.local", port: 8760 } }),
+        linkRow({ id: "radio-A", transport: "radio", address: { relayLinkId: "mbrelay-torture", channel: 1, group: 1 }, state: "connected" }),
+        linkRow({ id: "radio-B", transport: "radio", address: { relayLinkId: "mbrelay-torture", channel: 2, group: 1 } }),
+      ],
+      sessions: [{ linkId: "radio-A" }],
+    });
+    expect(planUserOpen(input, "radio-B")).toEqual([{ kind: "connect", linkId: "radio-B" }]);
   });
 
   it("asking to open the link that already occupies its own relay is a no-op", () => {
@@ -954,6 +1038,46 @@ describe("startReconciler -- dead-transport session teardown (bench defect 010 a
       expect(result.refusedReason).toBeUndefined();
       expect(opens).toBe(1);
       expect(store.snapshotRows().sessions.find((s) => s.link_id === "radio-A")).toBeUndefined();
+    } finally {
+      reconciler.stop();
+    }
+  });
+});
+
+// Stakeholder bench (2026-09-14): tovez's usb and wifi links were reopened
+// by hand but kept user_closed=1, so `plan()` never reconnected them on its
+// own again.
+describe("startReconciler -- an explicit reopen clears userClosed", () => {
+  let dir: string;
+  let store: Store;
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), "robot-console-reconciler-test-"));
+    store = new Store(openStoreDb({ filePath: path.join(dir, "console.sqlite") }));
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("requestOpen on a user-closed link clears the flag, so later automatic reconnects are allowed", async () => {
+    store.upsertDevice({ id: ROBOT_SERIAL, name: deviceIdToName(ROBOT_SERIAL), kind: "robot", at: 1 });
+    store.setOwned(ROBOT_SERIAL, true, 1);
+    store.upsertLink({ id: "wifi-1", transport: "wifi", address: { host: "10.0.0.5", port: 4000 }, deviceId: ROBOT_SERIAL, at: 1 });
+    store.setLinkState({ id: "wifi-1", state: "closed_by_user", at: 1, reason: "user-requested", userClosed: true });
+
+    const connector: Connector = {
+      connectAndIdentify: () => new Promise<ConnectedSession>(() => {}),
+    };
+    const reconciler = startReconciler(store, { connector, now: () => NOW, tickIntervalMs: 1_000_000 });
+    try {
+      expect(store.reconcilerRows().links.find((l) => l.id === "wifi-1")?.userClosed).toBe(true);
+      void reconciler.requestOpen("wifi-1");
+      await flush();
+      const row = store.reconcilerRows().links.find((l) => l.id === "wifi-1");
+      expect(row?.state).toBe("connecting");
+      expect(row?.userClosed).toBe(false);
     } finally {
       reconciler.stop();
     }

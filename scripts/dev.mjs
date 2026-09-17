@@ -70,9 +70,21 @@ const hostPort = parsePort(argv, process.env);
 // 015-005: `startServer` no longer composes the store/watchers/
 // reconciler itself -- `startRuntime` (`runtime.ts`) is the composition
 // root, mirroring `cli.ts`'s own `main()`.
+//
+// 018-010: this call passes no `disableSweep` opinion of its own, so it
+// gets `startRuntime`'s default -- sweeper OFF (`runtime.ts`'s own
+// `StartRuntimeOptions.disableSweep` doc comment). Before this change
+// the default was ON, so `npm run dev` swept idle relays; the
+// stakeholder asked for that to stop.
 const runtime = startRuntime();
 const host = await startServer({ store: runtime.store, runtime, port: hostPort });
 console.log(`robot-console: host listening on ${host.url}`);
+
+// Stakeholder instruction (018-010): open Chrome, not the OS default
+// (Safari) -- Vite's `server.open` shells out to the `open` package,
+// which honours `process.env.BROWSER` as the app name to launch, so set
+// it (unless the user already overrode it) before `createServer` runs.
+process.env.BROWSER ??= "google chrome";
 
 const vite = await createServer({
   configFile: path.join(uiRoot, "vite.config.ts"),

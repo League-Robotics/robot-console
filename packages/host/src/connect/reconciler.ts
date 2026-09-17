@@ -41,6 +41,51 @@
  * above) — flagged here for whoever wires the relay sweeper (a future
  * ticket) to confirm against real hardware.
  *
+ * ## 018-008: falling through past an ineligible higher-priority link
+ *
+ * Bench defect 5 (sprint.md; issue
+ * `bench-mbserial-single-client-and-retry.md`): a `failed` `mbserial`
+ * link on an owned robot was observed never retrying at all, even past
+ * its own `next_retry_at`. The cause was not the backoff math (already
+ * correct — `connector.ts`'s `recordFailure`, unchanged by this ticket)
+ * but {@link plan}'s own per-device candidate selection: before this
+ * ticket, it picked the single *first-existing* link in
+ * {@link AUTO_CONNECT_TRANSPORTS} preference order and tested
+ * eligibility only on that one link, never falling through to a
+ * lower-priority transport if the top one turned out ineligible. A
+ * robot reachable both by `wifi` and `mbserial` (every farm bridge this
+ * ticket hardens rides exactly this shape — `gopiv`/`tigez`/`vevov` each
+ * have both a `wifi` and an `mbserial` link) whose `wifi` link sat in
+ * some non-actionable state (`discovered`, `unresponsive`, `stale` —
+ * anything short of `connectable` or a backoff-elapsed `failed`) starved
+ * its own `mbserial` link forever: `wifi` was always `preferred` by
+ * order, was never itself eligible, and nothing ever fell through to
+ * try `mbserial` instead, no matter how long `mbserial`'s own backoff
+ * had elapsed.
+ *
+ * **The rule this ticket implements** (deciding against the
+ * alternative of letting a device open a *second*, simultaneous
+ * network link alongside one it already has connected):
+ *
+ * - A device with **no connected link** (the existing
+ *   {@link deviceHasActiveLink} gate, unchanged) walks
+ *   {@link AUTO_CONNECT_TRANSPORTS} in order and retries the first link
+ *   that is actually eligible right now (`connectable`, or `failed`
+ *   with its backoff elapsed) — falling through past a higher-priority
+ *   link that exists but is not currently actionable, rather than
+ *   giving up the moment the top-preference transport turns out not to
+ *   be ready.
+ * - A device that **already has a connected link** never opens a
+ *   second one automatically — {@link deviceHasActiveLink} still skips
+ *   the whole device before any per-transport selection runs, exactly
+ *   as before this ticket.
+ *
+ * This keeps architecture.md §8 rule 1's "preferred link order" intact
+ * for the common case (two equally-eligible links still resolve to the
+ * higher-priority one — `connector.test.ts`'s/`reconciler.test.ts`'s own
+ * "usb and wifi both connectable" case is unchanged) while fixing the
+ * specific starvation this ticket's bench evidence found.
+ *
  * ## Finding a relay's current child without relying on `relay_leases`
  * alone
  *
@@ -206,13 +251,19 @@ export function plan(rows: ReconcilerRows, now: number): Job[] {
     // Ticket 016-001: once a device's kind is known to be `relay`, its own
     // usb link is never an automatic-pass candidate again -- architecture.md
     // §7.2 ("no auto-opened console session on a relay any more"). A
-    // freshly-enumerated, not-yet-identified board has no way to be
-    // `kind === 'relay'` yet (`watchers/usbWatcher.ts`'s SWD-naming step
-    // seeds it `kind: 'robot'` as a provisional guess, before this device's
-    // first real identify ever runs), so this guard never blocks that
-    // one-time first identify -- only every *subsequent* automatic pass
-    // once `connect/connector.ts`'s own identify has corrected `kind` to
-    // `'relay'`.
+    // freshly-enumerated, not-yet-identified board is never `kind ===
+    // 'relay'` yet either way (018-004: `watchers/usbWatcher.ts`'s
+    // SWD-naming step now omits `kind` entirely rather than seeding a
+    // provisional `'robot'` guess -- a chip id read cannot itself tell a
+    // robot from a relay apart -- so a brand-new row instead gets the
+    // store's own required-column default, still never `'relay'`), so
+    // this guard never blocks that one-time first identify -- only every
+    // *subsequent* automatic pass once `connect/connector.ts`'s own
+    // identify has corrected `kind` to `'relay'` (or a device already
+    // known as a relay from an earlier identify/mDNS discovery, whose
+    // `kind` this guard now correctly keeps blocking forever, since
+    // `usbWatcher.ts`'s own SWD reads can no longer clobber it back to
+    // `'robot'` on a later USB replug -- the exact bug this ticket fixes).
     if (device.kind === "relay") {
       continue;
     }
@@ -221,18 +272,21 @@ export function plan(rows: ReconcilerRows, now: number): Job[] {
       continue;
     }
 
-    let preferred: ReconcilerLinkRow | undefined;
+    // 018-008: walk the preference order for the first link that is
+    // actually *eligible* right now, not merely the first one that
+    // *exists* -- see this module's own doc comment, "018-008: falling
+    // through past an ineligible higher-priority link", for the bug this
+    // fixes and the rule this implements.
+    let candidate: ReconcilerLinkRow | undefined;
     for (const transport of AUTO_CONNECT_TRANSPORTS) {
-      preferred = links.find((link) => link.transport === transport);
-      if (preferred) {
+      const link = links.find((candidateLink) => candidateLink.transport === transport);
+      if (link && isAutoConnectEligible(link, device, now)) {
+        candidate = link;
         break;
       }
     }
-    if (!preferred) {
-      continue;
-    }
-    if (isAutoConnectEligible(preferred, device, now)) {
-      jobs.push({ kind: "connect", linkId: preferred.id });
+    if (candidate) {
+      jobs.push({ kind: "connect", linkId: candidate.id });
     }
   }
 
@@ -266,6 +320,15 @@ function currentRelayChildLinkId(rows: ReconcilerRows, relayLinkId: string, excl
     (candidate) => candidate.id !== excludeLinkId && openSessionLinkIds.has(candidate.id) && relayLinkIdOf(candidate) === relayLinkId,
   );
   return sibling ? sibling.id : null;
+}
+
+/** Whether `relayLinkId` names an mbrelay pool's own link. A pool serves
+ * every TCP connection with a different relay board, so it carries as
+ * many bridges at once as it has boards: opening a second child through
+ * it never closes the first (no {@link Job} `switchRelayChild`). Only a
+ * directly-attached USB radio bridge is one robot at a time. */
+function isRelayPool(rows: ReconcilerRows, relayLinkId: string): boolean {
+  return rows.links.some((candidate) => candidate.id === relayLinkId && candidate.transport === "mbrelay");
 }
 
 /**
@@ -309,7 +372,7 @@ export function planUserOpen(rows: ReconcilerRows, linkId: string): Job[] {
   }
 
   const relayLinkId = relayLinkIdOf(link);
-  if (relayLinkId !== null) {
+  if (relayLinkId !== null && !isRelayPool(rows, relayLinkId)) {
     const currentChildId = currentRelayChildLinkId(rows, relayLinkId, link.id);
     if (currentChildId !== null) {
       return [{ kind: "switchRelayChild", relayLinkId, closeLinkId: currentChildId, openLinkId: link.id }];
@@ -604,7 +667,12 @@ export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler 
       return Promise.resolve();
     }
     inFlight.add(linkId);
-    store.setLinkState({ id: linkId, state: "connecting", at: now() });
+    // A connect only reaches a user-closed link through an explicit ask
+    // (`plan()` skips them), so the link is no longer user-closed. Left
+    // set, `userClosed` outlived the reopen and kept `plan()` from ever
+    // reconnecting that link on its own again (stakeholder bench,
+    // 2026-09-14: tovez's usb and wifi links both stuck at user_closed=1).
+    store.setLinkState({ id: linkId, state: "connecting", at: now(), userClosed: false });
     const controller = new AbortController();
     return connectLink(toConnectorLinkRow(raw), controller.signal)
       .then(

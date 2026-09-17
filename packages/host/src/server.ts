@@ -105,6 +105,7 @@ import { resolveRobotAddress, type RegistryLocation } from "./mbrelayRegistry.js
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
 import { resolveRelease as defaultResolveRelease, fetchAndVerifyHex as defaultFetchAndVerifyHex } from "./releases.js";
 import { LocalHexUploadManager, MAX_UPLOAD_BYTE_LENGTH } from "./localHexUpload.js";
+import { readLocalHex as defaultReadLocalHex } from "./localFirmware.js";
 import { flash as defaultFlash, type FlashOutcome } from "./flash.js";
 import { createFlasher } from "./connect/flasher.js";
 import { flashOverMbflash as defaultFlashOverMbflash, type MbflashOutcome } from "./connect/mbflashClient.js";
@@ -233,6 +234,10 @@ export interface StartServerOptions {
   /** Injectable hex fetch+verify for the same path. Defaults to the real
    * {@link fetchAndVerifyHex}. */
   fetchAndVerifyHex?: typeof defaultFetchAndVerifyHex;
+  /** Reads a firmware kind configured as a local `.hex` path
+   * (out-of-process, 2026-09-16). Defaults to the real
+   * {@link readLocalHex}. */
+  readLocalHex?: typeof defaultReadLocalHex;
   /** Injectable flash orchestration. Defaults to the real {@link flash}
    * (`flash.ts`) — tests substitute a fake that resolves/rejects on
    * demand, e.g. to exercise ticket 005's signal-handling acceptance
@@ -496,6 +501,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   const enumerateDaplinkDevicesFn = options.enumerateDaplinkDevices ?? defaultEnumerateDaplinkDevices;
   const resolveReleaseFn = options.resolveRelease ?? defaultResolveRelease;
   const fetchAndVerifyHexFn = options.fetchAndVerifyHex ?? defaultFetchAndVerifyHex;
+  const readLocalHexFn = options.readLocalHex ?? defaultReadLocalHex;
   const flashFn = options.flash ?? defaultFlash;
   // Sprint 017 ticket 003: flash orchestration's board_owner exclusivity
   // and session close-first handoff now live in `connect/flasher.ts`,
@@ -837,18 +843,34 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
           failFlash(linkId, source, `no firmware source configured for "${source.firmware}"`);
           return;
         }
-        const resolved = await resolveReleaseFn(firmwareSource);
-        if ("reason" in resolved) {
-          failFlash(linkId, source, resolved.message);
-          return;
+        if (firmwareSource.kind === "local-file") {
+          // Configured as a path rather than a repo (out-of-process,
+          // 2026-09-16): the build is already on this machine's disk,
+          // so there is no release to resolve and nothing to download.
+          // Straight to "verifying" -- `localFirmware.ts` explains why
+          // that step is a structural hex check here rather than the
+          // sha256-against-manifest comparison a release gets.
+          setFlashPhase(linkId, source, "verifying");
+          const local = await readLocalHexFn(firmwareSource);
+          if ("reason" in local) {
+            failFlash(linkId, source, local.message);
+            return;
+          }
+          hexText = local.hex.toString("utf-8");
+        } else {
+          const resolved = await resolveReleaseFn(firmwareSource);
+          if ("reason" in resolved) {
+            failFlash(linkId, source, resolved.message);
+            return;
+          }
+          setFlashPhase(linkId, source, "verifying");
+          const fetched = await fetchAndVerifyHexFn(resolved);
+          if ("error" in fetched) {
+            failFlash(linkId, source, fetched.error);
+            return;
+          }
+          hexText = fetched.hex.toString("utf-8");
         }
-        setFlashPhase(linkId, source, "verifying");
-        const fetched = await fetchAndVerifyHexFn(resolved);
-        if ("error" in fetched) {
-          failFlash(linkId, source, fetched.error);
-          return;
-        }
-        hexText = fetched.hex.toString("utf-8");
       } else {
         const uploaded = localHexUpload.consumeUpload(source.uploadId);
         if (uploaded === undefined) {

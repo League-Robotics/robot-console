@@ -81,6 +81,7 @@
 import type { Store } from "../store/index.js";
 import { getFirmwareConfig, type FirmwareConfigMap, type FirmwareSource } from "../config.js";
 import { resolveRelease, type ReleasesFetchResponse, type ReleaseError, type ResolvedRelease } from "../releases.js";
+import { resolveLocalHex } from "../localFirmware.js";
 import type { FirmwareKind } from "../wsMessages.js";
 
 /** `tasks.name` this watcher heartbeats after every per-kind poll
@@ -357,6 +358,34 @@ export function startFirmwareWatcher(
         { repo: null, tag: null, available: null, reason: null, message: null },
         undefined,
       );
+      store.heartbeat(TASK_NAME, now());
+      scheduleNext(kind, pollIntervalMs);
+      return;
+    }
+
+    // A local hex file never touches GitHub, so none of this module's
+    // network machinery applies to it: no conditional GET, no ETag, no
+    // rate-limit backoff. Just stat the file on the ordinary poll
+    // interval -- which is what makes a rebuilt hex show up as a new
+    // build stamp without a host restart. A failed stat still writes a
+    // row (unlike the 403/429 path, which deliberately does not): there
+    // is no rate limit to protect against here, and "the file you
+    // pointed me at is gone" is exactly what the instructor needs to
+    // see. `tag` stays non-null even on failure so `projection.ts`'s
+    // `buildFirmwareAvailability` keeps reporting `configured: true`
+    // and surfaces the real reason, rather than collapsing to the
+    // misleading "not set up for this classroom yet".
+    if (source.kind === "local-file") {
+      const local = await resolveLocalHex(source);
+      if (stopped) {
+        return;
+      }
+      schedule.backoffMs = pollIntervalMs;
+      const localFields: WrittenFields =
+        "reason" in local
+          ? { repo: source.hexPath, tag: "not built", available: false, reason: local.reason, message: local.message }
+          : { repo: source.hexPath, tag: local.tag, available: true, reason: null, message: null };
+      writeIfChanged(kind, schedule, localFields, undefined);
       store.heartbeat(TASK_NAME, now());
       scheduleNext(kind, pollIntervalMs);
       return;

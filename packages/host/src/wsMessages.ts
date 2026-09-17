@@ -270,10 +270,49 @@ export interface SendCommandMessage {
  * most recent poll (`null` if it has never been checked at all) -- the
  * flash modal and Calibration tab firmware panel both show it next to
  * the repo/tag so a student or instructor can tell how fresh the
- * resolved release is. */
+ * resolved release is.
+ *
+ * Out-of-process, 2026-09-16: a configured firmware may now be a hex
+ * file on the host's own disk instead of a GitHub release (see
+ * `config.ts`'s `LocalHexFirmwareSource`), so `configured: true` has a
+ * second arm discriminated by `kind`. `kind` is **optional and absent**
+ * on the release arm, which is what every pre-existing client literal
+ * and test fixture already constructs; only the local-file arm states it
+ * explicitly. Clients branch with `kind === "local-file"`, never by
+ * probing for a field. The local arm carries no `repoUrl` at all --
+ * there is no repo and no release page to link to -- so a client cannot
+ * accidentally render a filesystem path as a URL. Its `tag` is the
+ * file's build stamp (`localFirmware.ts`'s `formatBuildStamp`, derived
+ * from the hex's mtime): for a locally built image, *which build this
+ * is* is exactly what a tag names. */
 export type FirmwareAvailability =
   | { configured: false }
-  | { configured: true; repoUrl: string; tag: string; available: boolean; checkedAt: number | null; reason?: string; message?: string };
+  | {
+      configured: true;
+      kind?: "release";
+      repoUrl: string;
+      tag: string;
+      available: boolean;
+      checkedAt: number | null;
+      reason?: string;
+      message?: string;
+    }
+  | {
+      configured: true;
+      kind: "local-file";
+      /** Absolute path to the hex this firmware kind flashes. */
+      hexPath: string;
+      /** `hexPath`'s basename -- what the UI names, so it never has to
+       * split a path itself. */
+      fileName: string;
+      /** Human-readable build stamp from the file's mtime (e.g.
+       * `"built 2026-09-13 10:52"`), shown where a release's tag is. */
+      tag: string;
+      available: boolean;
+      checkedAt: number | null;
+      reason?: string;
+      message?: string;
+    };
 
 /** One link as rendered on the front page -- inside a {@link
  * SnapshotDevice.links} list when its `deviceId` is known, or inside

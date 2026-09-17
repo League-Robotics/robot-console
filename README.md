@@ -79,8 +79,33 @@ out of sync with the new root version, which dirties the very next
 
 The two flashable firmware sources -- the relay's and the robot's --
 are configured via `ROBOT_CONSOLE_RELAY_FIRMWARE` /
-`ROBOT_CONSOLE_ROBOT_FIRMWARE`, each a `<github-repo-url>[:<tag>]`
-string (`tag` defaults to `latest`). At every host startup, an importer
+`ROBOT_CONSOLE_ROBOT_FIRMWARE`. Each takes **either** of two forms:
+
+- A **GitHub release**: `<github-repo-url>[:<tag>]` (`tag` defaults to
+  `latest`). The host resolves the release, downloads `MICROBIT.hex`,
+  and verifies it against the `MICROBIT.hex.txt` manifest's sha256.
+- A **local hex file**: a path to a `.hex` built on this machine, e.g.
+  `/Volumes/Proj/proj/RobotProjects/microbit-radio-relay/MICROBIT.hex`
+  or `~/nezha-robot-template/built/binary.hex`. This is what to use to
+  flash your own build instead of whatever GitHub last published.
+
+A value counts as a path when it has no URL scheme and either starts
+with `/`, `~/`, `./`, `../` or ends in `.hex`; `~` is expanded and
+relative paths are resolved once, at parse time. No GitHub repo URL
+ends in `.hex`, so the two forms cannot collide.
+
+For a local hex there is no release lookup and no download, and
+deliberately no sha256 check -- a local build ships no manifest, and
+there is no independent digest to check the bytes against. Instead the
+host structurally validates the file as Intel hex before flashing,
+which catches the failure mode that actually occurs locally: a
+truncated or still-being-written build. The flash UI shows the file
+name and a build stamp from its mtime (e.g. `built 2026-09-13 10:52`)
+where a release's tag would go, as plain text rather than a link. The
+watcher re-stats the file on its normal poll interval, so a rebuild
+shows up as a new build stamp without restarting the host.
+
+At every host startup, an importer
 resolves these in the following order and writes the result into the
 host's own SQLite store (`console.sqlite`'s `settings` table) --
 **an explicit environment variable always wins over a stale stored

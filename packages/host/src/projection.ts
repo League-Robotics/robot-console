@@ -89,6 +89,8 @@ import type {
   SnapshotLink,
   SnapshotRelay,
 } from "./wsMessages.js";
+import path from "node:path";
+import { isLocalHexPath } from "./config.js";
 
 const FIRMWARE_KINDS: readonly FirmwareKind[] = ["relay", "robot"];
 
@@ -428,13 +430,37 @@ function buildFirmwareAvailability(row: ProjectionFirmwareRow | undefined): Firm
     return { configured: false };
   }
   const available = row.available ?? false;
+  const failure = {
+    ...(!available && row.reason !== null ? { reason: row.reason } : {}),
+    ...(!available && row.message !== null ? { message: row.message } : {}),
+  };
+
+  // `firmware.repo` stores verbatim whatever was configured for this
+  // kind, so deciding what a stored string *means* is exactly the
+  // question `config.ts`'s `isLocalHexPath` already answers when it
+  // parses that same string (out-of-process, 2026-09-16). Reusing the
+  // one predicate here -- rather than persisting a second discriminator
+  // column that could drift out of step with the value it describes --
+  // is what guarantees the parse and the projection can never disagree.
+  if (isLocalHexPath(row.repo)) {
+    return {
+      configured: true,
+      kind: "local-file",
+      hexPath: row.repo,
+      fileName: path.basename(row.repo),
+      tag: row.tag,
+      available,
+      checkedAt: row.checkedAt,
+      ...failure,
+    } as FirmwareAvailability;
+  }
+
   return {
     configured: true,
     repoUrl: row.repo,
     tag: row.tag,
     available,
     checkedAt: row.checkedAt,
-    ...(!available && row.reason !== null ? { reason: row.reason } : {}),
-    ...(!available && row.message !== null ? { message: row.message } : {}),
+    ...failure,
   } as FirmwareAvailability;
 }

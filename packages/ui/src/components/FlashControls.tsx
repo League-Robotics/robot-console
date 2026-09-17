@@ -340,9 +340,13 @@ export function FlashControls({ link }: FlashControlsProps) {
               ) : (
                 relaySource && (
                   <p className="device-flash-source" data-testid="flash-source-relay">
-                    <a href={relaySource.href} target="_blank" rel="noreferrer noopener">
-                      {relaySource.repoName}
-                    </a>{" "}
+                    {relaySource.href === null ? (
+                      relaySource.repoName
+                    ) : (
+                      <a href={relaySource.href} target="_blank" rel="noreferrer noopener">
+                        {relaySource.repoName}
+                      </a>
+                    )}{" "}
                     {relaySource.tag} · {relaySource.checkedText}
                   </p>
                 )
@@ -368,9 +372,13 @@ export function FlashControls({ link }: FlashControlsProps) {
               ) : (
                 robotSource && (
                   <p className="device-flash-source" data-testid="flash-source-robot">
-                    <a href={robotSource.href} target="_blank" rel="noreferrer noopener">
-                      {robotSource.repoName}
-                    </a>{" "}
+                    {robotSource.href === null ? (
+                      robotSource.repoName
+                    ) : (
+                      <a href={robotSource.href} target="_blank" rel="noreferrer noopener">
+                        {robotSource.repoName}
+                      </a>
+                    )}{" "}
                     {robotSource.tag} · {robotSource.checkedText}
                   </p>
                 )

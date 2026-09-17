@@ -148,9 +148,13 @@ export function CalibrationFirmwarePanel({ device, link }: CalibrationFirmwarePa
           ) : (
             robotSource && (
               <p className="device-flash-source" data-testid="calibration-flash-source">
-                <a href={robotSource.href} target="_blank" rel="noreferrer noopener">
-                  {robotSource.repoName}
-                </a>{" "}
+                {robotSource.href === null ? (
+                  robotSource.repoName
+                ) : (
+                  <a href={robotSource.href} target="_blank" rel="noreferrer noopener">
+                    {robotSource.repoName}
+                  </a>
+                )}{" "}
                 {robotSource.tag} · {robotSource.checkedText}
               </p>
             )

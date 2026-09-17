@@ -57,15 +57,57 @@
 import type { FirmwareKind } from "./wsMessages.js";
 import type { Store } from "./store/index.js";
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 
-/** A resolved firmware source: a GitHub repo URL and the release tag
- * to fetch from it (`"latest"` unless the configured value pins a
- * specific one). See `releases.ts` (ticket 003) for how this is
- * resolved to an actual release/asset. */
-export interface FirmwareSource {
+/** A resolved firmware source that lives in a GitHub release: a repo URL
+ * and the release tag to fetch from it (`"latest"` unless the configured
+ * value pins a specific one). See `releases.ts` (ticket 003) for how
+ * this is resolved to an actual release/asset.
+ *
+ * `kind` is **optional** here, and {@link parseFirmwareSource} omits it
+ * when it builds one. A GitHub release was the only kind of firmware
+ * source this codebase had until local hex paths were added
+ * (out-of-process, 2026-09-16), so every pre-existing construction site
+ * and test fixture in the tree writes the bare `{repoUrl, tag}` shape.
+ * Making the discriminant optional on *this* arm (and required on
+ * {@link LocalHexFirmwareSource}) keeps all of them valid while still
+ * letting `source.kind === "local-file"` narrow correctly -- the check
+ * every consumer actually performs. */
+export interface ReleaseFirmwareSource {
+  kind?: "release";
   repoUrl: string;
   tag: string;
 }
+
+/** A resolved firmware source that is simply a hex file already sitting
+ * on this machine's disk (out-of-process, 2026-09-16).
+ *
+ * The stakeholder builds relay and robot firmware locally
+ * (`microbit-radio-relay`'s own `MICROBIT.hex` at its repo root, the
+ * robot template's `built/binary.hex`) and wants the console's existing
+ * Flash buttons to deploy *that* build rather than whatever GitHub last
+ * published. Pointing the env var at the file is the whole interface:
+ * no release lookup, no download, and -- deliberately -- no sha256
+ * manifest, because a locally built hex has no `MICROBIT.hex.txt`
+ * alongside it and nothing to check one against. See
+ * `localFirmware.ts`'s own module doc comment for what replaces that
+ * verification step.
+ *
+ * `hexPath` is always absolute and `~`-expanded by the time it gets
+ * here -- {@link parseFirmwareSource} resolves it once, so no consumer
+ * has to care what the raw configured string looked like. */
+export interface LocalHexFirmwareSource {
+  kind: "local-file";
+  hexPath: string;
+}
+
+/** Where one {@link FirmwareKind}'s flashable image comes from: a GitHub
+ * release, or a hex file on this machine's disk. Discriminated by
+ * `kind`, which is absent for the (historical, far more common) release
+ * shape -- see {@link ReleaseFirmwareSource}'s own doc comment for why
+ * it is optional there rather than required on both arms. */
+export type FirmwareSource = ReleaseFirmwareSource | LocalHexFirmwareSource;
 
 /** One entry per {@link FirmwareKind}; `undefined` means that
  * firmware's `settings` row was absent, empty, or otherwise could not
@@ -107,8 +149,64 @@ export const SETTINGS_KEY_BY_FIRMWARE: Record<FirmwareKind, string> = {
  * whole trimmed string as the repo URL with the default tag, rather
  * than producing an unusable empty `repoUrl`.
  */
+/** Matches a URL scheme prefix (`https://`, `http://`, `git+ssh://`, …).
+ * Used only to rule a value *out* of being a local path -- see
+ * {@link isLocalHexPath}. */
+const URL_SCHEME_PATTERN = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/**
+ * Whether a configured firmware value names a hex file on this machine
+ * rather than a GitHub repo (out-of-process, 2026-09-16).
+ *
+ * This is the **single source of truth** for that question. It is used
+ * both when parsing the configured string ({@link parseFirmwareSource})
+ * and when interpreting the `firmware.repo` column the resolved value
+ * was stored in (`projection.ts`'s `buildFirmwareAvailability`), so the
+ * two can never disagree about what a given stored string means -- the
+ * column holds exactly what was configured, and exactly one predicate
+ * decides how to read it.
+ *
+ * A value is a local path when it carries no URL scheme **and** either
+ * looks like a path (`/…`, `~/…`, `./…`, `../…`) or ends in `.hex`. The
+ * `.hex` suffix is what makes a repo-relative `build/MICROBIT.hex` work
+ * without a leading `./`; no GitHub repo URL ends in `.hex`, so the two
+ * cases cannot collide. Never throws.
+ */
+export function isLocalHexPath(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0 || URL_SCHEME_PATTERN.test(trimmed)) {
+    return false;
+  }
+  return (
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("~/") ||
+    trimmed.startsWith("./") ||
+    trimmed.startsWith("../") ||
+    trimmed.toLowerCase().endsWith(".hex")
+  );
+}
+
+/** Expand a leading `~`/`~/` to this user's home directory. Any other
+ * value (including a `~user` form, which this deliberately does not
+ * support) is returned untouched. */
+function expandHome(rawPath: string): string {
+  if (rawPath === "~") {
+    return homedir();
+  }
+  if (rawPath.startsWith("~/")) {
+    return path.join(homedir(), rawPath.slice(2));
+  }
+  return rawPath;
+}
+
 export function parseFirmwareSource(raw: string): FirmwareSource {
   const trimmed = raw.trim();
+  // Checked before any `:`-splitting below: a path is never a
+  // `<repo-url>:<tag>` pair, and splitting one on a stray colon would
+  // silently truncate it into an unopenable file name.
+  if (isLocalHexPath(trimmed)) {
+    return { kind: "local-file", hexPath: path.resolve(expandHome(trimmed)) };
+  }
   const lastColon = trimmed.lastIndexOf(":");
   if (lastColon === -1) {
     return { repoUrl: trimmed, tag: DEFAULT_TAG };

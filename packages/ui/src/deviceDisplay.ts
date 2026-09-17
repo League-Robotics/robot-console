@@ -160,6 +160,18 @@ export function firmwareDisabledReason(availability: FirmwareAvailability | unde
       return "The configured build can't be found — ask your instructor to check the setup.";
     case "network":
       return "Couldn't check for firmware just now — try again in a moment.";
+    // Out-of-process, 2026-09-16: reasons only a local-hex source can
+    // produce (`host/src/localFirmware.ts`'s `LocalHexError`). Kept in
+    // the same calm, student-facing register as every branch above --
+    // the path that is actually wrong is instructor detail, and belongs
+    // in `firmwareDiagnosticDetail`, not here.
+    case "file-missing":
+    case "not-a-file":
+      return "The build file isn't where it's expected — ask your instructor to check the setup.";
+    case "unreadable":
+      return "The build file couldn't be read — ask your instructor to check the setup.";
+    case "invalid-hex":
+      return "The build file looks incomplete — if it's still building, try again in a moment.";
     default:
       return "This firmware isn't available right now.";
   }
@@ -189,6 +201,11 @@ export function firmwareDiagnosticDetail(availability: FirmwareAvailability | un
   if (availability.message === undefined) {
     return null;
   }
+  if (availability.kind === "local-file") {
+    // The configured path *is* the diagnostic here -- "no file at
+    // /Volumes/…/MICROBIT.hex" is the whole answer for whoever set it.
+    return `Checked ${availability.hexPath}: ${availability.message}`;
+  }
   return `Checked ${availability.repoUrl} (tag: ${availability.tag}): ${availability.message}`;
 }
 
@@ -215,6 +232,13 @@ export function repoShortName(repoUrl: string): string {
 export function releaseDisplayName(availability: FirmwareAvailability | undefined): string | null {
   if (!availability || !availability.configured) {
     return null;
+  }
+  if (availability.kind === "local-file") {
+    // e.g. "MICROBIT.hex built 2026-09-13 10:52" -- the same
+    // "<what> <which build>" shape a release gets, so flash progress
+    // copy ("Flashing MICROBIT.hex built …: writing…") reads the same
+    // either way and no call site needs to know which kind it has.
+    return `${availability.fileName} ${availability.tag}`;
   }
   return `${repoShortName(availability.repoUrl)} ${availability.tag}`;
 }
@@ -255,15 +279,24 @@ export function relativeTimeText(at: number, now: number = Date.now()): string {
 export function firmwareSourceText(
   availability: FirmwareAvailability | undefined,
   now: number = Date.now(),
-): { href: string; repoName: string; tag: string; checkedText: string } | null {
+): { href: string | null; repoName: string; tag: string; checkedText: string } | null {
   if (!availability || !availability.configured) {
     return null;
+  }
+  const checkedText =
+    availability.checkedAt === null ? "checked: never" : `checked ${relativeTimeText(availability.checkedAt, now)}`;
+  if (availability.kind === "local-file") {
+    // `href: null` is the signal to render plain text instead of a
+    // link (out-of-process, 2026-09-16). A local build has no release
+    // page -- and a `file://` link would be worse than none, since it
+    // either does nothing or opens the raw hex in a browser tab.
+    return { href: null, repoName: availability.fileName, tag: availability.tag, checkedText };
   }
   return {
     href: `${availability.repoUrl}/releases/tag/${availability.tag}`,
     repoName: repoShortName(availability.repoUrl),
     tag: availability.tag,
-    checkedText: availability.checkedAt === null ? "checked: never" : `checked ${relativeTimeText(availability.checkedAt, now)}`,
+    checkedText,
   };
 }
 

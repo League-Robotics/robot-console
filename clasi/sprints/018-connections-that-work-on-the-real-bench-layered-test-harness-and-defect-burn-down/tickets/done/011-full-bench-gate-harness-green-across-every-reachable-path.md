@@ -212,3 +212,55 @@ this sprint's scope) but worth a look.
 `bench-018-011-report-v2-screenshots/bench-run.7GR9kO/`. Scoped tests
 `npx vitest run scripts/bench` (245 passed) and `npm run typecheck`
 green in the foreground.
+
+## Close-gate addendum: reopened once for a leaked test timer (team-lead, 2026-09-17)
+
+`close_sprint`'s full-suite run — the sprint's single test gate — came
+back **2331 tests passed, 126 files passed, exit code 1**: vitest caught
+one unhandled error. This ticket was reopened to fix it, per its own
+Implementation Plan's allowance for a defect surfaced by the gate.
+
+**The error**: `Error: database is not open` thrown from
+`Store.reconcilerRows` (`store/index.ts:1589`) via `fail()`
+(`harvester.ts:214`) via `Timeout.pollStatus` (`harvester.ts:242`) — a
+STATUS-poll `setInterval` still ticking on real timers after a test had
+called `store.close()`, throwing out of a bare timer callback where
+nothing could catch it. Introduced by this sprint's own `262e84a`.
+
+**Cause: test-teardown omission, not a product defect.** Three tests in
+`harvester.test.ts` never drive their session to a natural death, so
+`fail()`/`stopPolling()` never runs before the store closes: "any line
+from the robot, not only a STATUS reply, keeps the link alive" (acks keep
+resetting the miss counter) and both 018-009 "defers to a pending foreign
+query" tests (`missedPollLimit: 1000` guarantees `fail()` cannot fire
+within the test's lifetime).
+
+**Fix** (`3f4e109`, `packages/host/src/connect/harvester.test.ts` only —
+no product code): `seededStore()` and `connectedLink()` register what
+they create into module-level sets, and one `afterEach` closes every
+registered link first — routing through the harvester's own existing
+`onClose → fail() → stopPolling()` path while the store is still open,
+the only public way to stop a session's poll timer — then closes every
+registered store. The 22 individual `store.close()` call sites are gone,
+so a future test using these fixtures cannot reintroduce the leak by
+forgetting one, which is exactly how this arose.
+
+**Scope deliberately held**: while tracing this, the programmer found
+that `HarvesterAttach` (`connect/connector.ts`) exposes **no teardown
+method at all**, and `runtime.ts`'s `stop()` never stops the poll
+interval before `store.close()` — the same hazard `relaySweeper.stop()`
+(016-008) exists to prevent. It is **latent, not live**: `cli.ts` calls
+`process.exit(0)` synchronously after `runtime.stop()` resolves, so no
+pending interval callback gets a turn. Adding that seam means changing
+the `connector.ts` interface and wiring `runtime.ts` — too much to ride
+along on a close-recovery pass, after this sprint's bench verification
+was already run and signed off. Filed as
+`clasi/issues/harvester-has-no-teardown-seam.md` for the next sprint.
+
+**Verification** (team-lead, independently, not taken on the
+programmer's report): `npx vitest run
+packages/host/src/connect/harvester.test.ts` → 22 passed, **no "Errors"
+line**, exit 0. Programmer additionally reported `npm test` full suite
+126 files / 2331 tests passed with `EXIT_CODE=0`, and a clean `npm run
+typecheck`; `close_sprint`'s own gate run below is the authoritative
+confirmation of that.

@@ -1,7 +1,7 @@
 ---
 id: 018
 title: 'Connections that work on the real bench: layered test harness and defect burn-down'
-status: executing
+status: done
 branch: sprint/018-connections-that-work-on-the-real-bench-layered-test-harness-and-defect-burn-down
 use-cases:
 - SUC-001

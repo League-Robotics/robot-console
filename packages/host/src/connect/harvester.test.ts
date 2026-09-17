@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { openStoreDb } from "../store/db.js";
 import { Store } from "../store/index.js";
 import { LineLink } from "../link/LineLink.js";
@@ -13,22 +13,65 @@ import { createHarvester, type HarvesterTelemetryEvent } from "./harvester.js";
 // registry's own `reportDesyncIfNeeded` tests. No real serial/TCP I/O --
 // every raw line is pushed straight through a `FakeByteStream`.
 
+// Sprint 018 close-gate fix (2026-09-17, ticket 018-011, no separate
+// harvester ticket): `createHarvester`'s own `pollStatus` interval is a
+// live `setInterval`, and nothing in `HarvesterAttach` (ticket 001's own
+// narrow seam -- `attach()` only, no teardown) can stop it from outside
+// the module. A test whose link never dies naturally (no missed-poll
+// ceiling reached, no transport close) leaves that interval running
+// with real timers past its own `store.close()` -- confirmed live via
+// `npx vitest run` on this file: "any line from the robot ... keeps the
+// link alive" (below) left exactly this kind of interval running, which
+// fired minutes later against an already-closed database and threw
+// "database is not open" out of a bare timer callback (`ERR_INVALID_
+// STATE`), an uncaught exception vitest reported separately from the
+// (all-passing) test results.
+//
+// `LineLink.close()` is the only public, non-internals-reaching way this
+// suite has to stop a session's poll timer: closing the link fires the
+// harvester's own `onClose` handler, which routes through `fail()` (the
+// module's own "exactly one error path") and clears the interval --
+// exactly what a real caller closing a link already does. `seededStore()`
+// and `connectedLink()` below register whatever they create in these two
+// sets; the single `afterEach` closes every registered link (letting its
+// harvester's own `fail()` stop polling while the store is still open),
+// then closes every registered store. This is automatic -- a future test
+// in this file that simply calls the existing fixtures cannot reintroduce
+// the leak by forgetting a teardown call, the way 22 individual
+// `store.close()` call sites just did.
+const activeStores = new Set<Store>();
+const activeLinks = new Set<LineLink>();
+
+afterEach(async () => {
+  for (const link of activeLinks) {
+    await link.close();
+  }
+  activeLinks.clear();
+  for (const store of activeStores) {
+    store.close();
+  }
+  activeStores.clear();
+});
+
 /** A fresh in-memory, fully-migrated store, with `link-1`/`device-1`
  * already wired up as a connected USB session -- the shape
  * `connect/connector.ts` itself would have already written by the time
- * `HarvesterAttach.attach()` is ever called. */
+ * `HarvesterAttach.attach()` is ever called. Registered for automatic
+ * teardown -- see the module doc comment above. */
 function seededStore(): Store {
   const store = new Store(openStoreDb({ filePath: ":memory:" }));
   store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 0 });
   store.upsertLink({ id: "link-1", transport: "usb", address: { path: "/dev/x" }, deviceId: 1198504156, at: 0 });
   store.openSession("link-1", 0);
+  activeStores.add(store);
   return store;
 }
 
 /** A connected `LineLink` over a fresh `FakeByteStream`, resolved past
  * `connect()` -- mirrors `connector.test.ts`'s own `flush()`-then-
  * `resolveOpen()` two-step, needed because `LineLink.connect()` awaits
- * `stream.open()` before attaching its own data listeners. */
+ * `stream.open()` before attaching its own data listeners. Registered
+ * for automatic teardown -- see the module doc comment above. */
 async function connectedLink(): Promise<{ link: LineLink; stream: FakeByteStream }> {
   const stream = new FakeByteStream();
   const link = new LineLink(stream, { connectTimeoutMs: 5000 });
@@ -36,6 +79,7 @@ async function connectedLink(): Promise<{ link: LineLink; stream: FakeByteStream
   await new Promise((resolve) => setTimeout(resolve, 0));
   stream.resolveOpen();
   await promise;
+  activeLinks.add(link);
   return { link, stream };
 }
 
@@ -75,7 +119,6 @@ describe("createHarvester -- sessions.answered_at (ticket 018-010)", () => {
     await flush();
 
     expect(store.snapshotRows().sessions.find((s) => s.link_id === "link-1")?.answered_at).toBe(5000);
-    store.close();
   });
 
   it("is set on any other reply verb too (estop, funcs, and the default fall-through)", async () => {
@@ -95,7 +138,6 @@ describe("createHarvester -- sessions.answered_at (ticket 018-010)", () => {
     stream.emitData("ver 1.2.3\n");
     await flush();
     expect(store.snapshotRows().sessions.find((s) => s.link_id === "link-1")?.answered_at).toBe(7000);
-    store.close();
   });
 
   // A missed `STATUS` poll (no reply at all) must never set answered_at --
@@ -115,7 +157,6 @@ describe("createHarvester -- sessions.answered_at (ticket 018-010)", () => {
 
     expect(store.snapshotRows().links.find((l) => l.id === "link-1")?.state).toBe("unresponsive");
     expect(store.snapshotRows().sessions.find((s) => s.link_id === "link-1")?.answered_at).toBeNull();
-    store.close();
   });
 });
 
@@ -134,7 +175,6 @@ describe("createHarvester -- status/funcs/thdr+t", () => {
     const parsed = JSON.parse(row?.robot_status as string) as { ready: boolean; active: boolean };
     expect(parsed.ready).toBe(true);
     expect(parsed.active).toBe(true);
-    store.close();
   });
 
   it("estop flips robotStatus.estopped immediately, ahead of the next status poll", async () => {
@@ -149,7 +189,6 @@ describe("createHarvester -- status/funcs/thdr+t", () => {
     const row = store.snapshotRows().sessions.find((s) => s.link_id === "link-1");
     const parsed = JSON.parse(row?.robot_status as string) as { estopped: boolean };
     expect(parsed.estopped).toBe(true);
-    store.close();
   });
 
   it("funcs accumulates RobotFunction entries onto sessions.functions", async () => {
@@ -165,7 +204,6 @@ describe("createHarvester -- status/funcs/thdr+t", () => {
     const row = store.snapshotRows().sessions.find((s) => s.link_id === "link-1");
     const functions = JSON.parse(row?.functions as string) as Array<{ name: string; signature?: string }>;
     expect(functions).toEqual([{ name: "drive", signature: "x y" }, { name: "stop" }]);
-    store.close();
   });
 
   it("thdr/t forward to the telemetry sink and never touch the sessions row", async () => {
@@ -189,7 +227,6 @@ describe("createHarvester -- status/funcs/thdr+t", () => {
     const row = store.snapshotRows().sessions.find((s) => s.link_id === "link-1");
     expect(row?.robot_status).toBeNull();
     expect(row?.functions).toBeNull();
-    store.close();
   });
 
   it("a t line with no header held yet is dropped silently -- no telemetry event, no crash", async () => {
@@ -203,7 +240,6 @@ describe("createHarvester -- status/funcs/thdr+t", () => {
     await flush();
 
     expect(onTelemetry).not.toHaveBeenCalled();
-    store.close();
   });
 });
 
@@ -222,7 +258,6 @@ describe("createHarvester -- unresponsive, exactly once", () => {
     const unresponsiveCalls = setLinkState.mock.calls.filter(([input]) => input.state === "unresponsive");
     expect(unresponsiveCalls).toHaveLength(1);
     expect(store.snapshotRows().links.find((l) => l.id === "link-1")?.state).toBe("unresponsive");
-    store.close();
   });
 
   // Stakeholder bench (2026-09-14): a radio link turned off read
@@ -241,7 +276,6 @@ describe("createHarvester -- unresponsive, exactly once", () => {
     const row = store.snapshotRows().links.find((l) => l.id === "link-1");
     expect(row?.state).toBe("closed_by_user");
     expect(row?.state_reason).toBe("user-requested");
-    store.close();
   });
 
   // Stakeholder bench (2026-09-14): tovez was declared dead over Wi-Fi
@@ -259,7 +293,6 @@ describe("createHarvester -- unresponsive, exactly once", () => {
     }
 
     expect(store.snapshotRows().links.find((l) => l.id === "link-1")?.state).not.toBe("unresponsive");
-    store.close();
   });
 
   it("a Wi-Fi link gets a 5-poll window before it is declared dead, and says so in the reason", async () => {
@@ -277,7 +310,6 @@ describe("createHarvester -- unresponsive, exactly once", () => {
     const row = store.snapshotRows().links.find((l) => l.id === "link-1");
     expect(row?.state).toBe("unresponsive");
     expect(row?.state_reason).toBe("no reply to 5 STATUS polls -- link presumed dead");
-    store.close();
   });
 
   it("a telemetry frame refreshes answered_at, so a link that only streams telemetry still reads as Linked", async () => {
@@ -290,7 +322,6 @@ describe("createHarvester -- unresponsive, exactly once", () => {
     await flush();
 
     expect(store.snapshotRows().sessions.find((s) => s.link_id === "link-1")?.answered_at).toBe(5000);
-    store.close();
   });
 
   it("three missed STATUS polls (a usb link, not just wifi) marks unresponsive exactly once and stops polling", async () => {
@@ -305,7 +336,6 @@ describe("createHarvester -- unresponsive, exactly once", () => {
     const unresponsiveCalls = setLinkState.mock.calls.filter(([input]) => input.state === "unresponsive");
     expect(unresponsiveCalls).toHaveLength(1);
     expect(store.snapshotRows().links.find((l) => l.id === "link-1")?.state).toBe("unresponsive");
-    store.close();
   });
 
   it(
@@ -339,7 +369,6 @@ describe("createHarvester -- unresponsive, exactly once", () => {
       // this used to be undefined and reached the store as "transport
       // closed").
       expect(closed?.message).toBe("no reply to 3 STATUS polls -- link presumed dead");
-      store.close();
     },
   );
 });
@@ -361,7 +390,6 @@ describe("createHarvester -- id reply stores program/version (018-016)", () => {
     const device = store.snapshotRows().devices.find((d) => d.id === 1198504156);
     expect(device?.program).toBe("calibration-0.20260913.1");
     expect(device?.version).toBe("1.20260912.8");
-    store.close();
   });
 
   it("an id reply naming a different device is never written -- devices row stays untouched", async () => {
@@ -378,7 +406,6 @@ describe("createHarvester -- id reply stores program/version (018-016)", () => {
     const device = store.snapshotRows().devices.find((d) => d.id === 1198504156);
     expect(device?.program).toBeNull();
     expect(device?.version).toBeNull();
-    store.close();
   });
 
   it("a malformed id reply (too few fields) is ignored, no throw", async () => {
@@ -397,7 +424,6 @@ describe("createHarvester -- id reply stores program/version (018-016)", () => {
     // (this module's own "id ... update the session row" contract) --
     // confirmed via answeredAt rather than throwing.
     expect(store.snapshotRows().sessions.find((s) => s.link_id === "link-1")?.answered_at).not.toBeNull();
-    store.close();
   });
 });
 
@@ -425,7 +451,6 @@ describe("createHarvester -- resync notice (reportDesyncIfNeeded)", () => {
 
     expect(notices).toHaveLength(1);
     expect(notices[0]).toContain("resynced automatically");
-    store.close();
   });
 
   it("classification other than robot never sends ID or polls STATUS", async () => {
@@ -442,7 +467,6 @@ describe("createHarvester -- resync notice (reportDesyncIfNeeded)", () => {
 
     expect(stream.writes.some((w) => w.bytes.startsWith("ID"))).toBe(false);
     expect(stream.writes.some((w) => w.bytes.startsWith("STATUS"))).toBe(false);
-    store.close();
   });
 });
 
@@ -496,7 +520,6 @@ describe("createHarvester -- STATUS poll defers to a pending foreign query (018-
     expect(statusWriteCount(stream)).toBe(statusCountBeforeForeignQuery);
     // A skipped tick is not a miss -- confirm the watchdog never fired.
     expect(setLinkState.mock.calls.some(([input]) => input.state === "unresponsive")).toBe(false);
-    store.close();
   });
 
   it("resumes polling once the foreign query settles", async () => {
@@ -519,6 +542,5 @@ describe("createHarvester -- STATUS poll defers to a pending foreign query (018-
 
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS * 2));
     expect(statusWriteCount(stream)).toBeGreaterThan(statusCountBeforeForeignQuery);
-    store.close();
   });
 });

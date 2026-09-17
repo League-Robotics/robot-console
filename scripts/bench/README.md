@@ -294,10 +294,12 @@ every device x path Layer 2's own report marked as attempted (`layer2
 paths are real "robot reached over this transport" rows, so Layer 3
 reads that filtering rather than re-deriving it.
 
-For each path: reach the robot's page (front page -> Connect, or a
-relay card's own robot picker + Connect for `radio-via-mbrelay:<pool>`,
-or the card's arrow directly if already Linked) -> assert the header
-says `Linked` -> type `ID` into the console (`getByLabel("Line to
+For each path: reach the robot's page (front page -> Connect, or the
+robot's own radio chip for `radio-via-mbrelay:<pool>` -- the relay
+card's robot picker was retired 2026-09-14; a robot's own radio chip
+now finds a bridge itself -- or the card's arrow directly if already
+Linked) -> assert the header says `Linked` -> type `ID` into the
+console (`getByLabel("Line to
 send")`) -- or, for a path whose own device `kind` is `"relay"`, `?`
 instead (018-004: a relay has no `ID` verb; `?`, not `HELLO`, since live
 verification found a relay does not reliably repeat its full banner
@@ -306,8 +308,9 @@ its own `# channel: ...` status reply) renders within 5s -> assert no
 enabled drive/send control on a page that isn't Linked -> assert no raw
 internal id (`connector:`, `relayBridger:`, `link "`, `candidate "`,
 `usb-9906`) appears anywhere in the page's own text -> (relay paths
-only) assert the relay card actually named the robot it was asked to
-reach. Screenshots are saved at each step under `--screenshot-dir`.
+only) assert the robot's radio link via the specific pool under test is
+actually usable. Screenshots are saved at each step under
+`--screenshot-dir`.
 Never clicks a drive button, never types a motion verb.
 
 ```sh

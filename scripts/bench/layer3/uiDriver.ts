@@ -1,19 +1,25 @@
 /**
  * uiDriver.ts — Layer 3's Playwright driving logic: load the real,
  * production-built UI (`packages/ui/dist`, served by a real host) in
- * headless Chrome, click Connect (or a relay card's robot picker +
- * Connect, or a card's own arrow if already Linked), type `ID` in the
- * console, and assert the reply/header/controls/card-text truthfulness
- * this ticket's acceptance criteria require.
+ * headless Chrome, click Connect (or a robot's own radio chip for
+ * `radio-via-mbrelay:<pool>`, or a card's own arrow if already Linked),
+ * type `ID` in the console, and assert the reply/header/controls/
+ * card-text truthfulness this ticket's acceptance criteria require.
  *
  * Selectors below are the same `data-testid`/class contract the UI's
  * own components already commit to (`FrontPage.tsx`'s `device-card-*`/
- * `device-connection-*`/`relay-quick-connect-*`, `AppHeader.tsx`'s
- * `app-header-connection*`, `DeviceConsole.tsx`'s `console-send-input`/
- * `console-log`/`console-line-*` and its `aria-label="Line to send"`) —
- * verified against the real running app in this same session's own
- * prior bench walks (`scratchpad/team-lead-walk2.mjs`,
- * `scratchpad/ui-walk-after.mjs`), not guessed from source alone.
+ * `device-connection-*`/`device-radio-chip-*`/`device-radio-toggle-*`,
+ * `AppHeader.tsx`'s `app-header-connection*`, `DeviceConsole.tsx`'s
+ * `console-send-input`/`console-log`/`console-line-*` and its
+ * `aria-label="Line to send"`) — verified against the real running app
+ * in this same session's own prior bench walks
+ * (`scratchpad/team-lead-walk2.mjs`, `scratchpad/ui-walk-after.mjs`),
+ * not guessed from source alone. The relay card's own robot picker
+ * (`relay-quick-connect-*`) was retired 2026-09-14 (stakeholder
+ * decision -- `RelayConnectControls.tsx`'s `RelayConnectVariant` doc
+ * comment) and is no longer driven here; see {@link reachRobotPage}'s
+ * own doc comment for the current radio-chip flow this module drives
+ * instead (018-011).
  *
  * Pure, directly-testable pieces (no `Page` involved) are kept
  * separate from the async Playwright orchestration below, per this
@@ -147,9 +153,12 @@ export interface DriverOptions {
    * Default 20000ms -- generous relative to Layer 2's own observed
    * ~15s host identify budget. */
   connectTimeoutMs?: number;
-  /** Bound on a relay bridge reaching "Connected to <robot>". Default
-   * 30000ms -- generous relative to the live-verified ~9s torture
-   * handshake schedule plus its own retry margin. */
+  /** Bound on a robot's own radio chip reaching a usable link after it
+   * is pressed (018-011: was "a relay bridge reaching 'Connected to
+   * <robot>'" on the retired relay-card picker; same underlying wait,
+   * now observed via the live snapshot instead of relay-card text).
+   * Default 30000ms -- generous relative to the live-verified ~9s
+   * torture handshake schedule plus its own retry margin. */
   relayConnectTimeoutMs?: number;
 }
 
@@ -264,6 +273,22 @@ async function closeOtherLinksAndWait(linkClient: BenchWsClient, deviceName: str
  * card-level primary. On failure, returns `reason` explaining why; the
  * caller (`checkPath`) does every on-page assertion once this function
  * has navigated to the resolved link's own page.
+ *
+ * For a `radio-via-mbrelay:<pool>` target specifically (018-011): the
+ * relay card's own robot picker this used to drive was retired
+ * 2026-09-14 -- a robot's own radio chip now finds a bridge itself
+ * (`FrontPage.tsx`'s `RadioChip`; `allocateRadioBridge` picks a free
+ * USB radio bridge first, then an mbrelay pool, on the chip's own
+ * press, with no UI control to name a specific pool). This function
+ * presses that chip (`device-radio-toggle-<deviceId>`, resolved from
+ * the live snapshot since the chip is keyed by device id, not name)
+ * and then polls the live snapshot for `target.device`'s radio child
+ * link of *this specific* relay pool (`findRadioChildLink` against
+ * `relaySnapshotLink.id`) becoming usable -- so even though the chip
+ * itself cannot be told which pool to use, this function still only
+ * ever reports success for the pool `target.path` actually names: if
+ * `allocateRadioBridge` picked a different bridge, the poll here simply
+ * times out rather than mistaking the wrong pool for a pass.
  */
 async function reachRobotPage(
   page: Page,
@@ -294,44 +319,54 @@ async function reachRobotPage(
       console.log(`[bench:layer3] closed sibling link(s) ${closedBefore.join(", ")} on "${target.device}" before checking radio-via-mbrelay:${relayPool}`);
     }
 
-    const relayCard = await cardLocator(page, relayPool);
-    if ((await relayCard.count()) === 0) {
-      return { ok: false, reason: `no relay card found for pool "${relayPool}"` };
+    // Connections are made from a robot's own radio chip, never a
+    // relay card -- the relay card's robot picker was retired
+    // 2026-09-14 (`RelayConnectControls.tsx`'s `RelayConnectVariant` doc
+    // comment; `FrontPage.tsx`'s `RelayBridgeStatus` doc comment: "the
+    // old robot picker -- connections are made from a robot's radio
+    // chip, never here"). The chip (`RadioChip` in `FrontPage.tsx`) is
+    // keyed by device *id*, not name, so resolve it from the live
+    // snapshot rather than the robot's card locator this module uses
+    // for direct transports.
+    const deviceId = linkClient.snapshot?.devices.find((d) => d.name === target.device)?.id;
+    if (deviceId === undefined) {
+      return { ok: false, reason: `no device id found in the live snapshot for "${target.device}"` };
     }
-    await screenshot(page, options, `front-${relayPool}-before`, screenshots);
 
-    const alreadyConnectedText = await relayCard.locator(".device-relay-connect").innerText().catch(() => "");
-    let relayNamedRobot = new RegExp(`Connected to ${escapeRegExp(target.device)}\\b`).test(alreadyConnectedText);
+    const radioChip = page.locator(`[data-testid="device-radio-chip-${deviceId}"]`);
+    if ((await radioChip.count()) === 0) {
+      return { ok: false, reason: `"${target.device}" has no radio chip on its card (device id ${deviceId})` };
+    }
+    // Named distinctly from the direct-transport branch's own
+    // `front-<device>-before` below -- both branches can run for the
+    // same device in the same overall bench run (e.g. mbserial then
+    // radio), and would otherwise silently overwrite each other's
+    // screenshot in the shared `--screenshot-dir` (caught live running
+    // this exact fix: only one "before" screenshot per device survived
+    // until this rename).
+    await screenshot(page, options, `front-${target.device}-radio-before`, screenshots);
+
+    // Fast path: a previous path in this same run may already have
+    // bridged this exact robot through this exact pool -- check the
+    // live snapshot (the same `via.relayLinkId` resolution the poll
+    // below uses) before ever pressing the chip, rather than assume the
+    // chip starts idle.
+    let relayNamedRobot = isUsableLink(
+      linkClient.snapshot !== undefined ? findRadioChildLink(linkClient.snapshot, target.device, relaySnapshotLink.id) : undefined,
+    );
 
     if (!relayNamedRobot) {
-      const select = relayCard.locator('select[data-testid^="relay-quick-connect-select-"]');
-      if ((await select.count()) === 0) {
-        return { ok: false, reason: `relay card "${relayPool}" has no robot picker` };
+      // Scoped to this device's own dedicated toggle testid -- unlike
+      // the retired picker's plain button text (which the comment this
+      // replaces warned could match more than one control once a relay
+      // already had a bridged child), `device-radio-toggle-<id>` is
+      // already unique per device, so no further scoping is needed to
+      // avoid Playwright strict-mode ambiguity.
+      const toggle = radioChip.locator(`[data-testid="device-radio-toggle-${deviceId}"]`);
+      if ((await toggle.getAttribute("aria-disabled")) === "true") {
+        return { ok: false, reason: `"${target.device}"'s radio chip is disabled (page not yet sendable)` };
       }
-      await select.selectOption({ label: target.device }).catch(() => select.selectOption(target.device));
-      // Scoped to "Connect"/"Switch" text specifically -- once a relay
-      // already has a bridged child (e.g. a previous path in this same
-      // run already bridged a different robot through it), its own
-      // Disconnect button is *also* a `button` inside
-      // `.device-relay-connect-row`, and an unscoped locator resolves
-      // to both, which Playwright's strict mode correctly refuses to
-      // click ambiguously -- caught live running this exact sequence
-      // (gopiv then vevov, both via torture) before this fix.
-      const connectButton = relayCard.locator(".device-relay-connect-row button", { hasText: /^(Connect|Switch)$/ });
-      await connectButton.click();
-
-      const connectedText = await poll(
-        async () => {
-          const text = await relayCard.locator(".device-relay-connect").innerText().catch(() => "");
-          return new RegExp(`Connected to ${escapeRegExp(target.device)}\\b`).test(text) ? text : undefined;
-        },
-        options.relayConnectTimeoutMs ?? 30_000,
-      );
-      relayNamedRobot = connectedText !== undefined;
-      if (!relayNamedRobot) {
-        await screenshot(page, options, `front-${relayPool}-timeout`, screenshots);
-        return { ok: false, reason: `relay "${relayPool}" never showed "Connected to ${target.device}" within the bound` };
-      }
+      await toggle.click();
     }
 
     // 018-007 Step 0: resolve the *radio child link for this specific
@@ -339,6 +374,8 @@ async function reachRobotPage(
     // `layer2/pathChecks.ts` uses (`findRadioChildLink`, matching
     // `via.relayLinkId`), never the robot card's own top-level arrow.
     // See this function's own doc comment for the bug this replaces.
+    // This single poll also confirms the fast path above: when the link
+    // was already usable, this succeeds on its first check.
     const radioLink = await poll(
       async () => {
         const snapshot = linkClient.snapshot;
@@ -348,12 +385,13 @@ async function reachRobotPage(
         const child = findRadioChildLink(snapshot, target.device, relaySnapshotLink.id);
         return isUsableLink(child) ? child : undefined;
       },
-      options.connectTimeoutMs ?? 20_000,
+      options.relayConnectTimeoutMs ?? 30_000,
     );
     if (radioLink === undefined) {
       await screenshot(page, options, `front-${target.device}-radio-timeout`, screenshots);
       return { ok: false, reason: `"${target.device}"'s radio link via relay "${relayPool}" never reached state "connected" with a session within the bound` };
     }
+    relayNamedRobot = true;
 
     await page.goto(`${baseUrl}d/${radioLink.id}`);
     return { ok: true, linkId: radioLink.id, relayNamedRobot };
@@ -458,11 +496,20 @@ export async function checkPath(
   }
   const linkId = reached.linkId;
 
-  if (parseRelayPoolName(target.path) !== undefined) {
+  const relayPool = parseRelayPoolName(target.path);
+  if (relayPool !== undefined) {
+    // 018-011: the relay card that used to name the attempted robot in
+    // its own text was retired; this now confirms the same fact (the
+    // robot's radio chip actually bridged *this* robot through *this*
+    // pool, not some other one `allocateRadioBridge` might have picked)
+    // via the live snapshot's own `via.relayLinkId` match instead.
     assertions.push({
       name: "relay-names-attempted-robot",
       pass: reached.relayNamedRobot === true,
-      detail: reached.relayNamedRobot === true ? `relay card showed "Connected to ${target.device}"` : `relay card never named "${target.device}" as connected`,
+      detail:
+        reached.relayNamedRobot === true
+          ? `"${target.device}"'s radio link via relay "${relayPool}" is usable`
+          : `"${target.device}"'s radio link via relay "${relayPool}" was never confirmed usable`,
     });
   }
 

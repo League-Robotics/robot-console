@@ -58,11 +58,66 @@
  */
 
 import open, { apps } from "open";
-import { startServer, type RunningServer, type StartServerOptions } from "./server.js";
+import { startServer, PortInUseError, type RunningServer, type StartServerOptions } from "./server.js";
 import { startRuntime, type Runtime, type StartRuntimeOptions } from "./runtime.js";
 import { getFirmwareConfig } from "./config.js";
 import { dumpStore, formatStoreDump } from "./debug/dumpStore.js";
 import { startMcpServer } from "./mcp/server.js";
+
+/** The shape `GET /api/host-info` (`server.ts`) answers with. Only `ok`
+ * is required to treat a response as parseable at all -- `service`/
+ * `port` are checked explicitly by {@link main}'s own attach decision
+ * (an occupant that answers `{ok: true}` with some other `service`, or
+ * none, never identifies as robot-console). */
+export interface HostInfoProbeResult {
+  readonly ok: boolean;
+  readonly service?: string;
+  readonly port?: number;
+}
+
+/** Probes a candidate occupant's `GET /api/host-info` to decide whether
+ * an `EADDRINUSE` conflict on the default port is actually another
+ * robot-console host (attach) or something else -- a stray Vite dev
+ * server, a leftover bench run on the default port (hard fail, the
+ * escape hatch `sprint.md`'s own Design Rationale preserves verbatim).
+ * Returns `undefined` for anything that isn't a clean, parseable
+ * `{ok: ...}` JSON response -- a timeout, a connection error, a non-2xx
+ * status, or a body that doesn't parse as JSON at all. */
+export type ProbeHostInfoFn = (url: string) => Promise<HostInfoProbeResult | undefined>;
+
+/** Bounded wait for {@link defaultProbeHostInfo}'s real `fetch` -- "a few
+ * seconds" per ticket 021-001, generous for a loopback round trip while
+ * still failing fast when nothing is listening at all (the common case:
+ * a genuinely free port never rejects with `PortInUseError` in the first
+ * place, so this timeout is only ever paid on an actual conflict). */
+const HOST_INFO_PROBE_TIMEOUT_MS = 3000;
+
+function isHostInfoProbeResult(value: unknown): value is HostInfoProbeResult {
+  return typeof value === "object" && value !== null && "ok" in value;
+}
+
+/** Real default for {@link CliDeps.probeHostInfo} -- a bounded-timeout
+ * `fetch`, never a real socket in `cli.test.ts` (which always injects a
+ * fake here instead). */
+async function defaultProbeHostInfo(url: string): Promise<HostInfoProbeResult | undefined> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HOST_INFO_PROBE_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) {
+      return undefined;
+    }
+    const data: unknown = await response.json();
+    return isHostInfoProbeResult(data) ? data : undefined;
+  } catch {
+    // Connection refused, timed out (the `AbortController` above),
+    // malformed JSON -- all of these mean "could not confirm this is a
+    // robot-console host", never a thrown error out of the probe itself.
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Default {@link CliDeps.openBrowser}: the stakeholder does not want
  * `main()` popping up whatever the OS default browser happens to be
@@ -110,6 +165,13 @@ export interface CliDeps {
    * tested. */
   startMcpServer?: typeof startMcpServer;
   getFirmwareConfig?: typeof getFirmwareConfig;
+  /** Sprint 021 ticket 001: probes an `EADDRINUSE` occupant's own
+   * `/api/host-info` to decide attach-vs-hard-fail on the default port.
+   * Defaults to {@link defaultProbeHostInfo} (a real, bounded-timeout
+   * `fetch`) -- `cli.test.ts` always overrides this so the attach/
+   * hard-fail branches are exercised without ever opening a real
+   * socket. */
+  probeHostInfo?: ProbeHostInfoFn;
   /** Opens a browser to `url`. Defaults to {@link openInChrome} (Chrome,
    * falling back to the OS default browser if Chrome is not installed).
    * Rejects the same way a real browser-launch failure would, so
@@ -288,6 +350,7 @@ export async function main(
   const getFirmwareConfigFn = deps.getFirmwareConfig ?? getFirmwareConfig;
   const openBrowser = deps.openBrowser ?? openInChrome;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
+  const probeHostInfoFn = deps.probeHostInfo ?? defaultProbeHostInfo;
 
   const port = parsePortFlag(argv) ?? parsePortEnv(env);
 
@@ -306,34 +369,92 @@ export async function main(
   // `importFirmwareConfig` already having run) exists.
   const firmwareConfig = getFirmwareConfigFn(runtime.store);
 
-  const server = await startServerFn({
-    store: runtime.store,
-    runtime,
-    ...(port !== undefined ? { port } : {}),
-    firmwareConfig,
-    // Sprint 019 ticket 004 (SUC-004): mounts the MCP Streamable HTTP
-    // endpoint on this same server's own Express app -- see this
-    // module's own doc comment, "MCP server", and `server.ts`'s doc
-    // comment on `mountRoutes` for why this must be a hook `startServer`
-    // itself invokes (before its static/SPA catch-all route exists)
-    // rather than something done to its `app` after the fact.
-    mountRoutes: (app, extra) => {
-      // Sprint 019 ticket 005: the MCP tool surface now needs the
-      // reconciler too (connect/command tools), not just the store --
-      // see `mcp/server.ts`'s own `McpDeps`. Ticket 008: `extra` carries
-      // the exact `startFlash`/`enumerateDaplinkDevices` this server's
-      // own `flash-start` WS handler uses (`server.ts`'s own
-      // `MountRoutesExtra` doc comment) -- `mcp/tools/flash.ts`'s
-      // `request_flash` calls the *same* `startFlash`, not a second,
-      // divergent way of starting a flash.
-      startMcpServerFn(app, {
-        store: runtime.store,
-        reconciler: runtime.reconciler,
-        startFlash: extra.startFlash,
-        enumerateDaplinkDevices: extra.enumerateDaplinkDevices,
-      });
-    },
-  });
+  let server: RunningServer;
+  try {
+    server = await startServerFn({
+      store: runtime.store,
+      runtime,
+      ...(port !== undefined ? { port } : {}),
+      firmwareConfig,
+      // Sprint 019 ticket 004 (SUC-004): mounts the MCP Streamable HTTP
+      // endpoint on this same server's own Express app -- see this
+      // module's own doc comment, "MCP server", and `server.ts`'s doc
+      // comment on `mountRoutes` for why this must be a hook `startServer`
+      // itself invokes (before its static/SPA catch-all route exists)
+      // rather than something done to its `app` after the fact.
+      mountRoutes: (app, extra) => {
+        // Sprint 019 ticket 005: the MCP tool surface now needs the
+        // reconciler too (connect/command tools), not just the store --
+        // see `mcp/server.ts`'s own `McpDeps`. Ticket 008: `extra` carries
+        // the exact `startFlash`/`enumerateDaplinkDevices` this server's
+        // own `flash-start` WS handler uses (`server.ts`'s own
+        // `MountRoutesExtra` doc comment) -- `mcp/tools/flash.ts`'s
+        // `request_flash` calls the *same* `startFlash`, not a second,
+        // divergent way of starting a flash.
+        startMcpServerFn(app, {
+          store: runtime.store,
+          reconciler: runtime.reconciler,
+          startFlash: extra.startFlash,
+          enumerateDaplinkDevices: extra.enumerateDaplinkDevices,
+        });
+      },
+    });
+  } catch (error) {
+    // Sprint 021 ticket 001: EADDRINUSE on the *default* port means "a
+    // robot-console singleton is already running here" -- attach to it
+    // instead of hard-failing. Scoped to exactly the case no explicit
+    // --port/ROBOT_CONSOLE_PORT was given (`port === undefined`): an
+    // explicit port keeps today's exact hard-fail behavior verbatim,
+    // since `scripts/bench`'s own layer2/layer3 rely on an explicit
+    // --port always meaning a fresh, isolated instance (`sprint.md`'s
+    // Design Rationale, "Attach applies to the default port only").
+    if (error instanceof PortInUseError && port === undefined) {
+      const occupantUrl = `http://${error.host}:${error.port}`;
+      // "Never attach on a bare port match" (sprint.md's Design
+      // Rationale): a positive identification from the occupant's own
+      // `/api/host-info` is required before treating "in use" as "safe
+      // to attach to" -- a conflict that does not identify as
+      // robot-console falls through to the same hard failure below,
+      // preserving the escape hatch for a genuine, non-robot-console
+      // conflict (a stray Vite dev server, a leftover bench run).
+      const identity = await probeHostInfoFn(`${occupantUrl}/api/host-info`);
+      if (identity?.ok === true && identity.service === "robot-console") {
+        console.log(`robot-console: a host is already running at ${occupantUrl} -- attaching instead of starting a second one.`);
+        // This invocation's own runtime never got as far as binding a
+        // port, but `startRuntimeFn` above already opened the store and
+        // started the USB/mDNS/firmware watchers -- exactly the
+        // "half-start a runtime, grab hardware, then discover it should
+        // have attached" hazard this ticket exists to prevent (sprint
+        // 019 ticket 006's vevov incident). Stopping it here, the
+        // moment attach is decided, closes that window as tightly as
+        // this module can from the composition-root side. It is not a
+        // complete guarantee: `connect/reconciler.ts`'s own `stop()`
+        // does not close an already-open session (a known, separate gap
+        // -- `clasi/issues/reconciler-stop-leaks-open-sessions.md`), so
+        // if the reconciler's slow tick had already opened a session in
+        // the brief window between `startRuntimeFn` and this catch
+        // block, that session would outlive this `stop()` call. Also:
+        // returning without this call would leave the watchers'
+        // intervals scheduled forever, which would hang the process
+        // (Node never exits with a pending timer) even though `main()`
+        // itself returns normally.
+        await runtime.stop();
+        if (!hasNoOpenFlag(argv, env)) {
+          try {
+            await openBrowser(occupantUrl);
+          } catch (openError) {
+            console.warn(
+              `robot-console: could not open a browser automatically (${
+                openError instanceof Error ? openError.message : String(openError)
+              }) -- open ${occupantUrl} manually.`,
+            );
+          }
+        }
+        return;
+      }
+    }
+    throw error;
+  }
   console.log(`robot-console: listening on ${server.url}`);
 
   installShutdownHandlers(server, runtime, exit);

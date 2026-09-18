@@ -24,6 +24,7 @@ vi.mock("open", () => ({
 }));
 
 import { main, type CliDeps } from "./cli.js";
+import { PortInUseError } from "./server.js";
 import type { StartRuntimeOptions } from "./runtime.js";
 import type { StoreSnapshot } from "./store/index.js";
 
@@ -439,6 +440,160 @@ describe("cli: main -- MCP server wiring (sprint 019 ticket 004)", () => {
         getFirmwareConfig: vi.fn().mockReturnValue({}),
       }),
     ).resolves.toBeUndefined();
+
+    logSpy.mockRestore();
+  });
+});
+
+describe("cli: main -- EADDRINUSE attach vs hard-fail (021-001)", () => {
+  afterEach(() => {
+    process.removeAllListeners("SIGINT");
+    process.removeAllListeners("SIGTERM");
+  });
+
+  it("an explicit --port conflict rethrows today's exact message, unchanged -- no probe is even attempted", async () => {
+    const conflictError = new PortInUseError("127.0.0.1", 9999);
+    const runtimeStopMock = vi.fn();
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: runtimeStopMock });
+    const startServerMock = vi.fn().mockRejectedValue(conflictError);
+    const probeHostInfoMock = vi.fn();
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      probeHostInfo: probeHostInfoMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await expect(main(["--port", "9999"], {} as NodeJS.ProcessEnv, deps)).rejects.toThrow(conflictError.message);
+    // Regression: the explicit-port branch never even considers
+    // attaching -- no probe, no runtime.stop() of this invocation's own
+    // (never-bound) runtime.
+    expect(probeHostInfoMock).not.toHaveBeenCalled();
+    expect(runtimeStopMock).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+  });
+
+  it("no --port, a positive host-info probe: logs attaching, stops this invocation's own runtime, and returns without throwing or starting a second server", async () => {
+    const conflictError = new PortInUseError("127.0.0.1", 4795);
+    const runtimeStopMock = vi.fn();
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: runtimeStopMock });
+    const startServerMock = vi.fn().mockRejectedValueOnce(conflictError);
+    const probeHostInfoMock = vi.fn().mockResolvedValue({ ok: true, service: "robot-console", port: 4795 });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      probeHostInfo: probeHostInfoMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await expect(main([], {} as NodeJS.ProcessEnv, deps)).resolves.toBeUndefined();
+
+    expect(probeHostInfoMock).toHaveBeenCalledWith("http://127.0.0.1:4795/api/host-info");
+    expect(startRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(startServerMock).toHaveBeenCalledTimes(1);
+    // Attaching must not double-construct a runtime or retry startServer.
+    expect(runtimeStopMock).toHaveBeenCalledTimes(1);
+    expect(openBrowserMock).toHaveBeenCalledWith("http://127.0.0.1:4795");
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("already running"));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("attaching"));
+
+    logSpy.mockRestore();
+  });
+
+  it("--no-open is respected on the attach path too -- no browser is opened", async () => {
+    const conflictError = new PortInUseError("127.0.0.1", 4795);
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockRejectedValueOnce(conflictError);
+    const probeHostInfoMock = vi.fn().mockResolvedValue({ ok: true, service: "robot-console", port: 4795 });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      probeHostInfo: probeHostInfoMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await expect(main(["--no-open"], {} as NodeJS.ProcessEnv, deps)).resolves.toBeUndefined();
+    expect(openBrowserMock).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+  });
+
+  it("no --port, the probe fails/times out (resolves undefined): rethrows a clear conflict error, not a false 'already running'", async () => {
+    const conflictError = new PortInUseError("127.0.0.1", 4795);
+    const runtimeStopMock = vi.fn();
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: runtimeStopMock });
+    const startServerMock = vi.fn().mockRejectedValue(conflictError);
+    const probeHostInfoMock = vi.fn().mockResolvedValue(undefined);
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      probeHostInfo: probeHostInfoMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await expect(main([], {} as NodeJS.ProcessEnv, deps)).rejects.toThrow(conflictError.message);
+    expect(probeHostInfoMock).toHaveBeenCalledWith("http://127.0.0.1:4795/api/host-info");
+    expect(runtimeStopMock).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+  });
+
+  it("no --port, the probe answers but does not identify as robot-console: rethrows the conflict error too", async () => {
+    const conflictError = new PortInUseError("127.0.0.1", 4795);
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockRejectedValue(conflictError);
+    const probeHostInfoMock = vi.fn().mockResolvedValue({ ok: true, service: "some-other-thing" });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      probeHostInfo: probeHostInfoMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await expect(main([], {} as NodeJS.ProcessEnv, deps)).rejects.toThrow(conflictError.message);
+
+    logSpy.mockRestore();
+  });
+
+  it("a non-PortInUseError failure from startServer still propagates unchanged", async () => {
+    const otherError = new Error("some unrelated startup failure");
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockRejectedValue(otherError);
+    const probeHostInfoMock = vi.fn();
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      probeHostInfo: probeHostInfoMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await expect(main([], {} as NodeJS.ProcessEnv, deps)).rejects.toThrow(otherError.message);
+    expect(probeHostInfoMock).not.toHaveBeenCalled();
 
     logSpy.mockRestore();
   });

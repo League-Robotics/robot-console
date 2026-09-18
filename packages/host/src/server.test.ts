@@ -21,6 +21,7 @@ import {
   startServer,
   DEFAULT_BUFFERED_AMOUNT_THRESHOLD_BYTES,
   DEFAULT_MAX_PAYLOAD_BYTES,
+  PortInUseError,
   type MountRoutesExtra,
   type RunningServer,
   type ServerRuntime,
@@ -299,6 +300,70 @@ describe("server.ts: binding", () => {
       await expect(startTestServer({ port: busyPort })).rejects.toThrow(/already in use/);
     } finally {
       await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    }
+  });
+
+  it("021-001: rejects EADDRINUSE with a PortInUseError carrying {host, port}, not a plain Error", async () => {
+    const blocker = createServer();
+    await new Promise<void>((resolve) => blocker.listen(0, "127.0.0.1", resolve));
+    const address = blocker.address();
+    const busyPort = address && typeof address === "object" ? address.port : 0;
+
+    try {
+      let caught: unknown;
+      try {
+        await startTestServer({ port: busyPort });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(PortInUseError);
+      const portInUseError = caught as PortInUseError;
+      expect(portInUseError.host).toBe("127.0.0.1");
+      expect(portInUseError.port).toBe(busyPort);
+      // The message text itself is unchanged from before this ticket --
+      // cli.ts rethrows it verbatim for an explicit --port conflict.
+      expect(portInUseError.message).toMatch(/already in use/);
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------
+// GET /api/host-info (sprint 021 ticket 001) -- the one small, additive
+// identity contract cli.ts's own EADDRINUSE attach-vs-hard-fail decision
+// (and later, the daemon CLI's status/start) needs. Mounted
+// unconditionally, before the static-file/SPA catch-all, so it answers
+// the same way whether or not packages/ui/dist exists.
+// ---------------------------------------------------------------------
+
+describe("server.ts: GET /api/host-info", () => {
+  it("returns {ok: true, service: 'robot-console', port} when no built UI exists (the static-fallback branch)", async () => {
+    const missingDir = path.join(tmpdir(), `robot-console-host-info-missing-ui-${Date.now()}`);
+    const h = await harness({ staticDir: missingDir });
+
+    const response = await fetch(`${h.server.url}/api/host-info`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, service: "robot-console", port: h.server.port });
+  });
+
+  it("returns the same shape, ahead of the SPA catch-all, when a built UI is present", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "robot-console-server-host-info-test-"));
+    writeFileSync(path.join(dir, "index.html"), "<html>SPA</html>");
+    try {
+      const h = await harness({ staticDir: dir });
+
+      const response = await fetch(`${h.server.url}/api/host-info`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toMatch(/application\/json/);
+      expect(await response.json()).toEqual({ ok: true, service: "robot-console", port: h.server.port });
+
+      // host-info is additive -- anything else still falls through to
+      // the SPA catch-all, unchanged.
+      const spaResponse = await fetch(`${h.server.url}/some/spa/route`);
+      expect(await spaResponse.text()).toBe("<html>SPA</html>");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

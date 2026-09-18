@@ -335,7 +335,12 @@ export interface RunningServer {
   close(): Promise<void>;
 }
 
-function buildApp(staticDir: string, mountRoutes: ((app: express.Express, extra: MountRoutesExtra) => void) | undefined, extra: MountRoutesExtra): express.Express {
+function buildApp(
+  staticDir: string,
+  getPort: () => number,
+  mountRoutes: ((app: express.Express, extra: MountRoutesExtra) => void) | undefined,
+  extra: MountRoutesExtra,
+): express.Express {
   const app = express();
   // Sprint 019 ticket 004: a caller-supplied hook to register additional
   // routes *before* the static-file/SPA catch-all below -- Express
@@ -345,6 +350,22 @@ function buildApp(staticDir: string, mountRoutes: ((app: express.Express, extra:
   // be reached. This module has no MCP-specific knowledge of its own --
   // see {@link StartServerOptions.mountRoutes}'s own doc comment.
   mountRoutes?.(app, extra);
+  // Sprint 021 ticket 001: one small, additive identity contract --
+  // `{ok: true, service: "robot-console", port}` -- for a caller
+  // deciding whether an EADDRINUSE conflict is actually another
+  // robot-console host worth attaching to (`cli.ts`'s own
+  // `PortInUseError` handling) or something else entirely (a stray Vite
+  // dev server, a leftover bench run). Mounted unconditionally, before
+  // the static/SPA catch-all below, the same ordering rule
+  // `mountRoutes` follows -- so it is reachable whether or not
+  // `packages/ui/dist` exists, and never falls through to `index.html`.
+  // `getPort` is a closure over `startServer`'s own mutable "actual
+  // bound port" (below), not a fixed value captured at app-build time --
+  // `options.port` can be `0` (an ephemeral port, as tests use), in
+  // which case the real port is only known once `listen()` resolves.
+  app.get("/api/host-info", (_req, res) => {
+    res.json({ ok: true, service: "robot-console", port: getPort() });
+  });
   if (existsSync(staticDir)) {
     app.use(express.static(staticDir));
     app.get(/.*/, (_req, res) => {
@@ -377,19 +398,47 @@ function toBuffer(data: WebSocket.RawData): Buffer {
   return Buffer.from(data);
 }
 
+/**
+ * Sprint 021 ticket 001: {@link listen}'s own `EADDRINUSE` rejection, now
+ * a distinguishable class (`{host, port}`) rather than a plain `Error` --
+ * mechanism only. `server.ts` still makes no policy decision about what
+ * an in-use port *means* (module doc comment's own boundary, "no ...
+ * connection-policy logic of its own") -- deciding that "in use on the
+ * default port" means "attach to it" is entirely `cli.ts`'s call (see
+ * that module's own doc comment and `sprint.md`'s Design Rationale,
+ * "Attach applies to the default port only"). The message text is
+ * unchanged from before this ticket, so an explicit-port conflict
+ * (`cli.ts` rethrows this verbatim in that case) reads identically to
+ * today.
+ */
+export class PortInUseError extends Error {
+  readonly host: string;
+  readonly port: number;
+
+  constructor(host: string, port: number) {
+    super(
+      `port ${port} is already in use on ${host}. ` +
+        `Pass a different port (e.g. \`--port <port>\` or ` +
+        `ROBOT_CONSOLE_PORT=<port>) rather than relying on an ` +
+        `automatically-chosen one.`,
+    );
+    this.name = "PortInUseError";
+    this.host = host;
+    this.port = port;
+    // Restores `instanceof PortInUseError` when this file's compiled
+    // output targets a runtime whose native `Error` subclassing would
+    // otherwise be lost (a documented TS/ES5-interop pitfall) -- cheap
+    // insurance since `cli.ts`'s own catch depends on `instanceof`.
+    Object.setPrototypeOf(this, PortInUseError.prototype);
+  }
+}
+
 function listen(server: HttpServer, port: number, host: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const onError = (err: NodeJS.ErrnoException) => {
       server.removeListener("listening", onListening);
       if (err.code === "EADDRINUSE") {
-        reject(
-          new Error(
-            `port ${port} is already in use on ${host}. ` +
-              `Pass a different port (e.g. \`--port <port>\` or ` +
-              `ROBOT_CONSOLE_PORT=<port>) rather than relying on an ` +
-              `automatically-chosen one.`,
-          ),
-        );
+        reject(new PortInUseError(host, port));
         return;
       }
       reject(err);
@@ -563,11 +612,21 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   // network flash, reported back as `ERR busy` -- see `runNetworkFlashTask`).
   const flashOverMbflashFn = options.flashOverMbflash ?? defaultFlashOverMbflash;
 
+  // Sprint 021 ticket 001: `/api/host-info`'s own `port` field must
+  // report the *actual* bound port, not the requested one -- `port`
+  // above can be `0` (an ephemeral port; `server.test.ts`'s own harness
+  // always requests one) whose real value is only known once `listen()`
+  // resolves, below. `buildApp` closes over this mutable box via
+  // `getBoundPort` rather than a plain number captured at app-build
+  // time (before `listen()` has even been called).
+  let boundPort = port;
+  const getBoundPort = (): number => boundPort;
+
   // `startFlash` is a `function` declaration further down in this same
   // scope (hoisted -- see {@link MountRoutesExtra}'s own doc comment for
   // why passing its reference here, before its literal source position,
   // is safe).
-  const app = buildApp(staticDir, options.mountRoutes, { startFlash, enumerateDaplinkDevices: enumerateDaplinkDevicesFn });
+  const app = buildApp(staticDir, getBoundPort, options.mountRoutes, { startFlash, enumerateDaplinkDevices: enumerateDaplinkDevicesFn });
   const httpServer = createServer(app);
   const createWebSocketServer =
     options.createWebSocketServer ?? ((server, maxPayload) => new WebSocketServer({ server, maxPayload }));
@@ -1283,6 +1342,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
 
   const address = httpServer.address();
   const actualPort = address && typeof address === "object" ? address.port : port;
+  boundPort = actualPort;
 
   return {
     port: actualPort,

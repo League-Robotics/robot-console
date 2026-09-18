@@ -2,7 +2,7 @@
 id: '001'
 title: 'Invert EADDRINUSE: attach to an already-running default-port host instead
   of failing'
-status: open
+status: done
 use-cases:
 - SUC-002
 depends-on: []
@@ -76,27 +76,27 @@ Work:
 
 ## Acceptance Criteria
 
-- [ ] `startServer` rejects `EADDRINUSE` with a `PortInUseError`
+- [x] `startServer` rejects `EADDRINUSE` with a `PortInUseError`
       carrying `{host, port}`, not a plain `Error` (unit test against
       the existing fake-listen seam in `server.test.ts`).
-- [ ] `GET /api/host-info` returns `{ok: true, service: "robot-console",
+- [x] `GET /api/host-info` returns `{ok: true, service: "robot-console",
       port}` whether or not `packages/ui/dist` exists (the static-vs-
       fallback branch), and is registered before the SPA catch-all
       (a request to it never falls through to `index.html`).
-- [ ] `main()` with an explicit `--port` that hits `PortInUseError`
+- [x] `main()` with an explicit `--port` that hits `PortInUseError`
       rethrows byte-for-byte today's existing "pass a different port"
       message — no behavior change (regression test against
       `cli.test.ts`'s existing case for this).
-- [ ] `main()` with no `--port`, hitting `PortInUseError`, whose probe
+- [x] `main()` with no `--port`, hitting `PortInUseError`, whose probe
       of the occupant's `/api/host-info` succeeds and identifies as
       `robot-console`, logs "already running... attaching", does not
       construct a `runtime`/call `startServer` a second time, and
       returns without throwing (verified via injected fake `startServer`
       that rejects once, and a fake probe that resolves positively).
-- [ ] Same scenario but the probe fails/times out or answers with
+- [x] Same scenario but the probe fails/times out or answers with
       something that does not identify as `robot-console`: `main()`
       rethrows a clear conflict error (not a false "already running").
-- [ ] No existing `cli.test.ts`/`server.test.ts` case regresses.
+- [x] No existing `cli.test.ts`/`server.test.ts` case regresses.
 
 ## Testing
 

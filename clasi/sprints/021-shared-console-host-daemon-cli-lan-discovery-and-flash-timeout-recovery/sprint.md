@@ -1,7 +1,7 @@
 ---
 id: '021'
 title: 'Shared Console Host: Daemon CLI, LAN Discovery, and Flash Timeout Recovery'
-status: ticketing
+status: executing
 branch: sprint/021-shared-console-host-daemon-cli-lan-discovery-and-flash-timeout-recovery
 use-cases:
 - SUC-001

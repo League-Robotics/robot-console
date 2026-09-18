@@ -1,7 +1,7 @@
 ---
 id: 019
 title: MCP Server for Robot Connections and Carry-Over Bench Defects
-status: executing
+status: done
 branch: sprint/019-mcp-server-for-robot-connections-and-carry-over-bench-defects
 use-cases:
 - SUC-001

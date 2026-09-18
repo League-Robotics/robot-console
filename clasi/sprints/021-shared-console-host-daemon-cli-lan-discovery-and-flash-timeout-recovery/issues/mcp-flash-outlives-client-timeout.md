@@ -1,6 +1,8 @@
 ---
-status: pending
+status: in-progress
 sprint: '021'
+tickets:
+- 021-004
 ---
 
 # `request_flash` outlives a default MCP client timeout, so the awaited outcome never reaches the caller

@@ -1,6 +1,10 @@
 ---
-status: pending
+status: in-progress
 sprint: '020'
+tickets:
+- 020-001
+- 020-002
+- 020-003
 ---
 
 # WiFi robot discovery waits for the mDNS announcement interval instead of resolving on demand

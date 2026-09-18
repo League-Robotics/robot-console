@@ -1,6 +1,10 @@
 ---
-status: pending
+status: in-progress
 sprint: '021'
+tickets:
+- 021-001
+- 021-002
+- 021-003
 ---
 
 # One shared console host on the bench LAN: a daemon CLI to start/stop it, and discovery so everyone else attaches

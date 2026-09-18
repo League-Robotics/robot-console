@@ -69,6 +69,8 @@
 import { nameToRadioAddress } from "@robot-console/protocol";
 import {
   findCurrentMbflashService,
+  type AgentActionKind,
+  type AgentActionRow,
   type ProjectionDeviceRow,
   type ProjectionFirmwareRow,
   type ProjectionLinkRow,
@@ -79,6 +81,7 @@ import {
   type Transport,
 } from "./store/index.js";
 import type {
+  AgentActionActivity,
   FirmwareAvailability,
   FirmwareKind,
   RadioSourceWire,
@@ -143,7 +146,15 @@ export function buildSnapshotFromRows(rows: ProjectionRows, seq: number, at: num
   // from `known-robots.json`, never yet seen this run) -- "known but not
   // currently reachable" is meaningfully different from "not known".
   const devices: SnapshotDevice[] = rows.devices
-    .map((device) => buildDevice(device, linksByDevice.get(device.id) ?? [], lastCheckedByDevice.get(device.id) ?? null, ctx))
+    .map((device) =>
+      buildDevice(
+        device,
+        linksByDevice.get(device.id) ?? [],
+        lastCheckedByDevice.get(device.id) ?? null,
+        rows.recentAgentActionsByDevice.get(device.id),
+        ctx,
+      ),
+    )
     .filter((device) => device.owned || device.links.length > 0);
 
   const unassigned: SnapshotLink[] = unassignedLinks.map((link) => buildLink(link, ctx));
@@ -185,6 +196,7 @@ function buildDevice(
   device: ProjectionDeviceRow,
   ownLinks: readonly ProjectionLinkRow[],
   lastChecked: number | null,
+  recentAgentActions: readonly AgentActionRow[] | undefined,
   ctx: LinkContext,
 ): SnapshotDevice {
   const visibleLinks = ownLinks.filter((link) => !requiresOwned(link.transport) || device.owned);
@@ -201,7 +213,55 @@ function buildDevice(
     lastSeen: device.lastSeen,
     lastChecked,
     links: visibleLinks.map((link) => buildLink(link, ctx)),
+    // Sprint 019 ticket 006 (SUC-006/SUC-007): always an array (never
+    // omitted) for a device this function actually builds -- `[]` for a
+    // device no agent has ever touched, exactly like {@link
+    // Snapshot.tasks}'s own always-an-array convention. The field stays
+    // optional on the wire type only for pre-ticket-006 fixture literals
+    // elsewhere that construct a `SnapshotDevice` by hand.
+    recentAgentActions: (recentAgentActions ?? []).map(buildAgentActionActivity),
   };
+}
+
+/** Renders one `agent_actions` row as the display-ready row the console's
+ * "Recent agent activity" list shows -- `summary` folds `kind`/`params`/
+ * `result`/`resultReason` into one line so the UI never has to know
+ * `params`'s per-`kind` shape (mirrors {@link buildLabel}'s own
+ * "presentation choice lives here" convention). */
+function buildAgentActionActivity(row: AgentActionRow): AgentActionActivity {
+  return { kind: row.kind, caller: row.caller, summary: agentActionSummary(row), at: row.executedAt };
+}
+
+function agentActionSummary(row: AgentActionRow): string {
+  const detail = describeAgentActionParams(row.kind, row.params);
+  const outcome = row.result === "sent" ? "sent" : row.resultReason ? `failed: ${row.resultReason}` : "failed";
+  return `${detail} — ${outcome}`;
+}
+
+/** Best-effort, forward-compatible reading of `params` -- this ticket
+ * (006) has no `drive`/`flash` tool of its own to shape `params` from
+ * (tickets 007/008 do), so this only assumes the two conventions
+ * `sprint.md`'s own ERD names (`"JSON: verb+fields, or firmware ref"`)
+ * and falls back to a generic label rather than throwing on a shape it
+ * does not recognize -- display text only, never parsed by a client. */
+function describeAgentActionParams(kind: AgentActionKind, params: unknown): string {
+  const rec = typeof params === "object" && params !== null ? (params as Record<string, unknown>) : undefined;
+  if (kind === "drive") {
+    if (rec && typeof rec.verb === "string") {
+      const fields = Array.isArray(rec.fields) ? rec.fields : [];
+      return fields.length > 0 ? `${rec.verb} ${fields.join(" ")}` : rec.verb;
+    }
+    return "drive";
+  }
+  if (rec) {
+    if (typeof rec.firmware === "string") {
+      return `flash ${rec.firmware}`;
+    }
+    if (typeof rec.fileName === "string") {
+      return `flash ${rec.fileName}`;
+    }
+  }
+  return "flash";
 }
 
 /** A placeholder `(channel, group)` for a device with no persisted radio

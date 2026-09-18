@@ -278,6 +278,55 @@ export interface SessionIdentity {
  * session happened to be (`Store.openSession`'s own doc comment). */
 export const UI_SESSION_IDENTITY: SessionIdentity = { origin: "ui", caller: null };
 
+/** `agent_actions.kind` — see `migrations/0005-agent-actions.ts`'s own
+ * doc comment. */
+export type AgentActionKind = "drive" | "flash";
+
+/** `agent_actions.result` — `'sent'` once the underlying `sendCommand`/
+ * `startFlash` call actually transmitted/completed, `'failed'` when it
+ * did not. Never a lifecycle/pending value -- see the migration's own
+ * doc comment for why. */
+export type AgentActionResult = "sent" | "failed";
+
+/** {@link Store.recordAgentAction}'s input -- one row, written once, by
+ * the tool that already executed the action (`mcp/tools/drive.ts`/
+ * `mcp/tools/flash.ts`, via `mcp/agentActionLog.ts`'s own `record()`).
+ * Exactly one of `linkId`/`deviceId` is populated in practice (`drive`
+ * targets a link, `flash` targets a device -- `sprint.md`'s ERD), but
+ * this interface does not itself enforce that; the writing tool decides
+ * which it has. */
+export interface RecordAgentActionInput {
+  readonly kind: AgentActionKind;
+  readonly linkId?: string | null;
+  readonly deviceId?: number | null;
+  /** JSON-serializable detail -- verb+fields for `drive`, a firmware
+   * reference for `flash`. Shape is the writing tool's own concern, not
+   * this table's (mirrors `links.address`'s own free-form-JSON
+   * convention). */
+  readonly params: unknown;
+  /** The MCP client's own declared `clientInfo.name` -- always present;
+   * every row this table gets originates from an MCP-executed action. */
+  readonly caller: string;
+  readonly executedAt: number;
+  readonly result: AgentActionResult;
+  readonly resultReason?: string | null;
+}
+
+/** One `agent_actions` row, as {@link Store.recentAgentActions} and
+ * {@link Store.projectionRows} return it -- typed and camelCased, `params`
+ * parsed back from its stored JSON text. */
+export interface AgentActionRow {
+  readonly id: number;
+  readonly kind: AgentActionKind;
+  readonly linkId: string | null;
+  readonly deviceId: number | null;
+  readonly params: unknown;
+  readonly caller: string;
+  readonly executedAt: number;
+  readonly result: AgentActionResult;
+  readonly resultReason: string | null;
+}
+
 export interface SetFirmwareInput {
   kind: "relay" | "robot";
   repo?: string | null;
@@ -600,7 +649,26 @@ export interface ProjectionRows {
    * mirrors {@link StoreSnapshot.services}'s own "every row, callers
    * narrow" shape, just camelCased and `txt`-parsed for a typed reader. */
   readonly services: readonly ProjectionServiceRow[];
+  /** Sprint 019 ticket 006 (SUC-006/SUC-007): the newest
+   * {@link RECENT_AGENT_ACTIONS_LIMIT} `agent_actions` rows for each
+   * device, newest first -- keyed by `devices.id`, already resolved for
+   * a `drive` row (which carries `link_id`, not `device_id`) via that
+   * link's own owning device, and pre-limited here (not by
+   * `projection.ts`, which stays a pure `(rows) -> Snapshot` map with no
+   * SQL of its own) so `buildSnapshotFromRows` only ever has to read this
+   * map, not re-derive it. A device with no `agent_actions` row at all
+   * simply has no entry -- absence, not an empty array, is `Map.get`'s
+   * own natural "never touched" signal. */
+  readonly recentAgentActionsByDevice: ReadonlyMap<number, readonly AgentActionRow[]>;
 }
+
+/** How many of a device's most recent `agent_actions` rows
+ * {@link Store.projectionRows} carries into the {@link Snapshot} the
+ * console's "Recent agent activity" list renders -- a small, fixed cap
+ * (not user-configurable): this is a glance-at-a-glance list, not a full
+ * audit browser (`sprint.md`'s Open Questions: "a richer 'agent action
+ * history' view ... deferred"). */
+export const RECENT_AGENT_ACTIONS_LIMIT = 5;
 
 function toJson(value: unknown): string | null {
   return value === undefined || value === null ? null : JSON.stringify(value);
@@ -1489,6 +1557,92 @@ export class Store {
     );
   }
 
+  // ---- agent actions (sprint 019 ticket 006, SUC-006/SUC-007) ---------
+
+  /** Maps one raw `agent_actions` row (snake_case, `params` still JSON
+   * text) to {@link AgentActionRow} -- a tiny private helper purely to
+   * keep {@link recentAgentActions}'s SQL and its row-shaping separate. */
+  private static toAgentActionRow(row: {
+    id: number;
+    kind: AgentActionKind;
+    link_id: string | null;
+    device_id: number | null;
+    params: string;
+    caller: string;
+    executed_at: number;
+    result: AgentActionResult;
+    result_reason: string | null;
+  }): AgentActionRow {
+    return {
+      id: row.id,
+      kind: row.kind,
+      linkId: row.link_id,
+      deviceId: row.device_id,
+      params: JSON.parse(row.params) as unknown,
+      caller: row.caller,
+      executedAt: row.executed_at,
+      result: row.result,
+      resultReason: row.result_reason,
+    };
+  }
+
+  /** Appends one `agent_actions` row and returns its `id` --
+   * `mcp/agentActionLog.ts`'s own `record()`, the only caller (via
+   * tickets 007/008's `drive.ts`/`flash.ts`). A pure audit write: never
+   * touches `links`, `sessions`, `board_owner`, or `relay_leases` --
+   * see `migrations/0005-agent-actions.ts`'s own doc comment for why
+   * this table carries no lifecycle/status column and needs none. */
+  recordAgentAction(input: RecordAgentActionInput): number {
+    return this.withChange(
+      "agent_actions",
+      (id) => String(id),
+      () => {
+        const info = this.db
+          .prepare(
+            `INSERT INTO agent_actions (kind, link_id, device_id, params, caller, executed_at, result, result_reason)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            input.kind,
+            input.linkId ?? null,
+            input.deviceId ?? null,
+            JSON.stringify(input.params),
+            input.caller,
+            input.executedAt,
+            input.result,
+            input.resultReason ?? null,
+          );
+        return Number(info.lastInsertRowid);
+      },
+    );
+  }
+
+  /** The most recent `limit` `agent_actions` rows for a single link or
+   * device, newest first -- `mcp/agentActionLog.ts`'s own `recentFor()`.
+   * A plain read, no transaction (mirrors {@link radioSightings}'s own
+   * "always re-derive" reasoning). Exactly one of `linkId`/`deviceId` is
+   * given; this never combines both into an OR (a caller that wants both
+   * a device's own `flash` rows and its links' `drive` rows -- as
+   * {@link projectionRows} does -- calls this once per target and merges
+   * the results itself, same as it does for any other per-target read). */
+  recentAgentActions(target: { readonly linkId: string } | { readonly deviceId: number }, limit: number): readonly AgentActionRow[] {
+    const rows =
+      "linkId" in target
+        ? (this.db
+            .prepare(
+              `SELECT id, kind, link_id, device_id, params, caller, executed_at, result, result_reason
+               FROM agent_actions WHERE link_id = ? ORDER BY id DESC LIMIT ?`,
+            )
+            .all(target.linkId, limit) as Array<Parameters<typeof Store.toAgentActionRow>[0]>)
+        : (this.db
+            .prepare(
+              `SELECT id, kind, link_id, device_id, params, caller, executed_at, result, result_reason
+               FROM agent_actions WHERE device_id = ? ORDER BY id DESC LIMIT ?`,
+            )
+            .all(target.deviceId, limit) as Array<Parameters<typeof Store.toAgentActionRow>[0]>);
+    return rows.map(Store.toAgentActionRow);
+  }
+
   // ---- board ownership / relay leases ---------------------------------
 
   /** Attempts to claim exclusive ownership of `usbSerial` for `owner`.
@@ -1865,6 +2019,27 @@ export class Store {
       fastSweepSettingRows.map((row) => [row.key.slice(Store.FAST_SWEEP_SETTING_PREFIX.length), row.value === "1"] as const),
     );
 
+    // Sprint 019 ticket 006: each device's own `flash` rows (keyed
+    // directly by `device_id`) merged with its links' `drive` rows
+    // (keyed by `link_id` -- a `drive` action has no `device_id` of its
+    // own; see `migrations/0005-agent-actions.ts`'s doc comment),
+    // newest-first, capped at `RECENT_AGENT_ACTIONS_LIMIT`. One device
+    // typically owns very few links, so this is a handful of small,
+    // indexed queries per device, not a scan -- fine at this project's
+    // scale (a classroom's worth of devices), and it keeps
+    // `buildSnapshotFromRows` (`projection.ts`) a pure map over
+    // already-grouped rows, with no SQL of its own.
+    const recentAgentActionsByDevice = new Map<number, readonly AgentActionRow[]>();
+    for (const device of deviceRows) {
+      const ownFlashRows = this.recentAgentActions({ deviceId: device.id }, RECENT_AGENT_ACTIONS_LIMIT);
+      const ownLinkIds = linkRows.filter((l) => l.device_id === device.id).map((l) => l.id);
+      const driveRows = ownLinkIds.flatMap((linkId) => this.recentAgentActions({ linkId }, RECENT_AGENT_ACTIONS_LIMIT));
+      const merged = [...ownFlashRows, ...driveRows].sort((a, b) => b.id - a.id).slice(0, RECENT_AGENT_ACTIONS_LIMIT);
+      if (merged.length > 0) {
+        recentAgentActionsByDevice.set(device.id, merged);
+      }
+    }
+
     return {
       devices: deviceRows.map((d) => ({
         id: d.id,
@@ -1927,6 +2102,7 @@ export class Store {
         port: s.port,
         txt: s.txt !== null ? (JSON.parse(s.txt) as unknown) : null,
       })),
+      recentAgentActionsByDevice,
     };
   }
 

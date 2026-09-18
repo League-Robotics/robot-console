@@ -1094,6 +1094,65 @@ describe("server.ts: flash-start", () => {
     const result = ws.sent.find((m) => m.type === "flash-result");
     expect(result).toMatchObject({ type: "flash-result", status: "ok" });
   });
+
+  // Sprint 019 ticket 006 (SUC-007): the `Snapshot`'s `flash` overlay
+  // gains `origin`/`caller`, wired here for the browser's own
+  // `flash-start` path -- `origin: "ui"`, no `caller` at all (never
+  // `caller: undefined`, which `toHaveProperty` below tells apart from a
+  // genuinely absent key). Ticket 008's `mcp/tools/flash.ts` is the first
+  // caller that will ever produce `origin: "mcp"`/a `caller` name here.
+  it("attributes an in-flight browser flash as origin 'ui' with no caller on the snapshot's flash overlay, cleared once it settles", async () => {
+    let ws!: ReturnType<typeof fakeWebSocket>;
+    const flashMock = vi.fn(async (_device, _hex, onProgress: (phase: string) => void) => {
+      onProgress("erasing");
+      // `connect/flasher.ts` already acquired `board_owner = 'flash'`
+      // (a store write) before calling this mock, and `setFlashPhase`
+      // already ran at least once (at `runFlashTask`'s own first line,
+      // before this mock is ever reached) -- so by now a `snapshot`
+      // broadcast carrying the current flash overlay has already gone
+      // out on `ws`.
+      const latestSnapshot = [...ws.sent].reverse().find((m): m is Snapshot => m.type === "snapshot");
+      const link = latestSnapshot?.unassigned.find((l) => l.id === "usb-SERIAL123");
+      expect(link?.flash).toMatchObject({ origin: "ui" });
+      expect(link?.flash).not.toHaveProperty("caller");
+      return { status: "ok", method: "swd" } satisfies FlashOutcome;
+    });
+    const h = await harness({
+      enumerateDaplinkDevices: async () => [FAKE_DEVICE],
+      flash: flashMock as unknown as StartServerOptions["flash"],
+    });
+    h.store.upsertLink({ id: "usb-SERIAL123", transport: "usb", address: { path: "/dev/x" }, at: 1 });
+    await flush();
+
+    ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const sha256 = createHash("sha256").update("hello").digest("hex");
+    ws.emit(
+      "message",
+      Buffer.from(JSON.stringify({ type: "flash-local-begin", fileName: "a.hex", byteLength: 5, sha256 })),
+      false,
+    );
+    await flush();
+    const ready = ws.sent.find((m) => m.type === "flash-local-ready") as { uploadId: string } | undefined;
+    const uploadId = ready!.uploadId;
+    ws.emit("message", Buffer.concat([Buffer.from(uploadId, "ascii"), Buffer.from("hello")]), true);
+    await flush();
+
+    const source: FirmwareSourceRef = { kind: "local-hex", uploadId, fileName: "a.hex", sha256 };
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId: "usb-SERIAL123", source })), false);
+    await flush();
+    await flush();
+
+    expect(flashMock).toHaveBeenCalled();
+    // The overlay is deleted the instant the flash settles -- the final
+    // snapshot must carry no `flash` field at all for this link.
+    const finalSnapshot = [...ws.sent].reverse().find((m): m is Snapshot => m.type === "snapshot");
+    const finalLink = finalSnapshot?.unassigned.find((l) => l.id === "usb-SERIAL123");
+    expect(finalLink?.flash).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------

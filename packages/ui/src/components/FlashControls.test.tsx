@@ -543,6 +543,51 @@ describe("FlashControls post-flash navigation", () => {
   });
 });
 
+describe("FlashControls: flash-overlay attribution (sprint 019 ticket 006, SUC-007)", () => {
+  // `useFlashProgress` falls back to the snapshot's own `link.flash` when
+  // no live `flash-progress` event has arrived yet -- exercised here via
+  // `mountFlashControls`'s `firmwareStatus` snapshot, which carries this
+  // exact `link` (flash field included) as `unassigned: [link]`. This is
+  // also the same `link` object `FlashControls` reads `flash.origin`/
+  // `flash.caller` off directly, so no live `flash-progress` message is
+  // needed at all for this test.
+  it("shows 'Agent: <caller>' alongside the progress text for an MCP-attributed flash", () => {
+    const { el } = mountFlashControls(
+      baseLink({ flash: { source: { kind: "release", firmware: "robot" }, phase: "writing", origin: "mcp", caller: "agent-smith" } }),
+      { firmwareStatus: firmwareStatusFixture() },
+    );
+    expect(el.textContent).toContain("writing");
+    const agent = el.querySelector('[data-testid="flash-agent-usb-SERIAL-UNRESPONSIVE"]');
+    expect(agent).not.toBeNull();
+    expect(agent!.textContent).toBe("Agent: agent-smith");
+  });
+
+  it("falls back to 'unknown' when an mcp-origin flash carries no caller name", () => {
+    const { el } = mountFlashControls(
+      baseLink({ flash: { source: { kind: "release", firmware: "robot" }, phase: "writing", origin: "mcp" } }),
+      { firmwareStatus: firmwareStatusFixture() },
+    );
+    expect(el.querySelector('[data-testid="flash-agent-usb-SERIAL-UNRESPONSIVE"]')?.textContent).toBe("Agent: unknown");
+  });
+
+  it("shows no agent attribution for a browser-triggered (origin 'ui') flash", () => {
+    const { el } = mountFlashControls(
+      baseLink({ flash: { source: { kind: "release", firmware: "robot" }, phase: "writing", origin: "ui" } }),
+      { firmwareStatus: firmwareStatusFixture() },
+    );
+    expect(el.textContent).toContain("writing");
+    expect(el.querySelector('[data-testid="flash-agent-usb-SERIAL-UNRESPONSIVE"]')).toBeNull();
+  });
+
+  it("shows no agent attribution when the flash overlay carries neither origin nor caller (pre-ticket-006 fixture shape)", () => {
+    const { el } = mountFlashControls(
+      baseLink({ flash: { source: { kind: "release", firmware: "robot" }, phase: "writing" } }),
+      { firmwareStatus: firmwareStatusFixture() },
+    );
+    expect(el.querySelector('[data-testid="flash-agent-usb-SERIAL-UNRESPONSIVE"]')).toBeNull();
+  });
+});
+
 describe("018-017: firmware source line (repo link, tag, checked-at)", () => {
   it("shows a linked repo name, tag, and 'checked ...' text under an available release's button", () => {
     const { el } = mountFlashControls(baseLink({ state: "connectable", reason: null }), { firmwareStatus: firmwareStatusFixture() });

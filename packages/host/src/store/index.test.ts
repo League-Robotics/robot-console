@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { nameToValue } from "@robot-console/protocol";
+import { deviceIdToName, nameToValue } from "@robot-console/protocol";
 import { openStoreDb } from "./db.js";
 import { DeviceNameMismatchError, Store, openStore, type ChangeEvent } from "./index.js";
 
@@ -905,6 +905,134 @@ describe("Store: recordSighting", () => {
       expect(rows).toHaveLength(2);
       expect(rows[0]).toMatchObject({ id: id1, name: "vevov", ok: 1, detail: null });
       expect(rows[1]).toMatchObject({ id: id2, ok: 0, detail: "no banner" });
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("Store: recordAgentAction / recentAgentActions (sprint 019 ticket 006)", () => {
+  it("appends exactly one agent_actions row and returns its id, touching no other table", () => {
+    const { store, db } = freshStore();
+    try {
+      const before = db.prepare("SELECT COUNT(*) AS n FROM links").get() as { n: number };
+      const beforeSessions = db.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number };
+      const beforeBoardOwner = db.prepare("SELECT COUNT(*) AS n FROM board_owner").get() as { n: number };
+      const beforeRelayLeases = db.prepare("SELECT COUNT(*) AS n FROM relay_leases").get() as { n: number };
+
+      const id = store.recordAgentAction({
+        kind: "drive",
+        linkId: "link-1",
+        params: { verb: "WHEELS_V", fields: [40, 40] },
+        caller: "agent-smith",
+        executedAt: 100,
+        result: "sent",
+      });
+
+      const rows = db.prepare("SELECT * FROM agent_actions").all() as Array<{ id: number }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.id).toBe(id);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM links").get()).toEqual(before);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM sessions").get()).toEqual(beforeSessions);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM board_owner").get()).toEqual(beforeBoardOwner);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM relay_leases").get()).toEqual(beforeRelayLeases);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("writes kind/params/caller/result/resultReason and reads them back typed and camelCased", () => {
+    const { store } = freshStore();
+    try {
+      store.recordAgentAction({
+        kind: "flash",
+        deviceId: 42,
+        params: { firmware: "robot" },
+        caller: "agent-smith",
+        executedAt: 500,
+        result: "failed",
+        resultReason: "board not enumerated",
+      });
+      const rows = store.recentAgentActions({ deviceId: 42 }, 10);
+      expect(rows).toEqual([
+        {
+          id: expect.any(Number),
+          kind: "flash",
+          linkId: null,
+          deviceId: 42,
+          params: { firmware: "robot" },
+          caller: "agent-smith",
+          executedAt: 500,
+          result: "failed",
+          resultReason: "board not enumerated",
+        },
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("recentAgentActions returns rows newest-first, bounded by limit, filtered to the given link", () => {
+    const { store } = freshStore();
+    try {
+      store.recordAgentAction({ kind: "drive", linkId: "link-1", params: { verb: "STOP" }, caller: "a", executedAt: 1, result: "sent" });
+      store.recordAgentAction({ kind: "drive", linkId: "link-2", params: { verb: "STOP" }, caller: "a", executedAt: 2, result: "sent" });
+      store.recordAgentAction({ kind: "drive", linkId: "link-1", params: { verb: "MOVE_X" }, caller: "a", executedAt: 3, result: "sent" });
+      store.recordAgentAction({ kind: "drive", linkId: "link-1", params: { verb: "WHEELS_V" }, caller: "a", executedAt: 4, result: "sent" });
+
+      const rows = store.recentAgentActions({ linkId: "link-1" }, 2);
+      expect(rows.map((r) => (r.params as { verb: string }).verb)).toEqual(["WHEELS_V", "MOVE_X"]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("recentAgentActions filters by device, independent of link", () => {
+    const { store } = freshStore();
+    try {
+      store.recordAgentAction({ kind: "flash", deviceId: 1, params: { firmware: "robot" }, caller: "a", executedAt: 1, result: "sent" });
+      store.recordAgentAction({ kind: "flash", deviceId: 2, params: { firmware: "relay" }, caller: "a", executedAt: 2, result: "sent" });
+
+      const rows = store.recentAgentActions({ deviceId: 1 }, 10);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.deviceId).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("Store: projectionRows.recentAgentActionsByDevice (sprint 019 ticket 006)", () => {
+  it("merges a device's own flash rows with its links' drive rows, newest first, capped at RECENT_AGENT_ACTIONS_LIMIT, and omits an untouched device", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+      store.upsertLink({ id: "usb-vevov", transport: "usb", address: {}, deviceId: 1198504156, at: 1 });
+      store.upsertDevice({ id: 1, name: deviceIdToName(1), kind: "robot", at: 1 });
+
+      store.recordAgentAction({
+        kind: "drive",
+        linkId: "usb-vevov",
+        params: { verb: "WHEELS_V", fields: [40, 40] },
+        caller: "agent-smith",
+        executedAt: 10,
+        result: "sent",
+      });
+      store.recordAgentAction({
+        kind: "flash",
+        deviceId: 1198504156,
+        params: { firmware: "robot" },
+        caller: "agent-smith",
+        executedAt: 20,
+        result: "failed",
+        resultReason: "no device enumerated",
+      });
+
+      const rows = store.projectionRows();
+      const merged = rows.recentAgentActionsByDevice.get(1198504156);
+      expect(merged).toBeDefined();
+      expect(merged?.map((r) => r.kind)).toEqual(["flash", "drive"]); // newest (executedAt 20) first
+      expect(rows.recentAgentActionsByDevice.has(1)).toBe(false);
     } finally {
       store.close();
     }

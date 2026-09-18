@@ -309,6 +309,7 @@ function emptyRows(): ProjectionRows {
     wifiCredentials: null,
     fastSweepByRelayLinkId: new Map(),
     services: [],
+    recentAgentActionsByDevice: new Map(),
   };
 }
 
@@ -525,5 +526,67 @@ describe("buildSnapshotFromRows: capabilities", () => {
     expect(snapshot.devices[0]?.radio.source).toBe("derived");
     expect(snapshot.devices[0]?.radio.channel).toEqual(expect.any(Number));
     expect(snapshot.devices[0]?.radio.group).toEqual(expect.any(Number));
+  });
+});
+
+// ---------------------------------------------------------------------
+// recentAgentActions -- sprint 019 ticket 006 (SUC-006/SUC-007)
+// ---------------------------------------------------------------------
+
+describe("buildSnapshotFromRows: recentAgentActions", () => {
+  function deviceRow(id: number, owned = true) {
+    return {
+      id,
+      name: deviceIdToName(id),
+      kind: "robot" as const,
+      role: null,
+      commonName: null,
+      program: null,
+      version: null,
+      radioChannel: null,
+      radioGroup: null,
+      radioSource: null,
+      owned,
+      lastSeen: 1,
+    };
+  }
+
+  it("is [] for a device no agent has ever touched", () => {
+    const rows = emptyRows();
+    rows.devices = [deviceRow(10)];
+    const snapshot = buildSnapshotFromRows(rows, 1, 1);
+    expect(snapshot.devices[0]?.recentAgentActions).toEqual([]);
+  });
+
+  it("maps a device's pre-grouped agent_actions rows into display-ready activity, in the given order", () => {
+    const rows = emptyRows();
+    rows.devices = [deviceRow(10)];
+    rows.recentAgentActionsByDevice = new Map([
+      [
+        10,
+        [
+          { id: 2, kind: "flash", linkId: null, deviceId: 10, params: { firmware: "robot" }, caller: "agent-smith", executedAt: 20, result: "failed", resultReason: "no USB device is currently enumerated" },
+          { id: 1, kind: "drive", linkId: "l1", deviceId: null, params: { verb: "WHEELS_V", fields: [40, 40] }, caller: "agent-smith", executedAt: 10, result: "sent", resultReason: null },
+        ],
+      ],
+    ]);
+    const snapshot = buildSnapshotFromRows(rows, 1, 1);
+    expect(snapshot.devices[0]?.recentAgentActions).toEqual([
+      { kind: "flash", caller: "agent-smith", summary: "flash robot — failed: no USB device is currently enumerated", at: 20 },
+      { kind: "drive", caller: "agent-smith", summary: "WHEELS_V 40 40 — sent", at: 10 },
+    ]);
+  });
+
+  it("falls back to a generic label for a params shape it does not recognize, rather than throwing", () => {
+    const rows = emptyRows();
+    rows.devices = [deviceRow(10)];
+    rows.recentAgentActionsByDevice = new Map([
+      [10, [{ id: 1, kind: "drive" as const, linkId: "l1", deviceId: null, params: { unexpected: true }, caller: "agent-smith", executedAt: 5, result: "sent" as const, resultReason: null }]],
+    ]);
+    let snapshot: ReturnType<typeof buildSnapshotFromRows> | undefined;
+    expect(() => {
+      snapshot = buildSnapshotFromRows(rows, 1, 1);
+    }).not.toThrow();
+    expect(snapshot?.devices[0]?.recentAgentActions?.[0]?.summary).toBe("drive — sent");
   });
 });

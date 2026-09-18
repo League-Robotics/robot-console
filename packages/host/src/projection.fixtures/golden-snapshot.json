@@ -36,7 +36,8 @@
             "provisionWifi": false
           }
         }
-      ]
+      ],
+      "recentAgentActions": []
     },
     {
       "id": 1198504156,
@@ -136,7 +137,8 @@
             "addressSource": "derived"
           }
         }
-      ]
+      ],
+      "recentAgentActions": []
     }
   ],
   "unassigned": [

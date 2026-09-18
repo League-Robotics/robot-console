@@ -2,7 +2,7 @@
 id: '006'
 title: 'Agent action audit/visibility: agent_actions log, flash-overlay attribution,
   "Recent agent activity"'
-status: open
+status: done
 use-cases:
 - SUC-006
 - SUC-007
@@ -58,36 +58,36 @@ originally separated this concern out, now serving a different purpose.
 
 ## Acceptance Criteria
 
-- [ ] `agent_actions` table exists per `sprint.md`'s ERD: `id` (PK),
+- [x] `agent_actions` table exists per `sprint.md`'s ERD: `id` (PK),
       `kind` (`'drive'|'flash'`), `link_id` (nullable), `device_id`
       (nullable), `params` (JSON: verb+fields, or firmware ref),
       `caller`, `executed_at`, `result` (`'sent'|'failed'`),
       `result_reason` (nullable). Migration is additive; no backfill
       needed (starts empty). No `status`/lifecycle column — every row is
       already an executed (or attempted) action, never a pending one.
-- [ ] `mcp/agentActionLog.ts` exposes a `record(entry)` function (used by
+- [x] `mcp/agentActionLog.ts` exposes a `record(entry)` function (used by
       tickets 007/008, exercised here with a fake caller) that writes
       exactly one `agent_actions` row and makes no write to `links`,
       `sessions`, `board_owner`, or `relay_leases`.
-- [ ] `mcp/agentActionLog.ts` exposes a read for "the most recent N
+- [x] `mcp/agentActionLog.ts` exposes a read for "the most recent N
       `agent_actions` rows for a given link/device," used by the UI's
       "Recent agent activity" list.
-- [ ] `Snapshot`'s existing `flash?: {source, phase}` field gains
+- [x] `Snapshot`'s existing `flash?: {source, phase}` field gains
       optional `origin`/`caller` sub-fields; `server.ts`'s flash-overlay
       write path (extracted `startFlash`, ticket 008) sets them from who
       initiated the flash (`'ui'`/no caller for a browser flash,
       `'mcp'`/`<name>` for an MCP one). This ticket wires the field and
       its plumbing; ticket 008 is the first caller that actually sets
       `origin: 'mcp'`.
-- [ ] The console UI shows the `flash` overlay's `origin`/`caller`
+- [x] The console UI shows the `flash` overlay's `origin`/`caller`
       alongside its existing progress text when present.
-- [ ] The device/robot page shows a small, read-only "Recent agent
+- [x] The device/robot page shows a small, read-only "Recent agent
       activity" list (kind, caller, summary, timestamp) sourced from
       `agent_actions`, reading the same change-feed/snapshot mechanism
       every other UI slice already uses. No interactive element (no
       Approve/Deny, no acknowledge, nothing clickable) — purely
       informational.
-- [ ] No code path anywhere in the tool surface can delay, queue, or
+- [x] No code path anywhere in the tool surface can delay, queue, or
       require approval before `agent_actions` is written — this ticket
       adds no such path, and this criterion exists specifically so a
       later ticket cannot quietly add one without failing a review

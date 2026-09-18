@@ -127,6 +127,7 @@ import {
   type FlashPhase,
   type Notice,
   type ServerMessage,
+  type SessionOriginWire,
   type Snapshot,
   type SnapshotLink,
 } from "./wsMessages.js";
@@ -496,7 +497,30 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   // populates (projection.ts's own doc comment): SnapshotLink.flash.
   // -----------------------------------------------------------------
 
-  const flashStateByLink = new Map<string, { source: FirmwareSourceRef; phase: FlashPhase }>();
+  // Sprint 019 ticket 006 (SUC-007): `origin`/`caller` ride alongside
+  // `source`/`phase` in this same in-memory overlay -- `overlayLink`
+  // below spreads this whole value onto `SnapshotLink.flash` verbatim, so
+  // adding fields here is all "wiring the plumbing" (this ticket's own
+  // scope) requires; no change to `overlayLink`/`overlaySnapshot`
+  // themselves. Every call site in this file today is the browser's own
+  // `flash-start` handler, which never passes an identity and so always
+  // gets {@link UI_FLASH_IDENTITY} -- ticket 008's `mcp/tools/flash.ts`
+  // is the first caller that will ever pass `{origin: "mcp", caller}`,
+  // once `startFlash` is extracted for it to call directly (`sprint.md`'s
+  // Impact/Design Rationale).
+  const flashStateByLink = new Map<string, { source: FirmwareSourceRef; phase: FlashPhase; origin?: SessionOriginWire; caller?: string }>();
+
+  /** Who started a flash -- see {@link flashStateByLink}'s own doc
+   * comment. */
+  interface FlashIdentity {
+    readonly origin: SessionOriginWire;
+    readonly caller?: string;
+  }
+
+  /** The identity every flash in this file is started with today (a
+   * browser's own `flash-start` message carries no caller identity of
+   * its own) -- see {@link flashStateByLink}'s own doc comment. */
+  const UI_FLASH_IDENTITY: FlashIdentity = { origin: "ui" };
 
   function overlayLink(link: SnapshotLink): SnapshotLink {
     const flash = flashStateByLink.get(link.id);
@@ -609,8 +633,18 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
 
   const inFlightFlashes = new Set<Promise<void>>();
 
-  function setFlashPhase(linkId: string, source: FirmwareSourceRef, phase: FlashPhase): void {
-    flashStateByLink.set(linkId, { source, phase });
+  function setFlashPhase(linkId: string, source: FirmwareSourceRef, phase: FlashPhase, identity: FlashIdentity = UI_FLASH_IDENTITY): void {
+    flashStateByLink.set(linkId, {
+      source,
+      phase,
+      origin: identity.origin,
+      ...(identity.caller !== undefined ? { caller: identity.caller } : {}),
+    });
+    // The `flash-progress` broadcast itself carries no identity -- see
+    // `wsMessages.ts`'s `SnapshotLink.flash` doc comment: attribution
+    // rides the `Snapshot` overlay (`overlayLink`, above), not this
+    // per-stage push, which stays byte-for-byte the same message shape
+    // it was before this ticket.
     broadcast({ type: "flash-progress", linkId, source, phase, seq: nextSeq() });
   }
 
@@ -656,6 +690,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     device: ProjectionDeviceRow,
     service: ProjectionServiceRow,
     hexText: string,
+    identity: FlashIdentity = UI_FLASH_IDENTITY,
   ): Promise<FlashResultLike> {
     await runtime.reconciler.requestClose(linkId);
 
@@ -667,14 +702,14 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     const outcome = await flashOverMbflashFn(
       { host: service.host as string, port: service.port as number },
       Buffer.from(hexText, "utf-8"),
-      () => setFlashPhase(linkId, source, "writing"),
+      () => setFlashPhase(linkId, source, "writing", identity),
     );
     if (outcome.status !== "ok") {
       return outcome;
     }
 
-    setFlashPhase(linkId, source, "resetting");
-    setFlashPhase(linkId, source, "reidentifying");
+    setFlashPhase(linkId, source, "resetting", identity);
+    setFlashPhase(linkId, source, "reidentifying", identity);
     try {
       await runtime.reconciler.requestOpen(linkId);
     } catch (error) {
@@ -708,8 +743,8 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
    * fetch/verify step below (release vs. local-hex) is shared verbatim
    * — this ticket adds a second *destination* for the same bytes, not a
    * second way to obtain them. */
-  async function runFlashTask(linkId: string, source: FirmwareSourceRef): Promise<void> {
-    setFlashPhase(linkId, source, source.kind === "release" ? "fetching" : "verifying");
+  async function runFlashTask(linkId: string, source: FirmwareSourceRef, identity: FlashIdentity = UI_FLASH_IDENTITY): Promise<void> {
+    setFlashPhase(linkId, source, source.kind === "release" ? "fetching" : "verifying", identity);
     try {
       const rows = store.projectionRows();
       const linkRow = rows.links.find((candidate) => candidate.id === linkId);
@@ -773,7 +808,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
           // Straight to "verifying" -- `localFirmware.ts` explains why
           // that step is a structural hex check here rather than the
           // sha256-against-manifest comparison a release gets.
-          setFlashPhase(linkId, source, "verifying");
+          setFlashPhase(linkId, source, "verifying", identity);
           const local = await readLocalHexFn(firmwareSource);
           if ("reason" in local) {
             failFlash(linkId, source, local.message);
@@ -786,7 +821,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
             failFlash(linkId, source, resolved.message);
             return;
           }
-          setFlashPhase(linkId, source, "verifying");
+          setFlashPhase(linkId, source, "verifying", identity);
           const fetched = await fetchAndVerifyHexFn(resolved);
           if ("error" in fetched) {
             failFlash(linkId, source, fetched.error);
@@ -809,7 +844,9 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       }
 
       if (usbTarget) {
-        const outcome = await flasher.flash(linkId, usbTarget.usbSerial, usbTarget.device, hexText, (phase) => setFlashPhase(linkId, source, phase));
+        const outcome = await flasher.flash(linkId, usbTarget.usbSerial, usbTarget.device, hexText, (phase) =>
+          setFlashPhase(linkId, source, phase, identity),
+        );
         finishFlash(linkId, source, outcome);
         return;
       }
@@ -817,15 +854,15 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       // `networkTarget` is always set here: the transport check above
       // returns early unless exactly one of `usbTarget`/`networkTarget`
       // was assigned.
-      const outcome = await runNetworkFlashTask(linkId, source, networkTarget!.device, networkTarget!.service, hexText);
+      const outcome = await runNetworkFlashTask(linkId, source, networkTarget!.device, networkTarget!.service, hexText, identity);
       finishFlash(linkId, source, outcome);
     } catch (error) {
       failFlash(linkId, source, errorMessage(error));
     }
   }
 
-  function handleFlashStart(linkId: string, source: FirmwareSourceRef): void {
-    const task = runFlashTask(linkId, source);
+  function handleFlashStart(linkId: string, source: FirmwareSourceRef, identity: FlashIdentity = UI_FLASH_IDENTITY): void {
+    const task = runFlashTask(linkId, source, identity);
     inFlightFlashes.add(task);
     void task.finally(() => inFlightFlashes.delete(task));
   }

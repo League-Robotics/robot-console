@@ -98,3 +98,56 @@ describe("DiagnosticsPanel facts", () => {
     expect(labels).toContain("Library version");
   });
 });
+
+// ---------------------------------------------------------------------
+// "Recent agent activity" -- sprint 019 ticket 006 (SUC-006/SUC-007)
+// ---------------------------------------------------------------------
+
+describe("DiagnosticsPanel: Recent agent activity", () => {
+  it("renders the stable data-testid unconditionally, and the empty state (no stray list, no spinner) for a device no agent has ever touched", () => {
+    const theLink = link();
+    const el = mount(<DiagnosticsPanel device={device(theLink, { recentAgentActions: [] })} current={theLink} />);
+    const section = el.querySelector('[data-testid="recent-agent-activity"]');
+    expect(section).not.toBeNull();
+    expect(el.querySelector('[data-testid="recent-agent-activity-empty"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="recent-agent-activity-list"]')).toBeNull();
+    expect(el.querySelector('[role="status"], .spinner')).toBeNull();
+  });
+
+  it("renders the same empty state when recentAgentActions is absent entirely (a pre-ticket-006 snapshot literal)", () => {
+    const theLink = link();
+    const el = mount(<DiagnosticsPanel device={device(theLink)} current={theLink} />);
+    expect(el.querySelector('[data-testid="recent-agent-activity"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="recent-agent-activity-empty"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="recent-agent-activity-list"]')).toBeNull();
+  });
+
+  it("renders kind/caller/summary/timestamp for each row, newest first as given, with no interactive element", () => {
+    const theLink = link();
+    const el = mount(
+      <DiagnosticsPanel
+        device={device(theLink, {
+          recentAgentActions: [
+            { kind: "flash", caller: "agent-smith", summary: "flash robot — failed: no USB device is currently enumerated", at: 2000 },
+            { kind: "drive", caller: "agent-smith", summary: "WHEELS_V 40 40 — sent", at: 1000 },
+          ],
+        })}
+        current={theLink}
+      />,
+    );
+    const list = el.querySelector('[data-testid="recent-agent-activity-list"]');
+    expect(list).not.toBeNull();
+    expect(el.querySelector('[data-testid="recent-agent-activity-empty"]')).toBeNull();
+
+    const rows = Array.from(el.querySelectorAll('[data-testid^="recent-agent-activity-row-"]'));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.textContent).toContain("flash");
+    expect(rows[0]?.textContent).toContain("agent-smith");
+    expect(rows[0]?.textContent).toContain("flash robot — failed: no USB device is currently enumerated");
+    expect(rows[1]?.textContent).toContain("WHEELS_V 40 40 — sent");
+
+    // Purely informational -- this ticket's own acceptance criterion: no
+    // Approve/Deny, no acknowledge, nothing clickable anywhere in here.
+    expect(list?.querySelectorAll("button, input, a[href]")).toHaveLength(0);
+  });
+});

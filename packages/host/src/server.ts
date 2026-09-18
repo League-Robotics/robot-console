@@ -137,11 +137,25 @@ import {
  * accepts `--port`/`ROBOT_CONSOLE_PORT`). */
 export const DEFAULT_PORT = 4795;
 
-/** Bind address. Deliberately not overridable — see the module doc
- * comment's predecessor's own "Localhost only" note, still true here:
- * this process can open serial ports and drive a physical robot, so it
- * must never be reachable from anything but the machine it runs on. */
-const DEFAULT_HOST = "127.0.0.1";
+/** Bind address. Deliberately not overridable via {@link StartServerOptions}
+ * (no per-caller opt-out) — sprint 021 ticket 002 widens this from the
+ * previous `127.0.0.1`-only bind to every interface, per sprint.md's
+ * Design Rationale ("Bind address: 0.0.0.0, not one chosen interface"):
+ * this bench has no usable interface distinction (`en0`/`en1` both carry
+ * a `/21` netmask covering 192.168.0.0–192.168.7.255, one broadcast
+ * domain), and named fixtures move between subnets over time, so no
+ * single "the LAN interface" exists to bind instead. This is a
+ * stakeholder-accepted, explicitly-recorded risk, not an oversight: with
+ * drive/flash already unauthenticated (sprint 019), LAN reach means
+ * unauthenticated drive/flash from anywhere this host is reachable,
+ * including a hotspot or café network sharing the same machine — not
+ * just the bench LAN. Do not re-litigate this by re-narrowing the bind
+ * or adding an auth gate the stakeholder did not ask for; see this
+ * sprint's own ticket 002 for the accepted-risk framing in full. The MCP
+ * transport's own Host-header allowlist (`mcp/server.ts`) is a separate,
+ * complementary defense (DNS-rebinding protection) that does not narrow
+ * this bind. */
+const DEFAULT_HOST = "0.0.0.0";
 
 /** Bound on one incoming WebSocket frame (ticket 005 AC / review finding
  * `03-host-server-flash-releases.md` §1, F9). Sprint 017 ticket 003: tied

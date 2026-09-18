@@ -63,6 +63,7 @@ import { startRuntime, type Runtime, type StartRuntimeOptions } from "./runtime.
 import { getFirmwareConfig } from "./config.js";
 import { dumpStore, formatStoreDump } from "./debug/dumpStore.js";
 import { startMcpServer } from "./mcp/server.js";
+import { startConsoleAdvertiser, type ConsoleAdvertiser } from "./discovery/consoleAdvertiser.js";
 
 /** The shape `GET /api/host-info` (`server.ts`) answers with. Only `ok`
  * is required to treat a response as parseable at all -- `service`/
@@ -164,6 +165,12 @@ export interface CliDeps {
    * HTTP port -- `mcp/server.test.ts` is where `startMcpServer` itself is
    * tested. */
   startMcpServer?: typeof startMcpServer;
+  /** Advertises this host over mDNS (`discovery/consoleAdvertiser.ts`)
+   * once {@link startServer} resolves. Defaults to the real
+   * {@link startConsoleAdvertiser} (a real `bonjour-service` backend,
+   * lazily constructed) -- `cli.test.ts` always overrides this so no
+   * test in that suite opens a real multicast socket. */
+  startConsoleAdvertiser?: typeof startConsoleAdvertiser;
   getFirmwareConfig?: typeof getFirmwareConfig;
   /** Sprint 021 ticket 001: probes an `EADDRINUSE` occupant's own
    * `/api/host-info` to decide attach-vs-hard-fail on the default port.
@@ -284,7 +291,12 @@ function runDumpStore(env: NodeJS.ProcessEnv, deps: Required<Pick<CliDeps, "dump
  * `cli.test.ts`'s own cleanup, mirroring the retired `--watch-store`
  * suite's `process.removeAllListeners` discipline).
  */
-function installShutdownHandlers(server: RunningServer, runtime: Runtime, exit: (code: number) => void): () => void {
+function installShutdownHandlers(
+  server: RunningServer,
+  runtime: Runtime,
+  advertiser: ConsoleAdvertiser,
+  exit: (code: number) => void,
+): () => void {
   let shuttingDown = false;
 
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
@@ -293,6 +305,15 @@ function installShutdownHandlers(server: RunningServer, runtime: Runtime, exit: 
     }
     shuttingDown = true;
     console.log(`robot-console: received ${signal}, shutting down...`);
+    // Withdraw the mDNS advertisement (a real "goodbye" packet) before
+    // the server itself stops accepting connections, rather than letting
+    // it expire on its own TTL -- sprint 021 ticket 002's own acceptance
+    // criterion ("stops the advertiser before (or alongside) closing the
+    // server"). Synchronous and best-effort: `ConsoleAdvertiser.stop()`
+    // never throws (bonjour-service's own `Service#stop()`/`Bonjour#destroy()`
+    // are fire-and-forget from this module's perspective), so there is
+    // nothing to await or catch here.
+    advertiser.stop();
     try {
       // server.close() itself waits for any in-flight flash-start task
       // to finish or fail naturally (closing its DAPLink/HID handle)
@@ -347,6 +368,7 @@ export async function main(
   const startRuntimeFn = deps.startRuntime ?? startRuntime;
   const startServerFn = deps.startServer ?? startServer;
   const startMcpServerFn = deps.startMcpServer ?? startMcpServer;
+  const startConsoleAdvertiserFn = deps.startConsoleAdvertiser ?? startConsoleAdvertiser;
   const getFirmwareConfigFn = deps.getFirmwareConfig ?? getFirmwareConfig;
   const openBrowser = deps.openBrowser ?? openInChrome;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
@@ -457,7 +479,17 @@ export async function main(
   }
   console.log(`robot-console: listening on ${server.url}`);
 
-  installShutdownHandlers(server, runtime, exit);
+  // Sprint 021 ticket 002: advertise this host over mDNS at its actual
+  // bound port (server.port, not the requested one -- see server.ts's
+  // own `boundPort` doc comment for why those can differ) now that
+  // binding widens beyond 127.0.0.1 -- see `discovery/consoleAdvertiser.ts`'s
+  // own doc comment for what is advertised and why. Only reached once
+  // startServer has actually succeeded (never on the EADDRINUSE-attach
+  // early return above), so an attaching invocation never advertises a
+  // host it never bound.
+  const advertiser = startConsoleAdvertiserFn({ port: server.port });
+
+  installShutdownHandlers(server, runtime, advertiser, exit);
 
   if (hasNoOpenFlag(argv, env)) {
     return;

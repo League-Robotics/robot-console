@@ -81,18 +81,29 @@
  * for now: this is a local dev tool with a handful of agent connections
  * per run, not a multi-tenant server; revisit if that stops being true.
  *
- * ## Localhost-only, belt and suspenders
+ * ## Host-header allowlist, not disabling DNS-rebinding protection outright
  *
- * The route inherits `server.ts`'s own `127.0.0.1` binding (this module
- * adds no network exposure of its own — `sprint.md`'s Migration Concerns,
- * "Security"). On top of that, the SDK's own `localhostHostValidation()`
- * middleware (DNS-rebinding protection: rejects a request whose `Host`
- * header names anything other than `localhost`/`127.0.0.1`/`[::1]`) is
- * applied to every method on this route — a small, free defense the SDK
- * ships specifically for exactly this kind of unauthenticated localhost
- * server, directly in the spirit of this sprint's explicit scope
- * exclusion ("remote/non-localhost MCP access ... out of scope" — this
- * closes that door a little further, at no cost).
+ * `server.ts`'s own `DEFAULT_HOST` widened to `0.0.0.0` (sprint 021
+ * ticket 002 — see that constant's own doc comment for the accepted-risk
+ * framing): this route now inherits a LAN-reachable socket, not a
+ * localhost-only one. Binding wider alone is not sufficient to let a
+ * legitimate LAN-originated MCP call through, though — the SDK's own
+ * `localhostHostValidation()` (DNS-rebinding protection: rejects a
+ * request whose `Host` header names anything other than
+ * `localhost`/`127.0.0.1`/`[::1]`) would still 403 every such call, since
+ * a LAN caller's `Host` header names this machine's own hostname or LAN
+ * IP, never `localhost`. Per sprint.md's Design Rationale ("Host-header
+ * allowlist, not disabling DNS-rebinding protection outright"): this
+ * module widens the allowlist instead of dropping the check — the SDK's
+ * `hostHeaderValidation(allowedHostnames)` (the general form
+ * `localhostHostValidation()` itself is built on) is called with the
+ * three original localhost forms plus this machine's own hostname,
+ * `<hostname>.local`, and every non-internal IPv4 address
+ * {@link nonInternalIPv4Addresses} reports — see {@link
+ * buildMcpHostAllowlist}. The check itself, and the defense it provides
+ * against a hostile *third-party* domain's `Host` header (DNS rebinding
+ * proper), is unchanged; only the set of hostnames a legitimate caller
+ * may already be using is widened to match the now-wider bind.
  *
  * ## Injectable seams
  *
@@ -106,12 +117,13 @@
  * sockets, but the real SDK protocol machinery) and by this ticket's own
  * documented live smoke test against a real running host.
  */
+import os from "node:os";
 import { randomUUID } from "node:crypto";
 import type { Express, Request, Response } from "express";
 import express from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { localhostHostValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
+import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { registerInspectTools, type InspectStore } from "./tools/inspect.js";
 import { registerConnectTools, type ConnectToolsReconciler, type ConnectToolsStore } from "./tools/connect.js";
@@ -263,6 +275,55 @@ function firstHeaderValue(value: string | string[] | undefined): string | undefi
   return Array.isArray(value) ? value[0] : value;
 }
 
+/**
+ * Every non-internal IPv4 address `os.networkInterfaces()` reports right
+ * now — the "every non-internal IPv4 address" clause of {@link
+ * buildMcpHostAllowlist}'s own allowlist (see the module doc comment's
+ * "Host-header allowlist" section). Excludes loopback/internal
+ * interfaces (`info.internal`) and every IPv6 address — a `Host` header
+ * never carries a bare IPv6 literal without brackets, and this project's
+ * bench LAN is IPv4 (`sprint.md`'s own "the bench spans subnets ...
+ * 192.168.x.x" framing); an IPv6 LAN address would need bracket handling
+ * this allowlist does not attempt.
+ *
+ * Takes `interfaces` as a parameter (defaulting to a fresh real
+ * `os.networkInterfaces()` call) rather than reading the real function
+ * directly, so `mcp/server.test.ts` can drive this against a fake
+ * interface map without mocking the `"node:os"` module itself —
+ * mirrors this codebase's "injectable seam, real default" convention
+ * elsewhere (`server.ts`'s own `createWebSocketServer`,
+ * `mdnsDiscovery.ts`'s `createBonjourBackend`).
+ */
+export function nonInternalIPv4Addresses(interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces()): string[] {
+  const addresses: string[] = [];
+  for (const infos of Object.values(interfaces)) {
+    for (const info of infos ?? []) {
+      if (info.family === "IPv4" && !info.internal) {
+        addresses.push(info.address);
+      }
+    }
+  }
+  return addresses;
+}
+
+/**
+ * The MCP Host-header allowlist — see the module doc comment's
+ * "Host-header allowlist" section. `hostname`/`interfaces` default to
+ * real `os.hostname()`/`os.networkInterfaces()` calls; {@link
+ * startMcpServer} calls this exactly once, at startup (mounting the
+ * route), not per request — a request cannot change which interfaces
+ * this machine has mid-flight, so re-reading it on every POST would be
+ * pure waste. Exported (with explicit parameters) so
+ * `mcp/server.test.ts` can assert its exact contents against fake
+ * `os.hostname()`/`os.networkInterfaces()` values.
+ */
+export function buildMcpHostAllowlist(
+  hostname: string = os.hostname(),
+  interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces(),
+): string[] {
+  return ["localhost", "127.0.0.1", "[::1]", hostname, `${hostname}.local`, ...nonInternalIPv4Addresses(interfaces)];
+}
+
 export function startMcpServer(app: Express, deps: McpDeps, options: StartMcpServerOptions = {}): StartedMcpServer {
   const path = options.path ?? DEFAULT_MCP_PATH;
   const createMcpServer = options.createMcpServer ?? (() => createDefaultMcpServer(deps));
@@ -276,7 +337,10 @@ export function startMcpServer(app: Express, deps: McpDeps, options: StartMcpSer
   // `McpTransportLike`, which does not mention them, sidesteps that).
   const createTransport: () => McpTransportLike = options.createTransport ?? (() => new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() }));
 
-  const hostValidation = localhostHostValidation();
+  // Sprint 021 ticket 002: widens the allowlist itself rather than
+  // dropping the check -- see the module doc comment's "Host-header
+  // allowlist" section and buildMcpHostAllowlist's own doc comment.
+  const hostValidation = hostHeaderValidation(buildMcpHostAllowlist());
 
   // Sprint 019 ticket 005: kept for the lifetime of this process -- see
   // the module doc comment's own "no eviction policy yet" note.

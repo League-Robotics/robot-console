@@ -11,9 +11,20 @@
  * (via the SDK's own `InMemoryTransport`, still no sockets) and by this
  * ticket's documented live smoke test against a real running host.
  */
+import os from "node:os";
 import { describe, expect, it, vi } from "vitest";
 import type { Express, Request, Response } from "express";
-import { startMcpServer, createDefaultMcpServer, DEFAULT_MCP_PATH, type McpDeps, type McpTransportLike, type StartMcpServerOptions } from "./server.js";
+import { localhostHostValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
+import {
+  startMcpServer,
+  createDefaultMcpServer,
+  buildMcpHostAllowlist,
+  nonInternalIPv4Addresses,
+  DEFAULT_MCP_PATH,
+  type McpDeps,
+  type McpTransportLike,
+  type StartMcpServerOptions,
+} from "./server.js";
 
 // ---------------------------------------------------------------------
 // A fake Express app -- records every route registration by method, so
@@ -114,6 +125,127 @@ describe("startMcpServer: route registration", () => {
     startMcpServer(app, fakeDeps);
     const post = app.routes.find((r) => r.method === "post");
     expect(post?.handlers.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ---------------------------------------------------------------------
+// Host-header allowlist (sprint 021 ticket 002) -- server.ts's own
+// DEFAULT_HOST widened to 0.0.0.0 means this route's socket is now
+// LAN-reachable, so the SDK's own localhostHostValidation() (localhost/
+// 127.0.0.1/[::1] only) would 403 every legitimate LAN-originated call.
+// buildMcpHostAllowlist/nonInternalIPv4Addresses are unit-tested directly
+// against fake os.hostname()/os.networkInterfaces() values; the
+// middleware acceptance/rejection cases below drive the actual mounted
+// POST route's own hostValidation handler (post.handlers[1] -- see
+// route-registration's own "carries at least a body-parser and the
+// request handler" test above for why index 1, not the last handler, is
+// the validation middleware).
+// ---------------------------------------------------------------------
+
+describe("nonInternalIPv4Addresses", () => {
+  it("keeps only non-internal IPv4 addresses, dropping loopback/internal entries and every IPv6 entry", () => {
+    const fakeInterfaces = {
+      lo0: [{ address: "127.0.0.1", family: "IPv4", internal: true, mac: "", cidr: null, netmask: "255.0.0.0" } as os.NetworkInterfaceInfo],
+      en0: [
+        { address: "192.168.1.42", family: "IPv4", internal: false, mac: "", cidr: null, netmask: "255.255.248.0" } as os.NetworkInterfaceInfo,
+        { address: "fe80::1", family: "IPv6", internal: false, mac: "", cidr: null, netmask: "ffff:ffff:ffff:ffff::", scopeid: 4 } as os.NetworkInterfaceInfo,
+      ],
+      en1: [{ address: "192.168.4.7", family: "IPv4", internal: false, mac: "", cidr: null, netmask: "255.255.248.0" } as os.NetworkInterfaceInfo],
+    };
+
+    expect(nonInternalIPv4Addresses(fakeInterfaces)).toEqual(["192.168.1.42", "192.168.4.7"]);
+  });
+
+  it("tolerates an interface entry that is undefined (os.networkInterfaces()'s own Dict typing allows this)", () => {
+    expect(nonInternalIPv4Addresses({ missing: undefined })).toEqual([]);
+  });
+
+  it("defaults to a real os.networkInterfaces() call when no argument is given", () => {
+    expect(() => nonInternalIPv4Addresses()).not.toThrow();
+  });
+});
+
+describe("buildMcpHostAllowlist", () => {
+  it("includes localhost/127.0.0.1/[::1], the given hostname, <hostname>.local, and every non-internal IPv4 address from the given interfaces", () => {
+    const fakeInterfaces = {
+      en0: [{ address: "192.168.1.42", family: "IPv4", internal: false, mac: "", cidr: null, netmask: "255.255.248.0" } as os.NetworkInterfaceInfo],
+      en1: [{ address: "192.168.4.7", family: "IPv4", internal: false, mac: "", cidr: null, netmask: "255.255.248.0" } as os.NetworkInterfaceInfo],
+    };
+
+    expect(buildMcpHostAllowlist("tovez", fakeInterfaces)).toEqual([
+      "localhost",
+      "127.0.0.1",
+      "[::1]",
+      "tovez",
+      "tovez.local",
+      "192.168.1.42",
+      "192.168.4.7",
+    ]);
+  });
+
+  it("defaults to real os.hostname()/os.networkInterfaces() when no arguments are given", () => {
+    const allowlist = buildMcpHostAllowlist();
+    expect(allowlist).toContain("localhost");
+    expect(allowlist).toContain(os.hostname());
+    expect(allowlist).toContain(`${os.hostname()}.local`);
+  });
+});
+
+describe("startMcpServer: Host-header allowlist middleware (sprint 021 ticket 002)", () => {
+  function hostValidationHandler(app: ReturnType<typeof fakeExpressApp>): (req: Request, res: Response, next: () => void) => void {
+    const post = app.routes.find((r) => r.method === "post")!;
+    return post.handlers[1]! as unknown as (req: Request, res: Response, next: () => void) => void;
+  }
+
+  it("a request whose Host header names this machine's own hostname is accepted", () => {
+    const app = fakeExpressApp();
+    startMcpServer(app, fakeDeps);
+    const req = { headers: { host: `${os.hostname()}:4795` } } as unknown as Request;
+    const res = fakeResponse();
+    const next = vi.fn();
+
+    hostValidationHandler(app)(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.statusCode).toBeUndefined();
+  });
+
+  it("a request whose Host header names <hostname>.local is accepted", () => {
+    const app = fakeExpressApp();
+    startMcpServer(app, fakeDeps);
+    const req = { headers: { host: `${os.hostname()}.local:4795` } } as unknown as Request;
+    const res = fakeResponse();
+    const next = vi.fn();
+
+    hostValidationHandler(app)(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.statusCode).toBeUndefined();
+  });
+
+  it("a request whose Host header names an unrelated third-party domain is still rejected -- the DNS-rebinding defense still does something", () => {
+    const app = fakeExpressApp();
+    startMcpServer(app, fakeDeps);
+    const req = { headers: { host: "evil.example.com:4795" } } as unknown as Request;
+    const res = fakeResponse();
+    const next = vi.fn();
+
+    hostValidationHandler(app)(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("021-002 regression guard: the old localhostHostValidation() would have rejected this exact LAN-hostname request -- confirms the allowlist widening is load-bearing, not a no-op", () => {
+    const oldMiddleware = localhostHostValidation();
+    const req = { headers: { host: `${os.hostname()}:4795` } } as unknown as Request;
+    const res = fakeResponse();
+    const next = vi.fn();
+
+    oldMiddleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(403);
   });
 });
 

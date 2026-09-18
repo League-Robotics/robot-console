@@ -76,6 +76,11 @@ describe("cli: main -- --watch-store is gone", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main(["--watch-store"], {} as NodeJS.ProcessEnv, deps);
@@ -143,6 +148,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main([], env, deps);
@@ -168,6 +178,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main(["--port", "9999"], {} as NodeJS.ProcessEnv, deps);
@@ -188,6 +203,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main(["--no-open"], {} as NodeJS.ProcessEnv, deps);
@@ -208,6 +228,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main([], { ROBOT_CONSOLE_NO_OPEN: "1" } as unknown as NodeJS.ProcessEnv, deps);
@@ -228,6 +253,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main([], {} as NodeJS.ProcessEnv, deps);
@@ -248,6 +278,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main(["--sweep"], {} as NodeJS.ProcessEnv, deps);
@@ -268,6 +303,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main([], { ROBOT_CONSOLE_ENABLE_SWEEP: "1" } as unknown as NodeJS.ProcessEnv, deps);
@@ -288,6 +328,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main(["--no-sweep"], { ROBOT_CONSOLE_DISABLE_SWEEP: "1" } as unknown as NodeJS.ProcessEnv, deps);
@@ -309,6 +354,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await expect(main([], {} as NodeJS.ProcessEnv, deps)).resolves.toBeUndefined();
@@ -328,6 +378,7 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startRuntime: startRuntimeMock,
       startServer: startServerMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       // openBrowser deliberately omitted -- this exercises the real
       // default (`openInChrome`), not a test fake.
     };
@@ -351,6 +402,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startRuntime: startRuntimeMock,
       startServer: startServerMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main([], {} as NodeJS.ProcessEnv, deps);
@@ -407,6 +463,11 @@ describe("cli: main -- MCP server wiring (sprint 019 ticket 004)", () => {
       startMcpServer: startMcpServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main([], {} as NodeJS.ProcessEnv, deps);
@@ -438,8 +499,93 @@ describe("cli: main -- MCP server wiring (sprint 019 ticket 004)", () => {
         startServer: startServerMock,
         openBrowser: openBrowserMock,
         getFirmwareConfig: vi.fn().mockReturnValue({}),
+        startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       }),
     ).resolves.toBeUndefined();
+
+    logSpy.mockRestore();
+  });
+});
+
+describe("cli: main -- console advertiser wiring (sprint 021 ticket 002)", () => {
+  afterEach(() => {
+    process.removeAllListeners("SIGINT");
+    process.removeAllListeners("SIGTERM");
+  });
+
+  it("calls startConsoleAdvertiser with the server's actual bound port once startServer resolves", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://0.0.0.0:54219", port: 54219, close: vi.fn().mockResolvedValue(undefined) });
+    const startConsoleAdvertiserMock = vi.fn().mockReturnValue({ stop: vi.fn() });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await main([], {} as NodeJS.ProcessEnv, {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      startConsoleAdvertiser: startConsoleAdvertiserMock,
+    });
+
+    expect(startConsoleAdvertiserMock).toHaveBeenCalledTimes(1);
+    expect(startConsoleAdvertiserMock).toHaveBeenCalledWith({ port: 54219 });
+
+    logSpy.mockRestore();
+  });
+
+  it("never starts an advertiser on the EADDRINUSE-attach path -- an attaching invocation never bound a port of its own", async () => {
+    const conflictError = new PortInUseError("0.0.0.0", 4795);
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockRejectedValueOnce(conflictError);
+    const probeHostInfoMock = vi.fn().mockResolvedValue({ ok: true, service: "robot-console", port: 4795 });
+    const startConsoleAdvertiserMock = vi.fn().mockReturnValue({ stop: vi.fn() });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(
+      main([], {} as NodeJS.ProcessEnv, {
+        startRuntime: startRuntimeMock,
+        startServer: startServerMock,
+        probeHostInfo: probeHostInfoMock,
+        openBrowser: openBrowserMock,
+        getFirmwareConfig: vi.fn().mockReturnValue({}),
+        startConsoleAdvertiser: startConsoleAdvertiserMock,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(startConsoleAdvertiserMock).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+  });
+
+  it("shutdown stops the advertiser before closing the server", async () => {
+    const runtimeStopMock = vi.fn();
+    const serverCloseMock = vi.fn().mockResolvedValue(undefined);
+    const advertiserStopMock = vi.fn();
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: runtimeStopMock });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://0.0.0.0:4795", port: 4795, close: serverCloseMock });
+    const startConsoleAdvertiserMock = vi.fn().mockReturnValue({ stop: advertiserStopMock });
+    const exitMock = vi.fn();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await main([], {} as NodeJS.ProcessEnv, {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: vi.fn().mockResolvedValue(undefined),
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      startConsoleAdvertiser: startConsoleAdvertiserMock,
+      exit: exitMock,
+    });
+
+    process.emit("SIGINT");
+    await vi.waitFor(() => expect(exitMock).toHaveBeenCalled());
+
+    expect(advertiserStopMock).toHaveBeenCalledTimes(1);
+    expect(serverCloseMock).toHaveBeenCalledTimes(1);
+    const advertiserStopOrder = advertiserStopMock.mock.invocationCallOrder[0];
+    const closeOrder = serverCloseMock.mock.invocationCallOrder[0];
+    expect(advertiserStopOrder).toBeLessThan(closeOrder);
 
     logSpy.mockRestore();
   });
@@ -466,6 +612,11 @@ describe("cli: main -- EADDRINUSE attach vs hard-fail (021-001)", () => {
       probeHostInfo: probeHostInfoMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await expect(main(["--port", "9999"], {} as NodeJS.ProcessEnv, deps)).rejects.toThrow(conflictError.message);
@@ -493,6 +644,11 @@ describe("cli: main -- EADDRINUSE attach vs hard-fail (021-001)", () => {
       probeHostInfo: probeHostInfoMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await expect(main([], {} as NodeJS.ProcessEnv, deps)).resolves.toBeUndefined();
@@ -523,6 +679,11 @@ describe("cli: main -- EADDRINUSE attach vs hard-fail (021-001)", () => {
       probeHostInfo: probeHostInfoMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await expect(main(["--no-open"], {} as NodeJS.ProcessEnv, deps)).resolves.toBeUndefined();
@@ -546,6 +707,11 @@ describe("cli: main -- EADDRINUSE attach vs hard-fail (021-001)", () => {
       probeHostInfo: probeHostInfoMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await expect(main([], {} as NodeJS.ProcessEnv, deps)).rejects.toThrow(conflictError.message);
@@ -569,6 +735,11 @@ describe("cli: main -- EADDRINUSE attach vs hard-fail (021-001)", () => {
       probeHostInfo: probeHostInfoMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await expect(main([], {} as NodeJS.ProcessEnv, deps)).rejects.toThrow(conflictError.message);
@@ -590,6 +761,11 @@ describe("cli: main -- EADDRINUSE attach vs hard-fail (021-001)", () => {
       probeHostInfo: probeHostInfoMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await expect(main([], {} as NodeJS.ProcessEnv, deps)).rejects.toThrow(otherError.message);
@@ -623,6 +799,7 @@ describe("cli: main -- SIGINT/SIGTERM shutdown", () => {
       startServer: f.startServerMock,
       openBrowser: vi.fn().mockResolvedValue(undefined),
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       exit: exitMock,
     });
 
@@ -650,6 +827,7 @@ describe("cli: main -- SIGINT/SIGTERM shutdown", () => {
       startServer: f.startServerMock,
       openBrowser: vi.fn().mockResolvedValue(undefined),
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       exit: exitMock,
     });
 
@@ -672,6 +850,7 @@ describe("cli: main -- SIGINT/SIGTERM shutdown", () => {
       startServer: f.startServerMock,
       openBrowser: vi.fn().mockResolvedValue(undefined),
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       exit: exitMock,
     });
 
@@ -710,6 +889,7 @@ describe("cli: main -- SIGINT/SIGTERM shutdown", () => {
       startServer: startServerMock,
       openBrowser: vi.fn().mockResolvedValue(undefined),
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       exit: exitMock,
     });
 

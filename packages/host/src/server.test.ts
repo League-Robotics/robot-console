@@ -284,15 +284,29 @@ async function harness(overrides: Partial<StartServerOptions> = {}): Promise<Har
 // ---------------------------------------------------------------------
 
 describe("server.ts: binding", () => {
-  it("binds to localhost only", async () => {
+  it("021-002: binds 0.0.0.0 (every interface), not localhost only -- see server.ts's own DEFAULT_HOST doc comment for the accepted-risk framing", async () => {
     const h = await harness();
-    expect(h.server.host).toBe("127.0.0.1");
-    expect(h.server.url).toBe(`http://127.0.0.1:${h.server.port}`);
+    expect(h.server.host).toBe("0.0.0.0");
+    expect(h.server.url).toBe(`http://0.0.0.0:${h.server.port}`);
+  });
+
+  it("021-002: a client reaches the server via a non-loopback-looking address (127.0.0.1) even though it requested an ephemeral port on 0.0.0.0 -- a real second network interface is not guaranteed in CI, so this is the unit-test-level proxy for LAN reachability; the bench-level cross-subnet check is a separate, hardware-dependent verification", async () => {
+    const h = await harness();
+    const response = await fetch(`http://127.0.0.1:${h.server.port}/api/host-info`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, service: "robot-console", port: h.server.port });
   });
 
   it("fails clearly, rather than silently picking another port, when the port is already in use", async () => {
     const blocker = createServer();
-    await new Promise<void>((resolve) => blocker.listen(0, "127.0.0.1", resolve));
+    // 021-002: the blocker must itself bind 0.0.0.0, matching what a real
+    // second robot-console instance does (server.ts's own DEFAULT_HOST) --
+    // a blocker bound only to 127.0.0.1 no longer reliably conflicts with
+    // a 0.0.0.0 bind on this platform (verified: Node's default socket
+    // options let a 0.0.0.0 bind coexist with an already-bound 127.0.0.1
+    // socket on the same port, via SO_REUSEADDR), so this test would
+    // otherwise pass for the wrong reason (or not at all).
+    await new Promise<void>((resolve) => blocker.listen(0, "0.0.0.0", resolve));
     const address = blocker.address();
     const busyPort = address && typeof address === "object" ? address.port : 0;
 
@@ -305,7 +319,9 @@ describe("server.ts: binding", () => {
 
   it("021-001: rejects EADDRINUSE with a PortInUseError carrying {host, port}, not a plain Error", async () => {
     const blocker = createServer();
-    await new Promise<void>((resolve) => blocker.listen(0, "127.0.0.1", resolve));
+    // See the previous test's own comment -- the blocker binds 0.0.0.0
+    // for the same reason.
+    await new Promise<void>((resolve) => blocker.listen(0, "0.0.0.0", resolve));
     const address = blocker.address();
     const busyPort = address && typeof address === "object" ? address.port : 0;
 
@@ -318,7 +334,7 @@ describe("server.ts: binding", () => {
       }
       expect(caught).toBeInstanceOf(PortInUseError);
       const portInUseError = caught as PortInUseError;
-      expect(portInUseError.host).toBe("127.0.0.1");
+      expect(portInUseError.host).toBe("0.0.0.0");
       expect(portInUseError.port).toBe(busyPort);
       // The message text itself is unchanged from before this ticket --
       // cli.ts rethrows it verbatim for an explicit --port conflict.

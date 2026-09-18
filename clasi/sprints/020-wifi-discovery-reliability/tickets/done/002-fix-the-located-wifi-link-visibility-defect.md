@@ -1,7 +1,7 @@
 ---
 id: '002'
 title: Fix the located WiFi link visibility defect
-status: in-progress
+status: done
 use-cases:
 - SUC-002
 depends-on:

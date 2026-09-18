@@ -1,7 +1,7 @@
 ---
 id: '001'
 title: Relay lease takeover for a direct session-open (sweeper-vs-session race)
-status: open
+status: done
 use-cases:
 - SUC-001
 depends-on: []
@@ -45,28 +45,100 @@ contract and code the missing call, but mark the harness-verification
 acceptance criterion explicitly unverified with the reason, rather than
 checking it off.
 
+## Implementation Notes (2026-09-17)
+
+**Precondition check**: `ls /dev/cu.usbmodem*` was empty and no `npm run
+dev` process was running at both the start and end of this ticket's
+work — no USB relay was ever attached during this session. Per the
+ticket's own precondition, the fix was implemented from the seam's
+existing contract rather than reproduced live, and the hardware-bound
+acceptance criteria below are marked accordingly.
+
+**The exact function (AC1)**: a direct relay `session-open
+{linkId: <relay usb link>}` reaches `server.ts`'s `session-open` handler
+(the `"linkId" in message"` branch, `server.ts:990-1000`), which calls
+`runtime.reconciler.requestOpen(linkId)` (`connect/reconciler.ts`). The
+reconciler's job executor ultimately calls `connect/connector.ts`'s
+`Connector.connectAndIdentify(link, signal)`, whose internal `attempt()`
+function is the one that actually opens the raw port. For a relay's own
+usb link, `resolveExclusivity()` (`connector.ts`) classifies the link's
+exclusivity as `board_owner` (keyed by USB serial number) — a
+*different* store-level lock than the one `watchers/relaySweeper.ts`'s
+own `runOnePass()` acquires for the same relay (`relay_leases`, keyed by
+the relay's own link id, owner `"sweep"`). Because these are two
+unrelated locks, `acquireExclusivity()` always succeeds even while a
+sweep pass is running — the store layer never sees the contention at
+all. The actual race is entirely at the OS level: `attempt()`'s own
+`createSerialStream(path)` call (via `link/adapters/serialStream.ts`,
+`serialport`'s `SerialPort.open()`) fails with the native
+`@serialport/bindings-cpp` `flock(LOCK_EX | LOCK_NB)` error — literal
+text `"Cannot lock port"` (`serialport_unix.cpp`) — when the sweeper's
+own directly-opened stream already holds the physical port. This is the
+"second code path" the ticket describes: `attempt()` never consulted
+`connect/relayLeaseRevocation.ts`'s seam at all before this ticket,
+unlike `connect/relayBridger.ts`'s own `bridge()`, which already did
+(016-004).
+
+**The fix**: `connect/connector.ts` gained `isKnownRelayUsbLink()` (is
+this `usb` link's already-known device a `kind='relay'` row?) and
+`takeoverDirectOpenSweep()` (find any `relayLeaseRevocation`-registered
+controller for this link, `.abort()` it, then poll — bounded by
+`directOpenTakeoverMaxWaitMs`/`directOpenTakeoverPollMs`, defaults
+1000ms/25ms mirroring `relayBridger.ts`'s own takeover constants — until
+it is deregistered). `attempt()` now calls this before opening the raw
+port for any `usb` link already known to be a relay, and reclassifies a
+subsequent `"Cannot lock port"` failure into
+`RELAY_EXTERNAL_LOCK_REASON` ("another app has this relay open") *only*
+for that same known-relay case (never for a plain robot's own usb port —
+see the code's own doc comment for why: the recorded MakeCode-holds-
+the-board case must never be mislabeled "this relay"). `runtime.ts` now
+constructs the shared `relayLeaseRevocation` seam before the connector
+and hands it the same instance already shared with the bridger and
+sweeper.
+
 ## Acceptance Criteria
 
-- [ ] The exact function that handles a direct relay `session-open` is
+- [x] The exact function that handles a direct relay `session-open` is
       identified (in `connect/connector.ts` or `server.ts`'s
       `session-open` handler) and documented in the implementation notes
-      before any change is made.
-- [ ] That path calls `relayLeaseRevocation`'s existing
+      before any change is made. — see "Implementation Notes" above.
+- [x] That path calls `relayLeaseRevocation`'s existing
       `register`/`get`/`clear` seam the same way `connect/relayBridger.ts`
       already does, taking over an in-flight sweep instead of racing it.
-- [ ] With a USB relay attached and the sweeper actively probing, a
-      direct `session-open {linkId: <relay usb link>}` succeeds within
-      one probe's delay (≤ ~1 s) and never reports "Cannot lock port"
-      for our own sweeper.
-- [ ] When the port is held by a genuinely external OS process (simulate
-      by holding the port open from a second process/script), the open
-      fails with a reason naming external contention in plain language
-      ("another app has this relay open"), never "Cannot lock port".
-- [ ] `scripts/bench/run.sh`'s relay-open path is re-run against a
-      physically attached USB relay and the report row is cited in this
-      ticket's closing notes — or, if no relay is attached at execution
-      time, this criterion is explicitly marked
-      unverified-hardware-absent with the date, not silently skipped.
+      — `takeoverDirectOpenSweep()` calls `revocation.get()`/`.abort()`
+      exactly as `relayBridger.ts`'s own `takeoverSweepLease()` does;
+      proven by `connector.test.ts`'s "direct relay session-open sweep
+      takeover" suite (a fake sweep controller is aborted, then the
+      raw port opens only once the seam deregisters it).
+- [ ] **Unverified-hardware-absent, 2026-09-17.** With a USB relay
+      attached and the sweeper actively probing, a direct
+      `session-open {linkId: <relay usb link>}` succeeds within one
+      probe's delay (≤ ~1 s) and never reports "Cannot lock port" for
+      our own sweeper. No USB relay was attached at any point during
+      this ticket's work (`/dev/cu.usbmodem*` empty throughout) — the
+      takeover-then-open sequence and its ≤1s-class bound are covered
+      only by `connector.test.ts`'s fake-relay-revocation unit tests
+      (real timers, but a fake `ByteStream`, never a real OS-level
+      `flock()`), not by a real physical port race.
+- [ ] **Partially verified; unverified-hardware-absent for the full
+      scenario, 2026-09-17.** When the port is held by a genuinely
+      external OS process, the open fails with a reason naming external
+      contention in plain language ("another app has this relay open"),
+      never "Cannot lock port". The *classification logic* is verified
+      directly: `connector.test.ts` scripts a fake stream's `open()`
+      rejection with the exact native `@serialport/bindings-cpp` error
+      text (`"Error Resource busy Cannot lock port"`, sourced from that
+      package's own `serialport_unix.cpp`) and confirms it is
+      reclassified to `RELAY_EXTERNAL_LOCK_REASON` for a known relay
+      link, left unchanged for a non-relay usb link (the MakeCode-holds-
+      the-board regression guard) and for a non-lock failure. What is
+      **not** verified is the literal scenario this criterion names — a
+      second real OS process/script genuinely `flock()`-holding a
+      physical serial port — since no relay hardware was attached to
+      exercise a real port at all.
+- [ ] **Unverified-hardware-absent, 2026-09-17.** `scripts/bench/run.sh`'s
+      relay-open path was not re-run: no USB relay was attached at any
+      point during this ticket's work to run it against.
 
 ## Implementation Plan
 

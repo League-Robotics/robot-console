@@ -132,6 +132,7 @@ import { runRelayCommandPlane } from "../link/RelayCommandPlane.js";
 import { Store, type DeviceKind, type Transport } from "../store/index.js";
 import { mergeNamePlaceholderIfAny } from "../store/placeholderMerge.js";
 import { KeyedMutex } from "./keyedMutex.js";
+import type { RelayLeaseRevocation } from "./relayLeaseRevocation.js";
 
 // ---------------------------------------------------------------------
 // Public types
@@ -211,6 +212,19 @@ export interface ConnectorDeps {
   /** The harvester-attach seam — see {@link HarvesterAttach}. Defaults
    * to a no-op stub. */
   harvester?: HarvesterAttach;
+  /** The shared revocation seam (`connect/relayLeaseRevocation.ts`) this
+   * module consults before opening a `usb`-transport link that is
+   * already known to be a relay device — see {@link
+   * takeoverDirectOpenSweep}'s own doc comment (sprint 019 ticket 001,
+   * SUC-001). Optional: omitted (a composition with no sweeper concept
+   * at all — no test in this repository ever wires one but this
+   * ticket's own), a direct relay session-open never attempts a
+   * takeover (there is nothing to take over from), but a known relay's
+   * port-lock failure is still reclassified — with no sweeper possible
+   * in this composition, any such failure is external by construction.
+   * `runtime.ts` always wires the same instance handed to
+   * `watchers/relaySweeper.ts` and `connect/relayBridger.ts`. */
+  revocation?: RelayLeaseRevocation;
 }
 
 export interface ConnectorOptions {
@@ -232,6 +246,16 @@ export interface ConnectorOptions {
    * `next_retry_at` (architecture.md §8: "capped at 60 s"). Default
    * {@link DEFAULT_BACKOFF_CAP_MS}. */
   backoffCapMs?: number;
+  /** Bound on how long a direct relay session-open waits for a
+   * `relaySweeper.ts` pass it has just taken over to actually hand back
+   * the relay's port before proceeding regardless — see {@link
+   * takeoverDirectOpenSweep}'s own doc comment (sprint 019 ticket 001).
+   * Default {@link DEFAULT_DIRECT_OPEN_TAKEOVER_MAX_WAIT_MS}. */
+  directOpenTakeoverMaxWaitMs?: number;
+  /** Poll interval while waiting for the sweep to hand back the relay
+   * during a direct-open takeover. Default {@link
+   * DEFAULT_DIRECT_OPEN_TAKEOVER_POLL_MS}. */
+  directOpenTakeoverPollMs?: number;
 }
 
 export interface Connector {
@@ -388,6 +412,143 @@ export function releaseExclusivity(store: Store, exclusivity: Exclusivity, owner
     store.releaseBoardOwner(resourceKey, owner);
   } else {
     store.releaseRelayLease(resourceKey, owner);
+  }
+}
+
+// ---------------------------------------------------------------------
+// Direct relay session-open sweep takeover (sprint 019 ticket 001;
+// SUC-001; issue `bench-relay-port-contention-sweeper-vs-session.md`)
+//
+// A direct `session-open {linkId: <relay usb link>}` reaches this module
+// through the exact same `usb`-transport `board_owner` exclusivity path
+// as any other usb link (`resolveExclusivity`, above) -- `board_owner` is
+// keyed by USB serial number, a resource `watchers/relaySweeper.ts`
+// never touches at all. The sweeper instead holds `relay_leases` (keyed
+// by the relay's own link id, `SWEEP_OWNER = "sweep"`) for the duration
+// of one probe pass, and opens the *same physical serial port* directly
+// (never through this module) while it does. Because these are two
+// unrelated store-level locks, `acquireExclusivity` above always
+// succeeds even while a sweep pass is running -- the actual contention
+// is invisible at the store layer and only ever surfaces once this
+// module's own `createSerialStream`/`SerialPort.open()` call reaches the
+// OS, which fails the *second* concurrent open of one physical port with
+// `@serialport/bindings-cpp`'s own `flock(LOCK_EX | LOCK_NB)` failure --
+// literal text "Cannot lock port" (`serialport_unix.cpp`'s `open()`).
+//
+// `connect/relayBridger.ts`'s own `takeoverSweepLease` (016-004) already
+// solved this for a *bridged* session-open, by aborting the sweep's own
+// registered `AbortController` (`connect/relayLeaseRevocation.ts`'s
+// shared seam) and waiting for it to hand back `relay_leases` before
+// proceeding. This is the second code path that needs the identical
+// guarantee: {@link takeoverDirectOpenSweep} below finds and aborts any
+// sweep pass currently registered against this link (a no-op if none is
+// running), then gives it a bounded window to actually let go of the
+// physical port -- `relaySweeper.ts`'s own per-pass `finally` block
+// closes its stream *before* deregistering from the revocation seam, so
+// "no longer registered" is a reliable proxy for "the physical port is
+// free again". Only ever attempted for a `usb` link already known (by an
+// earlier identify) to be a relay device -- {@link isKnownRelayUsbLink}
+// -- never for a plain robot's own usb link, which `relaySweeper.ts`
+// never opens a sweep pass against in the first place (this also keeps
+// the *reason text* below accurate: "another app has this relay open"
+// would be a wrong diagnosis for a robot's own port, e.g. the recorded
+// MakeCode-holds-the-board case).
+//
+// If the physical open *still* fails with that same "Cannot lock port"
+// text after this takeover step has already run (whether it found a
+// sweep to take over or not), the holder cannot be our own sweeper --
+// {@link PORT_LOCK_FAILURE_PATTERN} below reclassifies that one failure
+// shape into {@link RELAY_EXTERNAL_LOCK_REASON}, a plain-language reason
+// distinguishable from an ordinary "no banner"/parse failure, exactly
+// this ticket's own acceptance criteria.
+// ---------------------------------------------------------------------
+
+/** Default for {@link ConnectorOptions.directOpenTakeoverMaxWaitMs} --
+ * mirrors `connect/relayBridger.ts`'s own `DEFAULT_TAKEOVER_MAX_WAIT_MS`
+ * (comfortably above the sweeper's own worst-case handback: its current
+ * `!CG`/`ID` wait, <= `relaySweeper.ts`'s `SWEEP_PROBE_TIMEOUT_MS` =
+ * 500ms, plus stream-close/deregister overhead). Duplicated as its own
+ * constant, not imported, for the same reason {@link
+ * PORT_LOCK_FAILURE_PATTERN}'s neighbor below is duplicated rather than
+ * imported: `connect/relayBridger.ts` already imports several helpers
+ * *from* this module, so importing back from it would create a cycle. */
+export const DEFAULT_DIRECT_OPEN_TAKEOVER_MAX_WAIT_MS = 1000;
+/** Default for {@link ConnectorOptions.directOpenTakeoverPollMs}. */
+export const DEFAULT_DIRECT_OPEN_TAKEOVER_POLL_MS = 25;
+
+/** Reported verbatim in `links.state_reason` when a direct relay
+ * session-open's raw port fails to lock *after* {@link
+ * takeoverDirectOpenSweep} has already run (see this section's own doc
+ * comment for why that ordering is what makes "genuinely external" a
+ * safe conclusion). Never confused with the `board_owner`/`relay_leases`
+ * "held by another owner" message above (an in-process store
+ * disagreement, reported before the physical port is ever touched) --
+ * this is the OS's own advisory lock failing, which only happens when a
+ * different process or file handle already has the physical port open. */
+export const RELAY_EXTERNAL_LOCK_REASON = "another app has this relay open";
+
+/** `@serialport/bindings-cpp`'s own literal error text
+ * (`serialport_unix.cpp`'s `open()`: ``"Error %s Cannot lock port"``, an
+ * OS-level `flock(LOCK_EX | LOCK_NB)` failure) -- matched case-
+ * insensitively since the surrounding `strerror()` text is platform-
+ * dependent. */
+export const PORT_LOCK_FAILURE_PATTERN = /cannot lock port/i;
+
+/** Is `link` a `usb`-transport link already known (via an earlier
+ * identify — `watchers/usbWatcher.ts`'s own SWD naming, or a previous
+ * banner) to be a relay device? The only usb links `relaySweeper.ts`
+ * ever runs a sweep pass against — see this section's own doc comment
+ * for why a not-yet-identified usb link, or a known robot's own usb
+ * link, is deliberately never treated as one here. */
+export function isKnownRelayUsbLink(store: Store, link: LinkRow): boolean {
+  if (link.transport !== "usb" || link.deviceId === undefined || link.deviceId === null) {
+    return false;
+  }
+  const device = store.snapshotRows().devices.find((row) => Number(row.id) === link.deviceId);
+  return device?.kind === "relay";
+}
+
+/**
+ * Find and abort any `relaySweeper.ts` pass currently registered against
+ * `linkId` in the shared `revocation` seam, then wait (bounded by
+ * `maxWaitMs`, polling every `pollMs`) for it to deregister — proxy for
+ * "the physical port is free again", see this section's own doc comment.
+ * A no-op, resolving immediately, when `revocation` is undefined (no
+ * sweeper in this composition) or nothing is currently registered for
+ * `linkId` (the common case: an idle relay, or any non-relay usb link).
+ * Never throws except for `signal`'s own abort; a timeout is not an
+ * error here either — the caller's own subsequent physical port open is
+ * what will actually fail (and be reclassified, if it is still a lock
+ * failure) if the sweep genuinely never let go in time.
+ */
+export async function takeoverDirectOpenSweep(
+  revocation: RelayLeaseRevocation | undefined,
+  linkId: string,
+  owner: string,
+  scheduler: Scheduler,
+  now: () => number,
+  signal: AbortSignal,
+  maxWaitMs: number,
+  pollMs: number,
+): Promise<void> {
+  if (!revocation) {
+    return;
+  }
+  const controller = revocation.get(linkId);
+  if (!controller) {
+    return;
+  }
+  controller.abort(new Error(`connector: takeover of relay "${linkId}" for a direct session-open by "${owner}"`));
+
+  const deadline = now() + maxWaitMs;
+  while (revocation.get(linkId) === controller) {
+    if (signal.aborted) {
+      throw abortError(signal);
+    }
+    if (now() >= deadline) {
+      return;
+    }
+    await scheduler.delay(pollMs);
   }
 }
 
@@ -794,12 +955,15 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
   const scheduler = deps.scheduler ?? realScheduler;
   const now = deps.now ?? (() => Date.now());
   const harvester = deps.harvester ?? NO_OP_HARVESTER;
+  const revocation = deps.revocation;
 
   const connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
   const identifySchedule = opts.identifySchedule ?? DEFAULT_IDENTIFY_SCHEDULE_MS;
   const identifyBudgetMs = opts.identifyBudgetMs ?? DEFAULT_IDENTIFY_BUDGET_MS;
   const relayHandshakeTimeoutMs = opts.relayHandshakeTimeoutMs;
   const backoffCapMs = opts.backoffCapMs ?? DEFAULT_BACKOFF_CAP_MS;
+  const directOpenTakeoverMaxWaitMs = opts.directOpenTakeoverMaxWaitMs ?? DEFAULT_DIRECT_OPEN_TAKEOVER_MAX_WAIT_MS;
+  const directOpenTakeoverPollMs = opts.directOpenTakeoverPollMs ?? DEFAULT_DIRECT_OPEN_TAKEOVER_POLL_MS;
 
   const mutex = new KeyedMutex();
 
@@ -841,6 +1005,30 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
         throw abortError(signal);
       }
 
+      // Sprint 019 ticket 001 (SUC-001): a direct session-open of a
+      // relay's own usb link races `watchers/relaySweeper.ts`'s periodic
+      // probe for the same physical port -- board_owner (just acquired
+      // above) never sees that contention at all, since the sweeper
+      // holds `relay_leases`, a different lock entirely. Take over any
+      // in-flight sweep pass registered against this link before ever
+      // touching the raw port -- see `takeoverDirectOpenSweep`'s own doc
+      // comment for the full reasoning. A no-op for every non-relay usb
+      // link (a robot's own port) and for an idle relay with no sweep
+      // running.
+      const relayTakeoverEligible = link.transport === "usb" && isKnownRelayUsbLink(store, link);
+      if (relayTakeoverEligible) {
+        await takeoverDirectOpenSweep(
+          revocation,
+          link.id,
+          owner,
+          scheduler,
+          now,
+          signal,
+          directOpenTakeoverMaxWaitMs,
+          directOpenTakeoverPollMs,
+        );
+      }
+
       let lineLink: LineLink | undefined;
       const plan = buildStreamPlan(
         link,
@@ -863,8 +1051,18 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
         await lineLink.connect({ timeoutMs: connectTimeoutMs, signal });
       } catch (error) {
         const err = toError(error);
-        recordFailure(store, link.id, err.message, now(), backoffCapMs);
-        throw err;
+        // Sprint 019 ticket 001: a port-lock failure reaching here *after*
+        // the takeover attempt above already ran cannot be our own
+        // sweeper -- see the "Direct relay session-open sweep takeover"
+        // section's own doc comment for why that ordering makes this
+        // conclusion safe. Reclassified into a distinct, plain-language
+        // reason rather than the raw OS error text.
+        const reported =
+          relayTakeoverEligible && PORT_LOCK_FAILURE_PATTERN.test(err.message)
+            ? new Error(RELAY_EXTERNAL_LOCK_REASON)
+            : err;
+        recordFailure(store, link.id, reported.message, now(), backoffCapMs);
+        throw reported;
       }
 
       // 018-008: watch for the two shapes a single-client bridge's

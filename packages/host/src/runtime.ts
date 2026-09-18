@@ -43,15 +43,17 @@
  *    target `server.ts` forwards an explicit user `session-open`/
  *    `session-close` command to.
  * 5a. `createRelayLeaseRevocation` (ticket 016-003), constructed before
- *    the bridger (step 4a moved below this point in the actual wiring —
- *    see the code, not this list's own ordinal numbering, which is kept
- *    stable across tickets rather than renumbered) and handed to BOTH
- *    `createRelayBridger` and `startRelaySweeper` (ticket 016-004): the
+ *    the connector/bridger (steps 4/4a moved below this point in the
+ *    actual wiring — see the code, not this list's own ordinal
+ *    numbering, which is kept stable across tickets rather than
+ *    renumbered) and handed to `createConnector` (ticket 019-001, a
+ *    direct relay session-open's own takeover of an in-flight sweep),
+ *    `createRelayBridger`, and `startRelaySweeper` (ticket 016-004): the
  *    shared in-process seam that lets a student's connect find and abort
- *    a running sweep pass without either module importing the other.
- *    `startRelaySweeper` itself probes idle usb relays over the radio
- *    command plane for remembered robots; never touches `sessions`,
- *    never calls the connector or the reconciler.
+ *    a running sweep pass without any of the three modules importing
+ *    another. `startRelaySweeper` itself probes idle usb relays over the
+ *    radio command plane for remembered robots; never touches
+ *    `sessions`, never calls the connector or the reconciler.
  * 6. `installUnhandledRejectionBackstop` (ticket 003) — the process-wide
  *    last-resort net; see that module's own doc comment for why this is
  *    not a substitute for each component's own error handling.
@@ -177,11 +179,14 @@ export interface StartRuntimeOptions {
   firmwareWatcherOptions?: FirmwareWatcherOptions;
 
   createConnector?: typeof defaultCreateConnector;
-  /** Every {@link ConnectorDeps} field except `harvester`, which this
-   * module always wires to its own {@link createHarvester} call (see
-   * the module doc comment's composition order) — a caller that wants a
-   * fake harvester overrides {@link createHarvester} instead. */
-  connectorDeps?: Omit<ConnectorDeps, "harvester">;
+  /** Every {@link ConnectorDeps} field except `harvester` (this module
+   * always wires its own {@link createHarvester} call — see the module
+   * doc comment's composition order; a caller that wants a fake
+   * harvester overrides {@link createHarvester} instead) and `revocation`
+   * (sprint 019 ticket 001 — always the same shared seam handed to the
+   * bridger and the sweeper, per {@link createRelayLeaseRevocation}'s own
+   * doc comment below). */
+  connectorDeps?: Omit<ConnectorDeps, "harvester" | "revocation">;
   connectorOptions?: ConnectorOptions;
 
   createHarvester?: typeof defaultCreateHarvester;
@@ -306,15 +311,22 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
     },
   });
 
-  const connector = createConnectorFn(store, { ...options.connectorDeps, harvester }, options.connectorOptions);
-
-  // Ticket 016-003/004: the shared revocation seam, constructed once per
-  // runtime (exactly like the harvester's fan-out above) and handed to
-  // BOTH the bridger and the sweeper -- this is what lets a student's
-  // connect (the bridger, on a sweep-held lease-acquisition failure) find
-  // and abort a running sweep pass without either module importing the
-  // other (`connect/relayLeaseRevocation.ts`'s own doc comment).
+  // Ticket 016-003/004 (extended by 019-001 to the connector itself): the
+  // shared revocation seam, constructed once per runtime (exactly like
+  // the harvester's fan-out above) and handed to the connector, the
+  // bridger, and the sweeper alike -- this is what lets a student's
+  // connect (the bridger, on a sweep-held lease-acquisition failure, or
+  // the connector, on a direct relay session-open racing the sweeper's
+  // own raw port open) find and abort a running sweep pass without any
+  // of the three modules importing another (`connect/relayLeaseRevocation.ts`'s
+  // own doc comment).
   const relayLeaseRevocation = createRelayLeaseRevocationFn();
+  const connector = createConnectorFn(
+    store,
+    { ...options.connectorDeps, harvester, revocation: relayLeaseRevocation },
+    options.connectorOptions,
+  );
+
   const bridger = createRelayBridgerFn(
     store,
     { ...options.relayBridgerDeps, harvester, revocation: relayLeaseRevocation },

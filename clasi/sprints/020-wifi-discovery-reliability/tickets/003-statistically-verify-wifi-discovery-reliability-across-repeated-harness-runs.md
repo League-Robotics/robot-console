@@ -160,6 +160,28 @@ exclusions per the methodology above, and if most/all of the 10
 attempts land there, the honest outcome is "blocked on fixture
 availability," not a measured pass rate.
 
+**Finding 2 resolved, findings 1 and 3 now decisive together
+(2026-09-18, 13:42).** Independently re-verified with full,
+untruncated instance names across all three relevant service types:
+`_robotlink._tcp` -> `tovez robot link` only; `_mbserial._tcp` ->
+`tigez`, `gopiv`, `tovez-2`; `_mbrelay._tcp` -> `torture`. Both earlier
+relayed claims about `tovez`/`tovez-2` were true, about two different
+service types (`_robotlink._tcp` vs `_mbserial._tcp`) — not a
+contradiction, not an injection; a truncating `awk` filter on the
+coordinator's own earlier browse is why the discrepancy wasn't caught
+sooner. **Decisive, independently-confirmed fact: `gopiv` currently has
+no `_robotlink._tcp` advertisement at all** — its WiFi link is down,
+not merely flaky (the board itself is alive via `_mbserial._tcp`). The
+only robot on this bench with a live WiFi path right now is `tovez`,
+which this ticket must not touch. **Zero valid, fixture-reachable runs
+are currently possible**, for two independent, already-documented
+reasons (gopiv's WiFi is down; tovez is off-limits). Standing by per
+the coordinator's explicit instruction, not attempting any
+`scripts/bench/run.sh` run, until gopiv's WiFi returns or the peer
+clears tovez. If neither resolves, the honest close for this ticket is
+**blocked on fixture availability** — explicitly not a measured rate —
+per the pre-committed methodology above.
+
 No `scripts/bench/run.sh` run has been executed yet. Awaiting
 re-dispatch per the coordinator's explicit "stop and report" — this
 section is written *before* any of the 10 runs so the threshold above

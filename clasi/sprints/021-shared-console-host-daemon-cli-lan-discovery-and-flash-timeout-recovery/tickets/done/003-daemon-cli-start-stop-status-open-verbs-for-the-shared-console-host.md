@@ -1,14 +1,14 @@
 ---
 id: '003'
 title: 'Daemon CLI: start/stop/status/open verbs for the shared console host'
-status: open
+status: done
 use-cases:
 - SUC-002
 - SUC-003
 - SUC-004
 depends-on:
-- "001"
-- "002"
+- '001'
+- '002'
 github-issue: ''
 issue: shared-console-host-daemon-cli-and-discovery.md
 completes_issue: true
@@ -103,37 +103,37 @@ Work:
 
 ## Acceptance Criteria
 
-- [ ] `start` against no running host spawns exactly one detached child,
+- [x] `start` against no running host spawns exactly one detached child,
       waits for it to report ready, and prints its URL; the parent
       `start` process itself exits promptly (does not block).
-- [ ] A second `start` call while the first is still running (same
+- [x] A second `start` call while the first is still running (same
       `ROBOT_CONSOLE_STATE_DIR`) reports "already running" and exits 0,
       and no second child process is ever spawned (asserted via the
       injected fake `spawn` never being called a second time).
-- [ ] `start` after the daemon process has been killed out from under it
+- [x] `start` after the daemon process has been killed out from under it
       (simulated: write a daemon-info file with a PID that does not
       exist) detects the stale file, removes it, and starts fresh rather
       than falsely reporting "already running".
-- [ ] `stop` against a running daemon sends `SIGTERM`, waits for exit,
+- [x] `stop` against a running daemon sends `SIGTERM`, waits for exit,
       and removes the daemon-info file; against no running daemon (or a
       stale one) it reports "not running" and exits 0.
-- [ ] `status` accurately reports running (with port/URL) or not
+- [x] `status` accurately reports running (with port/URL) or not
       running, cleaning up a stale daemon-info file as a side effect
       when found.
-- [ ] `open` against a running host opens a local browser at a working
+- [x] `open` against a running host opens a local browser at a working
       URL and prints a `<hostname>.local:<port>` line; against no
       running host it reports "not running" and does not call
       `openBrowser` at all.
-- [ ] None of `start`/`stop`/`status`/`open` accept or forward a
+- [x] None of `start`/`stop`/`status`/`open` accept or forward a
       `--port` flag; they always operate against the default-port daemon
       info.
-- [ ] The plain, no-subcommand invocation (today's existing behavior,
+- [x] The plain, no-subcommand invocation (today's existing behavior,
       including every flag `scripts/bench/layer2`/`layer3` already pass)
       is unaffected by this ticket, other than now also writing/removing
       a daemon-info file — verified against existing `cli.test.ts` cases
       plus a new one asserting daemon-info is written on start and
       removed on shutdown for the plain path too.
-- [ ] One real-process integration test (mirroring
+- [x] One real-process integration test (mirroring
       `scripts/bench/layer2`'s own pattern): spawn `bin/robot-console.js
       start` against a scratch `ROBOT_CONSOLE_STATE_DIR`, assert a second
       `start` against the same scratch dir attaches rather than

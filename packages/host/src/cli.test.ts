@@ -76,6 +76,11 @@ describe("cli: main -- --watch-store is gone", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -148,6 +153,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -178,6 +188,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -203,6 +218,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -228,6 +248,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -253,6 +278,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -278,6 +308,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -303,6 +338,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -328,6 +368,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -354,6 +399,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -378,6 +428,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startRuntime: startRuntimeMock,
       startServer: startServerMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       // openBrowser deliberately omitted -- this exercises the real
       // default (`openInChrome`), not a test fake.
@@ -402,6 +457,11 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startRuntime: startRuntimeMock,
       startServer: startServerMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -463,6 +523,11 @@ describe("cli: main -- MCP server wiring (sprint 019 ticket 004)", () => {
       startMcpServer: startMcpServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -499,9 +564,107 @@ describe("cli: main -- MCP server wiring (sprint 019 ticket 004)", () => {
         startServer: startServerMock,
         openBrowser: openBrowserMock,
         getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
         startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       }),
     ).resolves.toBeUndefined();
+
+    logSpy.mockRestore();
+  });
+});
+
+describe("cli: main -- daemon-info wiring (sprint 021 ticket 003)", () => {
+  afterEach(() => {
+    process.removeAllListeners("SIGINT");
+    process.removeAllListeners("SIGTERM");
+  });
+
+  it("writes daemon.json with the actual bound pid/host/port once startServer resolves, for the plain no-subcommand path too", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://0.0.0.0:4795", host: "0.0.0.0", port: 4795, close: vi.fn().mockResolvedValue(undefined) });
+    const writeDaemonInfoMock = vi.fn();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const beforeCall = Date.now();
+
+    await main([], {} as NodeJS.ProcessEnv, {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: vi.fn().mockResolvedValue(undefined),
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
+      writeDaemonInfo: writeDaemonInfoMock,
+      removeDaemonInfo: vi.fn(),
+    });
+
+    expect(writeDaemonInfoMock).toHaveBeenCalledTimes(1);
+    const [info] = writeDaemonInfoMock.mock.calls[0] as [{ pid: number; host: string; port: number; startedAt: number }];
+    expect(info.pid).toBe(process.pid);
+    expect(info.host).toBe("0.0.0.0");
+    expect(info.port).toBe(4795);
+    expect(info.startedAt).toBeGreaterThanOrEqual(beforeCall);
+
+    logSpy.mockRestore();
+  });
+
+  it("never writes daemon.json on the EADDRINUSE-attach path -- an attaching invocation never bound a port of its own", async () => {
+    const conflictError = new PortInUseError("0.0.0.0", 4795);
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockRejectedValueOnce(conflictError);
+    const probeHostInfoMock = vi.fn().mockResolvedValue({ ok: true, service: "robot-console", port: 4795 });
+    const writeDaemonInfoMock = vi.fn();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(
+      main([], {} as NodeJS.ProcessEnv, {
+        startRuntime: startRuntimeMock,
+        startServer: startServerMock,
+        probeHostInfo: probeHostInfoMock,
+        openBrowser: vi.fn().mockResolvedValue(undefined),
+        getFirmwareConfig: vi.fn().mockReturnValue({}),
+        startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
+        writeDaemonInfo: writeDaemonInfoMock,
+        removeDaemonInfo: vi.fn(),
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(writeDaemonInfoMock).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+  });
+
+  it("removes daemon.json during SIGINT/SIGTERM shutdown, after runtime.stop() (session teardown) has resolved", async () => {
+    const runtimeStopOrder: string[] = [];
+    const runtimeStopMock = vi.fn().mockImplementation(async () => {
+      runtimeStopOrder.push("runtime.stop");
+    });
+    const removeDaemonInfoMock = vi.fn().mockImplementation(() => {
+      runtimeStopOrder.push("removeDaemonInfo");
+    });
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: runtimeStopMock });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://0.0.0.0:4795", host: "0.0.0.0", port: 4795, close: vi.fn().mockResolvedValue(undefined) });
+    const exitMock = vi.fn();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await main([], {} as NodeJS.ProcessEnv, {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: vi.fn().mockResolvedValue(undefined),
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: removeDaemonInfoMock,
+      exit: exitMock,
+    });
+
+    process.emit("SIGINT");
+    await vi.waitFor(() => expect(exitMock).toHaveBeenCalled());
+
+    expect(removeDaemonInfoMock).toHaveBeenCalledTimes(1);
+    expect(runtimeStopOrder).toEqual(["runtime.stop", "removeDaemonInfo"]);
 
     logSpy.mockRestore();
   });
@@ -525,6 +688,11 @@ describe("cli: main -- console advertiser wiring (sprint 021 ticket 002)", () =>
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       startConsoleAdvertiser: startConsoleAdvertiserMock,
     });
 
@@ -550,6 +718,11 @@ describe("cli: main -- console advertiser wiring (sprint 021 ticket 002)", () =>
         probeHostInfo: probeHostInfoMock,
         openBrowser: openBrowserMock,
         getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
         startConsoleAdvertiser: startConsoleAdvertiserMock,
       }),
     ).resolves.toBeUndefined();
@@ -574,6 +747,11 @@ describe("cli: main -- console advertiser wiring (sprint 021 ticket 002)", () =>
       startServer: startServerMock,
       openBrowser: vi.fn().mockResolvedValue(undefined),
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       startConsoleAdvertiser: startConsoleAdvertiserMock,
       exit: exitMock,
     });
@@ -612,6 +790,11 @@ describe("cli: main -- EADDRINUSE attach vs hard-fail (021-001)", () => {
       probeHostInfo: probeHostInfoMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -644,6 +827,11 @@ describe("cli: main -- EADDRINUSE attach vs hard-fail (021-001)", () => {
       probeHostInfo: probeHostInfoMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -679,6 +867,11 @@ describe("cli: main -- EADDRINUSE attach vs hard-fail (021-001)", () => {
       probeHostInfo: probeHostInfoMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -707,6 +900,11 @@ describe("cli: main -- EADDRINUSE attach vs hard-fail (021-001)", () => {
       probeHostInfo: probeHostInfoMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -735,6 +933,11 @@ describe("cli: main -- EADDRINUSE attach vs hard-fail (021-001)", () => {
       probeHostInfo: probeHostInfoMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -761,6 +964,11 @@ describe("cli: main -- EADDRINUSE attach vs hard-fail (021-001)", () => {
       probeHostInfo: probeHostInfoMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
       // unconditionally once startServer resolves -- faked here (not
       // exercising the real bonjour-service-backed default) so no test
@@ -799,6 +1007,11 @@ describe("cli: main -- SIGINT/SIGTERM shutdown", () => {
       startServer: f.startServerMock,
       openBrowser: vi.fn().mockResolvedValue(undefined),
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       exit: exitMock,
     });
@@ -827,6 +1040,11 @@ describe("cli: main -- SIGINT/SIGTERM shutdown", () => {
       startServer: f.startServerMock,
       openBrowser: vi.fn().mockResolvedValue(undefined),
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       exit: exitMock,
     });
@@ -850,6 +1068,11 @@ describe("cli: main -- SIGINT/SIGTERM shutdown", () => {
       startServer: f.startServerMock,
       openBrowser: vi.fn().mockResolvedValue(undefined),
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       exit: exitMock,
     });
@@ -889,6 +1112,11 @@ describe("cli: main -- SIGINT/SIGTERM shutdown", () => {
       startServer: startServerMock,
       openBrowser: vi.fn().mockResolvedValue(undefined),
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
       startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       exit: exitMock,
     });

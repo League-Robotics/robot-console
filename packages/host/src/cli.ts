@@ -57,13 +57,15 @@
  * touched in tests.
  */
 
-import open, { apps } from "open";
 import { startServer, PortInUseError, type RunningServer, type StartServerOptions } from "./server.js";
 import { startRuntime, type Runtime, type StartRuntimeOptions } from "./runtime.js";
 import { getFirmwareConfig } from "./config.js";
 import { dumpStore, formatStoreDump } from "./debug/dumpStore.js";
 import { startMcpServer } from "./mcp/server.js";
 import { startConsoleAdvertiser, type ConsoleAdvertiser } from "./discovery/consoleAdvertiser.js";
+import { openInChrome } from "./browserOpen.js";
+import { runStart, runStop, runStatus, runOpen } from "./daemon/cli.js";
+import { writeDaemonInfo, removeDaemonInfo } from "./daemon/daemonInfo.js";
 
 /** The shape `GET /api/host-info` (`server.ts`) answers with. Only `ok`
  * is required to treat a response as parseable at all -- `service`/
@@ -120,26 +122,6 @@ async function defaultProbeHostInfo(url: string): Promise<HostInfoProbeResult | 
   }
 }
 
-/** Default {@link CliDeps.openBrowser}: the stakeholder does not want
- * `main()` popping up whatever the OS default browser happens to be
- * (Safari, on the macOS benches this project runs on) -- it should open
- * Google Chrome specifically. Falls back to the plain OS-default
- * `open(url)` (and warns once) if Chrome itself is not installed, so a
- * missing Chrome degrades to the old behavior rather than failing
- * startup outright. */
-async function openInChrome(url: string): Promise<void> {
-  try {
-    await open(url, { app: { name: apps.chrome } });
-  } catch (error) {
-    console.warn(
-      `robot-console: Google Chrome not found (${
-        error instanceof Error ? error.message : String(error)
-      }) -- opening the default browser instead.`,
-    );
-    await open(url);
-  }
-}
-
 /** Injectable seams for {@link main}. Every field defaults to the real
  * implementation; `cli.test.ts` substitutes fakes for whichever fields
  * the case under test touches. */
@@ -189,6 +171,15 @@ export interface CliDeps {
    * `cli.test.ts` can observe a clean `SIGINT`/`SIGTERM` shutdown
    * without ending the test process itself. */
   exit?: (code: number) => void;
+  /** Writes `daemon.json` once {@link startServer} resolves
+   * (`daemon/daemonInfo.ts`). Defaults to the real {@link writeDaemonInfo}
+   * -- `cli.test.ts` always overrides this so no test in that suite ever
+   * touches the real state directory (sprint 021 ticket 003). */
+  writeDaemonInfo?: typeof writeDaemonInfo;
+  /** Removes `daemon.json` during shutdown. Defaults to the real
+   * {@link removeDaemonInfo} -- same reasoning as {@link writeDaemonInfo}
+   * above. */
+  removeDaemonInfo?: typeof removeDaemonInfo;
 }
 
 /** `--port <n>` / `--port=<n>` from argv, if present and a valid
@@ -296,6 +287,7 @@ function installShutdownHandlers(
   runtime: Runtime,
   advertiser: ConsoleAdvertiser,
   exit: (code: number) => void,
+  removeDaemonInfoFn: () => void,
 ): () => void {
   let shuttingDown = false;
 
@@ -320,8 +312,22 @@ function installShutdownHandlers(
       // before resolving -- see server.ts's own doc comment.
       await server.close();
     } finally {
+      // Sprint 021 ticket 003: `runtime.stop()` now awaits
+      // `reconciler.stop()`, which closes every session it still holds
+      // before resolving (issue `reconciler-stop-leaks-open-sessions.md`)
+      // -- so by the time this call returns, no session this process
+      // opened is still holding a real socket to a robot. This is what
+      // makes `daemon/cli.ts`'s `stop` verb honest: it sends `SIGTERM`
+      // and waits for this process to actually exit, and this process
+      // never calls `exit(0)` below until session teardown has already
+      // happened.
       await runtime.stop();
     }
+    // Remove `daemon.json` only after the runtime (and its sessions) are
+    // actually torn down -- a `stop`/`status` call racing this shutdown
+    // must never see "not running" (no daemon-info) while a session is
+    // still technically open.
+    removeDaemonInfoFn();
     exit(0);
   };
 
@@ -357,6 +363,32 @@ export async function main(
   env: NodeJS.ProcessEnv = process.env,
   deps: CliDeps = {},
 ): Promise<void> {
+  // Sprint 021 ticket 003: `start`/`stop`/`status`/`open` dispatch to
+  // `daemon/cli.ts` *before* any of today's flag parsing (including
+  // `hasDumpStoreFlag` below) ever runs -- these are argv[0] literal
+  // subcommands, not `--flag` tokens, so they collide with nothing today's
+  // parsing recognizes. Every other invocation (no subcommand, or any
+  // invocation starting with a `--flag`) falls through unchanged. Each
+  // `run*` function owns its own defaults (real fs/network/spawn) --
+  // `main()` passes only `env`, mirroring how it already threads `env`
+  // into `runtimeOptions.storeOptions` below.
+  switch (argv[0]) {
+    case "start":
+      await runStart({ env });
+      return;
+    case "stop":
+      await runStop({ env });
+      return;
+    case "status":
+      await runStatus({ env });
+      return;
+    case "open":
+      await runOpen({ env });
+      return;
+    default:
+      break;
+  }
+
   if (hasDumpStoreFlag(argv)) {
     runDumpStore(env, {
       dumpStore: deps.dumpStore ?? dumpStore,
@@ -373,6 +405,8 @@ export async function main(
   const openBrowser = deps.openBrowser ?? openInChrome;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
   const probeHostInfoFn = deps.probeHostInfo ?? defaultProbeHostInfo;
+  const writeDaemonInfoFn = deps.writeDaemonInfo ?? writeDaemonInfo;
+  const removeDaemonInfoFn = deps.removeDaemonInfo ?? removeDaemonInfo;
 
   const port = parsePortFlag(argv) ?? parsePortEnv(env);
 
@@ -447,19 +481,26 @@ export async function main(
         // started the USB/mDNS/firmware watchers -- exactly the
         // "half-start a runtime, grab hardware, then discover it should
         // have attached" hazard this ticket exists to prevent (sprint
-        // 019 ticket 006's vevov incident). Stopping it here, the
-        // moment attach is decided, closes that window as tightly as
-        // this module can from the composition-root side. It is not a
-        // complete guarantee: `connect/reconciler.ts`'s own `stop()`
-        // does not close an already-open session (a known, separate gap
-        // -- `clasi/issues/reconciler-stop-leaks-open-sessions.md`), so
-        // if the reconciler's slow tick had already opened a session in
-        // the brief window between `startRuntimeFn` and this catch
-        // block, that session would outlive this `stop()` call. Also:
+        // 019 ticket 006's vevov incident). Stopping it here, the moment
+        // attach is decided, closes that window: if the reconciler's
+        // slow tick had already opened a session in the brief window
+        // between `startRuntimeFn` and this catch block, `runtime.stop()`
+        // now closes it too (sprint 021 ticket 003 fixed
+        // `connect/reconciler.ts`'s own `stop()` to close every session
+        // it still holds, rather than leaving it open --
+        // `clasi/issues/reconciler-stop-leaks-open-sessions.md`). Also:
         // returning without this call would leave the watchers'
         // intervals scheduled forever, which would hang the process
         // (Node never exits with a pending timer) even though `main()`
         // itself returns normally.
+        //
+        // This same `startRuntimeFn`-before-any-probe shape is also why
+        // `daemon/cli.ts`'s own `runStart` never builds a runtime at
+        // all: it probes `/api/host-info` (and, failing that, a bounded
+        // `spawn`+wait) before ever importing/constructing anything that
+        // could touch hardware, closing this window from the outside
+        // rather than opening-then-stopping it from the inside, the way
+        // this in-process `main()` path still does.
         await runtime.stop();
         if (!hasNoOpenFlag(argv, env)) {
           try {
@@ -479,6 +520,19 @@ export async function main(
   }
   console.log(`robot-console: listening on ${server.url}`);
 
+  // Sprint 021 ticket 003: write `daemon.json` the moment `startServer`
+  // resolves -- for *every* way the host is started (a bare terminal
+  // invocation, the bench harness's own direct spawn with its own
+  // scratch `ROBOT_CONSOLE_STATE_DIR`, or `daemon/cli.ts`'s `start`
+  // spawning this same entry point), not only when launched via `start`
+  // -- see `daemon/daemonInfo.ts`'s own doc comment. `server.port` is the
+  // actual bound port (never the requested one -- same reasoning as the
+  // advertiser below); `server.host` is deliberately not stored as the
+  // record's own probeable address (it is the literal bind address
+  // `0.0.0.0`, not a usable one -- `daemon/cli.ts` always probes/opens
+  // against `127.0.0.1`/`<hostname>.local` instead).
+  writeDaemonInfoFn({ pid: process.pid, host: server.host, port: server.port, startedAt: Date.now() }, { env });
+
   // Sprint 021 ticket 002: advertise this host over mDNS at its actual
   // bound port (server.port, not the requested one -- see server.ts's
   // own `boundPort` doc comment for why those can differ) now that
@@ -489,7 +543,7 @@ export async function main(
   // host it never bound.
   const advertiser = startConsoleAdvertiserFn({ port: server.port });
 
-  installShutdownHandlers(server, runtime, advertiser, exit);
+  installShutdownHandlers(server, runtime, advertiser, exit, () => removeDaemonInfoFn({ env }));
 
   if (hasNoOpenFlag(argv, env)) {
     return;

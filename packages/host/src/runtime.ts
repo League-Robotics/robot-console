@@ -61,8 +61,10 @@
  * `stop()` tears all of it down in roughly the reverse order: the
  * backstop first (nothing should still be marking links failed once
  * everything else is stopping), the reconciler (stops scheduling new
- * jobs — does not close any already-open session, mirroring every
- * watcher's own `stop()` contract), the relay sweeper, the harvester
+ * jobs, then closes every session it still holds open — sprint 021
+ * ticket 003; issue `reconciler-stop-leaks-open-sessions.md` — awaited
+ * here so a real socket to a real robot never outlives this method,
+ * unlike before that ticket), the relay sweeper, the harvester
  * (ticket 019-003 — clears every attached session's `pollStatus`
  * interval), all three watchers, then the store.
  *
@@ -144,9 +146,10 @@ export interface Runtime {
    * harvester (sprint 019 ticket 003, SUC-003: every attached session's
    * `pollStatus` interval, so a stray tick can never write to the store
    * below once it closes), all three watchers, uninstalls the
-   * unhandled-rejection backstop, and closes the store. Does not close
-   * any already-open session — mirrors the reconciler's own `stop()`
-   * contract (this module's doc comment). */
+   * unhandled-rejection backstop, and closes the store. Awaits the
+   * reconciler's own `stop()` first, which closes every session it still
+   * holds open (sprint 021 ticket 003) — so once this resolves, no
+   * session this runtime opened is still holding a real socket. */
   stop(): Promise<void>;
 }
 
@@ -367,7 +370,12 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
       }
       stopped = true;
       uninstallUnhandledRejectionBackstop();
-      reconciler.stop();
+      // Awaited (sprint 021 ticket 003): the reconciler's own `stop()`
+      // now closes every session it still holds before resolving -- see
+      // `Reconciler.stop`'s own doc comment. This must happen, and be
+      // waited for, before `store.close()` below, since closing a
+      // session writes to the store.
+      await reconciler.stop();
       // Awaited: ticket 016-008 fixed relaySweeperHandle.stop() to wait
       // for every in-flight per-relay pass's own cleanup, precisely so
       // this store.close() below can never again race a pass still

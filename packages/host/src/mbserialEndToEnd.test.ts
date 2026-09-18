@@ -311,7 +311,7 @@ afterEach(async () => {
     }
     await h.server.close();
     h.mdnsWatcher.stop();
-    h.reconciler.stop();
+    await h.reconciler.stop();
     for (const socket of h.robot.sockets) {
       socket.destroy();
     }

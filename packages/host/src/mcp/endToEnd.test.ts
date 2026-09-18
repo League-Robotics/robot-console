@@ -321,3 +321,116 @@ describe("end-to-end: flash (immediate execution, audited, mcp-origin overlay)",
     }
   });
 });
+
+// ---------------------------------------------------------------------
+// Ticket 021-004: request_flash outliving a disconnected/timed-out
+// client -- through the exact production wiring (createDefaultMcpServer)
+// -- and the durable recovery path a fresh get_device_status call gives.
+// ---------------------------------------------------------------------
+
+describe("end-to-end: request_flash outliving a disconnected client -- the outcome is still recoverable via get_device_status", () => {
+  it("settles after the caller's own connection drops; a fresh get_device_status call recovers kind/caller/result from recentAgentActions[0]", async () => {
+    const store = openStore({ filePath: ":memory:" });
+    try {
+      store.upsertDevice({ id: DRIVE_DEVICE_ID, name: DRIVE_DEVICE_NAME, kind: "robot", at: 1 });
+      store.setOwned(DRIVE_DEVICE_ID, true, 1);
+      store.upsertLink({ id: DRIVE_LINK_ID, transport: "mbserial", address: { host: "e2e.local", port: 4000 }, deviceId: DRIVE_DEVICE_ID, at: 1 });
+      store.upsertService({ instance: DRIVE_DEVICE_NAME, type: MBFLASH_SERVICE_TYPE, host: "e2e.local", port: 34567, txt: null, at: 1 });
+
+      let resolveFlash!: (outcome: FlashResultLike) => void;
+      const deferred = new Promise<FlashResultLike>((resolve) => {
+        resolveFlash = resolve;
+      });
+      const startFlash = vi.fn(() => deferred);
+
+      const deps: McpDeps = {
+        store,
+        reconciler: { requestOpen: vi.fn(), requestClose: vi.fn(), sessions: { get: vi.fn(() => undefined) } },
+        startFlash: startFlash as unknown as McpDeps["startFlash"],
+        enumerateDaplinkDevices: vi.fn(async () => [] as DaplinkDevice[]),
+      };
+      // createDefaultMcpServer -- the exact function cli.ts uses in
+      // production, registering every tool category on one McpServer
+      // (this file's own module doc comment).
+      const server = createDefaultMcpServer(deps);
+      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: "021-004-e2e-agent", version: "1.0.0" });
+
+      const unhandled: unknown[] = [];
+      const onUnhandledRejection = (reason: unknown): void => {
+        unhandled.push(reason);
+      };
+      process.on("unhandledRejection", onUnhandledRejection);
+
+      try {
+        await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+        // Break delivery on the server's own transport -- simulates the
+        // caller's own connection dropping (or its request timing out)
+        // partway through, exactly as mcp/tools/flash.test.ts's own
+        // disconnect test does; see that file's doc comment for why this
+        // is a faithful stand-in for a real StreamableHTTPServerTransport
+        // whose SSE stream the client gave up on, rather than the whole
+        // session/transport closing.
+        const originalSend = serverTransport.send.bind(serverTransport);
+        let breakDelivery = false;
+        serverTransport.send = vi.fn(async (message: unknown, options?: unknown) => {
+          if (breakDelivery) {
+            throw new Error("write after close: the client's own connection is gone");
+          }
+          return originalSend(message as never, options as never);
+        });
+
+        // Not awaited to completion -- once `breakDelivery` flips, the
+        // server can never deliver a response to this call, so the
+        // client's own promise only settles once `client.close()` tears
+        // the session down in the `finally` below. `.catch()` just keeps
+        // that eventual rejection from ever surfacing as unhandled.
+        const flashCallPromise = client
+          .callTool({ name: "request_flash", arguments: { deviceId: DRIVE_DEVICE_ID, firmwareRef: "robot" } })
+          .catch((error: unknown) => error);
+        void flashCallPromise;
+
+        // waitFor rather than a fixed microtask-flush count since the
+        // precondition check's own resolveFlashLinkTarget call is
+        // genuinely async (enumerateDaplinkDevices).
+        await vi.waitFor(() => expect(startFlash).toHaveBeenCalledTimes(1));
+
+        // The client's own call times out / its connection drops here --
+        // well before startFlash settles.
+        breakDelivery = true;
+        resolveFlash({ status: "ok" });
+
+        // Exactly one durable row, regardless of the disconnect.
+        await vi.waitFor(() => {
+          expect(store.recentAgentActions({ deviceId: DRIVE_DEVICE_ID }, 10)).toHaveLength(1);
+        });
+        const rows = store.recentAgentActions({ deviceId: DRIVE_DEVICE_ID }, 10);
+        expect(rows[0]).toMatchObject({ kind: "flash", deviceId: DRIVE_DEVICE_ID, result: "sent" });
+
+        // Delivery works again for the *next* call -- a fresh
+        // get_device_status, exactly what request_flash's own tool
+        // description (corrected by this ticket) now tells a caller who
+        // missed the inline response to do.
+        breakDelivery = false;
+        const status = await client.callTool({ name: "get_device_status", arguments: { name: DRIVE_DEVICE_NAME } });
+        expect(status.isError).toBeFalsy();
+        const payload = parseToolText(status as { content: Array<{ type: string; text?: string }> }) as {
+          recentAgentActions: Array<{ kind: string; caller: string; summary: string }>;
+        };
+        expect(payload.recentAgentActions[0]).toMatchObject({ kind: "flash", caller: "021-004-e2e-agent" });
+        expect(payload.recentAgentActions[0]!.summary).toContain("sent");
+
+        // No uncaught exception / unhandled rejection escaped anywhere in
+        // this flow -- the process-crash risk this ticket asks to verify.
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off("unhandledRejection", onUnhandledRejection);
+        await client.close().catch(() => {});
+        await server.close().catch(() => {});
+      }
+    } finally {
+      store.close();
+    }
+  });
+});

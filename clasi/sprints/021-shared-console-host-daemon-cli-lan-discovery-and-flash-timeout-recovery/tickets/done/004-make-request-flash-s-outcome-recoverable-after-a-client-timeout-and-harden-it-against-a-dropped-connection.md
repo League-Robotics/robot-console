@@ -2,7 +2,7 @@
 id: '004'
 title: Make request_flash's outcome recoverable after a client timeout, and harden
   it against a dropped connection
-status: in-progress
+status: done
 use-cases:
 - SUC-006
 depends-on: []
@@ -69,24 +69,24 @@ What is actually missing, and this ticket's real scope:
 
 ## Acceptance Criteria
 
-- [ ] A test that starts a flash via `request_flash`'s handler with a
+- [x] A test that starts a flash via `request_flash`'s handler with a
       fake `startFlash` whose promise does not resolve immediately,
       simulates the caller's own request context closing/aborting
       before that promise resolves, then resolves it — and asserts (a)
       the handler runs to completion, (b) exactly one `agent_actions`
       row is written with the real outcome, and (c) no exception
       escapes the handler (the host process would not crash).
-- [ ] A companion test calls `get_device_status` afterward (same fake
+- [x] A companion test calls `get_device_status` afterward (same fake
       store) and confirms `recentAgentActions[0]` surfaces that flash's
       `kind`/`caller`/`result`/`resultReason` correctly.
-- [ ] `request_flash`'s `registerTool` description no longer claims the
+- [x] `request_flash`'s `registerTool` description no longer claims the
       `flash` overlay is available "as a fallback if this call's own
       connection drops" — it names `get_device_status`/
       `recentAgentActions` as the durable recovery path instead.
-- [ ] No schema change to `agent_actions` (`migrations/` directory
+- [x] No schema change to `agent_actions` (`migrations/` directory
       unchanged); no new MCP tool added; no `status`/pending column
       anywhere.
-- [ ] No existing `mcp/tools/flash.test.ts`/`mcp/endToEnd.test.ts` case
+- [x] No existing `mcp/tools/flash.test.ts`/`mcp/endToEnd.test.ts` case
       regresses.
 
 ## Testing

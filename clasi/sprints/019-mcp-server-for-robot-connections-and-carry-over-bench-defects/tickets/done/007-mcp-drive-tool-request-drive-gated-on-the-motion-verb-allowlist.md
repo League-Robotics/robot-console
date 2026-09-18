@@ -2,7 +2,7 @@
 id: '007'
 title: MCP drive tool (request_drive), executing immediately through the motion-verb
   allowlist
-status: open
+status: done
 use-cases:
 - SUC-006
 depends-on:
@@ -45,32 +45,37 @@ Design Rationale entry for `STOP`/`ESTOP`.
 
 ## Acceptance Criteria
 
-- [ ] `request_drive {linkId, verb, fields}` validates `verb` against the
+- [x] `request_drive {linkId, verb, fields}` validates `verb` against the
       seven-verb allowlist above; any other verb (including `STOP`/
       `ESTOP`) is rejected with a message pointing at `send_command`
       instead.
-- [ ] `request_drive` validates `fields` against each verb's own field
+- [x] `request_drive` validates `fields` against each verb's own field
       shape (per `wire_handler.cpp`'s per-verb decode functions —
       `decodeWheelsX`, `decodeMoveX`, etc.) before calling `sendCommand`,
       so a malformed request fails fast with a clear error rather than
       being sent to the firmware for it to reject.
-- [ ] On valid input, `request_drive` calls the extracted `sendCommand`
+- [x] On valid input, `request_drive` calls the extracted `sendCommand`
       function (ticket 005) **immediately** — no intermediate row, no
       wait, no approval step of any kind — and returns the same reply
       `send_command` would return for that verb.
-- [ ] `request_drive` requires an already-open session on the target link
+- [x] `request_drive` requires an already-open session on the target link
       (a correctness precondition — `sendCommand` needs a link to send
       on) — if none exists, it fails with a message directing the caller
       to `open_session` first, rather than opening one implicitly.
-- [ ] Every successful `request_drive` call writes exactly one row to
+- [x] Every successful `request_drive` call writes exactly one row to
       ticket 006's `agent_actions` log via `agentActionLog.record()`,
       after the `sendCommand` call.
-- [ ] The full path — `request_drive` call → `sendCommand` → robot
+- [x] The full path — `request_drive` call → `sendCommand` → robot
       receives the verb → `agent_actions` row written — is demonstrated
       end-to-end in at least one integration-style test against a fake
       session/store (real hardware verification happens in ticket 009,
-      hardware-permitting).
-- [ ] Tool schema follows the same empty-argument-safe design discipline
+      hardware-permitting). Note: no acceptance criterion of this ticket
+      itself requires live hardware -- all seven are satisfied by
+      `mcp/tools/drive.test.ts`'s fake-session/real-store integration
+      tests; live drive verification against a real robot remains
+      ticket 009's own gate, per this ticket's own scope note above ("the
+      bench is NOT yours right now").
+- [x] Tool schema follows the same empty-argument-safe design discipline
       as tickets 004/005.
 
 ## Implementation Plan

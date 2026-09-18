@@ -115,6 +115,8 @@ import { localhostHostValidation } from "@modelcontextprotocol/sdk/server/middle
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { registerInspectTools, type InspectStore } from "./tools/inspect.js";
 import { registerConnectTools, type ConnectToolsReconciler, type ConnectToolsStore } from "./tools/connect.js";
+import { registerDriveTools } from "./tools/drive.js";
+import type { AgentActionLogStore } from "./agentActionLog.js";
 
 /** Default mount path for the MCP Streamable HTTP endpoint. */
 export const DEFAULT_MCP_PATH = "/mcp";
@@ -163,12 +165,16 @@ function sessionIdOf(transport: McpTransportLike): string | undefined {
  * category needs — `registerInspectTools`'s own narrow {@link
  * InspectStore} plus `registerConnectTools`'s own {@link
  * ConnectToolsStore}/{@link ConnectToolsReconciler} (sprint 019 ticket
- * 005). Each tool module still only receives the narrow slice its own
- * type declares — this interface exists solely so `startMcpServer`'s own
- * caller (`cli.ts`) has one thing to construct and pass down, not
- * because any tool module itself needs the union. */
+ * 005), plus `registerDriveTools`'s own {@link AgentActionLogStore} need
+ * (sprint 019 ticket 007 — `registerDriveTools`'s own reconciler need,
+ * `DriveToolsReconciler`, is already exactly `ConnectToolsReconciler`'s
+ * `sessions` field, so no widening is needed on that side). Each tool
+ * module still only receives the narrow slice its own type declares —
+ * this interface exists solely so `startMcpServer`'s own caller
+ * (`cli.ts`) has one thing to construct and pass down, not because any
+ * tool module itself needs the union. */
 export interface McpDeps {
-  readonly store: InspectStore & ConnectToolsStore;
+  readonly store: InspectStore & ConnectToolsStore & AgentActionLogStore;
   readonly reconciler: ConnectToolsReconciler;
 }
 
@@ -226,6 +232,7 @@ export function createDefaultMcpServer(deps: McpDeps): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
   registerInspectTools(server, deps.store);
   registerConnectTools(server, deps);
+  registerDriveTools(server, deps);
   return server;
 }
 

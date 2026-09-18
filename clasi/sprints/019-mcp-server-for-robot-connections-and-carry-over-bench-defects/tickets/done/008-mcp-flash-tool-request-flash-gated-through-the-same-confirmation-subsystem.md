@@ -1,7 +1,7 @@
 ---
-id: '008'
+id: 008
 title: MCP flash tool (request_flash), executing immediately via startFlash
-status: open
+status: done
 use-cases:
 - SUC-007
 depends-on:
@@ -72,25 +72,25 @@ there is no gate to prove.
 
 ## Acceptance Criteria
 
-- [ ] `request_flash {deviceId, firmwareRef}` validates that the target
+- [x] `request_flash {deviceId, firmwareRef}` validates that the target
       device is flashable in its current state (mirrors whatever
       precondition `connect/flasher.ts`'s existing `flash-start` handler
       already checks — do not invent a new precondition set); an invalid
       or mid-session target is rejected with that same reason, starting
       no flash.
-- [ ] On valid input, `request_flash` calls the extracted `startFlash`
+- [x] On valid input, `request_flash` calls the extracted `startFlash`
       function (ticket 005/this ticket's own extraction, whichever lands
       first — see Implementation Plan) **immediately** — session
       close-first, `board_owner = 'flash'` acquire, `flash()`, release in
       `finally` — no intermediate row, no wait for permission, no
       approval step of any kind.
-- [ ] `request_flash` **awaits** `startFlash`'s own promise through to
+- [x] `request_flash` **awaits** `startFlash`'s own promise through to
       its terminal outcome (`{status: "ok"} | {status: "error", ...}`,
       the same shape `finishFlash`/`failFlash` already produce) and
       returns that outcome directly in its MCP response — the calling
       agent learns success or failure from the `request_flash` call
       itself, with no polling required.
-- [ ] The `flash` snapshot overlay (`Snapshot`'s `flash?: {source,
+- [x] The `flash` snapshot overlay (`Snapshot`'s `flash?: {source,
       phase}`, extended by ticket 006 with `origin`/`caller`) is set to
       `origin: 'mcp'`, `caller: <name>` for the duration of this
       operation; progress/result flow through the existing
@@ -98,18 +98,18 @@ there is no gate to prove.
       MCP-specific duplicate of either — `request_flash`'s own response
       is a second way to learn the same terminal outcome, not a
       replacement for those messages.
-- [ ] Every `request_flash` call that proceeds past the precondition
+- [x] Every `request_flash` call that proceeds past the precondition
       check writes exactly one row to ticket 006's `agent_actions` log
       via `agentActionLog.record()`, written once `startFlash`'s promise
       settles, carrying the real `result`/`result_reason` — not written
       speculatively before the outcome is known.
-- [ ] Re-identification after a successful MCP-triggered flash proceeds
+- [x] Re-identification after a successful MCP-triggered flash proceeds
       exactly as it does today (automatic, via the USB watcher's
       re-enumeration) — this ticket adds no MCP-specific re-identify
       path, matching `connect/flasher.ts`'s own documented boundary.
-- [ ] A rejected precondition check never touches `board_owner`, never
+- [x] A rejected precondition check never touches `board_owner`, never
       calls `flash()`, and writes no `agent_actions` row.
-- [ ] Tool schema follows the same empty-argument-safe design discipline
+- [x] Tool schema follows the same empty-argument-safe design discipline
       as tickets 004/005/007.
 
 ## Implementation Plan

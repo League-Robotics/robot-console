@@ -317,11 +317,21 @@ export async function main(
     // comment on `mountRoutes` for why this must be a hook `startServer`
     // itself invokes (before its static/SPA catch-all route exists)
     // rather than something done to its `app` after the fact.
-    mountRoutes: (app) => {
+    mountRoutes: (app, extra) => {
       // Sprint 019 ticket 005: the MCP tool surface now needs the
       // reconciler too (connect/command tools), not just the store --
-      // see `mcp/server.ts`'s own `McpDeps`.
-      startMcpServerFn(app, { store: runtime.store, reconciler: runtime.reconciler });
+      // see `mcp/server.ts`'s own `McpDeps`. Ticket 008: `extra` carries
+      // the exact `startFlash`/`enumerateDaplinkDevices` this server's
+      // own `flash-start` WS handler uses (`server.ts`'s own
+      // `MountRoutesExtra` doc comment) -- `mcp/tools/flash.ts`'s
+      // `request_flash` calls the *same* `startFlash`, not a second,
+      // divergent way of starting a flash.
+      startMcpServerFn(app, {
+        store: runtime.store,
+        reconciler: runtime.reconciler,
+        startFlash: extra.startFlash,
+        enumerateDaplinkDevices: extra.enumerateDaplinkDevices,
+      });
     },
   });
   console.log(`robot-console: listening on ${server.url}`);

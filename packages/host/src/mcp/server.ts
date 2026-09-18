@@ -116,7 +116,10 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { registerInspectTools, type InspectStore } from "./tools/inspect.js";
 import { registerConnectTools, type ConnectToolsReconciler, type ConnectToolsStore } from "./tools/connect.js";
 import { registerDriveTools } from "./tools/drive.js";
+import { registerFlashTools } from "./tools/flash.js";
 import type { AgentActionLogStore } from "./agentActionLog.js";
+import type { StartFlashFn } from "../server.js";
+import type { DaplinkDeviceLister } from "../devices.js";
 
 /** Default mount path for the MCP Streamable HTTP endpoint. */
 export const DEFAULT_MCP_PATH = "/mcp";
@@ -168,14 +171,26 @@ function sessionIdOf(transport: McpTransportLike): string | undefined {
  * 005), plus `registerDriveTools`'s own {@link AgentActionLogStore} need
  * (sprint 019 ticket 007 — `registerDriveTools`'s own reconciler need,
  * `DriveToolsReconciler`, is already exactly `ConnectToolsReconciler`'s
- * `sessions` field, so no widening is needed on that side). Each tool
- * module still only receives the narrow slice its own type declares —
- * this interface exists solely so `startMcpServer`'s own caller
- * (`cli.ts`) has one thing to construct and pass down, not because any
- * tool module itself needs the union. */
+ * `sessions` field, so no widening is needed on that side), plus
+ * `registerFlashTools`'s own `startFlash`/`enumerateDaplinkDevices` need
+ * (sprint 019 ticket 008 -- `server.ts`'s own extracted `startFlash`,
+ * handed down through `mountRoutes`'s `MountRoutesExtra`, not
+ * reconstructed here). Each tool module still only receives the narrow
+ * slice its own type declares — this interface exists solely so
+ * `startMcpServer`'s own caller (`cli.ts`) has one thing to construct
+ * and pass down, not because any tool module itself needs the union. */
 export interface McpDeps {
   readonly store: InspectStore & ConnectToolsStore & AgentActionLogStore;
   readonly reconciler: ConnectToolsReconciler;
+  /** The exact `startFlash` `server.ts`'s own `flash-start` WS handler
+   * calls -- see `server.ts`'s `MountRoutesExtra`/`StartFlashFn` doc
+   * comments. */
+  readonly startFlash: StartFlashFn;
+  /** The exact USB enumerator `startFlash` itself was built with, so
+   * `mcp/tools/flash.ts`'s own precondition check
+   * ({@link resolveFlashLinkTarget}) sees the same result `startFlash`
+   * would. */
+  readonly enumerateDaplinkDevices: DaplinkDeviceLister;
 }
 
 export interface StartMcpServerOptions {
@@ -233,6 +248,7 @@ export function createDefaultMcpServer(deps: McpDeps): McpServer {
   registerInspectTools(server, deps.store);
   registerConnectTools(server, deps);
   registerDriveTools(server, deps);
+  registerFlashTools(server, deps);
   return server;
 }
 

@@ -376,18 +376,26 @@ describe("cli: main -- MCP server wiring (sprint 019 ticket 004)", () => {
     process.removeAllListeners("SIGTERM");
   });
 
-  it("passes a mountRoutes hook to startServer that reaches startMcpServer with the app and runtime.store", async () => {
+  it("passes a mountRoutes hook to startServer that reaches startMcpServer with the app, runtime.store/reconciler, and the flash extras", async () => {
     const fakeStore = { marker: "fake-store" };
-    const startRuntimeMock = vi.fn().mockReturnValue({ store: fakeStore, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const fakeReconciler = { marker: "fake-reconciler" };
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: fakeStore, reconciler: fakeReconciler, telemetry: {}, stop: vi.fn() });
     const fakeApp = { marker: "fake-express-app" };
-    // A real startServer would call mountRoutes(app) itself, before its
-    // own static/catch-all route registration (server.ts's own doc
-    // comment on that hook) -- faked here to invoke it the same way,
-    // without needing a real Express app or HTTP port.
-    const startServerMock = vi.fn().mockImplementation(async (options: { mountRoutes?: (app: unknown) => void }) => {
-      options.mountRoutes?.(fakeApp);
-      return { url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) };
-    });
+    const fakeStartFlash = vi.fn();
+    const fakeEnumerateDaplinkDevices = vi.fn();
+    // A real startServer would call mountRoutes(app, extra) itself,
+    // before its own static/catch-all route registration (server.ts's
+    // own doc comment on that hook) -- faked here to invoke it the same
+    // way, without needing a real Express app or HTTP port. `extra`
+    // mirrors server.ts's own `MountRoutesExtra` (sprint 019 ticket 008):
+    // the exact `startFlash`/`enumerateDaplinkDevices` a real
+    // `startServer` would hand down.
+    const startServerMock = vi.fn().mockImplementation(
+      async (options: { mountRoutes?: (app: unknown, extra: { startFlash: unknown; enumerateDaplinkDevices: unknown }) => void }) => {
+        options.mountRoutes?.(fakeApp, { startFlash: fakeStartFlash, enumerateDaplinkDevices: fakeEnumerateDaplinkDevices });
+        return { url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) };
+      },
+    );
     const startMcpServerMock = vi.fn().mockReturnValue({ path: "/mcp" });
     const openBrowserMock = vi.fn().mockResolvedValue(undefined);
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -402,7 +410,12 @@ describe("cli: main -- MCP server wiring (sprint 019 ticket 004)", () => {
 
     await main([], {} as NodeJS.ProcessEnv, deps);
 
-    expect(startMcpServerMock).toHaveBeenCalledWith(fakeApp, fakeStore);
+    expect(startMcpServerMock).toHaveBeenCalledWith(fakeApp, {
+      store: fakeStore,
+      reconciler: fakeReconciler,
+      startFlash: fakeStartFlash,
+      enumerateDaplinkDevices: fakeEnumerateDaplinkDevices,
+    });
 
     logSpy.mockRestore();
   });

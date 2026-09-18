@@ -68,11 +68,13 @@ function fakeResponse(): Response & { statusCode?: number; jsonBody?: unknown; h
 // argument from a bare `InspectStore` to `{store, reconciler}` so the
 // connect tools (`open_session`/`close_session`/`send_command`) can be
 // registered alongside the inspect ones. Ticket 007 widened `store`
-// again (`AgentActionLogStore`, for `request_drive`'s audit write) --
-// this fake never has its methods called by any test in this file (they
-// exercise Express wiring, not tool behavior; that is
-// `mcp/tools/connect.test.ts`'s/`mcp/tools/drive.test.ts`'s own job), so
-// every field is just enough to satisfy the type.
+// again (`AgentActionLogStore`, for `request_drive`'s audit write).
+// Ticket 008 adds `startFlash`/`enumerateDaplinkDevices` for
+// `request_flash` -- this fake never has its methods called by any test
+// in this file (they exercise Express wiring, not tool behavior; that is
+// `mcp/tools/connect.test.ts`'s/`mcp/tools/drive.test.ts`'s/
+// `mcp/tools/flash.test.ts`'s own job), so every field is just enough to
+// satisfy the type.
 const fakeDeps: McpDeps = {
   store: {
     projectionRows: vi.fn(),
@@ -85,6 +87,8 @@ const fakeDeps: McpDeps = {
     requestClose: vi.fn(async () => undefined),
     sessions: { get: vi.fn() },
   } as unknown as McpDeps["reconciler"],
+  startFlash: vi.fn(async () => ({ status: "ok" }) as const),
+  enumerateDaplinkDevices: vi.fn(async () => []),
 };
 
 describe("startMcpServer: route registration", () => {
@@ -302,14 +306,15 @@ describe("startMcpServer: session continuity (sprint 019 ticket 005)", () => {
 });
 
 describe("createDefaultMcpServer: the real default registers every tool category", () => {
-  it("registers the inspect, connect, AND drive tools against the given deps (verified via a real InMemoryTransport round trip, not the Express layer)", async () => {
+  it("registers the inspect, connect, drive, AND flash tools against the given deps (verified via a real InMemoryTransport round trip, not the Express layer)", async () => {
     // Does not touch a real HTTP port -- proves the same factory
     // `startMcpServer` uses as its default `createMcpServer` actually
     // wires `registerInspectTools`/`registerConnectTools`/
-    // `registerDriveTools` to the deps it was given. Full protocol
-    // coverage (Zod validation, empty-argument survivability, no-writes)
-    // lives in `mcp/tools/inspect.test.ts`, `mcp/tools/connect.test.ts`,
-    // and `mcp/tools/drive.test.ts` respectively.
+    // `registerDriveTools`/`registerFlashTools` to the deps it was given.
+    // Full protocol coverage (Zod validation, empty-argument
+    // survivability, no-writes) lives in `mcp/tools/inspect.test.ts`,
+    // `mcp/tools/connect.test.ts`, `mcp/tools/drive.test.ts`, and
+    // `mcp/tools/flash.test.ts` respectively.
     const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
 
@@ -320,7 +325,7 @@ describe("createDefaultMcpServer: the real default registers every tool category
     try {
       const tools = await client.listTools();
       const names = tools.tools.map((t) => t.name).sort();
-      expect(names).toEqual(["close_session", "get_device_status", "list_devices", "open_session", "request_drive", "send_command"]);
+      expect(names).toEqual(["close_session", "get_device_status", "list_devices", "open_session", "request_drive", "request_flash", "send_command"]);
     } finally {
       await client.close();
       await server.close();

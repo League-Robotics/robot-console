@@ -93,15 +93,20 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocket, WebSocketServer } from "ws";
-import { isSequencedVerb } from "@robot-console/protocol";
 import { WifiCredentialsStore } from "./store/wifiCredentials.js";
-import { findCurrentMbflashService, type ProjectionDeviceRow, type ProjectionServiceRow, type Store } from "./store/index.js";
+import { findCurrentMbflashService, type ProjectionDeviceRow, type ProjectionRows, type ProjectionServiceRow, type Store } from "./store/index.js";
 import type { Reconciler } from "./connect/reconciler.js";
 import type { ConnectedSession } from "./connect/connector.js";
 import type { HarvesterTelemetryEvent } from "./connect/harvester.js";
 import { buildSnapshotFromRows } from "./projection.js";
-import { isValidRadioOverride, resolveDeviceRadio, type DeviceRadioOverride } from "./radioOverride.js";
-import { resolveRobotAddress, type RegistryLocation } from "./mbrelayRegistry.js";
+import { isValidRadioOverride } from "./radioOverride.js";
+import {
+  openSession,
+  closeSession,
+  requireSession as requireOpenSession,
+  sendCommand as sharedSendCommand,
+  type OpenSessionParams,
+} from "./connect/sessionOps.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
 import { resolveRelease as defaultResolveRelease, fetchAndVerifyHex as defaultFetchAndVerifyHex } from "./releases.js";
 import { LocalHexUploadManager, MAX_UPLOAD_BYTE_LENGTH } from "./localHexUpload.js";
@@ -122,6 +127,7 @@ import {
   type FlashPhase,
   type Notice,
   type ServerMessage,
+  type SessionOriginWire,
   type Snapshot,
   type SnapshotLink,
 } from "./wsMessages.js";
@@ -254,6 +260,35 @@ export interface StartServerOptions {
    * `new WebSocketServer({server: httpServer, maxPayload})`. See
    * {@link WebSocketServerLike}. */
   createWebSocketServer?: (httpServer: HttpServer, maxPayloadBytes: number) => WebSocketServerLike;
+  /** Sprint 019 ticket 004: called once, synchronously, with this
+   * server's own Express `app` instance, before the static-file/SPA
+   * catch-all route is registered — the one extension point a caller
+   * needs to mount an additional route (e.g. `cli.ts` mounting the MCP
+   * Streamable HTTP endpoint via `mcp/server.ts`'s `startMcpServer`) that
+   * must win against the catch-all rather than be shadowed by it.
+   * Ticket 008 adds {@link MountRoutesExtra} as a second parameter, so
+   * `cli.ts` can hand the MCP subsystem the exact same `startFlash`
+   * (and its `enumerateDaplinkDevices`) this file's own `flash-start`
+   * handler calls — this module still has no knowledge of what, if
+   * anything, is mounted here. */
+  mountRoutes?: (app: express.Express, extra: MountRoutesExtra) => void;
+}
+
+/** Second parameter to {@link StartServerOptions.mountRoutes} (sprint
+ * 019 ticket 008) — the one piece of this module's own closure state an
+ * external mount hook needs: the extracted `startFlash` function
+ * (`this file's own `flash-start` WS handler calls the very same
+ * reference) and the `enumerateDaplinkDevices` instance it was built
+ * with, so `mcp/tools/flash.ts`'s own precondition check
+ * ({@link resolveFlashLinkTarget}) sees the exact same USB enumeration
+ * `startFlash` itself would. `startFlash` is a `function` declaration
+ * inside {@link startServer} (hoisted to the top of that function's own
+ * scope), so passing its reference here — before its literal source
+ * position — is safe: nothing calls it until well after `startServer`
+ * has finished composing every one of its own closure variables. */
+export interface MountRoutesExtra {
+  readonly startFlash: StartFlashFn;
+  readonly enumerateDaplinkDevices: DaplinkDeviceLister;
 }
 
 /** `readyState`'s `OPEN` value (the standard WebSocket constants:
@@ -300,8 +335,16 @@ export interface RunningServer {
   close(): Promise<void>;
 }
 
-function buildApp(staticDir: string): express.Express {
+function buildApp(staticDir: string, mountRoutes: ((app: express.Express, extra: MountRoutesExtra) => void) | undefined, extra: MountRoutesExtra): express.Express {
   const app = express();
+  // Sprint 019 ticket 004: a caller-supplied hook to register additional
+  // routes *before* the static-file/SPA catch-all below -- Express
+  // matches routes in registration order, so anything specific (e.g. the
+  // MCP Streamable HTTP endpoint `cli.ts` mounts here) must be wired
+  // before the `app.get(/.*/, ...)` catch-all exists, or it would never
+  // be reached. This module has no MCP-specific knowledge of its own --
+  // see {@link StartServerOptions.mountRoutes}'s own doc comment.
+  mountRoutes?.(app, extra);
   if (existsSync(staticDir)) {
     app.use(express.static(staticDir));
     app.get(/.*/, (_req, res) => {
@@ -370,108 +413,111 @@ function usbSerialFromLinkId(linkId: string): string | undefined {
   return linkId.startsWith("usb-") ? linkId.slice("usb-".length) : undefined;
 }
 
-/** Parses just the `{channel, group}` fields off an already-JSON-parsed
- * `ProjectionLinkRow.address` (sprint 016 ticket 004) -- used by the
- * `session-open {relayLinkId, name}` handler to detect whether a
- * `links(radio)` row for this exact (name, relay) pair already carries a
- * resolved (sighted) address, rather than re-deriving a fresh one.
- * Mirrors `projection.ts`'s own private `parseRelayAddress` (not
- * imported directly -- that one also reads `relayLinkId`, which is
- * irrelevant here); never throws on a malformed/missing shape. */
-function parseChannelGroupAddress(address: unknown): { channel: number; group: number } | undefined {
-  if (typeof address !== "object" || address === null) {
-    return undefined;
-  }
-  const rec = address as Record<string, unknown>;
-  return typeof rec.channel === "number" && typeof rec.group === "number" ? { channel: rec.channel, group: rec.group } : undefined;
-}
-
-/** Parses `{host, registryPort}` off an already-JSON-parsed mbrelay
- * `ProjectionLinkRow.address` -- the location `resolveDeviceRadio`'s own
- * `registry` option (`radioOverride.ts`) needs to reach mbrelay's name
- * registry over HTTP (`mbrelayRegistry.ts`'s `RegistryLocation`). Only an
- * `_mbrelay._tcp` pool's own link row ever carries a `registryPort`
- * (`watchers/mdnsWatcher.ts`'s `handleMbrelay`) -- a local `usb` relay's
- * address never does, so this returns `undefined` for one, exactly as it
- * would for a malformed/missing shape. Never throws.
- */
-function parseRegistryLocation(address: unknown): RegistryLocation | undefined {
-  if (typeof address !== "object" || address === null) {
-    return undefined;
-  }
-  const rec = address as Record<string, unknown>;
-  return typeof rec.host === "string" && typeof rec.registryPort === "number"
-    ? { host: rec.host, port: rec.registryPort }
-    : undefined;
-}
-
-/** The registry location for `relayLinkId`'s own mbrelay pool, if any --
- * looked up fresh from the store on every `session-open {relayLinkId,
- * name}` bridge (sprint 016 ticket 006) rather than cached, since a
- * discovered pool's `registryPort` can change across `mdnsWatcher.ts`'s
- * own re-query/address-change handling. `undefined` when `relayLinkId`
- * names a local usb relay (no registry concept for one) or is not found
- * at all -- `resolveDeviceRadio` degrades to `override -> derived`
- * safely either way (see its own doc comment). */
-function resolveRegistryLocationForRelay(store: Store, relayLinkId: string): RegistryLocation | undefined {
-  const relayLink = store.projectionRows().links.find((candidate) => candidate.id === relayLinkId);
-  return relayLink ? parseRegistryLocation(relayLink.address) : undefined;
-}
-
-/** Any discovered mbrelay pool's registry location, preferring a pool
- * whose own link is not stale. The fleet shares one name registry, so a
- * USB radio bridge -- which has no registry of its own -- asks the same
- * one a pool would. `undefined` when no pool has ever been discovered. */
-function resolveFleetRegistryLocation(store: Store): RegistryLocation | undefined {
-  const pools = store.projectionRows().links.filter((link) => link.transport === "mbrelay");
-  const ordered = [...pools.filter((link) => link.state !== "stale"), ...pools.filter((link) => link.state === "stale")];
-  for (const pool of ordered) {
-    const location = parseRegistryLocation(pool.address);
-    if (location !== undefined) {
-      return location;
-    }
-  }
-  return undefined;
-}
-
-/**
- * The radio address a `session-open {relayLinkId, name}` bridge dials, in
- * this order:
- *
- * 1. the device's stored override;
- * 2. mbrelay's name registry, whenever one answers -- the fleet's source
- *    of truth for which address map each robot's firmware is on;
- * 3. the address already on this (robot, bridge) pair's own link row --
- *    what an earlier bridge or sweep confirmed (sprint 016 ticket 004);
- * 4. the name-derived default.
- *
- * Stakeholder bench defect (2026-09-14): `vevov` moved to the 73-channel
- * map (registry: 20/82) but its old `radio-vevov-via-<vitut>` row still
- * carried the old map's 37/43. Step 3 used to win outright, and a USB
- * bridge never asked the registry at all, so `vevov` never answered
- * through `vitut` while it answered through `torture` just fine.
- */
-async function resolveBridgeAddress(
-  name: string,
-  override: DeviceRadioOverride,
-  rowAddress: { channel: number; group: number } | undefined,
-  registry: RegistryLocation | undefined,
-): Promise<{ channel: number; group: number }> {
-  if (override.radioSource === "override" && override.radioChannel !== null && override.radioGroup !== null) {
-    return { channel: override.radioChannel, group: override.radioGroup };
-  }
-  if (registry !== undefined) {
-    const resolved = await resolveRobotAddress(name, registry);
-    if (resolved.outcome !== "local-derived") {
-      return { channel: resolved.channel, group: resolved.group };
-    }
-  }
-  return rowAddress ?? (await resolveDeviceRadio(name, override));
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+/** Structural subset of {@link FlashOutcome} (the USB path, `flash.ts`)
+ * and {@link MbflashOutcome} (the network path,
+ * `connect/mbflashClient.ts`) -- ticket 018-014: both feed the same
+ * `finishFlash` broadcast, and neither's own extra fields (`method`,
+ * `reason`) are ever part of the wire contract anyway, so `finishFlash`/
+ * `failFlash`/`runFlashTask`/`startFlash` only need this narrower shape,
+ * which both outcome types already satisfy structurally. Sprint 019
+ * ticket 008: hoisted to module level (out of {@link startServer}'s own
+ * closure) and exported so `mcp/tools/flash.ts` can type `startFlash`'s
+ * own terminal outcome without duplicating this shape. */
+export type FlashResultLike = { status: "ok" } | { status: "error"; error: string };
+
+/** Who started a flash -- see `startServer`'s own `flashStateByLink` doc
+ * comment. Sprint 019 ticket 008: hoisted to module level (with
+ * {@link UI_FLASH_IDENTITY}) so `mcp/tools/flash.ts` can build one of
+ * its own (`{origin: "mcp", caller}`) without importing anything from
+ * inside `startServer`'s closure. */
+export interface FlashIdentity {
+  readonly origin: SessionOriginWire;
+  readonly caller?: string;
+}
+
+/** The identity a browser's own `flash-start` message is started with --
+ * see {@link FlashIdentity}'s own doc comment. */
+export const UI_FLASH_IDENTITY: FlashIdentity = { origin: "ui" };
+
+/** One resolved flash target -- either a directly-attached USB board
+ * (identified by its own {@link DaplinkDevice}) or a network-flashable
+ * mbserial/wifi device currently advertising `_mbflash._tcp` (ticket
+ * 018-014). Returned by {@link resolveFlashLinkTarget}. */
+export type FlashTarget =
+  | { readonly kind: "usb"; readonly usbSerial: string; readonly device: DaplinkDevice }
+  | { readonly kind: "network"; readonly device: ProjectionDeviceRow; readonly service: ProjectionServiceRow };
+
+export interface ResolveFlashTargetDeps {
+  readonly enumerateDaplinkDevices: DaplinkDeviceLister;
+}
+
+/**
+ * Resolves `linkId` to a concrete flash target, or a plain-language
+ * reason it cannot be flashed right now -- exactly the checks
+ * `runFlashTask`'s own `flash-start` orchestration has always made
+ * before ever touching `board_owner`/`flasher.flash()` (module doc
+ * comment's "Flash orchestration has no `DeviceRegistry`..." section).
+ * Sprint 019 ticket 008 pulls this out to a standalone, module-level
+ * function specifically so `mcp/tools/flash.ts`'s own precondition
+ * check (`sprint.md`'s SUC-007: "the same precondition `flash-start`'s
+ * existing handler already checks — do not invent a new precondition
+ * set") is not a second, divergently-worded copy of this logic: it is
+ * this exact function, called both by `mcp/tools/flash.ts` (before ever
+ * calling `startFlash`) and by `runFlashTask` (below) itself. Never
+ * touches `board_owner` or calls `flash()` -- purely a read over
+ * already-fetched `rows` plus one USB enumeration.
+ */
+export async function resolveFlashLinkTarget(
+  rows: ProjectionRows,
+  linkId: string,
+  deps: ResolveFlashTargetDeps,
+): Promise<{ ok: true; target: FlashTarget } | { ok: false; reason: string }> {
+  const linkRow = rows.links.find((candidate) => candidate.id === linkId);
+  if (!linkRow) {
+    return { ok: false, reason: `link "${linkId}" no longer exists` };
+  }
+  if (linkRow.transport === "usb") {
+    const usbSerial = usbSerialFromLinkId(linkId);
+    if (usbSerial === undefined) {
+      return { ok: false, reason: `link "${linkId}" does not follow the "usb-<serial>" id convention` };
+    }
+    const devices = await deps.enumerateDaplinkDevices();
+    const device = devices.find((candidate) => candidate.serialNumber === usbSerial);
+    if (!device) {
+      return { ok: false, reason: `no USB device is currently enumerated for link "${linkId}" -- is it still plugged in?` };
+    }
+    return { ok: true, target: { kind: "usb", usbSerial, device } };
+  }
+  if (linkRow.transport === "mbserial" || linkRow.transport === "wifi") {
+    const deviceRow = linkRow.deviceId !== null ? rows.devices.find((candidate) => candidate.id === linkRow.deviceId) : undefined;
+    if (!deviceRow) {
+      return { ok: false, reason: `link "${linkId}" has no identified device to flash` };
+    }
+    const service = findCurrentMbflashService(rows.services, deviceRow);
+    if (!service || service.host === null || service.port === null) {
+      return {
+        ok: false,
+        reason: `no _mbflash._tcp service is currently advertised for "${deviceRow.name}" -- this robot cannot be flashed over the network right now`,
+      };
+    }
+    return { ok: true, target: { kind: "network", device: deviceRow, service } };
+  }
+  return {
+    ok: false,
+    reason: `flashing requires a directly attached USB link or a network-flashable mbserial/wifi link (link "${linkId}" is ${linkRow.transport})`,
+  };
+}
+
+/** Starts a flash on `linkId` immediately and returns its terminal
+ * outcome -- see `startServer`'s own `startFlash` (a nested function;
+ * this type alias is what {@link MountRoutesExtra}/`mcp/tools/flash.ts`
+ * actually reach for, since the function itself lives inside
+ * `startServer`'s closure and cannot be a module-level export). */
+export type StartFlashFn = (linkId: string, source: FirmwareSourceRef, identity?: FlashIdentity) => Promise<FlashResultLike>;
 
 /**
  * Start the thin server: bind to localhost, serve the built UI (if
@@ -517,7 +563,11 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   // network flash, reported back as `ERR busy` -- see `runNetworkFlashTask`).
   const flashOverMbflashFn = options.flashOverMbflash ?? defaultFlashOverMbflash;
 
-  const app = buildApp(staticDir);
+  // `startFlash` is a `function` declaration further down in this same
+  // scope (hoisted -- see {@link MountRoutesExtra}'s own doc comment for
+  // why passing its reference here, before its literal source position,
+  // is safe).
+  const app = buildApp(staticDir, options.mountRoutes, { startFlash, enumerateDaplinkDevices: enumerateDaplinkDevicesFn });
   const httpServer = createServer(app);
   const createWebSocketServer =
     options.createWebSocketServer ?? ((server, maxPayload) => new WebSocketServer({ server, maxPayload }));
@@ -573,7 +623,20 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   // populates (projection.ts's own doc comment): SnapshotLink.flash.
   // -----------------------------------------------------------------
 
-  const flashStateByLink = new Map<string, { source: FirmwareSourceRef; phase: FlashPhase }>();
+  // Sprint 019 ticket 006 (SUC-007): `origin`/`caller` ride alongside
+  // `source`/`phase` in this same in-memory overlay -- `overlayLink`
+  // below spreads this whole value onto `SnapshotLink.flash` verbatim, so
+  // adding fields here is all "wiring the plumbing" (this ticket's own
+  // scope) requires; no change to `overlayLink`/`overlaySnapshot`
+  // themselves. The browser's own `flash-start` handler never passes an
+  // identity and so always gets the module-level {@link UI_FLASH_IDENTITY};
+  // ticket 008's `mcp/tools/flash.ts` is the first caller that ever
+  // passes `{origin: "mcp", caller}`, via the now-extracted `startFlash`
+  // below (`sprint.md`'s Impact/Design Rationale). {@link FlashIdentity}/
+  // {@link UI_FLASH_IDENTITY} themselves now live at module level (ticket
+  // 008), not as a local declaration here, so `mcp/tools/flash.ts` can
+  // build its own identity value without reaching into this closure.
+  const flashStateByLink = new Map<string, { source: FirmwareSourceRef; phase: FlashPhase; origin?: SessionOriginWire; caller?: string }>();
 
   function overlayLink(link: SnapshotLink): SnapshotLink {
     const flash = flashStateByLink.get(link.id);
@@ -684,23 +747,22 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   // Flash orchestration (module doc comment's own section)
   // -----------------------------------------------------------------
 
-  const inFlightFlashes = new Set<Promise<void>>();
+  const inFlightFlashes = new Set<Promise<FlashResultLike>>();
 
-  function setFlashPhase(linkId: string, source: FirmwareSourceRef, phase: FlashPhase): void {
-    flashStateByLink.set(linkId, { source, phase });
+  function setFlashPhase(linkId: string, source: FirmwareSourceRef, phase: FlashPhase, identity: FlashIdentity = UI_FLASH_IDENTITY): void {
+    flashStateByLink.set(linkId, {
+      source,
+      phase,
+      origin: identity.origin,
+      ...(identity.caller !== undefined ? { caller: identity.caller } : {}),
+    });
+    // The `flash-progress` broadcast itself carries no identity -- see
+    // `wsMessages.ts`'s `SnapshotLink.flash` doc comment: attribution
+    // rides the `Snapshot` overlay (`overlayLink`, above), not this
+    // per-stage push, which stays byte-for-byte the same message shape
+    // it was before this ticket.
     broadcast({ type: "flash-progress", linkId, source, phase, seq: nextSeq() });
   }
-
-  /** Structural subset of {@link FlashOutcome} (the USB path,
-   * `flash.ts`) and {@link MbflashOutcome} (the network path,
-   * `connect/mbflashClient.ts`) -- ticket 018-014: both now feed the
-   * same `finishFlash` broadcast, and neither's own extra fields
-   * (`method`, `reason`) are ever part of the wire contract anyway (see
-   * this module's own doc comment, "Flash orchestration has no
-   * `DeviceRegistry`..."), so `finishFlash`/`failFlash` only need this
-   * narrower shape, which both outcome types already satisfy
-   * structurally. */
-  type FlashResultLike = { status: "ok" } | { status: "error"; error: string };
 
   function finishFlash(linkId: string, source: FirmwareSourceRef, outcome: FlashResultLike): void {
     flashStateByLink.delete(linkId);
@@ -733,6 +795,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     device: ProjectionDeviceRow,
     service: ProjectionServiceRow,
     hexText: string,
+    identity: FlashIdentity = UI_FLASH_IDENTITY,
   ): Promise<FlashResultLike> {
     await runtime.reconciler.requestClose(linkId);
 
@@ -744,14 +807,14 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     const outcome = await flashOverMbflashFn(
       { host: service.host as string, port: service.port as number },
       Buffer.from(hexText, "utf-8"),
-      () => setFlashPhase(linkId, source, "writing"),
+      () => setFlashPhase(linkId, source, "writing", identity),
     );
     if (outcome.status !== "ok") {
       return outcome;
     }
 
-    setFlashPhase(linkId, source, "resetting");
-    setFlashPhase(linkId, source, "reidentifying");
+    setFlashPhase(linkId, source, "resetting", identity);
+    setFlashPhase(linkId, source, "reidentifying", identity);
     try {
       await runtime.reconciler.requestOpen(linkId);
     } catch (error) {
@@ -767,81 +830,52 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
 
   /** The body of one `flash-start` task -- see the module doc comment's
    * "Flash orchestration" section. Never throws/rejects: every failure
-   * is reported as a `flash-result` `status: "error"`, matching the
-   * retired `deviceRegistry.ts#runFlash`'s own "failure is a value"
-   * contract. `startServer.close()` awaits every such task (via
+   * is reported as a `flash-result` `status: "error"` *and* returned as
+   * this same promise's own resolved value (sprint 019 ticket 008 --
+   * `startFlash`/`request_flash` need the terminal outcome, not just the
+   * broadcast side effect), matching the retired
+   * `deviceRegistry.ts#runFlash`'s own "failure is a value" contract.
+   * `startServer.close()` awaits every such task (via
    * {@link inFlightFlashes}) before returning, so a flash in progress at
    * shutdown finishes (and closes its DAPLink/HID handle, or the
    * `mbflashClient.ts` TCP socket, via each path's own `finally`) before
    * the process exits.
    *
-   * Ticket 018-014: routes by transport once the target link resolves.
-   * A `usb` link keeps the exact pre-existing path (`flasher.flash`,
-   * board_owner-guarded); a `mbserial`/`wifi` link whose device has a
-   * current `_mbflash._tcp` service (`findCurrentMbflashService`) routes
-   * to {@link runNetworkFlashTask} instead. Any other transport (or a
+   * Ticket 018-014: routes by transport once {@link resolveFlashLinkTarget}
+   * resolves the target link -- a `usb` link keeps the exact pre-existing
+   * path (`flasher.flash`, board_owner-guarded); a `mbserial`/`wifi` link
+   * whose device has a current `_mbflash._tcp` service routes to
+   * {@link runNetworkFlashTask} instead. Any other transport (or a
    * mbserial/wifi device with no current flash service) fails plainly,
    * same as the old USB-only check did. Either way, the hex
    * fetch/verify step below (release vs. local-hex) is shared verbatim
    * — this ticket adds a second *destination* for the same bytes, not a
    * second way to obtain them. */
-  async function runFlashTask(linkId: string, source: FirmwareSourceRef): Promise<void> {
-    setFlashPhase(linkId, source, source.kind === "release" ? "fetching" : "verifying");
+  async function runFlashTask(linkId: string, source: FirmwareSourceRef, identity: FlashIdentity = UI_FLASH_IDENTITY): Promise<FlashResultLike> {
+    setFlashPhase(linkId, source, source.kind === "release" ? "fetching" : "verifying", identity);
+    // Reports the failure exactly as before (`failFlash`'s own
+    // `flash-result` broadcast) *and* hands back the same message as
+    // this function's own resolved value -- every `return` in the body
+    // below that used to be a bare `failFlash(...); return;` is now
+    // `return fail(...);`, so no failure path was skipped by this
+    // ticket's refactor.
+    function fail(message: string): FlashResultLike {
+      failFlash(linkId, source, message);
+      return { status: "error", error: message };
+    }
     try {
       const rows = store.projectionRows();
-      const linkRow = rows.links.find((candidate) => candidate.id === linkId);
-      if (!linkRow) {
-        failFlash(linkId, source, `link "${linkId}" no longer exists`);
-        return;
+      const resolution = await resolveFlashLinkTarget(rows, linkId, { enumerateDaplinkDevices: enumerateDaplinkDevicesFn });
+      if (!resolution.ok) {
+        return fail(resolution.reason);
       }
-
-      let usbTarget: { usbSerial: string; device: DaplinkDevice } | undefined;
-      let networkTarget: { device: ProjectionDeviceRow; service: ProjectionServiceRow } | undefined;
-
-      if (linkRow.transport === "usb") {
-        const usbSerial = usbSerialFromLinkId(linkId);
-        if (usbSerial === undefined) {
-          failFlash(linkId, source, `link "${linkId}" does not follow the "usb-<serial>" id convention`);
-          return;
-        }
-        const devices = await enumerateDaplinkDevicesFn();
-        const device = devices.find((candidate) => candidate.serialNumber === usbSerial);
-        if (!device) {
-          failFlash(linkId, source, `no USB device is currently enumerated for link "${linkId}" -- is it still plugged in?`);
-          return;
-        }
-        usbTarget = { usbSerial, device };
-      } else if (linkRow.transport === "mbserial" || linkRow.transport === "wifi") {
-        const deviceRow = linkRow.deviceId !== null ? rows.devices.find((candidate) => candidate.id === linkRow.deviceId) : undefined;
-        if (!deviceRow) {
-          failFlash(linkId, source, `link "${linkId}" has no identified device to flash`);
-          return;
-        }
-        const service = findCurrentMbflashService(rows.services, deviceRow);
-        if (!service || service.host === null || service.port === null) {
-          failFlash(
-            linkId,
-            source,
-            `no _mbflash._tcp service is currently advertised for "${deviceRow.name}" -- this robot cannot be flashed over the network right now`,
-          );
-          return;
-        }
-        networkTarget = { device: deviceRow, service };
-      } else {
-        failFlash(
-          linkId,
-          source,
-          `flashing requires a directly attached USB link or a network-flashable mbserial/wifi link (link "${linkId}" is ${linkRow.transport})`,
-        );
-        return;
-      }
+      const target = resolution.target;
 
       let hexText: string;
       if (source.kind === "release") {
         const firmwareSource = firmwareConfig[source.firmware];
         if (!firmwareSource) {
-          failFlash(linkId, source, `no firmware source configured for "${source.firmware}"`);
-          return;
+          return fail(`no firmware source configured for "${source.firmware}"`);
         }
         if (firmwareSource.kind === "local-file") {
           // Configured as a path rather than a repo (out-of-process,
@@ -850,61 +884,68 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
           // Straight to "verifying" -- `localFirmware.ts` explains why
           // that step is a structural hex check here rather than the
           // sha256-against-manifest comparison a release gets.
-          setFlashPhase(linkId, source, "verifying");
+          setFlashPhase(linkId, source, "verifying", identity);
           const local = await readLocalHexFn(firmwareSource);
           if ("reason" in local) {
-            failFlash(linkId, source, local.message);
-            return;
+            return fail(local.message);
           }
           hexText = local.hex.toString("utf-8");
         } else {
           const resolved = await resolveReleaseFn(firmwareSource);
           if ("reason" in resolved) {
-            failFlash(linkId, source, resolved.message);
-            return;
+            return fail(resolved.message);
           }
-          setFlashPhase(linkId, source, "verifying");
+          setFlashPhase(linkId, source, "verifying", identity);
           const fetched = await fetchAndVerifyHexFn(resolved);
           if ("error" in fetched) {
-            failFlash(linkId, source, fetched.error);
-            return;
+            return fail(fetched.error);
           }
           hexText = fetched.hex.toString("utf-8");
         }
       } else {
         const uploaded = localHexUpload.consumeUpload(source.uploadId);
         if (uploaded === undefined) {
-          failFlash(
-            linkId,
-            source,
+          return fail(
             `no pending local-hex upload found for id ${source.uploadId} -- it may have expired, ` +
               `already been used, or never completed the upload handshake`,
           );
-          return;
         }
         hexText = uploaded.toString("utf-8");
       }
 
-      if (usbTarget) {
-        const outcome = await flasher.flash(linkId, usbTarget.usbSerial, usbTarget.device, hexText, (phase) => setFlashPhase(linkId, source, phase));
+      if (target.kind === "usb") {
+        const outcome = await flasher.flash(linkId, target.usbSerial, target.device, hexText, (phase) =>
+          setFlashPhase(linkId, source, phase, identity),
+        );
         finishFlash(linkId, source, outcome);
-        return;
+        return outcome;
       }
 
-      // `networkTarget` is always set here: the transport check above
-      // returns early unless exactly one of `usbTarget`/`networkTarget`
-      // was assigned.
-      const outcome = await runNetworkFlashTask(linkId, source, networkTarget!.device, networkTarget!.service, hexText);
+      const outcome = await runNetworkFlashTask(linkId, source, target.device, target.service, hexText, identity);
       finishFlash(linkId, source, outcome);
+      return outcome;
     } catch (error) {
-      failFlash(linkId, source, errorMessage(error));
+      return fail(errorMessage(error));
     }
   }
 
-  function handleFlashStart(linkId: string, source: FirmwareSourceRef): void {
-    const task = runFlashTask(linkId, source);
+  /** Starts a flash on `linkId` immediately -- see the module doc
+   * comment's "Flash orchestration" section. Sprint 019 ticket 008: this
+   * is the extracted, standalone-in-spirit function `mountRoutes`'s own
+   * {@link MountRoutesExtra} hands to `mcp/tools/flash.ts` (via
+   * {@link StartFlashFn}) -- the *same* function this file's own
+   * `flash-start` WS handler calls below, not a second, divergent way of
+   * starting a flash. Returns `runFlashTask`'s own terminal-outcome
+   * promise; the WS handler discards it (the browser already learns the
+   * outcome from the `flash-progress`/`flash-result` broadcasts this
+   * same call triggers), while `request_flash` awaits it directly
+   * (`sprint.md`'s Design Rationale, "`request_flash` awaits its own
+   * completion"). */
+  function startFlash(linkId: string, source: FirmwareSourceRef, identity: FlashIdentity = UI_FLASH_IDENTITY): Promise<FlashResultLike> {
+    const task = runFlashTask(linkId, source, identity);
     inFlightFlashes.add(task);
     void task.finally(() => inFlightFlashes.delete(task));
+    return task;
   }
 
   // -----------------------------------------------------------------
@@ -915,11 +956,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   // -----------------------------------------------------------------
 
   function requireSession(linkId: string): ConnectedSession {
-    const session = runtime.reconciler.sessions.get(linkId);
-    if (!session) {
-      throw new Error(`link "${linkId}" has no open session`);
-    }
-    return session;
+    return requireOpenSession(runtime.reconciler.sessions, linkId);
   }
 
   async function provisionWifiOverLink(
@@ -987,88 +1024,19 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     if (message.type !== "session-open") {
       return;
     }
-    if ("linkId" in message) {
-      // Bench defect 4 (2026-09-12): a refused open must not be silent
-      // -- see `reconciler.ts`'s own `describeUserOpenRefusal` doc
-      // comment (not owned yet, already open/connecting, or an unknown
-      // link) and `WsProvider.tsx`'s `appendNotice`, which already knows
-      // how to render a link-scoped notice on that card's own console.
-      const { refusedReason } = await runtime.reconciler.requestOpen(message.linkId);
-      if (refusedReason !== undefined) {
-        sendNotice(message.linkId, "warn", `connect refused: ${refusedReason}`);
-      }
-      return;
-    }
-    // {relayLinkId, name}: route one of a relay's several robots (ticket
-    // 008; SUC-009). Resolve the named robot's radio address
-    // (`radioOverride.ts`'s `override -> registry -> derived` order,
-    // consulting this device's own stored override if one already
-    // exists), ensure a `links` row for that radio child exists (a
-    // deterministic id/address per (relayLinkId, name) pair, so a repeat
-    // bridge to the same robot over the same relay reuses the same row
-    // rather than accumulating one per attempt), then hand the child's
-    // linkId to the reconciler exactly like a `{linkId}` open --
-    // `planUserOpen` (ticket 002) is what turns this into a
-    // close-old-child + open-new-child pair executed as one job, never a
-    // client-sequenced session-close then session-open.
-    //
-    // Sprint 016 ticket 006: `registry` (mbrelay's live name registry
-    // location) is threaded in here from `relayLinkId`'s own discovered
-    // pool row, if any (`resolveRegistryLocationForRelay`, reading the
-    // `registryPort` `watchers/mdnsWatcher.ts`'s `handleMbrelay` already
-    // records off the pool's TXT record) -- closing the "resolver never
-    // wired to a registry location" gap `radioOverride.ts`'s own doc
-    // comment used to describe. A local usb relay (no TXT record, no
-    // registry concept) resolves `registry` to `undefined` here, so this
-    // still degrades to `override -> derived` exactly as before for that
-    // case -- see `resolveDeviceRadio`'s own doc comment.
-    //
-    // Found by name, not by recomputing a numeric device id from it:
-    // `devices.id` is the chip's own `FICR.DEVICEID[1]`, and many
-    // different ids can decode to the same five-letter name
-    // (`wsMessages.ts`'s own doc comment: "~79% collision probability
-    // over a 100-robot fleet") -- `@robot-console/protocol`'s
-    // `nameToValue` is the *derived-address* helper `nameToRadioAddress`
-    // uses internally, not a name -> device-id inverse, so it must never
-    // be used to look up "the" device row for a name.
-    const existingDevice = store.projectionRows().devices.find((candidate) => candidate.name === message.name);
-    const override: DeviceRadioOverride = existingDevice
-      ? { radioChannel: existingDevice.radioChannel, radioGroup: existingDevice.radioGroup, radioSource: existingDevice.radioSource }
-      : { radioChannel: null, radioGroup: null, radioSource: null };
-    const childLinkId = `radio-${message.name}-via-${message.relayLinkId}`;
-    // Sprint 016 ticket 004 (SUC-004, sweep takeover): if this exact
-    // (name, relay) pair's own `links` row already exists -- written by
-    // an earlier bridge, or by `watchers/relaySweeper.ts`'s own sweep
-    // pass recording a sighting for this candidate -- its own `address`
-    // is the channel/group already confirmed reachable. Reuse it rather
-    // than re-deriving a fresh one: a takeover must bridge to the same
-    // address the sweep just sighted the robot on, not a possibly-
-    // different freshly-resolved default (this ticket's own acceptance
-    // criterion). Only when no such row exists yet (the very first ever
-    // bridge to this pair) does this fall back to `resolveDeviceRadio`'s
-    // own override -> derived resolution.
-    const existingLink = store.projectionRows().links.find((candidate) => candidate.id === childLinkId);
-    const sightedAddress = existingLink ? parseChannelGroupAddress(existingLink.address) : undefined;
-    // Stakeholder (2026-09-14): a registry answer now outranks that row --
-    // see `resolveBridgeAddress`. A USB bridge asks any discovered pool's
-    // registry, since it has none of its own.
-    const registry = resolveRegistryLocationForRelay(store, message.relayLinkId) ?? resolveFleetRegistryLocation(store);
-    const { channel, group } = await resolveBridgeAddress(message.name, override, sightedAddress, registry);
-    // The named robot's own device row, when known, owns the child link
-    // from the first attempt -- so a failed bridge shows on that robot's
-    // card instead of on a link no card lists.
-    store.upsertLink({
-      id: childLinkId,
-      transport: "radio",
-      address: { relayLinkId: message.relayLinkId, channel, group },
-      ...(existingDevice ? { deviceId: existingDevice.id } : {}),
-      at: Date.now(),
-    });
-    // Bench defect 4: same "never silent" rule as the plain {linkId}
-    // open above.
-    const { refusedReason } = await runtime.reconciler.requestOpen(childLinkId);
+    // Sprint 019 ticket 005: the actual open (both the plain `{linkId}`
+    // form and the `{relayLinkId, name}` relay-bridge form -- ticket 008;
+    // SUC-009) is `connect/sessionOps.ts`'s own `openSession`, the same
+    // WS-independent function `mcp/tools/connect.ts`'s `open_session`
+    // tool calls -- see that module's own doc comment for the full
+    // bridge-resolution rationale this handler used to carry inline.
+    // This wrapper's only remaining job is the WS-specific "never
+    // silent" notice (bench defect 4, 2026-09-12): a refused open must
+    // surface on the console rather than nothing happening.
+    const params: OpenSessionParams = "linkId" in message ? { linkId: message.linkId } : { relayLinkId: message.relayLinkId, name: message.name };
+    const { linkId, refusedReason } = await openSession({ store, reconciler: runtime.reconciler }, params);
     if (refusedReason !== undefined) {
-      sendNotice(childLinkId, "warn", `connect refused: ${refusedReason}`);
+      sendNotice(linkId, "warn", `connect refused: ${refusedReason}`);
     }
   });
 
@@ -1076,7 +1044,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     if (message.type !== "session-close") {
       return;
     }
-    await runtime.reconciler.requestClose(message.linkId);
+    await closeSession({ reconciler: runtime.reconciler }, message.linkId);
   });
 
   handlers.set("line", async (_ws, message) => {
@@ -1102,19 +1070,16 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       return;
     }
     const session = requireSession(message.linkId);
-    if (message.verb.toUpperCase() === "HELLO") {
-      throw new Error('"HELLO" cannot be sent via send-command -- close and reopen the link instead');
-    }
-    const fields = message.fields ?? [];
-    // 018-009: a non-sequenced verb (ID/STATUS/HELP/DEBUG/VER/ESTOP/...)
-    // goes through `sendUnsequencedQuery`, not the plain
-    // `sendUnsequenced` -- a student's own query gets a bounded one-time
-    // resend if unanswered, and connect/harvester.ts's own STATUS poll
-    // defers to it while it is outstanding (see LineLink.ts's own module
-    // doc comment, "Unsequenced query resend and poll/query
-    // serialization", for the full rationale and bench evidence).
+    // Sprint 019 ticket 005: the actual send is `connect/sessionOps.ts`'s
+    // own WS-independent `sendCommand` -- the same function `mcp/tools/
+    // connect.ts`'s `send_command` tool calls for any verb it allows
+    // through its own gated-motion-verb check. This wrapper still owns
+    // the two things that are specifically WS-console concerns:
+    // `noteStudentStatus`'s "Show status polls" bookkeeping (018-009) and
+    // broadcasting the sent line to the console's own transcript.
     noteStudentStatus(session, message.verb);
-    const sent = isSequencedVerb(message.verb) ? session.link.sendCommand(message.verb, fields) : session.link.sendUnsequencedQuery(message.verb, fields);
+    const fields = message.fields ?? [];
+    const sent = sharedSendCommand(session, message.verb, fields);
     broadcast({ type: "line", linkId: message.linkId, direction: "tx", line: sent.replace(/\n$/, ""), seq: nextSeq() }, { throttle: true });
   });
 
@@ -1122,7 +1087,11 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     if (message.type !== "flash-start") {
       return;
     }
-    handleFlashStart(message.linkId, message.source);
+    // The browser's own outcome comes from the `flash-progress`/
+    // `flash-result` broadcasts `startFlash` already triggers -- this
+    // handler discards its returned promise deliberately (see
+    // `startFlash`'s own doc comment); it never throws/rejects.
+    void startFlash(message.linkId, message.source);
   });
 
   handlers.set("flash-local-begin", async (ws, message) => {

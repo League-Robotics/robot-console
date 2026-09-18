@@ -61,3 +61,55 @@
   font-size: 0.78rem;
   word-break: break-all;
 }
+
+/* Sprint 019 ticket 006 (SUC-006/SUC-007): "Recent agent activity" --
+   purely informational, so it is styled quietly, matching
+   `.diagnostics-facts`'s own muted labels rather than the alert-style
+   `.device-note-error` used elsewhere in this codebase for something
+   that needs attention. */
+.diagnostics-agent-activity {
+  margin-top: 1.25rem;
+}
+
+.diagnostics-agent-activity h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+}
+
+.diagnostics-agent-activity-empty {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--rc-text-muted);
+}
+
+.diagnostics-agent-activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.diagnostics-agent-activity-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--rc-border);
+  padding-bottom: 0.35rem;
+}
+
+.diagnostics-agent-activity-kind {
+  text-transform: capitalize;
+  color: var(--rc-text-muted);
+}
+
+.diagnostics-agent-activity-caller {
+  color: var(--rc-accent);
+}
+
+.diagnostics-agent-activity-when {
+  margin-left: auto;
+  color: var(--rc-text-muted);
+}

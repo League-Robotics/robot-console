@@ -163,6 +163,26 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
   const onTelemetry = deps.onTelemetry ?? (() => {});
   const onNotice = deps.onNotice ?? (() => {});
 
+  // ---------------------------------------------------------------------
+  // Sprint 019 ticket 003 (SUC-003; issue
+  // `harvester-has-no-teardown-seam.md`): `HarvesterAttach.stop()`'s own
+  // implementation. One entry per still-live attached session -- `fail()`
+  // (below) removes its own session's entry the moment it runs, so this
+  // set only ever holds sessions `stop()` still needs to reach (a session
+  // that already died naturally needs nothing further done to it). A
+  // session attached after `stop()` has already run (a race `runtime.ts`'s
+  // own ordering makes vanishingly unlikely today, but not impossible --
+  // `stop()` runs before `store.close()`, not before every other
+  // collaborator) starts pre-failed instead of being added here at all,
+  // per `attach()`'s own `harvesterStopped` check below.
+  // ---------------------------------------------------------------------
+  interface AttachedSessionControl {
+    stopPolling: () => void;
+    markFailed: () => void;
+  }
+  const attachedSessions = new Set<AttachedSessionControl>();
+  let harvesterStopped = false;
+
   return {
     attach(session: ConnectedSession): void {
       const { linkId, link, classification } = session;
@@ -173,7 +193,10 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
       let pollAwaitingStatus = false;
       let pollMisses = 0;
       let desyncNotified = false;
-      let failed = false;
+      // Pre-failed if this harvester's own `stop()` already ran -- see
+      // this function's own `attachedSessions`/`harvesterStopped` doc
+      // comment just above.
+      let failed = harvesterStopped;
       let pollTimer: ReturnType<typeof setInterval> | undefined;
       const telemetryDecoder = new TelemetryDecoder();
 
@@ -183,6 +206,14 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
           pollTimer = undefined;
         }
       }
+
+      const sessionControl: AttachedSessionControl = {
+        stopPolling,
+        markFailed: () => {
+          failed = true;
+        },
+      };
+      attachedSessions.add(sessionControl);
 
       /** The one error path (module doc comment): writes `unresponsive`
        * at most once and stops polling for good -- neither `onClose` nor
@@ -206,6 +237,9 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
         }
         failed = true;
         stopPolling();
+        // This session died on its own -- `stop()` no longer needs to
+        // reach it (see `attachedSessions`'s own doc comment above).
+        attachedSessions.delete(sessionControl);
         // Stakeholder bench (2026-09-14): turning a link off closes its
         // transport, and this `onClose` can land after the reconciler has
         // already recorded `closed_by_user` -- which must stand, not read
@@ -452,12 +486,30 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
           // handling -- absence of a reply (or a failed send) is never
           // evidence of anything; classification simply stays as-is.
         }
-        if (statusPollIntervalMs > 0) {
+        // Sprint 019 ticket 003: never start a poll timer for a session
+        // attached after this harvester's own `stop()` already ran --
+        // `failed` is already `true` in that case (see this function's
+        // own `let failed = harvesterStopped;` above), so there would be
+        // nothing for the timer to do besides tick uselessly until
+        // process exit.
+        if (statusPollIntervalMs > 0 && !failed) {
           pollStatus();
           pollTimer = setInterval(pollStatus, statusPollIntervalMs);
           pollTimer.unref?.();
         }
       }
+    },
+
+    // See `HarvesterAttach.stop`'s own doc comment (`connect/connector.ts`)
+    // for the full contract. Idempotent: a second call finds
+    // `attachedSessions` already empty and simply does nothing.
+    stop(): void {
+      harvesterStopped = true;
+      for (const control of attachedSessions) {
+        control.stopPolling();
+        control.markFailed();
+      }
+      attachedSessions.clear();
     },
   };
 }

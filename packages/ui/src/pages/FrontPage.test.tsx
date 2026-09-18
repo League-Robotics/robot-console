@@ -737,6 +737,92 @@ describe("bench defect 010 addendum (2026-09-13): a refused/failed Connect shows
   });
 });
 
+// Sprint 019 ticket 005 (SUC-005): an MCP-opened session shows up on this
+// same per-link row exactly the way a browser-opened one already does,
+// distinctly labeled with its own caller -- the stakeholder's own
+// original ask for the whole MCP feature ("it shows up in the robot
+// console"), not a gate.
+describe("MCP-opened session origin/caller label (ticket 005)", () => {
+  it("shows an 'Agent: <caller>' label for a session with origin 'mcp'", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              name: "vevov",
+              links: [
+                link("usb-vevov", {
+                  state: "connected",
+                  session: {
+                    seq: 0,
+                    pending: 0,
+                    lastDone: null,
+                    lastDoneReason: null,
+                    robotStatus: null,
+                    functions: null,
+                    origin: "mcp",
+                    caller: "agent-smith",
+                  },
+                }),
+              ],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
+    const agentLabel = el.querySelector('[data-testid="device-link-agent-usb-vevov"]');
+    expect(agentLabel?.textContent).toBe("Agent: agent-smith");
+  });
+
+  it("shows no agent label for an ordinary browser session (origin 'ui' or absent)", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              name: "vevov",
+              links: [
+                link("usb-vevov", {
+                  state: "connected",
+                  session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null, origin: "ui", caller: null },
+                }),
+              ],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
+    expect(el.querySelector('[data-testid="device-link-agent-usb-vevov"]')).toBeNull();
+  });
+
+  it("falls back to 'Agent: unknown' if an mcp-origin session somehow carries no caller name", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              name: "vevov",
+              links: [
+                link("usb-vevov", {
+                  state: "connected",
+                  session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null, origin: "mcp", caller: null },
+                }),
+              ],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
+    expect(el.querySelector('[data-testid="device-link-agent-usb-vevov"]')?.textContent).toBe("Agent: unknown");
+  });
+});
+
 describe("unassigned USB boards (acceptance: un-owned WiFi absent, unassigned present -> card renders)", () => {
   it("renders the unassigned board's card via DevicesList directly", () => {
     const el = mount(

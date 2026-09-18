@@ -50,6 +50,8 @@ import { resolveStateDir, type StateDirOptions } from "./stateDir.js";
 import { MIGRATION_0001_INITIAL } from "./migrations/0001-initial.js";
 import { MIGRATION_0002_SESSION_ANSWERED_AT } from "./migrations/0002-session-answered-at.js";
 import { MIGRATION_0003_DEVICE_COMMON_NAME } from "./migrations/0003-device-common-name.js";
+import { MIGRATION_0004_SESSION_ORIGIN_CALLER } from "./migrations/0004-session-origin-caller.js";
+import { MIGRATION_0005_AGENT_ACTIONS } from "./migrations/0005-agent-actions.js";
 
 const DB_FILENAME = "console.sqlite";
 
@@ -68,6 +70,8 @@ const MIGRATIONS: readonly string[] = [
   MIGRATION_0001_INITIAL,
   MIGRATION_0002_SESSION_ANSWERED_AT,
   MIGRATION_0003_DEVICE_COMMON_NAME,
+  MIGRATION_0004_SESSION_ORIGIN_CALLER,
+  MIGRATION_0005_AGENT_ACTIONS,
 ];
 
 export interface StoreDbOptions extends StateDirOptions {

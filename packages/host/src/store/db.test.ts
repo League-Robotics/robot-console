@@ -19,9 +19,16 @@ const EXPECTED_TABLES = [
   "settings",
   "tasks",
   "changes",
+  "agent_actions",
 ] as const;
 
-const EXPECTED_INDEXES = ["devices_name", "links_device", "sightings_device_at"] as const;
+const EXPECTED_INDEXES = [
+  "devices_name",
+  "links_device",
+  "sightings_device_at",
+  "agent_actions_link",
+  "agent_actions_device",
+] as const;
 
 function listNames(db: DatabaseSync, type: "table" | "index"): string[] {
   // Excludes SQLite's own internal autoindexes (`sqlite_autoindex_*`,
@@ -104,11 +111,13 @@ describe("store/db: openStoreDb", () => {
   it("migrates a fresh database (user_version 0) to create every table and index", () => {
     db = openStoreDb({ filePath: dbFile });
 
-    // Sprint 018 ticket 010 added migration 0002 (`sessions.answered_at`)
-    // and ticket 016 added migration 0003 (`devices.common_name`)
-    // alongside 0001 -- a fresh database now lands on user_version 3.
+    // Sprint 018 ticket 010 added migration 0002 (`sessions.answered_at`),
+    // ticket 016 added migration 0003 (`devices.common_name`), sprint 019
+    // ticket 005 added migration 0004 (`sessions.origin`/`sessions.caller`),
+    // and ticket 006 added migration 0005 (`agent_actions`) alongside
+    // 0001 -- a fresh database now lands on user_version 5.
     const userVersion = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-    expect(userVersion).toBe(3);
+    expect(userVersion).toBe(5);
 
     expect(listNames(db, "table")).toEqual([...EXPECTED_TABLES].sort());
     expect(listNames(db, "index")).toEqual([...EXPECTED_INDEXES].sort());
@@ -155,7 +164,7 @@ describe("store/db: openStoreDb", () => {
 
     db = openStoreDb({ filePath: dbFile });
     const userVersion = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-    expect(userVersion).toBe(3);
+    expect(userVersion).toBe(5);
     expect(listNames(db, "table")).toEqual([...EXPECTED_TABLES].sort());
 
     // Insert a row, close, and re-open again -- a second migration pass

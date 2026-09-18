@@ -1,5 +1,9 @@
 ---
-status: pending
+status: done
+sprint: 019
+tickets:
+- 019-003
+- 019-009
 ---
 
 # `HarvesterAttach` has no teardown seam, so its STATUS-poll timer can outlive the store

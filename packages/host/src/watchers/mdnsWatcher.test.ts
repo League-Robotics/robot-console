@@ -930,6 +930,219 @@ describe("startMdnsWatcher", () => {
   });
 });
 
+/**
+ * 019-002: `triggerWifiOnDemandProbes`'s own suite. `deps.probeWifiOnDemand`
+ * is always a fully synthetic fake here -- no real DNS/socket I/O in this
+ * file, per this module's own testing convention (`discovery/
+ * wifiOnDemand.test.ts` is where the real bounded-timeout/real-socket
+ * behavior is exercised). vitest's fake timers (`beforeEach` above) drive
+ * the interval, but a fake timer never advances a microtask queue on its
+ * own -- {@link flushMicrotasks} drains the `probeWifiOnDemandDep(...).
+ * then().catch().finally()` chain after every point that can start one,
+ * mirroring `tcpStream.test.ts`'s own `flush()` idiom for the same
+ * reason.
+ */
+describe("startMdnsWatcher -- 019-002 WiFi on-demand fallback", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function flushMicrotasks(): Promise<void> {
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+    }
+  }
+
+  it(
+    "probes every owned, non-relay device with no current wifi link immediately at start -- before any mDNS event, " +
+      "and creates the link exactly like an mDNS observation would on a 'found' result",
+    async () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const owned = namedDevice(1);
+      store.upsertDevice({ id: owned.id, name: owned.name, kind: "robot", at: 1 });
+      store.setOwned(owned.id, true, 1);
+      const probedNames: string[] = [];
+      const handle = start(store, backend, undefined, {
+        probeWifiOnDemand: (name) => {
+          probedNames.push(name);
+          return Promise.resolve({ status: "found", host: `${name}.local`, port: 7654, ip: "10.0.0.5" } as const);
+        },
+      });
+      try {
+        await flushMicrotasks();
+        // No `up`/`onServiceChange`/`update()` ever fired on any browser
+        // -- this is the "before the first mDNS announcement" case the
+        // issue itself describes.
+        expect(probedNames).toEqual([owned.name]);
+        const link = store.snapshotRows().links.find((l) => l.id === `wifi-${owned.name}`);
+        expect(link).toMatchObject({
+          address: JSON.stringify({ host: `${owned.name}.local`, port: 7654, ip: "10.0.0.5" }),
+          state: "connectable",
+        });
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    },
+  );
+
+  it("never probes a device that already has a live (non-stale) wifi link", async () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const owned = namedDevice(2);
+    store.upsertDevice({ id: owned.id, name: owned.name, kind: "robot", at: 1 });
+    store.setOwned(owned.id, true, 1);
+    // Already discovered before this watcher even starts -- written
+    // directly, the same row shape `handleWifi` itself would produce,
+    // rather than routing through a scripted mDNS event (this watcher's
+    // browsers only start listening once `startMdnsWatcher` itself calls
+    // `backend.find()`, so an event emitted beforehand would have no
+    // listener yet to catch it).
+    store.upsertLink({ id: `wifi-${owned.name}`, transport: "wifi", address: { host: `${owned.name}.local`, port: 7654 }, deviceId: owned.id, at: 1 });
+    let probeCalls = 0;
+    const handle = start(store, backend, undefined, {
+      probeWifiOnDemand: () => {
+        probeCalls++;
+        return Promise.resolve({ status: "not-found", reason: "should never be called" } as const);
+      },
+    });
+    try {
+      await flushMicrotasks();
+      expect(probeCalls).toBe(0);
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it("never probes an unowned device or a relay-kind device", async () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const unowned = namedDevice(3);
+    const relay = namedDevice(4);
+    store.upsertDevice({ id: unowned.id, name: unowned.name, kind: "robot", at: 1 });
+    // `unowned` is left at its default owned=false -- never explicitly set.
+    store.upsertDevice({ id: relay.id, name: relay.name, kind: "relay", at: 1 });
+    store.setOwned(relay.id, true, 1);
+    const probedNames: string[] = [];
+    const handle = start(store, backend, undefined, {
+      probeWifiOnDemand: (name) => {
+        probedNames.push(name);
+        return Promise.resolve({ status: "not-found", reason: "n/a" } as const);
+      },
+    });
+    try {
+      await flushMicrotasks();
+      expect(probedNames).toEqual([]);
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it("a 'not-found' result creates nothing, and the same device is retried on the next scheduled tick (bounded retry, not one-shot)", async () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const owned = namedDevice(5);
+    store.upsertDevice({ id: owned.id, name: owned.name, kind: "robot", at: 1 });
+    store.setOwned(owned.id, true, 1);
+    let probeCalls = 0;
+    const handle = start(store, backend, undefined, {
+      probeWifiOnDemand: () => {
+        probeCalls++;
+        return Promise.resolve({ status: "not-found", reason: "no reply" } as const);
+      },
+    });
+    try {
+      await flushMicrotasks();
+      expect(probeCalls).toBe(1);
+      expect(store.snapshotRows().links.find((l) => l.id === `wifi-${owned.name}`)).toBeUndefined();
+
+      vi.advanceTimersByTime(DEFAULT_REQUERY_INTERVAL_MS);
+      await flushMicrotasks();
+      expect(probeCalls).toBe(2);
+      expect(store.snapshotRows().links.find((l) => l.id === `wifi-${owned.name}`)).toBeUndefined();
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it(
+    "a probe that never settles never blocks this watcher's own aging/pruning or heartbeat, and is not re-issued " +
+      "while still in flight (no busy loop)",
+    async () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const owned = namedDevice(6);
+      store.upsertDevice({ id: owned.id, name: owned.name, kind: "robot", at: 1 });
+      store.setOwned(owned.id, true, 1);
+      let probeCalls = 0;
+      const handle = start(store, backend, undefined, {
+        // Never resolves -- if `triggerWifiOnDemandProbes` ever awaited
+        // this (instead of firing it and moving on), every synchronous
+        // step after it inside `browseCycle` -- `ageAndPruneOnce`, the
+        // heartbeat -- would never run either.
+        probeWifiOnDemand: () => {
+          probeCalls++;
+          return new Promise(() => undefined);
+        },
+      });
+      try {
+        await flushMicrotasks();
+        expect(probeCalls).toBe(1);
+
+        vi.advanceTimersByTime(DEFAULT_REQUERY_INTERVAL_MS);
+        await flushMicrotasks();
+
+        // The tick's own synchronous work landed regardless of the
+        // still-pending probe from the immediate kick above.
+        const task = store.snapshotRows().tasks.find((t) => t.name === "mdnsWatcher");
+        expect(task).toMatchObject({ state: "running" });
+        expect(task?.heartbeat_at).toBeTypeOf("number");
+
+        // And the still-in-flight name was not re-probed -- no busy loop.
+        expect(probeCalls).toBe(1);
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    },
+  );
+
+  it("probes every owned, non-relay device independently -- one device's own result never affects another's", async () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const found = namedDevice(7);
+    const notFound = namedDevice(8);
+    store.upsertDevice({ id: found.id, name: found.name, kind: "robot", at: 1 });
+    store.setOwned(found.id, true, 1);
+    store.upsertDevice({ id: notFound.id, name: notFound.name, kind: "robot", at: 1 });
+    store.setOwned(notFound.id, true, 1);
+    const handle = start(store, backend, undefined, {
+      probeWifiOnDemand: (name) =>
+        Promise.resolve(
+          name === found.name
+            ? ({ status: "found", host: `${name}.local`, port: 7654, ip: "10.0.0.9" } as const)
+            : ({ status: "not-found", reason: "no reply" } as const),
+        ),
+    });
+    try {
+      await flushMicrotasks();
+      expect(store.snapshotRows().links.find((l) => l.id === `wifi-${found.name}`)).toBeDefined();
+      expect(store.snapshotRows().links.find((l) => l.id === `wifi-${notFound.name}`)).toBeUndefined();
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+});
+
 describe("mdnsWatcher TTL/interval constants block", () => {
   it("every default is a positive number, and the re-query interval is smaller than every TTL", () => {
     for (const value of [

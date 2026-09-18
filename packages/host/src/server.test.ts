@@ -11,7 +11,7 @@
  * closed in `afterEach`), which is what the port-busy test needs.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
@@ -21,6 +21,7 @@ import {
   startServer,
   DEFAULT_BUFFERED_AMOUNT_THRESHOLD_BYTES,
   DEFAULT_MAX_PAYLOAD_BYTES,
+  type MountRoutesExtra,
   type RunningServer,
   type ServerRuntime,
   type StartServerOptions,
@@ -299,6 +300,55 @@ describe("server.ts: binding", () => {
     } finally {
       await new Promise<void>((resolve) => blocker.close(() => resolve()));
     }
+  });
+});
+
+// ---------------------------------------------------------------------
+// mountRoutes -- sprint 019 ticket 004's own generic extension point
+// (this module has no MCP-specific knowledge; `cli.ts` is what actually
+// passes `startMcpServer` wrapped in this hook -- see `mcp/server.ts`).
+// ---------------------------------------------------------------------
+
+describe("server.ts: mountRoutes", () => {
+  it("is invoked exactly once with this server's own Express app instance", async () => {
+    const mountRoutesMock = vi.fn();
+    await harness({ mountRoutes: mountRoutesMock });
+
+    expect(mountRoutesMock).toHaveBeenCalledTimes(1);
+    const app = mountRoutesMock.mock.calls[0]?.[0] as { get: unknown; post: unknown };
+    expect(typeof app.get).toBe("function");
+    expect(typeof app.post).toBe("function");
+  });
+
+  it("a route it registers wins over the static-file/SPA catch-all, even when a built UI is present", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "robot-console-server-mount-test-"));
+    writeFileSync(path.join(dir, "index.html"), "<html>SPA</html>");
+    try {
+      const h = await harness({
+        staticDir: dir,
+        mountRoutes: (app) => {
+          app.get("/probe", (_req, res) => {
+            res.status(200).type("text/plain").send("PROBE-OK");
+          });
+        },
+      });
+
+      const probeResponse = await fetch(`${h.server.url}/probe`);
+      expect(await probeResponse.text()).toBe("PROBE-OK");
+
+      // The catch-all is still there for everything mountRoutes didn't
+      // claim -- this hook adds a route, it does not replace the SPA.
+      const rootResponse = await fetch(`${h.server.url}/`);
+      expect(await rootResponse.text()).toContain("SPA");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("omitting mountRoutes changes nothing about existing behavior", async () => {
+    const h = await harness();
+    const response = await fetch(`${h.server.url}/`);
+    expect(response.status).toBe(200);
   });
 });
 
@@ -1044,6 +1094,164 @@ describe("server.ts: flash-start", () => {
     expect(h.store.acquireBoardOwner("SERIAL123", "someone-else", Date.now())).toBe(true);
     const result = ws.sent.find((m) => m.type === "flash-result");
     expect(result).toMatchObject({ type: "flash-result", status: "ok" });
+  });
+
+  // Sprint 019 ticket 006 (SUC-007): the `Snapshot`'s `flash` overlay
+  // gains `origin`/`caller`, wired here for the browser's own
+  // `flash-start` path -- `origin: "ui"`, no `caller` at all (never
+  // `caller: undefined`, which `toHaveProperty` below tells apart from a
+  // genuinely absent key). Ticket 008's `mcp/tools/flash.ts` is the first
+  // caller that will ever produce `origin: "mcp"`/a `caller` name here.
+  it("attributes an in-flight browser flash as origin 'ui' with no caller on the snapshot's flash overlay, cleared once it settles", async () => {
+    let ws!: ReturnType<typeof fakeWebSocket>;
+    const flashMock = vi.fn(async (_device, _hex, onProgress: (phase: string) => void) => {
+      onProgress("erasing");
+      // `connect/flasher.ts` already acquired `board_owner = 'flash'`
+      // (a store write) before calling this mock, and `setFlashPhase`
+      // already ran at least once (at `runFlashTask`'s own first line,
+      // before this mock is ever reached) -- so by now a `snapshot`
+      // broadcast carrying the current flash overlay has already gone
+      // out on `ws`.
+      const latestSnapshot = [...ws.sent].reverse().find((m): m is Snapshot => m.type === "snapshot");
+      const link = latestSnapshot?.unassigned.find((l) => l.id === "usb-SERIAL123");
+      expect(link?.flash).toMatchObject({ origin: "ui" });
+      expect(link?.flash).not.toHaveProperty("caller");
+      return { status: "ok", method: "swd" } satisfies FlashOutcome;
+    });
+    const h = await harness({
+      enumerateDaplinkDevices: async () => [FAKE_DEVICE],
+      flash: flashMock as unknown as StartServerOptions["flash"],
+    });
+    h.store.upsertLink({ id: "usb-SERIAL123", transport: "usb", address: { path: "/dev/x" }, at: 1 });
+    await flush();
+
+    ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const sha256 = createHash("sha256").update("hello").digest("hex");
+    ws.emit(
+      "message",
+      Buffer.from(JSON.stringify({ type: "flash-local-begin", fileName: "a.hex", byteLength: 5, sha256 })),
+      false,
+    );
+    await flush();
+    const ready = ws.sent.find((m) => m.type === "flash-local-ready") as { uploadId: string } | undefined;
+    const uploadId = ready!.uploadId;
+    ws.emit("message", Buffer.concat([Buffer.from(uploadId, "ascii"), Buffer.from("hello")]), true);
+    await flush();
+
+    const source: FirmwareSourceRef = { kind: "local-hex", uploadId, fileName: "a.hex", sha256 };
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId: "usb-SERIAL123", source })), false);
+    await flush();
+    await flush();
+
+    expect(flashMock).toHaveBeenCalled();
+    // The overlay is deleted the instant the flash settles -- the final
+    // snapshot must carry no `flash` field at all for this link.
+    const finalSnapshot = [...ws.sent].reverse().find((m): m is Snapshot => m.type === "snapshot");
+    const finalLink = finalSnapshot?.unassigned.find((l) => l.id === "usb-SERIAL123");
+    expect(finalLink?.flash).toBeUndefined();
+  });
+
+  // Sprint 019 ticket 008: the MCP-triggered counterpart to the "ui"
+  // test just above. `mcp/tools/flash.ts`'s own `request_flash` calls
+  // exactly the `startFlash` `mountRoutes`'s own `MountRoutesExtra`
+  // hands out here (`cli.ts` wires the two together for real) -- this
+  // test proves that *this file's own* `startFlash`, called with an
+  // explicit `{origin: "mcp", caller}` identity the way `request_flash`
+  // would, attributes the overlay accordingly and hands back the same
+  // terminal outcome `finishFlash`/`failFlash` broadcast, without ever
+  // going through a second, MCP-specific flash implementation.
+  it("attributes an MCP-triggered flash as origin 'mcp' with the given caller on the snapshot's flash overlay, clears it once settled, and its own returned promise resolves to the terminal outcome", async () => {
+    let ws!: ReturnType<typeof fakeWebSocket>;
+    // `flash()` is held open (a deferred promise, not a real timer) so
+    // the flash is still genuinely in flight when this test inspects the
+    // snapshot overlay -- the store's own change-feed flush that carries
+    // it into a `snapshot` broadcast is `setImmediate`-coalesced
+    // (`store/index.ts`'s own `scheduleFlush`), so the overlay is only
+    // observable from *outside* `flash()`'s own synchronous call chain,
+    // after at least one real event-loop turn has had a chance to run
+    // that flush -- never from an assertion placed inside the `flash()`
+    // callback itself (a throw there would just be caught by
+    // `runFlashTask`'s own try/catch and reported as an ordinary flash
+    // failure, silently masking the assertion rather than failing the
+    // test).
+    let resolveFlash!: (outcome: FlashOutcome) => void;
+    const flashDeferred = new Promise<FlashOutcome>((resolve) => {
+      resolveFlash = resolve;
+    });
+    const flashMock = vi.fn(async (_device, _hex, onProgress: (phase: string) => void) => {
+      onProgress("erasing");
+      return flashDeferred;
+    });
+    let capturedStartFlash: MountRoutesExtra["startFlash"] | undefined;
+    const h = await harness({
+      enumerateDaplinkDevices: async () => [FAKE_DEVICE],
+      flash: flashMock as unknown as StartServerOptions["flash"],
+      mountRoutes: (_app, extra) => {
+        capturedStartFlash = extra.startFlash;
+      },
+    });
+    h.store.upsertLink({ id: "usb-SERIAL123", transport: "usb", address: { path: "/dev/x" }, at: 1 });
+    await flush();
+
+    ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    expect(capturedStartFlash).toBeDefined();
+
+    // Same local-hex upload handshake every other flash-start test in
+    // this file uses -- `startFlash` still needs a real, previously
+    // uploaded hex for a `local-hex` source regardless of who calls it.
+    const sha256 = createHash("sha256").update("hello").digest("hex");
+    ws.emit(
+      "message",
+      Buffer.from(JSON.stringify({ type: "flash-local-begin", fileName: "a.hex", byteLength: 5, sha256 })),
+      false,
+    );
+    await flush();
+    const ready = ws.sent.find((m) => m.type === "flash-local-ready") as { uploadId: string } | undefined;
+    const uploadId = ready!.uploadId;
+    ws.emit("message", Buffer.concat([Buffer.from(uploadId, "ascii"), Buffer.from("hello")]), true);
+    await flush();
+    ws.sent.length = 0;
+
+    const source: FirmwareSourceRef = { kind: "local-hex", uploadId, fileName: "a.hex", sha256 };
+    // Not a `flash-start` WS message -- calling `startFlash` the same
+    // way `mcp/tools/flash.ts`'s `request_flash` would, directly.
+    const outcomePromise = capturedStartFlash!("usb-SERIAL123", source, { origin: "mcp", caller: "agent-007" });
+
+    // Give the store's own coalesced change-feed flush a real event-loop
+    // turn to run while the flash is still genuinely in flight (held
+    // open by `flashDeferred`, not yet resolved).
+    await flush();
+    await flush();
+    expect(flashMock).toHaveBeenCalled();
+    const midFlightSnapshot = [...ws.sent].reverse().find((m): m is Snapshot => m.type === "snapshot");
+    const midFlightLink = midFlightSnapshot?.unassigned.find((l) => l.id === "usb-SERIAL123");
+    expect(midFlightLink?.flash).toMatchObject({ origin: "mcp", caller: "agent-007" });
+
+    resolveFlash({ status: "ok", method: "swd" });
+    const outcome = await outcomePromise;
+
+    // `startFlash`'s own resolved value is `flasher.flash`'s raw
+    // `FlashOutcome` on success (`{status, method}`) -- `FlashResultLike`
+    // is a structural subset, not a distinct runtime shape.
+    expect(outcome).toMatchObject({ status: "ok" });
+    // `finishFlash` deletes the overlay synchronously (in-memory), but a
+    // `snapshot` broadcast reflecting that still needs a real event-loop
+    // turn for the store's own coalesced flush -- the same reason the
+    // mid-flight check above needed one (`releaseBoardOwner`'s own write,
+    // in `flasher.flash`'s `finally`, schedules the flush that eventually
+    // carries the now-cleared overlay).
+    await flush();
+    const finalSnapshot = [...ws.sent].reverse().find((m): m is Snapshot => m.type === "snapshot");
+    const finalLink = finalSnapshot?.unassigned.find((l) => l.id === "usb-SERIAL123");
+    expect(finalLink?.flash).toBeUndefined();
   });
 });
 

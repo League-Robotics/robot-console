@@ -16,6 +16,12 @@ function when(value: number | null | undefined): string {
 
 export function DiagnosticsPanel({ device, current }: { device: SnapshotDevice; current: SnapshotLink }) {
   const now = Date.now();
+  // Sprint 019 ticket 006 (SUC-006/SUC-007): `recentAgentActions` is
+  // optional on the wire type only so a pre-ticket-006 snapshot literal
+  // need not be updated to keep type-checking (`wsMessages.ts`'s own
+  // doc comment) -- an absent value here means exactly what an empty
+  // array means: no agent has ever touched this device.
+  const recentAgentActions = device.recentAgentActions ?? [];
   return (
     <section className="diagnostics-panel" data-testid="robot-tab-panel-diagnostics" aria-label="Diagnostics">
       <dl className="diagnostics-facts">
@@ -74,6 +80,37 @@ export function DiagnosticsPanel({ device, current }: { device: SnapshotDevice; 
           </tbody>
         </table>
       </div>
+
+      {/* Sprint 019 ticket 006 (SUC-006/SUC-007): a small, read-only list
+          of the last few MCP-executed drive/flash actions touching this
+          device -- visibility, not a gate (`sprint.md`'s Revision: "Let
+          the agents do whatever they want"). No interactive element
+          renders anywhere in this section, ever -- no Approve/Deny, no
+          acknowledge, nothing clickable, per this ticket's own acceptance
+          criterion. The outer `data-testid` is present and stable in both
+          the populated and empty cases, so a browser-driven walk can find
+          this section unconditionally rather than needing two different
+          selectors depending on whether any agent has ever touched this
+          device. */}
+      <section className="diagnostics-agent-activity" data-testid="recent-agent-activity" aria-label="Recent agent activity">
+        <h3>Recent agent activity</h3>
+        {recentAgentActions.length === 0 ? (
+          <p className="diagnostics-agent-activity-empty" data-testid="recent-agent-activity-empty">
+            No agent activity recorded for this device yet.
+          </p>
+        ) : (
+          <ul className="diagnostics-agent-activity-list" data-testid="recent-agent-activity-list">
+            {recentAgentActions.map((action, index) => (
+              <li key={`${action.at}-${index}`} className="diagnostics-agent-activity-row" data-testid={`recent-agent-activity-row-${index}`}>
+                <span className="diagnostics-agent-activity-kind">{action.kind}</span>
+                <span className="diagnostics-agent-activity-caller">{action.caller}</span>
+                <span className="diagnostics-agent-activity-summary">{action.summary}</span>
+                <span className="diagnostics-agent-activity-when">{when(action.at)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </section>
   );
 }

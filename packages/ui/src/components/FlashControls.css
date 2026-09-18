@@ -75,6 +75,17 @@
   color: var(--rc-text-muted);
 }
 
+/* Sprint 019 ticket 006 (SUC-007): who started an in-flight flash, next
+   to the progress text above -- mirrors `FrontPage.css`'s own
+   `.device-connection-agent` (ticket 005): a quiet, distinct label, not
+   a warning, so an agent's presence is visible without reading as an
+   alarm. */
+.device-flash-agent {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--rc-accent);
+}
+
 .device-flash-local {
   display: flex;
   flex-direction: column;

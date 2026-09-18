@@ -154,6 +154,34 @@ export type LinkState =
  * to know that absence-means-derived convention itself. */
 export type RadioSourceWire = "override" | "registry" | "derived";
 
+/** Who opened a session -- mirrors `store/index.ts`'s own `SessionOrigin`
+ * verbatim; see {@link Transport}'s own doc comment for why this is an
+ * independent declaration, not an import. `"ui"` is a browser session;
+ * `"mcp"` is one an MCP client opened (sprint 019 ticket 005, SUC-005).
+ * Reused verbatim by {@link SnapshotLink.flash}'s own `origin` (sprint
+ * 019 ticket 006) -- who opened a session and who started a flash are the
+ * same two-value question. */
+export type SessionOriginWire = "ui" | "mcp";
+
+/** One row of the device page's "Recent agent activity" list (sprint 019
+ * ticket 006; SUC-006/SUC-007) -- mirrors `store/index.ts`'s own
+ * `AgentActionRow`, but display-shaped: `summary` is already-rendered
+ * text (`projection.ts`'s own presentation choice from `kind`/`params`/
+ * `result`/`resultReason`, e.g. `"WHEELS_V 40 40 -- sent"` or `"flash
+ * nezha-robot-template -- failed: <reason>"`), never parsed by a client
+ * (mirrors {@link SnapshotLink.label}'s own convention), so the UI never
+ * has to know `params`'s per-`kind` shape. Purely informational -- no
+ * interactive element renders from this, ever (this ticket's own
+ * acceptance criterion: "No interactive element ... purely
+ * informational"). */
+export interface AgentActionActivity {
+  kind: "drive" | "flash";
+  caller: string;
+  summary: string;
+  /** `agent_actions.executed_at`. */
+  at: number;
+}
+
 /** A parsed `status k=v ...` reply (robot firmware `wire_handler.cpp`
  * `execStatus`). `fields` is every `k=v` pair verbatim, order-free; the
  * named booleans are derived host-side from the `flags=<hex>` bitfield
@@ -378,6 +406,19 @@ export interface SnapshotLink {
      * not be updated to keep type-checking; a fixture that omits it is
      * simply never "Linked" under the new criterion. */
     answeredAt?: number | null;
+    /** Sprint 019 ticket 005 (SUC-005): `'ui'` for a session opened from
+     * the browser (the default -- see `store/index.ts`'s
+     * `UI_SESSION_IDENTITY`), `'mcp'` for one an MCP client opened via
+     * `connect/sessionOps.ts`'s `openSession`. Optional (like {@link
+     * answeredAt}) so pre-019-005 snapshot literals need not be updated
+     * to keep type-checking -- a fixture that omits it is simply never
+     * shown as an agent session. */
+    origin?: SessionOriginWire;
+    /** The MCP client's own declared `clientInfo.name` when `origin ===
+     * "mcp"`, `null`/absent otherwise -- what the console's device card
+     * shows alongside the existing "who holds this board" text (ticket
+     * 005's own acceptance criterion). */
+    caller?: string | null;
   };
   /** Present only while a flash is in flight for this link. Flash
    * progress is held in server-side memory, not in the store
@@ -385,7 +426,25 @@ export interface SnapshotLink {
    * `buildSnapshot`, being a pure function over store rows only, never
    * populates this field; `server.ts` (ticket 005) overlays it before
    * broadcasting. Typed here so that overlay has somewhere to write. */
-  flash?: { source: FirmwareSourceRef; phase: FlashPhase };
+  flash?: {
+    source: FirmwareSourceRef;
+    phase: FlashPhase;
+    /** Sprint 019 ticket 006 (SUC-007): who started this flash --
+     * `"ui"` for a browser's own `flash-start` (no {@link caller}
+     * alongside it), `"mcp"` for one `mcp/tools/flash.ts` (ticket 008)
+     * started, always paired with `caller` there. Both fields are
+     * optional so a pre-ticket-006 fixture/test literal need not be
+     * updated to keep type-checking -- a `flash` overlay that omits them
+     * is simply never shown as agent-attributed, exactly like {@link
+     * SnapshotLink.session}'s own `origin`/`caller` convention
+     * (ticket 005). Held only for the duration of the flash -- `server.ts`'s
+     * `finishFlash`/`failFlash` delete this whole overlay the instant the
+     * flash settles, success or failure, so this is never reconstructed
+     * after the fact; `agent_actions` (this ticket's own audit table) is
+     * the durable record once the overlay is gone. */
+    origin?: SessionOriginWire;
+    caller?: string;
+  };
   /** Whether `open`/`close`/`flash`/`provisionWifi` are currently
    * meaningful actions for this link, given its transport and state --
    * `projection.ts`'s own derivation, so the UI never re-implements the
@@ -426,6 +485,18 @@ export interface SnapshotDevice {
    * at all yet. */
   lastChecked: number | null;
   links: SnapshotLink[];
+  /** The newest few `agent_actions` rows touching this device (its own
+   * `flash` rows, plus its links' `drive` rows), newest first -- sprint
+   * 019 ticket 006 (SUC-006/SUC-007), sourced from `store/index.ts`'s
+   * `projectionRows` (`recentAgentActionsByDevice`). Optional, like
+   * {@link SnapshotLink.session}'s own `origin`/`caller` (ticket 005) and
+   * {@link SnapshotRelay.sweep} (ticket 016-007), so a pre-ticket-006
+   * snapshot literal -- most existing test fixtures -- need not be
+   * updated to keep type-checking; a client treats an absent value
+   * exactly like an empty array (no agent has ever touched this device),
+   * never as "unknown" or a reason to show a loading state. Purely
+   * informational; see {@link AgentActionActivity}'s own doc comment. */
+  recentAgentActions?: AgentActionActivity[];
 }
 
 /** One relay's lease/bridging status, alongside (not instead of) its own

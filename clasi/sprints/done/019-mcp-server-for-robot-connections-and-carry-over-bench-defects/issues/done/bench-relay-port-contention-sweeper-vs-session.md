@@ -1,5 +1,9 @@
 ---
-status: in-progress
+status: done
+sprint: 019
+tickets:
+- 019-001
+- 019-009
 ---
 
 # Opening a relay's own USB link while the sweeper holds its port fails with "Cannot lock port"

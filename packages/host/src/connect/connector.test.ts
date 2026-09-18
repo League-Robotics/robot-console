@@ -5,7 +5,15 @@ import type { ByteStream } from "../link/LineLink.js";
 import { FakeByteStream } from "../link/__fixtures__/FakeByteStream.js";
 import { realScheduler, type Scheduler } from "../link/pacing.js";
 import { deviceIdToName } from "@robot-console/protocol";
-import { createConnector, type ConnectorDeps, type LinkRow } from "./connector.js";
+import {
+  createConnector,
+  isKnownRelayUsbLink,
+  takeoverDirectOpenSweep,
+  RELAY_EXTERNAL_LOCK_REASON,
+  type ConnectorDeps,
+  type LinkRow,
+} from "./connector.js";
+import { createRelayLeaseRevocation } from "./relayLeaseRevocation.js";
 
 // Sprint 015 ticket 001's own suite: one test per acceptance criterion,
 // plus the boot-window retry / reset-between-candidates coverage the
@@ -1084,6 +1092,315 @@ describe("connectAndIdentify -- preamble gating", () => {
     stream.resolveOpen();
     await promise;
     expect(stream.writes.some((w) => w.bytes.startsWith("!"))).toBe(false);
+    store.close();
+  });
+});
+
+// ---------------------------------------------------------------------
+// Sprint 019 ticket 001 (SUC-001): a direct relay session-open races
+// `watchers/relaySweeper.ts`'s periodic probe for the relay's own
+// physical port -- see connector.ts's own "Direct relay session-open
+// sweep takeover" section for the full reasoning. No USB relay was
+// attached to the bench when this ticket was worked (2026-09-17), so
+// every test here drives the fake `ByteStream`/`RelayLeaseRevocation`
+// harness only -- see this ticket's own closing notes for what remains
+// unverified against real hardware.
+// ---------------------------------------------------------------------
+
+/** A usb link already identified (by an earlier SWD-naming pass or
+ * banner) as a relay device -- the only shape `isKnownRelayUsbLink`
+ * recognizes, and the only shape a real sweep pass would ever be
+ * registered against. */
+const RELAY_DEVICE_ID = 1779042365; // deviceIdToName(1779042365) === "getez"
+
+function seedRelayUsbLink(store: Store, id = "usb-RELAY"): LinkRow {
+  const link = usbLink(id, "/dev/cu.relay");
+  store.upsertDevice({ id: RELAY_DEVICE_ID, name: "getez", kind: "relay", at: 0 });
+  store.upsertLink({ id: link.id, transport: link.transport, address: link.address, deviceId: RELAY_DEVICE_ID, at: 0 });
+  return { ...link, deviceId: RELAY_DEVICE_ID };
+}
+
+describe("isKnownRelayUsbLink", () => {
+  it("is false for a usb link with no deviceId at all (never yet identified)", () => {
+    const store = freshStore();
+    expect(isKnownRelayUsbLink(store, usbLink())).toBe(false);
+    store.close();
+  });
+
+  it("is false for a usb link whose deviceId is a known kind='robot' device", () => {
+    const store = freshStore();
+    store.upsertDevice({ id: ROBOT_SERIAL, name: "vevov", kind: "robot", at: 0 });
+    expect(isKnownRelayUsbLink(store, { ...usbLink(), deviceId: ROBOT_SERIAL })).toBe(false);
+    store.close();
+  });
+
+  it("is false for a non-usb link even if its deviceId is a relay", () => {
+    const store = freshStore();
+    store.upsertDevice({ id: RELAY_DEVICE_ID, name: "getez", kind: "relay", at: 0 });
+    expect(isKnownRelayUsbLink(store, { ...wifiLink(), deviceId: RELAY_DEVICE_ID })).toBe(false);
+    store.close();
+  });
+
+  it("is true for a usb link whose deviceId is a known kind='relay' device", () => {
+    const store = freshStore();
+    const link = seedRelayUsbLink(store);
+    expect(isKnownRelayUsbLink(store, link)).toBe(true);
+    store.close();
+  });
+});
+
+describe("takeoverDirectOpenSweep", () => {
+  it("resolves immediately, never calling the scheduler, when revocation is undefined", async () => {
+    let delayCalls = 0;
+    const scheduler: Scheduler = {
+      delay: (ms) => {
+        delayCalls++;
+        return realScheduler.delay(ms);
+      },
+    };
+    await takeoverDirectOpenSweep(undefined, "usb-RELAY", "session:x", scheduler, () => Date.now(), new AbortController().signal, 500, 10);
+    expect(delayCalls).toBe(0);
+  });
+
+  it("resolves immediately, never calling the scheduler, when nothing is registered for this link", async () => {
+    const revocation = createRelayLeaseRevocation();
+    let delayCalls = 0;
+    const scheduler: Scheduler = {
+      delay: (ms) => {
+        delayCalls++;
+        return realScheduler.delay(ms);
+      },
+    };
+    await takeoverDirectOpenSweep(revocation, "usb-RELAY", "session:x", scheduler, () => Date.now(), new AbortController().signal, 500, 10);
+    expect(delayCalls).toBe(0);
+  });
+
+  it("aborts the registered sweep controller synchronously, and resolves once it is handed back (cleared) well within maxWaitMs", async () => {
+    const revocation = createRelayLeaseRevocation();
+    const controller = new AbortController();
+    revocation.register("usb-RELAY", controller);
+
+    // Simulate `relaySweeper.ts`'s own finally block handing the relay
+    // back shortly after its pass is aborted -- close enough behind the
+    // abort to prove the takeover, not so close it could pass by
+    // accident before the abort is even observed.
+    setTimeout(() => revocation.clear("usb-RELAY", controller), 20);
+
+    const promise = takeoverDirectOpenSweep(
+      revocation,
+      "usb-RELAY",
+      "session:x",
+      realScheduler,
+      () => Date.now(),
+      new AbortController().signal,
+      1000,
+      10,
+    );
+    // The abort itself happens synchronously inside takeoverDirectOpenSweep,
+    // before its own first await -- observable immediately, with no need
+    // to await the returned promise first.
+    expect(controller.signal.aborted).toBe(true);
+
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  it("resolves (never throws) once maxWaitMs elapses, if the sweep is never handed back", async () => {
+    const revocation = createRelayLeaseRevocation();
+    const controller = new AbortController();
+    revocation.register("usb-RELAY", controller);
+
+    const startedAt = Date.now();
+    await expect(
+      takeoverDirectOpenSweep(revocation, "usb-RELAY", "session:x", realScheduler, () => Date.now(), new AbortController().signal, 40, 10),
+    ).resolves.toBeUndefined();
+    // Bounded: actually waited roughly maxWaitMs, not an instant no-op
+    // and not a runaway wait either.
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(30);
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+    // Still registered -- this function never itself clears another
+    // module's own registration.
+    expect(revocation.get("usb-RELAY")).toBe(controller);
+  });
+
+  it("rejects with the caller's own abort reason if signal aborts while still waiting for handback", async () => {
+    const revocation = createRelayLeaseRevocation();
+    const controller = new AbortController();
+    revocation.register("usb-RELAY", controller);
+    const callerController = new AbortController();
+
+    const promise = takeoverDirectOpenSweep(
+      revocation,
+      "usb-RELAY",
+      "session:x",
+      realScheduler,
+      () => Date.now(),
+      callerController.signal,
+      1000,
+      10,
+    );
+    setTimeout(() => callerController.abort(new Error("caller cancelled")), 15);
+    await expect(promise).rejects.toThrow(/caller cancelled/);
+  });
+});
+
+/** Poll `predicate` until it's true, or throw after `timeoutMs` --
+ * `connect/relayBridger.test.ts`'s own convention, used below only for
+ * the one test in this file that drives real timers (`realScheduler`)
+ * rather than the fixed-clock `immediateScheduler` every other test
+ * here uses -- necessary because `takeoverDirectOpenSweep`'s own poll
+ * loop would otherwise starve `flush()`'s macrotask boundary (an
+ * immediately-resolving `Scheduler.delay` regenerates a fresh microtask
+ * on every iteration, forever, whenever nothing ever satisfies its exit
+ * condition -- exactly the case here until the test itself clears the
+ * sweep). */
+async function waitFor(predicate: () => boolean, timeoutMs = 2000, pollMs = 5): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  if (!predicate()) {
+    throw new Error("waitFor: timed out");
+  }
+}
+
+describe("connectAndIdentify -- direct relay session-open sweep takeover (sprint 019 ticket 001, SUC-001)", () => {
+  it("a known relay's direct session-open takes over an in-flight sweep pass before the raw port is ever opened, then proceeds once handed back", async () => {
+    const store = freshStore();
+    const link = seedRelayUsbLink(store);
+    const revocation = createRelayLeaseRevocation();
+    const sweepController = new AbortController();
+    revocation.register(link.id, sweepController);
+
+    const stream = new BannerByteStream(RELAY_BANNER);
+    // Real timers here (not the fixed-clock immediateScheduler every
+    // other test in this file uses) -- see waitFor's own doc comment for
+    // why: the takeover's own wait loop must genuinely yield to the
+    // event loop so this test's later `revocation.clear` (scheduled via
+    // a real macrotask) can ever run at all.
+    const connector = createConnector(
+      store,
+      { ...baseDeps(stream, realScheduler), revocation },
+      { directOpenTakeoverPollMs: 5 },
+    );
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+
+    // Give the mutex hop and the synchronous takeover-abort step a real
+    // moment to run.
+    await waitFor(() => sweepController.signal.aborted);
+
+    // The physical port is not opened yet: the sweep has not handed the
+    // relay back.
+    expect(stream.openCallCount).toBe(0);
+
+    // The sweeper's own finally block: close its stream (not modeled
+    // here -- no separate sweep stream in this test), then deregister.
+    revocation.clear(link.id, sweepController);
+
+    // The takeover's poll loop notices within one poll interval and lets
+    // the raw port open proceed.
+    await waitFor(() => stream.openCallCount === 1);
+    stream.resolveOpen();
+    const session = await promise;
+    expect(session.linkId).toBe(link.id);
+    store.close();
+  });
+
+  it("a known relay's direct session-open with no sweep running opens the port immediately (revocation provided but nothing registered)", async () => {
+    const store = freshStore();
+    const link = seedRelayUsbLink(store);
+    const revocation = createRelayLeaseRevocation();
+
+    const stream = new BannerByteStream(RELAY_BANNER);
+    const connector = createConnector(store, { ...baseDeps(stream), revocation });
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    expect(stream.openCallCount).toBe(1);
+    stream.resolveOpen();
+    await promise;
+    store.close();
+  });
+
+  it("an OS-level port-lock failure on a known relay link is reported as 'another app has this relay open', not the raw serialport text", async () => {
+    const store = freshStore();
+    const link = seedRelayUsbLink(store);
+    const revocation = createRelayLeaseRevocation();
+
+    const stream = new FakeByteStream();
+    const connector = createConnector(store, { ...baseDeps(stream), revocation });
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    // The exact @serialport/bindings-cpp native text (serialport_unix.cpp's
+    // open(): `"Error %s Cannot lock port"`) -- see connector.ts's own
+    // PORT_LOCK_FAILURE_PATTERN doc comment.
+    stream.rejectOpen(new Error("Error Resource busy Cannot lock port"));
+    await expect(promise).rejects.toThrow(RELAY_EXTERNAL_LOCK_REASON);
+
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("failed");
+    expect(linkRow?.state_reason).toBe(RELAY_EXTERNAL_LOCK_REASON);
+    store.close();
+  });
+
+  it("a non-lock connect failure on a known relay link is reported unchanged, never relabeled", async () => {
+    const store = freshStore();
+    const link = seedRelayUsbLink(store);
+    const revocation = createRelayLeaseRevocation();
+
+    const stream = new FakeByteStream();
+    const connector = createConnector(store, { ...baseDeps(stream), revocation });
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.rejectOpen(new Error("ENOENT: no such device"));
+    await expect(promise).rejects.toThrow(/ENOENT/);
+
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state_reason).toMatch(/ENOENT/);
+    expect(linkRow?.state_reason).not.toBe(RELAY_EXTERNAL_LOCK_REASON);
+    store.close();
+  });
+
+  it("a lock-shaped failure on a usb link that is NOT a known relay (e.g. a robot's own port, held by MakeCode) keeps the raw message -- never mislabeled 'this relay'", async () => {
+    const store = freshStore();
+    const link = usbLink(); // no deviceId at all -- never identified
+    seedLink(store, link);
+    const revocation = createRelayLeaseRevocation();
+
+    const stream = new FakeByteStream();
+    const connector = createConnector(store, { ...baseDeps(stream), revocation });
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.rejectOpen(new Error("Error Resource busy Cannot lock port"));
+    await expect(promise).rejects.toThrow(/Cannot lock port/);
+
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state_reason).not.toBe(RELAY_EXTERNAL_LOCK_REASON);
+    expect(linkRow?.state_reason).toMatch(/Cannot lock port/);
+    store.close();
+  });
+
+  it("omitting revocation entirely skips the takeover step (nothing to abort) but still classifies a known relay's lock failure as external -- no sweeper is even possible in this composition", async () => {
+    const store = freshStore();
+    const link = seedRelayUsbLink(store);
+
+    const stream = new FakeByteStream();
+    const connector = createConnector(store, baseDeps(stream)); // no revocation dep at all
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    expect(stream.openCallCount).toBe(1); // no takeover wait -- opened immediately
+    stream.rejectOpen(new Error("Error Resource busy Cannot lock port"));
+    await expect(promise).rejects.toThrow(RELAY_EXTERNAL_LOCK_REASON);
+
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state_reason).toBe(RELAY_EXTERNAL_LOCK_REASON);
     store.close();
   });
 });

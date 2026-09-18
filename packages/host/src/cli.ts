@@ -27,6 +27,20 @@
  * {@link startRuntime}, so the stand-in is superseded, not replaced by
  * anything else.
  *
+ * ## MCP server (sprint 019 ticket 004, SUC-004)
+ *
+ * `startMcpServer` (`mcp/server.ts`) is wired in via `startServer`'s own
+ * `mountRoutes` hook (`server.ts`'s doc comment on that option) — this is
+ * what "started ... before/alongside `startServer()`" (ticket 004's own
+ * acceptance criterion) actually means in code: `mountRoutes` runs
+ * synchronously inside `startServer`, before its Express app's
+ * static-file/SPA catch-all route is registered, so the MCP route is
+ * never shadowed by it, and the route only starts accepting real
+ * connections once `startServer`'s own `listen()` succeeds — by which
+ * point `runtime` (and its `store`) already exists, so there is no window
+ * where an MCP call could race store construction. Injectable via
+ * {@link CliDeps.startMcpServer}, mirroring every other collaborator here.
+ *
  * ## Signal handling (ticket 005, SUC-006)
  *
  * `SIGINT`/`SIGTERM` call `server.close()` (which waits for any
@@ -48,6 +62,7 @@ import { startServer, type RunningServer, type StartServerOptions } from "./serv
 import { startRuntime, type Runtime, type StartRuntimeOptions } from "./runtime.js";
 import { getFirmwareConfig } from "./config.js";
 import { dumpStore, formatStoreDump } from "./debug/dumpStore.js";
+import { startMcpServer } from "./mcp/server.js";
 
 /** Default {@link CliDeps.openBrowser}: the stakeholder does not want
  * `main()` popping up whatever the OS default browser happens to be
@@ -87,6 +102,13 @@ export interface CliDeps {
    * dependencies", not "was `startRuntime` itself called". */
   runtimeOptions?: StartRuntimeOptions;
   startServer?: (options: StartServerOptions) => Promise<RunningServer>;
+  /** Mounts the MCP Streamable HTTP endpoint (`mcp/server.ts`). Defaults
+   * to the real {@link startMcpServer}. Overriding this is how
+   * `cli.test.ts` observes that `main()`'s wiring reaches it (via the
+   * `mountRoutes` hook below) without ever touching a real Express app or
+   * HTTP port -- `mcp/server.test.ts` is where `startMcpServer` itself is
+   * tested. */
+  startMcpServer?: typeof startMcpServer;
   getFirmwareConfig?: typeof getFirmwareConfig;
   /** Opens a browser to `url`. Defaults to {@link openInChrome} (Chrome,
    * falling back to the OS default browser if Chrome is not installed).
@@ -262,6 +284,7 @@ export async function main(
 
   const startRuntimeFn = deps.startRuntime ?? startRuntime;
   const startServerFn = deps.startServer ?? startServer;
+  const startMcpServerFn = deps.startMcpServer ?? startMcpServer;
   const getFirmwareConfigFn = deps.getFirmwareConfig ?? getFirmwareConfig;
   const openBrowser = deps.openBrowser ?? openInChrome;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
@@ -288,6 +311,28 @@ export async function main(
     runtime,
     ...(port !== undefined ? { port } : {}),
     firmwareConfig,
+    // Sprint 019 ticket 004 (SUC-004): mounts the MCP Streamable HTTP
+    // endpoint on this same server's own Express app -- see this
+    // module's own doc comment, "MCP server", and `server.ts`'s doc
+    // comment on `mountRoutes` for why this must be a hook `startServer`
+    // itself invokes (before its static/SPA catch-all route exists)
+    // rather than something done to its `app` after the fact.
+    mountRoutes: (app, extra) => {
+      // Sprint 019 ticket 005: the MCP tool surface now needs the
+      // reconciler too (connect/command tools), not just the store --
+      // see `mcp/server.ts`'s own `McpDeps`. Ticket 008: `extra` carries
+      // the exact `startFlash`/`enumerateDaplinkDevices` this server's
+      // own `flash-start` WS handler uses (`server.ts`'s own
+      // `MountRoutesExtra` doc comment) -- `mcp/tools/flash.ts`'s
+      // `request_flash` calls the *same* `startFlash`, not a second,
+      // divergent way of starting a flash.
+      startMcpServerFn(app, {
+        store: runtime.store,
+        reconciler: runtime.reconciler,
+        startFlash: extra.startFlash,
+        enumerateDaplinkDevices: extra.enumerateDaplinkDevices,
+      });
+    },
   });
   console.log(`robot-console: listening on ${server.url}`);
 

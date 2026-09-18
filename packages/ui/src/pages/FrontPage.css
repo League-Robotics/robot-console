@@ -398,6 +398,15 @@
   flex-basis: 100%;
 }
 
+/* Sprint 019 ticket 005 (SUC-005): an MCP-opened session's caller,
+   alongside this row's own existing "who holds this board" state text --
+   not a warning, so it does not share `.device-connection-notice`'s
+   color; a quiet, distinct label is enough to make an agent's presence
+   visible without reading as an alarm. */
+.device-connection-agent {
+  color: var(--rc-accent);
+}
+
 /* Ticket 018-010: the quiet "N older connections hidden" summary line
    for whatever `deviceDisplay.ts`'s `cardLinks` filtered out of the
    Connections list above -- deliberately muted/small, matching

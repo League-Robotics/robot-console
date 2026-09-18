@@ -317,9 +317,25 @@ export function FlashControls({ link }: FlashControlsProps) {
   return (
     <div className="flash-controls">
       {progress ? (
-        <p className="device-flash-progress" role="status">
-          {flashProgressText(progress, firmwareStatus)}
-        </p>
+        <>
+          <p className="device-flash-progress" role="status">
+            {flashProgressText(progress, firmwareStatus)}
+          </p>
+          {link.flash?.origin === "mcp" && (
+            // Sprint 019 ticket 006 (SUC-007): an MCP-triggered flash is
+            // attributed here for its whole duration, exactly the way an
+            // MCP-opened session's "Agent: <caller>" label already shows
+            // on the front page (ticket 005) -- visibility, not a gate.
+            // Read straight off the snapshot's own `link.flash` (not
+            // `progress`, which mirrors the live `flash-progress` wire
+            // message and carries no identity of its own -- see
+            // `wsMessages.ts`'s `SnapshotLink.flash` doc comment) so this
+            // needs no change to the live-progress plumbing at all.
+            <p className="device-flash-agent" data-testid={`flash-agent-${link.id}`}>
+              Agent: {link.flash.caller ?? "unknown"}
+            </p>
+          )}
+        </>
       ) : (
         <div className="device-flash-section">
           <div className="device-flash-actions">

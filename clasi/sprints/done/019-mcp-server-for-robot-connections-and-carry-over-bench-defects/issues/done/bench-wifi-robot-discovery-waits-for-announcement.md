@@ -1,5 +1,9 @@
 ---
-status: pending
+status: done
+sprint: 019
+tickets:
+- 019-002
+- 019-009
 ---
 
 # WiFi robot discovery waits for the mDNS announcement interval instead of resolving on demand
@@ -108,3 +112,71 @@ falls relative to the next unsolicited announcement.
 for **every owned robot with a WiFi path**, `tigez` included — and use
 `tigez` as the regression fixture, since it demonstrably both succeeds
 and fails under the current code.
+
+## Not fixed by 019-002's on-demand-discovery fallback (programmer, 019-009, 2026-09-18)
+
+019-002 shipped the bounded `dns.lookup` + TCP 7654 HELLO fallback and
+closed `completes_issue: true`, but its own ten-consecutive-harness-runs
+acceptance criterion against `tigez` was left unmet (no WiFi robot was
+reachable at that ticket's verification time). This ticket (009) is the
+sprint's own gate for exactly that kind of deferral, and ran the ten
+runs now that `tigez` is back.
+
+**Fixture chosen by property, not name**: at run time, `tigez` was the
+only owned robot exhibiting a live WiFi banner match in Layer 1 (direct
+`tigez.local:7654` HELLO). `gopiv` and `vevov` both failed WiFi-by-name
+resolution (`getaddrinfo ENOTFOUND {gopiv,vevov}.local`) in every probe
+this session ran — i.e. neither currently has a reachable onboard WiFi
+path at all, independent of this discovery-timing question. `tigez` is
+therefore the only valid fixture on the bench today, not a hardcoded
+choice.
+
+**Result: 2 pass / 8 fail across 10 valid, sequential
+`scripts/bench/run.sh` runs** (2 further attempts were refused outright
+by the harness's own exclusivity check, due to genuinely foreign
+processes from *other, unrelated sessions* transiently holding a bench
+resource — `gopiv`'s bridge port and `tovez`'s bridge port respectively;
+neither was started by this session, neither was signaled, both cleared
+on their own within seconds, and neither counts as one of the 10 —
+recorded as bench-sharing events, not part of this ticket's own
+evidence). Full stdout logs, per-run reports and screenshots are at
+`clasi/sprints/.../tickets/` evidence path
+`<scratchpad>/019-009/tigez-wifi-run-{1,2,4,5,6,7,8,9,10,12}.md` /
+`.stdout.log`, summarized in `<scratchpad>/019-009/tigez-wifi-10run-summary.log`
+(session scratchpad, not committed to the repo — cite by path in ticket
+009's closing notes).
+
+| run | L1 | L2 | L3 | reason |
+| --- | -- | -- | -- | --- |
+| 1  | pass | pass | fail | no live-snapshot link of transport "wifi" found for "tigez" |
+| 2  | pass | pass | pass | - |
+| 4  | pass | fail | pass | no link found in the snapshot for tigez via wifi |
+| 5  | pass | pass | pass | - |
+| 6  | pass | pass | fail | no live-snapshot link of transport "wifi" found for "tigez" |
+| 7  | pass | fail | fail | no link found in the snapshot for tigez via wifi |
+| 8  | pass | fail | fail | no link found in the snapshot for tigez via wifi |
+| 9  | pass | fail | fail | no link found in the snapshot for tigez via wifi |
+| 10 | pass | pass | fail | no live-snapshot link of transport "wifi" found for "tigez" |
+| 12 | pass | fail | fail | no link found in the snapshot for tigez via wifi |
+
+Notable: Layer 1's *raw* probe (a direct TCP dial + HELLO against
+`tigez.local:7654`, the harness's own workaround for this exact gap)
+passed all 10/10 — the robot's WiFi radio itself was reachable the
+entire time. The failure is specifically that the **host's own live
+link/snapshot** (Layer 2's WS-level session-open, Layer 3's browser-
+visible link row) does not reliably reflect that reachability. This is
+the same shape 019-002 was supposed to fix, and the failure mode has
+gotten *more* consistent over the run (early runs split 2 pass/2 fail
+in 4 attempts; the last 4 consecutive valid runs — 7, 8, 9, 12 — all
+failed both L2 and L3), which argues against "just a race that
+resolves eventually" and for the fallback path either not firing
+reliably or regressing under repeated/rapid host restarts.
+
+**This ticket (009) is not fixing this** — per its own scope rule
+("if it is structural, stop and report rather than making a large
+change here"), root-causing an intermittent async discovery race
+inside `mdnsWatcher`'s on-demand fallback (or the reconciler policy
+that triggers it) is exactly that kind of structural work, not a
+one-line fix. Reopening/carrying this issue forward to the next sprint
+that has bench access, with this ticket's 10-run evidence attached
+rather than 019-002's single anecdotal 206ms success.

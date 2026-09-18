@@ -1,7 +1,7 @@
 ---
 id: '020'
 title: WiFi Discovery Reliability
-status: executing
+status: done
 branch: sprint/020-wifi-discovery-reliability
 use-cases: []
 issues:

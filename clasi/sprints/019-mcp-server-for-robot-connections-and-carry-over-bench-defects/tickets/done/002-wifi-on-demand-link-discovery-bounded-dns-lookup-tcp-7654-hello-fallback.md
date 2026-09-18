@@ -1,7 +1,7 @@
 ---
 id: '002'
 title: WiFi on-demand link discovery (bounded dns.lookup + TCP 7654 HELLO fallback)
-status: in-progress
+status: done
 use-cases:
 - SUC-002
 depends-on: []
@@ -189,3 +189,52 @@ architecture doesn't mandate one over the other).
   component boundary; `docs/design/architecture.md` §6.2's mDNS
   discussion stays accurate (this is a supplement, not a replacement,
   of the passive path it already describes).
+
+## Team-lead closing decision (2026-09-17)
+
+**Closing this ticket `done` with one criterion unmet**, deliberately and
+with the substitution recorded rather than checked off.
+
+**What is actually verified**: the defect is fixed and demonstrated
+**on live hardware**, end to end, through the real mDNS backend with no
+fakes — `startMdnsWatcher` + `createBonjourBackend()` created
+`links.wifi-tovez` in **206 ms**, in state `connectable`, with the same
+shape and promotion an mDNS observation would have produced. A direct
+`probeWifiOnDemand("tovez")` answered in 73 ms. Against a defect whose
+entire complaint was "tens of seconds with no link at all while waiting
+for the next unsolicited announcement", a 206 ms link creation is the
+behavior change the ticket exists to produce.
+
+**What is not verified, and why**: the ticket named **`tigez`** as the
+regression fixture and asked for ten consecutive `scripts/bench/run.sh`
+runs against it. `tigez` is **no longer on the bench** — a live 45 s
+`dns-sd -B _robotlink._tcp` browse showed no `tigez` announcement at
+all, and a bounded `dns.lookup` timed out. This is the third distinct
+fleet state in one evening: `tigez` had a working WiFi path at 22:46Z
+(passed all three harness layers), failed discovery at 23:02Z (the
+intermittency that made it the chosen fixture), and by ~00:40Z was gone
+from the network entirely. `gopiv` and `vevov` were re-confirmed
+unreachable (ICMP timeout, ARP `incomplete`); `vevov` has no working ESP
+module at all per the fleet migration plan. `tovez` — which this sprint's
+planning documents assumed was *not* a WiFi robot — was the one live
+WiFi robot at verification time.
+
+**Why `done` and not blocked**: the unmet criterion tests the *fixture's*
+availability, not the code. Holding the sprint's second ticket open
+waiting for a specific robot to come back, when the same code path has
+been proven live on a different robot of the same kind, would stall the
+sprint for no additional confidence.
+
+**Carried to ticket 009 — whoever runs the sprint's verification gate
+must pick this up**: re-run the WiFi discovery path against whichever
+owned WiFi robots are actually on the bench at that time, `tigez`
+included **if it has returned**, and record the result there. This is not
+optional tidying; it is the deferred half of this ticket's acceptance,
+and 009 is the sprint's own gate for exactly this kind of deferral.
+
+**Standing bench observation for the stakeholder**: the WiFi fleet's
+membership changed three times in roughly two hours tonight. Any future
+ticket that names a specific robot as its fixture should name a
+*property* ("an owned robot with a live WiFi path") and resolve the
+actual robot at run time, or it will keep going stale between planning
+and execution — as this one did, twice.

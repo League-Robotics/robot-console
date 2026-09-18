@@ -11,7 +11,7 @@
  * closed in `afterEach`), which is what the port-busy test needs.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
@@ -299,6 +299,55 @@ describe("server.ts: binding", () => {
     } finally {
       await new Promise<void>((resolve) => blocker.close(() => resolve()));
     }
+  });
+});
+
+// ---------------------------------------------------------------------
+// mountRoutes -- sprint 019 ticket 004's own generic extension point
+// (this module has no MCP-specific knowledge; `cli.ts` is what actually
+// passes `startMcpServer` wrapped in this hook -- see `mcp/server.ts`).
+// ---------------------------------------------------------------------
+
+describe("server.ts: mountRoutes", () => {
+  it("is invoked exactly once with this server's own Express app instance", async () => {
+    const mountRoutesMock = vi.fn();
+    await harness({ mountRoutes: mountRoutesMock });
+
+    expect(mountRoutesMock).toHaveBeenCalledTimes(1);
+    const app = mountRoutesMock.mock.calls[0]?.[0] as { get: unknown; post: unknown };
+    expect(typeof app.get).toBe("function");
+    expect(typeof app.post).toBe("function");
+  });
+
+  it("a route it registers wins over the static-file/SPA catch-all, even when a built UI is present", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "robot-console-server-mount-test-"));
+    writeFileSync(path.join(dir, "index.html"), "<html>SPA</html>");
+    try {
+      const h = await harness({
+        staticDir: dir,
+        mountRoutes: (app) => {
+          app.get("/probe", (_req, res) => {
+            res.status(200).type("text/plain").send("PROBE-OK");
+          });
+        },
+      });
+
+      const probeResponse = await fetch(`${h.server.url}/probe`);
+      expect(await probeResponse.text()).toBe("PROBE-OK");
+
+      // The catch-all is still there for everything mountRoutes didn't
+      // claim -- this hook adds a route, it does not replace the SPA.
+      const rootResponse = await fetch(`${h.server.url}/`);
+      expect(await rootResponse.text()).toContain("SPA");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("omitting mountRoutes changes nothing about existing behavior", async () => {
+    const h = await harness();
+    const response = await fetch(`${h.server.url}/`);
+    expect(response.status).toBe(200);
   });
 });
 

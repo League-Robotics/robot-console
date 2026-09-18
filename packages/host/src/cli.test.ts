@@ -363,6 +363,74 @@ describe("cli: main -- production startup composes runtime then server", () => {
   });
 });
 
+describe("cli: main -- MCP server wiring (sprint 019 ticket 004)", () => {
+  // main() unconditionally calls installShutdownHandlers, which
+  // registers real process-level SIGINT/SIGTERM listeners -- cleaned up
+  // here exactly like every other describe block in this file that
+  // calls main(), so a listener left over from one of these tests can
+  // never fire during (and spuriously fail) a later describe block's own
+  // process.emit("SIGINT"/"SIGTERM") (bench finding, this ticket: an
+  // earlier version of this suite leaked exactly that).
+  afterEach(() => {
+    process.removeAllListeners("SIGINT");
+    process.removeAllListeners("SIGTERM");
+  });
+
+  it("passes a mountRoutes hook to startServer that reaches startMcpServer with the app and runtime.store", async () => {
+    const fakeStore = { marker: "fake-store" };
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: fakeStore, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const fakeApp = { marker: "fake-express-app" };
+    // A real startServer would call mountRoutes(app) itself, before its
+    // own static/catch-all route registration (server.ts's own doc
+    // comment on that hook) -- faked here to invoke it the same way,
+    // without needing a real Express app or HTTP port.
+    const startServerMock = vi.fn().mockImplementation(async (options: { mountRoutes?: (app: unknown) => void }) => {
+      options.mountRoutes?.(fakeApp);
+      return { url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) };
+    });
+    const startMcpServerMock = vi.fn().mockReturnValue({ path: "/mcp" });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      startMcpServer: startMcpServerMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+    };
+
+    await main([], {} as NodeJS.ProcessEnv, deps);
+
+    expect(startMcpServerMock).toHaveBeenCalledWith(fakeApp, fakeStore);
+
+    logSpy.mockRestore();
+  });
+
+  it("defaults to the real startMcpServer when deps.startMcpServer is not overridden -- main() still composes without it throwing", async () => {
+    // Exercises the real default wiring path (deps.startMcpServer
+    // omitted): startServer itself is still faked, and its fake never
+    // calls the mountRoutes hook, so the real startMcpServer is never
+    // actually invoked here -- this only proves main() does not fail to
+    // resolve the real default when no override is given.
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(
+      main([], {} as NodeJS.ProcessEnv, {
+        startRuntime: startRuntimeMock,
+        startServer: startServerMock,
+        openBrowser: openBrowserMock,
+        getFirmwareConfig: vi.fn().mockReturnValue({}),
+      }),
+    ).resolves.toBeUndefined();
+
+    logSpy.mockRestore();
+  });
+});
+
 describe("cli: main -- SIGINT/SIGTERM shutdown", () => {
   afterEach(() => {
     process.removeAllListeners("SIGINT");

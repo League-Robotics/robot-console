@@ -10,13 +10,15 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@robot-console/protocol": "*",
     "bonjour-service": "^1.4.4",
     "express": "^5.2.1",
     "node-hid": "^3.4.0",
     "open": "^11.0.2",
     "serialport": "^13.0.0",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

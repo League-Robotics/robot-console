@@ -254,6 +254,15 @@ export interface StartServerOptions {
    * `new WebSocketServer({server: httpServer, maxPayload})`. See
    * {@link WebSocketServerLike}. */
   createWebSocketServer?: (httpServer: HttpServer, maxPayloadBytes: number) => WebSocketServerLike;
+  /** Sprint 019 ticket 004: called once, synchronously, with this
+   * server's own Express `app` instance, before the static-file/SPA
+   * catch-all route is registered — the one extension point a caller
+   * needs to mount an additional route (e.g. `cli.ts` mounting the MCP
+   * Streamable HTTP endpoint via `mcp/server.ts`'s `startMcpServer`) that
+   * must win against the catch-all rather than be shadowed by it. Purely
+   * generic: this module has no knowledge of what, if anything, gets
+   * mounted here. */
+  mountRoutes?: (app: express.Express) => void;
 }
 
 /** `readyState`'s `OPEN` value (the standard WebSocket constants:
@@ -300,8 +309,16 @@ export interface RunningServer {
   close(): Promise<void>;
 }
 
-function buildApp(staticDir: string): express.Express {
+function buildApp(staticDir: string, mountRoutes?: (app: express.Express) => void): express.Express {
   const app = express();
+  // Sprint 019 ticket 004: a caller-supplied hook to register additional
+  // routes *before* the static-file/SPA catch-all below -- Express
+  // matches routes in registration order, so anything specific (e.g. the
+  // MCP Streamable HTTP endpoint `cli.ts` mounts here) must be wired
+  // before the `app.get(/.*/, ...)` catch-all exists, or it would never
+  // be reached. This module has no MCP-specific knowledge of its own --
+  // see {@link StartServerOptions.mountRoutes}'s own doc comment.
+  mountRoutes?.(app);
   if (existsSync(staticDir)) {
     app.use(express.static(staticDir));
     app.get(/.*/, (_req, res) => {
@@ -517,7 +534,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   // network flash, reported back as `ERR busy` -- see `runNetworkFlashTask`).
   const flashOverMbflashFn = options.flashOverMbflash ?? defaultFlashOverMbflash;
 
-  const app = buildApp(staticDir);
+  const app = buildApp(staticDir, options.mountRoutes);
   const httpServer = createServer(app);
   const createWebSocketServer =
     options.createWebSocketServer ?? ((server, maxPayload) => new WebSocketServer({ server, maxPayload }));

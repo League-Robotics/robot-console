@@ -2,7 +2,7 @@
 id: '004'
 title: Make request_flash's outcome recoverable after a client timeout, and harden
   it against a dropped connection
-status: open
+status: in-progress
 use-cases:
 - SUC-006
 depends-on: []

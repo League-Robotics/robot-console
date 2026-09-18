@@ -44,7 +44,13 @@ function fakeDeps() {
   }) as unknown as StartRuntimeOptions["startFirmwareWatcher"];
 
   let capturedHarvesterDeps: HarvesterDeps | undefined;
-  const fakeHarvester = { marker: "fake-harvester" };
+  // Sprint 019 ticket 003: `stop()` is now part of `HarvesterAttach`
+  // (`connect/connector.ts`) -- this fake carries one, pushed onto the
+  // same shared `calls` ledger every other collaborator's own stop uses,
+  // so the "startRuntime -- stop()" ordering suite below can assert
+  // where it lands relative to the others.
+  const harvesterStopMock = vi.fn(() => calls.push("harvester.stop"));
+  const fakeHarvester = { marker: "fake-harvester", stop: harvesterStopMock };
   const createHarvesterMock = vi.fn((_store: unknown, deps: HarvesterDeps) => {
     calls.push("createHarvester");
     capturedHarvesterDeps = deps;
@@ -144,6 +150,7 @@ function fakeDeps() {
     startFirmwareWatcherMock,
     reconcilerStopMock,
     relaySweeperStopMock,
+    harvesterStopMock,
     uninstallMock,
     openStoreWithImportsMock,
     startUsbWatcherMock,
@@ -303,7 +310,7 @@ describe("startRuntime -- telemetry fan-out", () => {
 });
 
 describe("startRuntime -- stop()", () => {
-  it("stops the backstop, the reconciler, the relay sweeper, all three watchers, then closes the store, in that order", async () => {
+  it("stops the backstop, the reconciler, the relay sweeper, the harvester, all three watchers, then closes the store, in that order", async () => {
     const f = fakeDeps();
     const runtime = startRuntime(f.options);
     f.calls.length = 0; // only care about stop()'s own ordering from here
@@ -311,13 +318,16 @@ describe("startRuntime -- stop()", () => {
     // Ticket 016-008: stop() now awaits the relay sweeper's own stop()
     // (which itself awaits every in-flight pass's cleanup) before
     // continuing on to the watchers and the store -- see runtime.ts's
-    // own Runtime.stop doc comment.
+    // own Runtime.stop doc comment. Ticket 019-003: the harvester's own
+    // `stop()` lands right after the sweeper's, still before every
+    // watcher and the store.
     await runtime.stop();
 
     expect(f.calls).toEqual([
       "uninstallUnhandledRejectionBackstop",
       "reconciler.stop",
       "relaySweeper.stop",
+      "harvester.stop",
       "usbWatcher.stop",
       "mdnsWatcher.stop",
       "firmwareWatcher.stop",
@@ -335,6 +345,7 @@ describe("startRuntime -- stop()", () => {
     expect(f.uninstallMock).toHaveBeenCalledTimes(1);
     expect(f.reconcilerStopMock).toHaveBeenCalledTimes(1);
     expect(f.relaySweeperStopMock).toHaveBeenCalledTimes(1);
+    expect(f.harvesterStopMock).toHaveBeenCalledTimes(1);
     expect(f.usbStopMock).toHaveBeenCalledTimes(1);
     expect(f.mdnsStopMock).toHaveBeenCalledTimes(1);
     expect(f.firmwareStopMock).toHaveBeenCalledTimes(1);
@@ -361,7 +372,15 @@ describe("startRuntime -- disableSweep (018-005 Step 0b)", () => {
     await expect(runtime.stop()).resolves.toBeUndefined();
 
     expect(f.relaySweeperStopMock).not.toHaveBeenCalled();
-    expect(f.calls).toEqual(["uninstallUnhandledRejectionBackstop", "reconciler.stop", "usbWatcher.stop", "mdnsWatcher.stop", "firmwareWatcher.stop", "store.close"]);
+    expect(f.calls).toEqual([
+      "uninstallUnhandledRejectionBackstop",
+      "reconciler.stop",
+      "harvester.stop",
+      "usbWatcher.stop",
+      "mdnsWatcher.stop",
+      "firmwareWatcher.stop",
+      "store.close",
+    ]);
   });
 
   it("starts the sweeper when disableSweep: false is passed explicitly", () => {

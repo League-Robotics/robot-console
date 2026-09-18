@@ -62,8 +62,9 @@
  * backstop first (nothing should still be marking links failed once
  * everything else is stopping), the reconciler (stops scheduling new
  * jobs — does not close any already-open session, mirroring every
- * watcher's own `stop()` contract), the relay sweeper, all three
- * watchers, then the store.
+ * watcher's own `stop()` contract), the relay sweeper, the harvester
+ * (ticket 019-003 — clears every attached session's `pollStatus`
+ * interval), all three watchers, then the store.
  *
  * Every collaborator is injectable via {@link StartRuntimeOptions},
  * mirroring `cli.ts`'s own `CliDeps` seam ("real defaults, fakes in
@@ -139,10 +140,13 @@ export interface Runtime {
    * relay sweeper (awaited — ticket 016-008: its own `stop()` now waits
    * for every in-flight per-relay pass's cleanup before resolving, so
    * this method must await it too, or the store below could still close
-   * out from under a pass's still-running `finally` block), all three
-   * watchers, uninstalls the unhandled-rejection backstop, and closes
-   * the store. Does not close any already-open session — mirrors the
-   * reconciler's own `stop()` contract (this module's doc comment). */
+   * out from under a pass's still-running `finally` block), the
+   * harvester (sprint 019 ticket 003, SUC-003: every attached session's
+   * `pollStatus` interval, so a stray tick can never write to the store
+   * below once it closes), all three watchers, uninstalls the
+   * unhandled-rejection backstop, and closes the store. Does not close
+   * any already-open session — mirrors the reconciler's own `stop()`
+   * contract (this module's doc comment). */
   stop(): Promise<void>;
 }
 
@@ -370,6 +374,17 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
       // mid-`finally` (the same "database is not open" unhandled
       // rejection relaySweeper.test.ts's own flake surfaced).
       await relaySweeperHandle.stop();
+      // Sprint 019 ticket 003 (SUC-003; issue
+      // `harvester-has-no-teardown-seam.md`): symmetrical fix for the
+      // harvester's own `pollStatus` interval, found at sprint 018's own
+      // close gate ("database is not open" thrown from a bare timer
+      // callback via `Store.reconcilerRows`, sprint 018 ticket 011's own
+      // *test*-teardown fix). No in-flight work to await here (see
+      // `HarvesterAttach.stop`'s own doc comment) -- calling it merely
+      // clears every attached session's timer and makes each one's own
+      // `fail()` inert, so a poll tick that would otherwise land after
+      // `store.close()` below can never write to it.
+      harvester.stop();
       usbHandle.stop();
       mdnsHandle.stop();
       firmwareHandle.stop();

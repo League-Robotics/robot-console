@@ -176,6 +176,23 @@ export interface ConnectedSession {
  * changes this module's own signature. */
 export interface HarvesterAttach {
   attach(session: ConnectedSession): void;
+  /** Sprint 019 ticket 003 (SUC-003; issue
+   * `harvester-has-no-teardown-seam.md`): stop every still-attached
+   * session's `pollStatus` interval and make its own `fail()` inert
+   * afterward, so neither a stray poll tick nor a late `link.onClose`
+   * can write to a store this seam's owner is about to close —
+   * `runtime.ts`'s own `stop()` calls this before `store.close()`,
+   * modeled directly on `watchers/relaySweeper.ts`'s own `stop()`
+   * (016-008): "this `store.close()` below can never again race a
+   * [timer] still mid-`finally`." Idempotent — safe to call more than
+   * once, and safe to call even if no session was ever attached.
+   * Synchronous, unlike the sweeper's own `stop()`: every attached
+   * session's `pollStatus` is driven off a bare `setInterval` with no
+   * awaited work inside it, so clearing the timer and flipping each
+   * session's own in-memory "failed" guard needs no awaiting — see
+   * `connect/harvester.ts`'s `createHarvester` for the real
+   * implementation. */
+  stop(): void;
 }
 
 /** Exported (ticket 016-002) so `connect/relayBridger.ts` can reuse the
@@ -183,6 +200,10 @@ export interface HarvesterAttach {
 export const NO_OP_HARVESTER: HarvesterAttach = {
   attach(): void {
     // Stubbed until ticket 003 — see the module doc comment.
+  },
+  stop(): void {
+    // Nothing was ever attached through this stub -- see `attach`'s own
+    // doc comment.
   },
 };
 

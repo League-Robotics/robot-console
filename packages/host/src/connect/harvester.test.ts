@@ -544,3 +544,115 @@ describe("createHarvester -- STATUS poll defers to a pending foreign query (018-
     expect(statusWriteCount(stream)).toBeGreaterThan(statusCountBeforeForeignQuery);
   });
 });
+
+// ---------------------------------------------------------------------
+// Sprint 019 ticket 003 (SUC-003; issue
+// `harvester-has-no-teardown-seam.md`): `HarvesterAttach` previously
+// exposed no `stop()` at all, so nothing could clear a session's
+// `pollStatus` interval (or make its own `fail()` inert) from outside
+// this module. This is the production half of the gap sprint 018's own
+// close-gate incident surfaced -- the *test*-teardown half (018-011,
+// `afterEach` above) already fixed the symptom in this suite; these
+// tests cover the seam itself. Deliberately written so that reverting
+// `stop()`'s own body to a no-op (while leaving the method in place)
+// makes the first two tests fail -- confirmed locally by temporarily
+// changing `createHarvester`'s returned `stop()` to an empty function
+// and re-running this file: both "never fires again" assertions failed
+// (`stream.writes.length` grew past `writesBeforeStop`, and
+// `setLinkStateSpy` recorded an `unresponsive` call), exactly the
+// regression this ticket asks for. Restored before committing.
+// ---------------------------------------------------------------------
+describe("createHarvester -- stop() (sprint 019 ticket 003)", () => {
+  it("clears the poll timer and makes fail() inert -- a tick that would otherwise mark the link unresponsive after stop() never touches the store again", async () => {
+    const store = seededStore();
+    const setLinkStateSpy = vi.spyOn(store, "setLinkState");
+    const { link, stream } = await connectedLink(); // never answers STATUS
+    // statusPollIntervalMs: 50, missedPollLimit: 2 -- attach()'s own
+    // synchronous first pollStatus() call sends the first STATUS
+    // (pollMisses stays 0, nothing missed yet); without this ticket's
+    // fix, the tick at t ~= 50ms would count one miss and the tick at
+    // t ~= 100ms would reach the limit and call fail(). stop() below
+    // runs at t ~= 20ms, comfortably before either.
+    const harvester = createHarvester(store, { statusPollIntervalMs: 50, missedPollLimit: 2 });
+    harvester.attach(session(link));
+    // Let attach()'s own initial "ID" then "STATUS" writes actually
+    // clear the write pacer's own 10ms-apart chain (LineLink's default
+    // pace) before capturing the baseline stop() must hold steady
+    // against -- comfortably before the first poll tick at t ~= 50ms.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const writesBeforeStop = stream.writes.length;
+    expect(writesBeforeStop).toBeGreaterThan(0);
+
+    harvester.stop();
+
+    // Advance real time past several poll intervals that would otherwise
+    // have fired (t ~= 50ms, 100ms, 150ms -- well past when the watchdog
+    // would have declared the link dead and written `unresponsive` at
+    // the second one). Without stop()'s own clearInterval, this is
+    // exactly the window sprint 018's own incident crashed in: a
+    // `pollStatus` tick landing after the owner considered this
+    // harvester done.
+    await new Promise((resolve) => setTimeout(resolve, 170));
+
+    // No further STATUS writes went out -- the interval is actually
+    // cleared, not merely made a no-op that still fires forever.
+    expect(stream.writes.length).toBe(writesBeforeStop);
+    // fail() never ran: the store was never told this link is
+    // unresponsive.
+    expect(setLinkStateSpy.mock.calls.some(([input]) => input.state === "unresponsive")).toBe(false);
+    expect(store.snapshotRows().links.find((l) => l.id === "link-1")?.state).not.toBe("unresponsive");
+  });
+
+  it("a late link close after stop() never writes to the store either", async () => {
+    const store = seededStore();
+    const setLinkStateSpy = vi.spyOn(store, "setLinkState");
+    const { link, stream } = await connectedLink();
+    const harvester = createHarvester(store, { statusPollIntervalMs: 0 });
+    harvester.attach(session(link));
+
+    harvester.stop();
+    stream.emitClose();
+    await flush();
+
+    expect(setLinkStateSpy.mock.calls.some(([input]) => input.state === "unresponsive")).toBe(false);
+    expect(store.snapshotRows().links.find((l) => l.id === "link-1")?.state).not.toBe("unresponsive");
+  });
+
+  it("is safe to call even after the store it was built against has already closed -- runtime.ts's own ordering (harvester.stop() before store.close())", async () => {
+    const store = seededStore();
+    const { link } = await connectedLink(); // never answers STATUS
+    const harvester = createHarvester(store, { statusPollIntervalMs: 10, missedPollLimit: 2 });
+    harvester.attach(session(link));
+
+    harvester.stop();
+    store.close();
+    activeStores.delete(store); // already closed -- afterEach must not double-close it
+
+    // The pending pollTimer (had it survived stop()) would have fired
+    // inside this window and thrown "database is not open" out of a
+    // bare timer callback -- exactly sprint 018's own close-gate
+    // incident. Nothing should throw here; vitest fails the run on an
+    // uncaught exception from a timer callback exactly the way the
+    // original incident did.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  });
+
+  it("is idempotent -- calling it twice is harmless", async () => {
+    const store = seededStore();
+    const { link } = await connectedLink();
+    const harvester = createHarvester(store, { statusPollIntervalMs: 5 });
+    harvester.attach(session(link));
+
+    expect(() => {
+      harvester.stop();
+      harvester.stop();
+    }).not.toThrow();
+  });
+
+  it("is harmless to call on a harvester with no session ever attached", () => {
+    const store = seededStore();
+    const harvester = createHarvester(store);
+
+    expect(() => harvester.stop()).not.toThrow();
+  });
+});

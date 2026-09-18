@@ -1,5 +1,13 @@
 ---
-status: pending
+status: in-progress
+sprint: 019
+tickets:
+- 019-004
+- 019-005
+- 019-006
+- 019-007
+- 019-008
+- 019-009
 ---
 
 # MCP server for robot connections, sharing the robot console's library and database

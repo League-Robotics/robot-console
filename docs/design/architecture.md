@@ -412,3 +412,123 @@ satisfy is `docs/reviews/2026-09-11/review-ui.md` §1.
 Telemetry or console-line persistence in the DB; multi-host coordination
 beyond the existing mbrelay registry; authentication; any change to the
 robot firmware.
+
+## 13. MCP subsystem (sprint 019)
+
+Consolidated from sprint 019's own `sprint.md` (tickets 004-008), per
+this project's `consolidate-architecture` convention — this section
+synthesizes the design those tickets settled on rather than restating
+`sprint.md`'s own Architecture section verbatim.
+
+### 13.1 Purpose and boundary
+
+An MCP (Model Context Protocol) tool surface lets an external agent
+(Claude Code or any other MCP client) inspect devices, open/close
+sessions, send commands, and start motion/flashing — through the exact
+same store, connector, and reconciler this document already describes,
+never a parallel path. `mcp/server.ts` owns transport wiring and tool
+registration only; every tool delegates the actual device/link/session
+logic to the same collaborators §3/§8 already describe. This is a bolt-on
+tool surface, not a second host.
+
+### 13.2 Transport: Streamable HTTP, not stdio
+
+Mounted at `POST/GET/DELETE /mcp` on the *existing* Express `app` (the
+same one §9's wire contract server binds to), on `127.0.0.1` only —
+never a second process, which would recreate the exact "two processes
+fighting over one port/lease" shape §7 already fixed once, applied to
+the whole host. `@modelcontextprotocol/sdk` 1.30.0 (pinned). A
+`Mcp-Session-Id`-keyed map of `{server, transport}` pairs is kept for
+the process's lifetime once a client's `initialize` negotiates one — no
+eviction policy yet (a long-lived agent session, not a multi-tenant
+server). The SDK's own `localhostHostValidation()` middleware rejects
+any request whose `Host` header names anything but
+`localhost`/`127.0.0.1`/`[::1]` — belt and suspenders on top of the
+`127.0.0.1` bind. Remote/non-localhost MCP access is out of scope.
+
+### 13.3 Tool categories
+
+| Category | Tools | Module |
+|---|---|---|
+| Inspect | `list_devices`, `get_device_status` | `mcp/tools/inspect.ts` |
+| Connect | `open_session`, `close_session`, `send_command` | `mcp/tools/connect.ts` |
+| Drive | `request_drive` | `mcp/tools/drive.ts` |
+| Flash | `request_flash` | `mcp/tools/flash.ts` |
+
+Inspect tools read the same `buildSnapshot`-shaped projection §9
+describes (`devices[]`/`unassigned`, now including each device's
+`recentAgentActions` — §13.4). Connect tools call the same
+reconciler `requestOpen`/`requestClose`/`sessions.get` the UI's own
+WS handlers use (§8) — an MCP-opened session is indistinguishable, at
+the connector/reconciler layer, from a browser-opened one. `send_command`
+rejects the seven gated motion-starting verbs (`GATED_MOTION_VERBS`,
+shared with `request_drive`'s own allowlist so the two sets can never
+drift apart), directing the caller to `request_drive` instead; STOP/ESTOP
+and every other verb always go through `send_command` unconditionally.
+
+**No approval step, anywhere.** An early design (this sprint's own
+planning phase) considered a `pending_actions` approve/deny/expire gate
+for `request_drive`/`request_flash`. It was dropped before
+implementation (`sprint.md`'s Architecture Revision, tickets 006-008):
+both tools validate their request and execute it — immediately,
+unconditionally, the instant validation passes. `request_drive` and
+`request_flash` are simply the correct, validating entry points for
+motion-starting verbs and firmware flashes, respectively; there is
+nothing to wait on and nothing to poll.
+
+### 13.4 Audit and visibility: `agent_actions`
+
+Every executed `request_drive`/`request_flash` call — success or
+failure — writes exactly one row to a new `agent_actions` table
+(`mcp/agentActionLog.ts`): `kind` (`'drive' | 'flash'`), `linkId`/
+`deviceId`, `caller`, `params`, `executedAt`, `result`
+(`'sent' | 'failed'`), `resultReason`. A call rejected before reaching
+`sendCommand`/`startFlash` (non-allowlisted verb, malformed fields, an
+unflashable target) writes **no** row — the audit log records what
+actually reached the wire/board, not every attempt. `caller` is read
+from the MCP client's own `initialize` handshake
+(`clientInfo.name` — `server.server.getClientVersion()`), falling back
+to the literal string `"unknown"` (never `null`/`undefined`, since the
+column is `NOT NULL`) for a server instance that never itself processed
+`initialize` (a test harness invoking a tool's handler directly, mainly).
+
+Three places surface this log, all reading real `agent_actions` rows,
+never a parallel notion of "recent activity":
+
+- **`sessions` table gains `origin`/`caller`** (`'ui' | 'mcp'`, plus the
+  caller name): set when a session opens, read by the UI's own
+  `FrontPage.tsx` (`DeviceConnectionRow`, inside each connection chip's
+  hover/focus popover) to show `Agent: <caller>` on an MCP-opened
+  session exactly where a browser-opened one already shows its own
+  state — the stakeholder's original ask ("it shows up in the robot
+  console"), not a gate.
+- **`DiagnosticsPanel`'s "Recent agent activity"** (`data-testid=
+  "recent-agent-activity"`, on each device's Diagnostics tab) lists a
+  device's own `recentAgentActions` (bounded, most-recent-first), or an
+  explicit empty state ("No agent activity recorded for this device
+  yet.") for a device no agent has ever touched — never a stray box, never
+  an unresolved spinner.
+- **`FlashControls`'s flash-in-progress overlay** carries `origin`/
+  `caller` for the operation's duration (`link.flash.origin === "mcp"`)
+  — ephemeral, server-side-only state layered on top of the projection
+  by `server.ts` (same "not a DB table" status §9 already documents for
+  `SnapshotLink.flash`/`SnapshotRelay.bridging`), showing `Agent:
+  <caller>` on the exact same control a browser-initiated flash uses.
+
+### 13.5 Verification note (ticket 009, 2026-09-18)
+
+`packages/host/src/mcp/endToEnd.test.ts` exercises the full
+inspect → connect → drive → flash path against a fake reconciler/session
+and a real `:memory:` store, through the exact production wiring
+(`createDefaultMcpServer`) — not a hand-assembled subset of tools. A
+live smoke test against a real running host and a real
+`@modelcontextprotocol/sdk` client confirmed the same path end to end on
+real hardware: `request_drive` reached a real robot's wire (`tigez`, via
+its mbserial bridge) with a durably attributed `agent_actions` row, and
+the UI's own `Agent: <caller>`/`Recent agent activity` surfaces were
+confirmed live in a real browser. See that ticket's closing notes for
+the full evidence trail and one still-open carry-forward defect (WiFi
+on-demand link discovery, §6.2/issue
+`bench-wifi-robot-discovery-waits-for-announcement.md` — unrelated to
+this subsystem's own design, but discovered while verifying SUC-002
+alongside it).

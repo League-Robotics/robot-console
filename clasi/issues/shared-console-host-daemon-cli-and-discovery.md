@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '021'
 ---
 
 # One shared console host on the bench LAN: a daemon CLI to start/stop it, and discovery so everyone else attaches

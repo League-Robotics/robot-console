@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '020'
 ---
 
 # WiFi robot discovery waits for the mDNS announcement interval instead of resolving on demand

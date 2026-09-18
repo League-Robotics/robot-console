@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '021'
 ---
 
 # `request_flash` outlives a default MCP client timeout, so the awaited outcome never reaches the caller

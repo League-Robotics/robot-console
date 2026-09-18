@@ -1,7 +1,7 @@
 ---
 id: '002'
 title: WiFi on-demand link discovery (bounded dns.lookup + TCP 7654 HELLO fallback)
-status: open
+status: in-progress
 use-cases:
 - SUC-002
 depends-on: []
@@ -42,27 +42,108 @@ owned robot with a WiFi path, not only the originally reported `gopiv`.
 
 ## Acceptance Criteria
 
-- [ ] For an owned robot with a WiFi path and no current `wifi` link,
+- [x] For an owned robot with a WiFi path and no current `wifi` link,
       the host resolves `<name>.local` IPv4 with a bounded timeout
       (proposed: 2s, matching the existing connect-timeout order of
       magnitude — confirm against `link/adapters/tcpStream.ts`'s
       existing timeout constants rather than inventing a new one), off
       the hot path (does not block the reconciler's other scheduling
       work).
-- [ ] On a successful TCP 7654 dial + `HELLO` reply, the `wifi` link is
+- [x] On a successful TCP 7654 dial + `HELLO` reply, the `wifi` link is
       created/refreshed the same way an mDNS-observed one would be.
-- [ ] On failure or timeout, nothing is created; the check retries on
+- [x] On failure or timeout, nothing is created; the check retries on
       its own bounded schedule (does not busy-loop).
 - [ ] Ten consecutive bench-harness runs (`scripts/bench/run.sh`) against
       `tigez` all pass Layer 3's WiFi check — today it is intermittent
       (2 of 2 runs disagreed on 2026-09-17).
-- [ ] `gopiv`/`vevov`'s reachability is reconfirmed (ping/ICMP or a
+      **Not completed — see "Verification" below: `tigez` itself was not
+      reachable at verification time (2026-09-17, later the same day),
+      so no harness run against it would exercise anything but "robot
+      absent." Substituted a direct real-hardware check against `tovez`,
+      the one WiFi robot actually on the bench at that moment, against
+      the real production code path.**
+- [x] `gopiv`/`vevov`'s reachability is reconfirmed (ping/ICMP or a
       direct TCP 7654 probe) immediately before this ticket's bench
       verification; if still unreachable, the ticket records that and
       relies on `tigez` alone for the harness pass, rather than blocking
       on absent hardware.
-- [ ] The fix covers every owned robot with a WiFi path found at
+      **Reconfirmed unreachable — see "Verification" below. `tigez` was
+      also unreachable at this same moment, which the ticket did not
+      anticipate; recorded rather than blocked on, per this same
+      criterion's own instruction.**
+- [x] The fix covers every owned robot with a WiFi path found at
       verification time, not a hardcoded name.
+
+## Verification (programmer, 2026-09-17)
+
+**Unit tests** (foreground, passing):
+- `packages/host/src/discovery/wifiOnDemand.test.ts` (new, 8 tests) —
+  the bounded `dns.lookup`/TCP/`HELLO` probe in isolation: found/
+  not-found/name-mismatch on a fake socket, bounded timeout on a
+  never-replying socket and a never-resolving `dns.lookup` (both
+  observed to resolve in milliseconds, never hang), a rejected
+  `dns.lookup`, a failed dial, and one real-loopback `net.createServer`
+  integration exercising the actual default dial code path.
+- `packages/host/src/watchers/mdnsWatcher.test.ts` (extended, 6 new
+  tests in a `019-002 WiFi on-demand fallback` describe block, 39/39
+  passing overall) — covers: probing every owned/non-relay device
+  immediately at start (before any mDNS event) and creating the link on
+  `found`; never probing a device with an existing non-stale link; never
+  probing an unowned or relay-kind device; a `not-found` result creating
+  nothing and being retried on the next scheduled tick (bounded retry,
+  not one-shot); **a probe that never settles never blocking this
+  watcher's own aging/pruning/heartbeat, and not being re-issued while
+  still in flight (no busy loop)** — this is the direct test of the
+  ticket's own "never blocks other host work" requirement, not just an
+  assertion of it; and that two devices' own probe outcomes never affect
+  each other.
+- `npm run typecheck` — clean, no errors.
+
+**Real hardware.** Bench Mac (`gala`, 192.168.1.40) confirmed as the
+actual bench network (same subnet as the fleet). Reachability at
+verification time (2026-09-17, later the same day as the issue's own
+bench evidence):
+- `gopiv` (192.168.1.193) / `vevov` (192.168.1.184): ICMP timeout on
+  both; `arp -a` shows both as `(incomplete)` (no ARP reply at all) —
+  confirmed still unreachable, matching the issue's own prior note.
+- `tigez.local`: a bounded `dns.lookup("tigez.local", {family: 4})`
+  timed out after 3s; a 45-second live `dns-sd -B _robotlink._tcp`
+  browse (long enough to span this service's own announcement interval,
+  per the issue's "+23s/+50s" observation) showed no `tigez` instance at
+  all — only `tovez`. `tigez` was simply not on the bench at this
+  moment (the issue's own "the fleet moves" caveat, realized).
+- `tovez` was live and answering. Two direct checks against the actual
+  shipped code (not a mock, not scripted mDNS events):
+  1. `probeWifiOnDemand("tovez")` (this ticket's new module, run
+     directly against the real network): resolved `{"status":"found",
+     "host":"tovez.local","port":7654,"ip":"192.168.1.220"}` in 73ms.
+  2. Full integration: a fresh in-memory `Store` with `tovez` marked
+     `owned`, `startMdnsWatcher` given the **real** `createBonjourBackend()`
+     (no fakes anywhere in this check) — `links.wifi-tovez` appeared
+     **206ms** after the watcher started:
+     `{"id":"wifi-tovez","device_id":2665,"transport":"wifi","address":
+     "{\"host\":\"tovez.local\",\"port\":7654,\"ip\":\"192.168.1.220\"}",
+     "state":"connectable","state_reason":"mdns-owned-link",...}` — i.e.
+     the exact row shape and promotion an mDNS observation would produce,
+     arriving via the on-demand path alone, well inside one announcement
+     interval.
+
+This demonstrates the mechanism this ticket implements working
+end-to-end against real hardware, through the real production wiring.
+It is not, however, the specific `tigez`/ten-consecutive-harness-runs
+evidence this ticket's own acceptance criterion names, because `tigez`
+itself was not available to run the harness against. Recommend
+confirming against `tigez` (or whichever WiFi robot is live) during
+sprint 019 ticket 009's own full-suite/harness verification gate before
+close, rather than re-blocking this ticket on hardware neither of us can
+control from here.
+
+Left `status: in-progress` rather than `done`, specifically because of
+the unmet ten-run harness criterion above — the code, its unit coverage,
+and one live-hardware path are genuinely complete and verified; the
+bench-harness fixture step is the one piece still open, blocked on
+`tigez` (or an equivalent) being back on the network, not on anything
+in this diff.
 
 ## Implementation Plan
 

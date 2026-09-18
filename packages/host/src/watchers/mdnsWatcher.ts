@@ -135,6 +135,47 @@
  * remembered) simply never touches anything this way — everything ages
  * off `up`/`onServiceChange` alone, exactly as before this fix.
  *
+ * ## WiFi on-demand fallback (019-002)
+ *
+ * The `_robotlink._tcp`/`._udp` responder the two sections above
+ * describe only ever sends **unsolicited periodic** announcements — it
+ * never answers a query, so an owned WiFi robot can go tens of seconds
+ * (or longer — purely a function of where host start falls relative to
+ * the robot's own announcement interval) with no `links(wifi)` row at
+ * all, since nothing in the passive path above ever runs until an
+ * announcement actually arrives. Confirmed live and intermittent against
+ * `tigez` on 2026-09-17: two full bench-harness runs 15 minutes apart, no
+ * discovery code changed between them, disagreed about whether its
+ * `wifi` link existed at Layer 3 probe time.
+ *
+ * `triggerWifiOnDemandProbes` (below) is this watcher's active
+ * counterpart: for every owned, non-relay device with no current
+ * (non-`stale`) `wifi` link, it kicks off `discovery/wifiOnDemand.ts`'s
+ * bounded `dns.lookup(<name>.local, {family: 4})` + TCP-7654-`HELLO`
+ * probe, **unawaited** — this function itself never returns a promise the
+ * caller waits on, so it can never block this watcher's own synchronous
+ * per-tick work (`browser.update()` calls, aging/pruning, the heartbeat)
+ * or any other host component's scheduling. A successful probe upserts
+ * the `wifi` link exactly the way an mDNS-observed one would
+ * (`upsertLinkAndDetectChange` + `promoteOwnedLinkIfDiscovered`, the same
+ * two calls `handleWifi` itself makes); a failed or timed-out probe
+ * creates nothing and is simply retried the next time this function
+ * runs. `wifiOnDemandInFlight` caps this at one outstanding probe per
+ * device name at a time, which combined with this function only ever
+ * being called from a bounded schedule (once at start, then once per
+ * `browseCycle` tick — never from a tighter loop) is what keeps this
+ * from ever busy-looping: a name that is not currently being probed and
+ * does not yet have a live link gets at most one new probe per tick,
+ * however many ticks that takes.
+ *
+ * A device with no actual WiFi path (a USB-only or relay-only owned
+ * robot) is not filtered out in advance — there is no way to know that
+ * without probing, and this ticket's own scope note is "every owned
+ * robot with a WiFi path found at verification time, not a hardcoded
+ * name" — so such a device simply fails its `dns.lookup` every pass
+ * (fast, since there is no such `.local` record) and never gets a link,
+ * exactly as if this fallback did not run for it at all.
+ *
  * ## Injectable seams
  *
  * `deps.backend` is a required {@link MdnsBackend} (this ticket does not
@@ -151,6 +192,7 @@ import { nameToValue } from "@robot-console/protocol";
 import { isLocalMdnsService } from "../localHost.js";
 import { Store, type Transport } from "../store/index.js";
 import type { MdnsBackend, MdnsBrowser, MdnsFindOptions, MdnsService } from "../discovery/mdnsDiscovery.js";
+import { probeWifiOnDemand, type WifiOnDemandResult } from "../discovery/wifiOnDemand.js";
 
 /** How often every browsed type's `browser.update()` re-issues its PTR
  * query, so a missed boot announcement is recovered within one
@@ -249,6 +291,12 @@ export interface MdnsWatcherDeps {
   /** Wall-clock reader for every store timestamp and TTL comparison.
    * Defaults to `Date.now`. */
   now?: () => number;
+  /** 019-002's active WiFi-link-creation fallback — see the module doc
+   * comment's own "WiFi on-demand fallback" section. Defaults to the real
+   * `discovery/wifiOnDemand.ts` `probeWifiOnDemand`, which does real
+   * DNS/TCP I/O; tests inject a fully synthetic fake so this suite never
+   * needs a real `.local` record or a real socket. */
+  probeWifiOnDemand?: (name: string) => Promise<WifiOnDemandResult>;
 }
 
 export interface MdnsWatcherOptions {
@@ -427,6 +475,77 @@ export function startMdnsWatcher(
     const row = store.snapshotRows().links.find((link) => link.id === linkId);
     if (row?.state === "discovered") {
       store.setLinkState({ id: linkId, state: "connectable", at: now(), reason: "mdns-owned-link" });
+    }
+  }
+
+  // -------------------------------------------------------------------
+  // 019-002: WiFi on-demand link discovery -- see the module doc
+  // comment's own "WiFi on-demand fallback" section.
+  // -------------------------------------------------------------------
+
+  const probeWifiOnDemandDep = deps.probeWifiOnDemand ?? probeWifiOnDemand;
+
+  /** Names with a probe currently in flight -- see the module doc
+   * comment's own "WiFi on-demand fallback" section for why this is what
+   * keeps this fallback from ever busy-looping. */
+  const wifiOnDemandInFlight = new Set<string>();
+
+  /** Whether `name` already has a `links(wifi)` row this watcher
+   * considers live -- present and not aged to `stale`. A `stale` row is
+   * exactly "no current wifi link" for this fallback's own purposes,
+   * same as {@link plan}'s (in `connect/reconciler.ts`) own
+   * `isAutoConnectEligible` never treating `stale` as connectable. */
+  function hasLiveWifiLink(name: string): boolean {
+    const row = store.snapshotRows().links.find((link) => link.id === `wifi-${name}`);
+    return row !== undefined && row.state !== "stale";
+  }
+
+  /**
+   * For every owned, non-relay device with no current `wifi` link, kick
+   * off (unawaited) a bounded `discovery/wifiOnDemand.ts` probe. Never
+   * throws and never returns a promise the caller needs to wait on --
+   * every promise this starts is chained with its own `.catch`/`.finally`
+   * so a failure can never become an unhandled rejection out of this
+   * watcher's own timer, and `wifiOnDemandInFlight` is always cleared on
+   * settlement so a later call (the next tick) can retry. Safe to call
+   * from both the immediate at-start kick and every `browseCycle` tick
+   * without ever double-probing the same name concurrently.
+   */
+  function triggerWifiOnDemandProbes(): void {
+    const devices = store.snapshotRows().devices.filter((device) => Number(device.owned) === 1 && device.kind !== "relay");
+    for (const device of devices) {
+      // `StoreSnapshot.devices` is a low-level `Record<string, unknown>[]`
+      // passthrough (store/index.ts's own doc comment) -- narrowed here,
+      // never assumed, since this is the first place in this module that
+      // hands a device row's own `name` to something outside the store.
+      const name = device.name;
+      if (typeof name !== "string") {
+        continue;
+      }
+      if (wifiOnDemandInFlight.has(name) || hasLiveWifiLink(name)) {
+        continue;
+      }
+      wifiOnDemandInFlight.add(name);
+      void probeWifiOnDemandDep(name)
+        .then((result) => {
+          if (stopped || result.status !== "found") {
+            return;
+          }
+          const deviceId = uniqueOwnedDeviceIdByName(name);
+          const linkId = `wifi-${name}`;
+          upsertLinkAndDetectChange(linkId, "wifi", { host: result.host, port: result.port, ip: result.ip }, deviceId);
+          promoteOwnedLinkIfDiscovered(linkId, deviceId);
+        })
+        .catch(() => {
+          // `probeWifiOnDemand`'s own contract is "never throws" -- this
+          // is belt-and-suspenders for an injected test double (or a
+          // future change that breaks that contract) so a bug there can
+          // never become an unhandled rejection out of this watcher's
+          // own timer.
+        })
+        .finally(() => {
+          wifiOnDemandInFlight.delete(name);
+        });
     }
   }
 
@@ -649,6 +768,11 @@ export function startMdnsWatcher(
       browser.update?.();
     }
     ageAndPruneOnce();
+    // 019-002: unawaited, on purpose -- see triggerWifiOnDemandProbes's
+    // own doc comment and the module doc comment's "WiFi on-demand
+    // fallback" section for why this must never block the synchronous
+    // work above or below it.
+    triggerWifiOnDemandProbes();
     store.heartbeat(TASK_NAME, now());
   }
 
@@ -656,6 +780,13 @@ export function startMdnsWatcher(
   timer.unref?.();
 
   let stopped = false;
+  // 019-002: also kick off once immediately at start, rather than
+  // waiting for the first requery-interval tick -- otherwise this
+  // fallback would reintroduce a smaller version of the exact gap it
+  // exists to close (an owned WiFi robot with no link for up to one
+  // `requeryIntervalMs` after host start, every single start).
+  triggerWifiOnDemandProbes();
+
   return {
     stop(): void {
       if (stopped) {
@@ -668,6 +799,7 @@ export function startMdnsWatcher(
       }
       unsubscribeAnnounce?.();
       knownByFqdn.clear();
+      wifiOnDemandInFlight.clear();
     },
   };
 }

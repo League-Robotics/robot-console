@@ -950,6 +950,17 @@ function DeviceConnectionRow({
       <span className={link.state === "connected" ? "device-connection-state device-connection-open" : "device-connection-state"}>
         {linkStateText(link, now, device.kind)}
       </span>
+      {link.session?.origin === "mcp" && (
+        // Sprint 019 ticket 005 (SUC-005): an MCP-opened session shows up
+        // here exactly the way a browser-opened one already shows on
+        // this same row -- the stakeholder's own original ask for the
+        // whole MCP feature ("it shows up in the robot console"), not a
+        // gate of any kind. `caller` is the MCP client's own declared
+        // `clientInfo.name`; absent only if that client omitted one.
+        <span className="device-connection-agent" data-testid={`device-link-agent-${link.id}`}>
+          Agent: {link.session.caller ?? "unknown"}
+        </span>
+      )}
       {notice && (
         <span className="device-connection-notice" data-testid={`device-link-notice-${link.id}`} role="status">
           {notice.text}

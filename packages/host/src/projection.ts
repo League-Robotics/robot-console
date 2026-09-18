@@ -291,6 +291,12 @@ function buildLink(link: ProjectionLinkRow, ctx: LinkContext): SnapshotLink {
       // `deviceDisplay.ts`'s `isLinkAnswering`, the "Linked" criterion
       // this field exists for.
       answeredAt: session.answeredAt,
+      // Sprint 019 ticket 005 (SUC-005): MCP caller identity, carried
+      // straight through -- see `wsMessages.ts`'s own `SessionOriginWire`
+      // doc comment for why this is a locally-declared wire type rather
+      // than an import of the store's own `SessionOrigin`.
+      origin: session.origin,
+      caller: session.caller,
     };
   }
   return result;

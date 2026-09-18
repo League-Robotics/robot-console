@@ -1170,6 +1170,86 @@ describe("Store: sessions", () => {
       store.close();
     }
   });
+
+  // Sprint 019 ticket 005 (SUC-005): `origin`/`caller` -- MCP caller
+  // identity. `openSession` itself always writes the `'ui'`/`null`
+  // default (every existing/browser-opened session's own behavior,
+  // unchanged); `setSessionIdentity` is the one write
+  // `connect/sessionOps.ts`'s `openSession` makes on top, for an MCP
+  // caller.
+  it("openSession defaults a fresh session to origin 'ui', caller null", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertLink({ id: "link-1", transport: "usb", address: {}, at: 1 });
+      store.openSession("link-1", 100);
+      const row = store.snapshotRows().sessions[0];
+      expect(row).toMatchObject({ origin: "ui", caller: null });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("setSessionIdentity records an MCP caller's origin/caller on an open session", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertLink({ id: "link-1", transport: "usb", address: {}, at: 1 });
+      store.openSession("link-1", 100);
+      store.setSessionIdentity("link-1", { origin: "mcp", caller: "agent-smith" });
+      const row = store.projectionRows().sessions[0];
+      expect(row).toMatchObject({ origin: "mcp", caller: "agent-smith" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("re-opening a session resets origin/caller back to 'ui'/null, even if it was previously an MCP session", () => {
+    const { store } = freshStore();
+    try {
+      store.upsertLink({ id: "link-1", transport: "usb", address: {}, at: 1 });
+      store.openSession("link-1", 100);
+      store.setSessionIdentity("link-1", { origin: "mcp", caller: "agent-smith" });
+      store.openSession("link-1", 200);
+      const row = store.projectionRows().sessions[0];
+      expect(row).toMatchObject({ origin: "ui", caller: null });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("setSessionIdentity is a no-op (queues no change) when no session is open for the link", async () => {
+    const { store } = freshStore();
+    try {
+      store.upsertLink({ id: "link-1", transport: "usb", address: {}, at: 1 });
+      await nextMacrotask();
+      const received: unknown[] = [];
+      store.onChange((changes) => received.push(changes));
+
+      store.setSessionIdentity("link-1", { origin: "mcp", caller: "agent-smith" });
+      await nextMacrotask();
+
+      expect(received).toHaveLength(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("setSessionIdentity queues no change when the identity already matches (the ordinary 'ui' path never double-broadcasts)", async () => {
+    const { store } = freshStore();
+    try {
+      store.upsertLink({ id: "link-1", transport: "usb", address: {}, at: 1 });
+      store.openSession("link-1", 100);
+      await nextMacrotask();
+      const received: unknown[] = [];
+      store.onChange((changes) => received.push(changes));
+
+      store.setSessionIdentity("link-1", { origin: "ui", caller: null });
+      await nextMacrotask();
+
+      expect(received).toHaveLength(0);
+    } finally {
+      store.close();
+    }
+  });
 });
 
 describe("Store: board ownership", () => {
@@ -1451,6 +1531,8 @@ describe("Store: projectionRows", () => {
           },
           functions: [{ name: "drive" }],
           answeredAt: null,
+          origin: "ui",
+          caller: null,
         },
       ]);
 
@@ -1493,7 +1575,18 @@ describe("Store: projectionRows", () => {
 
       const rows = store.projectionRows();
       expect(rows.sessions).toEqual([
-        { linkId: "link-1", seq: null, pending: null, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null, answeredAt: null },
+        {
+          linkId: "link-1",
+          seq: null,
+          pending: null,
+          lastDone: null,
+          lastDoneReason: null,
+          robotStatus: null,
+          functions: null,
+          answeredAt: null,
+          origin: "ui",
+          caller: null,
+        },
       ]);
     } finally {
       store.close();

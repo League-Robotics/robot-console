@@ -2,7 +2,7 @@
 id: '005'
 title: MCP connect/command tools (open_session, close_session, send_command) and caller
   identity
-status: open
+status: done
 use-cases:
 - SUC-005
 depends-on:
@@ -49,33 +49,33 @@ human clicking Approve).
 
 ## Acceptance Criteria
 
-- [ ] `server.ts`'s `session-open`, `session-close`, and `send-command`
+- [x] `server.ts`'s `session-open`, `session-close`, and `send-command`
       handlers are refactored into standalone functions the WS handlers
       call as thin wrappers; the existing WS-level test suite for these
       three commands passes unchanged (proves no behavior regression).
-- [ ] `sessions` gains `origin` (`'ui' | 'mcp'`, default `'ui'`) and
+- [x] `sessions` gains `origin` (`'ui' | 'mcp'`, default `'ui'`) and
       `caller` (nullable text) columns via the store's existing
       migration mechanism; every existing/browser-opened session
       continues to write `origin: 'ui'`, `caller: NULL`.
-- [ ] `open_session {linkId}` / `{relayLinkId, name}` MCP tool: calls the
+- [x] `open_session {linkId}` / `{relayLinkId, name}` MCP tool: calls the
       extracted `openSession` function, writes `origin: 'mcp'`,
       `caller: <clientInfo.name>` (from the MCP `initialize` handshake)
       on the resulting `sessions` row.
-- [ ] `close_session {linkId}` MCP tool: calls the extracted
+- [x] `close_session {linkId}` MCP tool: calls the extracted
       `closeSession` function.
-- [ ] `send_command {linkId, verb, fields?}` MCP tool: calls the
+- [x] `send_command {linkId, verb, fields?}` MCP tool: calls the
       extracted `sendCommand` function for any verb except the seven
       gated motion verbs, which are rejected with a message naming
       `request_drive`, with no write performed.
-- [ ] The console UI's device card shows an MCP-opened session's origin/
+- [x] The console UI's device card shows an MCP-opened session's origin/
       caller distinctly from a browser session (a small, additive UI
       change — e.g. an "Agent: `<caller>`" label alongside the existing
       "who holds this board" text).
-- [ ] A session opened by MCP can be closed from the browser (existing
+- [x] A session opened by MCP can be closed from the browser (existing
       close affordance) and vice versa; both directions are visible to
       the other side via the existing change-feed/snapshot mechanism,
       with no new polling.
-- [ ] Tool schemas follow the same empty-argument-safe design discipline
+- [x] Tool schemas follow the same empty-argument-safe design discipline
       as ticket 004 (`.claude/rules/tool-call-empty-args.md`).
 
 ## Implementation Plan

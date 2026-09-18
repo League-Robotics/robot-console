@@ -254,6 +254,30 @@ export interface UpdateSessionInput {
   answeredAt?: number | null;
 }
 
+/** `sessions.origin` -- sprint 019 ticket 005 (SUC-005, MCP caller
+ * identity): `'ui'` for a browser-opened session (the default, written
+ * by every pre-existing caller unchanged), `'mcp'` for one an MCP
+ * client opened via `connect/sessionOps.ts`'s `openSession`. See
+ * `migrations/0004-session-origin-caller.ts`'s own doc comment. */
+export type SessionOrigin = "ui" | "mcp";
+
+/** Who opened a session, as {@link Store.setSessionIdentity} writes it
+ * -- `caller` is the MCP client's own declared `clientInfo.name` when
+ * `origin === "mcp"`, `null` for `origin === "ui"` (a browser session
+ * has no such name to carry). */
+export interface SessionIdentity {
+  readonly origin: SessionOrigin;
+  readonly caller: string | null;
+}
+
+/** The identity every `Store.openSession` call writes by default --
+ * every existing call site (`connect/connector.ts`, `connect/
+ * relayBridger.ts`) passes no identity of its own, so a plain re-open
+ * always resets `origin`/`caller` back to this rather than leaving a
+ * stale `'mcp'`/caller behind from whatever this link's *previous*
+ * session happened to be (`Store.openSession`'s own doc comment). */
+export const UI_SESSION_IDENTITY: SessionIdentity = { origin: "ui", caller: null };
+
 export interface SetFirmwareInput {
   kind: "relay" | "robot";
   repo?: string | null;
@@ -411,6 +435,11 @@ export interface ProjectionSessionRow {
   readonly functions: unknown;
   /** See {@link UpdateSessionInput.answeredAt}'s own doc comment. */
   readonly answeredAt: number | null;
+  /** See {@link SessionIdentity}. Always populated by
+   * {@link Store.projectionRows} (`'ui'` by default). */
+  readonly origin: SessionOrigin;
+  /** See {@link SessionIdentity}. */
+  readonly caller: string | null;
 }
 
 /** One `relay_leases` row, as {@link Store.projectionRows} needs it —
@@ -1363,18 +1392,56 @@ export class Store {
       "sessions",
       () => linkId,
       () => {
+        // `origin`/`caller` are explicitly reset to the `'ui'`/`NULL`
+        // default on every open (sprint 019 ticket 005) -- both on a
+        // fresh INSERT (where the column defaults would already give
+        // this) and on the ON CONFLICT re-open branch (where, absent
+        // this, a session that previously carried `Store
+        // .setSessionIdentity`'s `'mcp'`/caller would otherwise keep
+        // showing an agent's name for a session that agent no longer
+        // holds). `connect/sessionOps.ts`'s `openSession` is the only
+        // caller that ever moves a session away from this default,
+        // immediately after this same open, via `setSessionIdentity`.
         this.db
           .prepare(
-            `INSERT INTO sessions (link_id, opened_at)
-             VALUES (?, ?)
+            `INSERT INTO sessions (link_id, opened_at, origin, caller)
+             VALUES (?, ?, 'ui', NULL)
              ON CONFLICT(link_id) DO UPDATE SET
                opened_at = excluded.opened_at,
                seq = NULL, pending = NULL, last_done = NULL, last_done_reason = NULL,
-               robot_status = NULL, functions = NULL, answered_at = NULL`,
+               robot_status = NULL, functions = NULL, answered_at = NULL,
+               origin = 'ui', caller = NULL`,
           )
           .run(linkId, at);
       },
     );
+  }
+
+  /** Sets `sessions.origin`/`sessions.caller` for an already-open session
+   * -- sprint 019 ticket 005's own attribution write, called by
+   * `connect/sessionOps.ts`'s `openSession` immediately after a session
+   * it just (re)opened via {@link openSession} is confirmed live, with
+   * the identity of whoever asked for it (`'ui'`/`null` for the WS path,
+   * `'mcp'`/`clientInfo.name` for an MCP caller). A no-op -- recording no
+   * change at all, matching {@link acquireBoardOwner}'s own
+   * `withConditionalChange` discipline -- when either no session is open
+   * for `linkId` (the open itself never succeeded) or the row already
+   * carries this exact identity (the common case for the WS path's own
+   * default `'ui'`/`null`, which `openSession` above already wrote), so
+   * a browser's ordinary session-open never queues a spurious change-feed
+   * event / snapshot broadcast on top of the one `openSession` itself
+   * already queued. */
+  setSessionIdentity(linkId: string, identity: SessionIdentity): void {
+    this.withConditionalChange("sessions", linkId, () => {
+      const current = this.db.prepare("SELECT origin, caller FROM sessions WHERE link_id = ?").get(linkId) as
+        | { origin: SessionOrigin; caller: string | null }
+        | undefined;
+      if (current === undefined || (current.origin === identity.origin && current.caller === identity.caller)) {
+        return { result: undefined, changed: false };
+      }
+      this.db.prepare("UPDATE sessions SET origin = ?, caller = ? WHERE link_id = ?").run(identity.origin, identity.caller, linkId);
+      return { result: undefined, changed: true };
+    });
   }
 
   /** Merges the given fields into an open session; omitted fields are
@@ -1726,7 +1793,7 @@ export class Store {
     }>;
 
     const sessionRows = this.db
-      .prepare("SELECT link_id, seq, pending, last_done, last_done_reason, robot_status, functions, answered_at FROM sessions")
+      .prepare("SELECT link_id, seq, pending, last_done, last_done_reason, robot_status, functions, answered_at, origin, caller FROM sessions")
       .all() as Array<{
       link_id: string;
       seq: number | null;
@@ -1736,6 +1803,8 @@ export class Store {
       robot_status: string | null;
       functions: string | null;
       answered_at: number | null;
+      origin: SessionOrigin;
+      caller: string | null;
     }>;
 
     const relayLeaseRows = this.db.prepare("SELECT relay_link_id, owner FROM relay_leases").all() as Array<{
@@ -1834,6 +1903,8 @@ export class Store {
         robotStatus: s.robot_status !== null ? (JSON.parse(s.robot_status) as unknown) : null,
         functions: s.functions !== null ? (JSON.parse(s.functions) as unknown) : null,
         answeredAt: s.answered_at,
+        origin: s.origin,
+        caller: s.caller,
       })),
       relayLeases: relayLeaseRows.map((r) => ({ relayLinkId: r.relay_link_id, owner: r.owner })),
       firmware: firmwareRows.map((f) => ({

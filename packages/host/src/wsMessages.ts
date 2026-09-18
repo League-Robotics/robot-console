@@ -154,6 +154,12 @@ export type LinkState =
  * to know that absence-means-derived convention itself. */
 export type RadioSourceWire = "override" | "registry" | "derived";
 
+/** Who opened a session -- mirrors `store/index.ts`'s own `SessionOrigin`
+ * verbatim; see {@link Transport}'s own doc comment for why this is an
+ * independent declaration, not an import. `"ui"` is a browser session;
+ * `"mcp"` is one an MCP client opened (sprint 019 ticket 005, SUC-005). */
+export type SessionOriginWire = "ui" | "mcp";
+
 /** A parsed `status k=v ...` reply (robot firmware `wire_handler.cpp`
  * `execStatus`). `fields` is every `k=v` pair verbatim, order-free; the
  * named booleans are derived host-side from the `flags=<hex>` bitfield
@@ -378,6 +384,19 @@ export interface SnapshotLink {
      * not be updated to keep type-checking; a fixture that omits it is
      * simply never "Linked" under the new criterion. */
     answeredAt?: number | null;
+    /** Sprint 019 ticket 005 (SUC-005): `'ui'` for a session opened from
+     * the browser (the default -- see `store/index.ts`'s
+     * `UI_SESSION_IDENTITY`), `'mcp'` for one an MCP client opened via
+     * `connect/sessionOps.ts`'s `openSession`. Optional (like {@link
+     * answeredAt}) so pre-019-005 snapshot literals need not be updated
+     * to keep type-checking -- a fixture that omits it is simply never
+     * shown as an agent session. */
+    origin?: SessionOriginWire;
+    /** The MCP client's own declared `clientInfo.name` when `origin ===
+     * "mcp"`, `null`/absent otherwise -- what the console's device card
+     * shows alongside the existing "who holds this board" text (ticket
+     * 005's own acceptance criterion). */
+    caller?: string | null;
   };
   /** Present only while a flash is in flight for this link. Flash
    * progress is held in server-side memory, not in the store

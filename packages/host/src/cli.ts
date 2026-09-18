@@ -318,7 +318,10 @@ export async function main(
     // itself invokes (before its static/SPA catch-all route exists)
     // rather than something done to its `app` after the fact.
     mountRoutes: (app) => {
-      startMcpServerFn(app, runtime.store);
+      // Sprint 019 ticket 005: the MCP tool surface now needs the
+      // reconciler too (connect/command tools), not just the store --
+      // see `mcp/server.ts`'s own `McpDeps`.
+      startMcpServerFn(app, { store: runtime.store, reconciler: runtime.reconciler });
     },
   });
   console.log(`robot-console: listening on ${server.url}`);

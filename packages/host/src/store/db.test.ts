@@ -104,11 +104,13 @@ describe("store/db: openStoreDb", () => {
   it("migrates a fresh database (user_version 0) to create every table and index", () => {
     db = openStoreDb({ filePath: dbFile });
 
-    // Sprint 018 ticket 010 added migration 0002 (`sessions.answered_at`)
-    // and ticket 016 added migration 0003 (`devices.common_name`)
-    // alongside 0001 -- a fresh database now lands on user_version 3.
+    // Sprint 018 ticket 010 added migration 0002 (`sessions.answered_at`),
+    // ticket 016 added migration 0003 (`devices.common_name`), and
+    // sprint 019 ticket 005 added migration 0004
+    // (`sessions.origin`/`sessions.caller`) alongside 0001 -- a fresh
+    // database now lands on user_version 4.
     const userVersion = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-    expect(userVersion).toBe(3);
+    expect(userVersion).toBe(4);
 
     expect(listNames(db, "table")).toEqual([...EXPECTED_TABLES].sort());
     expect(listNames(db, "index")).toEqual([...EXPECTED_INDEXES].sort());
@@ -155,7 +157,7 @@ describe("store/db: openStoreDb", () => {
 
     db = openStoreDb({ filePath: dbFile });
     const userVersion = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-    expect(userVersion).toBe(3);
+    expect(userVersion).toBe(4);
     expect(listNames(db, "table")).toEqual([...EXPECTED_TABLES].sort());
 
     // Insert a row, close, and re-open again -- a second migration pass

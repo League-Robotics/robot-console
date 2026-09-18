@@ -135,7 +135,7 @@
  * remembered) simply never touches anything this way — everything ages
  * off `up`/`onServiceChange` alone, exactly as before this fix.
  *
- * ## WiFi on-demand fallback (019-002)
+ * ## WiFi on-demand fallback (019-002, replaced 020-002)
  *
  * The `_robotlink._tcp`/`._udp` responder the two sections above
  * describe only ever sends **unsolicited periodic** announcements — it
@@ -143,38 +143,77 @@
  * (or longer — purely a function of where host start falls relative to
  * the robot's own announcement interval) with no `links(wifi)` row at
  * all, since nothing in the passive path above ever runs until an
- * announcement actually arrives. Confirmed live and intermittent against
- * `tigez` on 2026-09-17: two full bench-harness runs 15 minutes apart, no
- * discovery code changed between them, disagreed about whether its
- * `wifi` link existed at Layer 3 probe time.
+ * announcement actually arrives, or until the next scheduled
+ * {@link DEFAULT_REQUERY_INTERVAL_MS} re-query. Confirmed live and
+ * intermittent against `tigez` on 2026-09-17: two full bench-harness
+ * runs 15 minutes apart, no discovery code changed between them,
+ * disagreed about whether its `wifi` link existed at Layer 3 probe time.
  *
- * `triggerWifiOnDemandProbes` (below) is this watcher's active
- * counterpart: for every owned, non-relay device with no current
- * (non-`stale`) `wifi` link, it kicks off `discovery/wifiOnDemand.ts`'s
- * bounded `dns.lookup(<name>.local, {family: 4})` + TCP-7654-`HELLO`
- * probe, **unawaited** — this function itself never returns a promise the
- * caller waits on, so it can never block this watcher's own synchronous
- * per-tick work (`browser.update()` calls, aging/pruning, the heartbeat)
- * or any other host component's scheduling. A successful probe upserts
- * the `wifi` link exactly the way an mDNS-observed one would
- * (`upsertLinkAndDetectChange` + `promoteOwnedLinkIfDiscovered`, the same
- * two calls `handleWifi` itself makes); a failed or timed-out probe
- * creates nothing and is simply retried the next time this function
- * runs. `wifiOnDemandInFlight` caps this at one outstanding probe per
- * device name at a time, which combined with this function only ever
- * being called from a bounded schedule (once at start, then once per
- * `browseCycle` tick — never from a tighter loop) is what keeps this
- * from ever busy-looping: a name that is not currently being probed and
- * does not yet have a live link gets at most one new probe per tick,
- * however many ticks that takes.
+ * **019-002's original fallback** (`discovery/wifiOnDemand.ts`'s bounded
+ * `dns.lookup(<name>.local)` + TCP-7654-`HELLO` probe) is no longer
+ * called from here as of 020-002. **020-001 diagnosed unbounded probe
+ * concurrency as the cause of 019-009's 2/10 bench pass rate; that
+ * diagnosis was itself incomplete, corrected during 020-002's own
+ * measurement** (see `<scratchpad>/020-002/` for the full evidence
+ * trail): a solo, completely uncontended `dns.lookup` for a name with no
+ * live mDNS answer takes **~5000ms** on this platform (measured three
+ * independent ways — a bare isolated script, `scripts/bench/layer1`'s
+ * own unrelated `wifi-by-name` check, and a single-device, single-probe
+ * repro with `probedNonTarget: false` proving zero contention) — an OS
+ * mDNS negative-resolution floor, not a Node/threadpool artifact.
+ * `discovery/wifiOnDemand.ts`'s own {@link
+ * DEFAULT_WIFI_DNS_LOOKUP_TIMEOUT_MS} (2000ms, inherited from
+ * `tcpStream.ts`'s unrelated already-resolved-host use case, never
+ * measured against *this* cold-discovery use case) sits **below that
+ * floor** — every cache-miss lookup is guaranteed to hit the timeout
+ * before the OS would ever have answered, so the probe cannot
+ * structurally distinguish "this robot is not there" from "this name is
+ * not cached yet," regardless of concurrency. Concurrency was a real,
+ * confirmed **multiplier** on top of that (5 concurrent uncapped lookups
+ * measured at 2x the solo wall-clock time — each occupies a libuv
+ * threadpool worker for its *entire* ~5s duration, `withTimeout` never
+ * cancels the underlying call, so a "settled" (timed-out) lookup keeps
+ * silently occupying a real thread for its full natural duration) — this
+ * is why 020-001's `UV_THREADPOOL_SIZE=32` A/B looked like a fix: more
+ * workers halve queueing delay stacked on top of a budget that was
+ * already too tight, occasionally landing a lookup under 2000ms by luck.
+ * It was never the primary cause.
  *
- * A device with no actual WiFi path (a USB-only or relay-only owned
- * robot) is not filtered out in advance — there is no way to know that
- * without probing, and this ticket's own scope note is "every owned
- * robot with a WiFi path found at verification time, not a hardcoded
- * name" — so such a device simply fails its `dns.lookup` every pass
- * (fast, since there is no such `.local` record) and never gets a link,
- * exactly as if this fallback did not run for it at all.
+ * Rather than raise the timeout to match the measured floor (still a
+ * multi-second user-facing wait, and still just widening a window a
+ * future fleet/network could exceed again), **`triggerWifiOnDemandProbes`
+ * now accelerates the exact same push-based mechanism the passive path
+ * above already uses**: it re-issues `browser.update()` against the
+ * `_robotlink._tcp`/`._udp` browsers immediately (rather than waiting for
+ * the next scheduled {@link DEFAULT_REQUERY_INTERVAL_MS} tick) whenever
+ * at least one owned, non-relay device has no live `wifi` link, and
+ * repeats that at {@link DEFAULT_WIFI_FAST_REQUERY_INTERVAL_MS} for up to
+ * {@link DEFAULT_WIFI_FAST_REQUERY_MAX_ATTEMPTS} attempts while any such
+ * device remains unlinked. This has **no failure timeout to get wrong**:
+ * `update()` just re-sends the same mDNS query the passive path already
+ * relies on, any response arrives through the *already-wired*
+ * `up`/`onServiceChange` handlers (`handleWifi`, the same one the passive
+ * path uses — no new confirmation step, same trust model the
+ * `mbserial`/`mbrelay` passive paths already use with no TCP/HELLO check
+ * either), and a robot that is genuinely absent simply never answers —
+ * exactly like today's plain passive path already behaves, just polled
+ * far more eagerly while it matters. After
+ * {@link DEFAULT_WIFI_FAST_REQUERY_MAX_ATTEMPTS} attempts (a device with
+ * no actual WiFi path — a USB-only or relay-only owned robot — will never
+ * answer), the fast interval clears itself and that device simply rides
+ * the normal {@link DEFAULT_REQUERY_INTERVAL_MS} cadence forever after,
+ * same as it always would have.
+ *
+ * `dns.resolve4` (020-001's other, "more robust" suggestion — c-ares
+ * async I/O off the threadpool entirely) was evaluated and empirically
+ * rejected for either design: it bypasses the system resolver entirely
+ * and does not do mDNS at all, so it fails outright (`ENOTFOUND`) for the
+ * exact `<name>.local` records this module needs — confirmed against two
+ * real, live bench robots (`<scratchpad>/020-002/resolve-ab-run1.log`).
+ * Raising `UV_THREADPOOL_SIZE` globally was also considered and rejected:
+ * a blunt, process-wide lever affecting every other threadpool consumer
+ * (`fs`, `crypto`, `zlib`, `better-sqlite3` I/O), and it does not remove
+ * the underlying floor, only shrinks the odds of hitting it.
  *
  * ## Injectable seams
  *
@@ -192,7 +231,6 @@ import { nameToValue } from "@robot-console/protocol";
 import { isLocalMdnsService } from "../localHost.js";
 import { Store, type Transport } from "../store/index.js";
 import type { MdnsBackend, MdnsBrowser, MdnsFindOptions, MdnsService } from "../discovery/mdnsDiscovery.js";
-import { probeWifiOnDemand, type WifiOnDemandResult } from "../discovery/wifiOnDemand.js";
 
 /** How often every browsed type's `browser.update()` re-issues its PTR
  * query, so a missed boot announcement is recovered within one
@@ -227,6 +265,28 @@ export const DEFAULT_MBFLASH_TTL_MS = 180_000;
  * instances (018-005 Step 0b). Matches the other TTLs above (180s) —
  * bench-tunable, not final. */
 export const DEFAULT_RADIO_TTL_MS = 180_000;
+
+/** 020-002: how often `triggerWifiOnDemandProbes` re-issues an
+ * accelerated `browser.update()` for the `_robotlink._tcp`/`._udp`
+ * browsers while at least one owned, non-relay device has no live `wifi`
+ * link. Far tighter than {@link DEFAULT_REQUERY_INTERVAL_MS} (30s) —
+ * this is the mechanism that closes the "wait up to a full tick" gap the
+ * on-demand fallback exists for, without any per-call timeout to get
+ * wrong (module doc comment's "WiFi on-demand fallback" section).
+ * Bench-tunable via {@link MdnsWatcherOptions.wifiFastRequeryIntervalMs}. */
+export const DEFAULT_WIFI_FAST_REQUERY_INTERVAL_MS = 2_000;
+
+/** 020-002: how many {@link DEFAULT_WIFI_FAST_REQUERY_INTERVAL_MS} ticks
+ * the accelerated re-query keeps running for a still-unlinked owned
+ * device before giving up and falling back to the normal
+ * {@link DEFAULT_REQUERY_INTERVAL_MS} cadence forever after (a device
+ * with no actual WiFi path — USB-only or relay-only — will never answer,
+ * and this bounds how long this module keeps polling it eagerly for
+ * nothing). 10 attempts at the default 2s interval is 20s, comfortably
+ * under one normal 30s tick, so a device that *does* have a WiFi path
+ * gets every realistic chance to answer before falling back. Bench-
+ * tunable via {@link MdnsWatcherOptions.wifiFastRequeryMaxAttempts}. */
+export const DEFAULT_WIFI_FAST_REQUERY_MAX_ATTEMPTS = 10;
 
 /** `tasks.name` this watcher heartbeats every browse cycle. */
 const TASK_NAME = "mdnsWatcher";
@@ -291,12 +351,6 @@ export interface MdnsWatcherDeps {
   /** Wall-clock reader for every store timestamp and TTL comparison.
    * Defaults to `Date.now`. */
   now?: () => number;
-  /** 019-002's active WiFi-link-creation fallback — see the module doc
-   * comment's own "WiFi on-demand fallback" section. Defaults to the real
-   * `discovery/wifiOnDemand.ts` `probeWifiOnDemand`, which does real
-   * DNS/TCP I/O; tests inject a fully synthetic fake so this suite never
-   * needs a real `.local` record or a real socket. */
-  probeWifiOnDemand?: (name: string) => Promise<WifiOnDemandResult>;
 }
 
 export interface MdnsWatcherOptions {
@@ -319,6 +373,16 @@ export interface MdnsWatcherOptions {
   /** `links(radio)` TTL (018-005). Defaults to
    * {@link DEFAULT_RADIO_TTL_MS}. */
   radioTtlMs?: number;
+  /** 020-002: how often the accelerated WiFi re-query fires while any
+   * owned, non-relay device has no live `wifi` link. Defaults to
+   * {@link DEFAULT_WIFI_FAST_REQUERY_INTERVAL_MS}. See the module doc
+   * comment's "WiFi on-demand fallback" section. */
+  wifiFastRequeryIntervalMs?: number;
+  /** 020-002: how many accelerated-re-query attempts a still-unlinked
+   * owned device gets before falling back to the normal
+   * {@link DEFAULT_REQUERY_INTERVAL_MS} cadence. Defaults to
+   * {@link DEFAULT_WIFI_FAST_REQUERY_MAX_ATTEMPTS}. */
+  wifiFastRequeryMaxAttempts?: number;
 }
 
 export interface MdnsWatcherHandle {
@@ -352,6 +416,8 @@ export function startMdnsWatcher(
   const mbrelayTtlMs = opts.mbrelayTtlMs ?? DEFAULT_MBRELAY_TTL_MS;
   const mbflashTtlMs = opts.mbflashTtlMs ?? DEFAULT_MBFLASH_TTL_MS;
   const radioTtlMs = opts.radioTtlMs ?? DEFAULT_RADIO_TTL_MS;
+  const wifiFastRequeryIntervalMs = opts.wifiFastRequeryIntervalMs ?? DEFAULT_WIFI_FAST_REQUERY_INTERVAL_MS;
+  const wifiFastRequeryMaxAttempts = opts.wifiFastRequeryMaxAttempts ?? DEFAULT_WIFI_FAST_REQUERY_MAX_ATTEMPTS;
 
   /** Bench defect 1 (2026-09-12): fqdn -> replay closure that redoes the
    * last-known `services`/`links` touch for that instance. Populated by
@@ -479,16 +545,17 @@ export function startMdnsWatcher(
   }
 
   // -------------------------------------------------------------------
-  // 019-002: WiFi on-demand link discovery -- see the module doc
-  // comment's own "WiFi on-demand fallback" section.
+  // 019-002/020-002: WiFi on-demand link discovery -- see the module doc
+  // comment's own "WiFi on-demand fallback" section for why this
+  // accelerates the passive browsers' own `update()` rather than running
+  // an independent `dns.lookup`.
   // -------------------------------------------------------------------
 
-  const probeWifiOnDemandDep = deps.probeWifiOnDemand ?? probeWifiOnDemand;
-
-  /** Names with a probe currently in flight -- see the module doc
-   * comment's own "WiFi on-demand fallback" section for why this is what
-   * keeps this fallback from ever busy-looping. */
-  const wifiOnDemandInFlight = new Set<string>();
+  /** 020-002: set while {@link fastRequeryTimer} is running -- at most
+   * one fast-requery cycle at a time, mirroring `timer`'s own one-timer
+   * discipline below. */
+  let fastRequeryTimer: ReturnType<typeof setInterval> | undefined;
+  let fastRequeryAttempts = 0;
 
   /** Whether `name` already has a `links(wifi)` row this watcher
    * considers live -- present and not aged to `stale`. A `stale` row is
@@ -500,53 +567,72 @@ export function startMdnsWatcher(
     return row !== undefined && row.state !== "stale";
   }
 
-  /**
-   * For every owned, non-relay device with no current `wifi` link, kick
-   * off (unawaited) a bounded `discovery/wifiOnDemand.ts` probe. Never
-   * throws and never returns a promise the caller needs to wait on --
-   * every promise this starts is chained with its own `.catch`/`.finally`
-   * so a failure can never become an unhandled rejection out of this
-   * watcher's own timer, and `wifiOnDemandInFlight` is always cleared on
-   * settlement so a later call (the next tick) can retry. Safe to call
-   * from both the immediate at-start kick and every `browseCycle` tick
-   * without ever double-probing the same name concurrently.
-   */
-  function triggerWifiOnDemandProbes(): void {
+  /** Every owned, non-relay device name with no current `wifi` link --
+   * the set {@link triggerWifiOnDemandProbes} and the fast-requery timer
+   * both need on every check. */
+  function namesNeedingWifiLink(): string[] {
     const devices = store.snapshotRows().devices.filter((device) => Number(device.owned) === 1 && device.kind !== "relay");
+    const names: string[] = [];
     for (const device of devices) {
       // `StoreSnapshot.devices` is a low-level `Record<string, unknown>[]`
       // passthrough (store/index.ts's own doc comment) -- narrowed here,
       // never assumed, since this is the first place in this module that
       // hands a device row's own `name` to something outside the store.
       const name = device.name;
-      if (typeof name !== "string") {
-        continue;
+      if (typeof name === "string" && !hasLiveWifiLink(name)) {
+        names.push(name);
       }
-      if (wifiOnDemandInFlight.has(name) || hasLiveWifiLink(name)) {
-        continue;
-      }
-      wifiOnDemandInFlight.add(name);
-      void probeWifiOnDemandDep(name)
-        .then((result) => {
-          if (stopped || result.status !== "found") {
-            return;
-          }
-          const deviceId = uniqueOwnedDeviceIdByName(name);
-          const linkId = `wifi-${name}`;
-          upsertLinkAndDetectChange(linkId, "wifi", { host: result.host, port: result.port, ip: result.ip }, deviceId);
-          promoteOwnedLinkIfDiscovered(linkId, deviceId);
-        })
-        .catch(() => {
-          // `probeWifiOnDemand`'s own contract is "never throws" -- this
-          // is belt-and-suspenders for an injected test double (or a
-          // future change that breaks that contract) so a bug there can
-          // never become an unhandled rejection out of this watcher's
-          // own timer.
-        })
-        .finally(() => {
-          wifiOnDemandInFlight.delete(name);
-        });
     }
+    return names;
+  }
+
+  /** Re-issues the mDNS query for both WiFi robotlink protocols right
+   * now, rather than waiting for the next {@link DEFAULT_REQUERY_INTERVAL_MS}
+   * tick. Purely a re-send of the same query the passive path already
+   * relies on -- no failure/timeout semantics of its own; any response
+   * arrives through the already-wired `up`/`onServiceChange` handlers
+   * below (`handleWifi`). Safe to call as often as this module likes. */
+  function requeryWifiBrowsersNow(): void {
+    robotlinkTcpBrowser.update?.();
+    robotlinkUdpBrowser.update?.();
+  }
+
+  /**
+   * For every owned, non-relay device with no current `wifi` link,
+   * accelerates discovery by re-querying the WiFi robotlink browsers
+   * immediately and arming {@link fastRequeryTimer} to keep repeating
+   * that at {@link DEFAULT_WIFI_FAST_REQUERY_INTERVAL_MS} until either a
+   * link appears (via the ordinary `handleWifi` path) or
+   * {@link DEFAULT_WIFI_FAST_REQUERY_MAX_ATTEMPTS} is reached, at which
+   * point the fast timer clears itself and the device rides the normal
+   * {@link DEFAULT_REQUERY_INTERVAL_MS} cadence forever after -- see the
+   * module doc comment's "WiFi on-demand fallback" section. Never
+   * throws, never blocks, safe to call from both the immediate at-start
+   * kick and every `browseCycle` tick.
+   */
+  function triggerWifiOnDemandProbes(): void {
+    if (stopped) {
+      return;
+    }
+    const pending = namesNeedingWifiLink();
+    if (pending.length === 0) {
+      return;
+    }
+    requeryWifiBrowsersNow();
+    if (fastRequeryTimer !== undefined) {
+      return;
+    }
+    fastRequeryAttempts = 0;
+    fastRequeryTimer = setInterval(() => {
+      fastRequeryAttempts++;
+      if (stopped || namesNeedingWifiLink().length === 0 || fastRequeryAttempts >= wifiFastRequeryMaxAttempts) {
+        clearInterval(fastRequeryTimer);
+        fastRequeryTimer = undefined;
+        return;
+      }
+      requeryWifiBrowsersNow();
+    }, wifiFastRequeryIntervalMs);
+    fastRequeryTimer.unref?.();
   }
 
   /** 018-007: `{host, port}` plus the resolved IPv4 address (`ip`), when
@@ -799,7 +885,10 @@ export function startMdnsWatcher(
       }
       unsubscribeAnnounce?.();
       knownByFqdn.clear();
-      wifiOnDemandInFlight.clear();
+      if (fastRequeryTimer !== undefined) {
+        clearInterval(fastRequeryTimer);
+        fastRequeryTimer = undefined;
+      }
     },
   };
 }

@@ -1,6 +1,10 @@
 ---
-status: pending
+status: in-progress
 sprint: '020'
+tickets:
+- 020-001
+- 020-002
+- 020-003
 ---
 
 # WiFi robot discovery waits for the mDNS announcement interval instead of resolving on demand
@@ -200,3 +204,66 @@ against `tovez`) with its ten-run criterion explicitly deferred to 009 —
 and the sweep then resolved the issue anyway. Either set
 `completes_issue: false` on a ticket whose verification is deferred, or
 re-check the swept issues at close. The team-lead owns that check.
+
+## Sprint 020 did not fix this. Measured 0/10. (team-lead, 2026-09-18)
+
+Sprint 020 was created solely to fix this issue, diagnosis-first. It
+closed with the issue **still open** and the measured rate **worse than
+the baseline it set out to beat**.
+
+**Ticket 003's measurement**, ten consecutive `scripts/bench/run.sh`
+runs against `tovez` (the only robot on the bench advertising a WiFi
+path; `gopiv`'s was absent — see
+[[gopiv-advertises-mbserial-but-no-robotlink]]):
+
+| layer | result |
+| --- | --- |
+| Layer 1 | **pass 10/10** — the robot was genuinely reachable throughout |
+| Layer 2 | **fail 10/10**, identically: "no link found in the snapshot for tovez via wifi" |
+| Layer 3 | **pass 4/10** |
+
+**0/10 overall against a 2/10 baseline.** 0 runs excluded. 0 leaked
+sockets across 11 `lsof` checks (each run was a fresh process, so
+[[reconciler-stop-leaks-open-sessions]] did not corrupt this
+measurement). Threshold and exclusion rules were committed to the ticket
+(`2aebec2`) **before any data existed**, specifically so the result could
+not be read generously afterwards.
+
+### The concrete lead worth chasing next
+
+**Layer 2 fails 100% while Layer 3 passes 40% — and Layer 3 never passes
+when Layer 2 would have.** Layer 3 runs *after* Layer 2 and spawns its
+own host. So the WiFi link **does** eventually appear; it simply is not
+there inside Layer 2's settle window.
+
+That reframes the remaining defect. It is not "the link never gets
+created" — sprint 020 established the probe works and the fix replaced
+`dns.lookup` with a re-query of the already-running passive
+`_robotlink._tcp` browsers (commit `70ff4c6`). The open question is
+**why the link is consistently late**, and specifically whether:
+- the accelerated re-query is not actually accelerating anything (i.e.
+  the fix is inert and we are still waiting on the passive browser's own
+  announcement cadence), or
+- the link is created but not yet *promoted/visible* in the snapshot
+  Layer 2 reads, or
+- Layer 2's settle window is simply too short and is itself the defect,
+  in which case the product may be healthier than the harness suggests.
+
+**Establish which before writing any more code.** Sprint 020's first
+diagnosis was wrong (it blamed libuv threadpool starvation; the real
+cause was a 2000 ms bound against a ~5000 ms mDNS negative-resolution
+floor), and its fix was then built on that wrong understanding. The
+discipline that caught it — measure, pre-commit the threshold, report
+the honest number — is what this issue needs again, not another patch.
+
+### Corrected facts for whoever picks this up
+
+- `tovez.local` resolves to **192.168.1.220** (not `192.168.4.53`, which
+  is dead — `nada` left the network).
+- The board presents three identity strings: `_mbserial._tcp` →
+  `tovez-2`, `_robotlink._tcp` → `tovez robot link`, wire `HELLO` →
+  `device NEZHA2 robot tovez`. **Only `HELLO` comes from the chip**; the
+  advertised names are whatever the advertising daemon was told. When
+  they disagree, `HELLO` is the tiebreak — the same rule this repo
+  learned about `mbdeploy probe`'s cached ROLE column. Resolve fixtures
+  by property at run time and confirm against `HELLO`.

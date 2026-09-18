@@ -21,6 +21,8 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { deviceIdToName } from "@robot-console/protocol";
 import { registerFlashTools, type FlashToolsDeps } from "./flash.js";
+import { registerInspectTools } from "./inspect.js";
+import { record } from "../agentActionLog.js";
 import type { FlashResultLike } from "../../server.js";
 import { MBFLASH_SERVICE_TYPE, openStore, Store } from "../../store/index.js";
 import type { DaplinkDevice } from "../../devices.js";
@@ -376,6 +378,175 @@ describe("request_flash: tool-call-empty-args.md survivability", () => {
 
       expect(result.isError).toBe(true);
       expect(startFlash).not.toHaveBeenCalled();
+    } finally {
+      store.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------
+// Ticket 021-004: outliving a client timeout / surviving a dropped
+// connection -- crash-safety, and the durable recovery path.
+// ---------------------------------------------------------------------
+
+describe("request_flash: survives a client disconnect while startFlash is still pending (crash-safety, ticket 021-004)", () => {
+  it(
+    "a send-after-disconnect failure while delivering the settled outcome is caught internally by the SDK -- " +
+      "the handler still runs to completion, still writes exactly one agent_actions row, and no exception or " +
+      "unhandled rejection ever escapes",
+    async () => {
+      const store = openStore({ filePath: ":memory:" });
+      try {
+        seedUsbFlashableDevice(store);
+        let resolveFlash!: (outcome: FlashResultLike) => void;
+        const deferred = new Promise<FlashResultLike>((resolve) => {
+          resolveFlash = resolve;
+        });
+        const startFlash = vi.fn(() => deferred);
+        const deps: FlashToolsDeps = {
+          store,
+          startFlash,
+          enumerateDaplinkDevices: vi.fn(async () => [FAKE_USB_DEVICE]),
+        } as unknown as FlashToolsDeps;
+
+        const server = new McpServer({ name: "flash-disconnect-test-server", version: "0.0.0" });
+        registerFlashTools(server, deps);
+
+        // The low-level Server's onerror -- exactly the callback the
+        // SDK's `Protocol._onrequest` (shared/protocol.js) invokes via
+        // `.catch(error => this._onerror(...))` once `capturedTransport
+        // .send(response)` rejects. Never an uncaught throw, never an
+        // unhandled rejection -- see the assertions below.
+        const sdkErrors: unknown[] = [];
+        server.server.onerror = (error: unknown) => {
+          sdkErrors.push(error);
+        };
+
+        const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+        const client = new Client({ name: "agent-smith", version: "0.0.0" });
+
+        const unhandled: unknown[] = [];
+        const onUnhandledRejection = (reason: unknown): void => {
+          unhandled.push(reason);
+        };
+        process.on("unhandledRejection", onUnhandledRejection);
+
+        try {
+          await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+          // Break delivery on the server's own transport from here on --
+          // this is what a real StreamableHTTPServerTransport does once
+          // the caller's own SSE stream/connection is gone (its `send()`
+          // throws "No connection established for request ID: ...", see
+          // `@modelcontextprotocol/sdk`'s `webStandardStreamableHttp.js`).
+          // The session/transport itself stays connected throughout --
+          // exactly like a real MCP session surviving one caller giving
+          // up on one call -- only *this* delivery fails; nothing here
+          // calls transport.close() or fires onclose, which would (via
+          // Protocol._onclose's abortController.abort()) short-circuit
+          // the very send() call this test needs to exercise.
+          const originalSend = serverTransport.send.bind(serverTransport);
+          let breakDelivery = false;
+          serverTransport.send = vi.fn(async (message: unknown, options?: unknown) => {
+            if (breakDelivery) {
+              throw new Error("write after close: the client's own connection is gone");
+            }
+            return originalSend(message as never, options as never);
+          });
+
+          // Not awaited to completion -- once `breakDelivery` flips, the
+          // server can never deliver a response to this call, so the
+          // client's own promise only ever settles (rejects, on its own
+          // 60s request timeout) once `client.close()` tears the session
+          // down in the `finally` below. `.catch()` here just keeps that
+          // eventual rejection from ever surfacing as unhandled -- this
+          // test's job is the *server's* behavior, not the client's.
+          const callPromise = client
+            .callTool({ name: "request_flash", arguments: { deviceId: DEVICE_ID, firmwareRef: "robot" } })
+            .catch((error: unknown) => error);
+          void callPromise;
+
+          // Let startFlash actually get invoked before "disconnecting" --
+          // waitFor rather than a fixed microtask-flush count since the
+          // precondition check's own resolveFlashLinkTarget call is
+          // genuinely async (enumerateDaplinkDevices).
+          await vi.waitFor(() => expect(startFlash).toHaveBeenCalledTimes(1));
+
+          breakDelivery = true;
+
+          // The flash itself settles well after the simulated disconnect
+          // -- server-side execution is unconditional and keeps going
+          // regardless (this file's own module doc comment).
+          resolveFlash({ status: "ok" });
+
+          // (a) + (b): the handler ran to completion and wrote exactly
+          // one agent_actions row with the real outcome, regardless of
+          // whether the caller was still there to receive it. waitFor
+          // rather than a fixed microtask-flush count for the same
+          // genuinely-async reason as above.
+          await vi.waitFor(() => {
+            expect(store.recentAgentActions({ deviceId: DEVICE_ID }, 10)).toHaveLength(1);
+          });
+          const rows = store.recentAgentActions({ deviceId: DEVICE_ID }, 10);
+          expect(rows[0]).toMatchObject({ kind: "flash", deviceId: DEVICE_ID, result: "sent" });
+
+          // The undeliverable-response failure did happen -- proving this
+          // test actually exercised the risky path, not a no-op.
+          await vi.waitFor(() => expect(sdkErrors.length).toBeGreaterThan(0));
+
+          // (c): but it never escaped as an uncaught exception or an
+          // unhandled promise rejection -- the SDK's own
+          // `.catch(error => this._onerror(...))` swallowed it. This is
+          // the process-crash risk this ticket asks to verify; it does
+          // not happen.
+          expect(unhandled).toEqual([]);
+        } finally {
+          process.off("unhandledRejection", onUnhandledRejection);
+          await client.close().catch(() => {});
+          await server.close().catch(() => {});
+        }
+      } finally {
+        store.close();
+      }
+    },
+  );
+});
+
+describe("request_flash: the durable recovery path a timed-out caller is told to use (ticket 021-004)", () => {
+  it("get_device_status's recentAgentActions[0] surfaces a recorded flash outcome's kind/caller/result/resultReason correctly", async () => {
+    const store = openStore({ filePath: ":memory:" });
+    try {
+      seedUsbFlashableDevice(store);
+      // Written the same way the disconnect test above proves happens
+      // even once the caller can no longer hear it -- record() itself
+      // doesn't know or care whether anyone is still listening.
+      record(store, {
+        kind: "flash",
+        deviceId: DEVICE_ID,
+        params: { firmwareRef: "robot" },
+        caller: "agent-smith",
+        executedAt: Date.now(),
+        result: "failed",
+        resultReason: "DAPLink write timeout",
+      });
+
+      const server = new McpServer({ name: "flash-recovery-test-server", version: "0.0.0" });
+      registerInspectTools(server, store);
+      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: "agent-smith", version: "0.0.0" });
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      try {
+        const result = await client.callTool({ name: "get_device_status", arguments: { name: DEVICE_NAME } });
+        expect(result.isError).toBeFalsy();
+        const payload = parseToolText(result as { content: Array<{ type: string; text?: string }> }) as {
+          recentAgentActions: Array<{ kind: string; caller: string; summary: string }>;
+        };
+        expect(payload.recentAgentActions[0]).toMatchObject({ kind: "flash", caller: "agent-smith" });
+        expect(payload.recentAgentActions[0]!.summary).toContain("failed: DAPLink write timeout");
+      } finally {
+        await client.close();
+        await server.close();
+      }
     } finally {
       store.close();
     }

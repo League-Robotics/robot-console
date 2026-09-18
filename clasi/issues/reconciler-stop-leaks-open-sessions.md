@@ -85,3 +85,28 @@ wrong, or at least shallow: **the process had leaked a session that
   fail.** Assert no socket survives `runtime.stop()`.
 - While in there, verify the doc comment in `runtime.ts` matches
   reality, since it is currently the misleading part.
+
+## Fixed in sprint 021 ticket 003 (team-lead, 2026-09-18)
+
+Fixed **at the root**, not worked around. `connect/reconciler.ts`'s
+`stop()` now closes every session it holds, and `runtime.stop()` awaits
+that before `store.close()`.
+
+One design choice worth recording: a stop-initiated close sets the link
+state to **`connectable`**, not `closed_by_user`. That matters — a
+`closed_by_user` row is durable and would make a *later* process refuse
+to reconnect, so a shutdown would silently poison the next run. Using
+`connectable` matches `clearInheritedSessions`'s existing symmetry, so a
+later process auto-reconnects normally.
+
+The daemon `stop` verb (same ticket) is therefore honest by construction
+rather than by assertion: `cli.ts`'s shutdown handler does not call
+`exit(0)` until `runtime.stop()` resolves, and `runStop` sends SIGTERM
+then waits for the pid to actually disappear. A gone pid means sessions
+were already released; a timeout is reported as **`"timed-out"`**, never
+as `"stopped"`. That was the requirement — a `stop` that printed success
+while robots stayed held would have been worse than no `stop` at all.
+
+**Resolved.** The two collisions that motivated this issue — a peer
+session blocked from `tovez` twice, once leaving a robot half-positioned
+in the north rail — should not recur from this cause.

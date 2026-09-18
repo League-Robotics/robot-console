@@ -518,11 +518,23 @@ export interface Reconciler {
   requestClose(linkId: string): Promise<void>;
   /** See {@link ReconcilerSessions}. */
   readonly sessions: ReconcilerSessions;
-  /** Stops the change-feed subscription and the slow tick. Does not
-   * close any already-open session -- mirrors every watcher's own
-   * `stop()` contract (`watchers/usbWatcher.ts`), which likewise leaves
-   * already-open links alone. */
-  stop(): void;
+  /** Stops the change-feed subscription and the slow tick, then closes
+   * every session this executor itself currently holds open (sprint 021
+   * ticket 003; issue `reconciler-stop-leaks-open-sessions.md`) --
+   * awaited, so a caller (`runtime.ts`'s own `stop()`) that awaits this
+   * knows every real socket this process held is actually released by
+   * the time it resolves, not merely that the scheduling loop stopped.
+   * Each closed link's row goes back to `connectable` (its own
+   * `stale-session-cleared-at-startup` reason's sibling -- see
+   * `clearInheritedSessions`), never `closed_by_user`: this is the
+   * executor releasing hardware on its own shutdown, not a user asking
+   * to keep a link closed until re-opened, so the very next process (or
+   * this one, restarted) auto-reconnects it exactly like any other
+   * `connectable` link, instead of being durably refused
+   * (`isClosedByUser`) forever. Best-effort per session -- one link's
+   * close failing never prevents the others from being attempted or
+   * this method from resolving. Idempotent: a second call is a no-op. */
+  stop(): Promise<void>;
 }
 
 /** Builds the `LinkRow` shape `connector.ts`'s `connectAndIdentify`
@@ -879,13 +891,43 @@ export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler 
         return sessions.values();
       },
     },
-    stop(): void {
+    async stop(): Promise<void> {
       if (stopped) {
         return;
       }
       stopped = true;
       unsubscribe();
       clearInterval(timer);
+      // Sprint 021 ticket 003; issue `reconciler-stop-leaks-open-sessions.md`:
+      // close every session this executor still holds, so "stopped" and
+      // "released the hardware" are the same claim -- see this method's
+      // own doc comment on {@link Reconciler.stop} for why each closed
+      // link goes back to `connectable`, not `closed_by_user`. Snapshot
+      // and clear the map first (mirroring {@link clearInheritedSessions}'s
+      // own shape) so nothing else can observe a half-closed session via
+      // `sessions.get`/`values` while this runs.
+      const entries = Array.from(sessions.entries());
+      sessions.clear();
+      await Promise.all(
+        entries.map(async ([linkId, session]) => {
+          try {
+            await session.link.close();
+          } catch {
+            // Best-effort -- a transport that fails to close cleanly on
+            // shutdown must not stop the other sessions in this batch
+            // from being released, and must not reject this method.
+          }
+          try {
+            store.closeSession(linkId);
+            store.setLinkState({ id: linkId, state: "connectable", at: now(), reason: "reconciler-stopped" });
+          } catch {
+            // Best-effort -- e.g. the store is already closed by a
+            // caller that tore it down before awaiting this (not
+            // `runtime.ts`'s own ordering, which awaits this first, but
+            // a test or other caller doing its own cleanup).
+          }
+        }),
+      );
     },
   };
 }

@@ -24,6 +24,7 @@ vi.mock("open", () => ({
 }));
 
 import { main, type CliDeps } from "./cli.js";
+import { PortInUseError } from "./server.js";
 import type { StartRuntimeOptions } from "./runtime.js";
 import type { StoreSnapshot } from "./store/index.js";
 
@@ -75,6 +76,16 @@ describe("cli: main -- --watch-store is gone", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main(["--watch-store"], {} as NodeJS.ProcessEnv, deps);
@@ -142,6 +153,16 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main([], env, deps);
@@ -167,6 +188,16 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main(["--port", "9999"], {} as NodeJS.ProcessEnv, deps);
@@ -187,6 +218,16 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main(["--no-open"], {} as NodeJS.ProcessEnv, deps);
@@ -207,6 +248,16 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main([], { ROBOT_CONSOLE_NO_OPEN: "1" } as unknown as NodeJS.ProcessEnv, deps);
@@ -227,6 +278,16 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main([], {} as NodeJS.ProcessEnv, deps);
@@ -247,6 +308,16 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main(["--sweep"], {} as NodeJS.ProcessEnv, deps);
@@ -267,6 +338,16 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main([], { ROBOT_CONSOLE_ENABLE_SWEEP: "1" } as unknown as NodeJS.ProcessEnv, deps);
@@ -287,6 +368,16 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main(["--no-sweep"], { ROBOT_CONSOLE_DISABLE_SWEEP: "1" } as unknown as NodeJS.ProcessEnv, deps);
@@ -308,6 +399,16 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startServer: startServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await expect(main([], {} as NodeJS.ProcessEnv, deps)).resolves.toBeUndefined();
@@ -327,6 +428,12 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startRuntime: startRuntimeMock,
       startServer: startServerMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       // openBrowser deliberately omitted -- this exercises the real
       // default (`openInChrome`), not a test fake.
     };
@@ -350,6 +457,16 @@ describe("cli: main -- production startup composes runtime then server", () => {
       startRuntime: startRuntimeMock,
       startServer: startServerMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main([], {} as NodeJS.ProcessEnv, deps);
@@ -406,6 +523,16 @@ describe("cli: main -- MCP server wiring (sprint 019 ticket 004)", () => {
       startMcpServer: startMcpServerMock,
       openBrowser: openBrowserMock,
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
     };
 
     await main([], {} as NodeJS.ProcessEnv, deps);
@@ -437,8 +564,420 @@ describe("cli: main -- MCP server wiring (sprint 019 ticket 004)", () => {
         startServer: startServerMock,
         openBrowser: openBrowserMock,
         getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+        startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       }),
     ).resolves.toBeUndefined();
+
+    logSpy.mockRestore();
+  });
+});
+
+describe("cli: main -- daemon-info wiring (sprint 021 ticket 003)", () => {
+  afterEach(() => {
+    process.removeAllListeners("SIGINT");
+    process.removeAllListeners("SIGTERM");
+  });
+
+  it("writes daemon.json with the actual bound pid/host/port once startServer resolves, for the plain no-subcommand path too", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://0.0.0.0:4795", host: "0.0.0.0", port: 4795, close: vi.fn().mockResolvedValue(undefined) });
+    const writeDaemonInfoMock = vi.fn();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const beforeCall = Date.now();
+
+    await main([], {} as NodeJS.ProcessEnv, {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: vi.fn().mockResolvedValue(undefined),
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
+      writeDaemonInfo: writeDaemonInfoMock,
+      removeDaemonInfo: vi.fn(),
+    });
+
+    expect(writeDaemonInfoMock).toHaveBeenCalledTimes(1);
+    const [info] = writeDaemonInfoMock.mock.calls[0] as [{ pid: number; host: string; port: number; startedAt: number }];
+    expect(info.pid).toBe(process.pid);
+    expect(info.host).toBe("0.0.0.0");
+    expect(info.port).toBe(4795);
+    expect(info.startedAt).toBeGreaterThanOrEqual(beforeCall);
+
+    logSpy.mockRestore();
+  });
+
+  it("never writes daemon.json on the EADDRINUSE-attach path -- an attaching invocation never bound a port of its own", async () => {
+    const conflictError = new PortInUseError("0.0.0.0", 4795);
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockRejectedValueOnce(conflictError);
+    const probeHostInfoMock = vi.fn().mockResolvedValue({ ok: true, service: "robot-console", port: 4795 });
+    const writeDaemonInfoMock = vi.fn();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(
+      main([], {} as NodeJS.ProcessEnv, {
+        startRuntime: startRuntimeMock,
+        startServer: startServerMock,
+        probeHostInfo: probeHostInfoMock,
+        openBrowser: vi.fn().mockResolvedValue(undefined),
+        getFirmwareConfig: vi.fn().mockReturnValue({}),
+        startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
+        writeDaemonInfo: writeDaemonInfoMock,
+        removeDaemonInfo: vi.fn(),
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(writeDaemonInfoMock).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+  });
+
+  it("removes daemon.json during SIGINT/SIGTERM shutdown, after runtime.stop() (session teardown) has resolved", async () => {
+    const runtimeStopOrder: string[] = [];
+    const runtimeStopMock = vi.fn().mockImplementation(async () => {
+      runtimeStopOrder.push("runtime.stop");
+    });
+    const removeDaemonInfoMock = vi.fn().mockImplementation(() => {
+      runtimeStopOrder.push("removeDaemonInfo");
+    });
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: runtimeStopMock });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://0.0.0.0:4795", host: "0.0.0.0", port: 4795, close: vi.fn().mockResolvedValue(undefined) });
+    const exitMock = vi.fn();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await main([], {} as NodeJS.ProcessEnv, {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: vi.fn().mockResolvedValue(undefined),
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: removeDaemonInfoMock,
+      exit: exitMock,
+    });
+
+    process.emit("SIGINT");
+    await vi.waitFor(() => expect(exitMock).toHaveBeenCalled());
+
+    expect(removeDaemonInfoMock).toHaveBeenCalledTimes(1);
+    expect(runtimeStopOrder).toEqual(["runtime.stop", "removeDaemonInfo"]);
+
+    logSpy.mockRestore();
+  });
+});
+
+describe("cli: main -- console advertiser wiring (sprint 021 ticket 002)", () => {
+  afterEach(() => {
+    process.removeAllListeners("SIGINT");
+    process.removeAllListeners("SIGTERM");
+  });
+
+  it("calls startConsoleAdvertiser with the server's actual bound port once startServer resolves", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://0.0.0.0:54219", port: 54219, close: vi.fn().mockResolvedValue(undefined) });
+    const startConsoleAdvertiserMock = vi.fn().mockReturnValue({ stop: vi.fn() });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await main([], {} as NodeJS.ProcessEnv, {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      startConsoleAdvertiser: startConsoleAdvertiserMock,
+    });
+
+    expect(startConsoleAdvertiserMock).toHaveBeenCalledTimes(1);
+    expect(startConsoleAdvertiserMock).toHaveBeenCalledWith({ port: 54219 });
+
+    logSpy.mockRestore();
+  });
+
+  it("never starts an advertiser on the EADDRINUSE-attach path -- an attaching invocation never bound a port of its own", async () => {
+    const conflictError = new PortInUseError("0.0.0.0", 4795);
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockRejectedValueOnce(conflictError);
+    const probeHostInfoMock = vi.fn().mockResolvedValue({ ok: true, service: "robot-console", port: 4795 });
+    const startConsoleAdvertiserMock = vi.fn().mockReturnValue({ stop: vi.fn() });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(
+      main([], {} as NodeJS.ProcessEnv, {
+        startRuntime: startRuntimeMock,
+        startServer: startServerMock,
+        probeHostInfo: probeHostInfoMock,
+        openBrowser: openBrowserMock,
+        getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+        startConsoleAdvertiser: startConsoleAdvertiserMock,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(startConsoleAdvertiserMock).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+  });
+
+  it("shutdown stops the advertiser before closing the server", async () => {
+    const runtimeStopMock = vi.fn();
+    const serverCloseMock = vi.fn().mockResolvedValue(undefined);
+    const advertiserStopMock = vi.fn();
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: runtimeStopMock });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://0.0.0.0:4795", port: 4795, close: serverCloseMock });
+    const startConsoleAdvertiserMock = vi.fn().mockReturnValue({ stop: advertiserStopMock });
+    const exitMock = vi.fn();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await main([], {} as NodeJS.ProcessEnv, {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: vi.fn().mockResolvedValue(undefined),
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      startConsoleAdvertiser: startConsoleAdvertiserMock,
+      exit: exitMock,
+    });
+
+    process.emit("SIGINT");
+    await vi.waitFor(() => expect(exitMock).toHaveBeenCalled());
+
+    expect(advertiserStopMock).toHaveBeenCalledTimes(1);
+    expect(serverCloseMock).toHaveBeenCalledTimes(1);
+    const advertiserStopOrder = advertiserStopMock.mock.invocationCallOrder[0];
+    const closeOrder = serverCloseMock.mock.invocationCallOrder[0];
+    expect(advertiserStopOrder).toBeLessThan(closeOrder);
+
+    logSpy.mockRestore();
+  });
+});
+
+describe("cli: main -- EADDRINUSE attach vs hard-fail (021-001)", () => {
+  afterEach(() => {
+    process.removeAllListeners("SIGINT");
+    process.removeAllListeners("SIGTERM");
+  });
+
+  it("an explicit --port conflict rethrows today's exact message, unchanged -- no probe is even attempted", async () => {
+    const conflictError = new PortInUseError("127.0.0.1", 9999);
+    const runtimeStopMock = vi.fn();
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: runtimeStopMock });
+    const startServerMock = vi.fn().mockRejectedValue(conflictError);
+    const probeHostInfoMock = vi.fn();
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      probeHostInfo: probeHostInfoMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
+    };
+
+    await expect(main(["--port", "9999"], {} as NodeJS.ProcessEnv, deps)).rejects.toThrow(conflictError.message);
+    // Regression: the explicit-port branch never even considers
+    // attaching -- no probe, no runtime.stop() of this invocation's own
+    // (never-bound) runtime.
+    expect(probeHostInfoMock).not.toHaveBeenCalled();
+    expect(runtimeStopMock).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+  });
+
+  it("no --port, a positive host-info probe: logs attaching, stops this invocation's own runtime, and returns without throwing or starting a second server", async () => {
+    const conflictError = new PortInUseError("127.0.0.1", 4795);
+    const runtimeStopMock = vi.fn();
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: runtimeStopMock });
+    const startServerMock = vi.fn().mockRejectedValueOnce(conflictError);
+    const probeHostInfoMock = vi.fn().mockResolvedValue({ ok: true, service: "robot-console", port: 4795 });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      probeHostInfo: probeHostInfoMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
+    };
+
+    await expect(main([], {} as NodeJS.ProcessEnv, deps)).resolves.toBeUndefined();
+
+    expect(probeHostInfoMock).toHaveBeenCalledWith("http://127.0.0.1:4795/api/host-info");
+    expect(startRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(startServerMock).toHaveBeenCalledTimes(1);
+    // Attaching must not double-construct a runtime or retry startServer.
+    expect(runtimeStopMock).toHaveBeenCalledTimes(1);
+    expect(openBrowserMock).toHaveBeenCalledWith("http://127.0.0.1:4795");
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("already running"));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("attaching"));
+
+    logSpy.mockRestore();
+  });
+
+  it("--no-open is respected on the attach path too -- no browser is opened", async () => {
+    const conflictError = new PortInUseError("127.0.0.1", 4795);
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockRejectedValueOnce(conflictError);
+    const probeHostInfoMock = vi.fn().mockResolvedValue({ ok: true, service: "robot-console", port: 4795 });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      probeHostInfo: probeHostInfoMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
+    };
+
+    await expect(main(["--no-open"], {} as NodeJS.ProcessEnv, deps)).resolves.toBeUndefined();
+    expect(openBrowserMock).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+  });
+
+  it("no --port, the probe fails/times out (resolves undefined): rethrows a clear conflict error, not a false 'already running'", async () => {
+    const conflictError = new PortInUseError("127.0.0.1", 4795);
+    const runtimeStopMock = vi.fn();
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: runtimeStopMock });
+    const startServerMock = vi.fn().mockRejectedValue(conflictError);
+    const probeHostInfoMock = vi.fn().mockResolvedValue(undefined);
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      probeHostInfo: probeHostInfoMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
+    };
+
+    await expect(main([], {} as NodeJS.ProcessEnv, deps)).rejects.toThrow(conflictError.message);
+    expect(probeHostInfoMock).toHaveBeenCalledWith("http://127.0.0.1:4795/api/host-info");
+    expect(runtimeStopMock).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+  });
+
+  it("no --port, the probe answers but does not identify as robot-console: rethrows the conflict error too", async () => {
+    const conflictError = new PortInUseError("127.0.0.1", 4795);
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockRejectedValue(conflictError);
+    const probeHostInfoMock = vi.fn().mockResolvedValue({ ok: true, service: "some-other-thing" });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      probeHostInfo: probeHostInfoMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
+    };
+
+    await expect(main([], {} as NodeJS.ProcessEnv, deps)).rejects.toThrow(conflictError.message);
+
+    logSpy.mockRestore();
+  });
+
+  it("a non-PortInUseError failure from startServer still propagates unchanged", async () => {
+    const otherError = new Error("some unrelated startup failure");
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockRejectedValue(otherError);
+    const probeHostInfoMock = vi.fn();
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      probeHostInfo: probeHostInfoMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      // Sprint 021 ticket 002: main() now calls startConsoleAdvertiser
+      // unconditionally once startServer resolves -- faked here (not
+      // exercising the real bonjour-service-backed default) so no test
+      // in this file ever opens a real multicast socket.
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
+    };
+
+    await expect(main([], {} as NodeJS.ProcessEnv, deps)).rejects.toThrow(otherError.message);
+    expect(probeHostInfoMock).not.toHaveBeenCalled();
 
     logSpy.mockRestore();
   });
@@ -468,6 +1007,12 @@ describe("cli: main -- SIGINT/SIGTERM shutdown", () => {
       startServer: f.startServerMock,
       openBrowser: vi.fn().mockResolvedValue(undefined),
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       exit: exitMock,
     });
 
@@ -495,6 +1040,12 @@ describe("cli: main -- SIGINT/SIGTERM shutdown", () => {
       startServer: f.startServerMock,
       openBrowser: vi.fn().mockResolvedValue(undefined),
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       exit: exitMock,
     });
 
@@ -517,6 +1068,12 @@ describe("cli: main -- SIGINT/SIGTERM shutdown", () => {
       startServer: f.startServerMock,
       openBrowser: vi.fn().mockResolvedValue(undefined),
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       exit: exitMock,
     });
 
@@ -555,6 +1112,12 @@ describe("cli: main -- SIGINT/SIGTERM shutdown", () => {
       startServer: startServerMock,
       openBrowser: vi.fn().mockResolvedValue(undefined),
       getFirmwareConfig: vi.fn().mockReturnValue({}),
+      // Sprint 021 ticket 003: main() now writes/removes daemon.json
+      // via these -- faked here so no test in this file ever touches
+      // the real state directory.
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
       exit: exitMock,
     });
 

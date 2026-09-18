@@ -80,6 +80,38 @@
  * harness bug's worst case) fails Zod validation before this file's
  * handler ever runs — mirroring `mcp/tools/drive.ts`'s own
  * `linkId`/`verb` pattern exactly.
+ *
+ * ## Outliving a client timeout, and surviving a dropped connection
+ * (ticket 021-004)
+ *
+ * A real flash can outlast a calling MCP client's own default timeout
+ * (confirmed live in ticket 019-008: `tigez` flashed successfully but the
+ * caller's own request timed out first). This function's own execution
+ * is unconditional once `startFlash` is called — a timed-out or
+ * disconnected caller changes nothing about what happens above; `record()`
+ * still writes exactly one row with the real outcome. The durable
+ * recovery path is already the "Audit write happens once" section
+ * above: `get_device_status`'s own `recentAgentActions[0]`
+ * (`mcp/tools/inspect.ts`, `projection.ts`'s `buildAgentActionActivity`).
+ * This is the issue's own "Option 3: both" — inline outcome when the
+ * client is still listening, durable audit row otherwise — and it
+ * required no new plumbing; only this doc comment and the tool
+ * `description` below (which used to point at the `flash` overlay, wrong
+ * once it settles) needed correcting.
+ *
+ * Separately, `flash.test.ts`'s own disconnect-mid-flash test proves
+ * (not just by reasoning) that when the caller's own connection is gone
+ * by the time `startFlash`'s promise resolves, the SDK's own
+ * `Protocol._onrequest` (`@modelcontextprotocol/sdk`'s
+ * `shared/protocol.js`) already wraps the resulting undeliverable-
+ * response failure in `.catch(error => this._onerror(...))` — it never
+ * escapes as an uncaught exception or an unhandled rejection that could
+ * crash this host process (which serves other agents' sessions
+ * concurrently). That test exercises the exact failure the real
+ * `StreamableHTTPServerTransport`'s `send()` throws in this situation
+ * (`"No connection established for request ID"`), so no change was
+ * needed here or in `server.ts` to harden this path — the SDK already
+ * degrades safely.
  */
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -144,11 +176,15 @@ export function registerFlashTools(server: McpServer, deps: FlashToolsDeps): voi
         "exact same startFlash path the console's own Flash button uses (session close-first, board_owner='flash' " +
         "acquire, flash, release in finally) immediately and unconditionally (there is no approval step anywhere in " +
         "this system). Awaits the flash through to its terminal outcome and returns it directly -- ok or error -- so " +
-        "the calling agent needs no polling to learn the result; get_device_status's `flash` overlay remains " +
-        "available for interim phase progress, or as a fallback if this call's own connection drops before the " +
-        "response arrives. This is the highest-blast-radius tool in this surface: a bad flash can leave a board " +
-        "silent until reflashed (always recoverable, but not free) -- use a device id you have just confirmed via " +
-        "list_devices/get_device_status.",
+        "the calling agent needs no polling to learn the result; get_device_status's `flash` overlay shows interim " +
+        "phase progress while the flash is under way, but is deleted the instant it settles -- it is not a fallback " +
+        "for a dropped connection. A flash can outlast this call's own timeout (server-side execution is " +
+        "unconditional and keeps going regardless): if this call's own connection drops or times out before the " +
+        "response arrives, the flash still completed (or failed) and is durably recorded -- recover the real outcome " +
+        "with a fresh get_device_status {deviceId} call afterward and read recentAgentActions[0] there (kind/caller/ " +
+        "result/resultReason), rather than assuming a timeout means failure and retrying. This is the " +
+        "highest-blast-radius tool in this surface: a bad flash can leave a board silent until reflashed (always " +
+        "recoverable, but not free) -- use a device id you have just confirmed via list_devices/get_device_status.",
       inputSchema: {
         deviceId: z.coerce
           .number()

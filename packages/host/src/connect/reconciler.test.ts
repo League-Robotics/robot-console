@@ -595,7 +595,7 @@ describe("startReconciler -- in-flight dedupe (acceptance criterion 3)", () => {
       await reconciler.requestOpen("wifi-1");
       expect(connectCalls).toBe(1);
     } finally {
-      reconciler.stop();
+      await reconciler.stop();
     }
   });
 });
@@ -653,7 +653,7 @@ describe("startReconciler -- executor integration (real connector, fake ByteStre
       expect(reconciler.sessions.get("wifi-1")).toBeUndefined();
       expect(Array.from(reconciler.sessions.values())).toEqual([]);
     } finally {
-      reconciler.stop();
+      await reconciler.stop();
     }
   });
 
@@ -710,7 +710,7 @@ describe("startReconciler -- executor integration (real connector, fake ByteStre
         expect(session?.linkId).toBe("wifi-1");
         expect(session?.link).toBeDefined();
       } finally {
-        reconciler.stop();
+        await reconciler.stop();
       }
     },
   );
@@ -760,7 +760,7 @@ describe("startReconciler -- executor integration (real connector, fake ByteStre
         expect(rows.devices[0]).toMatchObject({ id: ROBOT_SERIAL, owned: 1, usb_serial: "0012345678" });
         expect(rows.links.find((l) => l.id === "wifi-1")?.device_id).toBe(ROBOT_SERIAL);
       } finally {
-        reconciler.stop();
+        await reconciler.stop();
       }
     },
   );
@@ -783,7 +783,7 @@ describe("startReconciler -- executor integration (real connector, fake ByteStre
       const unknown = await reconciler.requestOpen("does-not-exist");
       expect(unknown.refusedReason).toBe('no such link "does-not-exist"');
     } finally {
-      reconciler.stop();
+      await reconciler.stop();
     }
   });
 
@@ -804,7 +804,7 @@ describe("startReconciler -- executor integration (real connector, fake ByteStre
     try {
       expect(opens).toBe(0);
     } finally {
-      reconciler.stop();
+      await reconciler.stop();
     }
   });
 
@@ -854,7 +854,7 @@ describe("startReconciler -- executor integration (real connector, fake ByteStre
       expect(rowB?.state).toBe("connected");
       expect(store.snapshotRows().sessions.find((s) => s.link_id === "radio-B")).toBeDefined();
     } finally {
-      reconciler.stop();
+      await reconciler.stop();
     }
   }, 10_000);
 
@@ -915,7 +915,7 @@ describe("startReconciler -- executor integration (real connector, fake ByteStre
       await flush();
       expect(createSerialStreamCalls).toBe(1);
     } finally {
-      reconciler.stop();
+      await reconciler.stop();
     }
   });
 });
@@ -999,7 +999,7 @@ describe("startReconciler -- dead-transport session teardown (bench defect 010 a
       expect(sessionRow).toBeDefined();
       expect(reconciler.sessions.get("wifi-1")).toBeDefined();
     } finally {
-      reconciler.stop();
+      await reconciler.stop();
     }
   });
 
@@ -1039,7 +1039,7 @@ describe("startReconciler -- dead-transport session teardown (bench defect 010 a
       expect(opens).toBe(1);
       expect(store.snapshotRows().sessions.find((s) => s.link_id === "radio-A")).toBeUndefined();
     } finally {
-      reconciler.stop();
+      await reconciler.stop();
     }
   });
 });
@@ -1079,7 +1079,7 @@ describe("startReconciler -- an explicit reopen clears userClosed", () => {
       expect(row?.state).toBe("connecting");
       expect(row?.userClosed).toBe(false);
     } finally {
-      reconciler.stop();
+      await reconciler.stop();
     }
   });
 });

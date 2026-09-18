@@ -2,12 +2,12 @@
 id: '002'
 title: Bind the console host to the LAN, self-advertise over mDNS, and widen the MCP
   host-header allowlist
-status: open
+status: done
 use-cases:
 - SUC-001
 - SUC-005
 depends-on:
-- "001"
+- '001'
 github-issue: ''
 issue: shared-console-host-daemon-cli-and-discovery.md
 completes_issue: true
@@ -76,30 +76,30 @@ Work:
 
 ## Acceptance Criteria
 
-- [ ] `startServer` binds `0.0.0.0` by default; a client connecting via
+- [x] `startServer` binds `0.0.0.0` by default; a client connecting via
       a non-loopback address on the same machine reaches the WS/HTTP
       server (unit/integration test using a real ephemeral port bound to
       `0.0.0.0` and connected to via `127.0.0.1`, since a real second
       network interface is not guaranteed in CI — the bench-level cross-
       subnet check is a separate, hardware-dependent verification, not a
       unit-test gate).
-- [ ] `consoleAdvertiser.ts`'s `start` calls the injected backend's
+- [x] `consoleAdvertiser.ts`'s `start` calls the injected backend's
       `publish` with `{name, type: "robotconsole", protocol: "tcp",
       port}` matching the actual bound port (not the requested one, when
       they differ); `stop()` calls `unpublish`/`destroy` exactly once.
-- [ ] `cli.ts`'s shutdown path stops the advertiser before (or alongside)
+- [x] `cli.ts`'s shutdown path stops the advertiser before (or alongside)
       closing the server — verified by an injected fake advertiser
       recording call order in a `cli.test.ts` case.
-- [ ] `hostHeaderValidation` is called with an allowlist that includes
+- [x] `hostHeaderValidation` is called with an allowlist that includes
       `localhost`/`127.0.0.1`/`[::1]` plus this machine's own hostname,
       `<hostname>.local`, and every non-internal IPv4 address
       `os.networkInterfaces()` reports at the time of the call (unit
       test with a fake `os.networkInterfaces()`/`os.hostname()`).
-  - [ ] A request whose `Host` header names one of those LAN
+  - [x] A request whose `Host` header names one of those LAN
       addresses/hostnames is accepted by the middleware (regression
       guard: fails against plain `localhostHostValidation()`, confirming
       the fix is load-bearing).
-- [ ] No existing `server.test.ts`/`mcp/server.test.ts` case regresses;
+- [x] No existing `server.test.ts`/`mcp/server.test.ts` case regresses;
       no test opens a real multicast socket or binds a real `0.0.0.0`
       listener reachable from outside the test process.
 

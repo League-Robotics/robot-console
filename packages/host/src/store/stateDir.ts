@@ -5,9 +5,11 @@
  *
  * Factored out of `resolveKnownRobotsFilePath` (originally
  * `store/knownRobots.ts`) so every file that lives in the state
- * directory — `known-robots.json`, `wifi-credentials.json`, and
- * `console.sqlite` (db.ts) — resolves its directory the same way,
- * without re-encoding the override/XDG fallback logic per file.
+ * directory — `known-robots.json`, `wifi-credentials.json`,
+ * `console.sqlite` (db.ts), and (sprint 021 ticket 003) `daemon.json`/
+ * `console.log` (`daemon/daemonInfo.ts`) — resolves its directory the
+ * same way, without re-encoding the override/XDG fallback logic per
+ * file.
  *
  * {@link resolveKnownRobotsFilePath} itself moved here outright (sprint
  * 015 ticket 003): `store/knownRobots.ts` (the old in-memory
@@ -76,4 +78,47 @@ export function resolveKnownRobotsFilePath(
     return options.filePath;
   }
   return path.join(resolveStateDir(options, env), KNOWN_ROBOTS_FILENAME);
+}
+
+/** Filename of the daemon-info record (`daemon/daemonInfo.ts`'s
+ * `{pid, host, port, startedAt}`), joined onto {@link resolveStateDir}'s
+ * directory. */
+const DAEMON_INFO_FILENAME = "daemon.json";
+
+/** Filename the daemon CLI's detached child (`start`) redirects its
+ * stdout/stderr into, joined onto {@link resolveStateDir}'s directory —
+ * sprint 021 ticket 003's own "where daemon logs go" open question,
+ * resolved to the same already-solved state directory rather than a
+ * second convention (`sprint.md`'s Design Rationale, "Daemon log
+ * destination"). */
+const DAEMON_LOG_FILENAME = "console.log";
+
+/**
+ * Resolve the on-disk path for `daemon.json` — an explicit `filePath`,
+ * else {@link resolveStateDir}'s directory joined with this file's name.
+ * Same pattern as {@link resolveKnownRobotsFilePath}; no new
+ * state-directory resolution rule.
+ */
+export function resolveDaemonInfoFilePath(
+  options: { filePath?: string; stateDir?: string } = {},
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (options.filePath !== undefined) {
+    return options.filePath;
+  }
+  return path.join(resolveStateDir(options, env), DAEMON_INFO_FILENAME);
+}
+
+/**
+ * Resolve the on-disk path for the daemon's `console.log` — same
+ * pattern as {@link resolveDaemonInfoFilePath}/{@link resolveKnownRobotsFilePath}.
+ */
+export function resolveDaemonLogFilePath(
+  options: { filePath?: string; stateDir?: string } = {},
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (options.filePath !== undefined) {
+    return options.filePath;
+  }
+  return path.join(resolveStateDir(options, env), DAEMON_LOG_FILENAME);
 }

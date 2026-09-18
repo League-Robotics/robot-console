@@ -17,6 +17,38 @@ USB serial, WiFi, farm serial bridges (mbserial), and radio through a
 relay. The console is a single host process that owns those connections.
 You drive it through MCP.
 
+## Connecting
+
+The MCP server lives **inside the host process**, so start a host first
+(below) — no host means no endpoint to connect to. It speaks Streamable
+HTTP, not stdio: there is no command to spawn.
+
+Endpoint: \`http://127.0.0.1:4795/mcp\`
+
+Claude Code, on this machine:
+
+    claude mcp add --transport http robot-console http://127.0.0.1:4795/mcp
+
+or in \`.mcp.json\`:
+
+    {
+      "mcpServers": {
+        "robot-console": {
+          "type": "http",
+          "url": "http://127.0.0.1:4795/mcp"
+        }
+      }
+    }
+
+From another machine on the bench, swap the host for this machine's
+name — \`http://<hostname>.local:4795/mcp\`. The host binds to every
+interface and accepts that name; it is the same URL \`rconsole ui\`
+prints for sharing.
+
+Identify yourself: your MCP client name is recorded as the \`caller\` on
+every session and every action you take, and it is what a human sees in
+the console UI. Use something a person can recognize.
+
 ## Getting a host
 
     rconsole status     # is one running, and where?
@@ -34,13 +66,7 @@ same serial ports and relay leases; this has put a robot into a wall.
 If it reports \`timed-out\`, the robots may still be held — believe that
 over any assumption that stopping worked.
 
-## Talking to it
-
-The MCP server is mounted **in-process on the host**, at \`/mcp\` on the
-host's own port (default 4795). There is no separate MCP process to
-start: no host means no MCP endpoint. Streamable HTTP, not stdio.
-
-Tools:
+## Tools
 
 | tool | what it does |
 | --- | --- |

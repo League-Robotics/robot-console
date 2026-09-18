@@ -210,4 +210,23 @@ describe("agent instructions", () => {
   it("says there is only ever one host", () => {
     expect(AGENT_INSTRUCTIONS).toMatch(/only ever one host/i);
   });
+
+  it("tells an agent how to actually connect, not just what the tools are", () => {
+    // The point of the Connecting section: an agent that has never seen
+    // this bench must be able to get from `rconsole agent` to a working
+    // MCP client without asking a human.
+    expect(AGENT_INSTRUCTIONS).toContain("http://127.0.0.1:4795/mcp");
+    expect(AGENT_INSTRUCTIONS).toContain("claude mcp add --transport http");
+    expect(AGENT_INSTRUCTIONS).toContain('"type": "http"');
+    // Streamable HTTP, not stdio -- the single most likely wrong guess,
+    // since this repo's own .mcp.json uses a stdio server.
+    expect(AGENT_INSTRUCTIONS).toMatch(/not stdio/i);
+    // And the endpoint does not exist without a host.
+    expect(AGENT_INSTRUCTIONS).toMatch(/no host means no endpoint/i);
+  });
+
+  it("tells an agent its client name is recorded and visible to humans", () => {
+    expect(AGENT_INSTRUCTIONS).toMatch(/caller/);
+    expect(AGENT_INSTRUCTIONS).toMatch(/recognize/i);
+  });
 });

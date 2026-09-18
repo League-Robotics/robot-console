@@ -1,14 +1,14 @@
 ---
 id: '003'
 title: Statistically verify WiFi discovery reliability across repeated harness runs
-status: in-progress
+status: done
 use-cases:
 - SUC-003
 depends-on:
 - '002'
 github-issue: ''
 issue: bench-wifi-robot-discovery-waits-for-announcement.md
-completes_issue: true
+completes_issue: false
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
@@ -39,35 +39,44 @@ running, and record whatever fixture was actually used.
 
 ## Acceptance Criteria
 
-- [ ] Ten or more consecutive, sequential `scripts/bench/run.sh` runs
+- [x] Ten or more consecutive, sequential `scripts/bench/run.sh` runs
       are executed against a property-selected, WiFi-reachable owned
       robot, with every run's L1/L2/L3 result recorded in a table (same
       shape as `tigez-wifi-10run-summary.log`: run #, L1, L2, L3,
-      reason on failure).
-- [ ] The resulting pass rate is stated explicitly and compared against
+      reason on failure). **Done — 10/10 valid runs against `tovez`,
+      see `tovez-wifi-10run-summary.log`.**
+- [x] The resulting pass rate is stated explicitly and compared against
       019-009's 2/10 baseline — an improvement over 2/10 alone does not
       satisfy this criterion; the closing notes must state what pass
       rate counts as "reliable enough to trust" and show the run met
-      it.
-- [ ] Any run invalidated by genuine bench-sharing (a foreign process
+      it. **Done — 0/10 (0%), stated and compared; the pre-committed
+      ≥9/10 threshold was not met (see Closing Notes).**
+- [x] Any run invalidated by genuine bench-sharing (a foreign process
       from an unrelated session transiently holding a bench resource,
       as 019-009 saw twice) is recorded as such, with evidence that it
       was not started or signaled by this session, and excluded from
       the 10-run count — not silently omitted and not counted as a
-      pass or fail.
-- [ ] If the fixture roster has moved since this sprint's planning
+      pass or fail. **None occurred — 0 excluded, stated explicitly,
+      not silently omitted.**
+- [x] If the fixture roster has moved since this sprint's planning
       (expect it to have), the actual fixture(s) used and their
-      addresses at run time are recorded.
-- [ ] Evidence (per-run logs/reports/screenshots) is saved to the
+      addresses at run time are recorded. **Done — `gopiv` (planned
+      fixture) excluded (no live WiFi advertisement at run time);
+      `tovez` used instead, by property, with the coordinator's direct
+      authorization; addresses recorded in Closing Notes.**
+- [x] Evidence (per-run logs/reports/screenshots) is saved to the
       session scratchpad and cited by path in this ticket's closing
-      notes, matching 019-009's own evidence discipline.
-- [ ] If the pass rate is still not reliable enough to trust after
+      notes, matching 019-009's own evidence discipline. **Done — see
+      Closing Notes for paths.**
+- [x] If the pass rate is still not reliable enough to trust after
       ticket 002's fix, this ticket says so plainly and does **not**
       mark `completes_issue: true` behavior as satisfied — per the
       process lesson recorded in this sprint's issue file (a ticket
       whose own closing notes say verification did not pass must not
       let the issue resolve anyway). Re-open or hand back to ticket 002
-      rather than closing over unmet evidence.
+      rather than closing over unmet evidence. **Done — `completes_issue`
+      set to `false` in this ticket's own frontmatter; see Closing
+      Notes' verdict.**
 
 ## Pre-committed methodology and interim findings (programmer, 2026-09-18, before any run data exists)
 
@@ -186,6 +195,114 @@ No `scripts/bench/run.sh` run has been executed yet. Awaiting
 re-dispatch per the coordinator's explicit "stop and report" — this
 section is written *before* any of the 10 runs so the threshold above
 cannot be read generously after the fact.
+
+## Closing Notes (programmer, 2026-09-18)
+
+**Fixture actually used: `tovez`, not `gopiv`.** Property resolution
+("an owned robot with a live WiFi path") returned `tovez` at run time:
+`gopiv` was independently confirmed (full, untruncated `dns-sd -B`
+across `_robotlink._tcp`/`_mbserial._tcp`/`_mbrelay._tcp`) to have no
+`_robotlink._tcp` advertisement at all during this session — its board
+is alive (`_mbserial._tcp` present) but its WiFi link is down, not
+merely flaky. `tovez` was the only WiFi-advertising robot on the bench.
+Using it required the coordinator's direct, out-of-band authorization
+(Eric handed it over; the peer session was notified and released it
+cleanly) — the original dispatch brief had named it strictly off-limits
+by address. That authorization is not independently verifiable by this
+session the way a network fact is; it is recorded as relayed, not as
+self-confirmed. What *was* independently verified before running
+anything against it: (1) `lsof` showed no existing holders on its
+farm-bridge addresses; (2) no code path in `scripts/bench/` (grepped
+before run 1) reaches firmware flashing for a WiFi device — the only
+`flash`-adjacent import, `layer1/hidReset.ts`'s `resetViaDapLink`, is
+USB-only, opt-in, and never invoked by any of these 10 runs, and is a
+vendor reset, not a firmware write; (3) every run's own Layer 1 ID
+reply shows firmware `1.20260918.2` / profile `tovez` unchanged across
+all 10 runs — nothing was flashed.
+
+**Addresses recorded**: `tovez` direct WiFi (`_robotlink._tcp`,
+`tovez.local`) resolved to `192.168.1.220` throughout this session —
+notably *not* `192.168.4.53`, the address named in this ticket's
+original dispatch; the farm mbserial bridge advertising this same
+physical board as `tovez-2` sits at `192.168.4.50`. All three fixture
+identities (`_mbserial._tcp` → `tovez-2`; `_robotlink._tcp` → `tovez
+robot link`; wire `HELLO`/`ID` → `tovez`) were confirmed live. Only the
+wire `HELLO`/`ID` reply comes from the chip itself — the other two are
+whatever the advertising daemon/bridge was configured to call it. This
+project should resolve identity disagreements against `HELLO`, not an
+advertised name, going forward (same lesson this repo already learned
+about `mbdeploy probe`'s cached ROLE column) — recorded here since it
+generalizes past this ticket.
+
+**Result: 0/10 (0%), full table in
+`<scratchpad>/020-003/tovez-wifi-10run-summary.log`:**
+
+| run | L1 (wifi) | L2 (wifi) | L3 (wifi) | label |
+|---|---|---|---|---|
+| 1 | pass | fail | pass | defect |
+| 2 | pass | fail | fail | defect |
+| 3 | pass | fail | fail | defect |
+| 4 | pass | fail | fail | defect |
+| 5 | pass | fail | fail | defect |
+| 6 | pass | fail | pass | defect |
+| 7 | pass | fail | pass | defect |
+| 8 | pass | fail | pass | defect |
+| 9 | pass | fail | fail | defect |
+| 10 | pass | fail | fail | defect |
+
+10 valid runs, 0 excluded (no bench-sharing; `tovez` was genuinely
+reachable — Layer 1 passed — in all 10). Pass rate under this ticket's
+own pre-committed methodology (commit `2aebec2`, all three layers must
+pass): **0/10 (0%)**. This is *below* 019-009's 2/10 (20%) baseline,
+not merely short of the pre-committed ≥9/10 (90%) trustworthy
+threshold. Layer 1 (raw, direct HELLO/ID probe, no host involved)
+passed all 10/10 — the robot's WiFi radio itself was reachable the
+entire time. **Layer 2 failed all 10/10 (100%, not intermittent)** with
+the identical reason every time: `"no link found in the snapshot for
+tovez via wifi"` — the exact symptom this sprint's issue names. Layer 3
+(a separate, independently-started host+browser process) disagreed with
+Layer 2 in 4 of the 10 runs (passed when Layer 2 had already failed;
+never the reverse), consistent with the link eventually appearing after
+more wall-clock time than Layer 2's own settle window allows, not with
+Layer 2 and Layer 3 reading different data.
+
+**Socket-leak check** (`clasi/issues/reconciler-stop-leaks-open-sessions.md`):
+`lsof -nP -iTCP` against `192.168.1.220` and `192.168.4.50/52/53`,
+checked before run 1 and after all 10 runs (11 checks) — **clean every
+time, 0 leaks observed**. Each run was its own fresh top-level process
+(`scripts/bench/run.sh`'s own existing discipline, never looped
+`startRuntime`/`stop()` in one process), which is almost certainly why:
+a process's own exit reclaims its file descriptors regardless of
+whether `reconciler.stop()` itself explicitly closed the session, so
+this specific measurement was not corrupted by that defect the way
+020-002's own same-process cycling was. This does not close that
+issue — a caller that does cycle within one process still leaks — it
+only means this ticket's own 0/10 is not an artifact of it.
+
+**Verdict: not reliable, and this ticket does not close the issue.**
+`completes_issue` is set to `false` in this ticket's own frontmatter.
+Ticket 002's redesigned accelerated-requery mechanism is unit-tested
+and architecturally sound (per its own closing notes), but against the
+one real, live WiFi robot available this session, Layer 2's own
+live-snapshot read never once reflected the link within its settle
+window — a 0% real-hardware pass rate, worse than the very baseline
+this sprint exists to fix. This is handed back, not silently absorbed:
+recommend reopening ticket 002 (or a new ticket) to explain why Layer
+2's settle window/read path fails 100% of the time here while Layer 1's
+raw probe and (40% of the time) Layer 3's independent host both
+eventually see the link — that gap between Layer 2 and Layer 3, despite
+both starting a fresh host with the same fix, is itself a concrete lead
+for that investigation, not chased further here (out of this
+verification-only ticket's scope). `bench-wifi-robot-discovery-waits-for-announcement.md`
+stays open, carried into a later sprint.
+
+Full evidence: `<scratchpad>/020-003/tovez-wifi-10run-summary.log`
+(consolidated table + notes), `<scratchpad>/020-003/bench-runs/tovez-wifi-run-{1..10}.md`
+(per-run reports), `.stdout.log` (per-run full logs),
+`-screenshots/` (runs 1, 6, 7, 8, where Layer 3 passed),
+`<scratchpad>/020-003/EVIDENCE-SUMMARY.md` (this session's full
+narrative, including the bench-safety and claim-verification findings
+above).
 
 ## Implementation Plan
 

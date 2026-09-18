@@ -1,9 +1,5 @@
 ---
-status: done
-sprint: 019
-tickets:
-- 019-002
-- 019-009
+status: pending
 ---
 
 # WiFi robot discovery waits for the mDNS announcement interval instead of resolving on demand
@@ -180,3 +176,26 @@ that triggers it) is exactly that kind of structural work, not a
 one-line fix. Reopening/carrying this issue forward to the next sprint
 that has bench access, with this ticket's 10-run evidence attached
 rather than 019-002's single anecdotal 206ms success.
+
+
+## Returned to the pool by the team-lead (2026-09-18)
+
+`close_sprint`'s issue sweep moved this file into sprint 019's
+`issues/done/` and set `status: done`, because tickets 019-002 and
+019-009 both carry `completes_issue: true`. **That is wrong and this
+note corrects it**: ticket 009's own gate ran the harness ten times
+against `tigez` and got **2 pass / 8 fail**, with Layer 2 failing in
+most of the failures — so the defect is not a Layer 3 timing artifact
+and 019-002's fix is not reliable. The evidence is in this file above,
+and in the run logs at
+`<scratchpad>/019-009/tigez-wifi-10run-summary.log` plus the per-run
+reports beside it.
+
+Recording the process lesson too, since it will recur: a ticket marked
+done with `completes_issue: true` resolves its issue at close **even
+when the ticket's own closing notes say the fix was not verified**.
+019-002 was closed on one live data point (a 206 ms link creation
+against `tovez`) with its ten-run criterion explicitly deferred to 009 —
+and the sweep then resolved the issue anyway. Either set
+`completes_issue: false` on a ticket whose verification is deferred, or
+re-check the swept issues at close. The team-lead owns that check.

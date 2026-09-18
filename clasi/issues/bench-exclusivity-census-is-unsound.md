@@ -74,6 +74,45 @@ discoverable. This is now the **third** independent demonstration:
   `scripts/bench/run.sh` and `scripts/bench/README.md`, which currently
   read as though it makes sharing safe.
 
+## The enumeration half, located in code (2026-09-18, sprint 020 ticket 003)
+
+Ticket 003 refused to start its verification runs after finding the
+concrete mechanism, and it is worse than "hosts tend to grab things":
+
+**`scripts/bench/layer1/index.ts`'s WiFi-announced dial loop (~line 357)
+dials every `_robotlink._tcp` service the passive mDNS browse discovers,
+unconditionally.** It is not gated by `known-robots.json`, not by
+"owned" status, and not by any CLI flag. `--skip-held` and
+`--allow-shared-bench` are both irrelevant to it — the robot is not
+*held*, it is merely *discoverable*, and discoverable is all the loop
+requires.
+
+So the harness cannot be asked to leave a specific robot alone. A
+promise to stay off a given device cannot be kept while running
+`scripts/bench/run.sh` at all. That promise was made to a peer session
+in writing and was, it turns out, unkeepable.
+
+**And the subnets are not isolation.** This host's `en0` and `en1` both
+carry a `/21` netmask covering `192.168.0.0`-`192.168.7.255`, so
+`gopiv` (192.168.1.x) and `tovez` (192.168.4.x) sit in **one broadcast
+domain**. Every argument in this project that treated the two subnets as
+separating the fixtures — including in this issue's own earlier framing
+and in sprint 021's planning notes — was wrong. mDNS reaches across
+them freely.
+
+### What that adds to the fix
+
+The scoping requirement is now concrete and testable: **a run must be
+able to name the devices it may touch, and dial nothing else.** That is
+a change to Layer 1's dial loop, not just to a flag's documentation.
+Note that Layer 2/3 *can* already be fenced (a synthetic single-robot
+`known-robots.json` under a scratch `ROBOT_CONSOLE_STATE_DIR` works, and
+was validated in 020-002) — it is Layer 1 alone that has no such gate.
+
+Pair this with [[reconciler-stop-leaks-open-sessions]]: an unconstrained
+dial is bad, and an unconstrained dial that then *fails to release the
+socket* is what actually put a robot in a rail.
+
 ## Related
 
 - [[shared-console-host-daemon-cli-and-discovery]] — sprint 021's

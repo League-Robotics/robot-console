@@ -13,6 +13,8 @@ import {
   DEFAULT_MBRELAY_TTL_MS,
   DEFAULT_MBFLASH_TTL_MS,
   DEFAULT_RADIO_TTL_MS,
+  DEFAULT_WIFI_FAST_REQUERY_INTERVAL_MS,
+  DEFAULT_WIFI_FAST_REQUERY_MAX_ATTEMPTS,
   type MdnsWatcherDeps,
   type MdnsWatcherOptions,
 } from "./mdnsWatcher.js";
@@ -931,18 +933,28 @@ describe("startMdnsWatcher", () => {
 });
 
 /**
- * 019-002: `triggerWifiOnDemandProbes`'s own suite. `deps.probeWifiOnDemand`
- * is always a fully synthetic fake here -- no real DNS/socket I/O in this
- * file, per this module's own testing convention (`discovery/
- * wifiOnDemand.test.ts` is where the real bounded-timeout/real-socket
- * behavior is exercised). vitest's fake timers (`beforeEach` above) drive
- * the interval, but a fake timer never advances a microtask queue on its
- * own -- {@link flushMicrotasks} drains the `probeWifiOnDemandDep(...).
- * then().catch().finally()` chain after every point that can start one,
- * mirroring `tcpStream.test.ts`'s own `flush()` idiom for the same
- * reason.
+ * 019-002/020-002: `triggerWifiOnDemandProbes`'s own suite.
+ *
+ * 020-002 replaced the original `dns.lookup`-based on-demand probe with
+ * an accelerated re-query of the same passive `_robotlink._tcp`/`._udp`
+ * browsers `handleWifi` already listens on -- real bench measurement
+ * (see `<scratchpad>/020-002/`) showed a solo, completely uncontended
+ * `dns.lookup` for a `.local` name with no live mDNS answer takes ~5000ms
+ * on real hardware (an OS mDNS negative-resolution floor, not a
+ * concurrency artifact), which sits *below* the DNS probe's own former
+ * 2000ms bound -- so that approach could never reliably distinguish
+ * "not there" from "not cached yet," independent of how many probes ran
+ * concurrently. `browser.update()` has no such floor: it is a bare
+ * re-send of the same query the passive path already performs, and any
+ * answer arrives through the already-tested `up`/`onServiceChange` ->
+ * `handleWifi` path (covered by the `startMdnsWatcher` describe block
+ * above) -- so this suite only needs to prove the *triggering*
+ * mechanism: an immediate re-query when a device is pending, a bounded
+ * fast-retry cadence while it stays pending, and a clean stop once a
+ * link appears or attempts run out. No real DNS/socket I/O anywhere in
+ * this file, per this module's own testing convention.
  */
-describe("startMdnsWatcher -- 019-002 WiFi on-demand fallback", () => {
+describe("startMdnsWatcher -- 020-002 accelerated WiFi re-query", () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -951,39 +963,32 @@ describe("startMdnsWatcher -- 019-002 WiFi on-demand fallback", () => {
     vi.useRealTimers();
   });
 
-  async function flushMicrotasks(): Promise<void> {
-    for (let i = 0; i < 10; i++) {
-      await Promise.resolve();
-    }
+  /** Registers `ids.length` owned, non-relay devices and returns their
+   * names, in the same order as `ids`. */
+  function ownedDevices(store: Store, ids: number[]): string[] {
+    return ids.map((id) => {
+      const device = namedDevice(id);
+      store.upsertDevice({ id: device.id, name: device.name, kind: "robot", at: 1 });
+      store.setOwned(device.id, true, 1);
+      return device.name;
+    });
   }
 
   it(
-    "probes every owned, non-relay device with no current wifi link immediately at start -- before any mDNS event, " +
-      "and creates the link exactly like an mDNS observation would on a 'found' result",
-    async () => {
+    "an owned, non-relay device with no current wifi link gets an immediate accelerated re-query of both wifi " +
+      "browsers at start -- before any mDNS event, and before the first normal browseCycle tick",
+    () => {
       const store = freshStore();
       const backend = fakeBackend();
-      const owned = namedDevice(1);
-      store.upsertDevice({ id: owned.id, name: owned.name, kind: "robot", at: 1 });
-      store.setOwned(owned.id, true, 1);
-      const probedNames: string[] = [];
-      const handle = start(store, backend, undefined, {
-        probeWifiOnDemand: (name) => {
-          probedNames.push(name);
-          return Promise.resolve({ status: "found", host: `${name}.local`, port: 7654, ip: "10.0.0.5" } as const);
-        },
-      });
+      ownedDevices(store, [1]);
+      const handle = start(store, backend);
       try {
-        await flushMicrotasks();
-        // No `up`/`onServiceChange`/`update()` ever fired on any browser
-        // -- this is the "before the first mDNS announcement" case the
-        // issue itself describes.
-        expect(probedNames).toEqual([owned.name]);
-        const link = store.snapshotRows().links.find((l) => l.id === `wifi-${owned.name}`);
-        expect(link).toMatchObject({
-          address: JSON.stringify({ host: `${owned.name}.local`, port: 7654, ip: "10.0.0.5" }),
-          state: "connectable",
-        });
+        // No `up`/`onServiceChange` ever fired, and the setInterval-driven
+        // browseCycle tick has not fired yet either (fake timers, nothing
+        // advanced) -- the only thing that could have called `update()`
+        // this early is the immediate at-start kick.
+        expect(backend.robotlinkTcp.update).toHaveBeenCalled();
+        expect(backend.robotlinkUdp.update).toHaveBeenCalled();
       } finally {
         handle.stop();
         store.close();
@@ -991,36 +996,21 @@ describe("startMdnsWatcher -- 019-002 WiFi on-demand fallback", () => {
     },
   );
 
-  it("never probes a device that already has a live (non-stale) wifi link", async () => {
+  it("never accelerates the re-query when no owned device needs a wifi link", () => {
     const store = freshStore();
     const backend = fakeBackend();
-    const owned = namedDevice(2);
-    store.upsertDevice({ id: owned.id, name: owned.name, kind: "robot", at: 1 });
-    store.setOwned(owned.id, true, 1);
-    // Already discovered before this watcher even starts -- written
-    // directly, the same row shape `handleWifi` itself would produce,
-    // rather than routing through a scripted mDNS event (this watcher's
-    // browsers only start listening once `startMdnsWatcher` itself calls
-    // `backend.find()`, so an event emitted beforehand would have no
-    // listener yet to catch it).
-    store.upsertLink({ id: `wifi-${owned.name}`, transport: "wifi", address: { host: `${owned.name}.local`, port: 7654 }, deviceId: owned.id, at: 1 });
-    let probeCalls = 0;
-    const handle = start(store, backend, undefined, {
-      probeWifiOnDemand: () => {
-        probeCalls++;
-        return Promise.resolve({ status: "not-found", reason: "should never be called" } as const);
-      },
-    });
+    // No devices at all.
+    const handle = start(store, backend);
     try {
-      await flushMicrotasks();
-      expect(probeCalls).toBe(0);
+      expect(backend.robotlinkTcp.update).not.toHaveBeenCalled();
+      expect(backend.robotlinkUdp.update).not.toHaveBeenCalled();
     } finally {
       handle.stop();
       store.close();
     }
   });
 
-  it("never probes an unowned device or a relay-kind device", async () => {
+  it("never accelerates the re-query for an unowned device or a relay-kind device", () => {
     const store = freshStore();
     const backend = fakeBackend();
     const unowned = namedDevice(3);
@@ -1029,44 +1019,29 @@ describe("startMdnsWatcher -- 019-002 WiFi on-demand fallback", () => {
     // `unowned` is left at its default owned=false -- never explicitly set.
     store.upsertDevice({ id: relay.id, name: relay.name, kind: "relay", at: 1 });
     store.setOwned(relay.id, true, 1);
-    const probedNames: string[] = [];
-    const handle = start(store, backend, undefined, {
-      probeWifiOnDemand: (name) => {
-        probedNames.push(name);
-        return Promise.resolve({ status: "not-found", reason: "n/a" } as const);
-      },
-    });
+    const handle = start(store, backend);
     try {
-      await flushMicrotasks();
-      expect(probedNames).toEqual([]);
+      expect(backend.robotlinkTcp.update).not.toHaveBeenCalled();
+      expect(backend.robotlinkUdp.update).not.toHaveBeenCalled();
     } finally {
       handle.stop();
       store.close();
     }
   });
 
-  it("a 'not-found' result creates nothing, and the same device is retried on the next scheduled tick (bounded retry, not one-shot)", async () => {
+  it("never accelerates the re-query for a device that already has a live (non-stale) wifi link", () => {
     const store = freshStore();
     const backend = fakeBackend();
-    const owned = namedDevice(5);
+    const owned = namedDevice(2);
     store.upsertDevice({ id: owned.id, name: owned.name, kind: "robot", at: 1 });
     store.setOwned(owned.id, true, 1);
-    let probeCalls = 0;
-    const handle = start(store, backend, undefined, {
-      probeWifiOnDemand: () => {
-        probeCalls++;
-        return Promise.resolve({ status: "not-found", reason: "no reply" } as const);
-      },
-    });
+    // Already discovered before this watcher even starts -- written
+    // directly, the same row shape `handleWifi` itself would produce.
+    store.upsertLink({ id: `wifi-${owned.name}`, transport: "wifi", address: { host: `${owned.name}.local`, port: 7654 }, deviceId: owned.id, at: 1 });
+    const handle = start(store, backend);
     try {
-      await flushMicrotasks();
-      expect(probeCalls).toBe(1);
-      expect(store.snapshotRows().links.find((l) => l.id === `wifi-${owned.name}`)).toBeUndefined();
-
-      vi.advanceTimersByTime(DEFAULT_REQUERY_INTERVAL_MS);
-      await flushMicrotasks();
-      expect(probeCalls).toBe(2);
-      expect(store.snapshotRows().links.find((l) => l.id === `wifi-${owned.name}`)).toBeUndefined();
+      expect(backend.robotlinkTcp.update).not.toHaveBeenCalled();
+      expect(backend.robotlinkUdp.update).not.toHaveBeenCalled();
     } finally {
       handle.stop();
       store.close();
@@ -1074,40 +1049,37 @@ describe("startMdnsWatcher -- 019-002 WiFi on-demand fallback", () => {
   });
 
   it(
-    "a probe that never settles never blocks this watcher's own aging/pruning or heartbeat, and is not re-issued " +
-      "while still in flight (no busy loop)",
-    async () => {
+    "keeps re-querying at the fast interval while a device stays unlinked, and stops the instant its link " +
+      "appears via the ordinary handleWifi path (no independent timeout of its own to get wrong)",
+    () => {
       const store = freshStore();
       const backend = fakeBackend();
-      const owned = namedDevice(6);
+      const owned = namedDevice(5);
       store.upsertDevice({ id: owned.id, name: owned.name, kind: "robot", at: 1 });
       store.setOwned(owned.id, true, 1);
-      let probeCalls = 0;
-      const handle = start(store, backend, undefined, {
-        // Never resolves -- if `triggerWifiOnDemandProbes` ever awaited
-        // this (instead of firing it and moving on), every synchronous
-        // step after it inside `browseCycle` -- `ageAndPruneOnce`, the
-        // heartbeat -- would never run either.
-        probeWifiOnDemand: () => {
-          probeCalls++;
-          return new Promise(() => undefined);
-        },
-      });
+      const handle = start(store, backend);
       try {
-        await flushMicrotasks();
-        expect(probeCalls).toBe(1);
+        const callsAtStart = backend.robotlinkTcp.update.mock.calls.length;
+        expect(callsAtStart).toBeGreaterThan(0);
 
-        vi.advanceTimersByTime(DEFAULT_REQUERY_INTERVAL_MS);
-        await flushMicrotasks();
+        vi.advanceTimersByTime(DEFAULT_WIFI_FAST_REQUERY_INTERVAL_MS);
+        const callsAfterOneFastTick = backend.robotlinkTcp.update.mock.calls.length;
+        expect(callsAfterOneFastTick).toBeGreaterThan(callsAtStart);
 
-        // The tick's own synchronous work landed regardless of the
-        // still-pending probe from the immediate kick above.
-        const task = store.snapshotRows().tasks.find((t) => t.name === "mdnsWatcher");
-        expect(task).toMatchObject({ state: "running" });
-        expect(task?.heartbeat_at).toBeTypeOf("number");
+        // The robot finally answers -- ordinary passive path, no
+        // knowledge here of *why* it answered now (an accelerated query
+        // or its own periodic announcement, indistinguishable and
+        // correctly so).
+        backend.robotlinkTcp.emitUp(wifiService(owned.name, `${owned.name}.local`, 7654));
+        expect(store.snapshotRows().links.find((l) => l.id === `wifi-${owned.name}`)).toBeDefined();
 
-        // And the still-in-flight name was not re-probed -- no busy loop.
-        expect(probeCalls).toBe(1);
+        const callsAfterLinked = backend.robotlinkTcp.update.mock.calls.length;
+        vi.advanceTimersByTime(DEFAULT_WIFI_FAST_REQUERY_INTERVAL_MS * 3);
+        // No further fast-interval ticks once the device is linked --
+        // only whatever the normal DEFAULT_REQUERY_INTERVAL_MS cadence
+        // would add, and 3x the (much shorter) fast interval here is
+        // still well under one normal tick.
+        expect(backend.robotlinkTcp.update.mock.calls.length).toBe(callsAfterLinked);
       } finally {
         handle.stop();
         store.close();
@@ -1115,31 +1087,90 @@ describe("startMdnsWatcher -- 019-002 WiFi on-demand fallback", () => {
     },
   );
 
-  it("probes every owned, non-relay device independently -- one device's own result never affects another's", async () => {
+  it(
+    `gives up after ${String(DEFAULT_WIFI_FAST_REQUERY_MAX_ATTEMPTS)} fast-interval attempts and falls back to the normal cadence, ` +
+      "for a device with no actual WiFi path (never re-attempted in a tight loop forever)",
+    () => {
+      const store = freshStore();
+      const backend = fakeBackend();
+      const owned = namedDevice(6);
+      store.upsertDevice({ id: owned.id, name: owned.name, kind: "robot", at: 1 });
+      store.setOwned(owned.id, true, 1);
+      const handle = start(store, backend);
+      try {
+        // Drain every fast-retry attempt -- the device never answers
+        // (no actual WiFi path, e.g. a USB-only owned robot). Stay
+        // comfortably short of DEFAULT_REQUERY_INTERVAL_MS (30s) so this
+        // phase's own assertion isn't confused by the *normal* tick
+        // re-engaging the fast path all over again (which it correctly
+        // does -- the device is still pending -- but that's the next
+        // assertion's own concern, not this one's).
+        const exhaustionWindowMs = DEFAULT_WIFI_FAST_REQUERY_INTERVAL_MS * (DEFAULT_WIFI_FAST_REQUERY_MAX_ATTEMPTS + 1);
+        expect(exhaustionWindowMs).toBeLessThan(DEFAULT_REQUERY_INTERVAL_MS);
+        vi.advanceTimersByTime(exhaustionWindowMs);
+        const callsAfterExhausted = backend.robotlinkTcp.update.mock.calls.length;
+
+        // Advancing further, but still short of one normal tick, must
+        // not add any more calls -- the fast timer cleared itself.
+        const stillBeforeNormalTickMs = DEFAULT_REQUERY_INTERVAL_MS - exhaustionWindowMs - 1;
+        vi.advanceTimersByTime(stillBeforeNormalTickMs);
+        expect(backend.robotlinkTcp.update.mock.calls.length).toBe(callsAfterExhausted);
+
+        // The device still gets the ordinary DEFAULT_REQUERY_INTERVAL_MS
+        // tick forever after -- falling back, not abandoned outright.
+        vi.advanceTimersByTime(2);
+        expect(backend.robotlinkTcp.update.mock.calls.length).toBeGreaterThan(callsAfterExhausted);
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    },
+  );
+
+  it("accelerates discovery for multiple owned devices at once with a single shared re-query -- no per-device fan-out", () => {
     const store = freshStore();
     const backend = fakeBackend();
-    const found = namedDevice(7);
-    const notFound = namedDevice(8);
-    store.upsertDevice({ id: found.id, name: found.name, kind: "robot", at: 1 });
-    store.setOwned(found.id, true, 1);
-    store.upsertDevice({ id: notFound.id, name: notFound.name, kind: "robot", at: 1 });
-    store.setOwned(notFound.id, true, 1);
-    const handle = start(store, backend, undefined, {
-      probeWifiOnDemand: (name) =>
-        Promise.resolve(
-          name === found.name
-            ? ({ status: "found", host: `${name}.local`, port: 7654, ip: "10.0.0.9" } as const)
-            : ({ status: "not-found", reason: "no reply" } as const),
-        ),
-    });
+    const names = ownedDevices(store, [10, 11, 12, 13, 14]);
+    const handle = start(store, backend);
     try {
-      await flushMicrotasks();
-      expect(store.snapshotRows().links.find((l) => l.id === `wifi-${found.name}`)).toBeDefined();
-      expect(store.snapshotRows().links.find((l) => l.id === `wifi-${notFound.name}`)).toBeUndefined();
+      const callsAtStart = backend.robotlinkTcp.update.mock.calls.length;
+      expect(callsAtStart).toBe(1);
+
+      // All five can be satisfied by the same handful of accelerated
+      // ticks -- proving there is no per-name queue/concurrency
+      // bookkeeping left to reason about (020-002's redesign point).
+      for (const name of names) {
+        backend.robotlinkTcp.emitUp(wifiService(name, `${name}.local`, 7654));
+      }
+      for (const name of names) {
+        expect(store.snapshotRows().links.find((l) => l.id === `wifi-${name}`)).toBeDefined();
+      }
     } finally {
       handle.stop();
       store.close();
     }
+  });
+
+  it("never busy-loops or keeps requerying after stop()", () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const owned = namedDevice(7);
+    store.upsertDevice({ id: owned.id, name: owned.name, kind: "robot", at: 1 });
+    store.setOwned(owned.id, true, 1);
+    const handle = start(store, backend);
+    const callsBeforeStop = backend.robotlinkTcp.update.mock.calls.length;
+    handle.stop();
+    store.close();
+
+    vi.advanceTimersByTime(DEFAULT_WIFI_FAST_REQUERY_INTERVAL_MS * (DEFAULT_WIFI_FAST_REQUERY_MAX_ATTEMPTS + 5));
+    expect(backend.robotlinkTcp.update.mock.calls.length).toBe(callsBeforeStop);
+  });
+
+  it("the fast-requery interval is shorter than the normal requery interval, and the attempt cap keeps total fast-phase duration well under one normal tick", () => {
+    expect(DEFAULT_WIFI_FAST_REQUERY_INTERVAL_MS).toBeGreaterThan(0);
+    expect(DEFAULT_WIFI_FAST_REQUERY_INTERVAL_MS).toBeLessThan(DEFAULT_REQUERY_INTERVAL_MS);
+    expect(DEFAULT_WIFI_FAST_REQUERY_MAX_ATTEMPTS).toBeGreaterThan(0);
+    expect(DEFAULT_WIFI_FAST_REQUERY_INTERVAL_MS * DEFAULT_WIFI_FAST_REQUERY_MAX_ATTEMPTS).toBeLessThan(DEFAULT_REQUERY_INTERVAL_MS);
   });
 });
 

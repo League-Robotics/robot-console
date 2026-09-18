@@ -51,10 +51,17 @@ Three things this ticket must produce:
    is to confirm it's still green after everything else in the sprint
    landed, not to re-derive it).
 2. **End-to-end MCP tool surface smoke test**: inspect → connect/
-   command → drive-with-approval → flash-with-approval, run against a
-   fake/in-memory store per the host's existing test convention (per
+   command → drive (executes immediately, no approval step) → flash
+   (executes immediately, no approval step), run against a fake/in-
+   memory store per the host's existing test convention (per
    `sprint.md`'s Test Strategy), plus a live smoke test against a real
-   running host if a real MCP client is available to drive it.
+   running host if a real MCP client is available to drive it. Per
+   `sprint.md`'s Architecture Revision, tickets 006-008 dropped the
+   `pending_actions`/approval design this criterion originally
+   referenced — there is no Approve/Deny/expire to simulate. What this
+   ticket verifies instead: `request_drive`/`request_flash` reach the
+   robot/board immediately, and each executed call is durably recorded
+   in `agent_actions` with correct attribution.
 3. **Sprint 018 carry-forward item**: UC-016's radio-via-host-attached-
    relay failover path, unverified at 018's close purely because no USB
    relay was attached. Verify it now if a relay is attached at execution
@@ -81,10 +88,20 @@ Three things this ticket must produce:
       `connect/harvester.test.ts` and `runtime.test.ts`, not a re-audit).
 - [ ] An end-to-end scripted test exercises, against a fake store:
       `list_devices` → `open_session` → `send_command STATUS` →
-      `request_drive` → simulated Approve → confirm the command was
-      sent → `close_session`; and separately, `request_flash` →
-      simulated Approve → confirm `startFlash` was called. Both paths
-      also confirm a Deny/expire produces no send/flash.
+      `request_drive {verb, fields}` → confirm the extracted
+      `sendCommand` function was called immediately, with no
+      intermediate state and no wait, and that the fake session/robot
+      actually received the verb → confirm exactly one `agent_actions`
+      row was written with the correct `kind: 'drive'`, `caller`,
+      verb/fields, and `executed_at` → `close_session`; and separately,
+      `request_flash {deviceId, firmwareRef}` → confirm the extracted
+      `startFlash` function was called immediately → confirm the `flash`
+      snapshot overlay carried `origin: 'mcp'`/`caller` for the
+      operation's duration → confirm exactly one `agent_actions` row was
+      written with `kind: 'flash'` and correct attribution. Both paths
+      also confirm a rejected call (a non-allowlisted verb, malformed
+      fields, an unflashable target) never reaches `sendCommand`/
+      `startFlash` and writes no `agent_actions` row.
 - [ ] If a real MCP client is available (e.g. Claude Code itself, via a
       temporary `.mcp.json` entry pointed at a locally running `npx
       robot-console`), a live smoke test connects, lists devices, and
@@ -96,8 +113,8 @@ Three things this ticket must produce:
       explicitly recorded as still-carried-forward, with the date, for
       whichever future sprint next has bench access to a relay.
 - [ ] `docs/design/architecture.md` gains a consolidated section for the
-      MCP subsystem (transport, tool categories, the confirmation
-      mechanism, the new `pending_actions`/`sessions` columns),
+      MCP subsystem (transport, tool categories, the audit/visibility
+      mechanism, the new `agent_actions`/`sessions` columns),
       synthesizing tickets 004-008's design rather than restating
       `sprint.md`'s own Architecture section verbatim — per the
       `consolidate-architecture` convention this project already
@@ -118,8 +135,9 @@ gap between tickets, fix it here and note why it wasn't caught earlier).
 
 **Files to create**:
 - An end-to-end test file, e.g. `packages/host/src/mcp/
-  endToEnd.test.ts`, covering the full inspect → connect → drive-
-  approve → flash-approve path against a fake store.
+  endToEnd.test.ts`, covering the full inspect → connect → drive
+  (immediate execution) → flash (immediate execution) path against a
+  fake store, including `agent_actions` attribution at each step.
 
 **Files to modify**:
 - `docs/design/architecture.md` — new MCP subsystem section.

@@ -205,12 +205,21 @@ export function CalibrationStorePanel({ link }: CalibrationStorePanelProps) {
               <p className="calibration-store-value" data-testid="calibration-store-wheel-value">
                 Wheel diameter: <strong>{wheelDiameterMm} mm</strong> — stored on the robot, survives a power cycle.
               </p>
+              {/* `wheel`/`wheel_mean`/`wheel_lo`/`wheel_hi` are all in
+                  **mm per shaft degree**, not millimetres of diameter.
+                  Rendering them with a bare "mm" next to the diameter
+                  headline above put "90.02 mm" and "range 0.78-0.7896 mm"
+                  on adjacent lines -- two different quantities wearing the
+                  same unit, which reads as nonsense. Converted to
+                  diameters so the range is directly comparable to the
+                  headline it sits under. The spread percentage is
+                  scale-invariant and needs no conversion. */}
               <RunsSummary
                 testId="calibration-store-wheel-runs"
                 runs={runs?.wheelRuns}
-                mean={runs?.wheelMean !== undefined ? round2(runs.wheelMean) : undefined}
-                lo={runs?.wheelLo}
-                hi={runs?.wheelHi}
+                mean={runs?.wheelMean !== undefined ? calibToDiameterMm(runs.wheelMean) : undefined}
+                lo={runs?.wheelLo !== undefined ? calibToDiameterMm(runs.wheelLo) : undefined}
+                hi={runs?.wheelHi !== undefined ? calibToDiameterMm(runs.wheelHi) : undefined}
                 spreadPct={runs?.wheelSpreadPct}
                 unit="mm"
               />

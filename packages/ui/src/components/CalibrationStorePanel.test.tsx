@@ -189,17 +189,26 @@ describe("CalibrationStorePanel", () => {
     it("several runs get a plain, unremarkable line with the range/spread, not the warning treatment", () => {
       const { el, socket } = mountPanel();
       rx(socket, BOTH_VALUES);
+      // wheel_lo/wheel_hi come off the wire in **mm per shaft degree**,
+      // the same units as `wheel` itself -- the firmware session's own
+      // measured samples "spanning 0.7800 to 0.7896" are the reference.
+      // This fixture previously supplied 89.9/90.3, i.e. diameters,
+      // which the firmware never sends. The panel converts to diameters
+      // for display so the range is comparable to the headline above it.
       rx(
         socket,
-        '{"ev":"calstore.runs","wheel_runs":4,"turn_runs":3,"wheel_lo":89.9,"wheel_hi":90.3,"wheel_spread":0.44,"turn_lo":11.3,"turn_hi":11.5,"turn_spread":1.8}',
+        '{"ev":"calstore.runs","wheel_runs":4,"turn_runs":3,"wheel_lo":0.7846,"wheel_hi":0.7881,"wheel_spread":0.44,"turn_lo":11.3,"turn_hi":11.5,"turn_spread":1.8}',
       );
 
       const wheelRuns = el.querySelector('[data-testid="calibration-store-wheel-runs"]')!;
       expect(wheelRuns.classList.contains("calibration-store-runs-settled")).toBe(true);
       expect(wheelRuns.classList.contains("calibration-store-runs-single")).toBe(false);
       expect(wheelRuns.textContent).toContain("4 runs");
+      // 0.7846 mm/deg is ~89.9 mm of diameter; 0.7881 is ~90.3 mm.
       expect(wheelRuns.textContent).toContain("89.9");
       expect(wheelRuns.textContent).toContain("90.3");
+      // The raw mm/deg values must not be shown as though they were mm.
+      expect(wheelRuns.textContent).not.toContain("0.7846");
 
       const turnRuns = el.querySelector('[data-testid="calibration-store-turn-runs"]')!;
       expect(turnRuns.classList.contains("calibration-store-runs-settled")).toBe(true);
@@ -281,5 +290,31 @@ describe("CalibrationStorePanel", () => {
       expect(el.querySelector('[data-testid="calibration-store-wheel-hint"]')).toBeNull();
       expect(el.querySelector('[data-testid="calibration-store-wheel-missing"]')).not.toBeNull();
     });
+  });
+});
+
+describe("wheel run range units", () => {
+  // Caught in a browser walk: the panel put "Wheel diameter: 90.02 mm"
+  // directly above "range 0.78-0.7896 mm". Both wore "mm", but the
+  // stored wheel value and its run statistics are in mm per shaft
+  // DEGREE, not millimetres of diameter -- so the range read as
+  // nonsense next to the headline it belongs to.
+  it("shows the wheel run range as diameters, comparable to the headline", () => {
+    const { el, socket } = mountPanel();
+    rx(socket, BOTH_VALUES);
+    rx(
+      socket,
+      '{"ev":"calstore.runs","wheel_runs":4,"wheel_mean":0.7848,"wheel_lo":0.78,"wheel_hi":0.7896,"wheel_spread":1.2,"turn_runs":3}',
+    );
+
+    const text = el.querySelector('[data-testid="calibration-store-wheel-runs"]')?.textContent ?? "";
+    // 0.78 mm/deg is ~89.4 mm of diameter; 0.7896 is ~90.5 mm.
+    expect(text).toMatch(/89\.[0-9]/);
+    expect(text).toMatch(/90\.[0-9]/);
+    // The raw mm/deg numbers must not appear as though they were mm.
+    expect(text).not.toContain("0.78");
+    expect(text).not.toContain("0.7896");
+    // The spread is scale-invariant and stays as reported.
+    expect(text).toContain("1.2%");
   });
 });

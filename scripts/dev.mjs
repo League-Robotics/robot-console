@@ -31,6 +31,16 @@ import { register } from "tsx/esm/api";
 register();
 
 const { startServer, DEFAULT_PORT } = await import("../packages/host/src/server.ts");
+// 2026-09-18: `npm run dev` is a SECOND composition root alongside
+// `cli.ts`'s `main()`, and it had drifted -- sprint 019 mounted the MCP
+// server inside `cli.ts` via `startServer`'s `mountRoutes` hook, and
+// nothing mounted it here, so `npm run dev` served the UI and the
+// WebSocket but answered 404 on /mcp. That is the way the stakeholder
+// actually runs the console, so in practice the MCP server did not
+// exist for him at all. Reported by the nezha-robot-template session
+// after its MCP client stopped working when a `rconsole start` daemon
+// (which does go through `cli.ts`) was replaced by `npm run dev`.
+const { startMcpServer } = await import("../packages/host/src/mcp/server.ts");
 const { startRuntime } = await import("../packages/host/src/runtime.ts");
 const { createServer } = await import("vite");
 const path = await import("node:path");
@@ -77,7 +87,26 @@ const hostPort = parsePort(argv, process.env);
 // the default was ON, so `npm run dev` swept idle relays; the
 // stakeholder asked for that to stop.
 const runtime = startRuntime();
-const host = await startServer({ store: runtime.store, runtime, port: hostPort });
+const host = await startServer({
+  store: runtime.store,
+  runtime,
+  port: hostPort,
+  // Same wiring as `cli.ts`'s own `main()`: `mountRoutes` runs
+  // synchronously inside `startServer`, before the SPA catch-all is
+  // registered, so the MCP route is never shadowed by it.
+  // Identical shape to `cli.ts`'s own call -- `extra` carries the exact
+  // `startFlash`/`enumerateDaplinkDevices` this server's own `flash-start`
+  // WS handler uses, so `request_flash` starts a flash the same one way,
+  // not a second divergent one.
+  mountRoutes: (app, extra) => {
+    startMcpServer(app, {
+      store: runtime.store,
+      reconciler: runtime.reconciler,
+      startFlash: extra.startFlash,
+      enumerateDaplinkDevices: extra.enumerateDaplinkDevices,
+    });
+  },
+});
 console.log(`robot-console: host listening on ${host.url}`);
 
 // Stakeholder instruction (018-010): open Chrome, not the OS default

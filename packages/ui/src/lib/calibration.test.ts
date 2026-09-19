@@ -10,9 +10,11 @@ import { describe, expect, it } from "vitest";
 import {
   CALIBRATION_IMAGE_BASELINE_DIAMETER_MM,
   applyCalibrationPatch,
+  calibToDiameterMm,
   calibrationCode,
   correctTrackWidth,
   deriveCalibration,
+  type CalStoreDefaults,
 } from "./calibration";
 
 describe("calibration maths", () => {
@@ -117,5 +119,95 @@ describe("calibrationCode -- the pasted slip must match what Apply sent", () => 
     );
     expect(snippet).toMatch(/ConfigField\.RotationalSlip, [0-9.]+/);
     expect(snippet).toContain("11.4 cm");
+  });
+});
+
+describe("calibToDiameterMm", () => {
+  it("converts mm-per-shaft-degree to a diameter", () => {
+    expect(calibToDiameterMm(CALIBRATION_IMAGE_BASELINE_DIAMETER_MM * Math.PI / 360)).toBeCloseTo(CALIBRATION_IMAGE_BASELINE_DIAMETER_MM, 2);
+  });
+});
+
+describe("calibrationCode -- fed by the robot's own calshow store, for a session with no local wizard runs at all", () => {
+  // The use case this covers: a student calibrated from the robot's own
+  // A/B menu with no computer attached, then plugged into a browser
+  // that has never seen either wizard run -- `CalibrationState` is `{}`.
+  const BOTH_STORED: CalStoreDefaults = {
+    hasWheel: true,
+    hasTurn: true,
+    wheelCalib: 0.7856,
+    trackWidthCm: 11.42,
+    slip: 1.008,
+    liveTrackWidthCm: 11.42,
+    liveSlip: 1.008,
+  };
+  const NEITHER_STORED: CalStoreDefaults = {
+    hasWheel: false,
+    hasTurn: false,
+    wheelCalib: 0,
+    trackWidthCm: 0,
+    slip: 0,
+    liveTrackWidthCm: 11.5,
+    liveSlip: 1,
+  };
+
+  it("with no calStore option at all (calshow never answered), behaves exactly as before -- no invented defaults", () => {
+    expect(calibrationCode({}, "gopiv")).toBe("");
+  });
+
+  it("both stored on the robot: emits both lines from calshow, correctly provenanced, with no session data at all", () => {
+    const code = calibrationCode({}, "gopiv", { calStore: BOTH_STORED });
+    expect(code).toContain(`diffDrive.setWheelCalibration(${calibToDiameterMm(0.7856)} * Math.PI / 360)`);
+    expect(code).toContain("stored on the robot (calshow)");
+    expect(code).toContain("diffDrive.setTrackWidth(11.42)");
+    expect(code).toContain("ConfigField.RotationalSlip, 1.008");
+    expect(code).not.toContain("NOT measured");
+  });
+
+  it("neither stored: emits both lines from the compiled defaults, unmistakably labelled NOT measured, naming the firmware profile", () => {
+    const code = calibrationCode({}, "gopiv", { calStore: NEITHER_STORED, firmwareProfile: "calibration-0.20260919.4" });
+    expect(code).toContain(`diffDrive.setWheelCalibration(${CALIBRATION_IMAGE_BASELINE_DIAMETER_MM} * Math.PI / 360)`);
+    expect(code).toContain("NOT measured -- calibration-0.20260919.4's compiled default");
+    expect(code).toContain("diffDrive.setTrackWidth(11.5)");
+    expect(code).toContain("ConfigField.RotationalSlip, 1)");
+    // Both mention the pinning hazard.
+    expect(code.match(/silently override/g)?.length).toBe(2);
+  });
+
+  it("only wheel stored: still emits a track-width/slip pair from the live defaults, so a program that also turns doesn't silently mis-pivot", () => {
+    const onlyWheel: CalStoreDefaults = { ...NEITHER_STORED, hasWheel: true, wheelCalib: 0.7856 };
+    const code = calibrationCode({}, "gopiv", { calStore: onlyWheel });
+    expect(code).toContain("stored on the robot (calshow)");
+    expect(code).toContain("diffDrive.setTrackWidth(11.5)");
+    expect(code).toContain("NOT measured");
+    expect(code).toContain("ConfigField.RotationalSlip, 1)");
+  });
+
+  it("only turn stored: still emits a wheel line from the compiled default", () => {
+    const onlyTurn: CalStoreDefaults = { ...NEITHER_STORED, hasTurn: true, trackWidthCm: 11.42, slip: 1.008 };
+    const code = calibrationCode({}, "gopiv", { calStore: onlyTurn });
+    expect(code).toContain(`diffDrive.setWheelCalibration(${CALIBRATION_IMAGE_BASELINE_DIAMETER_MM} * Math.PI / 360)`);
+    expect(code).toContain("NOT measured");
+    expect(code).toContain("diffDrive.setTrackWidth(11.42)");
+    expect(code).toContain("ConfigField.RotationalSlip, 1.008");
+  });
+
+  it("this session's own local state wins field-by-field: a local wheel measurement, with no local turn data, still fills the turn line from calStore", () => {
+    const code = calibrationCode({ wheelDiameterMm: 91.4 }, "gopiv", { calStore: BOTH_STORED });
+    // Locally-measured wheel diameter wins outright over calStore's own.
+    expect(code).toContain("diffDrive.setWheelCalibration(91.4 * Math.PI / 360)  // wheel diameter 91.4 mm");
+    // No local turn data at all -- filled from the robot's own stored
+    // turn calibration instead of being silently dropped.
+    expect(code).toContain("diffDrive.setTrackWidth(11.42)  // track width, cm -- stored on the robot (calshow)");
+  });
+
+  it("a typed ruler measurement still wins over calStore's stored slip (af65ce7's precedence, not regressed)", () => {
+    const code = calibrationCode(
+      { wheelDiameterMm: 90.28, reportedTrackWidthCm: 8.84, measuredTrackWidthCm: 11.5 },
+      "gopiv",
+      { calStore: BOTH_STORED },
+    );
+    expect(code).toContain("measured 11.5 cm / effective 8.84 cm");
+    expect(code).not.toContain("stored on the robot (calshow), from an earlier rotation calibration");
   });
 });

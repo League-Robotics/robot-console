@@ -155,6 +155,14 @@ export interface WheelsResult {
   trueCm: number;
   errorCm: number;
   wasCalib: number;
+  /** `calwheels.result`'s `stored` field (0/1) -- profile
+   * `calibration-0.20260919.4`: whether the robot is now *running* this
+   * measurement, not merely reporting it. Optional and read defensively
+   * (see this field's twin on {@link RestoredGeometry}): absent or
+   * non-numeric (older firmware) reads as `undefined`, never a
+   * fabricated `false` -- "don't know" and "confirmed not running it"
+   * are different claims and must stay distinguishable. */
+  stored?: boolean | undefined;
 }
 
 /** Validate and extract a `calwheels.result` line's fields. `undefined`
@@ -165,6 +173,7 @@ export function parseWheelsResult(fields: Record<string, unknown>): WheelsResult
   if (!core) {
     return undefined;
   }
+  const storedRaw = numberField(fields, "stored");
   return {
     calib: core.calib,
     diameterMm: core.diameter,
@@ -172,6 +181,7 @@ export function parseWheelsResult(fields: Record<string, unknown>): WheelsResult
     trueCm: core.true,
     errorCm: core.error,
     wasCalib: core.was,
+    stored: storedRaw === undefined ? undefined : storedRaw !== 0,
   };
 }
 
@@ -225,6 +235,22 @@ export function parseTurnResult(fields: Record<string, unknown>): TurnResult | u
 export interface RestoredGeometry {
   trackWidthCm: number;
   slip: number;
+  /** `calturn.restored`'s `stored` field (0/1) -- profile
+   * `calibration-0.20260919.4` fixed the restore ordering: it now
+   * happens *before* `calturn.fail` is announced, and this event's
+   * `stored` says which geometry is actually running.
+   * `stored:1` (success path): this is the geometry the robot is
+   * running, and it survives a power cycle. `stored:0` (failure path):
+   * the robot has been put back on its prior geometry -- it is *not*
+   * still running this run's anchor -- and that prior geometry is not
+   * necessarily persisted (it may itself have been a runtime `SET`).
+   * Optional and read defensively: absent/non-numeric (older firmware,
+   * or the pre-fix ordering where this line could still be dropped like
+   * any other progress line) reads as `undefined`, and callers must
+   * never assert a restore from documentation alone when this field
+   * didn't arrive -- see `RotationCalibrationWizard.tsx`'s own doc
+   * comment. */
+  stored?: boolean | undefined;
 }
 
 /** Validate and extract a `calturn.restored` line's fields. `undefined`
@@ -234,7 +260,8 @@ export function parseTurnRestored(fields: Record<string, unknown>): RestoredGeom
   if (!core) {
     return undefined;
   }
-  return { trackWidthCm: core.tw, slip: core.slip };
+  const storedRaw = numberField(fields, "stored");
+  return { trackWidthCm: core.tw, slip: core.slip, stored: storedRaw === undefined ? undefined : storedRaw !== 0 };
 }
 
 /** Render a non-terminal event's fields as one readable progress line,
@@ -246,4 +273,225 @@ export function parseTurnRestored(fields: Record<string, unknown>): RestoredGeom
 export function formatCalibrationEvent(ev: string, fields: Record<string, unknown>): string {
   const parts = Object.entries(fields).map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`);
   return parts.length > 0 ? `${ev} ${parts.join(" ")}` : ev;
+}
+
+/**
+ * `calstore.values` -- one of the two objects `calshow` emits (profile
+ * `calibration-0.20260919.4`; see `clasi/issues/calibration-calj-calc-one-click.md`).
+ * Parses as an `"other"` {@link CalibrationEvent} (`verb: "calstore"`,
+ * `suffix: "values"`) -- no new verb-detection machinery needed.
+ *
+ * `hasWheel`/`hasTurn` are the *authority* for "is this calibration
+ * stored" -- never inferred from `wheelCalib > 0`/`trackWidthCm > 0`.
+ * `wheelCalib`/`trackWidthCm`/`slip` are the *persisted* (survives a
+ * power cycle) calibration, meaningful only when the matching `has*`
+ * flag is set (0 when never stored, per the wire contract -- but the
+ * flag, not the zero, is what a caller must branch on). `liveTrackWidthCm`/
+ * `liveSlip` are independent of storage: what the robot is *actually
+ * running* right now (a compiled default when nothing was ever stored,
+ * or a runtime `SET rotational_slip` that was never saved to the
+ * store) -- the honest source for a pasted code line, since a student
+ * cares what the robot does, not just what survived its last boot.
+ *
+ * All seven fields are required for this to parse -- a
+ * `calstore.values` line with even one missing/non-numeric field
+ * degrades to `undefined` rather than a partially-trusted object, since
+ * `hasWheel`/`hasTurn` are exactly the fields this module warns never
+ * to guess at.
+ */
+export interface CalstoreValues {
+  /** mm per shaft degree, the persisted wheel calibration -- 0 if
+   * `hasWheel` is false. Never used as the "is it stored" signal. */
+  wheelCalib: number;
+  /** cm, the persisted track width -- meaningless if `hasTurn` is
+   * false. */
+  trackWidthCm: number;
+  /** The persisted rotational slip -- meaningless if `hasTurn` is
+   * false. */
+  slip: number;
+  hasWheel: boolean;
+  hasTurn: boolean;
+  /** cm, what the robot's track width actually is right now, whatever
+   * its origin (stored, runtime `SET`, or compiled default). */
+  liveTrackWidthCm: number;
+  /** What the robot's rotational slip actually is right now, whatever
+   * its origin. */
+  liveSlip: number;
+}
+
+/** Validate and extract a `calstore.values` line's fields (the
+ * `calstore` verb's `fields`, `ev` already stripped by
+ * {@link parseCalibrationLine}). `undefined` if any of the seven
+ * required fields is missing or non-numeric. */
+export function parseCalstoreValues(fields: Record<string, unknown>): CalstoreValues | undefined {
+  const core = requireNumbers(fields, ["wheel", "tw", "slip", "has_wheel", "has_turn", "live_tw", "live_slip"] as const);
+  if (!core) {
+    return undefined;
+  }
+  return {
+    wheelCalib: core.wheel,
+    trackWidthCm: core.tw,
+    slip: core.slip,
+    hasWheel: core.has_wheel !== 0,
+    hasTurn: core.has_turn !== 0,
+    liveTrackWidthCm: core.live_tw,
+    liveSlip: core.live_slip,
+  };
+}
+
+/**
+ * `calstore.runs` -- the second of the two objects `calshow` emits: run
+ * statistics behind the stored value since the last `calclear`. This is
+ * the mechanism that makes "the robot keeps the *last* run's value
+ * rather than a mean" safe: a single run (`wheelRuns`/`turnRuns === 1`)
+ * is not a precise estimate (sd 0.16%-0.43% measured on hardware, up to
+ * 1.2% between extremes on `vevov`), so this data is what lets a
+ * consumer draw a student's eye to "one sample" rather than "a settled
+ * fact". `wheelMean`/`turnMean` are reported for exactly that framing
+ * and must never be applied -- the robot always runs its last
+ * successful run's value, never a mean.
+ *
+ * Only the two run counts are required; every other field is optional
+ * context, read defensively field-by-field so a firmware that hasn't
+ * accumulated enough runs yet for a spread (or an older build missing
+ * some fields) still reports whatever it has.
+ */
+export interface CalstoreRuns {
+  wheelRuns: number;
+  turnRuns: number;
+  /** Reported for context only -- never applied; the robot always runs
+   * its last successful run's own value. */
+  wheelMean?: number | undefined;
+  turnMean?: number | undefined;
+  wheelLo?: number | undefined;
+  wheelHi?: number | undefined;
+  turnLo?: number | undefined;
+  turnHi?: number | undefined;
+  /** `(hi - lo)` as a percent of the mean. */
+  wheelSpreadPct?: number | undefined;
+  turnSpreadPct?: number | undefined;
+}
+
+/** Validate and extract a `calstore.runs` line's fields. `undefined`
+ * only if either run count is missing/non-numeric; every other field
+ * degrades individually to `undefined` rather than failing the whole
+ * object. */
+export function parseCalstoreRuns(fields: Record<string, unknown>): CalstoreRuns | undefined {
+  const core = requireNumbers(fields, ["wheel_runs", "turn_runs"] as const);
+  if (!core) {
+    return undefined;
+  }
+  return {
+    wheelRuns: core.wheel_runs,
+    turnRuns: core.turn_runs,
+    wheelMean: numberField(fields, "wheel_mean"),
+    turnMean: numberField(fields, "turn_mean"),
+    wheelLo: numberField(fields, "wheel_lo"),
+    wheelHi: numberField(fields, "wheel_hi"),
+    turnLo: numberField(fields, "turn_lo"),
+    turnHi: numberField(fields, "turn_hi"),
+    wheelSpreadPct: numberField(fields, "wheel_spread"),
+    turnSpreadPct: numberField(fields, "turn_spread"),
+  };
+}
+
+/** The prefix `boot cal ...` lines always start with -- plain text, not
+ * JSON, so it is never seen by {@link parseCalibrationLine} (which
+ * bails out before touching anything that doesn't start with `{`, and
+ * must go on doing so unweakened -- see this function's own doc
+ * comment on why it is a wholly separate check, not a fallback folded
+ * into that parser). */
+const BOOT_CAL_PREFIX = "boot cal";
+
+/**
+ * One `boot cal ...` line -- an opportunistic hint printed once at
+ * boot, either `boot cal wheel=<calib> tw=<tw> slip=<slip> runs=<w>/<t>`
+ * or `boot cal none stored`. Plain text, not JSON, so this is a
+ * deliberately separate function from {@link parseCalibrationLine}
+ * rather than a case inside it -- that parser's whole contract is "not
+ * a JSON object with a usable `ev` field is not a calibration line",
+ * and folding a prefix-prose format back into it would weaken that
+ * tolerance test for every other caller that relies on it to cheaply
+ * skip non-JSON noise. A caller that wants both simply tries
+ * {@link parseCalibrationLine} first and falls back to this function --
+ * see `CalibrationStore.ts`.
+ *
+ * This is an *opportunistic hint only* -- printed once, best-effort,
+ * before a computer is necessarily even listening -- never the
+ * authoritative read; `calshow`'s `calstore.values` is. Parsed
+ * token-by-token (`key=value`, whitespace-separated) rather than one
+ * rigid whole-line regex, so a boot line with a field this module
+ * doesn't recognize, or missing one it does, still yields whatever it
+ * has instead of failing to parse at all -- the same "never a
+ * fabricated number" discipline as {@link requireNumbers}, applied
+ * field-by-field instead of all-or-nothing (there is no `has_wheel`/
+ * `has_turn` authority flag on this line to gate on, so a caller must
+ * still treat this as a hint to be superseded, never a confident
+ * "stored"/"not stored" answer of its own).
+ */
+export interface BootCalHint {
+  /** True for the literal `boot cal none stored` line -- neither
+   * calibration was stored at boot. */
+  none: boolean;
+  wheelCalib?: number | undefined;
+  trackWidthCm?: number | undefined;
+  slip?: number | undefined;
+  wheelRuns?: number | undefined;
+  turnRuns?: number | undefined;
+}
+
+export function parseBootCalLine(line: string): BootCalHint | undefined {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith(BOOT_CAL_PREFIX)) {
+    return undefined;
+  }
+  const rest = trimmed.slice(BOOT_CAL_PREFIX.length).trim();
+  if (rest === "none stored") {
+    return { none: true };
+  }
+  const hint: BootCalHint = { none: false };
+  let recognized = false;
+  for (const token of rest.split(/\s+/)) {
+    const eq = token.indexOf("=");
+    if (eq <= 0) {
+      continue;
+    }
+    const key = token.slice(0, eq);
+    const value = token.slice(eq + 1);
+    if (key === "wheel") {
+      const n = Number(value);
+      if (Number.isFinite(n)) {
+        hint.wheelCalib = n;
+        recognized = true;
+      }
+    } else if (key === "tw") {
+      const n = Number(value);
+      if (Number.isFinite(n)) {
+        hint.trackWidthCm = n;
+        recognized = true;
+      }
+    } else if (key === "slip") {
+      const n = Number(value);
+      if (Number.isFinite(n)) {
+        hint.slip = n;
+        recognized = true;
+      }
+    } else if (key === "runs") {
+      const [wRaw, tRaw] = value.split("/");
+      const w = Number(wRaw);
+      const t = Number(tRaw);
+      if (wRaw !== undefined && Number.isFinite(w)) {
+        hint.wheelRuns = w;
+        recognized = true;
+      }
+      if (tRaw !== undefined && Number.isFinite(t)) {
+        hint.turnRuns = t;
+        recognized = true;
+      }
+    }
+  }
+  // Not one token recognized -- this isn't a `boot cal` shape this
+  // module understands, so it's not a hint at all rather than an empty
+  // one that would render as "cleared".
+  return recognized ? hint : undefined;
 }

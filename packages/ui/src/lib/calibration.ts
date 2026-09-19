@@ -130,6 +130,16 @@ export function correctTrackWidth(reportedCm: number, reportedWithDiameterMm: nu
   return round((reportedCm * trueDiameterMm) / reportedWithDiameterMm, 2);
 }
 
+/** `calwheels.result`'s/`calstore.values`' `calib`/`wheel` field (mm per
+ * shaft degree) as a diameter, mm -- the same `d = calib*360/π`
+ * conversion `CalibrationPage.tsx` and this module's own doc comment
+ * both already spell out inline; pulled out once so the `calshow`-fed
+ * branch of {@link calibrationCode} below doesn't duplicate it a third
+ * time. */
+export function calibToDiameterMm(calib: number): number {
+  return round((calib * 360) / Math.PI, 2);
+}
+
 export interface DerivedCalibration {
   effectiveTrackWidthCm?: number;
   trackWidthCm?: number;
@@ -157,23 +167,105 @@ export function deriveCalibration(state: CalibrationState): DerivedCalibration {
   return out;
 }
 
+/**
+ * The subset of `calstore.values` (see `CalibrationReport.ts`'s own doc
+ * comment) {@link calibrationCode} needs to fill in a calibration this
+ * browser session never itself measured -- the "carried the robot over
+ * from the A/B button menu, plugged in cold" case, which
+ * `CalibrationState` alone can never cover since it only ever grows
+ * from a wizard run made *in this browser*. A `CalstoreValues` object
+ * satisfies this structurally (same field names) with no import needed
+ * -- kept as its own local type so this pure-math module doesn't reach
+ * into `components/` for it.
+ */
+export interface CalStoreDefaults {
+  hasWheel: boolean;
+  hasTurn: boolean;
+  wheelCalib: number;
+  trackWidthCm: number;
+  slip: number;
+  liveTrackWidthCm: number;
+  liveSlip: number;
+}
+
+export interface CalibrationCodeOptions {
+  /** The robot's own `calshow`-reported store, when known (`calshow`
+   * has answered this connection). `undefined` -- not merely
+   * "everything false" -- means "haven't asked yet / not connected",
+   * and keeps {@link calibrationCode} to its pre-`calshow` behavior
+   * (never inventing a compiled-default line the caller has no
+   * evidence for). */
+  calStore?: CalStoreDefaults | undefined;
+  /** The connected device's own reported program string (e.g.
+   * `device.program`, `"calibration-0.20260919.4"`), named in an
+   * unmeasured default's comment so that comment never goes stale on
+   * its own -- the same "don't hardcode a fact the firmware can tell
+   * you live" reasoning the comment itself asks the *reader* to apply
+   * to the number beside it. */
+  firmwareProfile?: string | null | undefined;
+}
+
 /** The one block of code a student pastes into their program's setup.
- * Empty when nothing is known yet. */
-export function calibrationCode(state: CalibrationState, robotName: string): string {
+ * Empty when nothing is known yet -- neither this session's own wizard
+ * runs/typed entries nor (once connected) the robot's own `calshow`
+ * store have anything to report. */
+export function calibrationCode(state: CalibrationState, robotName: string, options?: CalibrationCodeOptions): string {
   const derived = deriveCalibration(state);
+  const calStore = options?.calStore;
+  const profileLabel = options?.firmwareProfile ? `${options.firmwareProfile}'s` : "the firmware's";
   const lines: string[] = [];
+
+  // --- Wheel diameter --------------------------------------------------
+  // 1. This session's own wizard run or typed entry wins outright.
+  // 2. Otherwise, a value stored on the robot itself (`calshow`,
+  //    `has_wheel`) -- this robot's own calibration, just not measured
+  //    in this browser.
+  // 3. Otherwise, once `calshow` has genuinely answered "not stored",
+  //    the firmware's compiled default -- so a program that also turns
+  //    still drives straight instead of silently mis-driving on a
+  //    missing call the student has no way to notice. Labelled
+  //    unmistakably as NOT measured: hardcoding it pins today's
+  //    default, and a later firmware flash whose default differs will
+  //    silently lose to this literal.
   if (state.wheelDiameterMm !== undefined) {
     lines.push(
       `diffDrive.setWheelCalibration(${state.wheelDiameterMm} * Math.PI / 360)  // wheel diameter ${state.wheelDiameterMm} mm`,
     );
+  } else if (calStore?.hasWheel) {
+    const diameterMm = calibToDiameterMm(calStore.wheelCalib);
+    lines.push(
+      `diffDrive.setWheelCalibration(${diameterMm} * Math.PI / 360)  // wheel diameter ${diameterMm} mm -- stored on the robot (calshow)`,
+    );
+  } else if (calStore !== undefined) {
+    lines.push(
+      `diffDrive.setWheelCalibration(${CALIBRATION_IMAGE_BASELINE_DIAMETER_MM} * Math.PI / 360)  // NOT measured -- ${profileLabel} compiled default. Running the wheel calibration replaces this; flashing different firmware whose default differs will silently override this hardcoded line.`,
+    );
   }
+
+  // --- Track width -------------------------------------------------------
+  // Same three-tier precedence as the wheel diameter above, except tier
+  // 3's number comes from `calshow`'s own `live_tw` (what the robot is
+  // actually running right now) rather than a project-wide constant --
+  // this robot's own track width is baked into its boot record
+  // per-robot, so there is no single project-wide compiled default to
+  // fall back on the way there is for the wheel.
   if (derived.trackWidthCm !== undefined) {
     const how =
       state.measuredTrackWidthCm !== undefined
         ? "measured track width, cm"
         : "effective track width, cm (not measured with a ruler)";
     lines.push(`diffDrive.setTrackWidth(${derived.trackWidthCm})  // ${how}`);
+  } else if (calStore?.hasTurn) {
+    lines.push(
+      `diffDrive.setTrackWidth(${calStore.trackWidthCm})  // track width, cm -- stored on the robot (calshow), from an earlier rotation calibration`,
+    );
+  } else if (calStore !== undefined) {
+    lines.push(
+      `diffDrive.setTrackWidth(${calStore.liveTrackWidthCm})  // NOT measured -- ${profileLabel} compiled default, currently running. Running the rotation calibration replaces this; flashing different firmware whose default differs will silently override this hardcoded line.`,
+    );
   }
+
+  // --- Rotational slip -----------------------------------------------
   // OOP 2026-09-19, found in a browser walk: this block used
   // `derived.rotationalSlip` unconditionally, which falls back to `1`
   // when no ruler measurement exists. With a `calturn` run applied, the
@@ -184,32 +276,46 @@ export function calibrationCode(state: CalibrationState, robotName: string): str
   // wrong one into their program, silently undoing the calibration they
   // just applied.
   //
-  // `firmwareSlip` wins when present: it is `calturn.result.slip`, the
-  // robot's own boot-record track width over the `b` this run measured,
-  // and it is exactly what the Apply button sent over the wire. The
-  // local division stays the fallback for the ruler-measurement path it
-  // was built for. The two are still not merged (see this module's doc
-  // comment) -- but the snippet must agree with what the robot was
-  // actually told.
-  // Precedence, and the order matters:
+  // Precedence, unchanged from that fix and not to be regressed:
   //  1. A ruler measurement the human deliberately typed wins -- the
   //     page advertises "typing a measured width switches to a computed
-  //     slip", and a firmware value must not silently override an
-  //     explicit human measurement.
+  //     slip", and nothing must silently override an explicit human
+  //     measurement.
   //  2. Otherwise the firmware's own slip, when a calturn run reported
-  //     one. This is the case that was broken.
-  //  3. Otherwise the local fallback (1).
-  const snippetSlip =
-    state.measuredTrackWidthCm !== undefined ? derived.rotationalSlip : (state.firmwareSlip ?? derived.rotationalSlip);
-  if (snippetSlip !== undefined) {
-    const how =
-      state.measuredTrackWidthCm !== undefined
-        ? `measured ${state.measuredTrackWidthCm} cm / effective ${derived.effectiveTrackWidthCm} cm`
-        : state.firmwareSlip !== undefined
-          ? `from the rotation calibration${state.robotTrackWidthCm !== undefined ? ` (${state.robotTrackWidthCm} cm boot-record track width / measured turn)` : ""}`
-          : "no ruler measurement, so the effective width is used as-is";
-    lines.push(`diffDrive.setConfigValue(ConfigField.RotationalSlip, ${snippetSlip})  // ${how}`);
+  //     one *this session*.
+  //  3. Otherwise the local ruler/effective-width division's own
+  //     fallback (1, from `deriveCalibration`).
+  //  4. New in this ticket, both lower-priority than every session-local
+  //     source above: the robot's own *stored* slip (`calshow`,
+  //     `has_turn`) -- a real measurement, just not made in this
+  //     browser.
+  //  5. Finally, once `calshow` has answered "nothing stored", the
+  //     robot's own *live* slip -- whatever it is actually running,
+  //     compiled default or otherwise -- labelled as not measured.
+  if (state.measuredTrackWidthCm !== undefined) {
+    if (derived.rotationalSlip !== undefined) {
+      lines.push(
+        `diffDrive.setConfigValue(ConfigField.RotationalSlip, ${derived.rotationalSlip})  // measured ${state.measuredTrackWidthCm} cm / effective ${derived.effectiveTrackWidthCm} cm`,
+      );
+    }
+  } else if (state.firmwareSlip !== undefined) {
+    lines.push(
+      `diffDrive.setConfigValue(ConfigField.RotationalSlip, ${state.firmwareSlip})  // from the rotation calibration${state.robotTrackWidthCm !== undefined ? ` (${state.robotTrackWidthCm} cm boot-record track width / measured turn)` : ""}`,
+    );
+  } else if (derived.rotationalSlip !== undefined) {
+    lines.push(
+      `diffDrive.setConfigValue(ConfigField.RotationalSlip, ${derived.rotationalSlip})  // no ruler measurement, so the effective width is used as-is`,
+    );
+  } else if (calStore?.hasTurn) {
+    lines.push(
+      `diffDrive.setConfigValue(ConfigField.RotationalSlip, ${calStore.slip})  // stored on the robot (calshow), from an earlier rotation calibration`,
+    );
+  } else if (calStore !== undefined) {
+    lines.push(
+      `diffDrive.setConfigValue(ConfigField.RotationalSlip, ${calStore.liveSlip})  // NOT measured -- ${profileLabel} compiled default, currently running`,
+    );
   }
+
   if (lines.length === 0) {
     return "";
   }

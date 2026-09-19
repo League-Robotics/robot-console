@@ -289,6 +289,43 @@ describe("RotationCalibrationWizard terminal states", () => {
     expect(el.querySelector('[data-testid="rotation-calibration-restored"]')?.textContent).toContain("11.16 cm");
   });
 
+  describe("profile calibration-0.20260919.4: the failure-path restore is now asserted from calturn.restored's own stored field, not from documentation", () => {
+    const RESTORED_STORED_0 = '{"ev":"calturn.restored","tw":11.42,"slip":1.0,"stored":0}';
+    const RESTORED_STORED_1 = '{"ev":"calturn.restored","tw":11.16,"slip":1.008,"stored":1}';
+
+    it("on failure, stored:0 lets the text claim the restore is confirmed by the robot, not merely documented", () => {
+      const { el, socket } = mountWizard(linkWithFunctions([{ name: "calturn" }]));
+      clickGo(el);
+      emitLine(socket, FAIL_LINE);
+      emitLine(socket, RESTORED_STORED_0);
+      const restored = el.querySelector('[data-testid="rotation-calibration-restored"]')!;
+      expect(restored.textContent).toContain("confirmed by the robot");
+      expect(restored.textContent).toContain("11.42 cm");
+      // The old, unconditional documentation-sourced claim is gone.
+      expect(restored.textContent).not.toContain("calturn restores this after every run");
+    });
+
+    it("on failure with no stored field at all (older firmware), states the numbers without claiming a confirmed restore", () => {
+      const { el, socket } = mountWizard(linkWithFunctions([{ name: "calturn" }]));
+      clickGo(el);
+      emitLine(socket, FAIL_LINE);
+      emitLine(socket, RESTORED_LINE);
+      const restored = el.querySelector('[data-testid="rotation-calibration-restored"]')!;
+      expect(restored.textContent).toContain("11.16 cm");
+      expect(restored.textContent).not.toContain("confirmed");
+      expect(restored.textContent).not.toContain("calturn restores this after every run");
+    });
+
+    it("on success, stored:1 notes the geometry survives a power cycle", () => {
+      const { el, socket } = mountWizard(linkWithFunctions([{ name: "calturn" }]));
+      clickGo(el);
+      emitLine(socket, RESULT_LINE);
+      emitLine(socket, RESTORED_STORED_1);
+      const restored = el.querySelector('[data-testid="rotation-calibration-restored"]')!;
+      expect(restored.textContent).toContain("survives a power cycle");
+    });
+  });
+
   it("a bare fail with no why text still fails cleanly with a generic reason", () => {
     const { el, socket } = mountWizard(linkWithFunctions([{ name: "calturn" }]));
     clickGo(el);

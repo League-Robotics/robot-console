@@ -236,6 +236,26 @@ describe("DistanceCalibrationWizard terminal states", () => {
     expect(el.querySelector<HTMLButtonElement>('[data-testid="distance-calibration-go"]')!.disabled).toBe(false);
   });
 
+  it("profile calibration-0.20260919.4: stored:1 says the robot is already running this, still with no Apply control", () => {
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
+    clickGo(el);
+    emitLine(
+      socket,
+      '{"ev":"calwheels.result","calib":0.7912,"diameter":90.68,"measured":89.61,"true":90,"error":-0.39,"was":0.7878,"stored":1}',
+    );
+    expect(el.querySelector('[data-testid="distance-calibration-stored"]')?.textContent).toContain("power cycle");
+    expect(el.querySelector('[data-testid="distance-calibration-no-apply"]')).toBeNull();
+    expect(el.textContent).not.toMatch(/apply/i);
+  });
+
+  it("stored absent (older firmware) keeps the original 'can't be applied live' text, never a fabricated stored claim", () => {
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
+    clickGo(el);
+    emitLine(socket, '{"ev":"calwheels.result","calib":0.7912,"diameter":90.68,"measured":89.61,"true":90,"error":-0.39,"was":0.7878}');
+    expect(el.querySelector('[data-testid="distance-calibration-no-apply"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="distance-calibration-stored"]')).toBeNull();
+  });
+
   it("renders a distinct failure state on a calwheels.fail line, never a snippet", () => {
     const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
     clickGo(el);

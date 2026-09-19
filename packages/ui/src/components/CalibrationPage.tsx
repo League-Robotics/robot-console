@@ -85,8 +85,10 @@ import {
 } from "../lib/calibration";
 import { useCopied } from "../lib/clipboard";
 import { isLinkUsable } from "../deviceDisplay";
-import { useSendable, useWsActions } from "../ws/WsProvider";
+import { useLinkLog, useSendable, useWsActions } from "../ws/WsProvider";
 import { CalibrationFirmwarePanel } from "./CalibrationFirmwarePanel";
+import { CalibrationStorePanel } from "./CalibrationStorePanel";
+import { deriveCalStoreState } from "./CalibrationStore";
 import { CalibrationTable } from "./CalibrationTable";
 import { DeviceConsole } from "./DeviceConsole";
 import { DistanceCalibrationWizard, type WheelsCalibrationRun } from "./DistanceCalibrationWizard";
@@ -168,8 +170,40 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
   }, [robotName, state]);
 
   const derived = useMemo(() => deriveCalibration(state), [state]);
-  const code = useMemo(() => calibrationCode(state, robotName), [state, robotName]);
+
+  // The robot's own `calshow` store (profile calibration-0.20260919.4) --
+  // see `CalibrationStorePanel.tsx`'s own doc comment for why this is
+  // the one input the generated code below needs that this session's
+  // own wizard runs can never provide: a student who calibrated from
+  // the robot's own A/B menu, with no computer attached, has a
+  // `CalibrationState` that is entirely empty in this browser.
+  const log = useLinkLog(link.id);
+  const calStoreState = useMemo(() => deriveCalStoreState(log), [log]);
+  const calStoreValues = calStoreState.values;
+
+  const code = useMemo(
+    () => calibrationCode(state, robotName, { calStore: calStoreValues, firmwareProfile: device.program }),
+    [state, robotName, calStoreValues, device.program],
+  );
   const { copied, copy } = useCopied();
+
+  // Named here (not only in the pasted snippet's own comments) per this
+  // ticket's own requirement: a student reading the page, not just the
+  // code, should see which calibration is still missing and that
+  // running it replaces the default the snippet is using meanwhile.
+  // Gated on `calStoreValues !== undefined` -- until `calshow` has
+  // actually answered, this page has no evidence either calibration is
+  // missing (only that this browser's own session hasn't measured it),
+  // so it says nothing rather than guessing.
+  const stillMissing: string[] = [];
+  if (calStoreValues !== undefined) {
+    if (state.wheelDiameterMm === undefined && !calStoreValues.hasWheel) {
+      stillMissing.push("wheel calibration");
+    }
+    if (derived.trackWidthCm === undefined && state.firmwareSlip === undefined && !calStoreValues.hasTurn) {
+      stillMissing.push("rotation calibration");
+    }
+  }
 
   const sendable = useSendable();
   const linkOpen = isLinkUsable(link) && sendable;
@@ -202,6 +236,17 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
     setState((previous) => applyCalibrationPatch(previous, patch));
   }
 
+  // A terminal wizard run changes what `calshow` would now report (a
+  // succeeded run stores a fresh value and bumps its run count; a
+  // failed one still bumps nothing but is worth reconfirming) -- asking
+  // again immediately keeps `CalibrationStorePanel` honest without
+  // waiting on its own manual Refresh button.
+  function refreshCalStore(): void {
+    if (isLinkUsable(link) && sendable) {
+      sendCommand(link.id, "RUN", ["calshow"]);
+    }
+  }
+
   function handleDistanceRun(run: WheelsCalibrationRun | undefined): void {
     if (run?.kind !== "succeeded") {
       return;
@@ -215,6 +260,7 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
     if (state.reportedWithDiameterMm === undefined) {
       update({ reportedWithDiameterMm: round((run.result.wasCalib * 360) / Math.PI, 2) });
     }
+    refreshCalStore();
   }
 
   function handleRotationRun(run: TurnCalibrationRun | undefined): void {
@@ -225,6 +271,7 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
         robotTrackWidthCm: run.result.trackWidthCm,
         firmwareSlip: run.result.slip,
       });
+      refreshCalStore();
       return;
     }
     if (run?.kind === "failed" || run?.kind === "unreadable") {
@@ -232,6 +279,7 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
       // standing -- see this page's own doc comment on "never a
       // confident wrong number".
       update({ reportedTrackWidthCm: undefined, robotTrackWidthCm: undefined, firmwareSlip: undefined });
+      refreshCalStore();
     }
   }
 
@@ -263,6 +311,12 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
 
         <div className="robot-page-panel calibration-code-panel" aria-label="Calibration code">
           <h3>Code for your program</h3>
+          {stillMissing.length > 0 && (
+            <p className="calibration-code-missing" data-testid="calibration-code-missing" role="status">
+              Still missing: {stillMissing.join(" and ")} — the code below uses the firmware's compiled default until
+              you run {stillMissing.length > 1 ? "them" : "it"}.
+            </p>
+          )}
           {code === "" ? (
             <p className="calibration-code-empty" data-testid="calibration-code-empty">
               Nothing to paste yet — run the distance calibration to get started.
@@ -287,6 +341,7 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
 
       <div className="robot-page-column robot-page-column-right robot-page-column-console">
         <div className="robot-page-panel robot-page-column-top" aria-label="Current calibration">
+          <CalibrationStorePanel link={link} />
           <h3>Current calibration</h3>
           <CalibrationTable variant="calibration" state={state} derived={derived} onPatch={update} />
           <button

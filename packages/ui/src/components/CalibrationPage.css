@@ -39,6 +39,16 @@
   font-size: 0.85rem;
 }
 
+.calibration-code-missing {
+  margin: 0 0 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--rc-warn-border);
+  background: var(--rc-warn-bg);
+  color: var(--rc-warn-text);
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+}
+
 .calibration-page .device-console {
   max-width: none;
 }

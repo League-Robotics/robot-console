@@ -376,10 +376,24 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
           <p className="distance-calibration-detail" data-testid="distance-calibration-detail">
             Measured {result.measuredCm} cm against a tape-measured {result.trueCm} cm (error {result.errorCm} cm).
           </p>
-          <p className="distance-calibration-no-apply" data-testid="distance-calibration-no-apply">
-            This can't be applied live — the robot has no config field for wheel calibration over the wire. Paste the
-            line below into your program and reflash to use it.
-          </p>
+          {result.stored === true ? (
+            // Profile calibration-0.20260919.4: `calwheels.result` gains
+            // `stored:1` -- the robot is already running this
+            // measurement, not merely reporting it, and it survives a
+            // power cycle. Read defensively (`stored === true`, never
+            // just "truthy"), so older firmware without the field keeps
+            // the "can't be applied live" text below rather than a
+            // fabricated claim this build never made.
+            <p className="distance-calibration-stored" data-testid="distance-calibration-stored">
+              Stored on the robot — it's already running this wheel calibration, and it will still be running it
+              after a power cycle. Paste the line below into your program too, so a future reflash doesn't lose it.
+            </p>
+          ) : (
+            <p className="distance-calibration-no-apply" data-testid="distance-calibration-no-apply">
+              This can't be applied live — the robot has no config field for wheel calibration over the wire. Paste
+              the line below into your program and reflash to use it.
+            </p>
+          )}
           <p className="distance-calibration-note">
             <code data-testid="distance-calibration-snippet">{wheelDiameterSnippet(diameterMm)}</code>
           </p>

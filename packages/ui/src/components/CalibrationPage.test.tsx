@@ -230,13 +230,17 @@ describe("CalibrationPage", () => {
 
   describe("ticket 018-013: run controls derived from FUNCS (corrected 2026-09-13: FUNCS only ever adds a control, never hides one)", () => {
     it("requests FUNCS once when the tab opens with no function list yet", () => {
+      // Also requests `calshow` once, unconditionally -- see the
+      // "CalibrationStorePanel" describe block below; unrelated to
+      // FUNCS, so this test only asserts FUNCS is among the sends.
       const { socket } = mountPage({ functions: null });
-      expect(socket.sent).toEqual([JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "FUNCS" })]);
+      expect(socket.sent).toContainEqual(JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "FUNCS" }));
+      expect(socket.sent.filter((line) => line.includes('"verb":"FUNCS"'))).toHaveLength(1);
     });
 
     it("does not request FUNCS when a function list is already known", () => {
       const { socket } = mountPage({ functions: [{ name: "calwheels" }] });
-      expect(socket.sent).toEqual([]);
+      expect(socket.sent.filter((line) => line.includes('"verb":"FUNCS"'))).toEqual([]);
     });
 
     it("both wizards still render, Calibrate turn included, even when FUNCS lists only calwheels -- an absent name proves nothing (dropped Wi-Fi burst lines)", () => {
@@ -318,6 +322,42 @@ describe("CalibrationPage", () => {
       rx(socket, '{"ev":"calturn.fail","why":"too few usable gaps; centre the robot on the cross"}');
       expect(el.querySelector('[data-testid="calibration-firmware-slip"]')).toBeNull();
       expect(el.querySelector('[data-testid="calibration-reported-track-width"]')?.textContent).toContain("not measured yet");
+    });
+  });
+
+  describe("profile calibration-0.20260919.4: calshow-fed store panel, page-level 'still missing' banner, and calshow refresh after a wizard run", () => {
+    it("mounts the store panel above the Current calibration table and sends calshow on connect", () => {
+      const { el, socket } = mountPage();
+      expect(el.querySelector('[data-testid="calibration-store-panel"]')).not.toBeNull();
+      expect(socket.sent.some((line) => line.includes('"fields":["calshow"]'))).toBe(true);
+    });
+
+    it("names the still-missing calibration on the page itself, once calshow has answered, and drops it once both are known", () => {
+      const { el, socket } = mountPage();
+      rx(socket, '{"ev":"calstore.values","wheel":0,"tw":0,"slip":0,"has_wheel":0,"has_turn":0,"live_tw":11.5,"live_slip":1}');
+      const missing = el.querySelector('[data-testid="calibration-code-missing"]')!;
+      expect(missing.textContent).toContain("wheel calibration");
+      expect(missing.textContent).toContain("rotation calibration");
+      // And the generated code now uses the compiled defaults rather
+      // than staying empty, since calshow has genuinely answered.
+      expect(el.querySelector('[data-testid="calibration-code"]')?.textContent).toContain("NOT measured");
+
+      rx(socket, '{"ev":"calstore.values","wheel":0.7856,"tw":11.42,"slip":1.008,"has_wheel":1,"has_turn":1,"live_tw":11.42,"live_slip":1.008}');
+      expect(el.querySelector('[data-testid="calibration-code-missing"]')).toBeNull();
+    });
+
+    it("does not claim anything is missing before calshow has answered -- only that this session's own state is incomplete", () => {
+      const { el } = mountPage();
+      expect(el.querySelector('[data-testid="calibration-code-missing"]')).toBeNull();
+    });
+
+    it("a succeeded distance-calibration run re-asks calshow, so the store panel doesn't wait on a manual Refresh", () => {
+      const { el, socket } = mountPage();
+      const before = socket.sent.filter((line) => line.includes('"fields":["calshow"]')).length;
+      click(el, '[data-testid="distance-calibration-go"]');
+      rx(socket, '{"ev":"calwheels.result","calib":0.7912,"diameter":90.68,"measured":89.61,"true":90,"error":-0.39,"was":0.7878}');
+      const after = socket.sent.filter((line) => line.includes('"fields":["calshow"]')).length;
+      expect(after).toBeGreaterThan(before);
     });
   });
 

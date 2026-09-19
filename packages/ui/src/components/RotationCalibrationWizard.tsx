@@ -250,16 +250,46 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the run's identity, not the object
   }, [runKey]);
 
-  function renderRestored(restored: RestoredGeometry | undefined) {
-    return restored ? (
+  // Profile calibration-0.20260919.4 fixed the restore ordering: the
+  // robot now restores its prior geometry *before* announcing
+  // `calturn.fail`, and `calturn.restored` carries a `stored` field
+  // saying which geometry that restore actually left running --
+  // `stored:0` on the failure path, `stored:1` on the success path (see
+  // `CalibrationReport.ts`'s own doc comment on `RestoredGeometry`).
+  //
+  // OOP found in a browser walk: this used to say "calturn restores
+  // this after every run, success or fail" *unconditionally* whenever
+  // any `.restored` line arrived -- a claim sourced from documentation
+  // (the old restore-ordering behavior), not from what this run's own
+  // event actually said. Before the ordering fix, that claim was
+  // sometimes false the instant a consumer acted on `.fail`: the
+  // restore hadn't happened yet. The fix: only ever assert a
+  // restoration-confirmed reading when `stored` itself says so; absent
+  // that field (older firmware, or a dropped `.restored` line's
+  // replacement never arriving with it), state the numbers and nothing
+  // more.
+  function renderRestored(restored: RestoredGeometry | undefined, context: "success" | "failure") {
+    if (!restored) {
+      return (
+        <p className="rotation-calibration-restored-unknown" data-testid="rotation-calibration-restored-unknown">
+          Couldn't confirm the robot's geometry after this run — the restore-confirmation line didn't arrive. Treat
+          it as unknown rather than assuming the restore went cleanly.
+        </p>
+      );
+    }
+    const confirmation =
+      context === "failure"
+        ? restored.stored === false
+          ? " — confirmed by the robot: this is its prior geometry, not this failed attempt's anchor"
+          : ""
+        : restored.stored === true
+          ? " — confirmed running, and it survives a power cycle"
+          : "";
+    return (
       <p className="rotation-calibration-restored" data-testid="rotation-calibration-restored">
         Robot's geometry now: track width <strong>{restored.trackWidthCm} cm</strong>, slip{" "}
-        <strong>{restored.slip}</strong> — calturn restores this after every run, success or fail.
-      </p>
-    ) : (
-      <p className="rotation-calibration-restored-unknown" data-testid="rotation-calibration-restored-unknown">
-        Couldn't confirm the robot's geometry after this run — the restore-confirmation line didn't arrive. Treat it
-        as unknown rather than assuming the restore went cleanly.
+        <strong>{restored.slip}</strong>
+        {confirmation}.
       </p>
     );
   }
@@ -355,7 +385,7 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
           <p className="rotation-calibration-failed" data-testid="rotation-calibration-failed" role="alert">
             Calibration failed: {run.why}
           </p>
-          {renderRestored(run.restored)}
+          {renderRestored(run.restored, "failure")}
         </>
       )}
 
@@ -381,7 +411,7 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
               Applied — rotational_slip set to {run.result.slip}.
             </p>
           )}
-          {renderRestored(run.restored)}
+          {renderRestored(run.restored, "success")}
         </div>
       )}
     </section>

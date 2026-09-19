@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Robot Console
+GenericName=micro:bit Robot Console
+Comment=Manage, flash and drive micro:bit robots
+Exec=robot-console
+Icon=robot-console
+Terminal=false
+Categories=Education;
+Keywords=microbit;micro:bit;robot;Nezha;
+StartupNotify=true
+StartupWMClass=RobotConsole

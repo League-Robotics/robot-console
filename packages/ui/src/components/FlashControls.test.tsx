@@ -475,6 +475,10 @@ describe("FlashControls post-flash navigation", () => {
     });
 
     expect(location(el)).toBe("/");
+    // Opened from the front page, navigating to "/" leaves the dialog
+    // mounted -- it must confirm the flash rather than silently fall
+    // back to the firmware choices.
+    expect(el.querySelector('[data-testid="flash-success"]')?.textContent).toBe("Flashed relay.");
   });
 
   it("does not navigate for a flash-result on a different link", () => {

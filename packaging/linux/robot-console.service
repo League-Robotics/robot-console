@@ -1,0 +1,24 @@
+[Unit]
+Description=Robot Console supervisor (micro:bit robot manager, 127.0.0.1:4795)
+
+[Service]
+Type=simple
+# Firmware release sources for the Flash buttons: the system-wide conffile,
+# then an optional per-user file whose keys win. Read when the service starts;
+# the supervisor passes its environment on to every host it starts.
+EnvironmentFile=-/etc/robot-console/robot-console.env
+EnvironmentFile=-%E/robot-console/robot-console.env
+# The supervisor serves the UI on 127.0.0.1:4795 and runs the robot host on
+# 127.0.0.1:4796 only while a window is connected. Keep in sync with ENTRY in
+# /usr/bin/robot-console (packaging/linux/robot-console.sh).
+ExecStart=/opt/robot-console/node/bin/node /opt/robot-console/app/bin/robot-console-supervisor.js
+Restart=on-failure
+RestartSec=2
+# On stop the supervisor SIGTERMs the host and waits up to 120 s before
+# SIGKILL (the host finishes an in-flight flash first), so leave room.
+TimeoutStopSec=150
+# KillMode stays at the default (control-group): whatever is still in the
+# unit's cgroup when the stop completes, an orphaned host included, is killed.
+
+[Install]
+WantedBy=default.target

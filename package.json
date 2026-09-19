@@ -6,7 +6,8 @@
   "description": "GUI for managing micro:bit robots built on the Elecfreaks Nezha differential-drive board.",
   "bin": {
     "robot-console": "./bin/robot-console.js",
-    "rconsole": "./bin/rconsole.js"
+    "rconsole": "./bin/rconsole.js",
+    "robot-console-supervisor": "./bin/robot-console-supervisor.js"
   },
   "workspaces": [
     "packages/*"

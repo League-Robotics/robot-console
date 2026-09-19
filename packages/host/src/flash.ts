@@ -59,10 +59,18 @@
  *
  * ## Every dapjs/HID call is time-bounded (sprint 017 ticket 003)
  *
- * `daplink.connect()` and `daplink.flash()` are each wrapped in
- * {@link withTimeout} (`lib/withTimeout.ts`) — `node-hid`/`dapjs` give no
- * bounded-wait or cancellation of their own, so a wedged USB transport
- * used to hang the caller (and the board's `board_owner` slot) forever.
+ * `daplink.connect()` is wrapped in {@link withTimeout}
+ * (`lib/withTimeout.ts`) — `node-hid`/`dapjs` give no bounded-wait or
+ * cancellation of their own, so a wedged USB transport used to hang the
+ * caller (and the board's `board_owner` slot) forever. `daplink.flash()`
+ * is bounded differently, by an inactivity watchdog on its progress
+ * events plus a long overall ceiling
+ * ({@link DEFAULT_DAPLINK_FLASH_IDLE_TIMEOUT_MS},
+ * {@link DEFAULT_DAPLINK_FLASH_TIMEOUT_MS}): a total-time bound cannot
+ * tell a slow flash from a stalled one, and a full micro:bit v2 image
+ * over Linux hidraw takes ~86 s. Cutting a healthy write short is
+ * worse than a slow wait, since dapjs cannot be cancelled and the
+ * cleanup disconnects the handle under it.
  * A timeout classifies as `reason: "timeout"` in the returned
  * {@link FlashFailure}, and the DAPLink handle is disconnected
  * best-effort before returning (never left open) — see each function's
@@ -321,9 +329,11 @@ export interface FlashSuccess {
  *   - `"no-volume"` — SWD flashing failed and no mounted MSD volume
  *     could be resolved for this device, so no fallback was attempted.
  *   - `"write-failed"` — the MSD fallback's file write itself failed.
- *   - `"timeout"` (sprint 017 ticket 003) — `daplink.connect()` or
- *     `daplink.flash()` did not settle within its configured budget (see
- *     the module doc's "Every dapjs/HID call is time-bounded" section).
+ *   - `"timeout"` (sprint 017 ticket 003) — `daplink.connect()` did not
+ *     settle within its budget, or `daplink.flash()` reported no progress
+ *     for its idle bound or ran past its overall ceiling; the error text
+ *     names which (see the module doc's "Every dapjs/HID call is
+ *     time-bounded" section).
  *     The DAPLink handle is disconnected best-effort before this is
  *     returned.
  *   - `"owner-unavailable"` (sprint 017 ticket 003) — produced only by
@@ -389,13 +399,29 @@ function defaultDapLinkFactory(hidPath: string): DAPLink {
  * avoid a slow suite). */
 export const DEFAULT_DAPLINK_CONNECT_TIMEOUT_MS = 5_000;
 
-/** Default bound on the single `daplink.flash()` call, which erases,
+/** Overall ceiling on the single `daplink.flash()` call, which erases,
  * writes, and resets the target as one atomic sequence (module doc's
  * "DAPjs's DAPLink.flash() is one atomic vendor-command sequence"
- * section) — generous, since a full micro:bit v2 image can take several
- * seconds to program page-by-page over HID. Overridable per call via
- * {@link FlashViaDapLinkOptions.flashTimeoutMs}. */
-export const DEFAULT_DAPLINK_FLASH_TIMEOUT_MS = 30_000;
+ * section). This is only the backstop for a flash that keeps reporting
+ * progress but never finishes; the bound that normally catches a wedged
+ * transport is {@link DEFAULT_DAPLINK_FLASH_IDLE_TIMEOUT_MS}. It used to
+ * be the *only* bound, at 30 s -- but a full micro:bit v2 image over
+ * Linux hidraw takes ~86 s (real-hardware finding, Ubuntu 24.04), so a
+ * healthy flash was reported as timed out while dapjs kept writing, and
+ * the cleanup then disconnected the HID handle under a live write.
+ * Overridable per call via {@link FlashViaDapLinkOptions.flashTimeoutMs}. */
+export const DEFAULT_DAPLINK_FLASH_TIMEOUT_MS = 300_000;
+
+/** Inactivity bound on `daplink.flash()`: the call fails with
+ * `reason: "timeout"` only if no `DAPLink.EVENT_PROGRESS` event has
+ * arrived for this long. The first window starts when `flash()` is
+ * called (DAPLink's OPEN/erase happens before the first progress event);
+ * every progress event restarts it; the last window covers the CLOSE and
+ * RESET commands sent after the final (`1.0`) progress event. dapjs
+ * emits progress once per written page, so a healthy flash resets this
+ * many times a second however slow the transport is overall.
+ * Overridable per call via {@link FlashViaDapLinkOptions.flashIdleTimeoutMs}. */
+export const DEFAULT_DAPLINK_FLASH_IDLE_TIMEOUT_MS = 30_000;
 
 /** Default bound on `daplink.connect()`/`daplink.reset()` inside
  * {@link resetViaDapLink}. Overridable via
@@ -406,8 +432,80 @@ export interface FlashViaDapLinkOptions {
   createDapLink?: DapLinkFactory;
   /** See {@link DEFAULT_DAPLINK_CONNECT_TIMEOUT_MS}. */
   connectTimeoutMs?: number;
-  /** See {@link DEFAULT_DAPLINK_FLASH_TIMEOUT_MS}. */
+  /** Overall ceiling on `daplink.flash()`. See
+   * {@link DEFAULT_DAPLINK_FLASH_TIMEOUT_MS}. */
   flashTimeoutMs?: number;
+  /** Longest gap between progress events before `daplink.flash()` is
+   * treated as stalled. See {@link DEFAULT_DAPLINK_FLASH_IDLE_TIMEOUT_MS}. */
+  flashIdleTimeoutMs?: number;
+}
+
+/** `daplink.flash()` hit one of its two bounds -- `"idle"` (no progress
+ * for {@link FlashViaDapLinkOptions.flashIdleTimeoutMs}) or `"ceiling"`
+ * ({@link FlashViaDapLinkOptions.flashTimeoutMs} in total). Classified
+ * as `reason: "timeout"`, like a {@link TimeoutError}. */
+export class FlashBoundError extends Error {
+  constructor(
+    readonly bound: "idle" | "ceiling",
+    readonly ms: number,
+  ) {
+    super(
+      bound === "idle"
+        ? `daplink.flash() made no progress for ${formatDuration(ms)}`
+        : `daplink.flash() exceeded ${formatDuration(ms)}`,
+    );
+    this.name = "FlashBoundError";
+  }
+}
+
+/** `30000` -> `"30 s"`; anything not a whole second stays in ms
+ * (tests use short bounds). */
+function formatDuration(ms: number): string {
+  return ms % 1000 === 0 ? `${ms / 1000} s` : `${ms} ms`;
+}
+
+/**
+ * Race `operation` against an inactivity watchdog and an overall
+ * ceiling. `progressed()` restarts the inactivity window; the first
+ * window starts now. Both timers are cleared once the race settles and
+ * are `unref()`'d, like {@link withTimeout}'s. Like that helper, this
+ * does not (cannot) cancel `operation` itself.
+ */
+function watchFlashProgress<T>(
+  operation: Promise<T>,
+  idleMs: number,
+  ceilingMs: number,
+): { result: Promise<T>; progressed: () => void } {
+  let progressed = () => {};
+  const result = new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const settle = (fn: () => void) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(idleTimer);
+        clearTimeout(ceilingTimer);
+        fn();
+      }
+    };
+    const armIdle = () =>
+      setTimeout(() => settle(() => reject(new FlashBoundError("idle", idleMs))), idleMs);
+    let idleTimer = armIdle();
+    idleTimer.unref?.();
+    const ceilingTimer = setTimeout(() => settle(() => reject(new FlashBoundError("ceiling", ceilingMs))), ceilingMs);
+    ceilingTimer.unref?.();
+    progressed = () => {
+      if (!settled) {
+        clearTimeout(idleTimer);
+        idleTimer = armIdle();
+        idleTimer.unref?.();
+      }
+    };
+    operation.then(
+      (value) => settle(() => resolve(value)),
+      (error: unknown) => settle(() => reject(error)),
+    );
+  });
+  return { result, progressed: () => progressed() };
 }
 
 /**
@@ -429,13 +527,15 @@ export interface FlashViaDapLinkOptions {
  * doc for why finer-grained phase boundaries aren't available from
  * `dapjs`). Always resolves to a {@link FlashOutcome}, never throws.
  *
- * `daplink.connect()` and `daplink.flash()` are each wrapped in
- * {@link withTimeout}; either one timing out classifies as
- * `reason: "timeout"`. A `connect()` timeout disconnects the (possibly
- * still-opening) handle best-effort before returning, since that call
- * never reaches this function's own `finally` block below; a
- * `flash()` timeout is already covered by that `finally`, same as every
- * other error thrown from within it.
+ * `daplink.connect()` is wrapped in {@link withTimeout};
+ * `daplink.flash()` is watched by {@link watchFlashProgress} (no progress
+ * for `flashIdleTimeoutMs`, or `flashTimeoutMs` in total). Any of these
+ * classifies as `reason: "timeout"`, with a message naming the bound. A
+ * `connect()` timeout disconnects the (possibly still-opening) handle
+ * best-effort before returning, since that call never reaches this
+ * function's own `finally` block below; a `flash()` timeout is already
+ * covered by that `finally`, same as every other error thrown from
+ * within it.
  */
 export async function flashViaDapLink(
   device: DaplinkDevice,
@@ -456,6 +556,7 @@ export async function flashViaDapLink(
   const createDapLink = options?.createDapLink ?? defaultDapLinkFactory;
   const connectTimeoutMs = options?.connectTimeoutMs ?? DEFAULT_DAPLINK_CONNECT_TIMEOUT_MS;
   const flashTimeoutMs = options?.flashTimeoutMs ?? DEFAULT_DAPLINK_FLASH_TIMEOUT_MS;
+  const flashIdleTimeoutMs = options?.flashIdleTimeoutMs ?? DEFAULT_DAPLINK_FLASH_IDLE_TIMEOUT_MS;
 
   let daplink: DAPLink;
   try {
@@ -482,15 +583,22 @@ export async function flashViaDapLink(
     return { status: "error", method: "swd", reason, error: message };
   }
 
-  const reportWriting = () => onProgress("writing");
+  // Restarts the inactivity window; assigned once flash() is under watch.
+  let progressed = () => {};
+  const reportWriting = () => {
+    progressed();
+    onProgress("writing");
+  };
   try {
     onProgress("erasing");
     daplink.on(DAPLink.EVENT_PROGRESS, reportWriting);
-    await withTimeout(daplink.flash(Buffer.from(hex, "utf-8")), flashTimeoutMs, "daplink.flash()");
+    const watch = watchFlashProgress(daplink.flash(Buffer.from(hex, "utf-8")), flashIdleTimeoutMs, flashTimeoutMs);
+    progressed = watch.progressed;
+    await watch.result;
     onProgress("resetting");
     return { status: "ok", method: "swd" };
   } catch (error) {
-    if (error instanceof TimeoutError) {
+    if (error instanceof FlashBoundError || error instanceof TimeoutError) {
       return { status: "error", method: "swd", reason: "timeout", error: error.message };
     }
     return {
@@ -1007,9 +1115,13 @@ export interface FlashOptions {
    * {@link DEFAULT_DAPLINK_CONNECT_TIMEOUT_MS}. */
   connectTimeoutMs?: number;
   /** Forwarded to {@link flashViaDapLink}'s own
-   * {@link FlashViaDapLinkOptions.flashTimeoutMs}. Defaults to
-   * {@link DEFAULT_DAPLINK_FLASH_TIMEOUT_MS}. */
+   * {@link FlashViaDapLinkOptions.flashTimeoutMs} (the overall ceiling).
+   * Defaults to {@link DEFAULT_DAPLINK_FLASH_TIMEOUT_MS}. */
   flashTimeoutMs?: number;
+  /** Forwarded to {@link flashViaDapLink}'s own
+   * {@link FlashViaDapLinkOptions.flashIdleTimeoutMs} (the no-progress
+   * bound). Defaults to {@link DEFAULT_DAPLINK_FLASH_IDLE_TIMEOUT_MS}. */
+  flashIdleTimeoutMs?: number;
   /** Settle delay before the MSD write starts (sprint 017 ticket 004).
    * Defaults to {@link DEFAULT_MSD_SETTLE_MS}. */
   msdSettleMs?: number;
@@ -1076,6 +1188,7 @@ export async function flash(
     ...(options?.createDapLink !== undefined ? { createDapLink: options.createDapLink } : {}),
     ...(options?.connectTimeoutMs !== undefined ? { connectTimeoutMs: options.connectTimeoutMs } : {}),
     ...(options?.flashTimeoutMs !== undefined ? { flashTimeoutMs: options.flashTimeoutMs } : {}),
+    ...(options?.flashIdleTimeoutMs !== undefined ? { flashIdleTimeoutMs: options.flashIdleTimeoutMs } : {}),
   });
   if (swdOutcome.status === "ok") {
     return swdOutcome;

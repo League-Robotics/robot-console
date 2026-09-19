@@ -4,6 +4,30 @@ status: pending
 
 # One-click calibration: `calj` and `calc` replace `calx`/`cala`, and the console's parser is dead
 
+## RENAMED, 2026-09-19: `calj` -> `calwheels`, `calc` -> `calturn`
+
+**Everything below says `calj`/`calc`. Those names are dead.** The
+firmware session renamed both verbs about an hour after sending the
+original contract:
+
+| was | now |
+| --- | --- |
+| `calj (cm:number=90.5)` | **`calwheels (cm:number=90.5)`** |
+| `calc (edges:number=10)` | **`calturn (edges:number=10)`** |
+
+The JSON event names moved with them —
+`calwheels.result` / `.quality` / `.span` / `.fail`, and
+`calturn.result` / `.quality` / `.ch` / `.restored` / `.fail`.
+**Field names *inside* the objects are unchanged**, so every field
+description below still holds; only the `ev` values and the `RUN` verbs
+changed.
+
+That is now **three** naming generations in one project
+(`calx`/`cala` -> `calj`/`calc` -> `calwheels`/`calturn`), which is a
+reason to key the parser off the `ev` object's structure and the
+`.result`/`.fail` suffix rather than hardcoding a verb list in more
+places than strictly necessary.
+
 ## What Eric asked for (2026-09-18)
 
 > "We're going to work on getting the calibration program working with the

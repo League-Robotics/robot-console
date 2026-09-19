@@ -231,6 +231,9 @@ export class LineLink {
   private pendingUnsequencedQueries = 0;
 
   private readonly lineEmitter = new Emitter<DecodedLine>();
+  /** Fan-out for outgoing verbs, both sequenced and unsequenced -- see
+   * {@link onQuerySent}. */
+  private readonly querySentEmitter = new Emitter<string>();
   private readonly rawLineEmitter = new Emitter<string>();
   private readonly inboundLineEmitter = new Emitter<string>();
   private readonly ackNackEmitter = new Emitter<AckNackEvent>();
@@ -447,6 +450,12 @@ export class LineLink {
     this.assertConnected("sendCommand");
     const line = this.protocolSession.send(verb, fields);
     this.paceWrite(line);
+    // See {@link onQuerySent}. `FUNCS` is one of the id-bearing verbs, so
+    // it arrives here rather than at `sendUnsequencedQuery` -- a fix that
+    // hooked only the unsequenced path would never fire for the one verb
+    // that needs it. (Caught by this change's own regression test, which
+    // failed with "FUNCS is one of the 11 id-bearing verbs".)
+    this.querySentEmitter.dispatch(verb);
     return line;
   }
 
@@ -486,7 +495,31 @@ export class LineLink {
     const line = this.protocolSession.sendUnsequenced(verb, fields);
     this.paceWrite(line);
     this.armUnsequencedResend(verb, line);
+    // Dispatch *after* the write, so a listener only ever learns about a
+    // query that actually went out. See {@link onQuerySent}.
+    this.querySentEmitter.dispatch(verb);
     return line;
+  }
+
+  /**
+   * Subscribe to every verb sent on this link, by either
+   * {@link sendCommand} (sequenced) or {@link sendUnsequencedQuery}.
+   * Returns an unsubscribe function.
+   *
+   * This exists for list-valued replies that have **no end-of-list
+   * sentinel** -- `FUNCS` above all. The robot answers one `funcs` line
+   * per registered verb and nothing marks the last one, so a consumer
+   * cannot tell "the start of a second batch" from "more of the first"
+   * by looking at replies alone. The only moment that is unambiguous is
+   * the moment the request goes out, which is here.
+   *
+   * Hooking the *send* rather than the first reply is deliberate: it
+   * also survives a partial first batch (lines emitted during a run are
+   * best-effort and can be dropped), where resetting on first-reply
+   * would silently keep stale entries from the previous request.
+   */
+  onQuerySent(listener: (verb: string) => void): () => void {
+    return this.querySentEmitter.on(listener);
   }
 
   /** Background resend/pending-tracking for one {@link sendUnsequencedQuery}

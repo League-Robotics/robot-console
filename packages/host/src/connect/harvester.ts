@@ -190,6 +190,32 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
       let lastAliveSync = 0;
 
       let functions: RobotFunction[] = [];
+      // The robot answers `FUNCS` with one `funcs` line per registered
+      // verb and **no end-of-list sentinel**, so replies alone cannot
+      // distinguish "a second batch" from "more of the first". Before
+      // this, every `funcs` line was appended unconditionally, so a
+      // second `FUNCS` (Refresh, a remount, a reconnect, the calibration
+      // page's own probe) doubled the list -- reported live 2026-09-18
+      // with every verb listed twice in the Functions dropdown, after the
+      // firmware side proved the robot emits each exactly once.
+      //
+      // The doubling was the visible half. The dangerous half is that an
+      // append-only list can hold entries from a *previous* firmware or a
+      // previous robot, and `packages/ui`'s calibration wizards gate their
+      // Go button on a function being present in it -- so a stale entry
+      // could light up a button the robot cannot honor. That gate is the
+      // only thing standing between a one-click calibration and a robot
+      // running different firmware entirely.
+      //
+      // Reset on *send*, not on first reply: the send is the one
+      // unambiguous moment, and it also survives a dropped first batch,
+      // where resetting on first-reply would keep the stale list.
+      const unsubscribeQuerySent = link.onQuerySent((verb) => {
+        if (verb.toUpperCase() === "FUNCS") {
+          functions = [];
+          syncSession({ functions });
+        }
+      });
       let pollAwaitingStatus = false;
       let pollMisses = 0;
       let desyncNotified = false;
@@ -205,6 +231,14 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
           clearInterval(pollTimer);
           pollTimer = undefined;
         }
+        // Drop the query-sent subscription on the same path that stops
+        // the poll timer: every teardown route (natural failure,
+        // `onClose`, and the harvester's own `stop()`) already funnels
+        // through here, so this cannot outlive the session. Sprint 019
+        // ticket 003 and sprint 021 ticket 003 were both about teardown
+        // paths that did not actually tear everything down; not adding a
+        // third.
+        unsubscribeQuerySent();
       }
 
       const sessionControl: AttachedSessionControl = {

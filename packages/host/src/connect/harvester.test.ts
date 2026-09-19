@@ -206,6 +206,86 @@ describe("createHarvester -- status/funcs/thdr+t", () => {
     expect(functions).toEqual([{ name: "drive", signature: "x y" }, { name: "stop" }]);
   });
 
+  it("a second FUNCS request replaces the list instead of doubling it", async () => {
+    // Reported live 2026-09-18: the Functions dropdown listed every verb
+    // twice. The firmware side proved the robot emits each exactly once
+    // (one `onRun` registration per verb; a single FUNCS request returns
+    // 4 lines, not 8), so the duplication was this module appending
+    // batch after batch. There is no end-of-list sentinel in the
+    // protocol, so the reset has to hang off the request going out.
+    const store = seededStore();
+    const { link, stream } = await connectedLink();
+    const harvester = createHarvester(store, { statusPollIntervalMs: 0 });
+    harvester.attach(session(link));
+
+    link.sendCommand("FUNCS");
+    stream.emitData("funcs square\n");
+    stream.emitData("funcs circle\n");
+    await flush();
+
+    link.sendCommand("FUNCS");
+    stream.emitData("funcs square\n");
+    stream.emitData("funcs circle\n");
+    await flush();
+
+    const row = store.snapshotRows().sessions.find((s) => s.link_id === "link-1");
+    const functions = JSON.parse(row?.functions as string) as Array<{ name: string }>;
+    expect(functions).toEqual([{ name: "square" }, { name: "circle" }]);
+  });
+
+  it("a FUNCS request drops verbs the robot no longer has", async () => {
+    // The dangerous half of the same bug, and the reason it is worth
+    // fixing rather than living with: `packages/ui`'s calibration
+    // wizards gate their Go button on a function being present in this
+    // list. An append-only list keeps entries from a previous firmware,
+    // so a stale `calj` could light up a one-click calibration button on
+    // a robot that cannot honor it -- the fleet is not uniform (one
+    // robot runs 25 unrelated verbs with no calj/calc at all).
+    const store = seededStore();
+    const { link, stream } = await connectedLink();
+    const harvester = createHarvester(store, { statusPollIntervalMs: 0 });
+    harvester.attach(session(link));
+
+    link.sendCommand("FUNCS");
+    stream.emitData("funcs calj cm:number=90.5\n");
+    stream.emitData("funcs calc edges:number=10\n");
+    await flush();
+
+    // Same link, robot now running different firmware with neither verb.
+    link.sendCommand("FUNCS");
+    stream.emitData("funcs tour\n");
+    await flush();
+
+    const row = store.snapshotRows().sessions.find((s) => s.link_id === "link-1");
+    const functions = JSON.parse(row?.functions as string) as Array<{ name: string }>;
+    expect(functions).toEqual([{ name: "tour" }]);
+    expect(functions.some((fn) => fn.name === "calj")).toBe(false);
+  });
+
+  it("resets on the request, not on the first reply, so a dropped first batch cannot leave stale entries", async () => {
+    // Lines emitted during a run are best-effort and get dropped (the
+    // firmware skips backpressure while a motion obligation is live, and
+    // the 8-slot ring drops the newest line). If the reset hung off the
+    // first reply instead of the request, a batch whose lines were all
+    // dropped would leave the previous list standing and looking current.
+    const store = seededStore();
+    const { link, stream } = await connectedLink();
+    const harvester = createHarvester(store, { statusPollIntervalMs: 0 });
+    harvester.attach(session(link));
+
+    link.sendCommand("FUNCS");
+    stream.emitData("funcs calj cm:number=90.5\n");
+    await flush();
+
+    // Second request; every reply line is dropped on the wire.
+    link.sendCommand("FUNCS");
+    await flush();
+
+    const row = store.snapshotRows().sessions.find((s) => s.link_id === "link-1");
+    const functions = JSON.parse(row?.functions as string) as Array<{ name: string }>;
+    expect(functions).toEqual([]);
+  });
+
   it("thdr/t forward to the telemetry sink and never touch the sessions row", async () => {
     const store = seededStore();
     const { link, stream } = await connectedLink();

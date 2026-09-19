@@ -42,6 +42,39 @@ const { startServer, DEFAULT_PORT } = await import("../packages/host/src/server.
 // (which does go through `cli.ts`) was replaced by `npm run dev`.
 const { startMcpServer } = await import("../packages/host/src/mcp/server.ts");
 const { startRuntime } = await import("../packages/host/src/runtime.ts");
+const { createServer } = await import("vite");
+const path = await import("node:path");
+const { fileURLToPath } = await import("node:url");
+
+const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const uiRoot = path.join(repoRoot, "packages", "ui");
+
+/** `--host-port <n>` / `--host-port=<n>`, else `ROBOT_CONSOLE_PORT`,
+ * else the host's own default. Mirrors `packages/host/src/cli.ts`'s
+ * flag handling, under a distinct name so it is unambiguous which of
+ * the two dev servers a port is meant for. */
+function parsePort(argv, env) {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--host-port") {
+      const value = Number(argv[i + 1]);
+      if (Number.isInteger(value)) return value;
+    } else if (arg?.startsWith("--host-port=")) {
+      const value = Number(arg.slice("--host-port=".length));
+      if (Number.isInteger(value)) return value;
+    }
+  }
+  const raw = env.ROBOT_CONSOLE_PORT;
+  if (raw !== undefined) {
+    const value = Number(raw);
+    if (Number.isInteger(value)) return value;
+  }
+  return DEFAULT_PORT;
+}
+
+const argv = process.argv.slice(2);
+const hostPort = parsePort(argv, process.env);
+
 // The host serves the *prebuilt* `packages/ui/dist` on its own port
 // (`server.ts`'s `defaultStaticDir`), while Vite below serves the live
 // HMR UI on its own. So `npm run dev` presents two UIs, and the one on
@@ -85,39 +118,6 @@ const { startRuntime } = await import("../packages/host/src/runtime.ts");
     }
   }
 }
-
-const { createServer } = await import("vite");
-const path = await import("node:path");
-const { fileURLToPath } = await import("node:url");
-
-const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const uiRoot = path.join(repoRoot, "packages", "ui");
-
-/** `--host-port <n>` / `--host-port=<n>`, else `ROBOT_CONSOLE_PORT`,
- * else the host's own default. Mirrors `packages/host/src/cli.ts`'s
- * flag handling, under a distinct name so it is unambiguous which of
- * the two dev servers a port is meant for. */
-function parsePort(argv, env) {
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "--host-port") {
-      const value = Number(argv[i + 1]);
-      if (Number.isInteger(value)) return value;
-    } else if (arg?.startsWith("--host-port=")) {
-      const value = Number(arg.slice("--host-port=".length));
-      if (Number.isInteger(value)) return value;
-    }
-  }
-  const raw = env.ROBOT_CONSOLE_PORT;
-  if (raw !== undefined) {
-    const value = Number(raw);
-    if (Number.isInteger(value)) return value;
-  }
-  return DEFAULT_PORT;
-}
-
-const argv = process.argv.slice(2);
-const hostPort = parsePort(argv, process.env);
 
 // The host first: if its port is busy it throws a clear error, and
 // there is no point standing Vite up only to tear it down again. Ticket

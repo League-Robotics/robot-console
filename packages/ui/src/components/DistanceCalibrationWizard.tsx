@@ -189,6 +189,25 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
   const [cmText, setCmText] = useState(DEFAULT_CM);
   const cmValue = parsePositiveNumber(cmText);
 
+  // calibration-0.20260919.2 (nezha-robot-template 12483c9) added a
+  // second argument: `calwheels (cm, wheel)`, where `wheel` is the
+  // known wheel diameter in mm and **0 means unknown** -- which is the
+  // default and the normal case.
+  //
+  // Why unknown is the useful default: the firmware's old guard refused
+  // any answer more than 10% from the stock 90 mm wheel, so a robot with
+  // swapped wheels was refused *for measuring correctly*. Declaring a
+  // wheel re-tightens that check, which is only what you want when you
+  // already trust the wheel and are re-checking it.
+  //
+  // Sending the argument is safe against older firmware too: arguments
+  // are read positionally via `runNumber(i, fallback)` and no verb
+  // validates arity, so a pre-efa5a6f hex ignores it (confirmed by the
+  // firmware session). So this control is not gated on the profile
+  // string -- it simply does nothing on an old hex rather than erroring.
+  const [wheelText, setWheelText] = useState("");
+  const wheelValue = parsePositiveNumber(wheelText);
+
   // The run's window is anchored on the log entry *id* minted at Go,
   // not an array index -- see `RotationCalibrationWizard.tsx`'s
   // identical rationale (a bounded log ring trimmed from the front
@@ -221,7 +240,10 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
     }
     const last = log[log.length - 1];
     setRunStartId(last ? last.id + 1 : 0);
-    sendCommand(linkId, "RUN", [VERB, String(cmValue)]);
+    // 0 is the firmware's own sentinel for "unknown", so a blank field
+    // sends 0 rather than omitting the argument -- one wire shape for
+    // both cases, and explicit about which one it is.
+    sendCommand(linkId, "RUN", [VERB, String(cmValue), String(wheelValue ?? 0)]);
   }
 
   const onRunRef = useRef(onRun);
@@ -264,6 +286,25 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
           onChange={(event) => setCmText(event.target.value)}
           disabled={!linkOpen || run?.kind === "running"}
         />
+        <div className="distance-calibration-wheel">
+          <label htmlFor="distance-calibration-wheel">Wheel diameter (mm), if you already know it</label>{" "}
+          <input
+            id="distance-calibration-wheel"
+            type="number"
+            inputMode="decimal"
+            step="0.1"
+            min="1"
+            placeholder="unknown"
+            data-testid="distance-calibration-wheel"
+            value={wheelText}
+            onChange={(event) => setWheelText(event.target.value)}
+            disabled={!linkOpen || run?.kind === "running"}
+          />
+          <p className="distance-calibration-wheel-hint" data-testid="distance-calibration-wheel-hint">
+            Leave this blank if you have swapped wheels or are not sure — that is the normal case, and it lets the robot
+            measure whatever wheel it actually has. Fill it in only to re-check a wheel you already trust.
+          </p>
+        </div>
       </div>
 
       {run === undefined && (

@@ -155,7 +155,11 @@ describe("DistanceCalibrationWizard run dispatch", () => {
     const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
     socket.sent.length = 0;
     clickGo(el);
-    expect(socket.sent).toEqual([JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "RUN", fields: ["calwheels", "90.5"] })]);
+    // The trailing "0" is the wheel argument: 0 means "unknown", which
+    // is the default and the normal case (calibration-0.20260919.2).
+    expect(socket.sent).toEqual([
+      JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "RUN", fields: ["calwheels", "90.5", "0"] }),
+    ]);
   });
 
   it("sends the edited cm value when Go is pressed", () => {
@@ -168,7 +172,9 @@ describe("DistanceCalibrationWizard run dispatch", () => {
     });
     socket.sent.length = 0;
     clickGo(el);
-    expect(socket.sent).toEqual([JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "RUN", fields: ["calwheels", "120"] })]);
+    expect(socket.sent).toEqual([
+      JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "RUN", fields: ["calwheels", "120", "0"] }),
+    ]);
   });
 
   it("hides the setup instructions and disables Go once a run is in flight", () => {
@@ -361,5 +367,47 @@ describe("calwheels.fail diagnostics (nezha-robot-template efa5a6f)", () => {
     expect(run.kind).toBe("failed");
     if (run.kind !== "failed") return;
     expect(run.implied).toBeUndefined();
+  });
+});
+
+function typeInto(el: HTMLDivElement, testid: string, value: string): void {
+  const input = el.querySelector<HTMLInputElement>(`[data-testid="${testid}"]`)!;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  act(() => {
+    setter.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+describe("wheel declaration (calibration-0.20260919.2)", () => {
+  // `calwheels (cm, wheel)` -- wheel in mm, 0 meaning unknown. Unknown
+  // is the default and the normal case: the firmware's old guard
+  // refused any answer more than 10% from the stock 90 mm wheel, so a
+  // swapped-wheel robot was refused for measuring correctly.
+  function sentFields(socket: { sent: string[] }): unknown {
+    return JSON.parse(socket.sent.at(-1)!).fields;
+  }
+
+  it("sends 0 for the wheel when the field is left blank", () => {
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
+    socket.sent.length = 0;
+    clickGo(el);
+    expect(sentFields(socket)).toEqual(["calwheels", "90.5", "0"]);
+  });
+
+  it("sends the declared wheel diameter when one is typed", () => {
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
+    typeInto(el, "distance-calibration-wheel", "64");
+    socket.sent.length = 0;
+    clickGo(el);
+    expect(sentFields(socket)).toEqual(["calwheels", "90.5", "64"]);
+  });
+
+  it("treats a junk wheel entry as unknown rather than sending it", () => {
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
+    typeInto(el, "distance-calibration-wheel", "abc");
+    socket.sent.length = 0;
+    clickGo(el);
+    expect(sentFields(socket)).toEqual(["calwheels", "90.5", "0"]);
   });
 });

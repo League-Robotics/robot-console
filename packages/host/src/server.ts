@@ -1272,6 +1272,24 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       reply({ ok: false, message: "the network name and password cannot contain spaces (the wire splits on them)" });
       return;
     }
+    // An empty field would encode as a *three*-token `WIFICRED SET
+    // <slot> <ssid>` line, because fields are space-joined. The robot's
+    // decoder requires exactly four and rejects the line -- writing
+    // nothing, silently, while this path would still look like it had
+    // sent a credential. That is indistinguishable from "the store is
+    // empty", which is exactly the state the firmware session found on
+    // tigez while trying to explain a robot that had no stored network.
+    //
+    // The UI's own `validateWifiInput` already blocks this, but this
+    // handler is reachable from any client, so refuse it here rather
+    // than emit a line that cannot do anything.
+    if (credentials.ssid.length === 0 || credentials.password.length === 0) {
+      reply({
+        ok: false,
+        message: "the network name and password must both be set -- an empty one would be rejected by the robot",
+      });
+      return;
+    }
     const session = requireSession(linkId);
     const result = await provisionWifiOverLink(session, message.slot ?? 0, credentials.ssid, credentials.password);
     reply(result);

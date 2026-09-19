@@ -422,7 +422,13 @@ describe("startMcpServer: session continuity (sprint 019 ticket 005)", () => {
     expect(transport.handleRequest).toHaveBeenNthCalledWith(2, secondReq, secondRes, secondReq.body);
   });
 
-  it("rejects a request carrying an Mcp-Session-Id this process does not recognize with a plain 400", async () => {
+  it("rejects an unrecognized Mcp-Session-Id with 404 so the client re-initializes", async () => {
+    // 404, not 400. Streamable HTTP clients treat 404 as "this session
+    // is gone, send `initialize` again"; a 400 reads as "your request
+    // was malformed" and leaves them retrying the same dead id. A peer
+    // session hit exactly that after a dev-server restart -- sessions
+    // live only in this process's memory -- and could not use MCP at
+    // all until it started over.
     const app = fakeExpressApp();
     startMcpServer(app, fakeDeps);
     const post = app.routes.find((r) => r.method === "post")!;
@@ -432,8 +438,10 @@ describe("startMcpServer: session continuity (sprint 019 ticket 005)", () => {
 
     await requestHandler(req, res);
 
-    expect(res.statusCode).toBe(400);
-    expect(res.jsonBody).toMatchObject({ jsonrpc: "2.0", error: { code: -32000 } });
+    expect(res.statusCode).toBe(404);
+    expect(res.jsonBody).toMatchObject({ jsonrpc: "2.0", error: { code: -32001 } });
+    // The message must tell a human reading a log what to do about it.
+    expect(JSON.stringify(res.jsonBody)).toContain("initialize");
   });
 });
 

@@ -360,10 +360,28 @@ export function startMcpServer(app: Express, deps: McpDeps, options: StartMcpSer
       }
       if (sessionId !== undefined) {
         // A session id was given but this process holds no such session
-        // (a foreign id, or a stale one from before a restart) -- reject
-        // plainly rather than silently starting a fresh session under an
-        // id this process never issued.
-        res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "Bad Request: unknown MCP session id." }, id: null });
+        // (a foreign id, or -- far more commonly -- a stale one from
+        // before a restart, since sessions live only in this process's
+        // memory). Still refused: never silently adopt an id this
+        // process never issued.
+        //
+        // **404, not 400.** The Streamable HTTP spec has clients treat
+        // 404 as "this session is gone, start a new one by sending
+        // `initialize` again", while a 400 reads as "your request was
+        // malformed" and leaves a client retrying the same dead id
+        // forever. A peer session hit exactly that after a dev-server
+        // restart: every call came back "Bad Request: unknown MCP
+        // session id", it could not diagnose through MCP at all, and
+        // went around via the radio relay instead. The message now says
+        // what to do, for a human reading a log.
+        res.status(404).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32001,
+            message: "Unknown or expired MCP session id -- send `initialize` again to start a new session.",
+          },
+          id: null,
+        });
         return;
       }
       const mcpServer = createMcpServer();

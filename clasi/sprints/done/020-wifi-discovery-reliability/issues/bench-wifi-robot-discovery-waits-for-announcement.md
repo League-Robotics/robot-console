@@ -267,3 +267,77 @@ the honest number — is what this issue needs again, not another patch.
   they disagree, `HELLO` is the tiebreak — the same rule this repo
   learned about `mbdeploy probe`'s cached ROLE column. Resolve fixtures
   by property at run time and confirm against `HELLO`.
+
+## ROOT CAUSE FOUND, 2026-09-19 — and it was never our discovery code
+
+Sprint 020 existed to fix this and closed an honest failure at 0/10. The
+cause has now been **measured** by the `nezha-robot-template` session,
+with nothing else touching the robot:
+
+```
+11:14:39  Add  _robotlink._tcp  "tigez robot link"
+11:15:03  Rmv   <- 24s after the Add: the record expired
+11:15:39  Add   <- next announcement, 60s after the previous
+```
+
+**`_robotlink._tcp` is announced every 60 s with a PTR TTL of ~24 s.**
+The record is therefore simply *absent* for ~36 s in every 60 — a browser
+sees the robot about **40% of the time**. The robot announces unsolicited
+and does not answer queries, so the cache expires rather than refreshing.
+
+**That 40% is the 2/10 this issue measured.** We were measuring the
+robot's announce duty cycle and attributing it to our code. Every
+diagnosis in sprint 020 — threadpool starvation, then the 2000 ms bound
+against the ~5000 ms mDNS negative floor — was looking in the wrong
+place, and the passive-browser rewrite could not help either, because
+there was genuinely nothing to see for 36 s at a time.
+
+The A record is unaffected: `tigez.local -> 192.168.1.224`, **TTL 120**,
+longer than the announce interval, so it never expires. `ping` works and
+a real session works (`leaguebot` connected on `192.168.1.224:7654` and
+got the banner, `STATUS wifi=1`, and `ID`) **throughout the PTR gap**.
+
+The 60 s/24 s mismatch is upstream in `pxt-nezha-diffdrive`'s mDNS
+announcer and cannot be fixed from the firmware image repo.
+
+### What our side actually had wrong
+
+`watchers/mdnsWatcher.ts` **already tolerated** the pattern — 180 s link
+TTL, a deliberately non-authoritative `down`, and `onAnnounce` refreshing
+`last_seen`. No change was needed there; it is now locked in by a
+regression test that plays back the exact measured cadence.
+
+The live defect was in **`connect/reconciler.ts`**. `_mbserial._tcp`'s
+Avahi-style responder answers a query in milliseconds; `_robotlink` never
+answers one at all. So on every cold start, `mbserial` won the race and
+connected before `wifi` had a link row — and 018-008's "a device with an
+already-connected link never opens a second one automatically" then made
+that wrong choice **permanent for the life of the process**.
+
+Worse, the `_mbserial` record advertising the name `tigez` is an
+`mbdeploy serve` daemon on `naught` with the board on **USB**, with a
+port that changes every announcement. During the 36 s gap it is the only
+`tigez` record on the network — so "whatever is present" lands on a USB
+proxy and calls it the WiFi robot. The two records disagree about both
+address and transport.
+
+Fixed in `580fa7c` with a discovery grace window
+(`DEFAULT_WIFI_DISCOVERY_GRACE_MS = 65_000`, mirroring the announce
+interval) that blocks `mbserial` as an auto-connect candidate only while
+a device has no live WiFi evidence at all. Opt-in at the reconciler,
+explicitly enabled by `runtime.ts` in production.
+
+### Still not demonstrated on hardware
+
+`tigez` dropped off WiFi partway through the fix work — ping and ARP
+confirm the host down while ARP still held a real MAC, matching
+[[wifi-robot-drops-under-motor-load]]. So a link surviving a live 60 s
+announce cycle, and the reconciler landing on the WiFi target rather than
+the `naught` USB proxy, are both still unproven against real hardware.
+
+### The lesson worth keeping
+
+Three diagnoses, two sprints, and the answer was a property of the
+*robot's advertisement*, not of our code. The measurement that settled it
+took one `dns-sd` run watching timestamps. **Measure the thing you are
+consuming before theorising about the consumer.**

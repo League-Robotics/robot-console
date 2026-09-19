@@ -169,6 +169,32 @@ export function WifiCredentialsDialog({ linkId, linkOpen, name, triggerClassName
                 {result.message}
               </p>
             )}
+            {result?.ok === true && (
+              // The credential really is stored at this point -- and the
+              // robot will carry on joining whatever network it picked at
+              // boot, indefinitely, until it is reset.
+              //
+              // `Protocol::serviceWifi()` chooses its credential source
+              // **once**, at the first poll after boot: flash store, else
+              // `setupWifi()`, else the baked default. If the store was
+              // empty at boot the flash branch is never taken and
+              // `wifiBegun_` stays true forever; a credential written
+              // afterwards lands in the slot correctly and has no effect
+              // on the join already running. `setupWifi()`'s own doc says
+              // it: "A call made after the link has already started is
+              // ignored."
+              //
+              // So "stored" is only half the story, and a student who
+              // clicks this and waits waits forever. The stakeholder hit
+              // exactly that -- the store accepted Busboom_Garage while
+              // the robot kept retrying a different network, 27 restarts
+              // deep. Saying it here is the difference between a working
+              // button and a mystery.
+              <p className="credentials-result-hint" role="status" data-testid="wifi-result-reset-hint">
+                <strong>Now reset the robot</strong> — power cycle it, or press its reset button. It keeps trying the
+                network it picked when it last started up until then, so nothing changes until it restarts.
+              </p>
+            )}
             <div className="credentials-actions">
               <button
                 type="submit"

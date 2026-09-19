@@ -101,6 +101,34 @@ describe("WifiCredentialsDialog", () => {
     });
     expect(el.querySelector('[data-testid="wifi-result"]')?.textContent).toContain("power-cycle");
     expect(el.querySelector('[data-testid="wifi-write"]')?.textContent).toBe("Save and write to robot");
+
+    // The host's own message mentioned power-cycling, but as one clause
+    // inside a longer sentence -- and the stakeholder still waited for a
+    // robot that was never going to join, because the firmware picks its
+    // credential source once at boot and a later write cannot change the
+    // join already running. This makes it a separate, unmissable line.
+    const hint = el.querySelector('[data-testid="wifi-result-reset-hint"]');
+    expect(hint).not.toBeNull();
+    expect(hint?.textContent).toContain("reset the robot");
+  });
+
+  it("shows no reset hint when the write failed", () => {
+    const { el, socket } = mountWifi();
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="wifi-credentials-trigger"]')!.click();
+    });
+    act(() => {
+      socket.emitMessage({
+        type: "wifi-provision-result",
+        linkId: "usb-ROBOT-A",
+        ok: false,
+        message: "the robot refused the credential",
+        seq: 2,
+      });
+    });
+    // Telling someone to reset a robot that stored nothing would send
+    // them to reboot it for no reason and lose the error.
+    expect(el.querySelector('[data-testid="wifi-result-reset-hint"]')).toBeNull();
   });
 
   it("refuses a network name with a space before sending anything, and never echoes the password anywhere", () => {

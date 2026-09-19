@@ -16,6 +16,22 @@
  * host it is actually talking to -- fetching from the host itself is
  * the point, not a convenience.
  *
+ * ## The URL is derived from the WebSocket's host, not the page origin
+ *
+ * A bare relative `fetch("/api/host-info")` is correct only when the
+ * page and the host share an origin -- true on the host's own port
+ * (4795) and in the packaged app, and **false under `npm run dev`**,
+ * where Vite serves the UI on 5173 while the host listens on 4795. A
+ * relative fetch there hits Vite, which has no such route, so the
+ * version silently never appeared -- reported from a browser on
+ * `localhost:5173`.
+ *
+ * So the base comes from the same place `WsProvider`'s
+ * `defaultSocketUrl()` gets its own: `VITE_WS_URL` when the dev script
+ * defines it (`ws://<host>:<port>/`), converted `ws`->`http`. When it
+ * is absent -- the packaged app, and the host's own port -- this falls
+ * back to the page origin, which is right for both.
+ *
  * Never surfaces a wrong or placeholder version: any failure (network
  * error, non-2xx, unparseable body, missing/non-string `version` field)
  * leaves the returned version `undefined`, same as "the host hasn't
@@ -37,12 +53,35 @@ interface HostInfoResponse {
  * the host reports no version at all (an unresolvable version renders
  * as no version, never a wrong one -- see this module's own doc
  * comment). */
+/**
+ * The absolute URL of the running host's `/api/host-info`.
+ *
+ * Mirrors `WsProvider.tsx`'s own `defaultSocketUrl()` precedence so the
+ * two can never disagree about *which host* the UI is talking to. See
+ * this module's doc comment for why a relative URL is wrong under
+ * `npm run dev`.
+ */
+export function hostInfoUrl(): string {
+  const configured = import.meta.env.VITE_WS_URL;
+  if (typeof configured === "string" && configured !== "") {
+    try {
+      const wsUrl = new URL(configured);
+      const protocol = wsUrl.protocol === "wss:" ? "https:" : "http:";
+      return `${protocol}//${wsUrl.host}/api/host-info`;
+    } catch {
+      // A malformed VITE_WS_URL should not take the version down with
+      // it -- fall through to the same-origin path below.
+    }
+  }
+  return "/api/host-info";
+}
+
 export function useHostVersion(fetchFn: FetchFn = fetch): string | undefined {
   const [version, setVersion] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     let cancelled = false;
-    fetchFn("/api/host-info")
+    fetchFn(hostInfoUrl())
       .then((response) => (response.ok ? (response.json() as Promise<HostInfoResponse>) : undefined))
       .then((body) => {
         if (!cancelled && body && typeof body.version === "string" && body.version.length > 0) {

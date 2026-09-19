@@ -8,7 +8,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { useHostVersion, type FetchFn } from "./useHostVersion";
+import { hostInfoUrl, useHostVersion, type FetchFn } from "./useHostVersion";
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -93,5 +93,39 @@ describe("useHostVersion", () => {
       await Promise.resolve();
     });
     expect(getVersion()).toBeUndefined();
+  });
+});
+
+describe("hostInfoUrl", () => {
+  // A bare relative "/api/host-info" is right only when the page and
+  // the host share an origin. Under `npm run dev` they do not: Vite
+  // serves the UI on 5173 while the host listens on 4795, so the fetch
+  // hit Vite, found no such route, and the version silently never
+  // appeared. Reported from a browser on localhost:5173.
+  const original = import.meta.env.VITE_WS_URL;
+  afterEach(() => {
+    import.meta.env.VITE_WS_URL = original;
+  });
+
+  it("points at the host's own port when the dev script defines VITE_WS_URL", () => {
+    import.meta.env.VITE_WS_URL = "ws://127.0.0.1:4795/";
+    expect(hostInfoUrl()).toBe("http://127.0.0.1:4795/api/host-info");
+  });
+
+  it("uses https for a wss socket", () => {
+    import.meta.env.VITE_WS_URL = "wss://gala.local:4795/";
+    expect(hostInfoUrl()).toBe("https://gala.local:4795/api/host-info");
+  });
+
+  it("falls back to the page origin when VITE_WS_URL is absent", () => {
+    // The packaged app and the host's own port: page and host share an
+    // origin, so a relative URL is correct there.
+    import.meta.env.VITE_WS_URL = "";
+    expect(hostInfoUrl()).toBe("/api/host-info");
+  });
+
+  it("falls back to the page origin rather than throwing on a malformed VITE_WS_URL", () => {
+    import.meta.env.VITE_WS_URL = "not a url";
+    expect(hostInfoUrl()).toBe("/api/host-info");
   });
 });

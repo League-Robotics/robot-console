@@ -42,6 +42,50 @@ const { startServer, DEFAULT_PORT } = await import("../packages/host/src/server.
 // (which does go through `cli.ts`) was replaced by `npm run dev`.
 const { startMcpServer } = await import("../packages/host/src/mcp/server.ts");
 const { startRuntime } = await import("../packages/host/src/runtime.ts");
+// The host serves the *prebuilt* `packages/ui/dist` on its own port
+// (`server.ts`'s `defaultStaticDir`), while Vite below serves the live
+// HMR UI on its own. So `npm run dev` presents two UIs, and the one on
+// the host port -- the one the app, `rconsole open`, and anyone typing
+// the host URL actually land on -- is whatever `dist/` happened to
+// contain from some earlier build.
+//
+// That has now cost three separate rounds of "the change isn't there":
+// UI work looked unshipped, a calibration panel looked unchanged, and a
+// version number added to the header was invisible because the bundle
+// on disk predated it by two hours. Every time, the code was correct and
+// the artifact was stale.
+//
+// Building it here, once, at dev startup costs a few hundred
+// milliseconds and removes the whole class. It does not replace Vite's
+// HMR -- edit-and-refresh on the host port still needs a rebuild -- but
+// it guarantees the bundle matches the source you started the server
+// from, which is the part that kept being wrong.
+{
+  const { execFileSync } = await import("node:child_process");
+  process.stdout.write("robot-console: building the UI bundle the host serves… ");
+  try {
+    execFileSync("npm", ["run", "vite:build", "-w", "@robot-console/ui"], {
+      cwd: repoRoot,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    console.log("done.");
+  } catch (error) {
+    // Never block the dev server on this: a broken build should still
+    // let you start the host and use Vite's HMR UI. But say so loudly,
+    // because the host port will then serve a stale bundle -- which is
+    // exactly the confusion this build exists to prevent.
+    console.log("FAILED.");
+    console.warn(
+      `robot-console: the UI bundle did not build, so ${"http://127.0.0.1:" + hostPort} will serve a STALE bundle.\n` +
+        "robot-console: use the Vite URL below for live UI, or fix the build and restart.",
+    );
+    const stderr = error?.stderr?.toString?.() ?? "";
+    if (stderr.length > 0) {
+      console.warn(stderr.split("\n").slice(-12).join("\n"));
+    }
+  }
+}
+
 const { createServer } = await import("vite");
 const path = await import("node:path");
 const { fileURLToPath } = await import("node:url");

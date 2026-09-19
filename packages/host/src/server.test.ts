@@ -294,7 +294,11 @@ describe("server.ts: binding", () => {
     const h = await harness();
     const response = await fetch(`http://127.0.0.1:${h.server.port}/api/host-info`);
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, service: "robot-console", port: h.server.port });
+    // `version` (added for the header's own version display) resolves
+    // from this checkout's real package.json -- asserted as "some
+    // string", not a hardcoded value that would need editing on every
+    // version bump.
+    expect(await response.json()).toEqual({ ok: true, service: "robot-console", port: h.server.port, version: expect.any(String) });
   });
 
   it("fails clearly, rather than silently picking another port, when the port is already in use", async () => {
@@ -354,13 +358,13 @@ describe("server.ts: binding", () => {
 // ---------------------------------------------------------------------
 
 describe("server.ts: GET /api/host-info", () => {
-  it("returns {ok: true, service: 'robot-console', port} when no built UI exists (the static-fallback branch)", async () => {
+  it("returns {ok: true, service: 'robot-console', port, version} when no built UI exists (the static-fallback branch)", async () => {
     const missingDir = path.join(tmpdir(), `robot-console-host-info-missing-ui-${Date.now()}`);
     const h = await harness({ staticDir: missingDir });
 
     const response = await fetch(`${h.server.url}/api/host-info`);
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, service: "robot-console", port: h.server.port });
+    expect(await response.json()).toEqual({ ok: true, service: "robot-console", port: h.server.port, version: expect.any(String) });
   });
 
   it("returns the same shape, ahead of the SPA catch-all, when a built UI is present", async () => {
@@ -372,7 +376,7 @@ describe("server.ts: GET /api/host-info", () => {
       const response = await fetch(`${h.server.url}/api/host-info`);
       expect(response.status).toBe(200);
       expect(response.headers.get("content-type")).toMatch(/application\/json/);
-      expect(await response.json()).toEqual({ ok: true, service: "robot-console", port: h.server.port });
+      expect(await response.json()).toEqual({ ok: true, service: "robot-console", port: h.server.port, version: expect.any(String) });
 
       // host-info is additive -- anything else still falls through to
       // the SPA catch-all, unchanged.

@@ -13,7 +13,7 @@
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Snapshot, SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
 import { AppHeader } from "./AppHeader";
 import { WsProvider } from "../ws/WsProvider";
@@ -768,5 +768,56 @@ describe("AppHeader Set Wi-Fi (sprint 015 ticket 008 restore)", () => {
       ],
     });
     expect(el.querySelector('[data-testid="wifi-credentials-trigger"]')).toBeNull();
+  });
+});
+
+describe("AppHeader host version display (stakeholder: version on the main page)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("shows the running host's version, from /api/host-info, right after the name", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, service: "robot-console", port: 4795, version: "0.20260919.9" }) })),
+    );
+    const { el } = mountAt("/");
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const versionEl = el.querySelector('[data-testid="host-version"]');
+    expect(versionEl?.textContent?.trim()).toBe("0.20260919.9");
+    expect(el.querySelector("h1")?.textContent).toContain("robot-console");
+  });
+
+  it("renders just the name, no wrong or placeholder version, when the host-info fetch fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("network down");
+      }),
+    );
+    const { el } = mountAt("/");
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(el.querySelector('[data-testid="host-version"]')).toBeNull();
+    expect(el.querySelector("h1")?.textContent?.trim()).toBe("robot-console");
+  });
+
+  it("renders just the name when the host answers with no version field", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, service: "robot-console", port: 4795 }) })),
+    );
+    const { el } = mountAt("/");
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(el.querySelector('[data-testid="host-version"]')).toBeNull();
+    expect(el.querySelector("h1")?.textContent?.trim()).toBe("robot-console");
   });
 });

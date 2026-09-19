@@ -30,6 +30,15 @@
   margin: 0;
 }
 
+/* A fact, not a title -- visually subordinate to the app name it
+ * follows on the same line. */
+.app-header-version {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--rc-text-muted, currentColor);
+  opacity: 0.7;
+}
+
 /* OOP 2026-09-10: a back arrow button, not a text link. */
 .app-header-back {
   display: inline-flex;

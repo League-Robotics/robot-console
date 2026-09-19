@@ -142,6 +142,7 @@
 import { Link, useMatch } from "react-router";
 import type { SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
 import { connectionLabel, currentRelayChild, isLinkUsable, linkStateText, plainFailureReason } from "../deviceDisplay";
+import { useHostVersion } from "../hooks/useHostVersion";
 import { useDeviceForLink, useDevices, useHostConnection, useLink, useRelays, useSendable, useWsActions } from "../ws/WsProvider";
 import { FlashDialog } from "./FlashDialog";
 import { RadioAddressDialog } from "./RadioAddressDialog";
@@ -256,6 +257,11 @@ function usableSiblingLink(device: SnapshotDevice | undefined, link: SnapshotLin
 
 export function AppHeader() {
   const homeMatch = useMatch("/");
+  // Sourced from the running host (`/api/host-info`), not this UI
+  // bundle's own package.json -- see `useHostVersion.ts`'s own doc
+  // comment for why the two can drift. `undefined` renders just the
+  // name, never a wrong or placeholder version.
+  const hostVersion = useHostVersion();
   const deviceMatch = useMatch("/d/:linkId");
   const linkId = deviceMatch?.params.linkId;
   const link = useLink(linkId ?? "");
@@ -287,7 +293,15 @@ export function AppHeader() {
         </p>
       )}
       <div className="app-header-bar">
-        <h1>robot-console</h1>
+        <h1>
+          robot-console
+          {hostVersion && (
+            <span className="app-header-version" data-testid="host-version">
+              {" "}
+              {hostVersion}
+            </span>
+          )}
+        </h1>
         {!homeMatch && (
           <Link to="/" className="app-header-back" aria-label="Back to devices" title="Back to devices">
             <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">

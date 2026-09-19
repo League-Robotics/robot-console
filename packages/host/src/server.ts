@@ -108,6 +108,7 @@ import {
   type OpenSessionParams,
 } from "./connect/sessionOps.js";
 import { getFirmwareConfig, type FirmwareConfigMap } from "./config.js";
+import { getHostVersion } from "./hostVersion.js";
 import { resolveRelease as defaultResolveRelease, fetchAndVerifyHex as defaultFetchAndVerifyHex } from "./releases.js";
 import { LocalHexUploadManager, MAX_UPLOAD_BYTE_LENGTH } from "./localHexUpload.js";
 import { readLocalHex as defaultReadLocalHex } from "./localFirmware.js";
@@ -378,7 +379,12 @@ function buildApp(
   // `options.port` can be `0` (an ephemeral port, as tests use), in
   // which case the real port is only known once `listen()` resolves.
   app.get("/api/host-info", (_req, res) => {
-    res.json({ ok: true, service: "robot-console", port: getPort() });
+    // The UI's `AppHeader` reads `version` to show which host is
+    // actually running -- see `hostVersion.ts`'s own doc comment for
+    // why this is resolved on the host side rather than read out of
+    // the UI bundle. Omitted (not a placeholder) when unresolvable.
+    const version = getHostVersion();
+    res.json({ ok: true, service: "robot-console", port: getPort(), ...(version !== undefined ? { version } : {}) });
   });
   if (existsSync(staticDir)) {
     app.use(express.static(staticDir));

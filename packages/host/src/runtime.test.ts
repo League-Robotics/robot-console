@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { startRuntime, type StartRuntimeOptions } from "./runtime.js";
 import type { HarvesterDeps, HarvesterTelemetryEvent } from "./connect/harvester.js";
 import type { ConnectorDeps } from "./connect/connector.js";
-import type { ReconcilerDeps } from "./connect/reconciler.js";
+import { DEFAULT_WIFI_DISCOVERY_GRACE_MS, type ReconcilerDeps } from "./connect/reconciler.js";
 import type { RelayBridgerDeps } from "./connect/relayBridger.js";
 import type { RelaySweeperDeps } from "./watchers/relaySweeper.js";
 
@@ -193,6 +193,12 @@ describe("startRuntime -- composition", () => {
     // Same for the reconciler and the connector.
     expect(f.getCapturedReconcilerDeps()?.connector).toBe(f.fakeConnector);
     expect(f.startReconcilerMock).toHaveBeenCalledWith(f.fakeStore, expect.objectContaining({ connector: f.fakeConnector }));
+    // 020-003: real production wiring opts into the wrong-robot-hazard
+    // discovery grace window by default -- `reconciler.ts`'s own
+    // `startReconciler` defaults this to disabled (`0`) for every other
+    // caller (test harnesses built directly on it), so this runtime is
+    // the one place that must supply it explicitly.
+    expect(f.getCapturedReconcilerDeps()?.wifiDiscoveryGraceMs).toBe(DEFAULT_WIFI_DISCOVERY_GRACE_MS);
     // Ticket 016-002/004: the reconciler is handed the SAME bridger this
     // runtime itself built, and that bridger is handed the same harvester
     // as the connector.
@@ -249,6 +255,12 @@ describe("startRuntime -- composition", () => {
     expect(f.createConnectorMock).toHaveBeenCalledWith(f.fakeStore, expect.any(Object), connectorOptions);
     expect(f.getCapturedReconcilerDeps()).toMatchObject(reconcilerDeps);
     expect(f.getCapturedHarvesterDeps()).toMatchObject(harvesterDeps);
+  });
+
+  it("020-003: an explicit reconcilerDeps.wifiDiscoveryGraceMs overrides this runtime's own default", () => {
+    const f = fakeDeps();
+    startRuntime({ ...f.options, reconcilerDeps: { wifiDiscoveryGraceMs: 5 } });
+    expect(f.getCapturedReconcilerDeps()?.wifiDiscoveryGraceMs).toBe(5);
   });
 
   it("uses a caller-supplied mdnsBackend instead of constructing one via createBonjourBackend", () => {

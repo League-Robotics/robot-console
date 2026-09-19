@@ -183,6 +183,63 @@ describe("plan() -- pure per-device connect decisions", () => {
     expect(plan(input, NOW)).toEqual([{ kind: "connect", linkId: "wifi-1" }]);
   });
 
+  // -------------------------------------------------------------------
+  // 020-003: the wrong-robot hazard's cold-start half -- `mbserial`'s
+  // Avahi-style responder answers a fresh query in milliseconds while
+  // `_robotlink`'s never answers a query at all (only an unsolicited
+  // ~60s announcement), so without a grace window a device with a
+  // genuine WiFi path loses the race to a same-named `mbserial`
+  // candidate (e.g. an unrelated `mbdeploy serve` daemon on a different
+  // host with a board checked out under the same name) on every cold
+  // start, and 018-008's own "never open a second link automatically"
+  // rule then makes that wrong choice permanent for the rest of the
+  // process's life. See `DEFAULT_WIFI_DISCOVERY_GRACE_MS`'s own doc
+  // comment.
+  // -------------------------------------------------------------------
+
+  it("020-003: an owned device with NO wifi link row at all yet does not fall through to an eligible mbserial link while the discovery grace window is still open", () => {
+    const mbserialConnectable = linkRow({ id: "mbserial-1", transport: "mbserial", deviceId: 1 });
+    const input = rows({ devices: [deviceRow(1, true)], links: [mbserialConnectable] });
+    expect(plan(input, NOW, { wifiDiscoveryGraceUntil: NOW + 65_000 })).toEqual([]);
+  });
+
+  it("020-003: the same device gets its mbserial job the instant the discovery grace window elapses, with wifi still never having shown up", () => {
+    const mbserialConnectable = linkRow({ id: "mbserial-1", transport: "mbserial", deviceId: 1 });
+    const input = rows({ devices: [deviceRow(1, true)], links: [mbserialConnectable] });
+    const graceUntil = NOW + 65_000;
+    expect(plan(input, graceUntil - 1, { wifiDiscoveryGraceUntil: graceUntil })).toEqual([]);
+    expect(plan(input, graceUntil, { wifiDiscoveryGraceUntil: graceUntil })).toEqual([{ kind: "connect", linkId: "mbserial-1" }]);
+  });
+
+  it("020-003: a stale wifi row (a restart after the store's own wifi TTL already expired it) counts as no evidence -- the grace window still blocks mbserial", () => {
+    const wifiStale = linkRow({ id: "wifi-1", transport: "wifi", deviceId: 1, state: "stale" });
+    const mbserialConnectable = linkRow({ id: "mbserial-1", transport: "mbserial", deviceId: 1 });
+    const input = rows({ devices: [deviceRow(1, true)], links: [wifiStale, mbserialConnectable] });
+    expect(plan(input, NOW, { wifiDiscoveryGraceUntil: NOW + 65_000 })).toEqual([]);
+  });
+
+  it("020-003: the instant a wifi link row appears (any state), the grace window no longer applies to that device -- normal 018-008 fall-through rules take over immediately", () => {
+    const wifiDiscovered = linkRow({ id: "wifi-1", transport: "wifi", deviceId: 1, state: "discovered" });
+    const mbserialConnectable = linkRow({ id: "mbserial-1", transport: "mbserial", deviceId: 1 });
+    const input = rows({ devices: [deviceRow(1, true)], links: [wifiDiscovered, mbserialConnectable] });
+    // Still well inside the grace window, but wifi now has a row (even
+    // in a non-actionable state) -- 018-008's own fall-through applies
+    // unmodified, exactly as its own existing suite already covers.
+    expect(plan(input, NOW, { wifiDiscoveryGraceUntil: NOW + 65_000 })).toEqual([{ kind: "connect", linkId: "mbserial-1" }]);
+  });
+
+  it("020-003: omitting the discovery-grace option entirely preserves the pre-020-003 behavior (immediate mbserial fall-through) -- every pre-existing call site does this", () => {
+    const mbserialConnectable = linkRow({ id: "mbserial-1", transport: "mbserial", deviceId: 1 });
+    const input = rows({ devices: [deviceRow(1, true)], links: [mbserialConnectable] });
+    expect(plan(input, NOW)).toEqual([{ kind: "connect", linkId: "mbserial-1" }]);
+  });
+
+  it("020-003: the grace window never blocks usb -- an owned device with no wifi link yet still gets an immediate usb connect job", () => {
+    const usbConnectable = linkRow({ id: "usb-1", transport: "usb", deviceId: 1 });
+    const input = rows({ devices: [deviceRow(1, true)], links: [usbConnectable] });
+    expect(plan(input, NOW, { wifiDiscoveryGraceUntil: NOW + 65_000 })).toEqual([{ kind: "connect", linkId: "usb-1" }]);
+  });
+
   it("a radio link is never auto-connected, even when connectable and it is the only link the device has", () => {
     const input = rows({
       devices: [deviceRow(1, true)],

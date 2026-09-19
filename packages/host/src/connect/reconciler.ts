@@ -150,6 +150,22 @@ export type Job =
  * own doc comment, "Automatic connect is usb/wifi/mbserial only"). */
 const AUTO_CONNECT_TRANSPORTS: readonly Transport[] = ["usb", "wifi", "mbserial"];
 
+/** {@link plan}'s own options. Both parameters ({@link ReconcilerRows},
+ * `now`) are the pure `(state, clock) -> Job[]` core; this is the one
+ * additional, still-pure input 020-003's wrong-robot-hazard fix needs
+ * (a fixed deadline computed once by the caller, not a hidden clock read
+ * of its own -- see {@link DEFAULT_WIFI_DISCOVERY_GRACE_MS}'s doc
+ * comment). Every existing call site that omits it keeps today's
+ * behavior exactly (immediate `mbserial` fall-through, as before this
+ * ticket). */
+export interface PlanOptions {
+  /** An absolute `now`-comparable timestamp; before it, `plan()` skips
+   * an otherwise-eligible `mbserial` candidate for any device with no
+   * `wifi` link row at all yet. Omitted (or `0`/in the past) disables
+   * the grace window entirely. */
+  wifiDiscoveryGraceUntil?: number;
+}
+
 type ReconcilerLinkRow = ReconcilerRows["links"][number];
 type ReconcilerDeviceRow = ReconcilerRows["devices"][number];
 
@@ -230,7 +246,8 @@ function deviceHasActiveLink(links: readonly ReconcilerLinkRow[], openSessionLin
  * live in {@link planUserOpen}/{@link planUserClose} — see this
  * module's own doc comment for why.
  */
-export function plan(rows: ReconcilerRows, now: number): Job[] {
+export function plan(rows: ReconcilerRows, now: number, options: PlanOptions = {}): Job[] {
+  const wifiDiscoveryGraceUntil = options.wifiDiscoveryGraceUntil ?? 0;
   const jobs: Job[] = [];
   const openSessionLinkIds = new Set(rows.sessions.map((session) => session.linkId));
 
@@ -277,8 +294,39 @@ export function plan(rows: ReconcilerRows, now: number): Job[] {
     // *exists* -- see this module's own doc comment, "018-008: falling
     // through past an ineligible higher-priority link", for the bug this
     // fixes and the rule this implements.
+    //
+    // 020-003: the one exception -- `mbserial` is skipped entirely (not
+    // merely deprioritized) while this device has **no *live* evidence
+    // of a wifi path yet** -- no `wifi` link row at all, or one that has
+    // already aged all the way to `stale` (mdnsWatcher.ts's own
+    // `upsertLinkAndDetectChange` treats a fresh sighting of a `stale`
+    // link as "discovered again" for exactly this reason: `stale` is
+    // "no current evidence", functionally identical to "never seen this
+    // run" for this check's purposes) -- and the discovery grace window
+    // (`options.wifiDiscoveryGraceUntil`, see
+    // {@link DEFAULT_WIFI_DISCOVERY_GRACE_MS}'s own doc comment) has not
+    // yet elapsed. This is the cold-start half of the wrong-robot
+    // hazard: `mbserial`'s Avahi-style responder answers a fresh query
+    // in milliseconds, `_robotlink`'s never answers a query at all, so
+    // without this a device with a genuine WiFi path loses the race to
+    // a same-named `mbserial` impersonator (or a legitimate but
+    // wrong-preference candidate) on every cold start (a fresh process,
+    // or a restart after the store's own `wifi` TTL already expired the
+    // old row to `stale`), and 018-008's own "never open a second link
+    // automatically" rule then makes that wrong choice permanent. A
+    // `wifi` link in any *other* state (`discovered`, `unresponsive`,
+    // `connecting`, `failed`, `connected`) is entirely unaffected --
+    // that is 018-008's own, already-tested fall-through behavior,
+    // untouched.
     let candidate: ReconcilerLinkRow | undefined;
     for (const transport of AUTO_CONNECT_TRANSPORTS) {
+      if (
+        transport === "mbserial" &&
+        now < wifiDiscoveryGraceUntil &&
+        !links.some((link) => link.transport === "wifi" && link.state !== "stale")
+      ) {
+        continue;
+      }
       const link = links.find((candidateLink) => candidateLink.transport === transport);
       if (link && isAutoConnectEligible(link, device, now)) {
         candidate = link;
@@ -450,6 +498,51 @@ export function planUserClose(rows: ReconcilerRows, linkId: string): Job[] {
  * tick"). */
 const DEFAULT_TICK_INTERVAL_MS = 5000;
 
+/**
+ * 020-003 (WiFi discovery flap investigation): how long, from this
+ * executor's own start, an owned device with **no `wifi` link row at
+ * all yet** is held back from an automatic `mbserial` connect job it
+ * would otherwise be immediately eligible for (018-008's own
+ * fall-through rule, below). This is the cold-start half of the
+ * "wrong-robot hazard" the investigation found live: `_mbserial._tcp`'s
+ * Avahi-style responders (a farm bridge, or — the confirmed hazard — an
+ * unrelated `mbdeploy serve` daemon on a *different* host that happens
+ * to have a board checked out under the same five-letter name) answer a
+ * fresh PTR query within milliseconds, while a WiFi robot's own
+ * `_robotlink._tcp`/`._udp` responder never answers a query at all and
+ * only ever sends an **unsolicited** announcement roughly every 60s
+ * (measured live against `tigez`, 2026-09-19: `Add`/`Rmv`/`Add` at
+ * :14:39/:15:03/:15:39). Without this grace window, a device that has a
+ * genuine WiFi path loses the race on every cold start (process start,
+ * or a restart after the store's own TTLs expired): `mbserial` becomes
+ * `connectable` and gets connected before `wifi` even has a row, and
+ * `plan()`'s own "a device with an already-connected link never opens a
+ * second one automatically" rule (018-008) then makes that wrong choice
+ * *permanent* for the rest of this process's life -- nothing ever
+ * re-races the two once one is connected.
+ *
+ * 65s, not 60s: generously above the measured ~60s steady-state
+ * announce interval, mirroring `scripts/bench/layer1/mdnsBrowse.ts`'s
+ * own {@link DEFAULT_ROBOTLINK_BROWSE_WINDOW_MS} constant and its
+ * identical justification ("generously above the ~60s steady-state
+ * announce interval ... reliably observes at least one announcement").
+ * Deliberately does **not** apply once a `wifi` link row exists in any
+ * state *other than* `stale` (`discovered`/`unresponsive`/`connecting`/
+ * `failed`/`connected` all count as "live evidence") -- that is the
+ * already-decided, already-tested 018-008 fall-through behavior
+ * (`reconciler.test.ts`'s own "018-008" cases), which this ticket
+ * leaves untouched. A `stale` row counts the same as no row at all: it
+ * is exactly what a `wifi` link that has not been re-observed within
+ * its own TTL looks like (`mdnsWatcher.ts`'s `ageLinks`), so it carries
+ * no more evidence of a live path than never having seen one this run.
+ * Bench-tunable, and **opt-in**, via {@link ReconcilerDeps.wifiDiscoveryGraceMs}
+ * -- see that field's own doc comment for why `startReconciler` does not
+ * apply this constant by default; `0` (or simply omitting the deps
+ * field) disables the grace window entirely (immediate fall-through,
+ * this ticket's own pre-existing behavior).
+ */
+export const DEFAULT_WIFI_DISCOVERY_GRACE_MS = 65_000;
+
 export interface ReconcilerDeps {
   /** Ticket 001's connector — the only thing the executor ever calls to
    * actually open a link, for every transport except a radio/mbrelay
@@ -480,6 +573,16 @@ export interface ReconcilerDeps {
    * `ConnectorOptions.backoffCapMs`. Defaults to
    * {@link DEFAULT_BACKOFF_CAP_MS}. */
   backoffCapMs?: number;
+  /** How long, from this executor's own start, an owned device with no
+   * live `wifi` link evidence yet is held back from an otherwise-
+   * eligible automatic `mbserial` connect job — see the constant's own
+   * doc comment for the wrong-robot hazard this exists to close.
+   * **Defaults to `0` (disabled)**, not {@link DEFAULT_WIFI_DISCOVERY_GRACE_MS}
+   * — unlike this interface's other `DEFAULT_*`-backed options, this one
+   * is opt-in: only `runtime.ts` (real production wiring, where a
+   * device's WiFi path is a live possibility) is expected to pass
+   * {@link DEFAULT_WIFI_DISCOVERY_GRACE_MS} explicitly. */
+  wifiDiscoveryGraceMs?: number;
 }
 
 /** Read-only view of the executor's own currently-open sessions — the
@@ -560,6 +663,29 @@ export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler 
   const now = deps.now ?? (() => Date.now());
   const tickIntervalMs = deps.tickIntervalMs ?? DEFAULT_TICK_INTERVAL_MS;
   const backoffCapMs = deps.backoffCapMs ?? DEFAULT_BACKOFF_CAP_MS;
+  // 020-003: a fixed deadline computed once at this executor's own
+  // start, not recomputed per tick -- see
+  // DEFAULT_WIFI_DISCOVERY_GRACE_MS's own doc comment for why this is a
+  // "since process start" grace window, not "since the device was first
+  // seen" (a device imported from known-robots.json at store bootstrap
+  // may have been `first_seen` months ago).
+  //
+  // Defaults to *disabled* (`0`) here, unlike this module's other
+  // `DEFAULT_*` deps (`tickIntervalMs`, `backoffCapMs`), which is
+  // deliberate: this executor has no way to tell "a device that has no
+  // wifi link yet because discovery just hasn't caught up" apart from
+  // "a device with no wifi transport at all, ever" (a pure mbserial/usb
+  // bench harness, a fake-mDNS integration test that never advertises
+  // `_robotlink` at all, ...) -- for the latter, waiting out a full
+  // grace window on every boot before mbserial/usb even gets a chance
+  // would be a pure regression with no offsetting safety benefit.
+  // `runtime.ts` (the one real production composition root, where a
+  // device's WiFi path is a live possibility this fix actually guards)
+  // is expected to opt in explicitly with
+  // {@link DEFAULT_WIFI_DISCOVERY_GRACE_MS}; every test/harness that
+  // constructs `startReconciler` directly without threading this
+  // through keeps today's exact behavior.
+  const wifiDiscoveryGraceUntil = now() + (deps.wifiDiscoveryGraceMs ?? 0);
 
   /** linkIds with a connect attempt currently in flight -- acceptance
    * criterion 3: "never re-issues a job already in flight for the same
@@ -754,7 +880,7 @@ export function startReconciler(store: Store, deps: ReconcilerDeps): Reconciler 
       return;
     }
     const rows = store.reconcilerRows();
-    for (const job of plan(rows, now())) {
+    for (const job of plan(rows, now(), { wifiDiscoveryGraceUntil })) {
       void dispatch(job);
     }
   }

@@ -99,7 +99,12 @@ import {
   type HarvesterDeps,
   type HarvesterTelemetryEvent,
 } from "./connect/harvester.js";
-import { startReconciler as defaultStartReconciler, type Reconciler, type ReconcilerDeps } from "./connect/reconciler.js";
+import {
+  startReconciler as defaultStartReconciler,
+  DEFAULT_WIFI_DISCOVERY_GRACE_MS,
+  type Reconciler,
+  type ReconcilerDeps,
+} from "./connect/reconciler.js";
 import {
   createRelayBridger as defaultCreateRelayBridger,
   type RelayBridgerDeps,
@@ -339,7 +344,18 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
     { ...options.relayBridgerDeps, harvester, revocation: relayLeaseRevocation },
     options.relayBridgerOptions,
   );
-  const reconciler = startReconcilerFn(store, { ...options.reconcilerDeps, connector, bridger });
+  // 020-003: real production wiring opts into the wrong-robot-hazard
+  // grace window (`reconciler.ts`'s own `ReconcilerDeps.wifiDiscoveryGraceMs`
+  // doc comment for why `startReconciler` itself defaults this to
+  // disabled) -- `options.reconcilerDeps` still wins if a caller
+  // (a test harness built on `startRuntime` itself) explicitly overrides
+  // it.
+  const reconciler = startReconcilerFn(store, {
+    wifiDiscoveryGraceMs: DEFAULT_WIFI_DISCOVERY_GRACE_MS,
+    ...options.reconcilerDeps,
+    connector,
+    bridger,
+  });
 
   // 018-010: `disableSweep` defaults to `true` when omitted (see this
   // option's own doc comment) -- so the common case (no caller opinion

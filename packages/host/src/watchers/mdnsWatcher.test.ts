@@ -542,6 +542,75 @@ describe("startMdnsWatcher", () => {
     },
   );
 
+  it(
+    "020-003: a wifi link seen once survives the measured 60s-announce/24s-PTR-TTL pattern -- the PTR is absent 36 of every 60 seconds, but the link never goes stale or disappears",
+    () => {
+      // Live measurement against `tigez`, 2026-09-19: `_robotlink._tcp`
+      // is announced every 60s with a PTR TTL of ~24s --
+      //   11:14:39  Add
+      //   11:15:03  Rmv   (24s after the Add -- the record expired)
+      //   11:15:39  Add   (60s after the previous Add)
+      // -- so the PTR is simply absent for ~36 of every 60 seconds
+      // (~60% of the time), even though the robot itself never stops
+      // being reachable. This is the defect sprint 020 spent an entire
+      // sprint failing to find: nothing in the discovery pipeline may
+      // treat that recurring absence as "the robot is gone" -- a link
+      // seen once must survive a PTR absence well past 40 seconds
+      // (this test's own literal acceptance bar), not just the exact
+      // 36s this one robot happens to measure at.
+      const store = freshStore();
+      const backend = fakeBackend();
+      const handle = start(store, backend);
+      try {
+        const service = wifiService("nnnnn", "nnnnn.local", 7654);
+        const linkId = "wifi-nnnnn";
+
+        backend.robotlinkTcp.emitUp(service); // 11:14:39 Add
+        expect(store.snapshotRows().links.find((l) => l.id === linkId)?.state).toBe("discovered");
+
+        // 11:15:03 Rmv -- `down` is deliberately a no-op (module doc
+        // comment: aging is last_seen/TTL-driven, never event-driven).
+        vi.advanceTimersByTime(24_000);
+        backend.robotlinkTcp.emitDown(service);
+        expect(store.snapshotRows().links.find((l) => l.id === linkId)).toBeDefined();
+
+        // The literal acceptance bar: still present and not stale at
+        // +40s, deep inside the PTR-absent gap, with no announcement
+        // and no re-query answer since the initial Add.
+        vi.advanceTimersByTime(16_000); // total: +40s since the initial Add
+        const at40s = store.snapshotRows().links.find((l) => l.id === linkId);
+        expect(at40s).toBeDefined();
+        expect(at40s?.state).not.toBe("stale");
+
+        // Run three full 60s/24s cycles (matching the measured
+        // pattern exactly: an Rmv-equivalent `down` at the 24s mark,
+        // an Add-equivalent announce at the 60s mark, nothing else)
+        // and assert the link is never stale at any point -- not just
+        // the isolated 40s instant above.
+        for (let cycle = 0; cycle < 3; cycle++) {
+          vi.advanceTimersByTime(20_000); // to the 60s mark of this cycle
+          backend.emitAnnounce(service.fqdn!); // 60s: next Add
+          expect(store.snapshotRows().links.find((l) => l.id === linkId)?.state).not.toBe("stale");
+          vi.advanceTimersByTime(24_000); // to the 24s-past-Add mark
+          backend.robotlinkTcp.emitDown(service); // 24s past Add: Rmv
+          expect(store.snapshotRows().links.find((l) => l.id === linkId)?.state).not.toBe("stale");
+          vi.advanceTimersByTime(16_000); // the rest of this 60s cycle
+          expect(store.snapshotRows().links.find((l) => l.id === linkId)?.state).not.toBe("stale");
+        }
+
+        // Never removed from `services` either -- the raw mDNS
+        // observation row survives the same pattern, refreshed by the
+        // same `onAnnounce` replay `links(wifi)` relies on.
+        expect(
+          store.snapshotRows().services.some((s) => s.type === "robotlink.tcp" && s.instance === service.name),
+        ).toBe(true);
+      } finally {
+        handle.stop();
+        store.close();
+      }
+    },
+  );
+
   it("stop()/start() round trip stops every browser and leaves no timer or in-memory state behind", () => {
     const store = freshStore();
     const backend = fakeBackend();

@@ -405,6 +405,8 @@ interface Store {
   relays: SnapshotRelay[];
   firmware: Record<FirmwareKind, FirmwareAvailability>;
   wifiSetting: Snapshot["wifi"];
+  /** The running host's version, from the snapshot. */
+  hostVersion: Snapshot["hostVersion"];
   tasks: Snapshot["tasks"];
   logsByLink: Map<string, LogEntry[]>;
   /** LRU order for `logsByLink`, oldest-touched first. */
@@ -710,6 +712,9 @@ function applySnapshot(store: Store, snapshot: Snapshot): void {
   if (!deepEqual(store.wifiSetting, snapshot.wifi)) {
     store.wifiSetting = snapshot.wifi;
   }
+  if (store.hostVersion !== snapshot.hostVersion) {
+    store.hostVersion = snapshot.hostVersion;
+  }
   if (!deepEqual(store.tasks, snapshot.tasks)) {
     store.tasks = snapshot.tasks;
   }
@@ -743,6 +748,7 @@ function createStore(): Store {
     relays: [],
     firmware: DEFAULT_FIRMWARE_STATUS,
     wifiSetting: DEFAULT_WIFI_SETTING,
+    hostVersion: undefined,
     tasks: [],
     logsByLink: new Map(),
     logOrder: [],
@@ -1152,6 +1158,19 @@ export const useFirmwareStatus = useFirmware;
 
 /** The network the host would provision robots onto, as currently
  * stored (never the password) -- from the most recent snapshot. */
+/** The running host's own version, for the header to show beside the
+ * title. `undefined` until the first snapshot arrives, or if the host
+ * could not resolve its own version -- the header then shows just the
+ * name, never a placeholder.
+ *
+ * Read from the snapshot, not fetched: under `npm run dev` the page is
+ * served by Vite on a different port than the host, so an HTTP fetch is
+ * cross-origin and Chrome blocks it outright. The WebSocket is not. */
+export function useHostVersion(): Snapshot["hostVersion"] {
+  const store = useStore();
+  return useSyncExternalStore(store.subscribe, () => store.hostVersion);
+}
+
 export function useWifiSetting(): Snapshot["wifi"] {
   const store = useStore();
   return useSyncExternalStore(store.subscribe, () => store.wifiSetting);

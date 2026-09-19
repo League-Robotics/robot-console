@@ -142,8 +142,16 @@
 import { Link, useMatch } from "react-router";
 import type { SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
 import { connectionLabel, currentRelayChild, isLinkUsable, linkStateText, plainFailureReason } from "../deviceDisplay";
-import { useHostVersion } from "../hooks/useHostVersion";
-import { useDeviceForLink, useDevices, useHostConnection, useLink, useRelays, useSendable, useWsActions } from "../ws/WsProvider";
+import {
+  useDeviceForLink,
+  useDevices,
+  useHostConnection,
+  useHostVersion,
+  useLink,
+  useRelays,
+  useSendable,
+  useWsActions,
+} from "../ws/WsProvider";
 import { FlashDialog } from "./FlashDialog";
 import { RadioAddressDialog } from "./RadioAddressDialog";
 import { relayStatusText } from "./RelayConnectControls";
@@ -258,7 +266,10 @@ function usableSiblingLink(device: SnapshotDevice | undefined, link: SnapshotLin
 export function AppHeader() {
   const homeMatch = useMatch("/");
   // Sourced from the running host (`/api/host-info`), not this UI
-  // bundle's own package.json -- see `useHostVersion.ts`'s own doc
+  // bundle's own package.json. Read from the snapshot over the
+  // WebSocket, not fetched over HTTP: under `npm run dev` the page is
+  // served by Vite on a different port than the host, so a fetch is
+  // cross-origin and Chrome blocks it -- see `WsProvider`'s own doc
   // comment for why the two can drift. `undefined` renders just the
   // name, never a wrong or placeholder version.
   const hostVersion = useHostVersion();

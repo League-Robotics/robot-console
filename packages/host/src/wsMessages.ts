@@ -551,6 +551,21 @@ export interface Snapshot {
   seq: number;
   /** `Date.now()` when this snapshot was built. */
   at: number;
+  /** The running host's own version, for the UI to show beside its
+   * title. Optional: a host that cannot resolve its version omits it,
+   * and the UI then shows just the name -- never a wrong or placeholder
+   * version.
+   *
+   * Carried on the snapshot rather than fetched from `/api/host-info`
+   * because the UI's only reliable channel to the host is this
+   * WebSocket. Under `npm run dev` the page is served by Vite on 5173
+   * while the host listens on 4795, so an HTTP fetch is cross-origin
+   * and was blocked outright -- observed in the browser:
+   * "Access to fetch at 'http://0.0.0.0:4795/api/host-info' from origin
+   * 'http://localhost:5173' has been blocked by CORS policy". The
+   * WebSocket is not subject to that, and is already open and
+   * authenticated by the time any page renders. */
+  hostVersion?: string;
   devices: SnapshotDevice[];
   /** USB boards seen but not yet identified to a `devices` row (no
    * `link.device_id` yet) -- architecture.md §9. */

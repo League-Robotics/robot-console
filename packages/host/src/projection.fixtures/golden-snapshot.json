@@ -2,6 +2,7 @@
   "type": "snapshot",
   "seq": 7,
   "at": 999999,
+  "hostVersion": "0.0.0-golden",
   "devices": [
     {
       "id": 2,
@@ -23,7 +24,7 @@
         {
           "id": "usb-relay-1",
           "transport": "usb",
-          "label": "USB · /dev/tty.usbmodem-relay1",
+          "label": "USB \u00b7 /dev/tty.usbmodem-relay1",
           "state": "connectable",
           "reason": null,
           "since": 91,
@@ -59,7 +60,7 @@
         {
           "id": "usb-vevov",
           "transport": "usb",
-          "label": "USB · /dev/tty.usbmodem-vevov",
+          "label": "USB \u00b7 /dev/tty.usbmodem-vevov",
           "state": "connected",
           "reason": null,
           "since": 110,
@@ -101,7 +102,7 @@
         {
           "id": "wifi-vevov",
           "transport": "wifi",
-          "label": "WiFi · vevov.local:7654",
+          "label": "WiFi \u00b7 vevov.local:7654",
           "state": "connectable",
           "reason": null,
           "since": 131,
@@ -117,7 +118,7 @@
         {
           "id": "radio-vevov",
           "transport": "radio",
-          "label": "Radio · ch41/grp3",
+          "label": "Radio \u00b7 ch41/grp3",
           "state": "connectable",
           "reason": null,
           "since": 141,
@@ -145,7 +146,7 @@
     {
       "id": "usb-unknown-1",
       "transport": "usb",
-      "label": "USB · /dev/tty.usbmodem-unknown",
+      "label": "USB \u00b7 /dev/tty.usbmodem-unknown",
       "state": "discovered",
       "reason": null,
       "since": 97,

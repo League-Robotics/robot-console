@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { deviceIdToName } from "@robot-console/protocol";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildSnapshot, buildSnapshotFromRows } from "./projection.js";
 import { MBFLASH_SERVICE_TYPE, openStore, type ProjectionRows, type Store } from "./store/index.js";
 
@@ -106,6 +106,24 @@ function seedGoldenScenario(store: Store): void {
 }
 
 describe("buildSnapshot: golden fixture", () => {
+  // The snapshot carries the running host's own version
+  // (`hostVersion`), which `getHostVersion()` resolves from
+  // `ROBOT_CONSOLE_VERSION` or the repo-root package.json -- a value
+  // that changes on every release bump. Pinned here so the golden
+  // fixture stays deterministic and still covers the field, rather than
+  // stripping it out and leaving it untested.
+  const previousVersion = process.env.ROBOT_CONSOLE_VERSION;
+  beforeEach(() => {
+    process.env.ROBOT_CONSOLE_VERSION = "0.0.0-golden";
+  });
+  afterEach(() => {
+    if (previousVersion === undefined) {
+      delete process.env.ROBOT_CONSOLE_VERSION;
+    } else {
+      process.env.ROBOT_CONSOLE_VERSION = previousVersion;
+    }
+  });
+
   it("matches the checked-in golden-snapshot.json fixture exactly", () => {
     const store = openStore({ filePath: ":memory:" });
     try {

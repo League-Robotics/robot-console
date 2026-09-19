@@ -79,11 +79,12 @@ function device(
   };
 }
 
-function snapshot(devices: SnapshotDevice[]): Snapshot {
+function snapshot(devices: SnapshotDevice[], hostVersion?: string): Snapshot {
   return {
     type: "snapshot",
     seq: 1,
     at: 0,
+    ...(hostVersion !== undefined ? { hostVersion } : {}),
     devices,
     unassigned: [],
     relays: [],
@@ -772,51 +773,49 @@ describe("AppHeader Set Wi-Fi (sprint 015 ticket 008 restore)", () => {
 });
 
 describe("AppHeader host version display (stakeholder: version on the main page)", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("shows the running host's version, from /api/host-info, right after the name", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, service: "robot-console", port: 4795, version: "0.20260919.9" }) })),
+  // The version rides the snapshot over the WebSocket, not an HTTP
+  // fetch. An earlier version of this feature fetched
+  // `/api/host-info` relative to the page, which works only when the
+  // page and host share an origin -- and under `npm run dev` they do
+  // not: Vite serves the UI on 5173 while the host listens on 4795.
+  // Chrome blocked it outright ("Access to fetch at
+  // 'http://0.0.0.0:4795/api/host-info' from origin
+  // 'http://localhost:5173' has been blocked by CORS policy"), so the
+  // version silently never appeared and these tests still passed,
+  // because they stubbed `fetch` and never exercised a real origin.
+  function mountWithVersion(hostVersion?: string): HTMLDivElement {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <AppHeader />
+        </WsProvider>,
+        { initialEntries: ["/"] },
+      ),
     );
-    const { el } = mountAt("/");
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
+    act(() => {
+      socket!.emitOpen();
     });
-    const versionEl = el.querySelector('[data-testid="host-version"]');
-    expect(versionEl?.textContent?.trim()).toBe("0.20260919.9");
+    act(() => {
+      socket!.emitMessage(snapshot([], hostVersion));
+    });
+    return el;
+  }
+
+  it("shows the running host's version right after the name", () => {
+    const el = mountWithVersion("0.20260919.12");
+    expect(el.querySelector('[data-testid="host-version"]')?.textContent?.trim()).toBe("0.20260919.12");
     expect(el.querySelector("h1")?.textContent).toContain("robot-console");
   });
 
-  it("renders just the name, no wrong or placeholder version, when the host-info fetch fails", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        throw new Error("network down");
-      }),
-    );
-    const { el } = mountAt("/");
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+  it("renders just the name, never a placeholder, when the host reports no version", () => {
+    const el = mountWithVersion(undefined);
     expect(el.querySelector('[data-testid="host-version"]')).toBeNull();
     expect(el.querySelector("h1")?.textContent?.trim()).toBe("robot-console");
   });
 
-  it("renders just the name when the host answers with no version field", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, service: "robot-console", port: 4795 }) })),
-    );
+  it("renders just the name before any snapshot has arrived", () => {
     const { el } = mountAt("/");
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
     expect(el.querySelector('[data-testid="host-version"]')).toBeNull();
     expect(el.querySelector("h1")?.textContent?.trim()).toBe("robot-console");
   });

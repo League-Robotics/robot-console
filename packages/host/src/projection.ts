@@ -80,6 +80,7 @@ import {
   type Store,
   type Transport,
 } from "./store/index.js";
+import { getHostVersion } from "./hostVersion.js";
 import type {
   AgentActionActivity,
   FirmwareAvailability,
@@ -108,6 +109,7 @@ export function buildSnapshot(store: Store, seq: number, at: number): Snapshot {
  * what `projection.test.ts`'s golden fixtures exercise, so a test never
  * needs a real `Store`/SQLite connection just to seed rows. */
 export function buildSnapshotFromRows(rows: ProjectionRows, seq: number, at: number): Snapshot {
+  const hostVersion = getHostVersion();
   const deviceById = new Map(rows.devices.map((d) => [d.id, d] as const));
   const linkById = new Map(rows.links.map((l) => [l.id, l] as const));
   const sessionByLink = new Map(rows.sessions.map((s) => [s.linkId, s] as const));
@@ -170,6 +172,7 @@ export function buildSnapshotFromRows(rows: ProjectionRows, seq: number, at: num
     type: "snapshot",
     seq,
     at,
+    ...(hostVersion !== undefined ? { hostVersion } : {}),
     devices,
     unassigned,
     relays,

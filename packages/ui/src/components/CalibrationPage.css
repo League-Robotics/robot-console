@@ -68,13 +68,30 @@
   font-size: 0.85rem;
 }
 
+/* One line: label on the left, a small Run on the right. These are
+   rarely-used escape hatches for a `cal*` verb this page has no wizard
+   for -- they should not look like features. Before this they were
+   full-width panels with an h3 and a full-width button each, which made
+   two minor verbs dominate the page. */
+.calibration-generic-run {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.2rem 0;
+}
+
+.calibration-generic-run-label {
+  color: var(--rc-text-muted);
+  font-size: 0.85rem;
+}
+
 .calibration-generic-run-go {
   border: 1px solid var(--rc-border);
   background: var(--rc-surface);
   color: var(--rc-text);
-  padding: 0.35rem 0.9rem;
-  border-radius: 0.4rem;
-  font-size: 0.85rem;
+  padding: 0.15rem 0.6rem;
+  border-radius: 0.3rem;
+  font-size: 0.8rem;
   cursor: pointer;
 }
 

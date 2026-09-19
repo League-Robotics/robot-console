@@ -142,8 +142,8 @@ function GenericCalibrationRun({ link, name }: GenericCalibrationRunProps) {
   const label = calibrationFunctionLabel(name);
 
   return (
-    <div className="robot-page-panel calibration-generic-run" aria-label={label}>
-      <h3>{label}</h3>
+    <div className="calibration-generic-run" aria-label={label}>
+      <span className="calibration-generic-run-label">{label}</span>
       <button
         type="button"
         className="calibration-generic-run-go"
@@ -229,8 +229,24 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
   // the ack'd reply). This list only ever adds a control now, never
   // removes one: any *other* `cal*` name it reports gets its own
   // `GenericCalibrationRun` below the two dedicated wizards.
-  const calFunctionNames = useMemo(() => (functions ?? []).map((fn) => fn.name).filter((n) => n.startsWith("cal")), [functions]);
-  const extraCalFunctionNames = calFunctionNames.filter((n) => n !== "calwheels" && n !== "calturn");
+  // Deduped: a duplicated FUNCS entry must never render two identical
+  // controls. `connect/harvester.ts` resets the list per request now
+  // (26c5d57), but a host running an older build still accumulates, and
+  // a doubled row here is both ugly and a colliding React key.
+  const calFunctionNames = useMemo(
+    () => [...new Set((functions ?? []).map((fn) => fn.name).filter((n) => n.startsWith("cal")))],
+    [functions],
+  );
+  // `calwheels`/`calturn` have dedicated wizards. `calshow`/`calclear`
+  // are plumbing the page already drives for itself -- `calshow` is sent
+  // on connect and behind the store panel's Refresh, `calclear` behind
+  // its confirmed Clear button. Rendering them again as bare "Run"
+  // controls gave the page two ways to do the same thing, one of them
+  // unlabelled and unguarded: a stray click on a generic "Calibrate
+  // clear / Run" would wipe a student's stored calibration with no
+  // confirmation at all.
+  const HANDLED_CAL_FUNCTIONS = new Set(["calwheels", "calturn", "calshow", "calclear"]);
+  const extraCalFunctionNames = calFunctionNames.filter((n) => !HANDLED_CAL_FUNCTIONS.has(n));
 
   function update(patch: CalibrationPatch): void {
     setState((previous) => applyCalibrationPatch(previous, patch));

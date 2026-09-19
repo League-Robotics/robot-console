@@ -471,3 +471,30 @@ describe("CalibrationPage", () => {
     expect(top.compareDocumentPosition(consoleEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
+
+describe("generic cal* controls stay out of the way", () => {
+  // The stakeholder saw "Calibrate show / Run" and "Calibrate clear /
+  // Run" rendered as full-width panels, twice each, and asked what they
+  // were for. They were auto-generated from FUNCS for any cal* verb
+  // without a dedicated wizard -- so calshow and calclear, which the
+  // page already drives for itself, appeared as a second, unguarded way
+  // to do the same thing.
+  it("never renders a generic Run control for calshow or calclear", () => {
+    const { el } = mountPage({ functions: [{ name: "calwheels" }, { name: "calturn" }, { name: "calshow" }, { name: "calclear" }] });
+    expect(el.querySelector('[data-testid="calibration-run-calshow"]')).toBeNull();
+    expect(el.querySelector('[data-testid="calibration-run-calclear"]')).toBeNull();
+  });
+
+  it("renders one control per name even if FUNCS reports a name twice", () => {
+    // An older host build accumulates FUNCS replies (fixed in 26c5d57),
+    // and a duplicate here is both an ugly repeated row and a colliding
+    // React key.
+    const { el } = mountPage({ functions: [{ name: "calfoo" }, { name: "calfoo" }] });
+    expect(el.querySelectorAll('[data-testid="calibration-run-calfoo"]')).toHaveLength(1);
+  });
+
+  it("still offers a control for a cal* verb this page has no wizard for", () => {
+    const { el } = mountPage({ functions: [{ name: "calwheels" }, { name: "calfoo" }] });
+    expect(el.querySelector('[data-testid="calibration-run-calfoo"]')).not.toBeNull();
+  });
+});

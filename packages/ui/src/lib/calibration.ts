@@ -136,6 +136,32 @@ export function correctTrackWidth(reportedCm: number, reportedWithDiameterMm: nu
  * both already spell out inline; pulled out once so the `calshow`-fed
  * branch of {@link calibrationCode} below doesn't duplicate it a third
  * time. */
+/**
+ * Did this run end because somebody pressed a button on the robot,
+ * rather than because it failed?
+ *
+ * calibration-0.20260919.5 made A / B / A+B stop a running program as a
+ * safety stop -- the stakeholder's reasoning being that a student who
+ * sees the robot heading for the edge of the table should not have to
+ * remember which button. The firmware reports it through the ordinary
+ * `<verb>.fail` event with `why: "stopped by a button press"`.
+ *
+ * It matters that the UI tells the two apart. A red "Calibration failed"
+ * overstates what happened: nothing went wrong, a person intervened on
+ * purpose. And from the console's side a button stop during a run *we*
+ * launched is otherwise indistinguishable from the robot bailing, so
+ * saying which it was is the difference between "your robot is broken"
+ * and "somebody put their hand on it".
+ *
+ * Matched loosely on purpose. This project has already renamed these
+ * verbs three times in a day, so an exact-string match is a poor bet;
+ * anything that fails to match simply renders as an ordinary failure,
+ * which is the safe direction to be wrong in.
+ */
+export function isButtonStop(why: string | undefined): boolean {
+  return why !== undefined && /stopped by a button/i.test(why);
+}
+
 export function calibToDiameterMm(calib: number): number {
   return round((calib * 360) / Math.PI, 2);
 }

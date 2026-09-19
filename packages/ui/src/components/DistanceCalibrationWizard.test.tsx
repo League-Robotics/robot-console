@@ -319,3 +319,47 @@ describe("deriveWheelsCalibrationRun (pure derivation)", () => {
     expect(run).toEqual({ kind: "running", events: [] });
   });
 });
+
+describe("calwheels.fail diagnostics (nezha-robot-template efa5a6f)", () => {
+  // The firmware's old guard refused any result more than 10% from the
+  // stock 90 mm wheel, so a robot with swapped wheels was refused for
+  // being RIGHT -- which is the red banner the stakeholder hit. The new
+  // guard checks the answer's plausibility instead, and reports the
+  // wheel diameter the run's own endpoints imply. That number is the
+  // diagnostic: a bad start once implied 778 mm.
+  it("shows the implied wheel diameter and accepted span when the firmware reports them", () => {
+    const run = deriveWheelsCalibrationRun([
+      {
+        direction: "rx",
+        line: '{"ev":"calwheels.fail","why":"no wheel that fits this chassis could have driven that","implied":778,"lo":40.2,"hi":120.6,"wheel":"unknown"}',
+      },
+    ]);
+    expect(run.kind).toBe("failed");
+    if (run.kind !== "failed") return;
+    expect(run.why).toBe("no wheel that fits this chassis could have driven that");
+    expect(run.implied).toBe(778);
+    expect(run.lo).toBe(40.2);
+    expect(run.hi).toBe(120.6);
+  });
+
+  it("still fails cleanly when the firmware sends no diagnostics at all", () => {
+    // Older firmware -- and the release the Flash button currently
+    // fetches is still the old one, so this path is live today.
+    const run = deriveWheelsCalibrationRun([
+      { direction: "rx", line: '{"ev":"calwheels.fail","why":"measured distance is nowhere near true"}' },
+    ]);
+    expect(run.kind).toBe("failed");
+    if (run.kind !== "failed") return;
+    expect(run.why).toBe("measured distance is nowhere near true");
+    expect(run.implied).toBeUndefined();
+  });
+
+  it("ignores a non-numeric implied rather than rendering it", () => {
+    const run = deriveWheelsCalibrationRun([
+      { direction: "rx", line: '{"ev":"calwheels.fail","why":"bad","implied":"lots"}' },
+    ]);
+    expect(run.kind).toBe("failed");
+    if (run.kind !== "failed") return;
+    expect(run.implied).toBeUndefined();
+  });
+});

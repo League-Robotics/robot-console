@@ -86,7 +86,7 @@ export type WheelsCalibrationRun =
   | { kind: "running"; events: string[] }
   | { kind: "run-error"; events: string[] }
   | { kind: "unreadable"; events: string[] }
-  | { kind: "failed"; events: string[]; why: string }
+  | { kind: "failed"; events: string[]; why: string; implied?: number; lo?: number; hi?: number }
   | { kind: "succeeded"; events: string[]; result: WheelsResult };
 
 /** Pure derivation of a run's phase from the slice of `log` recorded
@@ -124,7 +124,23 @@ export function deriveWheelsCalibrationRun(
         return result ? { kind: "succeeded", events, result } : { kind: "unreadable", events };
       }
       if (parsed.kind === "fail") {
-        return { kind: "failed", events, why: parsed.why ?? "no reason given" };
+        // nezha-robot-template efa5a6f: a `calwheels.fail` now carries
+        // `implied` -- the wheel diameter the run's own endpoints imply
+        // -- plus the accepted span `lo`/`hi` in cm. That is the number
+        // worth showing a student: a bad START detection once implied a
+        // 778 mm wheel, which says "the field reading went wrong", not
+        // "your robot is broken". Optional, and absent on older
+        // firmware, so every field is read defensively.
+        return {
+          kind: "failed",
+          events,
+          why: parsed.why ?? "no reason given",
+          ...(typeof parsed.fields.implied === "number" && Number.isFinite(parsed.fields.implied)
+            ? { implied: parsed.fields.implied }
+            : {}),
+          ...(typeof parsed.fields.lo === "number" && Number.isFinite(parsed.fields.lo) ? { lo: parsed.fields.lo } : {}),
+          ...(typeof parsed.fields.hi === "number" && Number.isFinite(parsed.fields.hi) ? { hi: parsed.fields.hi } : {}),
+        };
       }
       events = [...events, formatCalibrationEvent(parsed.ev, parsed.fields)];
       continue;
@@ -296,6 +312,17 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
       {run?.kind === "failed" && (
         <p className="distance-calibration-failed" data-testid="distance-calibration-failed" role="alert">
           Calibration failed: {run.why}
+          {run.implied !== undefined && (
+            <>
+              <br />
+              <span data-testid="distance-calibration-failed-implied">
+                The distance it drove implies a <strong>{run.implied} mm</strong> wheel
+                {run.lo !== undefined && run.hi !== undefined ? ` (it accepts ${run.lo}–${run.hi} cm of travel)` : ""}. A
+                wildly wrong number here usually means the start or finish line was misread on the field, not that the
+                robot is broken.
+              </span>
+            </>
+          )}
         </p>
       )}
 

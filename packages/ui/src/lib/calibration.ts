@@ -174,12 +174,41 @@ export function calibrationCode(state: CalibrationState, robotName: string): str
         : "effective track width, cm (not measured with a ruler)";
     lines.push(`diffDrive.setTrackWidth(${derived.trackWidthCm})  // ${how}`);
   }
-  if (derived.rotationalSlip !== undefined) {
+  // OOP 2026-09-19, found in a browser walk: this block used
+  // `derived.rotationalSlip` unconditionally, which falls back to `1`
+  // when no ruler measurement exists. With a `calturn` run applied, the
+  // page then showed "Applied -- rotational_slip set to 1.008" from the
+  // rotation wizard while this snippet said
+  // `setConfigValue(ConfigField.RotationalSlip, 1)` -- two visible,
+  // contradictory answers on one screen, and the student pastes the
+  // wrong one into their program, silently undoing the calibration they
+  // just applied.
+  //
+  // `firmwareSlip` wins when present: it is `calturn.result.slip`, the
+  // robot's own boot-record track width over the `b` this run measured,
+  // and it is exactly what the Apply button sent over the wire. The
+  // local division stays the fallback for the ruler-measurement path it
+  // was built for. The two are still not merged (see this module's doc
+  // comment) -- but the snippet must agree with what the robot was
+  // actually told.
+  // Precedence, and the order matters:
+  //  1. A ruler measurement the human deliberately typed wins -- the
+  //     page advertises "typing a measured width switches to a computed
+  //     slip", and a firmware value must not silently override an
+  //     explicit human measurement.
+  //  2. Otherwise the firmware's own slip, when a calturn run reported
+  //     one. This is the case that was broken.
+  //  3. Otherwise the local fallback (1).
+  const snippetSlip =
+    state.measuredTrackWidthCm !== undefined ? derived.rotationalSlip : (state.firmwareSlip ?? derived.rotationalSlip);
+  if (snippetSlip !== undefined) {
     const how =
       state.measuredTrackWidthCm !== undefined
         ? `measured ${state.measuredTrackWidthCm} cm / effective ${derived.effectiveTrackWidthCm} cm`
-        : "no ruler measurement, so the effective width is used as-is";
-    lines.push(`diffDrive.setConfigValue(ConfigField.RotationalSlip, ${derived.rotationalSlip})  // ${how}`);
+        : state.firmwareSlip !== undefined
+          ? `from the rotation calibration${state.robotTrackWidthCm !== undefined ? ` (${state.robotTrackWidthCm} cm boot-record track width / measured turn)` : ""}`
+          : "no ruler measurement, so the effective width is used as-is";
+    lines.push(`diffDrive.setConfigValue(ConfigField.RotationalSlip, ${snippetSlip})  // ${how}`);
   }
   if (lines.length === 0) {
     return "";

@@ -164,7 +164,17 @@ describe("CalibrationPage", () => {
     expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(false);
   });
 
-  it("a rotation run without a measured track width sets the effective width as the track width with slip 1; typing a measured width switches to a computed slip", () => {
+  it("a rotation run's own slip goes into the pasted code; typing a ruler measurement then overrides it", () => {
+    // OOP 2026-09-19, found in a browser walk: this used to assert
+    // `RotationalSlip, 1)` for the first phase -- i.e. the snippet said
+    // 1 while the rotation wizard's Apply button had just sent the
+    // firmware's own slip (1.008 in the observed case) over the wire.
+    // Two contradictory answers on one screen, and the student pastes
+    // the one that silently undoes the calibration they just applied.
+    // The firmware's slip is now what the snippet carries.
+    //
+    // A typed ruler measurement still wins over it -- that is a
+    // deliberate human act and the page advertises the switch.
     const { el, socket } = mountPage();
     type(el, "calibration-wheel-diameter", "90.28");
     click(el, '[data-testid="rotation-calibration-go"]');
@@ -173,7 +183,9 @@ describe("CalibrationPage", () => {
     expect(el.querySelector('[data-testid="calibration-effective-track"]')?.textContent).toBe("8.84 cm");
     let code = el.querySelector('[data-testid="calibration-code"]')?.textContent ?? "";
     expect(code).toContain("diffDrive.setTrackWidth(8.84)");
-    expect(code).toContain("ConfigField.RotationalSlip, 1)");
+    // The firmware's own slip, not the local fallback of 1.
+    expect(code).toContain("ConfigField.RotationalSlip, 1.301)");
+    expect(code).not.toContain("ConfigField.RotationalSlip, 1)");
 
     type(el, "calibration-track-width", "11.5");
     code = el.querySelector('[data-testid="calibration-code"]')?.textContent ?? "";

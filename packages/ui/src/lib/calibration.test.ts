@@ -90,3 +90,32 @@ describe("applyCalibrationPatch", () => {
     expect(applyCalibrationPatch({ robotTrackWidthCm: 11.16 }, { robotTrackWidthCm: undefined })).toEqual({});
   });
 });
+
+describe("calibrationCode -- the pasted slip must match what Apply sent", () => {
+  // Found in a browser walk 2026-09-19: the page showed "Applied --
+  // rotational_slip set to 1.008" next to a copyable snippet saying
+  // `RotationalSlip, 1`. A student pasting that snippet would silently
+  // undo the calibration they had just applied.
+  it("uses the firmware's slip when a calturn run has reported one", () => {
+    const snippet = calibrationCode(
+      {
+        wheelDiameterMm: 90.68,
+        reportedTrackWidthCm: 11.12,
+        firmwareSlip: 1.008,
+        robotTrackWidthCm: 11.16,
+      },
+      "puvet",
+    );
+    expect(snippet).toContain("ConfigField.RotationalSlip, 1.008");
+    expect(snippet).not.toContain("ConfigField.RotationalSlip, 1)");
+  });
+
+  it("falls back to the ruler-measurement division when there is no firmware slip", () => {
+    const snippet = calibrationCode(
+      { wheelDiameterMm: 90.68, reportedTrackWidthCm: 11.12, measuredTrackWidthCm: 11.4 },
+      "puvet",
+    );
+    expect(snippet).toMatch(/ConfigField\.RotationalSlip, [0-9.]+/);
+    expect(snippet).toContain("11.4 cm");
+  });
+});

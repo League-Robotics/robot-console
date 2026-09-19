@@ -1,65 +1,75 @@
 /**
- * RotationCalibrationWizard.tsx — the rotation-calibration (`cala`)
- * wizard panel, mounted on `RobotPage` (ticket 004, SUC-004).
+ * RotationCalibrationWizard.tsx — the rotation/track-width calibration
+ * (`calturn`) wizard panel, mounted on `RobotPage` (ticket 004,
+ * SUC-004; rewritten OOP 2026-09-18 for current firmware).
  *
- * Mirrors `DistanceCalibrationWizard.tsx`'s structure exactly (see that
- * module's own doc comment for the full rationale this one shares:
- * `FUNCS`-gated availability read straight from `link.session.functions`
- * with no on-open probe of its own (sprint 015 ticket 009), `RUN`-dispatch
- * on Go, progress derived from the link's own rx log via
- * `CalibrationReport.parseCalibrationLine`, the run's phase recomputed
- * from `log.filter(id >= runStartId)` on every render rather than
- * accumulated as incremental state) — per `sprint.md`'s Step 3 module
- * table, this wizard "differs from the distance wizard mainly in having
- * more distinct pass stages to show ... rather than in its underlying
- * mechanics."
+ * ## OOP 2026-09-18: `cala` -> `calturn`, prose -> JSON lines, and a genuine one-click Apply
  *
- * `test/calibratea.ts` (`nezha-robot-template`, read directly) is a
- * fully autonomous rotation calibration with **no beam pointer and no
- * manual nudge control**: the robot spins clockwise then
- * counter-clockwise against a black-tape cross, timing white-to-black
- * edge crossings on one reflectance channel, then re-runs both
- * directions a second time with the correction applied as its own
- * built-in verification pass. It narrates progress the same way `calx`
- * does -- plain `CALA:` text lines via `emitLine()` -- but marks four
- * distinct pass boundaries with their own marker lines, read verbatim
- * from the routine's own source: `CALA:pass clockwise`, `CALA:pass
- * counter-clockwise`, `CALA:check clockwise`, `CALA:check
- * counter-clockwise`. This module's own `deriveRotationCalibrationRun`
- * buckets every other progress line under whichever of those four
- * stages was most recently announced (or, before the first marker, an
- * undifferentiated "leading" bucket for lines like `CALA:begin ...`) --
- * per `sprint.md`'s Step 3, this CW/CCW/re-verify pass structure is
- * this component's own state, deliberately *not* pushed into the shared
- * `CalibrationReport.ts` parser, which stays prefix-and-shape-only.
+ * Per `clasi/issues/calibration-calj-calc-one-click.md`, `cala` (and its
+ * one-hop successor `calc`) is gone; the surviving verb is `calturn
+ * (edges:number=10)`, and its reports are JSON lines
+ * (`{"ev":"calturn.result", ...}` / `.quality` / `.ch` / `.restored` /
+ * `.fail`), not `CALA:`-prefixed prose narrating four CW/CCW/re-verify
+ * pass stages. The firmware no longer runs its own re-verification
+ * pass at all -- a run ends the first time `.result` or `.fail` is
+ * seen, full stop, so this module has no stage-bucketing machinery to
+ * carry over from the old `cala` wizard.
  *
- * **The snippet is never computed by this panel** -- same rule as the
- * distance wizard: the observed `CALA:apply ...` line is rendered
- * verbatim, never a value reconstructed from the intermediate `CALA:
- * measured b=...`/`CALA:derived slip=...` lines.
+ * ## The trap this module exists to avoid
  *
- * **`apply` is *not* the last line on the wire, unlike `calx`'s
- * identical-looking `CALX:apply` terminal line.** `test/calibratea.ts`
- * (read directly) emits `CALA:apply ...` once the correction is
- * computed, then immediately *sets* that correction and re-runs both
- * directions a second time -- `CALA:check clockwise`/`CALA:check
- * counter-clockwise` and their own progress lines follow `apply` on the
- * wire, not precede it. So `deriveRotationCalibrationRun` treats `apply`
- * as "the result is now known", not "stop reading the log": it records
- * the snippet and *keeps consuming* subsequent entries, so the two
- * re-verification stages still populate and render even though the run
- * is already `succeeded`. A `CALA:fail` line arriving after `apply` (the
- * re-verification pass itself can fail) overrides that outcome -- the
- * run flips to `failed`, discarding the snippet, because a failed
- * re-verification must never leave a green result standing.
+ * `calturn.result.slip` is `tw / b` -- **this robot's own boot-record
+ * track width divided by this run's own measured effective width** --
+ * already computed by the firmware. The issue is explicit that this,
+ * not `slip_at_anchor` (checkable-arithmetic scaffolding against the
+ * *anchor* geometry `calturn` temporarily installs to run), is "the
+ * value to store". `CalibrationReport.ts`'s `parseTurnResult` only ever
+ * surfaces `slip`/`trackWidthCm` under those names, precisely so this
+ * module can never reach for the wrong field by accident.
  *
- * No nudge control, no beam-pointer UI: this routine has neither -- see
- * this module's own doc comment above and the distance wizard's
- * identical carve-out.
+ * ## One-click Apply -- and why `calwheels` gets none
+ *
+ * Measured on hardware (the issue's own table): `rotational_slip`
+ * **works** over `SET`. So a succeeded `calturn` run really can be
+ * one-click: this panel's own Apply button sends
+ * `SET rotational_slip <slip>` directly. Contrast
+ * `DistanceCalibrationWizard.tsx`, whose `calwheels` result has no
+ * config field to write to at all and therefore has no Apply control
+ * of any kind, not even a disabled one -- the two wizards are
+ * deliberately asymmetric because the hardware is asymmetric.
+ *
+ * ## The anchor-overwrite and its restore
+ *
+ * `calturn` overwrites the robot's live geometry with an anchor while
+ * it measures, then restores the original geometry on *both* the
+ * success and the failure path, emitting `calturn.restored` to say what
+ * it put back. That line can be dropped like any other progress line
+ * (see `CalibrationReport.ts`'s own doc comment), so this panel never
+ * assumes it arrived -- when present it is shown as "the robot's
+ * geometry now"; when absent, the panel says plainly that it couldn't
+ * confirm, rather than assuming the restore happened cleanly.
+ *
+ *  - **Availability, `FUNCS`-gated, not classification-gated** -- same
+ *    non-blocking-hint discipline as `DistanceCalibrationWizard.tsx`.
+ *  - **Running**, `RUN calturn <edges>` dispatched via `sendCommand`.
+ *    `edges` is offered as the three values the issue calls "sensible"
+ *    (10/18/26) rather than a free-form number, since the firmware
+ *    silently rounds whatever it's given to the nearest `8n+2`.
+ *  - **The run's own log window is derived, not accumulated** -- same
+ *    `runStartId`/`log.filter` discipline as the distance wizard.
+ *
+ * No nudge control, no beam-pointer UI: this routine has neither (see
+ * the distance wizard's identical carve-out, unchanged since ticket 004).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { parseCalibrationLine } from "./CalibrationReport";
+import {
+  formatCalibrationEvent,
+  parseCalibrationLine,
+  parseTurnResult,
+  parseTurnRestored,
+  type RestoredGeometry,
+  type TurnResult,
+} from "./CalibrationReport";
 import { useLinkLog, useSendable, useWsActions } from "../ws/WsProvider";
 import { isLinkUsable } from "../deviceDisplay";
 import "./RotationCalibrationWizard.css";
@@ -69,178 +79,115 @@ import "./RotationCalibrationWizard.css";
  * constant. */
 const RUN_ERR_REPLY_PATTERN = /^err\b/i;
 
-/** One of the four distinct pass stages `cala` narrates, in the order
- * its own marker lines announce them (`test/calibratea.ts`, read
- * directly: `CALA:pass clockwise`, `CALA:pass counter-clockwise`,
- * `CALA:check clockwise`, `CALA:check counter-clockwise`). */
-export type RotationCalibrationStageId = "cw" | "ccw" | "check-cw" | "check-ccw";
+/** The wire verb this wizard runs -- isolated to this one constant, see
+ * `CalibrationReport.ts`'s own doc comment. */
+const VERB = "calturn";
 
-/** Display order and labels for the four stages, in the order the
- * routine announces them. */
-export const ROTATION_CALIBRATION_STAGE_ORDER: readonly RotationCalibrationStageId[] = [
-  "cw",
-  "ccw",
-  "check-cw",
-  "check-ccw",
-];
-
-export const ROTATION_CALIBRATION_STAGE_LABELS: Record<RotationCalibrationStageId, string> = {
-  cw: "Clockwise pass",
-  ccw: "Counter-clockwise pass",
-  "check-cw": "Re-verification — clockwise",
-  "check-ccw": "Re-verification — counter-clockwise",
-};
-
-/** The exact marker text (after `CALA:` is stripped) `test/calibratea.ts`
- * emits to announce each stage -- read directly from that file, not
- * guessed at. */
-const STAGE_MARKER_TEXT: Record<string, RotationCalibrationStageId> = {
-  "pass clockwise": "cw",
-  "pass counter-clockwise": "ccw",
-  "check clockwise": "check-cw",
-  "check counter-clockwise": "check-ccw",
-};
-
-/** One stage's accumulated progress lines, in the order they arrived. */
-export interface RotationCalibrationStageEvents {
-  stage: RotationCalibrationStageId;
-  events: string[];
-}
+/** The three "sensible offerings" per the issue: the firmware silently
+ * rounds any `edges` value to the nearest `8n+2` and says so if it
+ * changed the value, so a free-form number invites a rounding surprise
+ * a fixed set avoids. */
+const EDGE_OPTIONS = ["10", "18", "26"] as const;
+const DEFAULT_EDGES: (typeof EDGE_OPTIONS)[number] = "10";
 
 /** One calibration run's current phase, derived from the endpoint's log
- * -- see this module's doc comment. */
-export type RotationCalibrationRun =
-  | { kind: "running"; leadingEvents: string[]; stages: RotationCalibrationStageEvents[] }
-  | { kind: "run-error"; leadingEvents: string[]; stages: RotationCalibrationStageEvents[] }
-  | { kind: "succeeded"; leadingEvents: string[]; stages: RotationCalibrationStageEvents[]; snippet: string }
-  | { kind: "failed"; reason: string };
+ * -- see this module's doc comment. `restored`, when known, is carried
+ * on every terminal kind (and `running`, in case it somehow raced
+ * ahead) since `calturn.restored` can arrive on both the success and
+ * the failure path. */
+export type TurnCalibrationRun =
+  | { kind: "running"; events: string[]; restored?: RestoredGeometry | undefined }
+  | { kind: "run-error"; events: string[]; restored?: RestoredGeometry | undefined }
+  | { kind: "unreadable"; events: string[]; restored?: RestoredGeometry | undefined }
+  | { kind: "failed"; events: string[]; why: string; restored?: RestoredGeometry | undefined }
+  | { kind: "succeeded"; events: string[]; result: TurnResult; restored?: RestoredGeometry | undefined };
 
 /** Pure derivation of a run's phase from the slice of `log` recorded
  * since Go was pressed -- exported so `RotationCalibrationWizard.test.tsx`
- * can exercise it directly against fixture log slices, mirroring
- * `DistanceCalibrationWizard.tsx`'s `deriveDistanceCalibrationRun`.
+ * can exercise it directly against fixture log slices.
  *
- * `apply` does not end the loop (see this module's doc comment: the
- * real firmware keeps narrating both re-verification stages after its
- * own `apply` line) -- the snippet is recorded and iteration continues,
- * so a later `check clockwise`/`check counter-clockwise` marker still
- * opens its own stage bucket, and a later `fail` still overrides the
- * outcome to `failed`, discarding the snippet. */
-export function deriveRotationCalibrationRun(
+ * Drop-tolerant by construction: `.quality`/`.ch` lines, if present,
+ * only ever add progress text, never gate the terminal state. Once a
+ * `.result`/`.fail`/bare-`err` terminal state is reached, the loop
+ * keeps consuming entries -- not to look for more terminal lines (the
+ * issue's contract is exactly one `.result` or `.fail` per run), but
+ * because `calturn.restored` is emitted *after* the terminal line on
+ * the real wire and must still be picked up if it arrives.
+ */
+export function deriveTurnCalibrationRun(
   entries: readonly { direction: "tx" | "rx"; line: string }[],
-): RotationCalibrationRun {
-  const leadingEvents: string[] = [];
-  const stages: RotationCalibrationStageEvents[] = [];
-  let current: RotationCalibrationStageEvents | undefined;
-  let snippet: string | undefined;
-  // OOP 2026-09-10: over WiFi the firmware drops lines emitted in a
-  // burst, and `CALA:apply` rides in one (slope, measured, derived,
-  // apply, check -- five lines back to back). The result is already on
-  // the wire one line earlier, in `CALA:derived slip=<n> ...`, and the
-  // apply line only restates that same number, so it is reconstructed
-  // from there when the apply line never shows up.
-  let derivedSnippet: string | undefined;
+): TurnCalibrationRun {
+  let events: string[] = [];
+  let terminal:
+    | { kind: "run-error" }
+    | { kind: "unreadable" }
+    | { kind: "failed"; why: string }
+    | { kind: "succeeded"; result: TurnResult }
+    | undefined;
+  let restored: RestoredGeometry | undefined;
 
   for (const entry of entries) {
     if (entry.direction !== "rx") {
       continue;
     }
-    const event = parseCalibrationLine("CALA", entry.line);
-    if (event) {
-      if (event.kind === "progress") {
-        const slip = /^derived slip=\s*(-?\d+(?:\.\d+)?)/.exec(event.text.trim());
-        if (slip) {
-          derivedSnippet = `diffDrive.setConfigValue(ConfigField.RotationalSlip, ${slip[1]})`;
-        }
-      }
-      if (event.kind === "apply") {
-        // The result is now known, but the routine is not done talking
-        // -- its own re-verification passes still follow on the wire.
-        // Keep reading so those stages still populate.
-        snippet = event.snippet;
+    const parsed = parseCalibrationLine(entry.line);
+    if (parsed) {
+      if (parsed.verb !== VERB) {
+        // Noise from a different routine's own JSON lines (e.g.
+        // `calwheels` traffic on the same link) -- tolerated silently.
         continue;
       }
-      if (event.kind === "fail") {
-        // Overrides any snippet already recorded -- a fail during
-        // re-verification must not leave a green result standing.
-        return { kind: "failed", reason: event.reason };
-      }
-      const stageId = STAGE_MARKER_TEXT[event.text];
-      if (stageId) {
-        current = { stage: stageId, events: [] };
-        stages.push(current);
+      if (parsed.kind === "other" && parsed.suffix === "restored") {
+        // Validated best-effort: an unparsable `.restored` line is
+        // simply not adopted, never surfaced as a wrong geometry.
+        restored = parseTurnRestored(parsed.fields) ?? restored;
         continue;
       }
-      if (current) {
-        current.events.push(event.text);
-      } else {
-        leadingEvents.push(event.text);
+      if (terminal !== undefined) {
+        // Already terminal -- a stray duplicate `.result`/`.fail`, or
+        // more `.quality`/`.ch` lines, are tolerated and ignored.
+        continue;
       }
+      if (parsed.kind === "result") {
+        const result = parseTurnResult(parsed.fields);
+        terminal = result ? { kind: "succeeded", result } : { kind: "unreadable" };
+        continue;
+      }
+      if (parsed.kind === "fail") {
+        terminal = { kind: "failed", why: parsed.why ?? "no reason given" };
+        continue;
+      }
+      events = [...events, formatCalibrationEvent(parsed.ev, parsed.fields)];
       continue;
     }
-    if (RUN_ERR_REPLY_PATTERN.test(entry.line.trim())) {
-      return { kind: "run-error", leadingEvents, stages };
+    if (terminal === undefined && RUN_ERR_REPLY_PATTERN.test(entry.line.trim())) {
+      terminal = { kind: "run-error" };
     }
   }
-  const result = snippet ?? derivedSnippet;
-  if (result !== undefined) {
-    return { kind: "succeeded", leadingEvents, stages, snippet: result };
-  }
-  return { kind: "running", leadingEvents, stages };
-}
 
-/** The robot's own `measured b=<n>cm` line -- the effective track
- * width as the calibration image measured it, uncorrected for the
- * wheel diameter it assumed (see `CalibrationPage.correctTrackWidth`). */
-export function reportedTrackWidthCm(run: RotationCalibrationRun): number | undefined {
-  if (run.kind !== "succeeded" && run.kind !== "running") {
-    return undefined;
+  if (terminal === undefined) {
+    return { kind: "running", events, restored };
   }
-  const texts = [...run.leadingEvents, ...run.stages.flatMap((stage) => stage.events)];
-  for (const text of texts) {
-    const match = /^measured b=\s*(-?\d+(?:\.\d+)?)/.exec(text.trim());
-    if (match) {
-      return Number(match[1]);
-    }
+  if (terminal.kind === "run-error") {
+    return { kind: "run-error", events, restored };
   }
-  return undefined;
-}
-
-/** The robot's own `CALA:derived slip=<n> = track <a> / b <b>` line
- * (ticket 018-013, item 4) -- the firmware's own slip computation,
- * already on the wire (it is where `deriveRotationCalibrationRun`'s own
- * `derivedSnippet` fallback reads the number from, when the `apply` line
- * itself is dropped over WiFi). Never folded into `lib/calibration.ts`'s
- * own `DerivedCalibration.rotationalSlip`: the firmware divides its own
- * hard-coded 11.5 cm anchor by the reported width, not this robot's
- * actual measured track width, so the two numbers answer different
- * questions and both are shown, side by side, in the "Current
- * calibration" table (`CalibrationTable.tsx`) -- see this module's own
- * doc comment's "The image's own `derived slip` is ignored" note in
- * `lib/calibration.ts`. */
-export function robotReportedSlip(run: RotationCalibrationRun): number | undefined {
-  if (run.kind !== "succeeded" && run.kind !== "running") {
-    return undefined;
+  if (terminal.kind === "unreadable") {
+    return { kind: "unreadable", events, restored };
   }
-  const texts = [...run.leadingEvents, ...run.stages.flatMap((stage) => stage.events)];
-  for (const text of texts) {
-    const match = /^derived slip=\s*(-?\d+(?:\.\d+)?)/.exec(text.trim());
-    if (match) {
-      return Number(match[1]);
-    }
+  if (terminal.kind === "failed") {
+    return { kind: "failed", events, why: terminal.why, restored };
   }
-  return undefined;
+  return { kind: "succeeded", events, result: terminal.result, restored };
 }
 
 export interface RotationCalibrationWizardProps {
   link: SnapshotLink;
-  /** OOP 2026-09-10: called whenever the current run's derived state
-   * changes -- `CalibrationPage` folds a succeeded run's reported track
-   * width into the robot's calibration state, and drops it again on a
-   * failed re-verification. */
-  onRun?: (run: RotationCalibrationRun | undefined) => void;
-  /** OOP 2026-09-10: the rotation run is meaningless without a wheel
-   * diameter -- `CalibrationPage` blocks Go until one is known. */
+  /** Called whenever the current run's derived state changes --
+   * `CalibrationPage` folds a succeeded run's reported track width and
+   * firmware-computed slip into the robot's calibration state. */
+  onRun?: (run: TurnCalibrationRun | undefined) => void;
+  /** The rotation run is meaningless without a wheel diameter --
+   * `CalibrationPage` blocks Go until one is known. */
   disabled?: boolean;
   disabledReason?: string;
 }
@@ -252,32 +199,22 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
   const { sendCommand } = useWsActions();
   const log = useLinkLog(linkId);
   const functions = link.session?.functions ?? undefined;
-  // Stakeholder (2026-09-13, and reaffirmed the same day root-causing
-  // "only CalX" on a robot that genuinely has `cala`): `FUNCS` must
-  // never hide or block a calibration run. A Wi-Fi burst can drop a
-  // line from the middle of the reply while the ack still arrives, so
-  // an absent name proves nothing -- the button stays enabled either
-  // way, and a known-missing name only earns a non-blocking hint below.
-  const functionKnownMissing = functions !== undefined && !functions.some((fn) => fn.name === "cala");
+  // Stakeholder (2026-09-13): `FUNCS` must never hide or block a
+  // calibration run -- same discipline as the distance wizard.
+  const functionKnownMissing = functions !== undefined && !functions.some((fn) => fn.name === VERB);
 
-  // OOP 2026-09-10: the run's window is anchored on the log entry *id*
-  // minted at Go, not an array index. `useLinkLog` is a bounded ring
-  // (MAX_LINES_PER_LINK) trimmed from the front, so in a tab that has
-  // been open a while an index-based window slides and the terminal
-  // `apply` line scrolls straight out of it -- the stakeholder's "lots
-  // of details, then no code" report.
+  const [edges, setEdges] = useState<string>(DEFAULT_EDGES);
+
   const [runStartId, setRunStartId] = useState<number | undefined>(undefined);
-  const derived = useMemo<RotationCalibrationRun | undefined>(() => {
+  const derived = useMemo<TurnCalibrationRun | undefined>(() => {
     if (runStartId === undefined) {
       return undefined;
     }
-    return deriveRotationCalibrationRun(log.filter((entry) => entry.id >= runStartId));
+    return deriveTurnCalibrationRun(log.filter((entry) => entry.id >= runStartId));
   }, [log, runStartId]);
 
-  // Belt and braces: once a run has succeeded, keep that result even if
-  // the ring later evicts the lines it was derived from. Cleared by Go.
-  const latchedRef = useRef<{ startId: number; run: RotationCalibrationRun } | undefined>(undefined);
-  if (derived?.kind === "succeeded" && runStartId !== undefined) {
+  const latchedRef = useRef<{ startId: number; run: TurnCalibrationRun } | undefined>(undefined);
+  if (derived && derived.kind !== "running" && runStartId !== undefined) {
     latchedRef.current = { startId: runStartId, run: derived };
   }
   const latched = latchedRef.current;
@@ -286,23 +223,45 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
 
   const goDisabled = !linkOpen || disabled || run?.kind === "running";
 
-  const onRunRef = useRef(onRun);
-  onRunRef.current = onRun;
-  const runKey = run
-    ? `${run.kind}:${run.kind === "succeeded" ? run.snippet : ""}:${run.kind === "failed" ? run.reason : ""}`
-    : "";
-  useEffect(() => {
-    onRunRef.current?.(run);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the run's identity, not the object
-  }, [runKey]);
+  // The value actually sent by the last Apply press, so a stale
+  // confirmation never survives a fresh run or a different result.
+  const [appliedSlip, setAppliedSlip] = useState<number | undefined>(undefined);
 
   function handleGo(): void {
     if (goDisabled) {
       return;
     }
+    setAppliedSlip(undefined);
     const last = log[log.length - 1];
     setRunStartId(last ? last.id + 1 : 0);
-    sendCommand(linkId, "RUN", ["cala"]);
+    sendCommand(linkId, "RUN", [VERB, edges]);
+  }
+
+  function handleApply(result: TurnResult): void {
+    sendCommand(linkId, "SET", ["rotational_slip", String(result.slip)]);
+    setAppliedSlip(result.slip);
+  }
+
+  const onRunRef = useRef(onRun);
+  onRunRef.current = onRun;
+  const runKey = run ? JSON.stringify(run) : "";
+  useEffect(() => {
+    onRunRef.current?.(run);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the run's identity, not the object
+  }, [runKey]);
+
+  function renderRestored(restored: RestoredGeometry | undefined) {
+    return restored ? (
+      <p className="rotation-calibration-restored" data-testid="rotation-calibration-restored">
+        Robot's geometry now: track width <strong>{restored.trackWidthCm} cm</strong>, slip{" "}
+        <strong>{restored.slip}</strong> — calturn restores this after every run, success or fail.
+      </p>
+    ) : (
+      <p className="rotation-calibration-restored-unknown" data-testid="rotation-calibration-restored-unknown">
+        Couldn't confirm the robot's geometry after this run — the restore-confirmation line didn't arrive. Treat it
+        as unknown rather than assuming the restore went cleanly.
+      </p>
+    );
   }
 
   return (
@@ -315,7 +274,7 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
 
       {functionKnownMissing && (
         <p className="rotation-calibration-hint" data-testid="rotation-calibration-unavailable" role="status">
-          The robot's function list didn't include cala (lines can drop over Wi-Fi) — you can still try; the robot
+          The robot's function list didn't include {VERB} (lines can drop over Wi-Fi) — you can still try; the robot
           will say err if it's missing.
         </p>
       )}
@@ -326,10 +285,32 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
         </p>
       )}
 
+      {!disabled && (
+        <div className="rotation-calibration-config">
+          <label htmlFor="rotation-calibration-edges">Transitions per channel</label>{" "}
+          <select
+            id="rotation-calibration-edges"
+            data-testid="rotation-calibration-edges"
+            value={edges}
+            onChange={(event) => setEdges(event.target.value)}
+            disabled={!linkOpen || run?.kind === "running"}
+          >
+            {EDGE_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+          <p className="rotation-calibration-edges-note">
+            The firmware rounds this to the nearest valid count (8n+2) and says so if it changed it.
+          </p>
+        </div>
+      )}
+
       {!disabled && run === undefined && (
         <ol className="rotation-calibration-setup" data-testid="rotation-calibration-setup">
-          <li>Lay two strips of black tape crossing at right angles on the floor.</li>
-          <li>Place the robot at the centre of the cross, then press Go.</li>
+          <li>Lay out the alternating iron cross — eight 45° radial wedges.</li>
+          <li>Place the robot centred on the cross, then press Go.</li>
         </ol>
       )}
 
@@ -340,64 +321,67 @@ export function RotationCalibrationWizard({ link, onRun, disabled = false, disab
         disabled={goDisabled}
         onClick={handleGo}
       >
-        Calibrate A
+        Calibrate turn
       </button>
 
-      {(run?.kind === "running" || run?.kind === "succeeded") && (
+      {run?.kind === "running" && (
         <div className="rotation-calibration-progress" data-testid="rotation-calibration-progress" role="status">
-          <p>{run.kind === "running" ? "Running…" : "Verifying the correction…"}</p>
-          {run.leadingEvents.length > 0 && (
-            <ul className="rotation-calibration-leading">
-              {run.leadingEvents.map((text, index) => (
+          <p>Running…</p>
+          {run.events.length > 0 && (
+            <ul>
+              {run.events.map((text, index) => (
                 <li key={index}>{text}</li>
               ))}
             </ul>
           )}
-          {run.stages.map((stageEvents, index) => (
-            <div
-              key={index}
-              className="rotation-calibration-stage"
-              data-testid={`rotation-calibration-stage-${stageEvents.stage}`}
-            >
-              <p className="rotation-calibration-stage-label">
-                {ROTATION_CALIBRATION_STAGE_LABELS[stageEvents.stage]}
-              </p>
-              {stageEvents.events.length > 0 && (
-                <ul>
-                  {stageEvents.events.map((text, eventIndex) => (
-                    <li key={eventIndex}>{text}</li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          ))}
         </div>
       )}
 
       {run?.kind === "run-error" && (
         <p className="rotation-calibration-run-error" data-testid="rotation-calibration-run-error" role="alert">
-          The robot rejected the run request — "cala" may not be registered on this build.
+          The robot rejected the run request — "{VERB}" may not be registered on this build.
+        </p>
+      )}
+
+      {run?.kind === "unreadable" && (
+        <p className="rotation-calibration-unreadable" data-testid="rotation-calibration-unreadable" role="alert">
+          The robot reported a result, but this console couldn't read it (unexpected shape) — check the console log
+          rather than trust a guess.
         </p>
       )}
 
       {run?.kind === "failed" && (
-        <p className="rotation-calibration-failed" data-testid="rotation-calibration-failed" role="alert">
-          Calibration failed: {run.reason}
-        </p>
+        <>
+          <p className="rotation-calibration-failed" data-testid="rotation-calibration-failed" role="alert">
+            Calibration failed: {run.why}
+          </p>
+          {renderRestored(run.restored)}
+        </>
       )}
 
       {run?.kind === "succeeded" && (
         <div className="rotation-calibration-result" data-testid="rotation-calibration-result">
-          {reportedTrackWidthCm(run) !== undefined ? (
-            <p className="rotation-calibration-track" data-testid="rotation-calibration-track">
-              Effective track width as the robot measured it: <strong>{reportedTrackWidthCm(run)} cm</strong>
-            </p>
-          ) : (
-            <p className="rotation-calibration-track">Calibration complete.</p>
-          )}
-          <p className="rotation-calibration-note">
-            Robot reported: <code data-testid="rotation-calibration-snippet">{run.snippet}</code>
+          <p className="rotation-calibration-track" data-testid="rotation-calibration-track">
+            Effective track width this run measured: <strong>{run.result.b} cm</strong>
           </p>
+          <p className="rotation-calibration-slip" data-testid="rotation-calibration-slip">
+            Rotational slip: <strong>{run.result.slip}</strong> ({run.result.trackWidthCm} cm boot-record track width
+            / {run.result.b} cm measured this run)
+          </p>
+          <button
+            type="button"
+            className="rotation-calibration-apply"
+            data-testid="rotation-calibration-apply"
+            onClick={() => handleApply(run.result)}
+          >
+            Apply
+          </button>
+          {appliedSlip === run.result.slip && (
+            <p className="rotation-calibration-applied" data-testid="rotation-calibration-applied" role="status">
+              Applied — rotational_slip set to {run.result.slip}.
+            </p>
+          )}
+          {renderRestored(run.restored)}
         </div>
       )}
     </section>

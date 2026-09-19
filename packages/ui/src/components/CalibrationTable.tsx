@@ -25,15 +25,23 @@
  * (`CalibrationState.measuredTrackWidthCm`, always manually entered) --
  * renamed here to "Wheel track" to match the stakeholder's own term and
  * to free up "Measured track width" for the row this ticket adds: the
- * robot's own `CALA:measured b=...` reading
- * (`CalibrationState.reportedTrackWidthCm`, sourced from the rotation
- * calibration, never typed in) -- labelled "Measured track width
- * (robot-reported)" so the two are never confused again. Rotational slip
- * additionally shows the robot's own `CALA:derived slip=...` value
- * (`CalibrationState.robotReportedSlip`) alongside this table's own
- * computed slip, when the robot has reported one -- see
- * `RotationCalibrationWizard.tsx`'s `robotReportedSlip` doc comment for
- * why the two numbers are never merged into one.
+ * robot's own `calturn.result` `b` field (`CalibrationState.
+ * reportedTrackWidthCm`, sourced from the rotation calibration, never
+ * typed in) -- labelled "Measured track width (robot-reported)" so the
+ * two are never confused again.
+ *
+ * ## OOP 2026-09-18: `tw` (boot-record track width) and `firmwareSlip`
+ *
+ * Two more robot-reported facts, added when `cala`/`calc` were replaced
+ * by the current `calturn`: `robotTrackWidthCm` (`calturn.result`'s
+ * `tw` field -- this robot's own track width, baked into its boot
+ * record at flash time, shown with that provenance so it reads as a
+ * record rather than a live measurement) and `firmwareSlip`
+ * (`calturn.result`'s own `slip` field, the value the rotation wizard's
+ * Apply button actually sends). `firmwareSlip` shows alongside this
+ * table's own computed slip, replacing the retired `robotReportedSlip`
+ * row annotation -- see `lib/calibration.ts`'s own doc comment for why
+ * the two numbers are never merged into one.
  */
 import { parsePositiveNumber, type CalibrationPatch, type CalibrationState, type DerivedCalibration } from "../lib/calibration";
 import "./CalibrationTable.css";
@@ -53,6 +61,7 @@ export function CalibrationTable({ variant, state, derived, onPatch }: Calibrati
   const reportedTestId = `${variant}-reported-track-width`;
   const effectiveTestId = `${variant}-effective-track`;
   const slipTestId = `${variant}-slip`;
+  const robotTrackWidthTestId = `${variant}-robot-track-width`;
 
   return (
     <table className="calibration-table" data-testid={tableTestId}>
@@ -126,6 +135,22 @@ export function CalibrationTable({ variant, state, derived, onPatch }: Calibrati
           </td>
         </tr>
         <tr>
+          <th scope="row">Robot's own track width</th>
+          <td data-testid={robotTrackWidthTestId}>
+            {state.robotTrackWidthCm !== undefined
+              ? `${state.robotTrackWidthCm} cm`
+              : variant === "calibration"
+                ? "not reported yet — run the rotation calibration"
+                : "run the rotation calibration"}
+            {variant === "calibration" && state.robotTrackWidthCm !== undefined && (
+              <span className="calibration-source">
+                {" "}
+                from the robot's boot record, baked at flash time — a record, not a live measurement
+              </span>
+            )}
+          </td>
+        </tr>
+        <tr>
           <th scope="row">Rotational slip</th>
           <td data-testid={slipTestId}>
             {variant === "calibration"
@@ -135,10 +160,10 @@ export function CalibrationTable({ variant, state, derived, onPatch }: Calibrati
                   : "1 (no measured track width, so the effective width is used directly)"
                 : "—"
               : (derived.rotationalSlip ?? "—")}
-            {variant === "calibration" && state.robotReportedSlip !== undefined && (
-              <span className="calibration-source" data-testid={`${variant}-robot-reported-slip`}>
+            {variant === "calibration" && state.firmwareSlip !== undefined && (
+              <span className="calibration-source" data-testid={`${variant}-firmware-slip`}>
                 {" "}
-                (robot reported {state.robotReportedSlip})
+                (firmware computed {state.firmwareSlip} for this run — sent by the rotation wizard's Apply button)
               </span>
             )}
           </td>

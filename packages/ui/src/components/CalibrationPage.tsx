@@ -49,11 +49,14 @@
  *     already shows every line, calibration traffic included, and a
  *     second filtered view of the same log added confusion (which
  *     console has the line?) without adding information.
- *  4. **`robotReportedSlip`** (`RotationCalibrationWizard.tsx`'s own
- *     `CALA:derived slip=...` reader) still updates
- *     `CalibrationState.robotReportedSlip`, shown alongside this page's
- *     own computed `rotationalSlip` in `CalibrationTable.tsx` -- see that
- *     module's own doc comment for why the two numbers are never merged.
+ *  4. **The robot's own reported track width and slip** (`calturn.
+ *     result`'s `b`/`tw`/`slip` fields as of OOP 2026-09-18; formerly
+ *     `cala`'s `measured b=`/`derived slip=` lines) still update
+ *     `CalibrationState.reportedTrackWidthCm`/`robotTrackWidthCm`/
+ *     `firmwareSlip`, shown alongside this page's own computed
+ *     `rotationalSlip` in `CalibrationTable.tsx` -- see `lib/
+ *     calibration.ts`'s own doc comment for why the two slip numbers
+ *     are never merged.
  *
  * ## Ticket 018-018: the right column is viewport-bound too
  *
@@ -75,6 +78,7 @@ import {
   calibrationCode,
   deriveCalibration,
   readCalibrationState,
+  round,
   writeCalibrationState,
   type CalibrationPatch,
   type CalibrationState,
@@ -85,18 +89,8 @@ import { useSendable, useWsActions } from "../ws/WsProvider";
 import { CalibrationFirmwarePanel } from "./CalibrationFirmwarePanel";
 import { CalibrationTable } from "./CalibrationTable";
 import { DeviceConsole } from "./DeviceConsole";
-import {
-  DistanceCalibrationWizard,
-  deriveBaselineDiameterMm,
-  deriveWheelDiameterMm,
-  type DistanceCalibrationRun,
-} from "./DistanceCalibrationWizard";
-import {
-  RotationCalibrationWizard,
-  reportedTrackWidthCm,
-  robotReportedSlip,
-  type RotationCalibrationRun,
-} from "./RotationCalibrationWizard";
+import { DistanceCalibrationWizard, type WheelsCalibrationRun } from "./DistanceCalibrationWizard";
+import { RotationCalibrationWizard, type TurnCalibrationRun } from "./RotationCalibrationWizard";
 import "./CalibrationPage.css";
 
 export interface CalibrationPageProps {
@@ -112,15 +106,17 @@ export interface CalibrationPageProps {
   device: SnapshotDevice;
 }
 
-/** `calx`/`cala` get their stakeholder-specified labels verbatim; any
- * other `cal*` name `FUNCS` reports is labelled from its own suffix --
- * ticket 018-013's own required truth: "do not guess a third verb". */
+/** `calwheels`/`calturn` get their stakeholder-specified labels
+ * verbatim; any other `cal*` name `FUNCS` reports is labelled from its
+ * own suffix -- ticket 018-013's own required truth: "do not guess a
+ * third verb" (now doubly true after two renames in one day, OOP
+ * 2026-09-18: `calx`/`cala` -> `calj`/`calc` -> `calwheels`/`calturn`). */
 export function calibrationFunctionLabel(name: string): string {
-  if (name === "calx") {
-    return "Calibrate X (distance)";
+  if (name === "calwheels") {
+    return "Calibrate wheels (distance)";
   }
-  if (name === "cala") {
-    return "Calibrate A (rotation)";
+  if (name === "calturn") {
+    return "Calibrate turn (rotation)";
   }
   return `Calibrate ${name.slice(3)}`;
 }
@@ -200,43 +196,42 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
   // removes one: any *other* `cal*` name it reports gets its own
   // `GenericCalibrationRun` below the two dedicated wizards.
   const calFunctionNames = useMemo(() => (functions ?? []).map((fn) => fn.name).filter((n) => n.startsWith("cal")), [functions]);
-  const extraCalFunctionNames = calFunctionNames.filter((n) => n !== "calx" && n !== "cala");
+  const extraCalFunctionNames = calFunctionNames.filter((n) => n !== "calwheels" && n !== "calturn");
 
   function update(patch: CalibrationPatch): void {
     setState((previous) => applyCalibrationPatch(previous, patch));
   }
 
-  function handleDistanceRun(run: DistanceCalibrationRun | undefined): void {
+  function handleDistanceRun(run: WheelsCalibrationRun | undefined): void {
     if (run?.kind !== "succeeded") {
       return;
     }
-    const diameter = deriveWheelDiameterMm(run.events, run.snippet);
-    if (diameter === undefined) {
-      return;
-    }
-    update({ wheelDiameterMm: diameter, wheelDiameterSource: "distance-calibration" });
-    // A rotation result made with an older diameter is now stale.
-    const baseline = deriveBaselineDiameterMm(run.events);
-    if (baseline !== undefined && state.reportedWithDiameterMm === undefined) {
-      update({ reportedWithDiameterMm: baseline });
+    update({ wheelDiameterMm: round(run.result.diameterMm, 2), wheelDiameterSource: "distance-calibration" });
+    // A rotation result made with an older diameter is now stale --
+    // `was` is the wheel-calibration constant (mm/deg) the robot was
+    // still actually running when this result was measured, the same
+    // baseline a subsequent rotation run will itself be measured
+    // against until a reflash changes what's really on the board.
+    if (state.reportedWithDiameterMm === undefined) {
+      update({ reportedWithDiameterMm: round((run.result.wasCalib * 360) / Math.PI, 2) });
     }
   }
 
-  function handleRotationRun(run: RotationCalibrationRun | undefined): void {
+  function handleRotationRun(run: TurnCalibrationRun | undefined): void {
     if (run?.kind === "succeeded") {
-      const reported = reportedTrackWidthCm(run);
-      if (reported !== undefined) {
-        update({ reportedTrackWidthCm: reported, reportedWithDiameterMm: CALIBRATION_IMAGE_BASELINE_DIAMETER_MM });
-      }
-      const slip = robotReportedSlip(run);
-      if (slip !== undefined) {
-        update({ robotReportedSlip: slip });
-      }
+      update({
+        reportedTrackWidthCm: run.result.b,
+        reportedWithDiameterMm: state.reportedWithDiameterMm ?? CALIBRATION_IMAGE_BASELINE_DIAMETER_MM,
+        robotTrackWidthCm: run.result.trackWidthCm,
+        firmwareSlip: run.result.slip,
+      });
       return;
     }
-    if (run?.kind === "failed") {
-      // A failed re-verification must not leave a width or slip standing.
-      update({ reportedTrackWidthCm: undefined, robotReportedSlip: undefined });
+    if (run?.kind === "failed" || run?.kind === "unreadable") {
+      // A failed (or unreadable) run must not leave a width or slip
+      // standing -- see this page's own doc comment on "never a
+      // confident wrong number".
+      update({ reportedTrackWidthCm: undefined, robotTrackWidthCm: undefined, firmwareSlip: undefined });
     }
   }
 
@@ -248,17 +243,17 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
         <CalibrationFirmwarePanel device={device} link={link} />
 
         <div className="robot-page-panel" aria-label="Distance calibration">
-          <h3>{calibrationFunctionLabel("calx")}</h3>
+          <h3>{calibrationFunctionLabel("calwheels")}</h3>
           <DistanceCalibrationWizard link={link} onRun={handleDistanceRun} />
         </div>
 
         <div className="robot-page-panel" aria-label="Rotation calibration">
-          <h3>{calibrationFunctionLabel("cala")}</h3>
+          <h3>{calibrationFunctionLabel("calturn")}</h3>
           <RotationCalibrationWizard
             link={link}
             onRun={handleRotationRun}
             disabled={rotationBlocked}
-            disabledReason="Run the distance calibration first — the rotation run needs the wheel diameter."
+            disabledReason="Run the wheel calibration first — the rotation run needs the wheel diameter."
           />
         </div>
 

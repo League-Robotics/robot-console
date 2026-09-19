@@ -16,14 +16,51 @@
  *    measured it with a ruler. Without it, the rotation run's effective
  *    track width *is* the track width and the rotational slip is 1.
  *    With it, the slip is measured ÷ effective.
- *  - **Effective track width** comes from the rotation wizard (`cala`).
- *    The calibration image runs that routine with its own compiled
- *    wheel calibration (0.7878 mm/deg, a 90.28 mm wheel), never the
- *    diameter just measured, so the reported width is corrected here by
- *    the ratio of the real diameter to that baseline -- see
- *    {@link correctTrackWidth}. The image's own `derived slip` is
- *    ignored: it divides a hard-coded 11.5 cm anchor, not this robot's
- *    measured width.
+ *  - **Effective track width** comes from the rotation wizard (`calturn`
+ *    as of OOP 2026-09-18; formerly `cala`/`calc`). The calibration
+ *    image runs that routine against whatever wheel calibration is
+ *    still actually flashed (a fresh `calwheels` result can't be
+ *    applied live -- see `DistanceCalibrationWizard.tsx`'s own doc
+ *    comment), so the reported width is corrected here by the ratio of
+ *    the real diameter to that baseline -- see {@link correctTrackWidth}.
+ *    This correction predates the current firmware and nothing in
+ *    `clasi/issues/calibration-calj-calc-one-click.md` says it's no
+ *    longer needed, so it is kept unchanged rather than guessed away.
+ *
+ * ## OOP 2026-09-18: `firmwareSlip`/`robotTrackWidthCm` supersede the old `robotReportedSlip`
+ *
+ * `calturn.result` now hands back `slip` (`tw / b`, already divided by
+ * the firmware) and `tw` (this robot's own track width from its boot
+ * record) directly -- see `RotationCalibrationWizard.tsx`'s own doc
+ * comment for why `slip` is "the value to store", never
+ * `slip_at_anchor`. This is a materially different, more authoritative
+ * number than the old `robotReportedSlip` field it replaces (`cala`'s
+ * own `derived slip=`, explicitly *not* meant to be applied -- it
+ * divided a hard-coded 11.5 cm anchor unrelated to this robot). Two
+ * decisions this rewrite makes about the two "slip" sources now in
+ * play:
+ *
+ *  1. **`firmwareSlip` (from `calturn.result.slip`) is what the
+ *     rotation wizard's Apply button sends** via `SET rotational_slip`
+ *     -- never the locally-derived {@link DerivedCalibration.rotationalSlip}
+ *     below. It is a self-consistent, per-robot number (this robot's
+ *     own boot-record `tw` over this run's own measured `b`) with no
+ *     manual-measurement dependency, and the issue states it in exactly
+ *     those terms.
+ *  2. **The local division (`measuredTrackWidthCm / effectiveTrackWidthCm`)
+ *     is kept, unmerged, as the value {@link calibrationCode} pastes
+ *     into a rebuilt program** when a student has typed in a
+ *     caliper-measured track width -- it answers a different question
+ *     ("what does *your ruler* say"), and merging it into `firmwareSlip`
+ *     would blend a self-reported robot fact with a manual physical
+ *     measurement, the exact "confident wrong number" this project has
+ *     been burned by before (a mis-recorded physical fact silently
+ *     trusted -- see the issue's "Track width provenance" section).
+ *     `firmwareSlip` and `robotTrackWidthCm` are shown alongside this
+ *     table's own computed values, never folded into them, mirroring
+ *     this codebase's existing precedent of showing two numbers side by
+ *     side rather than merging them when they answer different
+ *     questions.
  */
 
 /** The compiled wheel calibration the calibration image runs `cala`
@@ -37,18 +74,23 @@ export interface CalibrationState {
    * rotation run was made -- what its reported width must be corrected
    * from. */
   measuredTrackWidthCm?: number;
-  /** Straight from the robot's `measured b=` line, uncorrected. */
+  /** Straight from `calturn.result`'s `b` field, uncorrected. */
   reportedTrackWidthCm?: number;
   reportedWithDiameterMm?: number;
-  /** The robot's own `CALA:derived slip=<n> ...` line (ticket 018-013) --
-   * the firmware's own slip computation, against its hard-coded 11.5 cm
-   * anchor (see `RotationCalibrationWizard.tsx`'s own `robotReportedSlip`
-   * doc comment for why this is never folded into {@link
-   * DerivedCalibration.rotationalSlip}: the image's own anchor has
-   * nothing to do with this robot's measured width). Shown alongside our
-   * own derived slip in the "Current calibration" table, never in place
-   * of it. */
-  robotReportedSlip?: number;
+  /** This robot's own track width, from `calturn.result`/`.restored`'s
+   * `tw` field -- baked into its boot record at flash time. A record,
+   * not a live measurement; see `CalibrationTable.tsx`'s own row for
+   * the provenance note shown alongside it. */
+  robotTrackWidthCm?: number;
+  /** `calturn.result`'s own `slip` field (`tw / b`, already divided by
+   * the firmware) -- OOP 2026-09-18, replaces the retired
+   * `robotReportedSlip` (`cala`'s `derived slip=`, against a hard-coded
+   * anchor, explicitly never meant to be applied). This is the value
+   * the rotation wizard's Apply button sends over `SET rotational_slip`
+   * -- see this module's own doc comment ("`firmwareSlip`/
+   * `robotTrackWidthCm` supersede...") for why it is never merged into
+   * {@link DerivedCalibration.rotationalSlip}. */
+  firmwareSlip?: number;
 }
 
 /** A patch to `CalibrationState` -- any field set to `undefined` is

@@ -83,8 +83,10 @@ describe("applyCalibrationPatch", () => {
     });
   });
 
-  it("ticket 018-013: carries robotReportedSlip like any other field, and strips it the same way on undefined", () => {
-    expect(applyCalibrationPatch({}, { robotReportedSlip: 1.301 })).toEqual({ robotReportedSlip: 1.301 });
-    expect(applyCalibrationPatch({ robotReportedSlip: 1.301 }, { robotReportedSlip: undefined })).toEqual({});
+  it("OOP 2026-09-18: carries firmwareSlip/robotTrackWidthCm like any other field, and strips them the same way on undefined", () => {
+    expect(applyCalibrationPatch({}, { firmwareSlip: 1.008 })).toEqual({ firmwareSlip: 1.008 });
+    expect(applyCalibrationPatch({ firmwareSlip: 1.008 }, { firmwareSlip: undefined })).toEqual({});
+    expect(applyCalibrationPatch({}, { robotTrackWidthCm: 11.16 })).toEqual({ robotTrackWidthCm: 11.16 });
+    expect(applyCalibrationPatch({ robotTrackWidthCm: 11.16 }, { robotTrackWidthCm: undefined })).toEqual({});
   });
 });

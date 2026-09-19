@@ -1,178 +1,159 @@
 /**
- * DistanceCalibrationWizard.tsx — the distance-calibration (`calx`)
- * wizard panel, mounted on `RobotPage` (ticket 003, SUC-003).
+ * DistanceCalibrationWizard.tsx — the wheel-travel-calibration
+ * (`calwheels`) wizard panel, mounted on `RobotPage` (ticket 003,
+ * SUC-003; rewritten OOP 2026-09-18 for current firmware).
  *
- * Per `sprint.md`'s Detail-planning findings, `calx` is already fully
- * autonomous and self-reporting (creeps onto a first black line, drives
- * a known 90 cm gap, stops on a second line, and reports a corrected
- * wheel-calibration constant as plain `CALX:` text lines). This panel's
- * job is presentation and sequencing only, over capabilities `RobotPage`
- * already has -- no new host/wire work:
+ * ## OOP 2026-09-18: `calx` -> `calwheels`, prose -> JSON lines
  *
- *  - **Availability, `FUNCS`-gated, not classification-gated** (see
- *    `sprint.md`'s Design Rationale): Go is enabled only once `calx`
- *    appears in `link.session.functions`; no session at all or a session
- *    whose `functions` is still `null` (no `FUNCS` round answered yet)
- *    and "answered, but `calx` absent" are rendered as two distinct,
- *    calm messages -- neither is a spinner or a timeout-shaped wait.
- *    Sprint 015 ticket 009 removed this panel's own one-shot `FUNCS`
- *    probe on mount/reopen (it duplicated no host behavior -- the
- *    harvester never auto-sends `FUNCS` either, so a session's `functions`
- *    field only ever populates from an explicit `FUNCS` press elsewhere,
- *    e.g. `CommandStrip`'s or `FunctionsPanel`'s own button); this panel
- *    just reads whatever the snapshot already reports.
- *  - **Running**, `RUN calx` dispatched via `sendCommand`, exactly the
- *    same call `FunctionsPanel`'s own Go button makes.
- *  - **Progress**, derived from the link's own rx log (`useLinkLog` --
- *    the same log `CommandStrip` reads for its `GET`-reply harvesting)
- *    via `CalibrationReport.parseCalibrationLine`.
- *    Every new `rx` line appended since this panel's own Go press is
- *    replayed, in order, into one of: an opaque progress event (rendered
- *    as its own raw text -- `"begin ..."` and `"start line found"` are
- *    already visibly distinct lines, with no need for this panel to
- *    invent semantic labels for firmware text it does not otherwise
- *    interpret), the terminal `apply` event (the snippet, rendered
- *    verbatim), a `fail` event (a distinct failure state, never a
- *    snippet), or -- outside `CalibrationReport`'s own vocabulary -- a
- *    bare `err ...` reply to the `RUN` command itself (a missing/wrong
- *    program name, per `wire_handler.cpp`'s `err 1` convention),
- *    rendered as a third, distinct terminal state so it is never
- *    confused with a `CALX:fail` line or with "unavailable".
- *  - **The run's own log window is derived, not accumulated as
- *    incremental state**: `runStartId` records the next log entry id at the
- *    moment Go was pressed, and the run's current phase is recomputed
- *    from `log.filter(id >= runStartId)` on every render (`useMemo`) --
- *    mirroring `CommandStrip`'s own `discoveredNames` derivation from
- *    `log` rather than separately-mutated state, so a cleared log or a
- *    second Go press both fall out of the same derivation with no extra
- *    reset path to keep in sync.
+ * Per `clasi/issues/calibration-calj-calc-one-click.md`, `calx` (and its
+ * one-hop successor `calj`) is gone; the surviving verb is `calwheels
+ * (cm:number=90.5)`, and its reports are JSON lines
+ * (`{"ev":"calwheels.result", ...}` / `.quality` / `.span` / `.fail`),
+ * not `CALX:`-prefixed prose. This panel's structure is otherwise
+ * unchanged from ticket 003's original design:
+ *
+ *  - **Availability, `FUNCS`-gated, not classification-gated**: Go is
+ *    enabled regardless of what `FUNCS` says (a dropped Wi-Fi burst
+ *    line must never hide or block a run, stakeholder 2026-09-13); an
+ *    absent `calwheels` in a *known* function list only earns a
+ *    non-blocking hint.
+ *  - **Running**, `RUN calwheels <cm>` dispatched via `sendCommand`,
+ *    where `cm` is the tape-measured line-to-line distance the operator
+ *    typed in (default `90.5`, the firmware's own declared default) --
+ *    per the issue, this is "the one length the whole wheel calibration
+ *    scales by", so it is editable and never silently defaulted at Go
+ *    time.
+ *  - **Progress**, derived from the link's own rx log via
+ *    `CalibrationReport.parseCalibrationLine`. Every JSON line this
+ *    module doesn't specifically recognize (`.quality`, `.span`, an
+ *    unrelated verb's own lines) is rendered as one generic progress
+ *    line via `formatCalibrationEvent`, or silently ignored if it
+ *    belongs to a different verb entirely (`parsed.verb !== VERB`).
+ *  - **A run ends in exactly one of `.result`/`.fail`** (never assumed
+ *    otherwise) or a bare `err ...` reply to the `RUN` command itself
+ *    (a missing/wrong program name) -- three distinct terminal states,
+ *    never confused with each other. A `.result` line whose fields
+ *    don't validate (missing/non-numeric) is its own fourth terminal
+ *    state, "unreadable" -- a malformed report must never be shown as a
+ *    confident number.
+ *  - **The run's own log window is derived, not accumulated**:
+ *    `runStartId` records the next log entry id at Go, and the run's
+ *    phase is recomputed from `log.filter(id >= runStartId)` on every
+ *    render.
+ *
+ * ## No Apply control -- ever
+ *
+ * Measured on hardware (the issue's own table): `travel_calib` returns
+ * `err 1` over `SET` -- there is no such config field. `calwheels`'s
+ * result cannot be applied live at all; it needs a full rebuild and
+ * reflash. This panel shows the measured diameter and the line to paste
+ * into a rebuilt program, and nothing else -- no disabled button, no
+ * button that would error if pressed. A control that cannot work must
+ * not exist (see `RotationCalibrationWizard.tsx`'s own doc comment for
+ * the contrasting case: `calturn`'s result genuinely can be applied).
  *
  * No nudge control, no beam-pointer UI: this routine has neither (see
- * `sprint.md`'s Detail-planning findings) -- both are out of scope for
- * this panel by design, not merely unimplemented.
+ * `sprint.md`'s Detail-planning findings, unchanged since ticket 003).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { parseCalibrationLine } from "./CalibrationReport";
+import { formatCalibrationEvent, parseCalibrationLine, parseWheelsResult, type WheelsResult } from "./CalibrationReport";
+import { parsePositiveNumber } from "../lib/calibration";
 import { useLinkLog, useSendable, useWsActions } from "../ws/WsProvider";
 import { isLinkUsable } from "../deviceDisplay";
 import "./DistanceCalibrationWizard.css";
 
 /** Matches a bare `err ...` reply to the `RUN` command itself (e.g.
  * `err 1 #7`, `wire_handler.cpp`'s convention for an unregistered
- * program name) -- never a `CALX:`-prefixed line, since those are
+ * program name) -- never a `calwheels.*` JSON line, since those are
  * intercepted by {@link parseCalibrationLine} first. Loose prefix
  * match, mirroring `CommandStrip.tsx`'s own `GET_REPLY_PATTERN`
  * discipline rather than a fixed reply grammar. */
 const RUN_ERR_REPLY_PATTERN = /^err\b/i;
 
+/** The wire verb this wizard runs. Isolated to this one constant --
+ * per `CalibrationReport.ts`'s own doc comment, the shared parser knows
+ * nothing about verb names at all, specifically so a fourth rename (two
+ * have already happened in one day) touches only this line. */
+const VERB = "calwheels";
+
+/** The firmware's own declared default (`calwheels (cm:number=90.5)`). */
+const DEFAULT_CM = "90.5";
+
 /** One calibration run's current phase, derived from the endpoint's log
- * -- see this module's doc comment ("The run's own log window..."). */
-export type DistanceCalibrationRun =
+ * -- see this module's doc comment. */
+export type WheelsCalibrationRun =
   | { kind: "running"; events: string[] }
   | { kind: "run-error"; events: string[] }
-  | { kind: "succeeded"; events: string[]; snippet: string }
-  | { kind: "failed"; events: string[]; reason: string };
+  | { kind: "unreadable"; events: string[] }
+  | { kind: "failed"; events: string[]; why: string }
+  | { kind: "succeeded"; events: string[]; result: WheelsResult };
 
 /** Pure derivation of a run's phase from the slice of `log` recorded
  * since Go was pressed -- exported so `DistanceCalibrationWizard.test.tsx`
- * can exercise it directly against fixture log slices without mounting
- * the component, mirroring `FunctionsPanel.test.tsx`'s direct tests of
- * `parseSignature`/`positionalArgs`. */
-export function deriveDistanceCalibrationRun(
+ * can exercise it directly against fixture log slices.
+ *
+ * Drop-tolerant by construction (issue's "Lines get dropped" section):
+ * this loop never requires any particular event to have arrived --
+ * `.quality`/`.span` lines, if present, are rendered as progress and
+ * otherwise simply never appear; only `.result`/`.fail`/a bare `err`
+ * reply end the run. A JSON line belonging to a different verb (e.g.
+ * `calturn`'s own traffic on the same link, or an unrelated future
+ * `cal*` routine) is tolerated silently, exactly like non-JSON noise.
+ */
+export function deriveWheelsCalibrationRun(
   entries: readonly { direction: "tx" | "rx"; line: string }[],
-): DistanceCalibrationRun {
+): WheelsCalibrationRun {
   let events: string[] = [];
-  // OOP 2026-09-10: over WiFi the firmware drops lines emitted in a
-  // burst, and `CALX:apply` is the last of four (measured, calib,
-  // diameter, apply). The mm-per-degree value the apply line would
-  // carry is already in `CALX:calib=<n> mm/deg`, so the result is
-  // reconstructed from there when the apply line never shows up.
-  let derivedSnippet: string | undefined;
   for (const entry of entries) {
     if (entry.direction !== "rx") {
       continue;
     }
-    const event = parseCalibrationLine("CALX", entry.line);
-    if (event) {
-      if (event.kind === "apply") {
-        return { kind: "succeeded", events, snippet: event.snippet };
+    const parsed = parseCalibrationLine(entry.line);
+    if (parsed) {
+      if (parsed.verb !== VERB) {
+        // Noise from a different routine's own JSON lines -- tolerated
+        // silently, exactly like non-calibration noise.
+        continue;
       }
-      if (event.kind === "fail") {
-        return { kind: "failed", events, reason: event.reason };
+      if (parsed.kind === "result") {
+        const result = parseWheelsResult(parsed.fields);
+        // A run that produced a `.result` line but whose fields don't
+        // validate is not a success -- "couldn't read this run", never
+        // a confident wrong diameter.
+        return result ? { kind: "succeeded", events, result } : { kind: "unreadable", events };
       }
-      const calib = /^calib=\s*(-?\d+(?:\.\d+)?)/.exec(event.text.trim());
-      if (calib) {
-        derivedSnippet = `diffDrive.setWheelCalibration(${calib[1]})`;
+      if (parsed.kind === "fail") {
+        return { kind: "failed", events, why: parsed.why ?? "no reason given" };
       }
-      events = [...events, event.text];
+      events = [...events, formatCalibrationEvent(parsed.ev, parsed.fields)];
       continue;
     }
     if (RUN_ERR_REPLY_PATTERN.test(entry.line.trim())) {
       return { kind: "run-error", events };
     }
   }
-  if (derivedSnippet !== undefined && events.some((text) => /^diameter=/.test(text.trim()))) {
-    // Both result lines arrived but the apply line did not -- the run
-    // is complete as far as the answer goes.
-    return { kind: "succeeded", events, snippet: derivedSnippet };
-  }
   return { kind: "running", events };
-}
-
-/**
- * OOP 2026-09-10 (stakeholder): the wizard's answer is the wheel
- * diameter, not a "calibration" number -- this routine *is* how the
- * diameter gets measured. The template's `calx` reports it directly
- * (`CALX:diameter=90.3 mm`); an older build that only sends the
- * `CALX:apply diffDrive.setWheelCalibration(<mm per degree>)` line is
- * converted (diameter = mm/deg × 360 / π). `undefined` when neither is
- * present, in which case the raw firmware snippet is shown as-is.
- */
-export function deriveWheelDiameterMm(events: readonly string[], snippet: string): number | undefined {
-  for (const text of events) {
-    const match = /^diameter=\s*(-?\d+(?:\.\d+)?)/.exec(text.trim());
-    if (match) {
-      return round2(Number(match[1]));
-    }
-  }
-  const applied = /setWheelCalibration\(\s*(-?\d+(?:\.\d+)?)\s*\)/.exec(snippet);
-  if (applied) {
-    return round2((Number(applied[1]) * 360) / Math.PI);
-  }
-  return undefined;
-}
-
-/** The wheel diameter the robot was running with before this run, from
- * `CALX:begin ... baseline=<mm per degree>mm/deg`. */
-export function deriveBaselineDiameterMm(events: readonly string[]): number | undefined {
-  for (const text of events) {
-    const match = /baseline=\s*(-?\d+(?:\.\d+)?)/.exec(text);
-    if (match) {
-      return round2((Number(match[1]) * 360) / Math.PI);
-    }
-  }
-  return undefined;
-}
-
-/** The line a student pastes: the extension's only geometry setter
- * takes mm per shaft degree, so the diameter is written literally and
- * the conversion (π·D/360) is spelled out in the code itself rather
- * than hidden in a pre-multiplied constant. */
-export function wheelDiameterSnippet(diameterMm: number): string {
-  return `diffDrive.setWheelCalibration(${diameterMm} * Math.PI / 360)`;
 }
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+/** The line a student pastes into a rebuilt program: the extension's
+ * only geometry setter takes mm per shaft degree, so the diameter is
+ * written literally and the conversion (π·D/360) is spelled out in the
+ * code itself rather than hidden in a pre-multiplied constant. */
+export function wheelDiameterSnippet(diameterMm: number): string {
+  return `diffDrive.setWheelCalibration(${diameterMm} * Math.PI / 360)`;
+}
+
 export interface DistanceCalibrationWizardProps {
   link: SnapshotLink;
-  /** OOP 2026-09-10: called whenever the current run's derived state
-   * changes, so `CalibrationPage` can fold a succeeded run's wheel
-   * diameter into the robot's calibration state. */
-  onRun?: (run: DistanceCalibrationRun | undefined) => void;
+  /** Called whenever the current run's derived state changes, so
+   * `CalibrationPage` can fold a succeeded run's wheel diameter into the
+   * robot's calibration state. */
+  onRun?: (run: WheelsCalibrationRun | undefined) => void;
 }
 
 export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWizardProps) {
@@ -182,59 +163,62 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
   const { sendCommand } = useWsActions();
   const log = useLinkLog(linkId);
   const functions = link.session?.functions ?? undefined;
-  // Stakeholder (2026-09-13, and reaffirmed the same day root-causing
-  // "only CalX" on a robot that genuinely has `cala`): `FUNCS` must
-  // never hide or block a calibration run. A Wi-Fi burst can drop a
-  // line from the middle of the reply while the ack still arrives, so
-  // an absent name proves nothing -- the button stays enabled either
-  // way, and a known-missing name only earns a non-blocking hint below.
-  const functionKnownMissing = functions !== undefined && !functions.some((fn) => fn.name === "calx");
+  // Stakeholder (2026-09-13): `FUNCS` must never hide or block a
+  // calibration run -- an absent name proves nothing (a Wi-Fi burst can
+  // drop a line from the middle of the reply while the ack still
+  // arrives). The button stays enabled either way; a known-missing name
+  // only earns a non-blocking hint below.
+  const functionKnownMissing = functions !== undefined && !functions.some((fn) => fn.name === VERB);
 
-  // OOP 2026-09-10: the run's window is anchored on the log entry *id*
-  // minted at Go, not an array index. `useLinkLog` is a bounded ring
-  // (MAX_LINES_PER_LINK) trimmed from the front, so in a tab that has
-  // been open a while an index-based window slides and the terminal
-  // `apply` line scrolls straight out of it -- the stakeholder's "lots
-  // of details, then no code" report.
+  const [cmText, setCmText] = useState(DEFAULT_CM);
+  const cmValue = parsePositiveNumber(cmText);
+
+  // The run's window is anchored on the log entry *id* minted at Go,
+  // not an array index -- see `RotationCalibrationWizard.tsx`'s
+  // identical rationale (a bounded log ring trimmed from the front
+  // would otherwise slide an index-based window out from under a
+  // long-lived tab).
   const [runStartId, setRunStartId] = useState<number | undefined>(undefined);
-  const derived = useMemo<DistanceCalibrationRun | undefined>(() => {
+  const derived = useMemo<WheelsCalibrationRun | undefined>(() => {
     if (runStartId === undefined) {
       return undefined;
     }
-    return deriveDistanceCalibrationRun(log.filter((entry) => entry.id >= runStartId));
+    return deriveWheelsCalibrationRun(log.filter((entry) => entry.id >= runStartId));
   }, [log, runStartId]);
 
-  // Belt and braces: once a run has succeeded, keep that result even if
-  // the ring later evicts the lines it was derived from. Cleared by Go.
-  const latchedRef = useRef<{ startId: number; run: DistanceCalibrationRun } | undefined>(undefined);
-  if (derived?.kind === "succeeded" && runStartId !== undefined) {
+  // Belt and braces: once a run reaches any terminal state, keep that
+  // result even if the ring later evicts the lines it was derived from.
+  // Cleared by Go.
+  const latchedRef = useRef<{ startId: number; run: WheelsCalibrationRun } | undefined>(undefined);
+  if (derived && derived.kind !== "running" && runStartId !== undefined) {
     latchedRef.current = { startId: runStartId, run: derived };
   }
   const latched = latchedRef.current;
   const run =
     derived?.kind === "running" && latched && latched.startId === runStartId ? latched.run : derived;
 
-  const goDisabled = !linkOpen || run?.kind === "running";
+  const goDisabled = !linkOpen || run?.kind === "running" || cmValue === undefined;
 
   function handleGo(): void {
-    if (goDisabled) {
+    if (goDisabled || cmValue === undefined) {
       return;
     }
     const last = log[log.length - 1];
     setRunStartId(last ? last.id + 1 : 0);
-    sendCommand(linkId, "RUN", ["calx"]);
+    sendCommand(linkId, "RUN", [VERB, String(cmValue)]);
   }
-
-  const diameterMm = run?.kind === "succeeded" ? deriveWheelDiameterMm(run.events, run.snippet) : undefined;
-  const baselineMm = run?.kind === "succeeded" ? deriveBaselineDiameterMm(run.events) : undefined;
 
   const onRunRef = useRef(onRun);
   onRunRef.current = onRun;
-  const runKey = run ? `${run.kind}:${run.kind === "succeeded" ? run.snippet : ""}` : "";
+  const runKey = run ? JSON.stringify(run) : "";
   useEffect(() => {
     onRunRef.current?.(run);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the run's identity, not the object
   }, [runKey]);
+
+  const result = run?.kind === "succeeded" ? run.result : undefined;
+  const diameterMm = result !== undefined ? round2(result.diameterMm) : undefined;
+  const wasDiameterMm = result !== undefined ? round2((result.wasCalib * 360) / Math.PI) : undefined;
 
   return (
     <section className="distance-calibration-wizard" aria-label="Distance calibration">
@@ -246,14 +230,29 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
 
       {functionKnownMissing && (
         <p className="distance-calibration-hint" data-testid="distance-calibration-unavailable" role="status">
-          The robot's function list didn't include calx (lines can drop over Wi-Fi) — you can still try; the robot
+          The robot's function list didn't include {VERB} (lines can drop over Wi-Fi) — you can still try; the robot
           will say err if it's missing.
         </p>
       )}
 
+      <div className="distance-calibration-config">
+        <label htmlFor="distance-calibration-cm">Tape-measured line-to-line distance (cm)</label>{" "}
+        <input
+          id="distance-calibration-cm"
+          type="number"
+          inputMode="decimal"
+          step="0.1"
+          min="1"
+          data-testid="distance-calibration-cm"
+          value={cmText}
+          onChange={(event) => setCmText(event.target.value)}
+          disabled={!linkOpen || run?.kind === "running"}
+        />
+      </div>
+
       {run === undefined && (
         <ol className="distance-calibration-setup" data-testid="distance-calibration-setup">
-          <li>Lay two black lines 90 cm apart on the floor.</li>
+          <li>Lay two black lines the measured distance apart, joined by a centre stripe.</li>
           <li>Place the robot just behind the first line, facing forward, then press Go.</li>
         </ol>
       )}
@@ -265,7 +264,7 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
         disabled={goDisabled}
         onClick={handleGo}
       >
-        Calibrate X
+        Calibrate wheels
       </button>
 
       {run?.kind === "running" && (
@@ -283,28 +282,38 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
 
       {run?.kind === "run-error" && (
         <p className="distance-calibration-run-error" data-testid="distance-calibration-run-error" role="alert">
-          The robot rejected the run request — "calx" may not be registered on this build.
+          The robot rejected the run request — "{VERB}" may not be registered on this build.
+        </p>
+      )}
+
+      {run?.kind === "unreadable" && (
+        <p className="distance-calibration-unreadable" data-testid="distance-calibration-unreadable" role="alert">
+          The robot reported a result, but this console couldn't read it (unexpected shape) — check the console log
+          rather than trust a guess.
         </p>
       )}
 
       {run?.kind === "failed" && (
         <p className="distance-calibration-failed" data-testid="distance-calibration-failed" role="alert">
-          Calibration failed: {run.reason}
+          Calibration failed: {run.why}
         </p>
       )}
 
-      {run?.kind === "succeeded" && (
+      {run?.kind === "succeeded" && result && diameterMm !== undefined && (
         <div className="distance-calibration-result" data-testid="distance-calibration-result">
-          {diameterMm !== undefined ? (
-            <p className="distance-calibration-diameter" data-testid="distance-calibration-diameter">
-              Wheel diameter: <strong>{diameterMm} mm</strong>
-              {baselineMm !== undefined && baselineMm !== diameterMm ? ` (was ${baselineMm} mm)` : ""}
-            </p>
-          ) : (
-            <p className="distance-calibration-diameter">Calibration complete.</p>
-          )}
+          <p className="distance-calibration-diameter" data-testid="distance-calibration-diameter">
+            Wheel diameter: <strong>{diameterMm} mm</strong>
+            {wasDiameterMm !== undefined && wasDiameterMm !== diameterMm ? ` (was ${wasDiameterMm} mm)` : ""}
+          </p>
+          <p className="distance-calibration-detail" data-testid="distance-calibration-detail">
+            Measured {result.measuredCm} cm against a tape-measured {result.trueCm} cm (error {result.errorCm} cm).
+          </p>
+          <p className="distance-calibration-no-apply" data-testid="distance-calibration-no-apply">
+            This can't be applied live — the robot has no config field for wheel calibration over the wire. Paste the
+            line below into your program and reflash to use it.
+          </p>
           <p className="distance-calibration-note">
-            Robot reported: <code data-testid="distance-calibration-snippet">{run.snippet}</code>
+            <code data-testid="distance-calibration-snippet">{wheelDiameterSnippet(diameterMm)}</code>
           </p>
         </div>
       )}

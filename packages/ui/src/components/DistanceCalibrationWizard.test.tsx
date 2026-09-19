@@ -1,30 +1,26 @@
 // @vitest-environment jsdom
 /**
- * DistanceCalibrationWizard.test.tsx — component tests for ticket 003's
- * distance-calibration wizard (SUC-003; migrated to the `Snapshot`
- * contract and its on-open probe removed, sprint 015 ticket 009).
+ * DistanceCalibrationWizard.test.tsx — component tests for the
+ * wheel-travel-calibration wizard (rewritten OOP 2026-09-18 for the
+ * current `calwheels` firmware; see `DistanceCalibrationWizard.tsx`'s
+ * own doc comment).
  *
- * Covers every acceptance criterion: `calx`-known-missing shows a
- * non-blocking hint but never disables Go (stakeholder correction,
- * 2026-09-13 -- `FUNCS` must never hide or block a calibration run),
- * the setup instructions, the `RUN calx` dispatch on Go, progressive
- * rendering of `CALX:` lines via `CalibrationReport`, the terminal
- * `apply` line rendered verbatim as the snippet, a `CALX:fail` line's
- * distinct failure state (never a snippet), a `RUN` `err 1` reply's own
- * distinct state, and the regression check that no nudge/beam-pointer UI
- * ever appears in this panel.
- *
- * Ticket 009 deletes the "fires a one-shot FUNCS probe on mount" pinned
- * test case this file used to carry, not adapting it: this panel no
- * longer sends `FUNCS` on its own at all, on mount or on reopen -- it
- * only reads whatever `link.session.functions` the snapshot already
- * reports.
+ * Covers: `calwheels`-known-missing shows a non-blocking hint but never
+ * disables Go, the editable tape-measured `cm` argument (default 90.5),
+ * the `RUN calwheels <cm>` dispatch on Go, progressive rendering of
+ * non-terminal JSON events, the terminal `.result` line rendered as a
+ * diameter with no Apply control anywhere, a `.fail` line's distinct
+ * failure state, a malformed `.result` line's distinct "unreadable"
+ * state (never a confident wrong number), a `RUN` `err 1` reply's own
+ * distinct state, drop-tolerance (missing `.quality`/`.span` never
+ * blocks `.result`), and the regression check that no nudge/beam-pointer
+ * UI ever appears in this panel.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RobotFunction, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { DistanceCalibrationWizard, deriveBaselineDiameterMm, deriveWheelDiameterMm, wheelDiameterSnippet } from "./DistanceCalibrationWizard";
+import { DistanceCalibrationWizard, deriveWheelsCalibrationRun, wheelDiameterSnippet } from "./DistanceCalibrationWizard";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 
@@ -112,119 +108,132 @@ function emitLine(socket: FakeSocket, line: string): void {
 }
 
 describe("DistanceCalibrationWizard availability", () => {
-  it("stakeholder 2026-09-13: before any FUNCS reply the Calibrate X button is present and enabled (an unanswered FUNCS never blocks the run)", () => {
+  it("before any FUNCS reply the Go button is present and enabled (an unanswered FUNCS never blocks the run)", () => {
     const { el } = mountWizard(linkWithFunctions(undefined));
     expect(el.querySelector('[data-testid="distance-calibration-idle"]')).toBeNull();
     expect(el.querySelector('[data-testid="distance-calibration-unavailable"]')).toBeNull();
     const go = el.querySelector<HTMLButtonElement>('[data-testid="distance-calibration-go"]')!;
-    expect(go.textContent).toBe("Calibrate X");
+    expect(go.textContent).toBe("Calibrate wheels");
     expect(go.disabled).toBe(false);
   });
 
-  it("stakeholder correction 2026-09-13: a FUNCS reply missing calx shows a non-blocking hint and leaves Go enabled -- a dropped Wi-Fi burst line must never hide or block a run", () => {
+  it("a FUNCS reply missing calwheels shows a non-blocking hint and leaves Go enabled", () => {
     const { el } = mountWizard(linkWithFunctions([{ name: "abort" }, { name: "sense" }]));
     const hint = el.querySelector('[data-testid="distance-calibration-unavailable"]');
     expect(hint).not.toBeNull();
-    expect(hint!.textContent).toContain("didn't include calx");
-    expect(hint!.textContent).toContain("you can still try");
-    expect(el.querySelector('[data-testid="distance-calibration-idle"]')).toBeNull();
+    expect(hint!.textContent).toContain("didn't include calwheels");
     expect(el.querySelector<HTMLButtonElement>('[data-testid="distance-calibration-go"]')!.disabled).toBe(false);
-    // Never a spinner -- this is a plain status paragraph, not a
-    // loading/progress element.
     expect(el.querySelector('[role="progressbar"]')).toBeNull();
   });
 
-  it("shows the 90cm setup instructions and enables Go once calx is present", () => {
-    const { el } = mountWizard(linkWithFunctions([{ name: "calx" }, { name: "cala" }]));
-    const setup = el.querySelector('[data-testid="distance-calibration-setup"]');
-    expect(setup).not.toBeNull();
-    expect(setup!.textContent).toContain("90 cm");
+  it("shows the setup instructions and a cm input defaulting to 90.5, and enables Go once calwheels is present", () => {
+    const { el } = mountWizard(linkWithFunctions([{ name: "calwheels" }, { name: "calturn" }]));
+    expect(el.querySelector('[data-testid="distance-calibration-setup"]')).not.toBeNull();
+    expect(el.querySelector<HTMLInputElement>('[data-testid="distance-calibration-cm"]')!.value).toBe("90.5");
     expect(el.querySelector<HTMLButtonElement>('[data-testid="distance-calibration-go"]')!.disabled).toBe(false);
   });
 
-  it("disables Go when there is no open session even with calx available", () => {
+  it("disables Go when there is no open session even with calwheels available", () => {
     const { el } = mountWizard(closedLink());
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="distance-calibration-go"]')!.disabled).toBe(true);
+  });
+
+  it("disables Go when the cm field is blanked -- the tape measurement must be right, not silently defaulted", () => {
+    const { el } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
+    const input = el.querySelector<HTMLInputElement>('[data-testid="distance-calibration-cm"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    act(() => {
+      setter.call(input, "");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
     expect(el.querySelector<HTMLButtonElement>('[data-testid="distance-calibration-go"]')!.disabled).toBe(true);
   });
 });
 
 describe("DistanceCalibrationWizard run dispatch", () => {
-  it("sends RUN calx via sendCommand when Go is pressed", () => {
-    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calx" }]));
+  it("sends RUN calwheels with the default 90.5 cm when Go is pressed without changing the input", () => {
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
     socket.sent.length = 0;
     clickGo(el);
-    expect(socket.sent).toEqual([JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "RUN", fields: ["calx"] })]);
+    expect(socket.sent).toEqual([JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "RUN", fields: ["calwheels", "90.5"] })]);
+  });
+
+  it("sends the edited cm value when Go is pressed", () => {
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
+    const input = el.querySelector<HTMLInputElement>('[data-testid="distance-calibration-cm"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    act(() => {
+      setter.call(input, "120");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    socket.sent.length = 0;
+    clickGo(el);
+    expect(socket.sent).toEqual([JSON.stringify({ type: "send-command", linkId: LINK_ID, verb: "RUN", fields: ["calwheels", "120"] })]);
   });
 
   it("hides the setup instructions and disables Go once a run is in flight", () => {
-    const { el } = mountWizard(linkWithFunctions([{ name: "calx" }]));
+    const { el } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
     clickGo(el);
     expect(el.querySelector('[data-testid="distance-calibration-setup"]')).toBeNull();
     expect(el.querySelector<HTMLButtonElement>('[data-testid="distance-calibration-go"]')!.disabled).toBe(true);
   });
 });
 
-describe("DistanceCalibrationWizard progress rendering", () => {
-  it("renders distinct, visible progress states as CALX: lines stream in -- not one generic spinner", () => {
-    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calx" }]));
+describe("DistanceCalibrationWizard progress rendering and drop tolerance", () => {
+  it("renders non-terminal JSON events as they stream in", () => {
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
     clickGo(el);
-
-    emitLine(socket, "CALX:begin true=90cm baseline=0.7878mm/deg");
-    let progress = el.querySelector('[data-testid="distance-calibration-progress"]')!;
-    expect(progress.textContent).toContain("begin true=90cm baseline=0.7878mm/deg");
-
-    emitLine(socket, "CALX:start line found");
-    progress = el.querySelector('[data-testid="distance-calibration-progress"]')!;
-    expect(progress.textContent).toContain("start line found");
-    // Both distinct lines are visible at once, not collapsed into one
-    // generic "running" word.
-    expect(progress.textContent).toContain("begin true=90cm baseline=0.7878mm/deg");
+    emitLine(socket, '{"ev":"calwheels.span","start":1,"finish":2}');
+    const progress = el.querySelector('[data-testid="distance-calibration-progress"]')!;
+    expect(progress.textContent).toContain("calwheels.span");
   });
 
-  it("tolerates interleaved noise (acks, unrelated debug lines) without disturbing progress", () => {
-    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calx" }]));
+  it("tolerates interleaved noise (acks, unrelated debug lines, a different verb's own lines) without disturbing progress", () => {
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
     clickGo(el);
     emitLine(socket, "ack 5 0 none");
-    emitLine(socket, "CALX:begin true=90cm baseline=0.7878mm/deg");
     emitLine(socket, "DBG: loop=12");
-    emitLine(socket, "CALX:start line found");
-
+    emitLine(socket, '{"ev":"calturn.ch","i":0,"n":10}');
+    emitLine(socket, '{"ev":"calwheels.span","start":1,"finish":2}');
     const progress = el.querySelector('[data-testid="distance-calibration-progress"]')!;
-    expect(progress.textContent).toContain("begin true=90cm baseline=0.7878mm/deg");
-    expect(progress.textContent).toContain("start line found");
+    expect(progress.textContent).toContain("calwheels.span");
     expect(el.querySelector('[data-testid="distance-calibration-run-error"]')).toBeNull();
     expect(el.querySelector('[data-testid="distance-calibration-failed"]')).toBeNull();
+  });
+
+  it("reaches .result even when .quality/.span never arrived (dropped over Wi-Fi) -- never requires an expected line", () => {
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
+    clickGo(el);
+    emitLine(socket, '{"ev":"calwheels.result","calib":0.7912,"diameter":90.68,"measured":89.61,"true":90,"error":-0.39,"was":0.7878}');
+    expect(el.querySelector('[data-testid="distance-calibration-diameter"]')?.textContent).toBe("Wheel diameter: 90.68 mm (was 90.28 mm)");
   });
 });
 
 describe("DistanceCalibrationWizard terminal states", () => {
-  it("OOP 2026-09-10: reports the wheel diameter from CALX:diameter and hands out code written in terms of that diameter", () => {
-    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calx" }]));
+  it("reports the wheel diameter from calwheels.result, with no Apply control anywhere on the panel", () => {
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
     clickGo(el);
-    emitLine(socket, "CALX:begin true=90cm baseline=0.7878mm/deg");
-    emitLine(socket, "CALX:start line found");
-    emitLine(socket, "CALX:measured=89.61cm true=90cm error=-0.39cm");
-    emitLine(socket, "CALX:calib=0.7912 mm/deg  (was 0.7878)");
-    emitLine(socket, "CALX:diameter=90.68 mm");
-    emitLine(socket, "CALX:apply diffDrive.setWheelCalibration(0.7912)");
+    emitLine(socket, '{"ev":"calwheels.span","start":1,"finish":2}');
+    emitLine(socket, '{"ev":"calwheels.result","calib":0.7912,"diameter":90.68,"measured":89.61,"true":90,"error":-0.39,"was":0.7878}');
 
-    const diameter = el.querySelector('[data-testid="distance-calibration-diameter"]')!;
-    expect(diameter.textContent).toBe("Wheel diameter: 90.68 mm (was 90.28 mm)");
-    // The paste-ready code now lives in CalibrationPage's single block;
-    // the wizard just shows what the robot itself reported.
-    const snippet = el.querySelector('[data-testid="distance-calibration-snippet"]')!;
-    expect(snippet.textContent).toBe("diffDrive.setWheelCalibration(0.7912)");
+    expect(el.querySelector('[data-testid="distance-calibration-diameter"]')!.textContent).toBe("Wheel diameter: 90.68 mm (was 90.28 mm)");
+    expect(el.querySelector('[data-testid="distance-calibration-snippet"]')!.textContent).toBe(
+      "diffDrive.setWheelCalibration(90.68 * Math.PI / 360)",
+    );
+    expect(el.querySelector('[data-testid="distance-calibration-no-apply"]')).not.toBeNull();
+    // No Apply control of any kind -- not a disabled one, not one that errors.
+    expect(el.textContent).not.toMatch(/apply/i);
     expect(el.querySelector('[data-testid="distance-calibration-failed"]')).toBeNull();
     expect(el.querySelector('[data-testid="distance-calibration-run-error"]')).toBeNull();
+    expect(el.querySelector('[data-testid="distance-calibration-unreadable"]')).toBeNull();
     // Go re-enables so the student can run again if they want to.
     expect(el.querySelector<HTMLButtonElement>('[data-testid="distance-calibration-go"]')!.disabled).toBe(false);
   });
 
-  it("renders a distinct failure state on a CALX:fail line, never a snippet", () => {
-    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calx" }]));
+  it("renders a distinct failure state on a calwheels.fail line, never a snippet", () => {
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
     clickGo(el);
-    emitLine(socket, "CALX:begin true=90cm baseline=0.7878mm/deg");
-    emitLine(socket, "CALX:fail no start line within 60cm");
+    emitLine(socket, '{"ev":"calwheels.fail","why":"no start line within 60cm","measured":10.5,"true":90.2}');
 
     const failed = el.querySelector('[data-testid="distance-calibration-failed"]')!;
     expect(failed).not.toBeNull();
@@ -233,8 +242,24 @@ describe("DistanceCalibrationWizard terminal states", () => {
     expect(el.querySelector('[data-testid="distance-calibration-run-error"]')).toBeNull();
   });
 
-  it("renders a distinct 'run rejected' state on a RUN err 1 reply, never confused with CALX:fail or unavailable", () => {
-    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calx" }]));
+  it("a bare fail with no why text still fails cleanly with a generic reason, never crashing or fabricating one", () => {
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
+    clickGo(el);
+    emitLine(socket, '{"ev":"calwheels.fail"}');
+    expect(el.querySelector('[data-testid="distance-calibration-failed"]')?.textContent).toContain("no reason given");
+  });
+
+  it("renders a distinct 'unreadable' state -- never a confident wrong number -- when .result's fields don't validate", () => {
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
+    clickGo(el);
+    emitLine(socket, '{"ev":"calwheels.result","calib":0.7912,"diameter":"ninety"}');
+    expect(el.querySelector('[data-testid="distance-calibration-unreadable"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="distance-calibration-diameter"]')).toBeNull();
+    expect(el.querySelector('[data-testid="distance-calibration-failed"]')).toBeNull();
+  });
+
+  it("renders a distinct 'run rejected' state on a RUN err 1 reply, never confused with .fail or unavailable", () => {
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
     clickGo(el);
     emitLine(socket, "err 1 #1");
 
@@ -244,63 +269,53 @@ describe("DistanceCalibrationWizard terminal states", () => {
     expect(el.querySelector('[data-testid="distance-calibration-unavailable"]')).toBeNull();
     expect(el.querySelector('[data-testid="distance-calibration-snippet"]')).toBeNull();
   });
-
-  it("falls back to the firmware's raw snippet, with no diameter line, when nothing derivable was sent", () => {
-    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calx" }]));
-    clickGo(el);
-    emitLine(socket, "CALX:apply diffDrive.somethingNew(42)");
-    expect(el.querySelector('[data-testid="distance-calibration-diameter"]')).toBeNull();
-    expect(el.querySelector('[data-testid="distance-calibration-snippet"]')!.textContent).toBe("diffDrive.somethingNew(42)");
-  });
 });
 
-describe("DistanceCalibrationWizard with the apply line dropped over WiFi (OOP 2026-09-10)", () => {
-  it("reaches the result from CALX:calib + CALX:diameter when CALX:apply never arrives", () => {
-    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calx" }]));
-    clickGo(el);
-    emitLine(socket, "CALX:begin true=90cm baseline=0.7878mm/deg");
-    emitLine(socket, "CALX:measured=89.61cm true=90cm error=-0.39cm");
-    emitLine(socket, "CALX:calib=0.7912 mm/deg  (was 0.7878)");
-    expect(el.querySelector('[data-testid="distance-calibration-snippet"]')).toBeNull();
-    emitLine(socket, "CALX:diameter=90.68 mm");
-    expect(el.querySelector('[data-testid="distance-calibration-diameter"]')?.textContent).toBe("Wheel diameter: 90.68 mm (was 90.28 mm)");
-    expect(el.querySelector('[data-testid="distance-calibration-snippet"]')?.textContent).toBe(
-      "diffDrive.setWheelCalibration(0.7912)",
-    );
-  });
-});
-
-describe("DistanceCalibrationWizard in a long-lived tab (OOP 2026-09-10 regression)", () => {
+describe("DistanceCalibrationWizard in a long-lived tab (log ring regression)", () => {
   it("still reaches the result when the log ring was already full at Go", () => {
-    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calx" }]));
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
     act(() => {
       for (let i = 0; i < 520; i += 1) {
         socket.emitMessage({ type: "line", linkId: LINK_ID, direction: "rx", line: `status ready=1 cyc=${i}` });
       }
     });
     clickGo(el);
-    emitLine(socket, "CALX:begin true=90cm baseline=0.7878mm/deg");
-    emitLine(socket, "CALX:diameter=90.68 mm");
-    emitLine(socket, "CALX:apply diffDrive.setWheelCalibration(0.7912)");
-    expect(el.querySelector('[data-testid="distance-calibration-diameter"]')?.textContent).toBe(
-      "Wheel diameter: 90.68 mm (was 90.28 mm)",
-    );
+    emitLine(socket, '{"ev":"calwheels.result","calib":0.7912,"diameter":90.68,"measured":89.61,"true":90,"error":-0.39,"was":0.7878}');
+    expect(el.querySelector('[data-testid="distance-calibration-diameter"]')?.textContent).toBe("Wheel diameter: 90.68 mm (was 90.28 mm)");
   });
 });
 
 describe("DistanceCalibrationWizard regression: no nudge/beam-pointer UI", () => {
   it("never renders a nudge control or beam-pointer affordance in any state", () => {
-    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calx" }]));
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
     expect(el.textContent).not.toMatch(/nudge/i);
     expect(el.textContent).not.toMatch(/beam/i);
 
     clickGo(el);
-    emitLine(socket, "CALX:begin true=90cm baseline=0.7878mm/deg");
+    emitLine(socket, '{"ev":"calwheels.span","start":1,"finish":2}');
     expect(el.textContent).not.toMatch(/nudge/i);
     expect(el.textContent).not.toMatch(/beam/i);
 
-    emitLine(socket, "CALX:apply diffDrive.setWheelCalibration(0.79)");
+    emitLine(socket, '{"ev":"calwheels.result","calib":0.7912,"diameter":90.68,"measured":89.61,"true":90,"error":-0.39,"was":0.7878}');
     expect(el.textContent).not.toMatch(/nudge/i);
     expect(el.textContent).not.toMatch(/beam/i);
+  });
+});
+
+describe("deriveWheelsCalibrationRun (pure derivation)", () => {
+  it("tolerates an empty slice without throwing, falling back to an empty running state", () => {
+    expect(deriveWheelsCalibrationRun([])).toEqual({ kind: "running", events: [] });
+  });
+
+  it("wheelDiameterSnippet writes the literal π·D/360 conversion, not a pre-multiplied constant", () => {
+    expect(wheelDiameterSnippet(90.68)).toBe("diffDrive.setWheelCalibration(90.68 * Math.PI / 360)");
+  });
+
+  it("ignores a different verb's own result/fail lines entirely", () => {
+    const run = deriveWheelsCalibrationRun([
+      { direction: "rx", line: '{"ev":"calturn.result","b":1,"tw":1,"slip":1}' },
+      { direction: "rx", line: '{"ev":"calturn.fail","why":"nope"}' },
+    ]);
+    expect(run).toEqual({ kind: "running", events: [] });
   });
 });

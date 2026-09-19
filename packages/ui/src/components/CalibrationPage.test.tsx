@@ -66,7 +66,7 @@ afterEach(() => {
 const LINK_ID = "usb-ROBOT-A";
 const NAME = "gopiv";
 
-function link(functions: RobotFunction[] | null = [{ name: "calx" }, { name: "cala" }], overrides: Partial<SnapshotLink> = {}): SnapshotLink {
+function link(functions: RobotFunction[] | null = [{ name: "calwheels" }, { name: "calturn" }], overrides: Partial<SnapshotLink> = {}): SnapshotLink {
   return {
     id: LINK_ID,
     transport: "usb",
@@ -112,7 +112,7 @@ function mountPage(
   // fixture) with an explicitly-passed `null` (FUNCS not answered yet,
   // deliberately used by the "requests FUNCS" tests below) -- both are
   // distinct inputs this helper must keep apart.
-  const theLink = link(opts.functions !== undefined ? opts.functions : [{ name: "calx" }, { name: "cala" }], opts.linkOverrides);
+  const theLink = link(opts.functions !== undefined ? opts.functions : [{ name: "calwheels" }, { name: "calturn" }], opts.linkOverrides);
   const theDevice = device(theLink, opts.deviceOverrides);
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
@@ -147,17 +147,14 @@ function type(el: HTMLDivElement, id: string, value: string): void {
 }
 
 describe("CalibrationPage", () => {
-  it("starts empty: no code, rotation blocked, and a distance run unlocks rotation and fills the code block", () => {
+  it("starts empty: no code, rotation blocked, and a wheel run unlocks rotation and fills the code block", () => {
     const { el, socket } = mountPage();
     expect(el.querySelector('[data-testid="calibration-code-empty"]')).not.toBeNull();
     expect(el.querySelector('[data-testid="rotation-calibration-blocked"]')).not.toBeNull();
     expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(true);
 
     click(el, '[data-testid="distance-calibration-go"]');
-    rx(socket, "CALX:begin true=90cm baseline=0.7878mm/deg");
-    rx(socket, "CALX:calib=0.7912 mm/deg  (was 0.7878)");
-    rx(socket, "CALX:diameter=90.68 mm");
-    rx(socket, "CALX:apply diffDrive.setWheelCalibration(0.7912)");
+    rx(socket, '{"ev":"calwheels.result","calib":0.7912,"diameter":90.68,"measured":89.61,"true":90,"error":-0.39,"was":0.7878}');
 
     expect(el.querySelector<HTMLInputElement>("#calibration-wheel-diameter")!.value).toBe("90.68");
     expect(el.querySelector('[data-testid="calibration-code"]')?.textContent).toContain(
@@ -171,11 +168,7 @@ describe("CalibrationPage", () => {
     const { el, socket } = mountPage();
     type(el, "calibration-wheel-diameter", "90.28");
     click(el, '[data-testid="rotation-calibration-go"]');
-    rx(socket, "CALA:begin track=11.5cm slip=0.952 b=12.08cm");
-    rx(socket, "CALA:pass clockwise");
-    rx(socket, "CALA:measured b=8.84cm  (anchor was 12.08)");
-    rx(socket, "CALA:derived slip=1.301 = track 11.5 / b 8.84");
-    rx(socket, "CALA:apply diffDrive.setConfigValue(ConfigField.RotationalSlip, 1.301)");
+    rx(socket, '{"ev":"calturn.result","b":8.84,"tw":11.5,"slip":1.301}');
 
     expect(el.querySelector('[data-testid="calibration-effective-track"]')?.textContent).toBe("8.84 cm");
     let code = el.querySelector('[data-testid="calibration-code"]')?.textContent ?? "";
@@ -189,14 +182,19 @@ describe("CalibrationPage", () => {
     expect(el.querySelector('[data-testid="calibration-slip"]')?.textContent).toContain("1.301");
   });
 
-  it("a failed re-verification drops the rotation result again", () => {
+  it("a later failed rotation run drops an earlier succeeded run's result again", () => {
+    // The current contract ends a single run in exactly one of
+    // `.result`/`.fail`, never both -- so a run flipping from succeeded
+    // to failed only happens across two separate Go presses, unlike the
+    // old `cala`'s own re-verification pass.
     const { el, socket } = mountPage();
     type(el, "calibration-wheel-diameter", "90.28");
     click(el, '[data-testid="rotation-calibration-go"]');
-    rx(socket, "CALA:measured b=8.84cm  (anchor was 12.08)");
-    rx(socket, "CALA:apply diffDrive.setConfigValue(ConfigField.RotationalSlip, 1.301)");
+    rx(socket, '{"ev":"calturn.result","b":8.84,"tw":11.5,"slip":1.301}');
     expect(el.querySelector('[data-testid="calibration-effective-track"]')?.textContent).toBe("8.84 cm");
-    rx(socket, "CALA:fail gap 148deg before 270 -- missed an arm, re-centre the robot");
+
+    click(el, '[data-testid="rotation-calibration-go"]');
+    rx(socket, '{"ev":"calturn.fail","why":"too few usable gaps; centre the robot on the cross"}');
     expect(el.querySelector('[data-testid="calibration-effective-track"]')?.textContent).toContain("not measured yet");
     expect(el.querySelector('[data-testid="calibration-code"]')?.textContent).not.toContain("setTrackWidth");
   });
@@ -225,22 +223,22 @@ describe("CalibrationPage", () => {
     });
 
     it("does not request FUNCS when a function list is already known", () => {
-      const { socket } = mountPage({ functions: [{ name: "calx" }] });
+      const { socket } = mountPage({ functions: [{ name: "calwheels" }] });
       expect(socket.sent).toEqual([]);
     });
 
-    it("stakeholder correction 2026-09-13: both wizards still render, Calibrate A included, even when FUNCS lists only calx -- the root-caused Wi-Fi burst-drop bug means an absent name proves nothing", () => {
-      const { el } = mountPage({ functions: [{ name: "calx" }] });
+    it("both wizards still render, Calibrate turn included, even when FUNCS lists only calwheels -- an absent name proves nothing (dropped Wi-Fi burst lines)", () => {
+      const { el } = mountPage({ functions: [{ name: "calwheels" }] });
       expect(el.querySelector('.robot-page-column-left [aria-label="Distance calibration"]')).not.toBeNull();
       expect(el.querySelector('.robot-page-column-left [aria-label="Rotation calibration"]')).not.toBeNull();
-      // Calibrate A is still blocked pending a wheel diameter (an
+      // Calibrate turn is still blocked pending a wheel diameter (an
       // unrelated, legitimate gate this page itself applies) -- typing
       // one clears that gate, leaving only the FUNCS-derived hint below,
-      // never a disabled button caused by the missing `cala` listing.
+      // never a disabled button caused by the missing `calturn` listing.
       type(el, "calibration-wheel-diameter", "90.28");
       expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(false);
       expect(el.querySelector('[data-testid="rotation-calibration-unavailable"]')?.textContent).toContain(
-        "didn't include cala",
+        "didn't include calturn",
       );
     });
 
@@ -255,7 +253,7 @@ describe("CalibrationPage", () => {
     });
 
     it("renders a generic run control for a cal* function neither wizard owns, labelled from its name, and running it sends a bare RUN", () => {
-      const { el, socket } = mountPage({ functions: [{ name: "calx" }, { name: "cala" }, { name: "calb" }] });
+      const { el, socket } = mountPage({ functions: [{ name: "calwheels" }, { name: "calturn" }, { name: "calb" }] });
       const control = el.querySelector('[aria-label="Calibrate b"]');
       expect(control).not.toBeNull();
       const button = el.querySelector<HTMLButtonElement>('[data-testid="calibration-run-calb"]')!;
@@ -282,33 +280,31 @@ describe("CalibrationPage", () => {
     });
   });
 
-  describe("ticket 018-013: robot-reported track width and slip in the Current calibration table", () => {
-    it("a successful rotation run fills the robot-reported track width and slip rows alongside the derived values", () => {
+  describe("OOP 2026-09-18: robot-reported track width, boot-record tw, and firmware slip in the Current calibration table", () => {
+    it("a successful rotation run fills the robot-reported track width, robot track width, and firmware-slip rows alongside the derived values", () => {
       const { el, socket } = mountPage();
       type(el, "calibration-wheel-diameter", "90.28");
       click(el, '[data-testid="rotation-calibration-go"]');
-      rx(socket, "CALA:measured b=8.84cm  (anchor was 12.08)");
-      rx(socket, "CALA:derived slip=1.301 = track 11.5 / b 8.84");
-      rx(socket, "CALA:apply diffDrive.setConfigValue(ConfigField.RotationalSlip, 1.301)");
+      rx(socket, '{"ev":"calturn.result","b":8.84,"tw":11.16,"slip":1.008}');
 
       expect(el.querySelector('[data-testid="calibration-reported-track-width"]')?.textContent).toContain("8.84 cm");
       expect(el.querySelector('[data-testid="calibration-reported-track-width"]')?.textContent).toContain(
         "robot-reported, from rotation calibration",
       );
-      expect(el.querySelector('[data-testid="calibration-robot-reported-slip"]')?.textContent).toContain("1.301");
+      expect(el.querySelector('[data-testid="calibration-robot-track-width"]')?.textContent).toContain("11.16 cm");
+      expect(el.querySelector('[data-testid="calibration-firmware-slip"]')?.textContent).toContain("1.008");
     });
 
-    it("a failed re-verification clears the robot-reported slip too", () => {
+    it("a later failed rotation run clears the robot-reported track width and firmware slip an earlier succeeded run left standing", () => {
       const { el, socket } = mountPage();
       type(el, "calibration-wheel-diameter", "90.28");
       click(el, '[data-testid="rotation-calibration-go"]');
-      rx(socket, "CALA:measured b=8.84cm  (anchor was 12.08)");
-      rx(socket, "CALA:derived slip=1.301 = track 11.5 / b 8.84");
-      rx(socket, "CALA:apply diffDrive.setConfigValue(ConfigField.RotationalSlip, 1.301)");
-      expect(el.querySelector('[data-testid="calibration-robot-reported-slip"]')).not.toBeNull();
+      rx(socket, '{"ev":"calturn.result","b":8.84,"tw":11.16,"slip":1.008}');
+      expect(el.querySelector('[data-testid="calibration-firmware-slip"]')).not.toBeNull();
 
-      rx(socket, "CALA:fail gap 148deg before 270 -- missed an arm, re-centre the robot");
-      expect(el.querySelector('[data-testid="calibration-robot-reported-slip"]')).toBeNull();
+      click(el, '[data-testid="rotation-calibration-go"]');
+      rx(socket, '{"ev":"calturn.fail","why":"too few usable gaps; centre the robot on the cross"}');
+      expect(el.querySelector('[data-testid="calibration-firmware-slip"]')).toBeNull();
       expect(el.querySelector('[data-testid="calibration-reported-track-width"]')?.textContent).toContain("not measured yet");
     });
   });

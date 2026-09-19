@@ -105,7 +105,14 @@ describe("CalibrationTable", () => {
     it("calibration variant: the ruler-measured input row is now labelled 'Wheel track', freeing 'Measured track width' for the robot-reported row", () => {
       const el = mount(<CalibrationTable variant="calibration" state={{}} derived={{}} onPatch={vi.fn()} />);
       const rowLabels = Array.from(el.querySelectorAll("th")).map((th) => th.textContent);
-      expect(rowLabels).toEqual(["Wheel diameter", "Wheel track", "Measured track width", "Effective track width", "Rotational slip"]);
+      expect(rowLabels).toEqual([
+        "Wheel diameter",
+        "Wheel track",
+        "Measured track width",
+        "Effective track width",
+        "Robot's own track width",
+        "Rotational slip",
+      ]);
       expect(el.querySelector('label[for="calibration-track-width"]')?.textContent).toBe("Wheel track");
     });
 
@@ -135,22 +142,35 @@ describe("CalibrationTable", () => {
       expect(el.querySelector('[data-testid="configuration-reported-track-width"]')?.textContent).toBe("8.84 cm");
     });
 
-    it("calibration variant: the robot's own CALA:derived slip= value shows alongside the computed slip, only when known", () => {
-      const withoutRobotSlip = mount(
+    it("calibration variant: the firmware's own calturn.result slip shows alongside the computed slip, only when known", () => {
+      const withoutFirmwareSlip = mount(
         <CalibrationTable variant="calibration" state={{ measuredTrackWidthCm: 11.5 }} derived={{ rotationalSlip: 1.301 }} onPatch={vi.fn()} />,
       );
-      expect(withoutRobotSlip.querySelector('[data-testid="calibration-robot-reported-slip"]')).toBeNull();
+      expect(withoutFirmwareSlip.querySelector('[data-testid="calibration-firmware-slip"]')).toBeNull();
 
-      const withRobotSlip = mount(
+      const withFirmwareSlip = mount(
         <CalibrationTable
           variant="calibration"
-          state={{ measuredTrackWidthCm: 11.5, robotReportedSlip: 1.301 }}
+          state={{ measuredTrackWidthCm: 11.5, firmwareSlip: 1.008 }}
           derived={{ rotationalSlip: 1.301 }}
           onPatch={vi.fn()}
         />,
       );
-      const slipCell = withRobotSlip.querySelector('[data-testid="calibration-slip"]');
-      expect(slipCell?.textContent).toBe("1.301 (robot reported 1.301)");
+      const slipCell = withFirmwareSlip.querySelector('[data-testid="calibration-slip"]');
+      expect(slipCell?.textContent).toContain("1.301");
+      expect(slipCell?.textContent).toContain("firmware computed 1.008");
+    });
+
+    it("OOP 2026-09-18: the robot's own boot-record track width (tw) shows with its provenance, and 'not reported yet' when absent", () => {
+      const withValue = mount(
+        <CalibrationTable variant="calibration" state={{ robotTrackWidthCm: 11.16 }} derived={{}} onPatch={vi.fn()} />,
+      );
+      const cell = withValue.querySelector('[data-testid="calibration-robot-track-width"]');
+      expect(cell?.textContent).toContain("11.16 cm");
+      expect(cell?.textContent).toContain("boot record");
+
+      const empty = mount(<CalibrationTable variant="calibration" state={{}} derived={{}} onPatch={vi.fn()} />);
+      expect(empty.querySelector('[data-testid="calibration-robot-track-width"]')?.textContent).toContain("not reported yet");
     });
   });
 });

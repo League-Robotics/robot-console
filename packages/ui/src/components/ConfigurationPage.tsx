@@ -85,15 +85,29 @@
  * block above the console also carries `robot-page-column-top`, so it
  * shrinks and scrolls internally before the console log's own floor
  * gives; see `RobotPage.css`'s doc comment on both classes.
+ *
+ * ## Ticket 022-001: `configurationCode`/`MASKED_PASSWORD`/`jsString`
+ * moved to `lib/programCode.ts` (renamed `programCode`)
+ *
+ * This page used to be the only caller of `configurationCode`, defined
+ * locally and unexported apart from a test-only export. The stakeholder
+ * wants the Calibration tab's own "Code for your program" block to be
+ * this exact function's output too (radio + Wi-Fi + calibration, not
+ * calibration alone), which meant it could no longer live inside a page
+ * component only `ConfigurationPage` renders -- see `lib/programCode.ts`'s
+ * own doc comment for the full reasoning. This page also no longer owns
+ * the `get-wifi-credentials` request effect: it moved to `RobotPage.tsx`
+ * (the nearest common ancestor of this tab and the Calibration tab) so
+ * a student who calibrates without ever opening this tab still sees a
+ * populated Wi-Fi line -- see `RobotPage.tsx`'s own doc comment.
  */
 import { useEffect, useMemo, useState } from "react";
 import { nameToRadioAddress } from "@robot-console/protocol";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { useConnectionStatus, useSendable, useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
+import { useSendable, useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
 import type { RadioAddress } from "../pages/RelayPage";
 import {
   applyCalibrationPatch,
-  calibrationCode,
   deriveCalibration,
   readCalibrationState,
   writeCalibrationState,
@@ -106,6 +120,7 @@ import {
   writeCalibration,
 } from "../lib/calibrationWrite";
 import { useCopied } from "../lib/clipboard";
+import { programCode } from "../lib/programCode";
 import { validateRadioOverrideInput } from "../lib/radioAddress";
 import { isLinkUsable } from "../deviceDisplay";
 import { AddressSourceChip } from "./AddressSourceChip";
@@ -114,40 +129,6 @@ import { ConsolePane } from "./ConsolePane";
 import { WifiCredentialsForm, validateWifiInput } from "./WifiCredentialsForm";
 import "./CalibrationTable.css";
 import "./ConfigurationPage.css";
-
-export const MASKED_PASSWORD = "••••••••";
-
-export interface ConfigurationCodeInput {
-  robotName: string;
-  radio: RadioAddress | undefined;
-  wifi: { ssid: string; password: string | undefined } | undefined;
-  calibration: CalibrationState;
-}
-
-function jsString(value: string): string {
-  return JSON.stringify(value);
-}
-
-/** The one block a student pastes into their program's setup. Exported
- * for `ConfigurationPage.test.tsx`. */
-export function configurationCode(input: ConfigurationCodeInput): string {
-  const lines: string[] = [`// ${input.robotName} configuration`];
-  if (input.radio) {
-    lines.push(`diffDrive.setupRadio(${input.radio.channel}, ${input.radio.group})  // radio channel, group`);
-  }
-  if (input.wifi) {
-    const password = input.wifi.password === undefined ? MASKED_PASSWORD : input.wifi.password;
-    lines.push(
-      `diffDrive.setupWifi(${jsString(input.wifi.ssid)}, ${jsString(password)})` +
-        (input.wifi.password === undefined ? "  // password not known to this computer -- fill it in" : ""),
-    );
-  }
-  const calibration = calibrationCode(input.calibration, input.robotName);
-  if (calibration !== "") {
-    lines.push(...calibration.split("\n").slice(1));
-  }
-  return lines.length === 1 ? "" : lines.join("\n");
-}
 
 export interface ConfigurationPageProps {
   device: SnapshotDevice;
@@ -211,14 +192,12 @@ export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
     return true;
   }
 
-  // Wi-Fi -- the host's stored network. Asked for once the socket is
-  // open (a send before that is dropped), and again on every reconnect.
-  const status = useConnectionStatus();
-  useEffect(() => {
-    if (status === "open") {
-      send({ type: "get-wifi-credentials", reveal: true });
-    }
-  }, [status, send]);
+  // Wi-Fi -- the host's stored network. Ticket 022-001: the
+  // `get-wifi-credentials` request itself moved up to `RobotPage.tsx`
+  // (fires once per robot session, open or reconnect, regardless of
+  // which tab is active) -- this page only reads the resulting global
+  // store slice (`stored`, above) now, same as `CalibrationPage.tsx`
+  // does.
   const [wifiDraft, setWifiDraft] = useState({ ssid: "", password: "" });
   const [wifiSeeded, setWifiSeeded] = useState(false);
   useEffect(() => {
@@ -293,7 +272,7 @@ export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
 
   const code = useMemo(
     () =>
-      configurationCode({
+      programCode({
         robotName,
         radio,
         wifi: stored?.ssid ? { ssid: stored.ssid, password: stored.password } : undefined,

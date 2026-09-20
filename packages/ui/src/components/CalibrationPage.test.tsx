@@ -24,6 +24,28 @@
  * asserting the wizards render regardless and each shows its own
  * non-blocking hint. The filtered `CalibrationConsole` panel is retired
  * (see this page's own doc comment); its describe block is deleted.
+ *
+ * Ticket 022-001: the code block now comes from `programCode()`
+ * (`lib/programCode.ts`), which always has `device.radio` to emit, so
+ * two pre-existing "empty until Start" assertions below were updated to
+ * expect a radio-only block instead of the true-empty state -- see the
+ * inline comments at each. The new
+ * "ticket 022-001: unified programCode" describe block below adds the
+ * radio/WiFi-specific cases this page didn't need before. It does NOT
+ * add an automated check of `CalibrationPage.css`'s wrap/height-cap
+ * rules themselves: this package's `tsconfig.json` deliberately has no
+ * Node ambient types (`types: ["vite/client"]` only -- it targets the
+ * browser), ruling out `node:fs`, and Vite's `?raw` import suffix
+ * (`RobotPage.test.tsx`'s own convention for a `.tsx` source scan)
+ * verified empirically to return "" for a `.css`-extension import
+ * under this project's `vitest.config.ts` (no `test.css` override
+ * enables real CSS processing) regardless of the `?raw` query --
+ * `RobotPage.test.tsx`'s own `robotPageCssSource` check has the same
+ * gap, masked only because it happens to use `.not.toMatch(...)`,
+ * which trivially passes against an empty string either way. The CSS
+ * change itself was verified by reading the compiled stylesheet
+ * directly rather than through an automated assertion this tooling
+ * cannot make.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -151,9 +173,20 @@ describe("CalibrationPage", () => {
   const WHEELS =
     '{"ev":"calwheels.result","calib":0.7912,"diameter":90.68,"measured":89.61,"true":90,"error":-0.39,"was":0.7878}';
 
-  it("starts with nothing but Start: no code, no run buttons until the flow begins", () => {
+  it("ticket 022-001: shows radio setup immediately (the unified generator always has a device.radio to emit), but no calibration line and no run buttons until the flow begins", () => {
     const { el } = mountPage();
-    expect(el.querySelector('[data-testid="calibration-code-empty"]')).not.toBeNull();
+    // Before this ticket this was the empty state
+    // ("calibration-code-empty"): `calibrationCode()` alone has nothing
+    // to say until a wizard runs or `calshow` answers. `programCode()`
+    // always has `device.radio` to emit, so the block is never empty on
+    // a real device page any more -- this is the literal stakeholder
+    // ask ("should always include all of the code for the program"),
+    // not a regression.
+    expect(el.querySelector('[data-testid="calibration-code-empty"]')).toBeNull();
+    const code = el.querySelector('[data-testid="calibration-code"]')?.textContent ?? "";
+    expect(code).toContain("diffDrive.setupRadio(1, 1)");
+    expect(code).not.toContain("setWheelCalibration");
+    expect(code).not.toContain("setTrackWidth");
     expect(el.querySelector('[data-testid="new-calibration-start"]')).not.toBeNull();
     expect(el.querySelector('[data-testid="new-calibration-wheels"]')).toBeNull();
     expect(el.querySelector('[data-testid="new-calibration-turns"]')).toBeNull();
@@ -296,7 +329,11 @@ describe("CalibrationPage", () => {
     expect(second.el.querySelector<HTMLInputElement>("#calibration-wheel-diameter")!.value).toBe("91");
     click(second.el, '[data-testid="calibration-reset"]');
     expect(second.el.querySelector<HTMLInputElement>("#calibration-wheel-diameter")!.value).toBe("");
-    expect(second.el.querySelector('[data-testid="calibration-code-empty"]')).not.toBeNull();
+    // Ticket 022-001: "Start over" clears `CalibrationState`, not the
+    // device's own radio address -- `programCode()` still has that to
+    // emit, so the block goes back to "radio only", not empty.
+    expect(second.el.querySelector('[data-testid="calibration-code-empty"]')).toBeNull();
+    expect(second.el.querySelector('[data-testid="calibration-code"]')?.textContent).toContain("diffDrive.setupRadio(");
   });
 
   describe("ticket 018-013: run controls derived from FUNCS (corrected 2026-09-13: FUNCS only ever adds a control, never hides one)", () => {
@@ -625,6 +662,55 @@ describe("CalibrationPage", () => {
 
     click(el, '[data-testid="calibration-help-close"]');
     expect(el.querySelector('[data-testid="calibration-help"]')).toBeNull();
+  });
+
+  describe("ticket 022-001: unified programCode -- radio + WiFi join calibration on this tab", () => {
+    it("includes the masked-password comment when a network is stored but not revealed, exactly like the Configuration tab's own wording", () => {
+      const { el, socket } = mountPage();
+      act(() => {
+        socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: false, source: "none" });
+      });
+      const code = el.querySelector('[data-testid="calibration-code"]')?.textContent ?? "";
+      expect(code).toContain("diffDrive.setupWifi(");
+      expect(code).toContain("password not known to this computer -- fill it in");
+    });
+
+    it("includes the real password once the store reveals it", () => {
+      const { el, socket } = mountPage();
+      act(() => {
+        socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "stored", password: "hunter2" });
+      });
+      const code = el.querySelector('[data-testid="calibration-code"]')?.textContent ?? "";
+      expect(code).toContain('diffDrive.setupWifi("Busboom_Garage", "hunter2")');
+    });
+
+    it("shows radio, WiFi, and calibration lines together, in that order, once a calibration has actually run", () => {
+      const { el, socket } = mountPage();
+      act(() => {
+        socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "stored", password: "hunter2" });
+      });
+      click(el, '[data-testid="new-calibration-start"]');
+      click(el, '[data-testid="new-calibration-wheels"]');
+      rx(socket, WHEELS);
+      const lines = (el.querySelector('[data-testid="calibration-code"]')?.textContent ?? "").split("\n");
+      expect(lines[0]).toBe("// gopiv configuration");
+      expect(lines[1]).toContain("diffDrive.setupRadio(1, 1)");
+      expect(lines[2]).toContain('diffDrive.setupWifi("Busboom_Garage", "hunter2")');
+      expect(lines[3]).toContain("setWheelCalibration");
+      // calibrationCode's own header must not survive the splice -- one
+      // header for what is now one program.
+      expect(lines.filter((line) => line.startsWith("//"))).toHaveLength(1);
+    });
+
+    // No automated test of CalibrationPage.css's wrap/height-cap rules
+    // themselves here -- see this file's own doc comment for why this
+    // project's tooling can't make that assertion reliably (no Node
+    // types in this package, and `?raw` on a `.css` file is stubbed to
+    // "" by `vitest.config.ts`'s default CSS handling regardless of the
+    // query suffix). Verified instead by reading the compiled
+    // stylesheet directly; see `CalibrationPage.css`'s own doc comments
+    // on `.calibration-code` and `.calibration-code-panel.robot-page-
+    // column-top` for the change and its reasoning.
   });
 });
 

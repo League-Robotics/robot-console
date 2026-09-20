@@ -8,12 +8,18 @@
  * the `DeviceConsole` mount here. This page still takes `link` (see
  * `mountPage` below) -- now only to mount that console, not to flash or
  * run calx/cala.
+ *
+ * Ticket 022-001 moved this page's own `configurationCode`/
+ * `MASKED_PASSWORD`/`jsString` out to `lib/programCode.ts` (renamed
+ * `programCode`) -- its own unit tests moved with it, to
+ * `lib/programCode.test.ts`. This file keeps only the mounted,
+ * FakeSocket-driven `ConfigurationPage` behavior.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { ConfigurationPage, MASKED_PASSWORD, configurationCode } from "./ConfigurationPage";
+import { ConfigurationPage } from "./ConfigurationPage";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 
@@ -112,34 +118,17 @@ function sent(socket: FakeSocket): unknown[] {
   return socket.sent.map((raw) => JSON.parse(raw));
 }
 
-describe("configurationCode", () => {
-  it("emits radio, masked Wi-Fi, and calibration lines in that order", () => {
-    const code = configurationCode({
-      robotName: "tigez",
-      radio: { channel: 55, group: 114 },
-      wifi: { ssid: "Busboom_Garage", password: undefined },
-      calibration: { wheelDiameterMm: 90.68 },
-    });
-    expect(code.split("\n")).toEqual([
-      "// tigez configuration",
-      "diffDrive.setupRadio(55, 114)  // radio channel, group",
-      `diffDrive.setupWifi("Busboom_Garage", "${MASKED_PASSWORD}")  // password not known to this computer -- fill it in`,
-      "diffDrive.setWheelCalibration(90.68 * Math.PI / 360)  // wheel diameter 90.68 mm",
-    ]);
-  });
-
-  it("puts the real password in when revealed, quoting it as a JS string, and is empty with nothing to say", () => {
-    expect(configurationCode({ robotName: "t", radio: undefined, wifi: { ssid: "Net", password: 'a"b' }, calibration: {} })).toContain(
-      'diffDrive.setupWifi("Net", "a\\"b")',
-    );
-    expect(configurationCode({ robotName: "t", radio: undefined, wifi: undefined, calibration: {} })).toBe("");
-  });
-});
-
 describe("ConfigurationPage", () => {
-  it("asks the host for the network with the password, shows both in the fields, and puts them in the code", () => {
+  // Ticket 022-001: the `get-wifi-credentials` request itself moved up
+  // to `RobotPage.tsx` (so the Calibration tab sees it too -- see that
+  // file's own doc comment and `RobotPage.test.tsx`'s own coverage of
+  // the request); this page, mounted standalone here with no
+  // `RobotPage` above it, no longer sends it itself. It still reacts
+  // correctly once a `wifi-credentials` reply arrives from *any*
+  // sender, which is all this test now needs to emit by hand.
+  it("shows a revealed network in the fields and puts it in the code once wifi-credentials arrives", () => {
     const { el, socket } = mountPage();
-    expect(sent(socket)).toEqual([{ type: "get-wifi-credentials", reveal: true }]);
+    expect(sent(socket)).toEqual([]);
     act(() => {
       socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "stored", password: "hunter2" });
     });

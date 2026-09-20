@@ -295,6 +295,26 @@ describe("RobotPage", () => {
     expect(el.querySelector(".status-panel")).toBeNull();
   });
 
+  it("ticket 022-001: requests get-wifi-credentials once the session is open, so the Calibration tab sees WiFi without ever opening Configuration first", () => {
+    const { el, socket } = mountRobotPage();
+    const sent = () => socket.sent.map((raw) => JSON.parse(raw));
+    expect(sent()).toContainEqual({ type: "get-wifi-credentials", reveal: true });
+    expect(socket.sent.filter((raw) => raw.includes('"get-wifi-credentials"'))).toHaveLength(1);
+
+    act(() => {
+      socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "stored", password: "hunter2" });
+    });
+    // Calibration tab opened directly -- Configuration was never
+    // visited this session -- and it still shows the real password,
+    // because the request now fires from this page, not from
+    // ConfigurationPage.tsx.
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
+    });
+    const code = el.querySelector('[data-testid="calibration-code"]')?.textContent ?? "";
+    expect(code).toContain('diffDrive.setupWifi("Busboom_Garage", "hunter2")');
+  });
+
   it("command strip's HELLO/ID/VER/STATUS buttons send their bare verb via sendCommand", () => {
     const { el, socket } = mountRobotPage();
 

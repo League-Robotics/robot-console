@@ -21,6 +21,19 @@
   cursor: default;
 }
 
+/* Ticket 022-001 (stakeholder screenshot: the Calibration tab's code
+ * block clipped mid-comment, behind a horizontal scrollbar): wrap
+ * instead of scrolling sideways. `white-space: pre` preserved line
+ * breaks but never wrapped a long line; `pre-wrap` keeps the breaks
+ * *and* wraps. `overflow-wrap: anywhere` (not `word-break: break-all`,
+ * which would break readable words for no reason) is for the long
+ * single-line provenance comments `calibrationCode` emits (e.g. "NOT
+ * measured -- <profile>'s compiled default. Running the wheel
+ * calibration replaces this; flashing different firmware whose default
+ * differs will silently override this hardcoded line.") -- those
+ * comments have no natural break point near the column's edge without
+ * it. `overflow-x: auto` is gone outright: there is nothing left for it
+ * to scroll once every line wraps instead. */
 .calibration-code {
   margin: 0;
   padding: 0.6rem 0.8rem;
@@ -29,8 +42,32 @@
   background: var(--rc-surface);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.82rem;
-  white-space: pre;
-  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* `.calibration-code-panel` also carries `.robot-page-column-top`
+ * (`RobotPage.css`) on `ConfigurationPage` only -- that class caps a
+ * panel's height and scrolls it internally, to reserve room for
+ * `ConsolePane`, still mounted below it in the same column until
+ * sprint 022 ticket 007 deletes that mount outright. The stakeholder's
+ * requirement for this panel specifically is unconditional -- "no
+ * matter how many lines you got, I want to expand that so that it
+ * shows all of them" -- so this compound selector (two classes; it
+ * beats the single-class `.robot-page-column-top` rule on specificity
+ * alone, regardless of which stylesheet loads first) removes the cap
+ * for this one panel, rather than for every panel that shares the
+ * class. The tradeoff while `ConsolePane` is still mounted below it: a
+ * very long code block can push the console further down the page than
+ * before, needing a scroll to reach -- exactly the "intermediate
+ * tickets show both the dock and the legacy console" tradeoff
+ * sprint.md's own Migration Concerns already names, not a new one.
+ * Ticket 007 deletes `ConsolePane` from this column entirely, at which
+ * point nothing is left below the code panel to reserve room for and
+ * this override stops mattering -- but stays correct regardless. */
+.calibration-code-panel.robot-page-column-top {
+  max-height: none;
+  overflow-y: visible;
 }
 
 .calibration-code-empty {

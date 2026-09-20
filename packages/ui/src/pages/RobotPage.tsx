@@ -112,8 +112,28 @@
  * harvester (ticket 003) already probes `ID` once per identify and polls
  * `STATUS` on its own, so a panel re-deriving "ask again on open" from
  * local effect state was duplicating work the host now owns outright.
+ *
+ * ## Ticket 022-001: this page now requests `get-wifi-credentials`
+ *
+ * Moved up from `ConfigurationPage.tsx`, which used to be the only tab
+ * that ever asked the host what network it would provision robots onto.
+ * The Calibration tab's own "Code for your program" block now renders
+ * the same `programCode()` output the Configuration tab does (radio +
+ * Wi-Fi + calibration -- see `CalibrationPage.tsx`'s own doc comment),
+ * which reads the same global `useWifiCredentials()` store slice --
+ * but that slice never fills in unless *something* sends the request
+ * that populates it. This page is the nearest common ancestor of every
+ * tab that can show that block, so mounting the request effect here
+ * (rather than duplicating it in both tabs, or leaving it only in
+ * Configuration) is what lets a student who calibrates without ever
+ * opening the Configuration tab still see a populated, or explicitly
+ * masked, Wi-Fi line. Gated on `useConnectionStatus()` exactly as the
+ * effect it replaces was: a send before the socket is open is dropped,
+ * so this fires once the connection opens and again on every
+ * reconnect, never on every tab switch (this component's tab state,
+ * `tab` above, is not a dependency).
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { nameDisplay } from "../deviceDisplay";
 import { CalibrationPage } from "../components/CalibrationPage";
@@ -124,6 +144,7 @@ import { ConsolePane } from "../components/ConsolePane";
 import { DriveControls } from "../components/DriveControls";
 import { DriveTab } from "../components/DriveTab";
 import { StatusPanel } from "../components/StatusPanel";
+import { useConnectionStatus, useWsActions } from "../ws/WsProvider";
 import "./RobotPage.css";
 
 export interface RobotPageProps {
@@ -153,6 +174,17 @@ export type RobotTab = "main" | "drive" | "calibration" | "configuration" | "dia
 
 export function RobotPage({ device, link }: RobotPageProps) {
   const [tab, setSelectedTab] = useState<RobotTab>("main");
+
+  // Ticket 022-001: see this file's own doc comment ("this page now
+  // requests get-wifi-credentials").
+  const status = useConnectionStatus();
+  const { send } = useWsActions();
+  useEffect(() => {
+    if (status === "open") {
+      send({ type: "get-wifi-credentials", reveal: true });
+    }
+  }, [status, send]);
+
   const tabs: Array<{ id: RobotTab; label: string }> = [
     { id: "main", label: "Main" },
     { id: "drive", label: "Drive" },

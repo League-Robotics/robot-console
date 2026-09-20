@@ -74,6 +74,26 @@
  * text below describes the arrangement it had then, so it shrinks
  * and scrolls internally before the console log's own floor gives; see
  * `RobotPage.css`'s doc comment on both classes for the full mechanism.
+ *
+ * ## Ticket 022-001: the code block now calls `programCode()`, not
+ * `calibrationCode()` directly -- radio and Wi-Fi join calibration
+ *
+ * The stakeholder: "the Calibration Code for Your Program section
+ * should also include Wi-Fi... you should be using the same code for
+ * that section as the configuration page." This page already had
+ * everything `programCode()` needs for radio (`device.radio`, already a
+ * prop); Wi-Fi needed one more thing this page never had: something
+ * that actually asks the host for the stored network. `useWifiCredentials()`
+ * is a global `WsProvider` hook, callable from anywhere, but the store
+ * slice it reads only fills in once *something* sends
+ * `get-wifi-credentials` -- previously only `ConfigurationPage.tsx` did,
+ * on its own mount. That request moved up to `RobotPage.tsx` (this
+ * page's own doc comment doesn't need to explain why twice; see that
+ * file's), so a student calibrating without ever opening the
+ * Configuration tab still gets a populated (or explicitly masked) Wi-Fi
+ * line here. `calibrationCode()` itself -- imported by `programCode.ts`,
+ * not by this page any more -- computes exactly what it always did; only
+ * this page's call site changed.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { RobotFunction, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
@@ -81,7 +101,6 @@ import {
   CALIBRATION_IMAGE_BASELINE_DIAMETER_MM,
   applyCalibrationPatch,
   calibToDiameterMm,
-  calibrationCode,
   deriveCalibration,
   readCalibrationState,
   round,
@@ -90,8 +109,9 @@ import {
   type CalibrationState,
 } from "../lib/calibration";
 import { useCopied } from "../lib/clipboard";
+import { programCode } from "../lib/programCode";
 import { isLinkUsable } from "../deviceDisplay";
-import { useLinkLog, useSendable, useWsActions } from "../ws/WsProvider";
+import { useLinkLog, useSendable, useWifiCredentials, useWsActions } from "../ws/WsProvider";
 import { CalibrationFirmwarePanel } from "./CalibrationFirmwarePanel";
 import { CalibrationHelp } from "./CalibrationHelp";
 import { NewCalibrationPanel } from "./NewCalibrationPanel";
@@ -186,9 +206,22 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
   const calStoreState = useMemo(() => deriveCalStoreState(log), [log]);
   const calStoreValues = calStoreState.values;
 
+  // Ticket 022-001: the same global Wi-Fi store `ConfigurationPage.tsx`
+  // reads -- `RobotPage.tsx` is what actually requests it now (see this
+  // file's own doc comment), so this page only ever reads what's
+  // already there, exactly like `ConfigurationPage.tsx` does.
+  const stored = useWifiCredentials();
+
   const code = useMemo(
-    () => calibrationCode(state, robotName, { calStore: calStoreValues, firmwareProfile: device.program }),
-    [state, robotName, calStoreValues, device.program],
+    () =>
+      programCode({
+        robotName,
+        radio: device.radio,
+        wifi: stored?.ssid ? { ssid: stored.ssid, password: stored.password } : undefined,
+        calibration: state,
+        calibrationOptions: { calStore: calStoreValues, firmwareProfile: device.program },
+      }),
+    [robotName, device.radio, stored, state, calStoreValues, device.program],
   );
   const { copied, copy } = useCopied();
 

@@ -3,9 +3,15 @@
    bar that is always present (`.console-dock-bar`) and an open pane
    (`.console-dock-pane`) that only exists in the DOM while `open` is
    true (ConsoleDock.tsx renders it conditionally -- there is no
-   `display: none` case to style here). The drag-resize handle (ticket
-   004) and the pinned-to-viewport-bottom layout refinement (ticket 006's
-   `DevicePage` wrapping) remain later tickets' work. */
+   `display: none` case to style here). Ticket 004 adds
+   `.console-dock-resize-handle` at the pane's own top edge, sized only
+   by the pane's own height -- it works whether or not the dock is
+   later glued to the viewport bottom, since it never assumes anything
+   about what is above or below `.console-dock` itself. The
+   pinned-to-viewport-bottom layout refinement (ticket 006's `DevicePage`
+   wrapping) remains a later ticket's work; ticket 003 deliberately left
+   `.device-page-shell` without a forced height, and this ticket does not
+   change that either. */
 .console-dock {
   display: flex;
   flex-direction: column;
@@ -76,7 +82,54 @@
   border-top: 1px solid var(--rc-border);
 }
 
+/* A live drag suppresses `.console-dock-pane`'s own transitions (there
+   are none today, but this guards against one being added later without
+   the author remembering resize needs to stay instantaneous, not
+   eased) and is the hook a future visual affordance (e.g. a subtle
+   highlight while actively dragging) can key off without re-deriving
+   "is a drag in progress" from anything else. */
+.console-dock-pane-dragging {
+  transition: none;
+}
+
 .console-dock-pane .device-console {
   flex: 1 1 auto;
   min-height: 0;
+}
+
+/* The drag handle itself: a thin full-width strip that is the pane's
+   first flex child (rendered before `DeviceConsole`), so it sits right
+   below `.console-dock-pane`'s own top border -- visually and
+   structurally "the top edge of the open dock" this ticket's Acceptance
+   Criteria call for. `row-resize` is the standard cursor affordance for
+   "drag vertically to resize" (matches e.g. a `<textarea>`'s own resize
+   handle in most browsers). The strip's own height (10px) is
+   deliberately larger than its visible grip bar (`::after`, 3px) so the
+   actual pointer target is comfortably grabbable -- a 2-3px line alone
+   would be hard to hit precisely with a mouse. */
+.console-dock-resize-handle {
+  flex: none;
+  height: 10px;
+  cursor: row-resize;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Keeps the strip itself invisible/non-boxy; only the thin bar below
+     (`::after`) reads as a visible grip so the handle doesn't look like
+     a second border under `.console-dock-bar`'s existing one. */
+  background: transparent;
+}
+
+.console-dock-resize-handle::after {
+  content: "";
+  width: 2.5rem;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--rc-border);
+}
+
+.console-dock-resize-handle:hover::after,
+.console-dock-pane-dragging .console-dock-resize-handle::after {
+  background: var(--rc-text-muted);
 }

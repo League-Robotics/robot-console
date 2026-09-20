@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 /**
- * ConsoleDock.test.tsx — sprint 022 ticket 002 (relocation) and ticket
- * 003 (collapse/toggle chrome, persistence, quiet indicator).
+ * ConsoleDock.test.tsx — sprint 022 ticket 002 (relocation), ticket 003
+ * (collapse/toggle chrome, persistence, quiet indicator), and ticket 004
+ * (drag-to-resize, persisted height).
  *
  * Ticket 002's property still holds and is still covered here:
  * `ConsoleDock` mounts `DeviceConsole` and `CommandStrip` for the given
@@ -12,13 +13,27 @@
  * and content only renders once toggled open, the toggle round-trips
  * through `localStorage` (`useDockPersistence`'s fixed key), and the
  * collapsed bar's quiet indicator lights up only for a `warn`/`error`
- * `LinkNotice` on *this* link.
+ * `LinkNotice` on *this* link. Ticket 004 adds the resize handle: drag
+ * mechanics, min/max clamping, and `heightPx` persistence.
+ *
+ * ## Simulating a pointer drag in jsdom
+ *
+ * `ConsoleDock.tsx`'s own doc comment covers this in full, but the short
+ * version for these tests: jsdom (this suite's `@vitest-environment`)
+ * implements the `PointerEvent` constructor but not the Pointer Capture
+ * API, and `useDragResize` was deliberately written to track drags via
+ * `window`-level listeners rather than element capture for exactly this
+ * reason. `firePointer` below dispatches a real `PointerEvent` at a
+ * given target (the handle for `pointerdown`, `window` for
+ * `pointermove`/`pointerup`, matching how the component itself listens)
+ * so these tests exercise the same code path a real browser would.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { ConsoleDock } from "./ConsoleDock";
+import { ConsoleDock, MIN_DOCK_HEIGHT_PX, MAX_DOCK_HEIGHT_PX } from "./ConsoleDock";
+import { DEFAULT_DOCK_HEIGHT_PX } from "./useDockPersistence";
 import { WsProvider } from "../../ws/WsProvider";
 import { FakeSocket } from "../../testing/FakeSocket";
 
@@ -64,6 +79,45 @@ function toggle(el: HTMLDivElement): void {
   act(() => {
     button!.click();
   });
+}
+
+/** Dispatch a real `PointerEvent` at `target`, matching how
+ * `useDragResize` itself listens (`pointerdown` on the handle element,
+ * `pointermove`/`pointerup`/`pointercancel` on `window`) -- see this
+ * file's own doc comment for why a constructed `PointerEvent` rather
+ * than a higher-level testing-library helper is used here. */
+function firePointer(target: EventTarget, type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel", clientY: number): void {
+  act(() => {
+    target.dispatchEvent(
+      new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, pointerType: "mouse", button: 0, clientY }),
+    );
+  });
+}
+
+function getHandle(el: HTMLDivElement): HTMLDivElement {
+  const handle = el.querySelector<HTMLDivElement>('[data-testid="console-dock-resize-handle"]');
+  expect(handle).not.toBeNull();
+  return handle!;
+}
+
+function getPane(el: HTMLDivElement): HTMLDivElement {
+  const pane = el.querySelector<HTMLDivElement>('[data-testid="console-dock-pane"]');
+  expect(pane).not.toBeNull();
+  return pane!;
+}
+
+/** Run one full drag gesture (`pointerdown` on the handle, one
+ * `pointermove` on `window`, then `pointerup` on `window`) and return
+ * the pane's height (in px, as a number) immediately after. `startY` is
+ * the handle's `pointerdown` `clientY`; `moveY` is the single
+ * `pointermove`'s `clientY` -- per this ticket's Description ("drag up
+ * to grow, down to shrink"), `moveY < startY` grows the dock. */
+function drag(el: HTMLDivElement, startY: number, moveY: number): number {
+  const handle = getHandle(el);
+  firePointer(handle, "pointerdown", startY);
+  firePointer(window, "pointermove", moveY);
+  firePointer(window, "pointerup", moveY);
+  return Number.parseInt(getPane(el).style.height, 10);
 }
 
 afterEach(() => {
@@ -225,5 +279,141 @@ describe("ConsoleDock quiet indicator (sprint 022 ticket 003, sprint.md Design R
     toggle(el);
     expect(el.querySelector('[data-testid="console-dock-indicator"]')).not.toBeNull();
     expect(el.querySelector('[data-testid="console-dock-pane"]')).not.toBeNull();
+  });
+});
+
+describe("ConsoleDock resize handle (sprint 022 ticket 004, SUC-002)", () => {
+  it("renders no resize handle while collapsed", () => {
+    const { el } = mountDock();
+    expect(el.querySelector('[data-testid="console-dock-resize-handle"]')).toBeNull();
+  });
+
+  it("renders a resize handle at the top of the pane once opened", () => {
+    const { el } = mountDock();
+    toggle(el);
+    const handle = getHandle(el);
+    expect(handle.getAttribute("role")).toBe("separator");
+    // The handle must be the pane's first child -- "the top edge of the
+    // open dock" per this ticket's Acceptance Criteria, not just
+    // somewhere inside the pane.
+    expect(getPane(el).firstElementChild).toBe(handle);
+  });
+
+  it("starts at the default height (DEFAULT_DOCK_HEIGHT_PX) on a never-before-visited browser", () => {
+    const { el } = mountDock();
+    toggle(el);
+    expect(getPane(el).style.height).toBe(`${DEFAULT_DOCK_HEIGHT_PX}px`);
+  });
+
+  it("dragging the handle up grows the dock height live, during the drag itself", () => {
+    const { el } = mountDock();
+    toggle(el);
+    const handle = getHandle(el);
+    firePointer(handle, "pointerdown", 500);
+    // Dragged up 50px (500 -> 450) -- before pointerup, so this asserts
+    // the live-feedback path, not just the post-commit value.
+    firePointer(window, "pointermove", 450);
+    expect(getPane(el).style.height).toBe(`${DEFAULT_DOCK_HEIGHT_PX + 50}px`);
+    firePointer(window, "pointerup", 450);
+  });
+
+  it("dragging the handle down shrinks the dock height", () => {
+    const { el } = mountDock();
+    toggle(el);
+    const finalHeight = drag(el, 500, 560);
+    expect(finalHeight).toBe(DEFAULT_DOCK_HEIGHT_PX - 60);
+  });
+
+  it("stays pinned full width and to the bottom of .console-dock while resizing (no width/position change)", () => {
+    const { el } = mountDock();
+    toggle(el);
+    const pane = getPane(el);
+    firePointer(getHandle(el), "pointerdown", 500);
+    firePointer(window, "pointermove", 300);
+    // Only `height` is ever written by the drag -- no inline
+    // width/left/top/position styling is introduced, so the pane keeps
+    // whatever full-width/bottom-pinned layout its CSS already gives it.
+    expect(pane.style.width).toBe("");
+    expect(pane.style.position).toBe("");
+    firePointer(window, "pointerup", 300);
+  });
+
+  it("clamps growth at MAX_DOCK_HEIGHT_PX", () => {
+    const { el } = mountDock();
+    toggle(el);
+    const finalHeight = drag(el, 1000, -5000);
+    expect(finalHeight).toBe(MAX_DOCK_HEIGHT_PX);
+  });
+
+  it("clamps shrinkage at MIN_DOCK_HEIGHT_PX", () => {
+    const { el } = mountDock();
+    toggle(el);
+    const finalHeight = drag(el, 500, 6000);
+    expect(finalHeight).toBe(MIN_DOCK_HEIGHT_PX);
+  });
+
+  it("does not write to localStorage on pointermove -- only on pointerup", () => {
+    const { el } = mountDock();
+    toggle(el);
+    firePointer(getHandle(el), "pointerdown", 500);
+    firePointer(window, "pointermove", 400);
+    const midDragStored = JSON.parse(window.localStorage.getItem("robot-console:console-dock")!);
+    expect(midDragStored.heightPx).toBe(DEFAULT_DOCK_HEIGHT_PX);
+    firePointer(window, "pointerup", 400);
+    const afterUpStored = JSON.parse(window.localStorage.getItem("robot-console:console-dock")!);
+    expect(afterUpStored.heightPx).toBe(DEFAULT_DOCK_HEIGHT_PX + 100);
+  });
+
+  it("persists the resized height across a remount (a page reload, in effect)", () => {
+    const { el } = mountDock();
+    toggle(el);
+    const finalHeight = drag(el, 500, 420);
+    expect(finalHeight).toBe(DEFAULT_DOCK_HEIGHT_PX + 80);
+
+    act(() => {
+      root!.unmount();
+    });
+    container!.remove();
+
+    const { el: reloaded } = mountDock();
+    // `open` was persisted `true` by the `toggle(el)` above, so the
+    // reloaded dock comes back open already, at the dragged height.
+    expect(getPane(reloaded).style.height).toBe(`${DEFAULT_DOCK_HEIGHT_PX + 80}px`);
+  });
+
+  it("collapsing and reopening within the same session preserves the last chosen height", () => {
+    const { el } = mountDock();
+    toggle(el);
+    const finalHeight = drag(el, 500, 380);
+    expect(finalHeight).toBe(DEFAULT_DOCK_HEIGHT_PX + 120);
+
+    toggle(el); // collapse
+    expect(el.querySelector('[data-testid="console-dock-pane"]')).toBeNull();
+
+    toggle(el); // reopen, same session -- no remount
+    expect(getPane(el).style.height).toBe(`${DEFAULT_DOCK_HEIGHT_PX + 120}px`);
+  });
+
+  it("cleans up window listeners on unmount mid-drag, without throwing on a stray move/up afterward", () => {
+    const { el } = mountDock();
+    toggle(el);
+    firePointer(getHandle(el), "pointerdown", 500);
+    firePointer(window, "pointermove", 460);
+
+    act(() => {
+      root!.unmount();
+    });
+    container!.remove();
+    root = null;
+    container = null;
+
+    // If the effect cleanup failed to remove the window listeners, this
+    // would throw (React attempting to update an unmounted tree) or, at
+    // minimum, leak a listener that outlives the component -- either way
+    // this call must be a silent no-op.
+    expect(() => {
+      firePointer(window, "pointermove", 300);
+      firePointer(window, "pointerup", 300);
+    }).not.toThrow();
   });
 });

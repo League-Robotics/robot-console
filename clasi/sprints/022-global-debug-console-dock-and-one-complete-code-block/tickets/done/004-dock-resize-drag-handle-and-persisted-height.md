@@ -1,25 +1,14 @@
 ---
-id: "004"
-title: "Dock resize: drag handle and persisted height"
-status: open
-use-cases: ["SUC-002"]
-depends-on: ["003"]
-github-issue: ""
-issue: ""
-# completes_issue: Controls whether linked issues are archived when this ticket
-# is moved to done. Default: true (archive when all referencing tickets are done).
-# Set to false (scalar) to suppress archival for ALL linked issues on this ticket.
-# Set to a mapping {filename.md: false} to suppress archival per issue filename.
-# Use false for tickets that partially address a multi-sprint umbrella issue.
+id: '004'
+title: 'Dock resize: drag handle and persisted height'
+status: done
+use-cases:
+- SUC-002
+depends-on:
+- '003'
+github-issue: ''
+issue: ''
 completes_issue: true
-# exception: Written by a lower agent when it cannot proceed (see architecture §exception-protocol).
-# exception:
-#   thrown_by: "programmer"          # "programmer" | "sprint-planner"
-#   thrown_at: "2026-05-07T14:23:00Z"
-#   attempted: |
-#     Description of what was attempted before giving up.
-#   conflict: "architecture-update.md §3 — reason the agent is blocked"
-#   surface: "internal"              # "user-visible" | "internal"
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
@@ -43,17 +32,17 @@ value; document the chosen bounds and why in a code comment.
 
 ## Acceptance Criteria
 
-- [ ] A visible, grabbable handle sits at the top edge of the open
+- [x] A visible, grabbable handle sits at the top edge of the open
       dock only (not shown when collapsed).
-- [ ] Dragging the handle up/down changes the dock's height live,
+- [x] Dragging the handle up/down changes the dock's height live,
       while it remains pinned to the bottom and full width.
-- [ ] The height is clamped to a documented min/max range.
-- [ ] The chosen height persists to `localStorage` (via
+- [x] The height is clamped to a documented min/max range.
+- [x] The chosen height persists to `localStorage` (via
       `useDockPersistence`) and is restored on the next page load,
       while the dock is open.
-- [ ] Collapsing and reopening the dock within the same session
+- [x] Collapsing and reopening the dock within the same session
       preserves the last chosen height (doesn't reset to a default).
-- [ ] Resize works via mouse drag; keyboard/touch resize is not
+- [x] Resize works via mouse drag; keyboard/touch resize is not
       required for this ticket (note this as a documented limitation
       if not implemented, rather than silently absent).
 

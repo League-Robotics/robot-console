@@ -295,24 +295,52 @@ describe("RobotPage", () => {
     expect(el.querySelector(".status-panel")).toBeNull();
   });
 
-  it("ticket 022-001: requests get-wifi-credentials once the session is open, so the Calibration tab sees WiFi without ever opening Configuration first", () => {
+  it("ticket 022-001 (regression fix): does not request get-wifi-credentials for a session that never opens Calibration or Configuration", () => {
+    // See RobotPage.tsx's own "Regression fix, same day" doc comment:
+    // the first cut of this effect fired unconditionally as soon as the
+    // session opened, regardless of `tab` -- which broke `App.test.tsx`'s
+    // disconnected-banner suite (a Main-tab-only session that asserts
+    // nothing at all has been sent). This pins the corrected contract:
+    // Main/Drive/Diagnostics-only sessions never send this.
+    const { socket } = mountRobotPage();
+    act(() => {
+      socket.emitMessage({ type: "line", linkId: LINK_ID, direction: "rx", line: "status a=1" });
+    });
+    expect(socket.sent.filter((raw) => raw.includes('"get-wifi-credentials"'))).toHaveLength(0);
+  });
+
+  it("ticket 022-001: requests get-wifi-credentials once the Calibration tab is opened, so it sees WiFi without ever opening Configuration first", () => {
     const { el, socket } = mountRobotPage();
     const sent = () => socket.sent.map((raw) => JSON.parse(raw));
+    // Nothing sent yet -- Main is the default tab and Calibration has
+    // not been opened.
+    expect(sent()).not.toContainEqual({ type: "get-wifi-credentials", reveal: true });
+
+    // Calibration tab opened directly -- Configuration was never
+    // visited this session -- and it still ends up showing the real
+    // password, because the request now fires from this page, latched
+    // on to `tab` becoming "calibration", not from ConfigurationPage.tsx.
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
+    });
     expect(sent()).toContainEqual({ type: "get-wifi-credentials", reveal: true });
     expect(socket.sent.filter((raw) => raw.includes('"get-wifi-credentials"'))).toHaveLength(1);
 
     act(() => {
       socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "stored", password: "hunter2" });
     });
-    // Calibration tab opened directly -- Configuration was never
-    // visited this session -- and it still shows the real password,
-    // because the request now fires from this page, not from
-    // ConfigurationPage.tsx.
+    const code = el.querySelector('[data-testid="calibration-code"]')?.textContent ?? "";
+    expect(code).toContain('diffDrive.setupWifi("Busboom_Garage", "hunter2")');
+
+    // Switching back to Main and re-opening Calibration must not
+    // re-send -- the latch is sticky for the life of this mount.
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-main"]')!.click();
+    });
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
     });
-    const code = el.querySelector('[data-testid="calibration-code"]')?.textContent ?? "";
-    expect(code).toContain('diffDrive.setupWifi("Busboom_Garage", "hunter2")');
+    expect(socket.sent.filter((raw) => raw.includes('"get-wifi-credentials"'))).toHaveLength(1);
   });
 
   it("command strip's HELLO/ID/VER/STATUS buttons send their bare verb via sendCommand", () => {

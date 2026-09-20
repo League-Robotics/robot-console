@@ -56,8 +56,11 @@ surrounding column rather than by their own scrollbar.
 
 **Debug console dock.** Introduce one `ConsoleDock` component, mounted
 once per device page (`DevicePage.tsx`), pinned to the bottom of the
-device page's own layout (not a page-covering overlay — see
-Architecture §Design Rationale). It renders a quiet, collapsed
+**browser viewport** — like a browser's own JavaScript devtools
+console, the stakeholder's original analogy, confirmed explicitly when
+shown the alternative — not the bottom of the page's own scrollable
+content, and not a page-covering overlay either (see Architecture
+§Revision and §Design Rationale; ticket 008). It renders a quiet, collapsed
 "Debug Console" bar by default; toggling it open reveals the existing
 `DeviceConsole` (log, autoscroll/clear/show-polls toolbar, send box,
 `SequencingIndicator`) plus `CommandStrip`'s HELLO/ID/VER/STATUS/FUNCS
@@ -375,6 +378,9 @@ graph TD
   ProgramCode --> CalibrationLib
   RobotPage -.->|no longer depends on ConsolePane, deleted| ConsoleDock
   DriveTab -.->|no longer depends on ConsolePane, deleted| ConsoleDock
+  ConsoleDock -.->|writes --console-dock-height custom property, read by page calc&#40;100vh&#41; column CSS -- ticket 008, see Revision| RobotPage
+  ConsoleDock -.->|writes --console-dock-height, ticket 008| RelayPage
+  ConsoleDock -.->|writes --console-dock-height, ticket 008| DriveTab
 ```
 
 No entity-relationship diagram: this sprint makes no data-model change
@@ -384,6 +390,81 @@ beyond the component diagram above: dependencies flow one way, from
 page components down into `console-dock`/`programCode.ts`, which in
 turn depend only on the existing `DeviceConsole`/`CommandStrip`/
 `WsProvider`/`lib/calibration.ts` — no cycle is introduced.
+
+### Revision (2026-09-20, after ticket 003 landed, before ticket 008)
+
+**What changed and why.** The stakeholder was asked directly and
+confirmed: the dock must be pinned to the bottom of the **browser
+viewport** — his own original analogy for this whole feature was a
+browser's JavaScript devtools console, "like you can with the console,
+the debug console, on a web browser for JavaScript. Same idea" — not
+to the bottom of the page's own scrollable content. That is not what
+tickets 002/003 built. `DevicePage.tsx`'s `.device-page-shell` is a
+plain flex column with no forced height (per that ticket's own Design
+Rationale entry below, "the dock takes layout space at the bottom of
+the page... not a page-covering overlay"), so the dock sits after page
+content in normal document flow. Verified live in Chromium at
+`/d/mbrelay-torture`: the open pane lands at y=367 on a short page; on
+a page taller than the viewport (e.g. the Calibration tab) the console
+requires scrolling to reach at all. Ticket 003's programmer flagged
+this as an open question rather than guessing, which was the right
+call — this Revision resolves it.
+
+**This does not fully reverse the superseded Design Rationale entry
+below.** That decision correctly rejected a page-covering overlay
+because several pages put their own controls at the bottom of a column
+(the Copy button on both code blocks, `CalibrationTable`'s "Start
+over", `DriveTab`'s `PathTracePanel`), and an overlay would sit on top
+of them whenever the dock is open. That constraint still holds. What
+was wrong was treating "not an overlay" and "in normal document flow"
+as the same thing — they aren't. A viewport-pinned dock avoids
+covering those controls not by living in flow, but by having every
+page reserve exactly the dock's current height as its own bottom
+margin/padding, so the two mechanisms (pinned dock, non-covered
+controls) are independent rather than accidentally coupled through
+"reflow."
+
+**New hazard this introduces, and its resolution.** `RobotPage.css`,
+`DeviceConsole.css`, and `DriveTab.css` already size page columns with
+fixed `calc(100vh - Npx)` literals (confirmed via `grep -rn
+"calc(100vh" packages/ui/src`: `RobotPage.css:114`, `RobotPage.css:149`,
+`DeviceConsole.css:104`, `DriveTab.css:17` as of this writing — ticket
+007, landing first, may change these same files' exact literals before
+ticket 008 starts). Ticket 004, landing concurrently with this
+Revision, adds a **drag-resizable** dock height persisted in
+`useDockPersistence.ts` as `heightPx`. Once the dock leaves document
+flow, its live height (which now varies by drag, and differs between
+collapsed and open) and every page's `calc(100vh - ...)` reservation
+must agree, or content hides behind the dock or a dead gap opens below
+it. Resolution: a single CSS custom property (e.g.
+`--console-dock-height`), written from the dock's own state (collapsed
+bar height, or bar+`heightPx` when open, live during a drag) and
+consumed by both the dock's own positioning and every page's
+`calc(100vh - ...)` rule in place of its current literal — one source
+of truth rather than a magic number duplicated across stylesheets. See
+the new Decision entry under Design Rationale below, and ticket 008's
+own Description for the full reasoning and hazard detail.
+
+**Sequencing**: this work is ticket 008, sequenced after ticket 007
+(legacy per-tab console removal and column-layout cleanup), not folded
+into 003/004/006. Ticket 007 already reworks every touched page's
+column CSS to reclaim space the old embedded console used to occupy;
+doing the viewport-pinning work before 007 would mean reconciling CSS
+against interim column shapes twice. This Revision does not change
+tickets 002-007's own scope or acceptance criteria — 003/004's
+collapse/toggle/resize chrome and behavior are correct as built, only
+their CSS *positioning* changes, and only once, in ticket 008.
+
+**No new tier decision needed.** This Revision does not change the
+sprint's overall Substantial sizing (stated at the top of this
+Architecture section) — it revises one Design Rationale decision within
+an already-substantial sprint, touching the same set of existing
+modules (console-dock, DevicePage, and the page CSS files already named
+in Step 3/Step 5) rather than introducing a new one. No new diagram
+node is warranted (no new component is introduced), but two new labeled
+edges were added to the Step 4 diagram above to record the new
+`--console-dock-height` cross-module dependency this Revision
+introduces (dock → page CSS, previously nonexistent).
 
 ### Step 5 — What changed / Why / Impact / Migration
 
@@ -458,6 +539,15 @@ design difference worth preserving.
 - **`localStorage` growth of one key.** Consistent with existing
   per-robot calibration `localStorage` usage; no cleanup mechanism is
   needed since this is one fixed-name key, not one per device.
+- **CSS positioning revision lands after, not alongside, tickets
+  003/004/006 (see §Revision, ticket 008).** Tickets 003 (collapse/
+  toggle chrome) and 004 (drag-resize) were built and verified against
+  the original "reflow, in document flow" positioning; ticket 008
+  changes only the dock's CSS positioning and the page CSS rules that
+  reserve space for it, not 003/004's collapse/toggle/resize behavior
+  or acceptance criteria, which remain correct as built. This is a
+  second, deliberately separate CSS pass, not a sign 003/004 were done
+  wrong.
 
 ### Design Rationale
 
@@ -481,9 +571,12 @@ for no benefit. Consequence: `FrontPage.tsx` needs zero changes — it
 was never in `DevicePage`'s subtree, so "no dock on `/`" requires no
 code at all, only follows from where the mount lives.
 
-**Decision: the dock takes layout space at the bottom of the page (a
-flex column inside `DevicePage`'s own render), not a page-covering
-overlay.** Context: "always full width... pinned to the bottom" could
+**Decision (SUPERSEDED — see §Revision above and the replacement
+decision immediately below; kept here, marked, rather than deleted, so
+the "why we first tried reflow" reasoning stays on record): the dock
+takes layout space at the bottom of the page (a flex column inside
+`DevicePage`'s own render), not a page-covering overlay.** Context:
+"always full width... pinned to the bottom" could
 be read either way. Alternatives: (a) `position: fixed` overlay, ceded
 z-index above page content; (b) a flex column (`page content` above,
 `ConsoleDock` below, both inside one `height: 100%` wrapper) so page
@@ -498,6 +591,48 @@ the whole point is that it only costs space while intentionally open.
 Consequence: `DevicePage.tsx` needs its own wrapping flex container;
 `App.tsx`/`main.tsx` need no change, since `FrontPage` never gets this
 wrapper.
+
+**Decision (replaces the one above, per §Revision, ticket 008): pin the
+dock to the viewport bottom via CSS positioning, using a single CSS
+custom property as the one source of truth for its live height, and
+achieve "no covered controls" by reserving that same height as bottom
+space in each page's own scrollable content — not by keeping the dock
+in normal document flow.** Context: the stakeholder confirmed, when
+shown the two layouts side by side, that "pinned to the bottom" meant
+pinned to the browser viewport (his own devtools-console analogy), not
+to the bottom of the page's scrollable content — the reading the
+decision above assumed. Alternatives: (a) leave the flex-column/in-flow
+approach as originally decided — rejected, contradicts the confirmed
+stakeholder reading; (b) `position: fixed` dock at the viewport bottom
+with each page's `calc(100vh - Npx)` rule hand-updated to a new fixed
+literal — rejected because ticket 004's drag-resizable height means any
+hardcoded number goes stale the moment the student drags the handle;
+(c) `position: fixed` dock at the viewport bottom, with the dock
+writing its own live pixel height (bar height when collapsed, bar +
+`heightPx` when open, live during a drag) to a CSS custom property
+(e.g. `--console-dock-height`), and every page's `calc(100vh - ...)`
+rule and bottom-of-column control spacing reading that same property
+instead of a literal. Why (c): it is the only option where the dock's
+height and every page's viewport math cannot drift apart, since both
+read the same live value; it also preserves the original decision's own
+goal (never cover a page's bottom controls) by reserving space equal to
+the dock's *actual current* height rather than a fixed estimate.
+Consequences: `ConsoleDock.tsx`/`useDockPersistence.ts` must write the
+custom property on every state change (toggle, drag, initial mount from
+persisted storage), not only at drag-end; `RobotPage.css`,
+`DeviceConsole.css`, `DriveTab.css`, and any other file with a
+`calc(100vh - Npx)` column rule reserving space for the dock must be
+rewritten to consume `var(--console-dock-height)`; `DevicePage.css`'s
+`.device-page-shell` changes from a plain reflow column to a layout
+where `ConsoleDock` is pinned to the viewport bottom while the
+dispatched page content scrolls independently above it; both the
+collapsed bar and the open pane are pinned, not only the open pane,
+since both read the same (state-dependent) property value. Exact
+mechanism for writing the property (a React effect calling
+`style.setProperty`, versus another approach) is left to ticket 008's
+implementation, flagged as an open question below rather than decided
+here, since ticket 004's own height-state shape should be finalized
+first.
 
 **Decision: retarget the popup to a new device rather than close it
 when the routed device changes (but still close it on a return to
@@ -603,6 +738,14 @@ sequencing concern exists beyond what's already stated there).
    count. This sprint's decision reuses an existing mechanism
    deliberately to stay small; a stakeholder walkthrough of the live
    dock may reveal a case that mechanism doesn't cover.
+3. **`--console-dock-height` write mechanism** (new, from §Revision /
+   ticket 008): whether the custom property is written via a React
+   effect (`document.documentElement.style.setProperty`) or some other
+   approach is left to ticket 008's implementation rather than decided
+   in this Revision, since ticket 004's own drag-height state shape
+   should be finalized first. Whoever picks up ticket 008 should choose
+   and document the mechanism, not treat this as still open after
+   implementation.
 
 ## Use Cases
 
@@ -788,10 +931,16 @@ Before tickets can be created, all of the following must be true:
 | 005 | Pop-out console window: window.open, portal rendering, and stylesheet copy | 003 |
 | 006 | Route-driven dock and popup lifecycle: close, retarget, and restore | 005 |
 | 007 | Remove legacy per-tab consoles, ConsolePane, and the per-tab CommandStrip mount | 006 |
+| 008 | Pin the debug console to the viewport bottom like a browser devtools drawer | 007 |
 
 Tickets execute serially in the order listed. 001 is independent of
 the console-dock work (items 1 and 2 of this sprint are unrelated) and
 is deliberately first so there is something landable early, per the
-stakeholder's own request. 002-007 form one dependency chain for the
+stakeholder's own request. 002-008 form one dependency chain for the
 console dock; 004 and 005 both depend only on 003 (not on each other)
 but are still executed serially, 004 before 005, in the order listed.
+008 (viewport-pinning; see Architecture §Revision) depends on 007
+specifically — not on 004 or 006 directly — because it needs 007's
+final column-layout shapes to do its CSS reconciliation once rather
+than twice; it is sequenced last because it is the only ticket that
+touches the dock's positioning contract with every other page's CSS.

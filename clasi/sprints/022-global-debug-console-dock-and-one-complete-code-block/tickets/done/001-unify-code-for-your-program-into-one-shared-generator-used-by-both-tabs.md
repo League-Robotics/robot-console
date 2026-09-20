@@ -161,3 +161,37 @@ section describes this UI-level detail today.
   CalibrationPage RobotPage` (run from `packages/ui`; this project uses
   `npm`/`vitest`, not `pytest` — the template's default command does
   not apply to this repo).
+
+## Regression fix (reopened, same sprint)
+
+`App.test.tsx`'s disconnected-banner suite (`a send attempted while
+disconnected reports a host-style console line instead of dropping
+silently`) started failing on this branch after this ticket's first
+close. Root cause, confirmed by instrumenting the actual send timing
+rather than trusting the symptom's framing ("something is sending
+over a closed socket" turned out not to be literally true): the
+`get-wifi-credentials` effect fired the instant `RobotPage` mounted
+with `status === "open"`, with no regard for which tab was selected.
+Because `RobotPage` (unlike the old `ConfigurationPage` placement) is
+mounted for every tab, that meant the request fired for *any* robot
+session the moment it connected -- including a Main-tab-only session
+that never renders a Wi-Fi line at all, which is exactly the scenario
+`App.test.tsx` exercises. That test's `expect(socket().sent).toEqual([])`
+right after a close is a fully generic, Wi-Fi-unrelated assertion
+("nothing has been sent by anything, automatically, in this session")
+that the new unconditional send silently falsified.
+
+Fix: latch `wifiTabVisited` true the first time `tab` becomes
+`"calibration"` or `"configuration"` (sticky for the life of the
+mount), and only let the send effect run once that latch is set,
+gated on `useSendable()` (the same guard `ConfigurationPage`'s own
+Save/Write-to-robot controls use) rather than raw
+`useConnectionStatus() === "open"`. This preserves the acceptance
+criterion that actually matters here -- Calibration sees Wi-Fi without
+Configuration ever having been opened, regardless of which of the two
+tabs is opened first -- while eliminating the unconditional send for
+sessions that visit neither. See `RobotPage.tsx`'s own doc comment
+("Regression fix, same day") for the full writeup, and
+`RobotPage.test.tsx`'s two ticket-022-001 tests (one pinning "no send
+without a Wi-Fi-relevant tab visit", one pinning "sends exactly once,
+latched, on Calibration alone") for the pinned behavior.

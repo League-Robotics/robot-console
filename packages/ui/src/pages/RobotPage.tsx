@@ -127,11 +127,46 @@
  * (rather than duplicating it in both tabs, or leaving it only in
  * Configuration) is what lets a student who calibrates without ever
  * opening the Configuration tab still see a populated, or explicitly
- * masked, Wi-Fi line. Gated on `useConnectionStatus()` exactly as the
- * effect it replaces was: a send before the socket is open is dropped,
- * so this fires once the connection opens and again on every
- * reconnect, never on every tab switch (this component's tab state,
- * `tab` above, is not a dependency).
+ * masked, Wi-Fi line.
+ *
+ * **Regression fix, same day**: the first cut of this effect fired
+ * unconditionally the instant `status` was `"open"`, with no regard for
+ * `tab` at all -- since `RobotPage` (unlike `ConfigurationPage` before
+ * it) is mounted for *every* tab, that meant the request went out the
+ * moment any robot page connected, even a session that only ever
+ * touches Main/Drive/Diagnostics and never renders a Wi-Fi line at
+ * all. Two things followed from that: it quietly re-created exactly
+ * the "component re-derives its own ask-again-on-open probe" pattern
+ * this file's own "Sprint 015 ticket 009" section above says the
+ * harvester already retired for every other panel, and it broke
+ * `App.test.tsx`'s disconnected-banner suite, which mounts a robot page
+ * on its default Main tab, closes the socket, and asserts nothing at
+ * all has been sent yet -- a fully generic, Wi-Fi-unrelated assertion
+ * that this effect's new unconditional send silently falsified. The
+ * lesson generalizes: an effect that is safe tucked inside a tab a
+ * student opens on purpose (the old `ConfigurationPage` placement)
+ * becomes a global, always-on side effect the moment it is hoisted to
+ * an always-mounted parent -- hoisting the *mount point* of an effect
+ * changes *when it runs*, not just *where it lives*, and every existing
+ * assumption about "this only fires if you opened that tab" has to be
+ * re-derived at the new mount point, not carried over by reference.
+ *
+ * The fix: latch `wifiTabVisited` true the first time `tab` becomes
+ * `"calibration"` or `"configuration"` (sticky for the life of this
+ * mount -- switching back to Main afterward must not un-latch it, and
+ * must not re-send either), and only then let the send effect run.
+ * That preserves the acceptance criterion this ticket actually cares
+ * about -- Calibration seeing Wi-Fi without Configuration ever having
+ * been opened, order-independent between the two tabs -- while no
+ * longer sending anything for sessions that never visit either tab.
+ * The send itself gates on `useSendable()`, not raw
+ * `useConnectionStatus()` -- the same guard `ConfigurationPage`'s own
+ * Save/Write-to-robot controls use (`WsProvider.tsx`'s doc comment on
+ * `useSendable`) -- so a tab switch during the "reconnected, snapshot
+ * not yet confirmed fresh" gap (see `useHostConnection`'s `stale`)
+ * waits for that gap to close rather than firing into it; it still
+ * fires again on every genuine reconnect once `wifiTabVisited` is
+ * already latched from an earlier visit.
  */
 import { useEffect, useState } from "react";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
@@ -144,7 +179,7 @@ import { ConsolePane } from "../components/ConsolePane";
 import { DriveControls } from "../components/DriveControls";
 import { DriveTab } from "../components/DriveTab";
 import { StatusPanel } from "../components/StatusPanel";
-import { useConnectionStatus, useWsActions } from "../ws/WsProvider";
+import { useSendable, useWsActions } from "../ws/WsProvider";
 import "./RobotPage.css";
 
 export interface RobotPageProps {
@@ -176,14 +211,22 @@ export function RobotPage({ device, link }: RobotPageProps) {
   const [tab, setSelectedTab] = useState<RobotTab>("main");
 
   // Ticket 022-001: see this file's own doc comment ("this page now
-  // requests get-wifi-credentials").
-  const status = useConnectionStatus();
+  // requests get-wifi-credentials") for why this lives here, and its
+  // "Regression fix, same day" section for why it is latched on
+  // `tab` rather than firing unconditionally on connect.
+  const sendable = useSendable();
   const { send } = useWsActions();
+  const [wifiTabVisited, setWifiTabVisited] = useState(false);
   useEffect(() => {
-    if (status === "open") {
+    if (tab === "calibration" || tab === "configuration") {
+      setWifiTabVisited(true);
+    }
+  }, [tab]);
+  useEffect(() => {
+    if (wifiTabVisited && sendable) {
       send({ type: "get-wifi-credentials", reveal: true });
     }
-  }, [status, send]);
+  }, [wifiTabVisited, sendable, send]);
 
   const tabs: Array<{ id: RobotTab; label: string }> = [
     { id: "main", label: "Main" },

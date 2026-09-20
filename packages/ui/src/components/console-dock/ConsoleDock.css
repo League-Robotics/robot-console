@@ -1,0 +1,202 @@
+/* ConsoleDock.css — ticket 002 laid this down as a fixed-height,
+   always-open block; ticket 003 replaces that with real dock chrome: a
+   bar that is always present (`.console-dock-bar`) and an open pane
+   (`.console-dock-pane`) that only exists in the DOM while `open` is
+   true (ConsoleDock.tsx renders it conditionally -- there is no
+   `display: none` case to style here). Ticket 004 adds
+   `.console-dock-resize-handle` at the pane's own top edge, sized only
+   by the pane's own height -- it works whether or not the dock is
+   later glued to the viewport bottom, since it never assumes anything
+   about what is above or below `.console-dock` itself.
+
+   Ticket 008 lands the "later ticket's work" the paragraph above used to
+   defer: `.console-dock` is now `position: fixed` to the browser
+   viewport's own bottom edge, not a flex-column participant of
+   `DevicePage.tsx`'s `.device-page-shell` (ticket 003's original
+   approach, superseded -- sprint.md's Architecture §Revision,
+   2026-09-20, and the Design Rationale entry it replaces have the full
+   decision record). The stakeholder's own analogy for this whole
+   feature was always a browser's JavaScript devtools console; confirmed
+   directly when shown both layouts side by side, "pinned to the bottom"
+   meant the viewport, not the bottom of the page's own scrollable
+   content -- verified live in Chromium that the old in-flow dock
+   required scrolling to reach on a page taller than the viewport (e.g.
+   the Calibration tab), exactly the behavior that analogy rules out.
+   Both dock states move together because both live inside this one
+   element: the collapsed bar and the open pane are equally pinned, per
+   this ticket's own Acceptance Criteria, with no separate positioning
+   rule needed for either.
+
+   `left`/`right: 0` (kept alongside the pre-existing `width: 100%`,
+   belt-and-suspenders) anchors the dock to the viewport itself: nothing
+   in this app's ancestor chain (`App.tsx`'s `.app`/`.app-main`,
+   `DevicePage.tsx`'s `.device-page-shell`) sets a
+   `transform`/`filter`/`perspective`/`will-change` that would make a
+   nearer ancestor `position: fixed`'s containing block instead of the
+   viewport -- confirmed by reading every one of those files while
+   implementing this ticket. `z-index: 30` sits between
+   `FrontPage.css`'s own `z-index: 20` (a lower-stakes in-page
+   affordance that never coexists with this dock on the same route
+   anyway) and `CalibrationHelp.css`'s full-screen modal backdrop at
+   `z-index: 40` -- that how-to dialog is meant to cover *everything*
+   while it's open, including this dock, so this dock's own stacking
+   context is deliberately lower.
+
+   See `ConsoleDock.tsx`'s own doc comment, "Ticket 008," for the
+   `--console-dock-height` custom property this repositioning makes
+   necessary -- the dock's live height (drag-resizable since ticket 004)
+   and every page's own `calc(100vh - ...)` column-sizing rule must now
+   agree, or content hides behind the dock or a dead gap opens beneath
+   it. */
+.console-dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+  border-top: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+}
+
+/* The bar is deliberately quiet -- per sprint.md's Design Rationale,
+   this project's stakeholder has already called the current console UI
+   "visually noisy," so collapsed-by-default state gets a plain label
+   and a toggle, nothing louder. */
+.console-dock-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.9rem;
+}
+
+.console-dock-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--rc-text-muted);
+}
+
+/* The quiet indicator (ConsoleDock.tsx: `warn`/`error`-level
+   `LinkNotice` on the active link, never a numeric badge). Two color
+   variants so a student can tell "something to look at" (warn) apart
+   from "something is wrong" (error) at a glance, without either one
+   being a number or a wall of text -- both read as a small solid dot,
+   not a banner. */
+.console-dock-indicator {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  flex: none;
+}
+
+.console-dock-indicator-warn {
+  background: var(--rc-warn-border);
+}
+
+.console-dock-indicator-error {
+  background: var(--rc-danger-bg);
+}
+
+/* Ticket 005's pop-out button. Sits on the always-present bar (not
+   inside `.console-dock-pane`) so it works whether the dock is open or
+   collapsed, per SUC-003's own precondition -- unlike the toggle
+   button, `margin-left: auto` is deliberately NOT set here, so this
+   button and the toggle sit next to each other rather than both trying
+   to hug the bar's right edge. */
+.console-dock-popout {
+  margin-left: auto;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.3rem 0.85rem;
+  border-radius: 0.4rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+/* Shown in the pop-out button's place while a popup is already open --
+   this sprint's Out of Scope excludes a second simultaneous popup, so
+   there is nothing for a second click to do. Quiet, matching
+   `.console-dock-title`, since this is informational, not actionable. */
+.console-dock-popped-out-hint {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--rc-text-muted);
+}
+
+.console-dock-toggle {
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.3rem 0.85rem;
+  border-radius: 0.4rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.console-dock-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 0.9rem 0.75rem;
+  border-top: 1px solid var(--rc-border);
+}
+
+/* A live drag suppresses `.console-dock-pane`'s own transitions (there
+   are none today, but this guards against one being added later without
+   the author remembering resize needs to stay instantaneous, not
+   eased) and is the hook a future visual affordance (e.g. a subtle
+   highlight while actively dragging) can key off without re-deriving
+   "is a drag in progress" from anything else. */
+.console-dock-pane-dragging {
+  transition: none;
+}
+
+.console-dock-pane .device-console {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* The drag handle itself: a thin full-width strip that is the pane's
+   first flex child (rendered before `DeviceConsole`), so it sits right
+   below `.console-dock-pane`'s own top border -- visually and
+   structurally "the top edge of the open dock" this ticket's Acceptance
+   Criteria call for. `row-resize` is the standard cursor affordance for
+   "drag vertically to resize" (matches e.g. a `<textarea>`'s own resize
+   handle in most browsers). The strip's own height (10px) is
+   deliberately larger than its visible grip bar (`::after`, 3px) so the
+   actual pointer target is comfortably grabbable -- a 2-3px line alone
+   would be hard to hit precisely with a mouse. */
+.console-dock-resize-handle {
+  flex: none;
+  height: 10px;
+  cursor: row-resize;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Keeps the strip itself invisible/non-boxy; only the thin bar below
+     (`::after`) reads as a visible grip so the handle doesn't look like
+     a second border under `.console-dock-bar`'s existing one. */
+  background: transparent;
+}
+
+.console-dock-resize-handle::after {
+  content: "";
+  width: 2.5rem;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--rc-border);
+}
+
+.console-dock-resize-handle:hover::after,
+.console-dock-pane-dragging .console-dock-resize-handle::after {
+  background: var(--rc-text-muted);
+}

@@ -18,10 +18,17 @@
  * seam for a test to inject an initial path or a `FakeSocket`, so this
  * file reproduces the same tree with `withRouter` instead of rendering
  * `App` itself).
+ *
+ * **Sprint 022 ticket 007**: `CommandStrip`/the console log moved from
+ * `RobotPage`'s own (always-visible) Main tab column into `ConsoleDock`
+ * (`DevicePage.tsx`), which is collapsed by default -- the two tests
+ * below that query `command-strip-hello`/`console-log` click
+ * `console-dock-toggle` first to open it, same as a student would
+ * before looking at either.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Snapshot, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { AppHeader } from "./components/AppHeader";
 import { AppRoutes } from "./router";
@@ -31,6 +38,18 @@ import { withRouter } from "./testing/renderWithRouter";
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
+
+// Sprint 022 ticket 007: `ConsoleDock`'s open/collapsed state persists
+// through `localStorage` (`useDockPersistence`'s fixed key). Without
+// clearing it, whichever test runs first in this file decides the
+// starting state for every test after it -- the two tests below that
+// click `console-dock-toggle` to open the dock would instead *close*
+// an already-open one left behind by an earlier test, exactly the
+// failure `ConsoleDock.test.tsx`'s own `beforeEach` already guards
+// against for the same reason.
+beforeEach(() => {
+  window.localStorage.clear();
+});
 
 function mount(node: ReactElement): HTMLDivElement {
   container = document.createElement("div");
@@ -170,6 +189,13 @@ describe("App shell: disconnected-from-host banner reaches a mounted RobotPage r
     act(() => {
       socket().emitMessage(snapshot({ devices: [robotDevice()] }));
     });
+    // Sprint 022 ticket 007: `CommandStrip` moved from `RobotPage`'s own
+    // (always-visible) Main tab column into `ConsoleDock`, which starts
+    // collapsed -- toggle it open once so `command-strip-hello` actually
+    // exists to query, same as a student would before looking at it.
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="console-dock-toggle"]')!.click();
+    });
     expect(banner(el)).toBeNull();
     // Enabled while connected with an open session.
     expect(el.querySelector<HTMLButtonElement>('[data-testid="drive-forward"]')!.disabled).toBe(false);
@@ -243,6 +269,12 @@ describe("App shell: disconnected-from-host banner reaches a mounted RobotPage r
     });
 
     expect(socket().sent).toEqual([]);
+    // Sprint 022 ticket 007: the log this send lands in is `ConsoleDock`'s
+    // now, not a RobotPage-owned console -- open it (collapsed by
+    // default) to read it, same as a student would.
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="console-dock-toggle"]')!.click();
+    });
     const log = el.querySelector('[data-testid="console-log"]')!;
     expect(log.textContent).toContain("Not sent -- no connection to the host.");
     expect(log.querySelector('[data-host-error="true"]')).not.toBeNull();

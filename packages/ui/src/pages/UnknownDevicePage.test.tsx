@@ -8,14 +8,19 @@
  *
  * What's covered here: the page header (the link's own `label`), the
  * link's own failure reason note (page-level, not part of the flash
- * flow), that `FlashControls` is actually wired up as a child (a thin
- * smoke test -- the flash behavior itself is exercised against the
+ * flow), and that `FlashControls` is actually wired up as a child (a
+ * thin smoke test -- the flash behavior itself is exercised against the
  * standalone component, `../components/FlashControls.test.tsx`, not
- * duplicated here), and that `DeviceConsole` renders alongside it.
+ * duplicated here).
+ *
+ * Sprint 022 ticket 007: this page's own `DeviceConsole` mount (via
+ * `ConsolePane`) is deleted -- `ConsoleDock` is the one place a student
+ * watches this link's log now. The test that used to prove that mount
+ * rendered alongside the flash controls now proves the opposite.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FirmwareAvailability, FirmwareKind, Snapshot, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { UnknownDevicePage } from "./UnknownDevicePage";
 import { AppHeader } from "../components/AppHeader";
@@ -105,7 +110,7 @@ function mountUnknownPage(
   const el = mount(
     withRouter(
       <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-        <UnknownDevicePage link={link} />
+        <UnknownDevicePage link={link} onActiveTargetChange={() => {}} />
       </WsProvider>,
       { initialEntries: [`/d/${link.id}`] },
     ),
@@ -168,10 +173,32 @@ describe("UnknownDevicePage", () => {
     expect(flashTrigger).toBeUndefined();
   });
 
-  it("renders DeviceConsole alongside the flash controls", () => {
+  it("sprint 022 ticket 007: no longer renders a DeviceConsole alongside the flash controls -- the log moved to ConsoleDock", () => {
     const { el } = mountUnknownPage(baseLink());
-    expect(el.querySelector('[aria-label="Console"]')).not.toBeNull();
-    expect(el.querySelector('[data-testid="console-send-input"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Console"]')).toBeNull();
+    expect(el.querySelector('[data-testid="console-send-input"]')).toBeNull();
+  });
+});
+
+describe("UnknownDevicePage reports the active console target (sprint 022 ticket 006)", () => {
+  it("calls onActiveTargetChange once with its own link as name -- there is no device for an unassigned link", () => {
+    const onActiveTargetChange = vi.fn();
+    const testLink = baseLink({ label: "USB · /dev/cu.usbmodemA" });
+    let socket: FakeSocket | null = null;
+    mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <UnknownDevicePage link={testLink} onActiveTargetChange={onActiveTargetChange} />
+        </WsProvider>,
+        { initialEntries: [`/d/${testLink.id}`] },
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+
+    expect(onActiveTargetChange).toHaveBeenCalledTimes(1);
+    expect(onActiveTargetChange).toHaveBeenCalledWith({ link: testLink, name: "USB · /dev/cu.usbmodemA" });
   });
 });
 
@@ -190,7 +217,7 @@ describe("UnknownDevicePage under AppHeader (ticket 012-004)", () => {
       withRouter(
         <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
           <AppHeader />
-          <UnknownDevicePage link={link} />
+          <UnknownDevicePage link={link} onActiveTargetChange={() => {}} />
         </WsProvider>,
         { initialEntries: [`/d/${link.id}`] },
       ),

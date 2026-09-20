@@ -126,6 +126,39 @@ export function round(value: number, places: number): number {
  * comes out k times larger and the routine concludes the track is
  * k times *narrower* than it really is. So the real effective width is
  * the reported one times k. */
+/** Arithmetic mean, or `undefined` for an empty set -- never 0, which
+ * would read as a real measurement of zero. */
+export function mean(values: readonly number[]): number | undefined {
+  if (values.length === 0) return undefined;
+  return values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+/**
+ * SAMPLE standard deviation (n-1), or `undefined` for fewer than two
+ * values.
+ *
+ * Undefined rather than 0 for a single run, because 0 would claim a
+ * precision nobody measured: one run has no spread, which is not the
+ * same as a spread of zero. The caller renders the difference.
+ *
+ * n-1 and not n because these ARE samples -- a handful of runs standing
+ * in for the population of every run this robot could make -- and the
+ * population form biases a three-run estimate low, which is the wrong
+ * direction to be wrong in when the number exists to tell a student
+ * whether to trust their calibration.
+ *
+ * Replaces the percent-spread (hi-lo over mean) this console used to
+ * show. Spread is driven entirely by the two extreme runs and grows
+ * with sample size, so it got worse the more carefully somebody
+ * measured.
+ */
+export function stdDev(values: readonly number[]): number | undefined {
+  if (values.length < 2) return undefined;
+  const average = mean(values)!;
+  const sumSquares = values.reduce((total, value) => total + (value - average) ** 2, 0);
+  return Math.sqrt(sumSquares / (values.length - 1));
+}
+
 export function correctTrackWidth(reportedCm: number, reportedWithDiameterMm: number, trueDiameterMm: number): number {
   return round((reportedCm * trueDiameterMm) / reportedWithDiameterMm, 2);
 }

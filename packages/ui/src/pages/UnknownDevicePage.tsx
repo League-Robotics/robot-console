@@ -22,18 +22,39 @@
  * navigation all live in `../components/FlashControls.tsx`, run inside
  * the popup modal `../components/FlashDialog.tsx` owns, shared with the
  * front-page card and the app header's Flash entry.
+ *
+ * Sprint 022 ticket 006: reports its own `link` as the "active console
+ * target" via `onActiveTargetChange` -- a no-op relative to
+ * `DevicePage`'s own route-derived default (there is no `device` for an
+ * unassigned link, so `name` is always `link.label` here, exactly
+ * matching `DevicePage`'s own `!device` fallback), kept uniform with
+ * every other dispatch arm so `RelayPage`'s one genuinely divergent case
+ * doesn't need special-cased wiring. See `DevicePage.tsx`'s own doc
+ * comment for the full mechanism.
+ *
+ * Sprint 022 ticket 007: this page's own `ConsolePane` mount (below the
+ * `FlashDialog`) is deleted. `ConsoleDock` already shows this exact
+ * link's log -- fed by the `onActiveTargetChange` report immediately
+ * above -- so a second copy here added nothing a student couldn't
+ * already see in the one dock every device page has.
  */
+import { useEffect } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import type { ActiveConsoleTarget } from "./DevicePage";
 import { FlashDialog } from "../components/FlashDialog";
-import { DeviceConsole } from "../components/DeviceConsole";
 import "./UnknownDevicePage.css";
 
 export interface UnknownDevicePageProps {
   link: SnapshotLink;
+  onActiveTargetChange: (target: ActiveConsoleTarget) => void;
 }
 
-export function UnknownDevicePage({ link }: UnknownDevicePageProps) {
+export function UnknownDevicePage({ link, onActiveTargetChange }: UnknownDevicePageProps) {
   const showReason = (link.state === "failed" || link.state === "unresponsive") && link.reason;
+
+  useEffect(() => {
+    onActiveTargetChange({ link, name: link.label });
+  }, [link, onActiveTargetChange]);
 
   return (
     <section className="unknown-device-page" aria-label="Unknown device">
@@ -42,8 +63,6 @@ export function UnknownDevicePage({ link }: UnknownDevicePageProps) {
       {showReason && <p className="device-note">Link attempt: {link.reason}</p>}
 
       <FlashDialog link={link} name={link.label} />
-
-      <DeviceConsole link={link} name={link.label} />
     </section>
   );
 }

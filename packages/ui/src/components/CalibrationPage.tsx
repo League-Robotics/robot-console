@@ -66,16 +66,50 @@
  * bound at all, so a long "Current calibration" table plus a growing
  * console log pushed the send line down and eventually off screen
  * (stakeholder report, 2026-09-14). The "Current calibration" panel
- * above the console also carries `robot-page-column-top`, so it shrinks
+ * NO LONGER carries `robot-page-column-top` (2026-09-19): that class
+ * caps a panel at `calc(100vh - ... - 19rem)` to leave room for the
+ * console BELOW it in the same column, and the console moved to the
+ * left column. Keeping it would have reserved 19rem for a console that
+ * is not there, scrolling this table internally for no reason. The old
+ * text below describes the arrangement it had then, so it shrinks
  * and scrolls internally before the console log's own floor gives; see
  * `RobotPage.css`'s doc comment on both classes for the full mechanism.
+ *
+ * **Sprint 022 ticket 007 update**: the console that moved to the left
+ * column above has since been deleted outright (superseded by
+ * `ConsoleDock`) -- the left column no longer carries
+ * `robot-page-column-console` either. This right column was never
+ * viewport-bound to begin with (no console ever sat in it), so it is
+ * unaffected by that deletion; it is documented here only so a reader
+ * following "the console moved to the left column" above does not go
+ * looking for it there and find nothing.
+ *
+ * ## Ticket 022-001: the code block now calls `programCode()`, not
+ * `calibrationCode()` directly -- radio and Wi-Fi join calibration
+ *
+ * The stakeholder: "the Calibration Code for Your Program section
+ * should also include Wi-Fi... you should be using the same code for
+ * that section as the configuration page." This page already had
+ * everything `programCode()` needs for radio (`device.radio`, already a
+ * prop); Wi-Fi needed one more thing this page never had: something
+ * that actually asks the host for the stored network. `useWifiCredentials()`
+ * is a global `WsProvider` hook, callable from anywhere, but the store
+ * slice it reads only fills in once *something* sends
+ * `get-wifi-credentials` -- previously only `ConfigurationPage.tsx` did,
+ * on its own mount. That request moved up to `RobotPage.tsx` (this
+ * page's own doc comment doesn't need to explain why twice; see that
+ * file's), so a student calibrating without ever opening the
+ * Configuration tab still gets a populated (or explicitly masked) Wi-Fi
+ * line here. `calibrationCode()` itself -- imported by `programCode.ts`,
+ * not by this page any more -- computes exactly what it always did; only
+ * this page's call site changed.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { RobotFunction, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import {
   CALIBRATION_IMAGE_BASELINE_DIAMETER_MM,
   applyCalibrationPatch,
-  calibrationCode,
+  calibToDiameterMm,
   deriveCalibration,
   readCalibrationState,
   round,
@@ -84,15 +118,14 @@ import {
   type CalibrationState,
 } from "../lib/calibration";
 import { useCopied } from "../lib/clipboard";
+import { programCode } from "../lib/programCode";
 import { isLinkUsable } from "../deviceDisplay";
-import { useLinkLog, useSendable, useWsActions } from "../ws/WsProvider";
+import { useLinkLog, useSendable, useWifiCredentials, useWsActions } from "../ws/WsProvider";
 import { CalibrationFirmwarePanel } from "./CalibrationFirmwarePanel";
-import { CalibrationStorePanel } from "./CalibrationStorePanel";
+import { CalibrationHelp } from "./CalibrationHelp";
+import { NewCalibrationPanel } from "./NewCalibrationPanel";
 import { deriveCalStoreState } from "./CalibrationStore";
 import { CalibrationTable } from "./CalibrationTable";
-import { DeviceConsole } from "./DeviceConsole";
-import { DistanceCalibrationWizard, type WheelsCalibrationRun } from "./DistanceCalibrationWizard";
-import { RotationCalibrationWizard, type TurnCalibrationRun } from "./RotationCalibrationWizard";
 import "./CalibrationPage.css";
 
 export interface CalibrationPageProps {
@@ -181,9 +214,22 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
   const calStoreState = useMemo(() => deriveCalStoreState(log), [log]);
   const calStoreValues = calStoreState.values;
 
+  // Ticket 022-001: the same global Wi-Fi store `ConfigurationPage.tsx`
+  // reads -- `RobotPage.tsx` is what actually requests it now (see this
+  // file's own doc comment), so this page only ever reads what's
+  // already there, exactly like `ConfigurationPage.tsx` does.
+  const stored = useWifiCredentials();
+
   const code = useMemo(
-    () => calibrationCode(state, robotName, { calStore: calStoreValues, firmwareProfile: device.program }),
-    [state, robotName, calStoreValues, device.program],
+    () =>
+      programCode({
+        robotName,
+        radio: device.radio,
+        wifi: stored?.ssid ? { ssid: stored.ssid, password: stored.password } : undefined,
+        calibration: state,
+        calibrationOptions: { calStore: calStoreValues, firmwareProfile: device.program },
+      }),
+    [robotName, device.radio, stored, state, calStoreValues, device.program],
   );
   const { copied, copy } = useCopied();
 
@@ -245,7 +291,13 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
   // unlabelled and unguarded: a stray click on a generic "Calibrate
   // clear / Run" would wipe a student's stored calibration with no
   // confirmation at all.
-  const HANDLED_CAL_FUNCTIONS = new Set(["calwheels", "calturn", "calshow", "calclear"]);
+  // `calsave` joins this set for the same reason `calclear` is in it:
+  // rendered generically it becomes a button labelled "Calibrate save"
+  // (calibrationFunctionLabel just drops the `cal` prefix), which means
+  // nothing to anybody and writes the robot's stored calibration on a
+  // stray click. The New Calibration panel's Done button is the only
+  // thing that should ever send it.
+  const HANDLED_CAL_FUNCTIONS = new Set(["calwheels", "calturn", "calshow", "calclear", "calsave"]);
   const extraCalFunctionNames = calFunctionNames.filter((n) => !HANDLED_CAL_FUNCTIONS.has(n));
 
   function update(patch: CalibrationPatch): void {
@@ -263,67 +315,107 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
     }
   }
 
-  function handleDistanceRun(run: WheelsCalibrationRun | undefined): void {
-    if (run?.kind !== "succeeded") {
+  const [helpOpen, setHelpOpen] = useState(false);
+
+  // ASK THE ROBOT WHAT IT IS RUNNING, as soon as the link is up.
+  // `CalibrationStorePanel` used to own this request; with that panel
+  // gone (stakeholder, 2026-09-19: "we don't need to know that it's
+  // stored calibration -- it's part of current calibration") the page
+  // sends it, because a robot this browser never measured has no other
+  // source for its own numbers.
+  const askedOnRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!isLinkUsable(link) || !sendable) {
+      askedOnRef.current = undefined;
       return;
     }
-    update({ wheelDiameterMm: round(run.result.diameterMm, 2), wheelDiameterSource: "distance-calibration" });
-    // A rotation result made with an older diameter is now stale --
-    // `was` is the wheel-calibration constant (mm/deg) the robot was
-    // still actually running when this result was measured, the same
-    // baseline a subsequent rotation run will itself be measured
-    // against until a reflash changes what's really on the board.
-    if (state.reportedWithDiameterMm === undefined) {
-      update({ reportedWithDiameterMm: round((run.result.wasCalib * 360) / Math.PI, 2) });
-    }
-    refreshCalStore();
-  }
+    if (askedOnRef.current === link.id) return;
+    askedOnRef.current = link.id;
+    sendCommand(link.id, "RUN", ["calshow"]);
+  }, [link, sendable, sendCommand]);
 
-  function handleRotationRun(run: TurnCalibrationRun | undefined): void {
-    if (run?.kind === "succeeded") {
-      update({
-        reportedTrackWidthCm: run.result.b,
-        reportedWithDiameterMm: state.reportedWithDiameterMm ?? CALIBRATION_IMAGE_BASELINE_DIAMETER_MM,
-        robotTrackWidthCm: run.result.trackWidthCm,
-        firmwareSlip: run.result.slip,
-      });
-      refreshCalStore();
-      return;
+  // SEED THE TABLE FROM THE ROBOT'S OWN STORE, once, and only into
+  // fields this session has nothing for -- a value measured in this
+  // browser is fresher than the one the robot booted with and must not
+  // be overwritten by a late `calshow` reply.
+  //
+  // Reconstructing the four-row view from what `calstore` keeps: the
+  // store holds the TRACK width and the slip, and effective = track /
+  // slip. A stored slip of exactly 1 means nobody ever entered a
+  // caliper measurement (that is what a slip of 1 IS -- see
+  // `deriveCalibration`), so the track width is left blank rather than
+  // filled with a number the robot only ever derived.
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (calStoreValues === undefined || seededRef.current) return;
+    seededRef.current = true;
+    const patch: CalibrationPatch = {};
+    if (calStoreValues.hasWheel && state.wheelDiameterMm === undefined) {
+      patch.wheelDiameterMm = calibToDiameterMm(calStoreValues.wheelCalib);
+      patch.wheelDiameterSource = "distance-calibration";
     }
-    if (run?.kind === "failed" || run?.kind === "unreadable") {
-      // A failed (or unreadable) run must not leave a width or slip
-      // standing -- see this page's own doc comment on "never a
-      // confident wrong number".
-      update({ reportedTrackWidthCm: undefined, robotTrackWidthCm: undefined, firmwareSlip: undefined });
-      refreshCalStore();
+    if (calStoreValues.hasTurn && state.reportedTrackWidthCm === undefined && calStoreValues.slip > 0) {
+      const effectiveCm = round(calStoreValues.trackWidthCm / calStoreValues.slip, 3);
+      patch.reportedTrackWidthCm = effectiveCm;
+      // No rescale: the stored effective width is already denominated
+      // in the stored wheel.
+      patch.reportedWithDiameterMm = patch.wheelDiameterMm ?? state.wheelDiameterMm;
+      if (calStoreValues.slip !== 1 && state.measuredTrackWidthCm === undefined) {
+        patch.measuredTrackWidthCm = calStoreValues.trackWidthCm;
+      }
     }
-  }
-
-  const rotationBlocked = state.wheelDiameterMm === undefined;
+    if (Object.keys(patch).length > 0) update(patch);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- seeds once, from the first calshow reply
+  }, [calStoreValues]);
 
   return (
     <div className="robot-page-columns calibration-page" data-testid="robot-tab-panel-calibration">
+      {/* Sprint 022 ticket 007: no more console on the left. Until this
+          ticket, a run's own lines landed in a `ConsolePane` mounted
+          below these two panels (stakeholder, 2026-09-19: "console on
+          the left, the things you act on on the right") -- kept
+          alongside the already-working `ConsoleDock` for four tickets so
+          the dock could be proven live before this copy was deleted
+          (sprint.md's Migration Concerns). That proof is done: a run's
+          output now shows up in the one dock every device page already
+          has, and this column drops `robot-page-column-console`'s
+          viewport binding along with the console it used to leave room
+          for -- the firmware panel and the calibration flow below just
+          take their own natural height now. */}
       <div className="robot-page-column robot-page-column-left">
         <CalibrationFirmwarePanel device={device} link={link} />
 
-        <div className="robot-page-panel" aria-label="Distance calibration">
-          <h3>{calibrationFunctionLabel("calwheels")}</h3>
-          <DistanceCalibrationWizard link={link} onRun={handleDistanceRun} />
-        </div>
+        <NewCalibrationPanel link={link} state={state} onPatch={update} onStoreChanged={refreshCalStore} />
+      </div>
 
-        <div className="robot-page-panel" aria-label="Rotation calibration">
-          <h3>{calibrationFunctionLabel("calturn")}</h3>
-          <RotationCalibrationWizard
-            link={link}
-            onRun={handleRotationRun}
-            disabled={rotationBlocked}
-            disabledReason="Run the wheel calibration first — the rotation run needs the wheel diameter."
-          />
-        </div>
-
+      <div className="robot-page-column robot-page-column-right">
         {extraCalFunctionNames.map((fnName) => (
           <GenericCalibrationRun key={fnName} link={link} name={fnName} />
         ))}
+
+        <div className="robot-page-panel" aria-label="Current calibration">
+          <h3>
+            Current calibration
+            <button
+              type="button"
+              className="calibration-help-button"
+              data-testid="calibration-help-open"
+              onClick={() => setHelpOpen(true)}
+            >
+              How to calibrate
+            </button>
+          </h3>
+          <CalibrationTable variant="calibration" state={state} derived={derived} onPatch={update} />
+          <button
+            type="button"
+            className="calibration-reset"
+            data-testid="calibration-reset"
+            onClick={() => setState({})}
+            disabled={Object.keys(state).length === 0}
+          >
+            Start over
+          </button>
+        </div>
 
         <div className="robot-page-panel calibration-code-panel" aria-label="Calibration code">
           <h3>Code for your program</h3>
@@ -335,7 +427,7 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
           )}
           {code === "" ? (
             <p className="calibration-code-empty" data-testid="calibration-code-empty">
-              Nothing to paste yet — run the distance calibration to get started.
+              Nothing to paste yet — press Start to calibrate.
             </p>
           ) : (
             <>
@@ -355,24 +447,7 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
         </div>
       </div>
 
-      <div className="robot-page-column robot-page-column-right robot-page-column-console">
-        <div className="robot-page-panel robot-page-column-top" aria-label="Current calibration">
-          <CalibrationStorePanel link={link} />
-          <h3>Current calibration</h3>
-          <CalibrationTable variant="calibration" state={state} derived={derived} onPatch={update} />
-          <button
-            type="button"
-            className="calibration-reset"
-            data-testid="calibration-reset"
-            onClick={() => setState({})}
-            disabled={Object.keys(state).length === 0}
-          >
-            Start over
-          </button>
-        </div>
-
-        <DeviceConsole link={link} name={robotName} />
-      </div>
+      <CalibrationHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
 }

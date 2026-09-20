@@ -18,6 +18,13 @@
  * child branch regardless of its own migration state (sprint 015 ticket
  * 009) -- this file's job is `RelayPage`'s own dispatch/rendering, not
  * `RobotPage`'s internals.
+ *
+ * Sprint 022 ticket 007: the idle branch's own `ConsolePane` mount (a
+ * raw console on the relay's own connectivity link, once it became
+ * usable) is deleted -- `ConsoleDock` already shows this exact link's
+ * log via this page's own "active console target" report (sprint 022
+ * ticket 006). The test that used to prove that mount appeared once the
+ * relay's own link had an open session now proves the opposite.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -122,12 +129,15 @@ function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   };
 }
 
-function mountRelayPage(relay: SnapshotDevice): { el: HTMLDivElement; socket: () => FakeSocket } {
+function mountRelayPage(
+  relay: SnapshotDevice,
+  onActiveTargetChange: (target: { link: SnapshotLink; name: string }) => void = () => {},
+): { el: HTMLDivElement; socket: () => FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     withRouter(
       <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-        <RelayPage device={relay} />
+        <RelayPage device={relay} onActiveTargetChange={onActiveTargetChange} />
       </WsProvider>,
       { initialEntries: [`/d/${relay.links[0]!.id}`] },
     ),
@@ -283,7 +293,14 @@ describe("RelayPage: not connected", () => {
     expect(el.textContent).not.toContain("sequencing state");
   });
 
-  it("renders the relay's own DeviceConsole once its own connectivity link actually has an open session", () => {
+  it("sprint 022 ticket 007: still renders no console of its own, even once its own connectivity link has an open session -- ConsoleDock covers this now", () => {
+    // Originally "renders the relay's own DeviceConsole once its own
+    // connectivity link actually has an open session" -- proved the
+    // idle branch's `ConsolePane` mount appeared for exactly this case
+    // (a raw console session opened directly on the relay, not a
+    // bridged robot). That mount is deleted; `ConsoleDock` already shows
+    // this same link's log via this page's own "active console target"
+    // report (sprint 022 ticket 006), so this page renders none itself.
     const withSession = device(3, {
       name: "rly01",
       kind: "relay",
@@ -296,7 +313,7 @@ describe("RelayPage: not connected", () => {
     });
     const { el, socket } = mountRelayPage(withSession);
     pushSnapshot(socket, { devices: [withSession] });
-    expect(el.querySelector('[aria-label="Console"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Console"]')).toBeNull();
   });
 
   it("lists every kind: robot device's name in the picker, sorted", () => {
@@ -453,5 +470,55 @@ describe("RelayPage: connected", () => {
     const { el, socket } = mountRelayPage(relayDevice());
     pushSnapshot(socket, { devices: [relayDevice(), childDevice()] });
     expect(el.textContent).toContain("The relay's own console returns after Disconnect.");
+  });
+
+  describe("RelayPage reports the active console target (sprint 022 ticket 006)", () => {
+    // The stakeholder was explicit and specific about this when asked
+    // directly (sprint 022, 2026-09-20): the dock/popup must follow
+    // "whatever device I'm showing on the main screen" -- the bridged
+    // robot, not the relay the URL names. `RobotPage` is mocked in this
+    // file (see the top-of-file `vi.mock` call), so these assertions are
+    // entirely about `RelayPage`'s own effect, not anything `RobotPage`
+    // itself does -- see `RelayPage.tsx`'s own doc comment for why this
+    // page owns both the idle and bridged reporting branches directly
+    // rather than delegating the bridged half to `RobotPage`.
+
+    it("reports the relay's own link/name while idle (no child bridged)", () => {
+      const onActiveTargetChange = vi.fn();
+      const relay = relayDevice({ name: "rly01" });
+      const { socket } = mountRelayPage(relay, onActiveTargetChange);
+      pushSnapshot(socket, { devices: [relay] });
+
+      expect(onActiveTargetChange).toHaveBeenCalledWith({ link: relay.links[0], name: "rly01" });
+    });
+
+    it("retargets to the bridged child's link/name once a child connects, with no route change", () => {
+      const onActiveTargetChange = vi.fn();
+      const relay = relayDevice({ name: "rly01" });
+      const { socket } = mountRelayPage(relay, onActiveTargetChange);
+      pushSnapshot(socket, { devices: [relay] });
+      expect(onActiveTargetChange).toHaveBeenLastCalledWith({ link: relay.links[0], name: "rly01" });
+
+      const bridged = childDevice({ name: "vevav" });
+      pushSnapshot(socket, { devices: [relay, bridged] });
+
+      expect(onActiveTargetChange).toHaveBeenLastCalledWith({ link: bridged.links[0], name: "vevav" });
+    });
+
+    it("reverts to the relay's own link/name once the bridged child disconnects, with no route change", () => {
+      const onActiveTargetChange = vi.fn();
+      const relay = relayDevice({ name: "rly01" });
+      const bridged = childDevice({ name: "vevav" });
+      const { socket } = mountRelayPage(relay, onActiveTargetChange);
+      pushSnapshot(socket, { devices: [relay, bridged] });
+      expect(onActiveTargetChange).toHaveBeenLastCalledWith({ link: bridged.links[0], name: "vevav" });
+
+      // No child in this later snapshot -- the same effect as Disconnect
+      // (or an unprompted bridge drop) from this page's own point of
+      // view: `currentRelayChild` no longer finds a match.
+      pushSnapshot(socket, { devices: [relay] });
+
+      expect(onActiveTargetChange).toHaveBeenLastCalledWith({ link: relay.links[0], name: "rly01" });
+    });
   });
 });

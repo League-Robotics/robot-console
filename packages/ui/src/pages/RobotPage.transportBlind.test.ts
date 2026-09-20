@@ -79,8 +79,9 @@ import statusPanelSource from "../components/StatusPanel.tsx?raw";
 import functionsPanelSource from "../components/FunctionsPanel.tsx?raw";
 import chartsPanelSource from "../components/ChartsPanel.tsx?raw";
 import pathTracePanelSource from "../components/PathTracePanel.tsx?raw";
-import distanceCalibrationWizardSource from "../components/DistanceCalibrationWizard.tsx?raw";
-import rotationCalibrationWizardSource from "../components/RotationCalibrationWizard.tsx?raw";
+import newCalibrationPanelSource from "../components/NewCalibrationPanel.tsx?raw";
+import calibrationHelpSource from "../components/CalibrationHelp.tsx?raw";
+import calibrationRunSource from "../lib/calibrationRun.ts?raw";
 import calibrationReportSource from "../components/CalibrationReport.ts?raw";
 import { RobotPage } from "./RobotPage";
 import { WsProvider } from "../ws/WsProvider";
@@ -112,15 +113,16 @@ const FILES_UNDER_TEST: Record<string, string> = {
   // it reads only `useTelemetry`/`useTelemetryHeader`/`useWsActions`,
   // never a transport/link type.
   "components/PathTracePanel.tsx": pathTracePanelSource,
-  // Sprint 011 ticket 003: the distance-calibration wizard and its
-  // shared report parser are held to the same property -- both read
-  // only `link.session.functions`/`useLinkLog`/`useWsActions`, never a
-  // transport/link type or `link.transport`.
-  "components/DistanceCalibrationWizard.tsx": distanceCalibrationWizardSource,
-  // Sprint 011 ticket 004: the rotation-calibration wizard is held to
-  // the same property -- it reads only `link.session.functions`/
-  // `useLinkLog`/`useWsActions`, never a transport/link type.
-  "components/RotationCalibrationWizard.tsx": rotationCalibrationWizardSource,
+  // 2026-09-19: the two calibration wizards this list used to name were
+  // replaced by one guided panel (`NewCalibrationPanel`), its help
+  // dialog, and the run derivation they both used, now in `lib`. The
+  // property carries over unchanged -- the panel reads only
+  // `useLinkLog`/`useWsActions`/`isLinkUsable`, never a transport or a
+  // link type, which is what lets a calibration run over a relay or
+  // Wi-Fi exactly as it does over USB.
+  "components/NewCalibrationPanel.tsx": newCalibrationPanelSource,
+  "components/CalibrationHelp.tsx": calibrationHelpSource,
+  "lib/calibrationRun.ts": calibrationRunSource,
   "components/CalibrationReport.ts": calibrationReportSource,
 };
 
@@ -221,7 +223,13 @@ describe("RobotPage renders correctly for a relay-transport link (sprint 8 ticke
     }
   });
 
-  it("renders the usual robot controls (estop, drive, console) for a relay-radio-transport link", () => {
+  it("renders the usual robot controls (estop, drive) for a relay-radio-transport link -- no console on this page any more (sprint 022 ticket 007)", () => {
+    // The console assertion this test originally carried
+    // (`[aria-label="Console"]` present) is inverted, not deleted: this
+    // page's own console/CommandStrip mount is gone (superseded by
+    // `ConsoleDock`, which lives in `DevicePage.tsx`, not `RobotPage`),
+    // so there is nothing transport-specific left to prove about a
+    // console `RobotPage` no longer renders at all.
     const link = relayTransportLink();
     const device = baseDevice(link);
     let socket: FakeSocket | null = null;
@@ -233,7 +241,7 @@ describe("RobotPage renders correctly for a relay-transport link (sprint 8 ticke
         createElement(WsProvider, {
           url: "ws://test/",
           socketFactory: () => (socket = new FakeSocket()),
-          children: createElement(RobotPage, { device, link }),
+          children: createElement(RobotPage, { device, link, onActiveTargetChange: () => {} }),
         }),
       );
     });
@@ -243,7 +251,7 @@ describe("RobotPage renders correctly for a relay-transport link (sprint 8 ticke
 
     expect(container.querySelector('[data-testid="estop-button"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="drive-forward"]')).not.toBeNull();
-    expect(container.querySelector('[aria-label="Console"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Console"]')).toBeNull();
     expect(container.textContent).toContain("vevav");
   });
 });
@@ -271,7 +279,7 @@ describe("RobotPage renders correctly for a wifi-transport link (sprint 10 ticke
     }
   });
 
-  it("renders the usual robot controls (estop, drive, console) for a wifi-transport link", () => {
+  it("renders the usual robot controls (estop, drive) for a wifi-transport link -- no console on this page any more (sprint 022 ticket 007)", () => {
     const link = wifiTransportLink();
     const device = baseDevice(link, { name: "gopiv" });
     let socket: FakeSocket | null = null;
@@ -283,7 +291,7 @@ describe("RobotPage renders correctly for a wifi-transport link (sprint 10 ticke
         createElement(WsProvider, {
           url: "ws://test/",
           socketFactory: () => (socket = new FakeSocket()),
-          children: createElement(RobotPage, { device, link }),
+          children: createElement(RobotPage, { device, link, onActiveTargetChange: () => {} }),
         }),
       );
     });
@@ -293,7 +301,7 @@ describe("RobotPage renders correctly for a wifi-transport link (sprint 10 ticke
 
     expect(container.querySelector('[data-testid="estop-button"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="drive-forward"]')).not.toBeNull();
-    expect(container.querySelector('[aria-label="Console"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Console"]')).toBeNull();
     expect(container.textContent).toContain("gopiv");
   });
 });

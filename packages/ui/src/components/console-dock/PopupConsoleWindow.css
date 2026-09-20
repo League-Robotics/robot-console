@@ -1,0 +1,61 @@
+/* PopupConsoleWindow.css — sprint 022 ticket 005.
+   This file ships as an ordinary part of the main app bundle (imported
+   by PopupConsoleWindow.tsx like any other component stylesheet) --
+   it does NOT need any special handling to reach the popup window. By
+   the time a student can click the pop-out button, this file is
+   already present in the *parent* document's own <head> (Vite dev
+   injects it as a <style> tag; a production build folds it into the
+   app's bundled stylesheet), so ConsoleDock.tsx's whole-<head> copy
+   (see PopupConsoleWindow.tsx's own doc comment) picks it up along
+   with every other rule already in the page, with no separate copy
+   step of its own. */
+
+/* Fills the popup's own <body> -- the popup has no other page chrome
+   competing for space, unlike ConsoleDock's docked pane, which shares
+   .console-dock with the always-present collapsed bar. */
+.popup-console-window {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  height: 100vh;
+  min-height: 0;
+  padding: 0.75rem 0.9rem;
+  box-sizing: border-box;
+  background: var(--rc-surface);
+  color: var(--rc-text);
+}
+
+.popup-console-window-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.popup-console-window-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--rc-text-muted);
+}
+
+/* The one control inside the popup itself (per this ticket's
+   Acceptance Criteria: "the popup has a 'put it back' control") --
+   styled to match .console-dock-toggle in ConsoleDock.css so the same
+   affordance reads consistently whether the student is looking at the
+   docked bar or the popup. */
+.popup-console-window-restore {
+  margin-left: auto;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.3rem 0.85rem;
+  border-radius: 0.4rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.popup-console-window .device-console {
+  flex: 1 1 auto;
+  min-height: 0;
+}

@@ -35,20 +35,33 @@
  *   the `cala` rotation-calibration wizard, same `FUNCS`-gating
  *   discipline, mounted below Distance calibration; see that
  *   component's own doc comment).
- * - **Right column**: exactly one `DeviceConsole`, sized to fill the
- *   column's available height (`RobotPage.css` overrides
- *   `DeviceConsole`'s own fixed `max-height` scoped to this column
- *   only -- every other page embedding `DeviceConsole` is unaffected),
- *   with `CommandStrip` beneath it. `CommandStrip` offers
- *   HELLO/ID/VER/STATUS (unsequenced, dispatched via plain
- *   `sendCommand`) and a free-text GET/SET pair (sequenced, dispatched
- *   the same way the retired Get/Set panel did). **No panel renders a
- *   reply area of its own** -- every reply, including `HELLO`'s
- *   host-side refusal, lands in this one `DeviceConsole`.
+ * - **Right column**: originally exactly one `DeviceConsole`, sized to
+ *   fill the column's available height, with `CommandStrip` beneath it
+ *   -- see "Sprint 022 ticket 007" below for why this column no longer
+ *   exists.
  * - Sprint 006's separate status-request panel and Get/Set panel, along
  *   with their separate reply areas, are retired outright (deleted, not
  *   deprecated -- both are fully superseded by `CommandStrip` + the
  *   unified console).
+ *
+ * ## Sprint 022 ticket 007: the Main tab's right column is gone
+ *
+ * The console+`CommandStrip` right column described above (and the
+ * `robot-page-columns` two-column grid that gave it a place to sit) is
+ * deleted, not just emptied. `ConsoleDock` (`DevicePage.tsx`, sprint 022
+ * tickets 002-006) has been the one place a student watches this
+ * robot's log since ticket 002, mounted once per device page regardless
+ * of tab; this page's own console/`CommandStrip` mount had been kept
+ * alongside it deliberately for four tickets (sprint.md's Migration
+ * Concerns: "intentional incremental delivery, not a defect") so the
+ * dock could be proven live before its predecessor was torn out. That
+ * proof is done (tickets 002-006 all verified live in Chromium), so this
+ * ticket removes the second copy: the Main tab is now a single column,
+ * the former left column's content (`StatusPanel`, `DriveControls`)
+ * rendered directly instead of sitting beside a now-empty sibling. A
+ * `CommandStrip` import that had no other caller on this page is removed
+ * with it -- `ConsoleDock` is `CommandStrip`'s one remaining runtime
+ * mount site (`console-dock/ConsoleDock.tsx`).
  *
  * **STOP/E-STOP moved into `DriveControls`'s pad, `EstopControl.tsx`
  * retired outright (out-of-process, 2026-09-10).** See `DriveControls`'s
@@ -112,18 +125,73 @@
  * harvester (ticket 003) already probes `ID` once per identify and polls
  * `STATUS` on its own, so a panel re-deriving "ask again on open" from
  * local effect state was duplicating work the host now owns outright.
+ *
+ * ## Ticket 022-001: this page now requests `get-wifi-credentials`
+ *
+ * Moved up from `ConfigurationPage.tsx`, which used to be the only tab
+ * that ever asked the host what network it would provision robots onto.
+ * The Calibration tab's own "Code for your program" block now renders
+ * the same `programCode()` output the Configuration tab does (radio +
+ * Wi-Fi + calibration -- see `CalibrationPage.tsx`'s own doc comment),
+ * which reads the same global `useWifiCredentials()` store slice --
+ * but that slice never fills in unless *something* sends the request
+ * that populates it. This page is the nearest common ancestor of every
+ * tab that can show that block, so mounting the request effect here
+ * (rather than duplicating it in both tabs, or leaving it only in
+ * Configuration) is what lets a student who calibrates without ever
+ * opening the Configuration tab still see a populated, or explicitly
+ * masked, Wi-Fi line.
+ *
+ * **Regression fix, same day**: the first cut of this effect fired
+ * unconditionally the instant `status` was `"open"`, with no regard for
+ * `tab` at all -- since `RobotPage` (unlike `ConfigurationPage` before
+ * it) is mounted for *every* tab, that meant the request went out the
+ * moment any robot page connected, even a session that only ever
+ * touches Main/Drive/Diagnostics and never renders a Wi-Fi line at
+ * all. Two things followed from that: it quietly re-created exactly
+ * the "component re-derives its own ask-again-on-open probe" pattern
+ * this file's own "Sprint 015 ticket 009" section above says the
+ * harvester already retired for every other panel, and it broke
+ * `App.test.tsx`'s disconnected-banner suite, which mounts a robot page
+ * on its default Main tab, closes the socket, and asserts nothing at
+ * all has been sent yet -- a fully generic, Wi-Fi-unrelated assertion
+ * that this effect's new unconditional send silently falsified. The
+ * lesson generalizes: an effect that is safe tucked inside a tab a
+ * student opens on purpose (the old `ConfigurationPage` placement)
+ * becomes a global, always-on side effect the moment it is hoisted to
+ * an always-mounted parent -- hoisting the *mount point* of an effect
+ * changes *when it runs*, not just *where it lives*, and every existing
+ * assumption about "this only fires if you opened that tab" has to be
+ * re-derived at the new mount point, not carried over by reference.
+ *
+ * The fix: latch `wifiTabVisited` true the first time `tab` becomes
+ * `"calibration"` or `"configuration"` (sticky for the life of this
+ * mount -- switching back to Main afterward must not un-latch it, and
+ * must not re-send either), and only then let the send effect run.
+ * That preserves the acceptance criterion this ticket actually cares
+ * about -- Calibration seeing Wi-Fi without Configuration ever having
+ * been opened, order-independent between the two tabs -- while no
+ * longer sending anything for sessions that never visit either tab.
+ * The send itself gates on `useSendable()`, not raw
+ * `useConnectionStatus()` -- the same guard `ConfigurationPage`'s own
+ * Save/Write-to-robot controls use (`WsProvider.tsx`'s doc comment on
+ * `useSendable`) -- so a tab switch during the "reconnected, snapshot
+ * not yet confirmed fresh" gap (see `useHostConnection`'s `stale`)
+ * waits for that gap to close rather than firing into it; it still
+ * fires again on every genuine reconnect once `wifiTabVisited` is
+ * already latched from an earlier visit.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import type { ActiveConsoleTarget } from "./DevicePage";
 import { nameDisplay } from "../deviceDisplay";
 import { CalibrationPage } from "../components/CalibrationPage";
-import { CommandStrip } from "../components/CommandStrip";
 import { ConfigurationPage } from "../components/ConfigurationPage";
 import { DiagnosticsPanel } from "../components/DiagnosticsPanel";
-import { DeviceConsole } from "../components/DeviceConsole";
 import { DriveControls } from "../components/DriveControls";
 import { DriveTab } from "../components/DriveTab";
 import { StatusPanel } from "../components/StatusPanel";
+import { useSendable, useWsActions } from "../ws/WsProvider";
 import "./RobotPage.css";
 
 export interface RobotPageProps {
@@ -133,26 +201,76 @@ export interface RobotPageProps {
    * (`RelayPage`). See this module's doc comment ("Sprint 015 ticket
    * 009") for why the caller, not this page, resolves it. */
   link: SnapshotLink;
+  /** Sprint 022 ticket 006: report this page's own `link`/`device.name`
+   * as the "active console target" -- see `DevicePage.tsx`'s own doc
+   * comment for the full mechanism. Called on mount and again whenever
+   * `link`/`device.name` actually change (e.g. switching from this
+   * robot to a different one via `/d/:linkId` -> `/d/:otherLinkId`,
+   * which re-renders this same component with new props rather than
+   * remounting it). This is a genuine no-op for `RobotPage` itself --
+   * `DevicePage` would already default the dock/popup to exactly this
+   * `link`/`name` without any report at all -- it exists purely so
+   * `RelayPage`'s one divergent case (its bridged-child substitution)
+   * can share a single mechanism with every other dispatch arm. */
+  onActiveTargetChange: (target: ActiveConsoleTarget) => void;
 }
 
 /** OOP 2026-09-10: the robot page is split into tabs next to the
- * robot's name (stakeholder direction): Main (status, drive, console),
- * Drive (`DriveTab`: a larger pad with cursor keys, a gamepad, and a
- * console on one side; functions, charts and the path trace on the other
- * -- OOP 2026-09-14 folded the separate "Functions & charts" tab in),
- * Calibration (`CalibrationPage`: the Flash-calibration-firmware/verify
- * panel, the always-on Calibrate X/Calibrate A wizards plus any other
- * `cal*` function `FUNCS` reports, and the code block feeding one
- * calibration state -- always offered, ticket 018-013, not gated on the
- * robot currently running a calibration build), and Configuration (`ConfigurationPage`: per-robot settings,
- * with the robot's full serial log under the code block -- see that
- * page's own doc comment). Sequencing state moved
- * into the console's own header (`DeviceConsole`) rather than a page
- * panel. */
+ * robot's name (stakeholder direction): Main (status, drive), Drive
+ * (`DriveTab`: a larger pad with cursor keys, a gamepad, and functions
+ * on one side; charts and the path trace on the other -- OOP 2026-09-14
+ * folded the separate "Functions & charts" tab in), Calibration
+ * (`CalibrationPage`: the Flash-calibration-firmware/verify panel, the
+ * always-on Calibrate X/Calibrate A wizards plus any other `cal*`
+ * function `FUNCS` reports, and the code block feeding one calibration
+ * state -- always offered, ticket 018-013, not gated on the robot
+ * currently running a calibration build), and Configuration
+ * (`ConfigurationPage`: per-robot settings and the generated code
+ * block). Sprint 022 ticket 007: none of these tabs mount a console of
+ * their own any more -- `ConsoleDock` (`DevicePage.tsx`) is the one
+ * console for the whole device page, regardless of which tab is
+ * showing, so tabbing here never touches it. */
 export type RobotTab = "main" | "drive" | "calibration" | "configuration" | "diagnostics";
 
-export function RobotPage({ device, link }: RobotPageProps) {
+export function RobotPage({ device, link, onActiveTargetChange }: RobotPageProps) {
   const [tab, setSelectedTab] = useState<RobotTab>("main");
+
+  // Sprint 022 ticket 006: report the active console target. Deps are
+  // `link`/`device.name`, not `tab` -- tabbing within this page must
+  // never re-fire this (SUC-004's own acceptance criterion, "tab
+  // switches never close an open popup or reset dock state"), and
+  // `link`/`device` are referentially stable across re-renders that
+  // don't actually change this link/device's own data (`WsProvider.tsx`'s
+  // structural-sharing `applySnapshot`), so this effect only re-runs
+  // when there is a real change to report -- switching to a different
+  // robot via `/d/:linkId` -> `/d/:otherLinkId` re-renders this same
+  // component instance with a genuinely different `link`/`device` (React
+  // Router keeps the same `DevicePage` element across a param-only
+  // change, and this component sits at the same JSX position across
+  // that re-render), which is exactly the "retarget an open popup in
+  // place" case this ticket implements.
+  useEffect(() => {
+    onActiveTargetChange({ link, name: device.name });
+  }, [link, device.name, onActiveTargetChange]);
+
+  // Ticket 022-001: see this file's own doc comment ("this page now
+  // requests get-wifi-credentials") for why this lives here, and its
+  // "Regression fix, same day" section for why it is latched on
+  // `tab` rather than firing unconditionally on connect.
+  const sendable = useSendable();
+  const { send } = useWsActions();
+  const [wifiTabVisited, setWifiTabVisited] = useState(false);
+  useEffect(() => {
+    if (tab === "calibration" || tab === "configuration") {
+      setWifiTabVisited(true);
+    }
+  }, [tab]);
+  useEffect(() => {
+    if (wifiTabVisited && sendable) {
+      send({ type: "get-wifi-credentials", reveal: true });
+    }
+  }, [wifiTabVisited, sendable, send]);
+
   const tabs: Array<{ id: RobotTab; label: string }> = [
     { id: "main", label: "Main" },
     { id: "drive", label: "Drive" },
@@ -190,22 +308,21 @@ export function RobotPage({ device, link }: RobotPageProps) {
         </p>
       )}
 
+      {/* Sprint 022 ticket 007: single column now -- the console+
+          CommandStrip right column this tab used to render beside this
+          content is deleted outright (see this file's own doc comment).
+          `data-testid="robot-tab-panel-main"` stays on this element so
+          it keeps identifying "the Main tab's content" for tests/AppHeader
+          regardless of how many columns that content happens to need. */}
       {tab === "main" && (
-        <div className="robot-page-columns" data-testid="robot-tab-panel-main">
-          <div className="robot-page-column robot-page-column-left">
-            <div className="robot-page-panel">
-              <StatusPanel link={link} />
-            </div>
-
-            <div className="robot-page-panel">
-              <h3>Drive</h3>
-              <DriveControls link={link} />
-            </div>
+        <div className="robot-page-column robot-page-column-left" data-testid="robot-tab-panel-main">
+          <div className="robot-page-panel">
+            <StatusPanel link={link} />
           </div>
 
-          <div className="robot-page-column robot-page-column-right robot-page-column-console">
-            <DeviceConsole link={link} name={device.name} />
-            <CommandStrip link={link} />
+          <div className="robot-page-panel">
+            <h3>Drive</h3>
+            <DriveControls link={link} />
           </div>
         </div>
       )}
@@ -214,7 +331,10 @@ export function RobotPage({ device, link }: RobotPageProps) {
 
       {tab === "calibration" && <CalibrationPage link={link} name={device.name} device={device} />}
 
-      {tab === "configuration" && <ConfigurationPage device={device} link={link} />}
+      {/* Sprint 022 ticket 007: `link` dropped from this call -- see
+          `ConfigurationPage.tsx`'s own doc comment. It only ever fed
+          that page's now-deleted `ConsolePane` mount. */}
+      {tab === "configuration" && <ConfigurationPage device={device} />}
 
       {tab === "diagnostics" && <DiagnosticsPanel device={device} current={link} />}
     </section>

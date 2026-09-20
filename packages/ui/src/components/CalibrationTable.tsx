@@ -43,7 +43,7 @@
  * row annotation -- see `lib/calibration.ts`'s own doc comment for why
  * the two numbers are never merged into one.
  */
-import { parsePositiveNumber, type CalibrationPatch, type CalibrationState, type DerivedCalibration } from "../lib/calibration";
+import { parsePositiveNumber, round, type CalibrationPatch, type CalibrationState, type DerivedCalibration } from "../lib/calibration";
 import "./CalibrationTable.css";
 
 export type CalibrationTableVariant = "calibration" | "configuration";
@@ -58,10 +58,8 @@ export interface CalibrationTableProps {
 export function CalibrationTable({ variant, state, derived, onPatch }: CalibrationTableProps) {
   const idPrefix = variant;
   const tableTestId = variant === "calibration" ? "calibration-table" : "configuration-calibration";
-  const reportedTestId = `${variant}-reported-track-width`;
   const effectiveTestId = `${variant}-effective-track`;
   const slipTestId = `${variant}-slip`;
-  const robotTrackWidthTestId = `${variant}-robot-track-width`;
 
   return (
     <table className="calibration-table" data-testid={tableTestId}>
@@ -92,7 +90,7 @@ export function CalibrationTable({ variant, state, derived, onPatch }: Calibrati
         </tr>
         <tr>
           <th scope="row">
-            <label htmlFor={`${idPrefix}-track-width`}>Wheel track</label>
+            <label htmlFor={`${idPrefix}-track-width`}>Measured track width</label>
           </th>
           <td>
             <input
@@ -107,20 +105,7 @@ export function CalibrationTable({ variant, state, derived, onPatch }: Calibrati
             />{" "}
             cm
             {variant === "calibration" && (
-              <span className="calibration-source"> wheel centre to wheel centre, if you measured it</span>
-            )}
-          </td>
-        </tr>
-        <tr>
-          <th scope="row">Measured track width</th>
-          <td data-testid={reportedTestId}>
-            {state.reportedTrackWidthCm !== undefined
-              ? `${state.reportedTrackWidthCm} cm`
-              : variant === "calibration"
-                ? "not measured yet — run the rotation calibration"
-                : "run the rotation calibration"}
-            {variant === "calibration" && state.reportedTrackWidthCm !== undefined && (
-              <span className="calibration-source"> robot-reported, from rotation calibration</span>
+              <span className="calibration-source"> wheel centre to wheel centre, measured with a caliper</span>
             )}
           </td>
         </tr>
@@ -130,41 +115,68 @@ export function CalibrationTable({ variant, state, derived, onPatch }: Calibrati
             {derived.effectiveTrackWidthCm !== undefined
               ? `${derived.effectiveTrackWidthCm} cm`
               : variant === "calibration"
-                ? "not measured yet — run the rotation calibration"
-                : "run the rotation calibration"}
-          </td>
-        </tr>
-        <tr>
-          <th scope="row">Robot's own track width</th>
-          <td data-testid={robotTrackWidthTestId}>
-            {state.robotTrackWidthCm !== undefined
-              ? `${state.robotTrackWidthCm} cm`
-              : variant === "calibration"
-                ? "not reported yet — run the rotation calibration"
-                : "run the rotation calibration"}
-            {variant === "calibration" && state.robotTrackWidthCm !== undefined && (
-              <span className="calibration-source">
-                {" "}
-                from the robot's boot record, baked at flash time — a record, not a live measurement
-              </span>
+                ? "not measured yet — run the turn calibration"
+                : "run the turn calibration"}
+            {variant === "calibration" && derived.effectiveTrackWidthCm !== undefined && (
+              <span className="calibration-source"> what the spin measured, scaled to the wheel above</span>
             )}
           </td>
         </tr>
         <tr>
           <th scope="row">Rotational slip</th>
+          {/* `firmwareSlip` FIRST, when there is one. This row used to
+              show only the locally-derived slip, which is 1 whenever no
+              caliper measurement has been typed in -- so a robot that
+              had just been written `rotational_slip 0.8818` from its own
+              turn calibration was described, one panel away, as having a
+              slip of 1. The row is titled "Rotational slip" under a
+              heading that reads "Current calibration": it has to be the
+              number the robot is actually running, and
+              `buildCalibrationWrites` sends `state.firmwareSlip ??
+              derived.rotationalSlip`, so this mirrors that precedence
+              exactly rather than inventing a second opinion.
+
+              The derived value is still shown beside it when a ruler
+              measurement exists -- `lib/calibration.ts`'s doc comment is
+              explicit that the two answer different questions ("what
+              does the robot measure" vs "what does your ruler say") and
+              must never be merged into one number. Side by side, which
+              is what that comment asks for and what this row was
+              missing. */}
           <td data-testid={slipTestId}>
-            {variant === "calibration"
-              ? derived.rotationalSlip !== undefined
-                ? state.measuredTrackWidthCm !== undefined
-                  ? `${derived.rotationalSlip}`
-                  : "1 (no measured track width, so the effective width is used directly)"
-                : "—"
-              : (derived.rotationalSlip ?? "—")}
-            {variant === "calibration" && state.firmwareSlip !== undefined && (
-              <span className="calibration-source" data-testid={`${variant}-firmware-slip`}>
-                {" "}
-                (firmware computed {state.firmwareSlip} for this run — sent by the rotation wizard's Apply button)
-              </span>
+            {state.firmwareSlip !== undefined ? (
+              <>
+                {round(state.firmwareSlip, 4)}
+                {variant === "calibration" && (
+                  <span className="calibration-source"> measured by the turn calibration, and written to the robot</span>
+                )}
+                {variant === "calibration" && derived.rotationalSlip !== undefined && state.measuredTrackWidthCm !== undefined && (
+                  <span className="calibration-source">
+                    {" "}
+                    — your ruler says {derived.rotationalSlip} ({state.measuredTrackWidthCm} ÷ {derived.effectiveTrackWidthCm})
+                  </span>
+                )}
+              </>
+            ) : (
+              <>
+                {derived.effectiveTrackWidthCm === undefined
+                  ? variant === "calibration"
+                    ? "— needs the effective track width, so run the turn calibration"
+                    : "—"
+                  : state.measuredTrackWidthCm === undefined
+                    ? variant === "calibration"
+                      ? "1 — no measured track width, so the effective width is used as the track"
+                      : "1"
+                    : `${derived.rotationalSlip}`}
+                {variant === "calibration" &&
+                  state.measuredTrackWidthCm !== undefined &&
+                  derived.effectiveTrackWidthCm !== undefined && (
+                    <span className="calibration-source">
+                      {" "}
+                      {state.measuredTrackWidthCm} ÷ {derived.effectiveTrackWidthCm}
+                    </span>
+                  )}
+              </>
             )}
           </td>
         </tr>

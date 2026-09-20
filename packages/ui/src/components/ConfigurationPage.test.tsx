@@ -5,15 +5,25 @@
  * unfiltered `DeviceConsole` under "Code for your program"; a same-day
  * stakeholder correction ("put it under Calibrate") moved the firmware
  * block and the run buttons to `CalibrationPage.test.tsx`, leaving only
- * the `DeviceConsole` mount here. This page still takes `link` (see
- * `mountPage` below) -- now only to mount that console, not to flash or
- * run calx/cala.
+ * the `DeviceConsole` mount here.
+ *
+ * Ticket 022-001 moved this page's own `configurationCode`/
+ * `MASKED_PASSWORD`/`jsString` out to `lib/programCode.ts` (renamed
+ * `programCode`) -- its own unit tests moved with it, to
+ * `lib/programCode.test.ts`. This file keeps only the mounted,
+ * FakeSocket-driven `ConfigurationPage` behavior.
+ *
+ * **Sprint 022 ticket 007**: the `DeviceConsole` mount described above
+ * is deleted outright -- `ConsoleDock` is the one place a student
+ * watches this robot's log now. `link` is gone from this page's props
+ * entirely (it only ever fed that console), so `mountPage` below no
+ * longer passes one.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { ConfigurationPage, MASKED_PASSWORD, configurationCode } from "./ConfigurationPage";
+import { ConfigurationPage } from "./ConfigurationPage";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 
@@ -90,7 +100,7 @@ function mountPage(
   const device = robot(overrides, linkOverrides);
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <ConfigurationPage device={device} link={device.links[0]!} />
+      <ConfigurationPage device={device} />
     </WsProvider>,
   );
   act(() => {
@@ -112,34 +122,17 @@ function sent(socket: FakeSocket): unknown[] {
   return socket.sent.map((raw) => JSON.parse(raw));
 }
 
-describe("configurationCode", () => {
-  it("emits radio, masked Wi-Fi, and calibration lines in that order", () => {
-    const code = configurationCode({
-      robotName: "tigez",
-      radio: { channel: 55, group: 114 },
-      wifi: { ssid: "Busboom_Garage", password: undefined },
-      calibration: { wheelDiameterMm: 90.68 },
-    });
-    expect(code.split("\n")).toEqual([
-      "// tigez configuration",
-      "diffDrive.setupRadio(55, 114)  // radio channel, group",
-      `diffDrive.setupWifi("Busboom_Garage", "${MASKED_PASSWORD}")  // password not known to this computer -- fill it in`,
-      "diffDrive.setWheelCalibration(90.68 * Math.PI / 360)  // wheel diameter 90.68 mm",
-    ]);
-  });
-
-  it("puts the real password in when revealed, quoting it as a JS string, and is empty with nothing to say", () => {
-    expect(configurationCode({ robotName: "t", radio: undefined, wifi: { ssid: "Net", password: 'a"b' }, calibration: {} })).toContain(
-      'diffDrive.setupWifi("Net", "a\\"b")',
-    );
-    expect(configurationCode({ robotName: "t", radio: undefined, wifi: undefined, calibration: {} })).toBe("");
-  });
-});
-
 describe("ConfigurationPage", () => {
-  it("asks the host for the network with the password, shows both in the fields, and puts them in the code", () => {
+  // Ticket 022-001: the `get-wifi-credentials` request itself moved up
+  // to `RobotPage.tsx` (so the Calibration tab sees it too -- see that
+  // file's own doc comment and `RobotPage.test.tsx`'s own coverage of
+  // the request); this page, mounted standalone here with no
+  // `RobotPage` above it, no longer sends it itself. It still reacts
+  // correctly once a `wifi-credentials` reply arrives from *any*
+  // sender, which is all this test now needs to emit by hand.
+  it("shows a revealed network in the fields and puts it in the code once wifi-credentials arrives", () => {
     const { el, socket } = mountPage();
-    expect(sent(socket)).toEqual([{ type: "get-wifi-credentials", reveal: true }]);
+    expect(sent(socket)).toEqual([]);
     act(() => {
       socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "stored", password: "hunter2" });
     });
@@ -222,11 +215,79 @@ describe("ConfigurationPage", () => {
     expect(sent(socket).length).toBe(sentBeforeClicks);
   });
 
+  // 2026-09-19: calibration became writable over the wire
+  // (`wheel_diameter` 40, `track_width` 41, alongside the existing
+  // `rotational_slip` 16). These three cover the whole point of that
+  // change -- a value typed on this page reaching the robot -- and in
+  // particular the cm->mm conversion, which nothing in the protocol
+  // would catch if it regressed.
+  it("Write to robot sends the entered calibration as SETs, track width converted to mm", () => {
+    const { el, socket } = mountPage();
+    act(() => {
+      socket.emitMessage({ type: "wifi-credentials", ssid: null, hasPassword: false, source: "none" });
+    });
+    // Nothing entered and no Wi-Fi stored: nothing to write.
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.disabled).toBe(true);
+
+    type(el, "#configuration-wheel-diameter", "81.45");
+    type(el, "#configuration-track-width", "12.85");
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.disabled).toBe(false);
+
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.click();
+    });
+    // 12.85 cm leaves as 128.5 mm. A 12.85 on the wire would be a
+    // 1.3 cm robot and a turn a tenth of the size it was asked for.
+    expect(sent(socket).slice(-3)).toEqual([
+      { type: "send-command", linkId: "usb-ROBOT-A", verb: "SET", fields: ["wheel_diameter", "81.45"] },
+      { type: "send-command", linkId: "usb-ROBOT-A", verb: "SET", fields: ["track_width", "128.5"] },
+      // ...and the store verb, so it survives the power cycle. cm here,
+      // mm above: calsave is a program on the robot calling
+      // setTrackWidth(), whose unit is centimetres.
+      { type: "send-command", linkId: "usb-ROBOT-A", verb: "RUN", fields: ["calsave", "81.45", "12.85", "0"] },
+    ]);
+    expect(el.querySelector('[data-testid="configuration-calibration-written"]')?.textContent).toContain(
+      "track_width 128.5 mm",
+    );
+  });
+
+  it("Write to robot still provisions Wi-Fi, and sends both when both are filled in", () => {
+    const { el, socket } = mountPage();
+    act(() => {
+      socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "stored" });
+    });
+    type(el, "#configuration-wheel-diameter", "81.45");
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.click();
+    });
+    expect(sent(socket).slice(-3)).toEqual([
+      { type: "provision-wifi", linkId: "usb-ROBOT-A", slot: 0 },
+      { type: "send-command", linkId: "usb-ROBOT-A", verb: "SET", fields: ["wheel_diameter", "81.45"] },
+      { type: "send-command", linkId: "usb-ROBOT-A", verb: "RUN", fields: ["calsave", "81.45", "0", "0"] },
+    ]);
+  });
+
+  it("sends no calibration SET for a value this session does not have", () => {
+    const { el, socket } = mountPage();
+    act(() => {
+      socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "stored" });
+    });
+    const before = sent(socket).length;
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.click();
+    });
+    // Wi-Fi only: no calibration entered, so no SETs and no claim of one.
+    expect(sent(socket).slice(before)).toEqual([
+      { type: "provision-wifi", linkId: "usb-ROBOT-A", slot: 0 },
+    ]);
+    expect(el.querySelector('[data-testid="configuration-calibration-written"]')).toBeNull();
+  });
+
   it("seeds the radio draft from device.radio and shows its source via the shared AddressSourceChip", () => {
     const device = robot({ radio: { channel: 55, group: 114, source: "override" } });
     const el = mount(
       <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
-        <ConfigurationPage device={device} link={device.links[0]!} />
+        <ConfigurationPage device={device} />
       </WsProvider>,
     );
     expect(el.querySelector<HTMLInputElement>('[data-testid="configuration-radio-channel"]')!.value).toBe("55");
@@ -243,32 +304,36 @@ describe("ConfigurationPage", () => {
     expect(el.querySelector('[data-testid="configuration-code"]')?.textContent).toContain("diffDrive.setWheelCalibration(91.5 * Math.PI / 360)");
   });
 
-  describe("ticket 018-013: the full serial log under the code", () => {
-    it("mounts the unfiltered DeviceConsole in the right column, showing every line (not just calibration traffic)", () => {
-      const { el, socket } = mountPage();
-      act(() => {
-        socket.emitMessage({ type: "line", linkId: "usb-ROBOT-A", direction: "rx", line: "status a=1" });
-      });
-      const right = el.querySelector(".robot-page-column-right")!;
-      expect(right.querySelector('[aria-label="Console"]')).not.toBeNull();
-      expect(right.querySelector('[data-testid="console-log"]')?.textContent).toContain("status a=1");
-    });
-
-    it("ticket 018-018: the right column is viewport-bound (shares RobotPage.css's `robot-page-column-console` with the Main tab), and the 'Code for your program' panel above the console carries the shrink/scroll wrapper class, in document order before the console", () => {
+  describe("ticket 018-013's console mount is gone (sprint 022 ticket 007)", () => {
+    it("no longer mounts a DeviceConsole in the right column -- the full serial log moved to ConsoleDock", () => {
+      // Originally: "mounts the unfiltered DeviceConsole in the right
+      // column, showing every line (not just calibration traffic)."
+      // `ConsoleDock` (mounted once per device page, not per tab) is
+      // where a student watches this robot's log now -- see that
+      // component's own test file for the "shows every line" behavior,
+      // which no longer needs a `ConfigurationPage` to exercise it.
       const { el } = mountPage();
       const right = el.querySelector(".robot-page-column-right")!;
-      expect(right.classList.contains("robot-page-column-console")).toBe(true);
+      expect(right.querySelector('[aria-label="Console"]')).toBeNull();
+      expect(right.querySelector('[data-testid="console-log"]')).toBeNull();
+    });
+
+    it("the right column no longer carries the viewport-bound console class, and the code panel no longer carries the shrink/scroll wrapper class -- nothing is left below either to reserve room for", () => {
+      // Originally ticket 018-018's own test, pinning that the right
+      // column shared `RobotPage.css`'s `robot-page-column-console` with
+      // the Main tab and that the code panel above the (now-deleted)
+      // console carried `robot-page-column-top`. Both classes existed
+      // only to leave room for a console mounted below; with that
+      // console gone, both are dropped -- see `RobotPage.css`'s own doc
+      // comment ("Sprint 022 ticket 007: `.robot-page-column-top` is
+      // deleted") for the full account.
+      const { el } = mountPage();
+      const right = el.querySelector(".robot-page-column-right")!;
+      expect(right.classList.contains("robot-page-column-console")).toBe(false);
 
       const top = el.querySelector('[aria-label="Configuration code"]')!;
-      expect(top.classList.contains("robot-page-column-top")).toBe(true);
+      expect(top.classList.contains("robot-page-column-top")).toBe(false);
       expect(right.contains(top)).toBe(true);
-
-      const consoleEl = el.querySelector('[aria-label="Console"]')!;
-      expect(right.contains(consoleEl)).toBe(true);
-      // `robot-page-column-top`'s own `max-height` formula (RobotPage.css)
-      // reserves room for `.device-console` below it -- this only holds
-      // if the panel really does precede the console in the column.
-      expect(top.compareDocumentPosition(consoleEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
   });
 });

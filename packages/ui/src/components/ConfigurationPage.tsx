@@ -67,96 +67,81 @@
  * need flash." So this page no longer renders a "Calibration firmware"
  * block or calx/cala run buttons, and no longer requests `FUNCS` -- all
  * of that (see `CalibrationPage.tsx`'s own doc comment) lives on the
- * Calibration tab now, including the flash button. This page still
- * takes `link` -- not for flashing/running any more, only to mount the
- * unfiltered `DeviceConsole` in the right column, unchanged from ticket
- * 018-013's own addition. Otherwise this page keeps only what
- * ticket-017-008 already gave it: the Calibration *values* table (shared
- * per-robot state, editable here too), Wi-Fi, Radio, the footer actions,
- * and the generated code block.
+ * Calibration tab now, including the flash button. This page used to
+ * keep taking `link` for one remaining reason -- mounting the
+ * unfiltered `DeviceConsole` in the right column -- but that mount is
+ * gone too now (sprint 022 ticket 007, below), so `link` is gone from
+ * this page's props entirely: nothing left here needs it. Otherwise
+ * this page keeps only what ticket-017-008 already gave it: the
+ * Calibration *values* table (shared per-robot state, editable here
+ * too), Wi-Fi, Radio, the footer actions, and the generated code block.
  *
- * ## Ticket 018-018: the right column is viewport-bound too
+ * ## Ticket 018-018 / sprint 022 ticket 007: the right column's
+ * viewport binding came and went
  *
- * The right column now carries `robot-page-column-console`
- * (`RobotPage.css`), the same sticky/viewport-height class the Main
- * tab's column already used -- previously it had no height bound, so
- * the generated-code block plus a growing console log could push the
- * send line off screen (stakeholder report, 2026-09-14). The code
- * block above the console also carries `robot-page-column-top`, so it
- * shrinks and scrolls internally before the console log's own floor
- * gives; see `RobotPage.css`'s doc comment on both classes.
+ * Ticket 018-018 gave the right column `robot-page-column-console`
+ * (`RobotPage.css`, the same sticky/viewport-height class the Main
+ * tab's column used) plus `robot-page-column-top` on the code block
+ * above it, because a growing console log below could otherwise push
+ * the send line off screen. Sprint 022 ticket 007 deletes the console
+ * that justified both classes (`ConsoleDock` is where a student watches
+ * this robot's log now, mounted once per device page regardless of
+ * tab) -- with it gone, there is nothing left in this column for either
+ * class to size around, so both are dropped: the code block renders at
+ * its own natural height, same as this page's left-column panels always
+ * have. See `RobotPage.css`'s own doc comment for the fuller account of
+ * why both classes are deleted everywhere, not just here.
+ *
+ * ## Ticket 022-001: `configurationCode`/`MASKED_PASSWORD`/`jsString`
+ * moved to `lib/programCode.ts` (renamed `programCode`)
+ *
+ * This page used to be the only caller of `configurationCode`, defined
+ * locally and unexported apart from a test-only export. The stakeholder
+ * wants the Calibration tab's own "Code for your program" block to be
+ * this exact function's output too (radio + Wi-Fi + calibration, not
+ * calibration alone), which meant it could no longer live inside a page
+ * component only `ConfigurationPage` renders -- see `lib/programCode.ts`'s
+ * own doc comment for the full reasoning. This page also no longer owns
+ * the `get-wifi-credentials` request effect: it moved to `RobotPage.tsx`
+ * (the nearest common ancestor of this tab and the Calibration tab) so
+ * a student who calibrates without ever opening this tab still sees a
+ * populated Wi-Fi line -- see `RobotPage.tsx`'s own doc comment.
  */
 import { useEffect, useMemo, useState } from "react";
 import { nameToRadioAddress } from "@robot-console/protocol";
-import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { useConnectionStatus, useSendable, useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
+import type { SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
+import { useSendable, useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
 import type { RadioAddress } from "../pages/RelayPage";
 import {
   applyCalibrationPatch,
-  calibrationCode,
   deriveCalibration,
   readCalibrationState,
   writeCalibrationState,
   type CalibrationPatch,
   type CalibrationState,
 } from "../lib/calibration";
+import {
+  buildCalibrationWrites,
+  describeCalibrationWrites,
+  writeCalibration,
+} from "../lib/calibrationWrite";
 import { useCopied } from "../lib/clipboard";
+import { programCode } from "../lib/programCode";
 import { validateRadioOverrideInput } from "../lib/radioAddress";
 import { isLinkUsable } from "../deviceDisplay";
 import { AddressSourceChip } from "./AddressSourceChip";
 import { CalibrationTable } from "./CalibrationTable";
-import { DeviceConsole } from "./DeviceConsole";
 import { WifiCredentialsForm, validateWifiInput } from "./WifiCredentialsForm";
 import "./CalibrationTable.css";
 import "./ConfigurationPage.css";
 
-export const MASKED_PASSWORD = "••••••••";
-
-export interface ConfigurationCodeInput {
-  robotName: string;
-  radio: RadioAddress | undefined;
-  wifi: { ssid: string; password: string | undefined } | undefined;
-  calibration: CalibrationState;
-}
-
-function jsString(value: string): string {
-  return JSON.stringify(value);
-}
-
-/** The one block a student pastes into their program's setup. Exported
- * for `ConfigurationPage.test.tsx`. */
-export function configurationCode(input: ConfigurationCodeInput): string {
-  const lines: string[] = [`// ${input.robotName} configuration`];
-  if (input.radio) {
-    lines.push(`diffDrive.setupRadio(${input.radio.channel}, ${input.radio.group})  // radio channel, group`);
-  }
-  if (input.wifi) {
-    const password = input.wifi.password === undefined ? MASKED_PASSWORD : input.wifi.password;
-    lines.push(
-      `diffDrive.setupWifi(${jsString(input.wifi.ssid)}, ${jsString(password)})` +
-        (input.wifi.password === undefined ? "  // password not known to this computer -- fill it in" : ""),
-    );
-  }
-  const calibration = calibrationCode(input.calibration, input.robotName);
-  if (calibration !== "") {
-    lines.push(...calibration.split("\n").slice(1));
-  }
-  return lines.length === 1 ? "" : lines.join("\n");
-}
-
 export interface ConfigurationPageProps {
   device: SnapshotDevice;
-  /** The specific link this page is showing a session for -- the routed
-   * link `RobotPage.tsx` already resolves for every other tab. Used here
-   * only to mount the unfiltered `DeviceConsole` in the right column
-   * (ticket 018-013); flashing and running calx/cala moved to the
-   * Calibration tab (stakeholder correction, 2026-09-13). */
-  link: SnapshotLink;
 }
 
-export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
+export function ConfigurationPage({ device }: ConfigurationPageProps) {
   const robotName = device.name;
-  const { send } = useWsActions();
+  const { send, sendCommand } = useWsActions();
   // Ticket 011 (carried from 009's send-gating sweep): Save (via
   // `saveWifi`) and Write to robot both send over the wire, so both
   // gate on `useSendable()` the same way every other send-capable
@@ -206,14 +191,12 @@ export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
     return true;
   }
 
-  // Wi-Fi -- the host's stored network. Asked for once the socket is
-  // open (a send before that is dropped), and again on every reconnect.
-  const status = useConnectionStatus();
-  useEffect(() => {
-    if (status === "open") {
-      send({ type: "get-wifi-credentials", reveal: true });
-    }
-  }, [status, send]);
+  // Wi-Fi -- the host's stored network. Ticket 022-001: the
+  // `get-wifi-credentials` request itself moved up to `RobotPage.tsx`
+  // (fires once per robot session, open or reconnect, regardless of
+  // which tab is active) -- this page only reads the resulting global
+  // store slice (`stored`, above) now, same as `CalibrationPage.tsx`
+  // does.
   const [wifiDraft, setWifiDraft] = useState({ ssid: "", password: "" });
   const [wifiSeeded, setWifiSeeded] = useState(false);
   useEffect(() => {
@@ -254,9 +237,41 @@ export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
       setTimeout(() => setSavedNote(null), 2000);
     }
   }
+  // Ticket 2026-09-19: calibration is writable over the wire now.
+  // `wheel_diameter` (ordinal 40) and `track_width` (41) landed in
+  // nezha-diffdrive alongside the `rotational_slip` (16) that was
+  // already there, so the three values this page has always been able
+  // to EDIT can finally be SENT -- see `lib/calibrationWrite.ts`, which
+  // owns the cm->mm conversion the track-width field needs.
+  const calibrationWrites = useMemo(
+    () => buildCalibrationWrites(calibration, derived),
+    [calibration, derived],
+  );
+  const [calibrationNote, setCalibrationNote] = useState<string | null>(null);
+
+  // One button, both jobs, because the page has one "Write to robot"
+  // (stakeholder direction) and a student who pressed it means "put
+  // what is on this page onto the robot". Wi-Fi still goes through the
+  // host's own provisioning message; calibration goes straight out as
+  // SETs on this link. Either half is skipped when it has nothing to
+  // say, so a page with only calibration filled in writes calibration
+  // and does not report a Wi-Fi failure it never attempted.
+  function writeToRobot(): void {
+    if (!openLink || !sendable) return;
+    if (stored?.ssid) {
+      send({ type: "provision-wifi", linkId: openLink.id, slot: 0 });
+    }
+    if (calibrationWrites.length > 0) {
+      writeCalibration(sendCommand, openLink.id, calibrationWrites);
+      setCalibrationNote(`Sent ${describeCalibrationWrites(calibrationWrites)}.`);
+    } else {
+      setCalibrationNote(null);
+    }
+  }
+
   const code = useMemo(
     () =>
-      configurationCode({
+      programCode({
         robotName,
         radio,
         wifi: stored?.ssid ? { ssid: stored.ssid, password: stored.password } : undefined,
@@ -349,6 +364,11 @@ export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
               {provisionResult.message}
             </p>
           )}
+          {calibrationNote && (
+            <p className="credentials-result credentials-result-ok" role="status" data-testid="configuration-calibration-written">
+              {calibrationNote}
+            </p>
+          )}
           {savedNote && (
             <p className="credentials-result credentials-result-ok" role="status" data-testid="configuration-saved">
               {savedNote}
@@ -367,28 +387,37 @@ export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
             <button
               type="button"
               data-testid="configuration-write"
-              disabled={!openLink || !stored?.ssid || !sendable}
+              disabled={!openLink || !sendable || (!stored?.ssid && calibrationWrites.length === 0)}
               title={
                 !sendable
                   ? "Disconnected from the host"
-                  : openLink
-                    ? "Write the saved Wi-Fi network to the robot's credential slot 0"
-                    : "Open a link to the robot first"
+                  : !openLink
+                    ? "Open a link to the robot first"
+                    : !stored?.ssid && calibrationWrites.length === 0
+                      ? "Nothing to write yet -- enter a calibration value or a Wi-Fi network"
+                      : "Write the calibration values and the saved Wi-Fi network to the robot"
               }
-              onClick={() => openLink && sendable && send({ type: "provision-wifi", linkId: openLink.id, slot: 0 })}
+              onClick={writeToRobot}
             >
               Write to robot
             </button>
           </div>
           <p className="credentials-note">
-            Write to robot stores the Wi-Fi network on the robot itself; calibration and radio settings reach it
-            through the code on the right.
+            Write to robot sends the calibration values and stores the Wi-Fi network on the robot itself.
+            Calibration sent this way lasts until the robot is power-cycled -- paste the code on the right into the
+            program to make it stick. Radio settings reach the robot only through that code.
           </p>
         </div>
       </div>
 
-      <div className="robot-page-column robot-page-column-right robot-page-column-console">
-        <div className="robot-page-panel calibration-code-panel robot-page-column-top" aria-label="Configuration code">
+      {/* Sprint 022 ticket 007: no more `robot-page-column-console`/
+          `robot-page-column-top` -- this column's own `ConsolePane`
+          mount is deleted (superseded by `ConsoleDock`), so there is
+          nothing below the code block any more to reserve viewport
+          height for. It renders at its own natural height now, same as
+          the left column's panels always have. */}
+      <div className="robot-page-column robot-page-column-right">
+        <div className="robot-page-panel calibration-code-panel" aria-label="Configuration code">
           <h3>Code for your program</h3>
           {code === "" ? (
             <p className="calibration-code-empty" data-testid="configuration-code-empty">
@@ -412,8 +441,6 @@ export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
             </>
           )}
         </div>
-
-        <DeviceConsole link={link} name={robotName} />
       </div>
     </div>
   );

@@ -21,6 +21,19 @@
   cursor: default;
 }
 
+/* Ticket 022-001 (stakeholder screenshot: the Calibration tab's code
+ * block clipped mid-comment, behind a horizontal scrollbar): wrap
+ * instead of scrolling sideways. `white-space: pre` preserved line
+ * breaks but never wrapped a long line; `pre-wrap` keeps the breaks
+ * *and* wraps. `overflow-wrap: anywhere` (not `word-break: break-all`,
+ * which would break readable words for no reason) is for the long
+ * single-line provenance comments `calibrationCode` emits (e.g. "NOT
+ * measured -- <profile>'s compiled default. Running the wheel
+ * calibration replaces this; flashing different firmware whose default
+ * differs will silently override this hardcoded line.") -- those
+ * comments have no natural break point near the column's edge without
+ * it. `overflow-x: auto` is gone outright: there is nothing left for it
+ * to scroll once every line wraps instead. */
 .calibration-code {
   margin: 0;
   padding: 0.6rem 0.8rem;
@@ -29,9 +42,24 @@
   background: var(--rc-surface);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.82rem;
-  white-space: pre;
-  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
+
+/* Sprint 022 ticket 007: the `.calibration-code-panel.robot-page-column-top`
+ * override that used to live here is deleted. It removed
+ * `.robot-page-column-top`'s height cap for this one panel only (on
+ * `ConfigurationPage`, which carried both classes) so a very long code
+ * block could always show every line -- unconditionally, per the
+ * stakeholder's own requirement -- while `ConsolePane` was still mounted
+ * below it reserving room. `.robot-page-column-top` itself is deleted
+ * now that `ConsolePane` is gone everywhere (`RobotPage.css`'s own doc
+ * comment has the full account), which is exactly the outcome this
+ * comment predicted when it was written: "nothing is left below the
+ * code panel to reserve room for and this override stops mattering."
+ * `ConfigurationPage.tsx`'s code panel no longer carries either class --
+ * it just renders at its own natural height, same as this page's
+ * "Current calibration"/"Code for your program" panels always did. */
 
 .calibration-code-empty {
   margin: 0;
@@ -49,9 +77,10 @@
   font-size: 0.85rem;
 }
 
-.calibration-page .device-console {
-  max-width: none;
-}
+/* Sprint 022 ticket 007: `.calibration-page .device-console { max-width:
+ * none; }` is deleted -- this page no longer renders a `.device-console`
+ * anywhere (its own `ConsolePane` mount is gone; the log lives in
+ * `ConsoleDock` now, which is not a descendant of `.calibration-page`). */
 
 .calibration-firmware-panel p {
   margin: 0 0 0.5rem;

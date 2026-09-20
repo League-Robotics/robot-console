@@ -1,12 +1,31 @@
 /**
  * DriveTab.tsx — the robot page's Drive tab (OOP 2026-09-10,
  * stakeholder direction). OOP 2026-09-14 folded the retired "Functions &
- * charts" tab in: the left column is an enlarged drive pad, the
- * keyboard/gamepad aids, and a console that fills the rest of the
+ * charts" tab in: the left column was an enlarged drive pad, the
+ * keyboard/gamepad aids, and a console that filled the rest of the
  * screen with its send line pinned at the bottom (the same
  * viewport-bound column pattern as the Main tab); the right column is
- * functions, charts, and the path trace. Besides the pad, two more ways
- * to hold a direction while this tab is showing:
+ * functions, charts, and the path trace.
+ *
+ * **Sprint 022 ticket 007: the left column's console is gone.** The
+ * same `ConsoleDock`/`CommandStrip` pair `RobotPage.tsx`'s own doc
+ * comment describes has been the one place a student watches this
+ * robot's log since ticket 002 -- this tab's own `ConsolePane` mount was
+ * kept alongside it only so the dock could be proven live first
+ * (sprint.md's Migration Concerns). With that proof done, the left
+ * column drops back to its pad/aids/Functions content at its own
+ * natural height: it no longer needs the viewport-bound
+ * `robot-page-column-console` sizing (nothing left in this column has
+ * to fill, or leave room below it for, a console that isn't there any
+ * more) or the `robot-page-column-top` shrink-before-the-console cap
+ * around that content. The right column (Charts, path trace) keeps
+ * `robot-page-column-console` unchanged -- that class was always doing
+ * two unrelated jobs under one name: bounding a column that hosts a
+ * console, AND giving ANY column a viewport-tall, sticky box a `flex: 1`
+ * child can fill to the bottom of the screen. The right column only
+ * ever needed the second job (`PathTracePanel` filling to the bottom),
+ * so it is unaffected by the console's removal on the left. Besides the
+ * pad, two more ways to hold a direction while this tab is showing:
  *
  *  - **Cursor keys** (and WASD): up/down drive, left/right turn in
  *    place, a diagonal arcs. Space or Escape stops. Keys are ignored
@@ -33,7 +52,6 @@ import { useSendable, useWsActions } from "../ws/WsProvider";
 import { isLinkUsable } from "../deviceDisplay";
 import { useHeldDrive, type WheelTarget as HeldDriveTarget } from "../hooks/useHeldDrive";
 import { ChartsPanel } from "./ChartsPanel";
-import { DeviceConsole } from "./DeviceConsole";
 import { DriveControls } from "./DriveControls";
 import { FunctionsPanel } from "./FunctionsPanel";
 import { PathTracePanel } from "./PathTracePanel";
@@ -260,8 +278,14 @@ export function DriveTab({ link, name }: DriveTabProps) {
 
   return (
     <div className="robot-page-columns drive-tab" data-testid="robot-tab-panel-drive">
-      <div className="robot-page-column robot-page-column-left robot-page-column-console drive-tab-left">
-        <div className="robot-page-column-top drive-tab-controls">
+      {/* Sprint 022 ticket 007: no more `robot-page-column-console`/
+          `robot-page-column-top` here -- this column used to end in a
+          `ConsolePane`, which reserved the viewport-bound sizing and the
+          shrink-before-the-console cap around everything above it (see
+          this file's own doc comment). Plain flow now: the pad, aids and
+          Functions panel just take their natural height. */}
+      <div className="robot-page-column robot-page-column-left drive-tab-left">
+        <div className="drive-tab-controls">
           <div className="drive-tab-pad">
             <DriveControls link={link} />
           </div>
@@ -282,7 +306,6 @@ export function DriveTab({ link, name }: DriveTabProps) {
             <FunctionsPanel link={link} name={name} />
           </div>
         </div>
-        <DeviceConsole link={link} name={name} />
       </div>
       <div className="robot-page-column robot-page-column-right robot-page-column-console drive-tab-right">
         <div className="robot-page-panel" aria-label="Charts">

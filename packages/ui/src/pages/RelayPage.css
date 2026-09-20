@@ -1,3 +1,18 @@
+/* Sprint 022 ticket 008: this file deliberately gains no
+ * `var(--console-dock-height)` reference of its own. This page has no
+ * `calc(100vh - ...)` column-sizing rule to begin with -- confirmed via
+ * `grep -rn "calc(100vh" packages/ui/src` while implementing this
+ * ticket -- because the one place that math matters for a bridged robot
+ * is `RobotPage.css`'s `.robot-page-column-console`, applied to the
+ * nested `<RobotPage device={child.device} link={child.link} />` this
+ * page renders for its own connected child (`relay-page-connected`,
+ * below), not to anything this file itself owns. `--console-dock-height`
+ * reaches that nested `RobotPage` for free regardless -- it's written to
+ * `document.documentElement.style` (`console-dock/ConsoleDock.tsx`'s own
+ * doc comment, "Ticket 008"), and a CSS custom property inherits down
+ * the DOM tree from the document root to everywhere, independent of how
+ * deeply nested the reading rule's own component happens to be. See that
+ * file's own ticket 008 comment for the actual fix. */
 .relay-page {
   display: flex;
   flex-direction: column;

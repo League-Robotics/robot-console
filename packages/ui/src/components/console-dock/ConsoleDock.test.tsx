@@ -597,4 +597,57 @@ describe("ConsoleDock pop-out window (sprint 022 ticket 005, SUC-003)", () => {
 
     expect(fakePopup.closed).toBe(true);
   });
+
+  // Sprint 022 ticket 006: the fifth close path, and the one that did
+  // not exist before this ticket -- see this file's own doc comment
+  // ("Ticket 006") for why it is safe to add here (an unconditional
+  // close in this component's own unmount cleanup) when the identical-
+  // looking thing was rejected as unsafe inside `PopupConsoleWindow`
+  // itself. In the real app this fires when `DevicePage` unmounts on
+  // navigation back to `/` (covered end-to-end, with a real route
+  // change, in `DevicePage.test.tsx`); this test isolates the same
+  // mechanism at `ConsoleDock`'s own level, closer to the code that
+  // actually performs the close.
+  it("closes an open popup when this component itself unmounts, leaving no orphan window", () => {
+    const fakePopup = createFakePopupWindow();
+    vi.mocked(openPopupWindow).mockReturnValue(fakePopup as unknown as Window);
+    const { el } = mountDock();
+
+    act(() => {
+      getPopOutButton(el).click();
+    });
+    expect(fakePopup.closed).toBe(false);
+
+    act(() => {
+      root!.unmount();
+    });
+    root = null;
+    container!.remove();
+    container = null;
+
+    expect(fakePopup.closed).toBe(true);
+  });
+
+  it("does NOT close anything on unmount when no popup was ever opened (StrictMode's synthetic mount/cleanup/mount right after this component's own mount must be a no-op)", () => {
+    // This is the scenario this file's own doc comment describes as the
+    // one moment this ticket's unmount effect could possibly observe a
+    // StrictMode double-invoke: immediately after mount, before any
+    // click. `openPopupWindow` is never even called in this test, so
+    // there is nothing for a wrongly-implemented cleanup to have closed
+    // -- this test exists to document that expectation, not because
+    // this project's test environment can simulate StrictMode's replay
+    // directly (React DOM's `createRoot`, used throughout this file,
+    // does not enable `<StrictMode>` on its own).
+    const { el } = mountDock();
+    expect(el.querySelector('[data-testid="console-dock"]')).not.toBeNull();
+
+    act(() => {
+      root!.unmount();
+    });
+    root = null;
+    container!.remove();
+    container = null;
+
+    expect(openPopupWindow).not.toHaveBeenCalled();
+  });
 });

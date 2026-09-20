@@ -72,9 +72,55 @@
  * additive, relocation-only work: every page dispatched to below still
  * mounts its own `ConsolePane`/`CommandStrip` unchanged, so the console
  * appears twice on screen until sprint 022 ticket 007 deletes the old
- * per-tab mounts. See the comment on the `consoleDock` element below for
- * why it is fed the routed link/device rather than the eventual
- * "active console target" (deferred to ticket 006).
+ * per-tab mounts.
+ *
+ * ## Sprint 022 ticket 006: the active console target
+ *
+ * `ConsoleDock`/`PopupConsoleWindow` are no longer fed this component's
+ * own route-derived `link`/`device` directly -- they are fed
+ * `activeTarget`, a piece of state this component owns and updates via
+ * an `onActiveTargetChange` callback threaded down to whichever child
+ * it dispatches to (see this file's own `ActiveConsoleTarget` type).
+ * **Why this indirection exists at all, when for two of the three
+ * dispatch arms it is a pure no-op:** `RelayPage.tsx` can silently
+ * substitute a *different* page for its own content -- when a robot is
+ * bridged through a relay, `RelayPage` renders `<RobotPage
+ * device={child.device} link={child.link} />`, but this component's own
+ * `useLink(linkId)`/`useDeviceForLink(linkId)` above still resolve to
+ * the *relay's* link, because the URL never changes when a bridge comes
+ * up or drops (`RelayPage`'s own Connect/Disconnect are `session-open`/
+ * `session-close` messages, not navigations). The stakeholder was
+ * explicit and specific about this when asked directly (sprint 022,
+ * 2026-09-20): the console must always show "whatever device I'm
+ * showing on the main screen" -- the *bridged robot*, not the relay the
+ * URL happens to name. `RobotPage`/`UnknownDevicePage` report their own
+ * `link`/`name` as `activeTarget` too, even though that is always
+ * exactly what this component's own route resolution would already
+ * hand `ConsoleDock` -- not because either of them ever disagrees with
+ * the route, but so `RelayPage`'s one genuinely divergent case can share
+ * a single mechanism with every other dispatch arm instead of getting
+ * its own special-cased wiring bolted on beside it. See `RelayPage.tsx`'s
+ * own doc comment for the bridging/idle branch that actually produces
+ * the divergence, and `sprint.md`'s Architecture §Step 3 module 4 /
+ * Design Rationale for the full decision record (flagged there, still
+ * under Open Questions, as a case the stakeholder had not been asked
+ * about directly until this ticket).
+ *
+ * `activeTarget` starts `null` and `target` below falls back to this
+ * component's own route-derived default (`routeTarget`) whenever it is
+ * -- that fallback only ever covers the one-or-two-render gap before
+ * the freshly (re)mounted or freshly re-rendered child's own
+ * report-on-change effect has fired for the *current* route; once a
+ * child has reported at least once for the current link, `activeTarget`
+ * is authoritative and `routeTarget` is never consulted again until the
+ * next real change. Navigating to `/` unmounts this whole component
+ * (and therefore `ConsoleDock`/`PopupConsoleWindow` beneath it) --
+ * `ConsoleDock.tsx`'s own doc comment covers why that unmount must
+ * *explicitly* call `close()` on any live popup rather than counting on
+ * unmounting to do it implicitly (it does not: a real `window.open`
+ * result is a separate browser window with its own lifetime, not
+ * something that closes itself just because the React tree that once
+ * portaled into it goes away).
  *
  * ## Sprint 022 ticket 003: the dock's own flex column wrapper
  *
@@ -92,7 +138,9 @@
  * this wrapper lives entirely inside `DevicePage`'s own render, and `/`
  * is never in this component's subtree.
  */
+import { useCallback, useState } from "react";
 import { useParams } from "react-router";
+import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useDeviceForLink, useHasSnapshot, useLink } from "../ws/WsProvider";
 import { UnknownDevicePage } from "./UnknownDevicePage";
 import { RelayPage } from "./RelayPage";
@@ -100,11 +148,33 @@ import { RobotPage } from "./RobotPage";
 import { ConsoleDock } from "../components/console-dock/ConsoleDock";
 import "./DevicePage.css";
 
+/**
+ * The "active console target" `ConsoleDock`/`PopupConsoleWindow` are
+ * fed -- see this module's own doc comment, "Sprint 022 ticket 006,"
+ * for the full reasoning. Exported so `RobotPage.tsx`/`RelayPage.tsx`/
+ * `UnknownDevicePage.tsx` share this exact shape for their
+ * `onActiveTargetChange` prop rather than each declaring an
+ * equivalent-but-separately-typed inline object literal.
+ */
+export interface ActiveConsoleTarget {
+  link: SnapshotLink;
+  name: string;
+}
+
 export function DevicePage() {
   const { linkId } = useParams<{ linkId: string }>();
   const hasSnapshot = useHasSnapshot();
   const link = useLink(linkId ?? "");
   const device = useDeviceForLink(linkId);
+
+  // Sprint 022 ticket 006: see this module's own doc comment section of
+  // the same name for the full reasoning. Declared unconditionally,
+  // above every early return below, like every other hook in this
+  // component.
+  const [activeTarget, setActiveTarget] = useState<ActiveConsoleTarget | null>(null);
+  const handleActiveTargetChange = useCallback((target: ActiveConsoleTarget) => {
+    setActiveTarget(target);
+  }, []);
 
   if (!hasSnapshot) {
     return (
@@ -126,16 +196,17 @@ export function DevicePage() {
     );
   }
 
-  // Sprint 022 ticket 002: the one `ConsoleDock` mount for this route,
-  // fed by this component's own route-derived `link`/`device` --
-  // deliberately *not* the "active console target" concept (sprint.md
-  // Architecture §Step 3, module 4; ticket 006). That means this is
-  // visibly wrong for a relay with a robot bridged through it: the dock
-  // below will show the *relay's* own console, not the bridged child's,
-  // until ticket 006 threads `activeTarget` down from `RelayPage`. That
-  // gap is deliberate for this ticket (relocation only, per its own
-  // Description), not an oversight.
-  const consoleDock = <ConsoleDock link={link} name={device?.name ?? link.label} />;
+  // The route's own default target: correct on its own for the
+  // `UnknownDevicePage`/`RobotPage` dispatch arms below in every case
+  // (their own `onActiveTargetChange` report is a no-op relative to
+  // this), and correct for the `RelayPage` arm only while no child is
+  // bridged. `target` immediately below is what actually reaches
+  // `ConsoleDock` -- see this module's own doc comment, "Sprint 022
+  // ticket 006," for why `activeTarget` must win once a child has
+  // reported at least once for the current route.
+  const routeTarget: ActiveConsoleTarget = { link, name: device?.name ?? link.label };
+  const target = activeTarget ?? routeTarget;
+  const consoleDock = <ConsoleDock link={target.link} name={target.name} />;
 
   if (!device) {
     // No `devices` row owns this link -- the direct successor of the
@@ -143,7 +214,7 @@ export function DevicePage() {
     // comment).
     return (
       <div className="device-page-shell">
-        <UnknownDevicePage link={link} />
+        <UnknownDevicePage link={link} onActiveTargetChange={handleActiveTargetChange} />
         {consoleDock}
       </div>
     );
@@ -153,14 +224,14 @@ export function DevicePage() {
     case "relay":
       return (
         <div className="device-page-shell">
-          <RelayPage device={device} />
+          <RelayPage device={device} onActiveTargetChange={handleActiveTargetChange} />
           {consoleDock}
         </div>
       );
     case "robot":
       return (
         <div className="device-page-shell">
-          <RobotPage device={device} link={link} />
+          <RobotPage device={device} link={link} onActiveTargetChange={handleActiveTargetChange} />
           {consoleDock}
         </div>
       );

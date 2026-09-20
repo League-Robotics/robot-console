@@ -23,12 +23,15 @@
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Snapshot, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { AppRoutes } from "../router";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 import { withRouter } from "../testing/renderWithRouter";
+import { createFakePopupWindow } from "../testing/FakePopupWindow";
+import { openPopupWindow } from "../lib/popupWindow";
 
 vi.mock("./RobotPage", () => ({
   RobotPage: ({ device }: { device: SnapshotDevice }) => (
@@ -37,6 +40,40 @@ vi.mock("./RobotPage", () => ({
     </section>
   ),
 }));
+
+/**
+ * Sprint 022 ticket 006: `lib/popupWindow.ts` is mocked wholesale, same
+ * as `ConsoleDock.test.tsx`/`PopupConsoleWindow.test.tsx` -- jsdom has
+ * no real `window.open`, so `openPopupWindow` becomes a `vi.fn()`
+ * pointed at a fresh `createFakePopupWindow()` fake per test.
+ */
+vi.mock("../lib/popupWindow", () => ({
+  openPopupWindow: vi.fn(),
+}));
+
+/**
+ * Test-only navigation harness for the two ticket-006 transitions that
+ * aren't reachable by clicking a real in-app link from a deep-linked
+ * device page: switching directly to a different routed device, and
+ * returning to the device list. `AppHeader`'s own back link already
+ * covers "navigate to `/`" for every other suite in this file's
+ * neighborhood, but pulling in the full header here would couple these
+ * tests to header markup unrelated to what they're checking; a bare
+ * `useNavigate()` pair of buttons is the smaller, more direct fixture.
+ */
+function TestNavButtons() {
+  const navigate = useNavigate();
+  return (
+    <div>
+      <button type="button" data-testid="goto-device-2" onClick={() => navigate("/d/usb-2")}>
+        Go to device 2
+      </button>
+      <button type="button" data-testid="goto-front" onClick={() => navigate("/")}>
+        Go to front page
+      </button>
+    </div>
+  );
+}
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -66,6 +103,7 @@ afterEach(() => {
   // to a single fixed `localStorage` key -- clear it between tests so a
   // later test never inherits an earlier one's toggled-open choice.
   window.localStorage.clear();
+  vi.mocked(openPopupWindow).mockReset();
 });
 
 function link(id: string, overrides: Partial<SnapshotLink> = {}): SnapshotLink {
@@ -122,6 +160,24 @@ function mountAt(initialPath: string): { el: HTMLDivElement; socket: () => FakeS
   const el = mount(
     withRouter(
       <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+        <AppRoutes />
+      </WsProvider>,
+      { initialEntries: [initialPath] },
+    ),
+  );
+  return { el, socket: () => socket! };
+}
+
+/** Same as {@link mountAt}, plus {@link TestNavButtons} mounted
+ * alongside `AppRoutes` so a test can drive the two ticket-006
+ * transitions that aren't reachable by clicking a real card/link from a
+ * deep-linked device page. */
+function mountAtWithNav(initialPath: string): { el: HTMLDivElement; socket: () => FakeSocket } {
+  let socket: FakeSocket | null = null;
+  const el = mount(
+    withRouter(
+      <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+        <TestNavButtons />
         <AppRoutes />
       </WsProvider>,
       { initialEntries: [initialPath] },
@@ -334,5 +390,112 @@ describe("DevicePage never sends session-open on its own (ticket 008)", () => {
     });
 
     expect(socket().sent).toEqual([]);
+  });
+});
+
+describe("DevicePage route-driven dock/popup lifecycle (sprint 022 ticket 006)", () => {
+  // `RobotPage` is mocked in this file (top of file) with a thin stub
+  // that never itself calls `onActiveTargetChange` -- these tests don't
+  // need it to: for a plain (non-relay) device, `DevicePage`'s own
+  // route-derived `routeTarget` fallback already tracks the routed
+  // `link`/`device` on every render (see `DevicePage.tsx`'s own doc
+  // comment, "Sprint 022 ticket 006"), so switching devices retargets
+  // `ConsoleDock`/`PopupConsoleWindow` correctly even with `activeTarget`
+  // itself staying `null` throughout. The bridging-specific half of this
+  // mechanism (a child's report genuinely overriding the route) is
+  // `RelayPage.test.tsx`'s job, not this file's -- that is the one case
+  // where a report actually changes the outcome instead of just
+  // confirming a default that was already correct.
+
+  it("retargets an open popup's content in place when switching to a different routed device, without reopening it", () => {
+    const fakePopup = createFakePopupWindow();
+    vi.mocked(openPopupWindow).mockReturnValue(fakePopup as unknown as Window);
+
+    const { el, socket } = mountAtWithNav("/d/usb-1");
+    act(() => {
+      socket().emitOpen();
+    });
+    act(() => {
+      socket().emitMessage(
+        snapshot({ devices: [device(1, { kind: "robot", role: "NEZHA2" }), device(2, { kind: "robot", role: "NEZHA2" })] }),
+      );
+    });
+
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="console-dock-popout"]')!.click();
+    });
+    expect(openPopupWindow).toHaveBeenCalledTimes(1);
+    expect(fakePopup.document.title).toBe("Debug Console — name-1");
+
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="goto-device-2"]')!.click();
+    });
+
+    // Same `Window` object -- `openPopupWindow` is never called a second
+    // time -- but the portaled content (here, just the title effect) has
+    // moved on to the newly routed device.
+    expect(openPopupWindow).toHaveBeenCalledTimes(1);
+    expect(fakePopup.closed).toBe(false);
+    expect(fakePopup.document.title).toBe("Debug Console — name-2");
+  });
+
+  it("closes an open popup and unmounts the dock entirely when navigating to /", () => {
+    const fakePopup = createFakePopupWindow();
+    vi.mocked(openPopupWindow).mockReturnValue(fakePopup as unknown as Window);
+
+    const { el, socket } = mountAtWithNav("/d/usb-1");
+    act(() => {
+      socket().emitOpen();
+    });
+    act(() => {
+      socket().emitMessage(snapshot({ devices: [device(1, { kind: "robot", role: "NEZHA2" })] }));
+    });
+
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="console-dock-popout"]')!.click();
+    });
+    expect(fakePopup.closed).toBe(false);
+
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="goto-front"]')!.click();
+    });
+
+    // The popup is a genuinely separate browser window -- it does not
+    // close itself just because the React tree that portaled into it
+    // unmounted; `ConsoleDock`'s own explicit unmount effect (ticket
+    // 006) is what closes it here.
+    expect(fakePopup.closed).toBe(true);
+    expect(el.querySelector('[data-testid="console-dock"]')).toBeNull();
+    expect(el.querySelector('[data-testid="location"]')?.textContent).toBe("/");
+  });
+
+  it("does not close or reopen the popup across a route change that keeps the same device page mounted", () => {
+    // A sibling check to the retarget test above: the popup itself must
+    // survive the transition (never briefly `closed`) even though its
+    // content updates -- ticket 006's own acceptance criterion is
+    // "retargets... rather than closing it," not merely "ends up
+    // showing the right thing eventually."
+    const fakePopup = createFakePopupWindow();
+    vi.mocked(openPopupWindow).mockReturnValue(fakePopup as unknown as Window);
+
+    const { el, socket } = mountAtWithNav("/d/usb-1");
+    act(() => {
+      socket().emitOpen();
+    });
+    act(() => {
+      socket().emitMessage(
+        snapshot({ devices: [device(1, { kind: "robot", role: "NEZHA2" }), device(2, { kind: "robot", role: "NEZHA2" })] }),
+      );
+    });
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="console-dock-popout"]')!.click();
+    });
+
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="goto-device-2"]')!.click();
+    });
+
+    expect(fakePopup.closed).toBe(false);
+    expect(el.querySelector('[data-testid="popup-console-window"]')).toBeNull(); // portaled into the fake, not `el`
   });
 });

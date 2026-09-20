@@ -1,25 +1,14 @@
 ---
-id: "006"
-title: "Route-driven dock and popup lifecycle: close, retarget, and restore"
-status: open
-use-cases: ["SUC-004"]
-depends-on: ["005"]
-github-issue: ""
-issue: ""
-# completes_issue: Controls whether linked issues are archived when this ticket
-# is moved to done. Default: true (archive when all referencing tickets are done).
-# Set to false (scalar) to suppress archival for ALL linked issues on this ticket.
-# Set to a mapping {filename.md: false} to suppress archival per issue filename.
-# Use false for tickets that partially address a multi-sprint umbrella issue.
+id: '006'
+title: 'Route-driven dock and popup lifecycle: close, retarget, and restore'
+status: done
+use-cases:
+- SUC-004
+depends-on:
+- '005'
+github-issue: ''
+issue: ''
 completes_issue: true
-# exception: Written by a lower agent when it cannot proceed (see architecture §exception-protocol).
-# exception:
-#   thrown_by: "programmer"          # "programmer" | "sprint-planner"
-#   thrown_at: "2026-05-07T14:23:00Z"
-#   attempted: |
-#     Description of what was attempted before giving up.
-#   conflict: "architecture-update.md §3 — reason the agent is blocked"
-#   surface: "internal"              # "user-visible" | "internal"
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
@@ -86,24 +75,24 @@ seeing it live.
 
 ## Acceptance Criteria
 
-- [ ] `DevicePage.tsx` holds `activeTarget` state and an
+- [x] `DevicePage.tsx` holds `activeTarget` state and an
       `onActiveTargetChange` callback threaded to its dispatched child.
-- [ ] `RobotPage`, `UnknownDevicePage` call `onActiveTargetChange` with
+- [x] `RobotPage`, `UnknownDevicePage` call `onActiveTargetChange` with
       their own `link`/`name`.
-- [ ] `RelayPage` calls `onActiveTargetChange` with the bridged child's
+- [x] `RelayPage` calls `onActiveTargetChange` with the bridged child's
       `link`/`name` while a child is bridged, and with its own relay
       `link`/`name` when idle.
-- [ ] `ConsoleDock`/`PopupConsoleWindow` are fed `activeTarget`, not
+- [x] `ConsoleDock`/`PopupConsoleWindow` are fed `activeTarget`, not
       `DevicePage`'s own raw route-derived link/device.
-- [ ] Tabbing within one device (Main → Drive → Calibration →
+- [x] Tabbing within one device (Main → Drive → Calibration →
       Configuration) never closes an open popup or resets dock state.
-- [ ] Switching the routed device (`/d/:linkId` → `/d/:otherLinkId`)
+- [x] Switching the routed device (`/d/:linkId` → `/d/:otherLinkId`)
       retargets an open popup's content in place — same `Window`
       object (assert `openPopupWindow`/`window.open` is not called a
       second time), new portaled content.
-- [ ] Navigating to `/` closes any open popup (verified via the fake
+- [x] Navigating to `/` closes any open popup (verified via the fake
       `popupWindow.ts` seam) and unmounts the dock entirely.
-- [ ] Bridging a child robot through a relay retargets the dock/popup
+- [x] Bridging a child robot through a relay retargets the dock/popup
       to the child's link; unbridging reverts to the relay's own link
       — both without any route change.
 

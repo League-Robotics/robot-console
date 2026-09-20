@@ -235,7 +235,7 @@ describe("RobotPage renders correctly for a relay-transport link (sprint 8 ticke
         createElement(WsProvider, {
           url: "ws://test/",
           socketFactory: () => (socket = new FakeSocket()),
-          children: createElement(RobotPage, { device, link }),
+          children: createElement(RobotPage, { device, link, onActiveTargetChange: () => {} }),
         }),
       );
     });
@@ -285,7 +285,7 @@ describe("RobotPage renders correctly for a wifi-transport link (sprint 10 ticke
         createElement(WsProvider, {
           url: "ws://test/",
           socketFactory: () => (socket = new FakeSocket()),
-          children: createElement(RobotPage, { device, link }),
+          children: createElement(RobotPage, { device, link, onActiveTargetChange: () => {} }),
         }),
       );
     });

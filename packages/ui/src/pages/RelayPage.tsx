@@ -116,8 +116,51 @@
  * showed "as if bridging" for a link that was never actually bridged);
  * a `lost` child with no session left offers Connect, not Disconnect,
  * to retry.
+ *
+ * ## Sprint 022 ticket 006: this is the one page where the active
+ * console target can genuinely diverge from the routed link
+ *
+ * `DevicePage.tsx`'s own `useLink(linkId)`/`useDeviceForLink(linkId)`
+ * resolve to *this relay's own* link/device no matter what this page
+ * renders -- the URL never changes when a bridge comes up or drops,
+ * because Connect/Disconnect are `session-open`/`session-close`
+ * messages, not navigations. But when `child` (below) is truthy, this
+ * page renders `<RobotPage device={child.device} link={child.link} />`
+ * -- a completely different device's page -- for its main content. Left
+ * alone, `DevicePage`'s dock/popup would keep showing the *relay's* own
+ * console the whole time a robot is bridged through it, which is
+ * exactly backwards from what a student looking at the screen would
+ * expect: they are looking at the bridged robot's status/drive/
+ * calibration UI, not the relay's.
+ *
+ * Asked directly about this exact case (sprint 022, 2026-09-20 -- his
+ * brief covered front-page navigation and switching between two routed
+ * devices explicitly, but not relay bridging, which `sprint.md`'s
+ * Design Rationale had flagged as an open question until then), the
+ * stakeholder confirmed the console must follow "whatever device I'm
+ * showing on the main screen" -- i.e. the bridged child, not the relay
+ * the URL names. That is a settled decision now, not a leaning; do not
+ * re-open it without a fresh stakeholder conversation.
+ *
+ * So this page reports its own "active console target" via
+ * `onActiveTargetChange`: the bridged child's `link`/`device.name`
+ * while `child` is truthy, and the relay's own `relayLink`/`relayName`
+ * once it reverts to `undefined` (Disconnect, or the bridge dropping on
+ * its own) -- both transitions fire with **no route change at all**,
+ * which is exactly why this can't be handled by `DevicePage` alone
+ * re-deriving from `useParams()`. `child` itself (from
+ * `currentRelayChild`, `deviceDisplay.ts`) is a brand-new object literal
+ * on every render of this page (see `findRelayChild`'s own `{ device,
+ * link }` allocation) -- the effect below keys off `activeLink`/
+ * `activeName`, values extracted from `child` up front, rather than
+ * `child` itself, so it only re-fires on an actual identity/value
+ * change, not on every unrelated re-render this page gets from
+ * `useDevices()`/`useRelays()` returning a new array reference for some
+ * *other* device's change elsewhere in the same snapshot.
  */
+import { useEffect } from "react";
 import type { SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
+import type { ActiveConsoleTarget } from "./DevicePage";
 import { AddressSourceChip } from "../components/AddressSourceChip";
 import { ConsolePane } from "../components/ConsolePane";
 import { RelayConnectControls } from "../components/RelayConnectControls";
@@ -128,6 +171,10 @@ import "./RelayPage.css";
 
 export interface RelayPageProps {
   device: SnapshotDevice;
+  /** Sprint 022 ticket 006: see this module's own doc comment, "this is
+   * the one page where the active console target can genuinely diverge
+   * from the routed link," for the full mechanism. */
+  onActiveTargetChange: (target: ActiveConsoleTarget) => void;
 }
 
 /** A `(channel, group)` pair -- kept here (rather than moved wholesale
@@ -139,7 +186,16 @@ export interface RadioAddress {
   group: number;
 }
 
-export function RelayPage({ device }: RelayPageProps) {
+/** A stable, referentially-unchanging no-op for the nested `RobotPage`'s
+ * required `onActiveTargetChange` prop when a bridged child is rendered
+ * -- see the doc comment at that call site, below, for why this page's
+ * own effect (not `RobotPage`'s) is the sole source of truth for the
+ * bridged-child target. Declared at module scope, not with `useCallback`
+ * inside the component, since it closes over nothing and there is no
+ * reason to reallocate it every render. */
+const NOOP_ACTIVE_TARGET_CHANGE: (target: ActiveConsoleTarget) => void = () => {};
+
+export function RelayPage({ device, onActiveTargetChange }: RelayPageProps) {
   const devices = useDevices();
   const relays = useRelays();
   const sendable = useSendable();
@@ -166,6 +222,37 @@ export function RelayPage({ device }: RelayPageProps) {
     .sort((a, b) => a.localeCompare(b));
 
   const relayName = nameDisplay(device).text;
+
+  // Sprint 022 ticket 006: report the active console target -- see this
+  // module's own doc comment, "this is the one page where the active
+  // console target can genuinely diverge from the routed link," for the
+  // full reasoning. This page owns *both* branches directly (rather
+  // than, say, delegating the bridged half to the nested `RobotPage`'s
+  // own generic "report my own link/name" effect) so the whole
+  // bridging/unbridging mechanism is exercised by this file's own test
+  // suite without needing the real `RobotPage` -- `sprint.md`'s
+  // Architecture §Step 4 diagram draws exactly one
+  // `onActiveTargetChange` arrow out of `RelayPage`, not one that
+  // sometimes really originates one level down.
+  //
+  // `activeLink`/`activeName` are extracted ahead of the effect so its
+  // dependency array holds the actual underlying values -- a stable
+  // `SnapshotLink` reference, a primitive string -- rather than `child`
+  // itself, which is a fresh object literal on every render regardless
+  // of any real change (`currentRelayChild`/`findRelayChild` in
+  // `deviceDisplay.ts`).
+  const activeLink = child ? child.link : relayLink;
+  const activeName = child ? child.device.name : relayName;
+  useEffect(() => {
+    if (activeLink) {
+      onActiveTargetChange({ link: activeLink, name: activeName });
+    }
+    // `activeLink` undefined only if this relay device somehow has no
+    // link of its own at all -- shouldn't occur in practice (DevicePage
+    // only ever dispatches here once its own routed `link` resolved
+    // non-null), but if it ever does, there is nothing meaningful to
+    // report and the previously-reported target (if any) simply stands.
+  }, [activeLink, activeName, onActiveTargetChange]);
 
   return (
     <section className={`relay-page${child ? " relay-page-connected" : ""}`} aria-label="Relay device">
@@ -211,7 +298,18 @@ export function RelayPage({ device }: RelayPageProps) {
            * radio field directly -- see this module's own doc comment. */}
           <AddressSourceChip radio={child.device.radio} />
 
-          <RobotPage device={child.device} link={child.link} />
+          {/* `onActiveTargetChange` is deliberately NOT threaded through
+              here: `RelayPage` itself already reports this exact same
+              `{ link: child.link, name: child.device.name }` target via
+              its own effect above, before this render happens. Handing
+              this nested `RobotPage` the live callback too would just
+              double-report the identical value on every one of its own
+              re-renders for no benefit, and would make this page's own
+              bridging behavior depend on `RobotPage`'s internals rather
+              than being fully owned (and testable) here. A stable
+              module-level no-op satisfies `RobotPageProps`' required
+              prop without any of that. */}
+          <RobotPage device={child.device} link={child.link} onActiveTargetChange={NOOP_ACTIVE_TARGET_CHANGE} />
         </>
       ) : (
         <>

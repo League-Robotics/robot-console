@@ -26,7 +26,7 @@
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Snapshot, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { RobotPage } from "./RobotPage";
 import { AppHeader } from "../components/AppHeader";
@@ -112,11 +112,14 @@ function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   };
 }
 
-function mountRobotPage(device: SnapshotDevice = robotDevice()): { el: HTMLDivElement; socket: FakeSocket } {
+function mountRobotPage(
+  device: SnapshotDevice = robotDevice(),
+  onActiveTargetChange: (target: { link: SnapshotLink; name: string }) => void = () => {},
+): { el: HTMLDivElement; socket: FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <RobotPage device={device} link={device.links[0]!} />
+      <RobotPage device={device} link={device.links[0]!} onActiveTargetChange={onActiveTargetChange} />
     </WsProvider>,
   );
   act(() => {
@@ -410,6 +413,35 @@ describe("RobotPage program/version diagnostics (sprint 011 ticket 002)", () => 
   });
 });
 
+describe("RobotPage reports the active console target (sprint 022 ticket 006)", () => {
+  it("calls onActiveTargetChange once with its own link/name on mount", () => {
+    const onActiveTargetChange = vi.fn();
+    const robot = robotDevice({ name: "kivon" });
+    mountRobotPage(robot, onActiveTargetChange);
+
+    expect(onActiveTargetChange).toHaveBeenCalledTimes(1);
+    expect(onActiveTargetChange).toHaveBeenCalledWith({ link: robot.links[0], name: "kivon" });
+  });
+
+  it("switching tabs (Main -> Drive -> Calibration -> Configuration) never reports again -- SUC-004's own acceptance criterion", () => {
+    const onActiveTargetChange = vi.fn();
+    const { el } = mountRobotPage(robotDevice(), onActiveTargetChange);
+    expect(onActiveTargetChange).toHaveBeenCalledTimes(1);
+
+    for (const tabId of ["drive", "calibration", "configuration", "diagnostics", "main"]) {
+      act(() => {
+        el.querySelector<HTMLButtonElement>(`[data-testid="robot-tab-${tabId}"]`)!.click();
+      });
+    }
+
+    // A popup/dock target derived from this call must never retarget or
+    // close purely because the student tabbed around within one device
+    // -- tab switches carry no `link`/`device.name` change at all, so
+    // this effect's dependency array never re-fires for them.
+    expect(onActiveTargetChange).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("RobotPage under AppHeader (ticket 012-004)", () => {
   // AppHeader owns the back-to-devices link and the Flash menu entry
   // (see AppHeader.test.tsx for the full behavior matrix); this is a
@@ -423,7 +455,7 @@ describe("RobotPage under AppHeader (ticket 012-004)", () => {
       withRouter(
         <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
           <AppHeader />
-          <RobotPage device={robot} link={robot.links[0]!} />
+          <RobotPage device={robot} link={robot.links[0]!} onActiveTargetChange={() => {}} />
         </WsProvider>,
         { initialEntries: [`/d/${robot.links[0]!.id}`] },
       ),

@@ -114,7 +114,27 @@
  * `beforeunload`-adjacent listeners always are: it is a genuine browser
  * event on the real top-level `window`, never synthesized by StrictMode,
  * so attaching/detaching it in this same effect carries none of the
- * cleanup risk described above.
+ * cleanup risk described above. Sprint 022 ticket 006 adds a fifth close
+ * path — the *caller's* own unmount — but deliberately outside this
+ * module (`ConsoleDock.tsx`'s own doc comment, "Ticket 006," explains
+ * why doing it there instead sidesteps this exact hazard).
+ *
+ * ## Ticket 006: retargeting is already free -- no change needed here
+ *
+ * `link`/`name` below are read fresh on every render by the portaled
+ * JSX at the bottom of this component, and the one-time setup effect
+ * above depends only on `[popupWindow, notifyClosed]` -- never on
+ * `link`/`name`. So when `DevicePage.tsx`'s "active console target"
+ * changes (a device switch, or a relay's bridged child changing) while
+ * a popup is already open, `ConsoleDock` simply re-renders this already-
+ * mounted component with new `link`/`name` props: the portaled content
+ * updates in place, the document-title effect below (already keyed on
+ * `name`) updates the popup's title, and `window.open` is never called
+ * again for the same popup. This is exactly the "same `Window` object,
+ * new content" behavior sprint.md's Design Rationale calls for -- ticket
+ * 005 built the seam without knowing it would be needed this way; ticket
+ * 006 is the first caller to actually change `link`/`name` on a live
+ * popup, and no code in this file needed to change for it to work.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";

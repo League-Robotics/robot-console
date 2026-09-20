@@ -121,19 +121,42 @@
  *    collapsed — per SUC-003's Alternate Flow, closing the popup is the
  *    student asking for the console *back*, not asking for it gone).
  *
- * ## Still deliberately incomplete after this ticket
+ * ## Ticket 006: `link`/`name` are now the caller's resolved "active
+ * console target," and this dock closes a live popup on its own unmount
  *
- * No route-driven retargeting/teardown for relay bridging or
- * navigation to `/` (ticket 006) — this dock's popup only tracks
- * whatever `{ link, name }` it is currently given; it does not yet
- * close on navigation to the device list, nor retarget in place when
- * the routed device changes. **No per-tab console mount is removed by
- * this ticket** — every page that already renders
- * `ConsolePane`/`CommandStrip` keeps doing so unchanged, so the running
- * app shows both the dock and the old per-tab console at once until
- * ticket 007's single clean removal pass. That is intentional
- * incremental delivery (sprint.md's Migration Concerns), not a defect to
- * fix here.
+ * `DevicePage.tsx` no longer feeds this component its own raw
+ * route-derived `link`/`device` — it resolves an `activeTarget` first
+ * (see that module's own doc comment for why `RelayPage`'s bridged-child
+ * substitution can make that diverge from the routed link) and passes
+ * *that* through as this same `{ link, name }` prop pair. This
+ * component's own props/shape need no change for that — `ConsoleDock`
+ * never had, and still doesn't have, any opinion about routing; it just
+ * renders whatever `link`/`name` it is handed, and retargets for free
+ * (`PopupConsoleWindow`'s portaled JSX already reads `link`/`name` fresh
+ * on every render, never re-running its one-time `window.open`-adjacent
+ * setup effect) the moment its caller hands it a different pair.
+ *
+ * What ticket 006 *does* add here: an explicit `popupWindow.close()`
+ * call from this component's own unmount, for the one real gap ticket
+ * 005 left (see that ticket's own report and this file's earlier
+ * doc-comment revision): a `window.open` result is a genuinely separate
+ * browser window with its own lifetime, not something that closes
+ * itself just because the React tree that once portaled into it goes
+ * away. Before this ticket, navigating from a device page back to `/`
+ * (which unmounts `DevicePage`, and therefore this component) left any
+ * open popup as an orphan — blank once its portal content unmounted,
+ * but never actually closed. See the `popupRef`/unmount-effect pair
+ * below for why this is safe to do here, specifically, when it was
+ * unsafe for `PopupConsoleWindow` to do the equivalent unconditionally
+ * in its own cleanup (`PopupConsoleWindow.tsx`'s own doc comment, "Why
+ * cleanup does not itself call popupWindow.close()").
+ *
+ * **No per-tab console mount is removed by this ticket** — every page
+ * that already renders `ConsolePane`/`CommandStrip` keeps doing so
+ * unchanged, so the running app shows both the dock and the old per-tab
+ * console at once until ticket 007's single clean removal pass. That is
+ * intentional incremental delivery (sprint.md's Migration Concerns), not
+ * a defect to fix here.
  */
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
@@ -366,6 +389,60 @@ export function ConsoleDock({ link, name }: ConsoleDockProps) {
   // *same* window object `PopupConsoleWindow` is managing, with no
   // second source of truth to keep in sync.
   const [popup, setPopup] = useState<Window | null>(null);
+
+  // Sprint 022 ticket 006: mirror `popup` into a ref so the unmount
+  // effect below (which must have an empty dependency array — see its
+  // own comment) always reads the *current* value from its cleanup,
+  // not whatever `popup` was at the time the effect itself was set up.
+  const popupRef = useRef<Window | null>(null);
+  useEffect(() => {
+    popupRef.current = popup;
+  }, [popup]);
+
+  // Sprint 022 ticket 006: close a live popup when this component
+  // itself unmounts — e.g. `DevicePage` unmounting on navigation back
+  // to `/`, or (less commonly) a device losing its link entirely
+  // mid-session, which also drops this component from `DevicePage`'s
+  // render tree. See this file's own doc comment ("Ticket 006") for why
+  // the gap this closes is real (a popup window does not close itself
+  // just because its portal content's React tree goes away).
+  //
+  // Why this is safe here specifically, when the identical-looking
+  // unconditional `popupWindow.close()` in `PopupConsoleWindow`'s own
+  // cleanup was rejected as unsafe (`PopupConsoleWindow.tsx`'s own doc
+  // comment, "Why cleanup does not itself call popupWindow.close()"):
+  // that hazard is about a component whose mount/unmount cycle repeats
+  // *within* one device visit — `PopupConsoleWindow` is conditionally
+  // rendered on `popup` truthiness, so it freshly mounts on every single
+  // pop-out, and React's `<StrictMode>` double-invokes effects (setup ->
+  // cleanup -> setup, synchronously) on every one of those fresh mounts,
+  // not only the app's first-ever render. A cleanup that closed the real
+  // window there would fire during that synthetic replay and close the
+  // popup the instant a student opened it, in development only, with no
+  // click available to reopen it.
+  //
+  // `ConsoleDock` does not have that problem, because its own mount
+  // lifetime is different in *kind*, not just degree: this component is
+  // mounted exactly once per device-page visit (`DevicePage.tsx`'s own
+  // doc comment — React Router keeps the same `DevicePage` instance
+  // across a `:linkId` param change, and this element sits at the same
+  // JSX position across every one of `DevicePage`'s three dispatch
+  // branches, so it survives even a robot-to-relay switch) and unmounts
+  // only when the whole device page goes away. The one moment this
+  // effect's own cleanup could possibly observe a StrictMode synthetic
+  // replay is immediately after *this* mount, before the student has
+  // had any chance to click Pop out — `popupRef.current` is still its
+  // initial `null` at that point, so that one synthetic cleanup is a
+  // no-op. Every *genuine* unmount happens strictly later than that
+  // one synthetic cycle, by which time the ref is exactly correct.
+  useEffect(() => {
+    return () => {
+      const openPopup = popupRef.current;
+      if (openPopup && !openPopup.closed) {
+        openPopup.close();
+      }
+    };
+  }, []);
 
   const handlePopOut = useCallback(() => {
     // Must be a direct, synchronous call from inside this click

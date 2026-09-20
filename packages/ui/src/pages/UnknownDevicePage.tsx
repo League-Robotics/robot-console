@@ -22,18 +22,34 @@
  * navigation all live in `../components/FlashControls.tsx`, run inside
  * the popup modal `../components/FlashDialog.tsx` owns, shared with the
  * front-page card and the app header's Flash entry.
+ *
+ * Sprint 022 ticket 006: reports its own `link` as the "active console
+ * target" via `onActiveTargetChange` -- a no-op relative to
+ * `DevicePage`'s own route-derived default (there is no `device` for an
+ * unassigned link, so `name` is always `link.label` here, exactly
+ * matching `DevicePage`'s own `!device` fallback), kept uniform with
+ * every other dispatch arm so `RelayPage`'s one genuinely divergent case
+ * doesn't need special-cased wiring. See `DevicePage.tsx`'s own doc
+ * comment for the full mechanism.
  */
+import { useEffect } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import type { ActiveConsoleTarget } from "./DevicePage";
 import { FlashDialog } from "../components/FlashDialog";
 import { ConsolePane } from "../components/ConsolePane";
 import "./UnknownDevicePage.css";
 
 export interface UnknownDevicePageProps {
   link: SnapshotLink;
+  onActiveTargetChange: (target: ActiveConsoleTarget) => void;
 }
 
-export function UnknownDevicePage({ link }: UnknownDevicePageProps) {
+export function UnknownDevicePage({ link, onActiveTargetChange }: UnknownDevicePageProps) {
   const showReason = (link.state === "failed" || link.state === "unresponsive") && link.reason;
+
+  useEffect(() => {
+    onActiveTargetChange({ link, name: link.label });
+  }, [link, onActiveTargetChange]);
 
   return (
     <section className="unknown-device-page" aria-label="Unknown device">

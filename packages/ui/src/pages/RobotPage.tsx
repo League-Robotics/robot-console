@@ -170,6 +170,7 @@
  */
 import { useEffect, useState } from "react";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import type { ActiveConsoleTarget } from "./DevicePage";
 import { nameDisplay } from "../deviceDisplay";
 import { CalibrationPage } from "../components/CalibrationPage";
 import { CommandStrip } from "../components/CommandStrip";
@@ -189,6 +190,18 @@ export interface RobotPageProps {
    * (`RelayPage`). See this module's doc comment ("Sprint 015 ticket
    * 009") for why the caller, not this page, resolves it. */
   link: SnapshotLink;
+  /** Sprint 022 ticket 006: report this page's own `link`/`device.name`
+   * as the "active console target" -- see `DevicePage.tsx`'s own doc
+   * comment for the full mechanism. Called on mount and again whenever
+   * `link`/`device.name` actually change (e.g. switching from this
+   * robot to a different one via `/d/:linkId` -> `/d/:otherLinkId`,
+   * which re-renders this same component with new props rather than
+   * remounting it). This is a genuine no-op for `RobotPage` itself --
+   * `DevicePage` would already default the dock/popup to exactly this
+   * `link`/`name` without any report at all -- it exists purely so
+   * `RelayPage`'s one divergent case (its bridged-child substitution)
+   * can share a single mechanism with every other dispatch arm. */
+  onActiveTargetChange: (target: ActiveConsoleTarget) => void;
 }
 
 /** OOP 2026-09-10: the robot page is split into tabs next to the
@@ -207,8 +220,26 @@ export interface RobotPageProps {
  * panel. */
 export type RobotTab = "main" | "drive" | "calibration" | "configuration" | "diagnostics";
 
-export function RobotPage({ device, link }: RobotPageProps) {
+export function RobotPage({ device, link, onActiveTargetChange }: RobotPageProps) {
   const [tab, setSelectedTab] = useState<RobotTab>("main");
+
+  // Sprint 022 ticket 006: report the active console target. Deps are
+  // `link`/`device.name`, not `tab` -- tabbing within this page must
+  // never re-fire this (SUC-004's own acceptance criterion, "tab
+  // switches never close an open popup or reset dock state"), and
+  // `link`/`device` are referentially stable across re-renders that
+  // don't actually change this link/device's own data (`WsProvider.tsx`'s
+  // structural-sharing `applySnapshot`), so this effect only re-runs
+  // when there is a real change to report -- switching to a different
+  // robot via `/d/:linkId` -> `/d/:otherLinkId` re-renders this same
+  // component instance with a genuinely different `link`/`device` (React
+  // Router keeps the same `DevicePage` element across a param-only
+  // change, and this component sits at the same JSX position across
+  // that re-render), which is exactly the "retarget an open popup in
+  // place" case this ticket implements.
+  useEffect(() => {
+    onActiveTargetChange({ link, name: device.name });
+  }, [link, device.name, onActiveTargetChange]);
 
   // Ticket 022-001: see this file's own doc comment ("this page now
   // requests get-wifi-credentials") for why this lives here, and its

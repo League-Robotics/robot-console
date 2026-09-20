@@ -25,7 +25,7 @@
  */
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { FlashDialog } from "../components/FlashDialog";
-import { DeviceConsole } from "../components/DeviceConsole";
+import { ConsolePane } from "../components/ConsolePane";
 import "./UnknownDevicePage.css";
 
 export interface UnknownDevicePageProps {
@@ -43,7 +43,7 @@ export function UnknownDevicePage({ link }: UnknownDevicePageProps) {
 
       <FlashDialog link={link} name={link.label} />
 
-      <DeviceConsole link={link} name={link.label} />
+      <ConsolePane link={link} name={link.label} />
     </section>
   );
 }

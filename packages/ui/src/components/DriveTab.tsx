@@ -33,7 +33,7 @@ import { useSendable, useWsActions } from "../ws/WsProvider";
 import { isLinkUsable } from "../deviceDisplay";
 import { useHeldDrive, type WheelTarget as HeldDriveTarget } from "../hooks/useHeldDrive";
 import { ChartsPanel } from "./ChartsPanel";
-import { DeviceConsole } from "./DeviceConsole";
+import { ConsolePane } from "./ConsolePane";
 import { DriveControls } from "./DriveControls";
 import { FunctionsPanel } from "./FunctionsPanel";
 import { PathTracePanel } from "./PathTracePanel";
@@ -282,7 +282,7 @@ export function DriveTab({ link, name }: DriveTabProps) {
             <FunctionsPanel link={link} name={name} />
           </div>
         </div>
-        <DeviceConsole link={link} name={name} />
+        <ConsolePane link={link} name={name} />
       </div>
       <div className="robot-page-column robot-page-column-right robot-page-column-console drive-tab-right">
         <div className="robot-page-panel" aria-label="Charts">

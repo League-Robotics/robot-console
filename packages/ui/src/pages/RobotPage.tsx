@@ -120,7 +120,7 @@ import { CalibrationPage } from "../components/CalibrationPage";
 import { CommandStrip } from "../components/CommandStrip";
 import { ConfigurationPage } from "../components/ConfigurationPage";
 import { DiagnosticsPanel } from "../components/DiagnosticsPanel";
-import { DeviceConsole } from "../components/DeviceConsole";
+import { ConsolePane } from "../components/ConsolePane";
 import { DriveControls } from "../components/DriveControls";
 import { DriveTab } from "../components/DriveTab";
 import { StatusPanel } from "../components/StatusPanel";
@@ -204,7 +204,7 @@ export function RobotPage({ device, link }: RobotPageProps) {
           </div>
 
           <div className="robot-page-column robot-page-column-right robot-page-column-console">
-            <DeviceConsole link={link} name={device.name} />
+            <ConsolePane link={link} name={device.name} />
             <CommandStrip link={link} />
           </div>
         </div>

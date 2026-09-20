@@ -242,6 +242,36 @@ describe("CalibrationPage", () => {
     expect(el.querySelector('[data-testid="new-calibration-start"]')).not.toBeNull();
   });
 
+  it("exactly one button is blue at a time: the one to press next", () => {
+    // Stakeholder, 2026-09-19: "I want the button you're supposed to
+    // push next to be blue." So the accent walks down the panel as the
+    // run progresses rather than sitting on Start.
+    const blue = (el: HTMLDivElement): string[] =>
+      Array.from(el.querySelectorAll<HTMLButtonElement>("button.new-calibration-next")).map(
+        (b) => b.dataset.testid ?? "",
+      );
+
+    const { el, socket } = mountPage();
+    expect(blue(el)).toEqual(["new-calibration-start"]);
+
+    click(el, '[data-testid="new-calibration-start"]');
+    expect(blue(el)).toEqual(["new-calibration-wheels"]);
+
+    click(el, '[data-testid="new-calibration-wheels"]');
+    rx(socket, WHEELS);
+    expect(blue(el)).toEqual(["new-calibration-turns"]);
+
+    click(el, '[data-testid="new-calibration-turns"]');
+    rx(socket, '{"ev":"calturn.result","b":8.84,"tw":11.5,"slip":1.301}');
+    expect(blue(el)).toEqual(["new-calibration-done"]);
+
+    // Re-running wheels invalidates the turn, so the next thing to
+    // press is the turn again.
+    click(el, '[data-testid="new-calibration-wheels"]');
+    rx(socket, '{"ev":"calwheels.result","calib":0.7101,"diameter":81.37,"measured":100.3,"true":90.5,"error":9.8,"was":0.7878}');
+    expect(blue(el)).toEqual(["new-calibration-turns"]);
+  });
+
   it("a failed run records nothing and says so", () => {
     const { el, socket } = mountPage();
     click(el, '[data-testid="new-calibration-start"]');
@@ -505,9 +535,17 @@ describe("CalibrationPage", () => {
     expect(left.classList.contains("robot-page-column-console")).toBe(true);
     expect(left.contains(el.querySelector('[aria-label="Console"]')!)).toBe(true);
 
-    // Everything you act on -- the flow, the values, the code -- is on
-    // the right, in that order.
-    expect(right.contains(el.querySelector('[aria-label="New calibration"]')!)).toBe(true);
+    // The firmware panel and the flow sit ABOVE the console, on the
+    // left: what you flash and what you press, over what you watch
+    // while it runs.
+    const firmware = el.querySelector('[aria-label="Calibration firmware"]') ?? left.firstElementChild!;
+    const flow = el.querySelector('[aria-label="New calibration"]')!;
+    const consoleEl = el.querySelector('[aria-label="Console"]')!;
+    expect(left.contains(flow)).toBe(true);
+    expect(left.contains(firmware)).toBe(true);
+    expect(flow.compareDocumentPosition(consoleEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // The values and the code you paste are on the right.
     expect(right.contains(el.querySelector('[aria-label="Current calibration"]')!)).toBe(true);
     expect(right.contains(el.querySelector('[aria-label="Calibration code"]')!)).toBe(true);
   });

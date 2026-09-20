@@ -47,6 +47,7 @@ import {
   type CalibrationState,
 } from "../lib/calibration";
 import { buildCalibrationWrites, describeCalibrationWrites, writeCalibration } from "../lib/calibrationWrite";
+import "./NewCalibrationPanel.css";
 import {
   deriveTurnCalibrationRun,
   deriveWheelsCalibrationRun,
@@ -190,6 +191,21 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
   const hasWheels = wheelRecords.length > 0;
   const hasTurns = turnRecords.length > 0;
 
+  // EXACTLY ONE BUTTON IS BLUE: the one to press next (stakeholder,
+  // 2026-09-19). The flow already decides which buttons exist; this
+  // decides which of them is the call to action, so the accent moves
+  // down the panel as the run progresses rather than sitting on Start
+  // forever. Re-running wheels sends it back to "turns", which is the
+  // same invalidation the Done button's disappearance shows.
+  const nextStep: "start" | "wheels" | "turns" | "done" = !started
+    ? "start"
+    : !hasWheels
+      ? "wheels"
+      : !hasTurns
+        ? "turns"
+        : "done";
+  const accent = (step: typeof nextStep): string => (step === nextStep ? "new-calibration-next" : "");
+
   function begin(kind: "wheels" | "turns"): void {
     if (!linkOpen || running) return;
     const last = log[log.length - 1];
@@ -237,7 +253,7 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
       {!started && (
         <button
           type="button"
-          className="new-calibration-start"
+          className={`new-calibration-start ${accent("start")}`}
           data-testid="new-calibration-start"
           disabled={!linkOpen}
           onClick={handleStart}
@@ -265,6 +281,7 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
           <div className="new-calibration-step">
             <button
               type="button"
+              className={accent("wheels")}
               data-testid="new-calibration-wheels"
               disabled={!linkOpen || running || tapeCm === undefined}
               onClick={() => begin("wheels")}
@@ -283,6 +300,7 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
             <div className="new-calibration-step">
               <button
                 type="button"
+                className={accent("turns")}
                 data-testid="new-calibration-turns"
                 disabled={!linkOpen || running}
                 onClick={() => begin("turns")}
@@ -302,7 +320,7 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
             <div className="new-calibration-step">
               <button
                 type="button"
-                className="new-calibration-done"
+                className={`new-calibration-done ${accent("done")}`}
                 data-testid="new-calibration-done"
                 disabled={!linkOpen || running}
                 onClick={handleDone}

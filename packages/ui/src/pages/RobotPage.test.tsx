@@ -186,17 +186,19 @@ describe("RobotPage", () => {
     expect(el.querySelector('[data-testid="robot-tab-drive"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("the Calibration tab (offered for any robot) shows the console left, the flow and the values right", () => {
+  it("the Calibration tab (offered for any robot) shows the flow above the console on the left, the values right", () => {
     const { el } = mountRobotPage(robotDevice({ program: "calibration-1", version: "1" }));
     expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Calibration", "Configuration", "Diagnostics"]);
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
     });
-    // Stakeholder, 2026-09-19: console on the left (it is what you watch
-    // while a run happens), everything you press on the right. The two
-    // standalone wizard panels are gone, replaced by the guided flow.
+    // Stakeholder, 2026-09-19: the firmware panel and the guided run sit
+    // above the console on the left -- what you flash and what you press,
+    // over what you watch while it runs -- and the values and the code
+    // you paste are on the right. The two standalone wizard panels are
+    // gone, replaced by the flow.
     expect(el.querySelector('.robot-page-column-left [aria-label="Console"]')).not.toBeNull();
-    expect(el.querySelector('.robot-page-column-right [aria-label="New calibration"]')).not.toBeNull();
+    expect(el.querySelector('.robot-page-column-left [aria-label="New calibration"]')).not.toBeNull();
     expect(el.querySelector('.robot-page-column-right [aria-label="Current calibration"]')).not.toBeNull();
     expect(el.querySelector('.robot-page-column-right [aria-label="Calibration code"]')).not.toBeNull();
     expect(el.querySelector('[aria-label="Distance calibration"]')).toBeNull();

@@ -119,7 +119,7 @@
  */
 import type { SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
 import { AddressSourceChip } from "../components/AddressSourceChip";
-import { DeviceConsole } from "../components/DeviceConsole";
+import { ConsolePane } from "../components/ConsolePane";
 import { RelayConnectControls } from "../components/RelayConnectControls";
 import { RobotPage } from "./RobotPage";
 import { useDevices, useRelays, useSendable, useWsActions } from "../ws/WsProvider";
@@ -231,7 +231,7 @@ export function RelayPage({ device }: RelayPageProps) {
               is actually usable (a student opened a raw console on the
               relay itself, a rare direct case distinct from bridging to
               a robot child). */}
-          {relayLink && isLinkUsable(relayLink) && <DeviceConsole link={relayLink} name={relayName} />}
+          {relayLink && isLinkUsable(relayLink) && <ConsolePane link={relayLink} name={relayName} />}
         </>
       )}
     </section>

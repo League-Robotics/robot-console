@@ -66,7 +66,12 @@
  * bound at all, so a long "Current calibration" table plus a growing
  * console log pushed the send line down and eventually off screen
  * (stakeholder report, 2026-09-14). The "Current calibration" panel
- * above the console also carries `robot-page-column-top`, so it shrinks
+ * NO LONGER carries `robot-page-column-top` (2026-09-19): that class
+ * caps a panel at `calc(100vh - ... - 19rem)` to leave room for the
+ * console BELOW it in the same column, and the console moved to the
+ * left column. Keeping it would have reserved 19rem for a console that
+ * is not there, scrolling this table internally for no reason. The old
+ * text below describes the arrangement it had then, so it shrinks
  * and scrolls internally before the console log's own floor gives; see
  * `RobotPage.css`'s doc comment on both classes for the full mechanism.
  */
@@ -92,7 +97,7 @@ import { CalibrationHelp } from "./CalibrationHelp";
 import { NewCalibrationPanel } from "./NewCalibrationPanel";
 import { deriveCalStoreState } from "./CalibrationStore";
 import { CalibrationTable } from "./CalibrationTable";
-import { DeviceConsole } from "./DeviceConsole";
+import { ConsolePane } from "./ConsolePane";
 import "./CalibrationPage.css";
 
 export interface CalibrationPageProps {
@@ -328,20 +333,24 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
           (stakeholder, 2026-09-19). A run's own lines land in the
           console, so it is the thing you watch while the panels on the
           right are what you press. */}
+      {/* LEFT: what you flash and what you press, above the console you
+          watch while it runs (stakeholder, 2026-09-19). The console
+          keeps `robot-page-column-console`'s viewport binding, so the
+          two panels above it shrink it rather than pushing it off. */}
       <div className="robot-page-column robot-page-column-left robot-page-column-console">
-        <DeviceConsole link={link} name={robotName} />
-      </div>
-
-      <div className="robot-page-column robot-page-column-right">
         <CalibrationFirmwarePanel device={device} link={link} />
 
         <NewCalibrationPanel link={link} state={state} onPatch={update} onStoreChanged={refreshCalStore} />
 
+        <ConsolePane link={link} name={robotName} />
+      </div>
+
+      <div className="robot-page-column robot-page-column-right">
         {extraCalFunctionNames.map((fnName) => (
           <GenericCalibrationRun key={fnName} link={link} name={fnName} />
         ))}
 
-        <div className="robot-page-panel robot-page-column-top" aria-label="Current calibration">
+        <div className="robot-page-panel" aria-label="Current calibration">
           <h3>
             Current calibration
             <button

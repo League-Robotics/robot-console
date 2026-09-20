@@ -110,7 +110,7 @@ import { validateRadioOverrideInput } from "../lib/radioAddress";
 import { isLinkUsable } from "../deviceDisplay";
 import { AddressSourceChip } from "./AddressSourceChip";
 import { CalibrationTable } from "./CalibrationTable";
-import { DeviceConsole } from "./DeviceConsole";
+import { ConsolePane } from "./ConsolePane";
 import { WifiCredentialsForm, validateWifiInput } from "./WifiCredentialsForm";
 import "./CalibrationTable.css";
 import "./ConfigurationPage.css";
@@ -458,7 +458,7 @@ export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
           )}
         </div>
 
-        <DeviceConsole link={link} name={robotName} />
+        <ConsolePane link={link} name={robotName} />
       </div>
     </div>
   );

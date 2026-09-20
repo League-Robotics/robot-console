@@ -1,7 +1,7 @@
 ---
 id: '007'
 title: Remove legacy per-tab consoles, ConsolePane, and the per-tab CommandStrip mount
-status: in-progress
+status: done
 use-cases:
 - SUC-001
 depends-on:

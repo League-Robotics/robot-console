@@ -377,19 +377,82 @@ describe("CalibrationPage", () => {
       expect(el.textContent).not.toMatch(/Robot's own track width/);
     });
 
-    it("with no caliper entry the slip is 1, and says why -- directly under the effective width it is using", () => {
+    it("keeps the calibration in the table after Done writes it -- Done is not an invalidation", () => {
+      // Stakeholder, 2026-09-19: "right after I hit the Done button and
+      // it writes the robot, it's telling me on the current calibration
+      // that the measured track width doesn't exist... there's no
+      // rotational slip because we haven't run the calibration, but we
+      // just did."
+      //
+      // Done empties the per-run records once they have been averaged
+      // and sent. An effect watching for "no turn records" read that as
+      // "the turn calibration was invalidated" and stripped the track
+      // width and slip out of the state -- so the table reverted to its
+      // never-calibrated text in the same tick the panel said "Written
+      // to the robot". Only a NEW WHEEL invalidates a turn.
       const { el, socket } = mountPage();
       click(el, '[data-testid="new-calibration-start"]');
       click(el, '[data-testid="new-calibration-wheels"]');
       rx(socket, WHEELS);
       click(el, '[data-testid="new-calibration-turns"]');
       rx(socket, '{"ev":"calturn.result","b":8.84,"tw":11.16,"slip":1.008}');
-      expect(el.querySelector('[data-testid="calibration-slip"]')?.textContent).toContain(
-        "no measured track width, so the effective width is used as the track",
-      );
+      click(el, '[data-testid="new-calibration-done"]');
 
+      expect(el.querySelector('[data-testid="new-calibration-written"]')?.textContent).toContain("Written to the robot");
+      const effective = el.querySelector('[data-testid="calibration-effective-track"]')?.textContent ?? "";
+      expect(effective).toContain("8.84 cm");
+      expect(effective).not.toContain("run the turn calibration");
+      expect(el.querySelector('[data-testid="calibration-slip"]')?.textContent).toContain("1.008");
+    });
+
+    it("a NEW wheel run does still invalidate the turn measured against the old one", () => {
+      // The clear that moved out of the records effect has to still
+      // happen where it was actually meant to: a fresh calwheels result
+      // means every turn taken against the previous wheel is stale, and
+      // leaving its track width on screen -- rescaled to the new wheel
+      // -- would be a confident wrong number.
+      const { el, socket } = mountPage();
+      click(el, '[data-testid="new-calibration-start"]');
+      click(el, '[data-testid="new-calibration-wheels"]');
+      rx(socket, WHEELS);
+      click(el, '[data-testid="new-calibration-turns"]');
+      rx(socket, '{"ev":"calturn.result","b":8.84,"tw":11.16,"slip":1.008}');
+      expect(el.querySelector('[data-testid="calibration-effective-track"]')?.textContent).toContain("8.84 cm");
+
+      click(el, '[data-testid="new-calibration-wheels"]');
+      rx(socket, '{"ev":"calwheels.result","calib":0.7132,"diameter":81.45,"measured":100.3,"true":90.5,"error":9.8,"was":0.7878}');
+      expect(el.querySelector('[data-testid="calibration-effective-track"]')?.textContent).toContain(
+        "run the turn calibration",
+      );
+      expect(el.querySelector('[data-testid="calibration-slip"]')?.textContent).not.toContain("1.008");
+    });
+
+    it("shows the slip the TURN CALIBRATION measured, because that is the one written to the robot", () => {
+      // Stakeholder, 2026-09-19: the robot was written
+      // `rotational_slip 0.8818` and the table beside it said the slip
+      // was 1. It said 1 because this row only ever showed the locally
+      // DERIVED slip, which is 1 by definition until somebody types a
+      // caliper measurement -- while `buildCalibrationWrites` sends
+      // `state.firmwareSlip ?? derived.rotationalSlip`. The row and the
+      // write now agree, in that same precedence.
+      const { el, socket } = mountPage();
+      click(el, '[data-testid="new-calibration-start"]');
+      click(el, '[data-testid="new-calibration-wheels"]');
+      rx(socket, WHEELS);
+      click(el, '[data-testid="new-calibration-turns"]');
+      rx(socket, '{"ev":"calturn.result","b":8.84,"tw":11.16,"slip":1.008}');
+      const slip = () => el.querySelector('[data-testid="calibration-slip"]')?.textContent ?? "";
+      expect(slip()).toContain("1.008");
+      expect(slip()).toContain("measured by the turn calibration");
+      // Never the old placeholder 1, which contradicted the robot.
+      expect(slip()).not.toContain("no measured track width, so the effective width is used as the track");
+
+      // A caliper entry does not displace it -- the two answer
+      // different questions and are shown side by side, per
+      // lib/calibration.ts's own doc comment.
       type(el, "calibration-track-width", "11.16");
-      expect(el.querySelector('[data-testid="calibration-slip"]')?.textContent).toContain("11.16 ÷ 8.84");
+      expect(slip()).toContain("1.008");
+      expect(slip()).toContain("11.16 ÷ 8.84");
     });
   });
 

@@ -124,6 +124,8 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
   // the pending window's own startId so a re-render cannot double-count
   // a run, which would quietly bias the mean.
   const settledRef = useRef<number | undefined>(undefined);
+  const patchRef = useRef(onPatch);
+  patchRef.current = onPatch;
   useEffect(() => {
     if (!pending || !run || run.kind === "running") return;
     if (settledRef.current === pending.startId) return;
@@ -136,8 +138,18 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
         const ranWithMm = round((wheels.result.wasCalib * 360) / Math.PI, 2);
         setWheelRecords((previous) => [...previous, { diameterMm, ranWithMm }]);
         // A new wheel invalidates every turn measured against the old
-        // one -- the whole reason this panel gates the flow.
+        // one -- the whole reason this panel gates the flow. Clearing
+        // the derived track width and slip is part of that
+        // invalidation, and belongs HERE, next to the cause: until
+        // 2026-09-19 it lived in the `bMean === undefined` effect
+        // below, which also fires when Done empties the records after
+        // writing them -- so pressing Done wiped the effective track
+        // width and slip out of the table *milliseconds after sending
+        // them to the robot*, and the panel that had just said
+        // "Written to the robot" sat next to a table saying "run the
+        // turn calibration". Reported by the stakeholder, 2026-09-19.
         setTurnRecords([]);
+        patchRef.current({ reportedTrackWidthCm: undefined, firmwareSlip: undefined });
         setFailure(undefined);
       } else {
         setFailure(describeFailure("wheel", wheels));
@@ -163,17 +175,17 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
   const bMean = useMemo(() => mean(turnRecords.map((record) => record.bCm)), [turnRecords]);
   const slipSd = useMemo(() => stdDev(turnRecords.map((record) => record.firmwareSlip)), [turnRecords]);
 
-  const patchRef = useRef(onPatch);
-  patchRef.current = onPatch;
   useEffect(() => {
     if (wheelMean === undefined) return;
     patchRef.current({ wheelDiameterMm: round(wheelMean, 2), wheelDiameterSource: "distance-calibration" });
   }, [wheelMean]);
   useEffect(() => {
-    if (bMean === undefined) {
-      patchRef.current({ reportedTrackWidthCm: undefined, firmwareSlip: undefined });
-      return;
-    }
+    // No records is NOT the same as no calibration: Done empties them
+    // on purpose once they have been averaged and written. So this
+    // effect only ever writes a fresh measurement up, never clears one
+    // -- matching the wheel effect above, which has always bailed
+    // rather than cleared. Invalidation is the wheels branch's job.
+    if (bMean === undefined) return;
     // `b` is denominated in the wheel the robot was RUNNING for the
     // spin -- the last wheel run's own result, which `calwheels` stored
     // on the robot as it finished -- not in the mean this console is

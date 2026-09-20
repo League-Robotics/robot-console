@@ -1,7 +1,7 @@
 ---
 id: '022'
 title: Global debug console dock and one complete code block
-status: executing
+status: done
 branch: sprint/022-global-debug-console-dock-and-one-complete-code-block
 use-cases:
 - SUC-001

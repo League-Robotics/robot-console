@@ -237,6 +237,61 @@ describe("DevicePage per-type dispatch", () => {
   });
 });
 
+describe("DevicePage mounts ConsoleDock (sprint 022 ticket 002)", () => {
+  it("mounts the dock alongside RobotPage for a robot-kind device", () => {
+    const { el, socket } = mountAt("/d/usb-1");
+    act(() => {
+      socket().emitOpen();
+    });
+    act(() => {
+      socket().emitMessage(snapshot({ devices: [device(1, { kind: "robot", role: "NEZHA2" })] }));
+    });
+
+    expect(el.querySelector('[aria-label="Robot device"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="console-dock"]')).not.toBeNull();
+  });
+
+  it("mounts the dock alongside RelayPage for a relay-kind device", () => {
+    const { el, socket } = mountAt("/d/usb-1");
+    act(() => {
+      socket().emitOpen();
+    });
+    act(() => {
+      socket().emitMessage(snapshot({ devices: [device(1, { kind: "relay", role: "RADIORELAY" })] }));
+    });
+
+    expect(el.querySelector('[aria-label="Relay device"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="console-dock"]')).not.toBeNull();
+  });
+
+  it("mounts the dock alongside UnknownDevicePage for a link with no owning device", () => {
+    const { el, socket } = mountAt("/d/usb-1");
+    act(() => {
+      socket().emitOpen();
+    });
+    act(() => {
+      socket().emitMessage(snapshot({ unassigned: [link("usb-1")] }));
+    });
+
+    expect(el.querySelector('[aria-label="Unknown device"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="console-dock"]')).not.toBeNull();
+  });
+
+  it("does not mount the dock while the device isn't connected or the snapshot hasn't arrived", () => {
+    const { el, socket } = mountAt("/d/usb-MISSING");
+    act(() => {
+      socket().emitOpen();
+    });
+
+    expect(el.querySelector('[data-testid="console-dock"]')).toBeNull();
+
+    act(() => {
+      socket().emitMessage(snapshot({ devices: [device(1)] }));
+    });
+    expect(el.querySelector('[data-testid="console-dock"]')).toBeNull();
+  });
+});
+
 describe("DevicePage never sends session-open on its own (ticket 008)", () => {
   it("sends nothing at all on mount for a not-yet-open robot device", () => {
     const { socket } = mountAt("/d/usb-1");

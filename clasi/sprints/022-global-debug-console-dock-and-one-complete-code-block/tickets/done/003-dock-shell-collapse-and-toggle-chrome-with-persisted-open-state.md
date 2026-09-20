@@ -1,7 +1,7 @@
 ---
 id: '003'
 title: 'Dock shell: collapse and toggle chrome with persisted open state'
-status: in-progress
+status: done
 use-cases:
 - SUC-001
 depends-on:

@@ -7,12 +7,53 @@
    `.console-dock-resize-handle` at the pane's own top edge, sized only
    by the pane's own height -- it works whether or not the dock is
    later glued to the viewport bottom, since it never assumes anything
-   about what is above or below `.console-dock` itself. The
-   pinned-to-viewport-bottom layout refinement (ticket 006's `DevicePage`
-   wrapping) remains a later ticket's work; ticket 003 deliberately left
-   `.device-page-shell` without a forced height, and this ticket does not
-   change that either. */
+   about what is above or below `.console-dock` itself.
+
+   Ticket 008 lands the "later ticket's work" the paragraph above used to
+   defer: `.console-dock` is now `position: fixed` to the browser
+   viewport's own bottom edge, not a flex-column participant of
+   `DevicePage.tsx`'s `.device-page-shell` (ticket 003's original
+   approach, superseded -- sprint.md's Architecture §Revision,
+   2026-09-20, and the Design Rationale entry it replaces have the full
+   decision record). The stakeholder's own analogy for this whole
+   feature was always a browser's JavaScript devtools console; confirmed
+   directly when shown both layouts side by side, "pinned to the bottom"
+   meant the viewport, not the bottom of the page's own scrollable
+   content -- verified live in Chromium that the old in-flow dock
+   required scrolling to reach on a page taller than the viewport (e.g.
+   the Calibration tab), exactly the behavior that analogy rules out.
+   Both dock states move together because both live inside this one
+   element: the collapsed bar and the open pane are equally pinned, per
+   this ticket's own Acceptance Criteria, with no separate positioning
+   rule needed for either.
+
+   `left`/`right: 0` (kept alongside the pre-existing `width: 100%`,
+   belt-and-suspenders) anchors the dock to the viewport itself: nothing
+   in this app's ancestor chain (`App.tsx`'s `.app`/`.app-main`,
+   `DevicePage.tsx`'s `.device-page-shell`) sets a
+   `transform`/`filter`/`perspective`/`will-change` that would make a
+   nearer ancestor `position: fixed`'s containing block instead of the
+   viewport -- confirmed by reading every one of those files while
+   implementing this ticket. `z-index: 30` sits between
+   `FrontPage.css`'s own `z-index: 20` (a lower-stakes in-page
+   affordance that never coexists with this dock on the same route
+   anyway) and `CalibrationHelp.css`'s full-screen modal backdrop at
+   `z-index: 40` -- that how-to dialog is meant to cover *everything*
+   while it's open, including this dock, so this dock's own stacking
+   context is deliberately lower.
+
+   See `ConsoleDock.tsx`'s own doc comment, "Ticket 008," for the
+   `--console-dock-height` custom property this repositioning makes
+   necessary -- the dock's live height (drag-resizable since ticket 004)
+   and every page's own `calc(100vh - ...)` column-sizing rule must now
+   agree, or content hides behind the dock or a dead gap opens beneath
+   it. */
 .console-dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
   display: flex;
   flex-direction: column;
   width: 100%;

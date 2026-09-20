@@ -32,7 +32,14 @@ import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { ConsoleDock, MIN_DOCK_HEIGHT_PX, MAX_DOCK_HEIGHT_PX } from "./ConsoleDock";
+import {
+  ConsoleDock,
+  MIN_DOCK_HEIGHT_PX,
+  MAX_DOCK_HEIGHT_PX,
+  COLLAPSED_DOCK_HEIGHT_PX,
+  OPEN_PANE_BORDER_PX,
+  CONSOLE_DOCK_HEIGHT_PROPERTY,
+} from "./ConsoleDock";
 import { DEFAULT_DOCK_HEIGHT_PX } from "./useDockPersistence";
 import { WsProvider } from "../../ws/WsProvider";
 import { FakeSocket } from "../../testing/FakeSocket";
@@ -122,6 +129,18 @@ function getPane(el: HTMLDivElement): HTMLDivElement {
   const pane = el.querySelector<HTMLDivElement>('[data-testid="console-dock-pane"]');
   expect(pane).not.toBeNull();
   return pane!;
+}
+
+/** Reads back the `--console-dock-height` custom property `ConsoleDock`
+ * writes to `document.documentElement.style` (sprint 022 ticket 008) --
+ * jsdom does support `CSSStyleDeclaration.getPropertyValue`/
+ * `setProperty` on a real element, even though it has no layout engine
+ * to back a *measured* size with (see `ConsoleDock.tsx`'s own doc
+ * comment, "Ticket 008," for why the value written is a computed
+ * formula rather than a DOM measurement -- exactly so this assertion is
+ * meaningful in this environment). */
+function getDockHeightProperty(): string {
+  return document.documentElement.style.getPropertyValue(CONSOLE_DOCK_HEIGHT_PROPERTY);
 }
 
 /** Run one full drag gesture (`pointerdown` on the handle, one
@@ -649,5 +668,96 @@ describe("ConsoleDock pop-out window (sprint 022 ticket 005, SUC-003)", () => {
     container = null;
 
     expect(openPopupWindow).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Sprint 022 ticket 008: `--console-dock-height`.
+ *
+ * Per this ticket's own Verification note, this is what jsdom *can*
+ * meaningfully check about the viewport-pinning work: that `ConsoleDock`
+ * writes the expected numeric value to the shared custom property on
+ * mount, toggle, and live during a drag. What it deliberately does not
+ * and cannot check -- actual `position: fixed` pinning against a real
+ * viewport, the collapsed-vs-open visual difference, or non-overlap with
+ * a page's bottom controls -- is a live-Chromium-only concern (this
+ * file's own header comment already establishes the same split for
+ * pointer-drag mechanics vs. real cursor affordances).
+ */
+describe("ConsoleDock --console-dock-height (sprint 022 ticket 008)", () => {
+  it("writes just the collapsed height on a never-before-visited (collapsed-by-default) mount", () => {
+    mountDock();
+    expect(getDockHeightProperty()).toBe(`${COLLAPSED_DOCK_HEIGHT_PX}px`);
+  });
+
+  it("writes the collapsed height again after toggling closed", () => {
+    const { el } = mountDock();
+    toggle(el); // open
+    toggle(el); // collapse
+    expect(getDockHeightProperty()).toBe(`${COLLAPSED_DOCK_HEIGHT_PX}px`);
+  });
+
+  it("writes bar height plus the default pane height once toggled open", () => {
+    const { el } = mountDock();
+    toggle(el);
+    expect(getDockHeightProperty()).toBe(`${COLLAPSED_DOCK_HEIGHT_PX + OPEN_PANE_BORDER_PX + DEFAULT_DOCK_HEIGHT_PX}px`);
+  });
+
+  it("mounts already reflecting a persisted open+dragged height, with no separate 'fix it up later' step", () => {
+    window.localStorage.setItem("robot-console:console-dock", JSON.stringify({ open: true, heightPx: 400 }));
+    mountDock();
+    expect(getDockHeightProperty()).toBe(`${COLLAPSED_DOCK_HEIGHT_PX + OPEN_PANE_BORDER_PX + 400}px`);
+  });
+
+  it("updates live during a drag, before pointerup commits the final value", () => {
+    const { el } = mountDock();
+    toggle(el);
+    const handle = getHandle(el);
+    firePointer(handle, "pointerdown", 500);
+    // Dragged up 50px -- see this file's own `drag`/`firePointer` doc
+    // comments for the "drag up grows" sign convention.
+    firePointer(window, "pointermove", 450);
+    expect(getDockHeightProperty()).toBe(`${COLLAPSED_DOCK_HEIGHT_PX + OPEN_PANE_BORDER_PX + DEFAULT_DOCK_HEIGHT_PX + 50}px`);
+    firePointer(window, "pointerup", 450);
+    // Settles back to the same value post-commit -- committing to
+    // `localStorage` does not itself change the live height, only where
+    // it will be read from on the next mount.
+    expect(getDockHeightProperty()).toBe(`${COLLAPSED_DOCK_HEIGHT_PX + OPEN_PANE_BORDER_PX + DEFAULT_DOCK_HEIGHT_PX + 50}px`);
+  });
+
+  it("tracks a clamped drag (MAX_DOCK_HEIGHT_PX) the same way the pane's own height does", () => {
+    const { el } = mountDock();
+    toggle(el);
+    const finalHeight = drag(el, 1000, -5000);
+    expect(finalHeight).toBe(MAX_DOCK_HEIGHT_PX);
+    expect(getDockHeightProperty()).toBe(`${COLLAPSED_DOCK_HEIGHT_PX + OPEN_PANE_BORDER_PX + MAX_DOCK_HEIGHT_PX}px`);
+  });
+
+  it("collapsing while a popup is open (pop-out always collapses the dock) writes the collapsed height", () => {
+    const fakePopup = createFakePopupWindow();
+    vi.mocked(openPopupWindow).mockReturnValue(fakePopup as unknown as Window);
+    const { el } = mountDock();
+    toggle(el); // open first
+    expect(getDockHeightProperty()).not.toBe(`${COLLAPSED_DOCK_HEIGHT_PX}px`);
+
+    act(() => {
+      getPopOutButton(el).click();
+    });
+
+    expect(getDockHeightProperty()).toBe(`${COLLAPSED_DOCK_HEIGHT_PX}px`);
+  });
+
+  it("removes the property on unmount, leaving no stale reservation for whatever mounts next", () => {
+    mountDock();
+    expect(getDockHeightProperty()).not.toBe("");
+
+    act(() => {
+      root!.unmount();
+    });
+    root = null;
+    container!.remove();
+    container = null;
+
+    expect(getDockHeightProperty()).toBe("");
   });
 });

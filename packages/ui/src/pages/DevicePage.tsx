@@ -144,6 +144,20 @@
  * `FrontPage.tsx` need no change, matching that Design Rationale entry:
  * this wrapper lives entirely inside `DevicePage`'s own render, and `/`
  * is never in this component's subtree.
+ *
+ * **Sprint 022 ticket 008 update**: the stakeholder confirmed, shown the
+ * two layouts side by side, that "pinned to the bottom" meant the
+ * browser viewport (his own devtools-console analogy), not the bottom of
+ * the page's own scrollable content -- the reading the paragraph above
+ * assumed. `ConsoleDock` no longer participates in `.device-page-shell`'s
+ * flex flow; it is `position: fixed` to the viewport bottom
+ * (`ConsoleDock.css`). `.device-page-shell` is kept, still wrapping each
+ * dispatch arm plus `consoleDock` exactly as before, but now serves only
+ * as a `padding-bottom: var(--console-dock-height)` reservation for the
+ * dispatched page content -- see `DevicePage.css`'s own doc comment and
+ * `console-dock/ConsoleDock.tsx`'s "Ticket 008" section for the full
+ * mechanics and the new cross-module `--console-dock-height` contract
+ * this introduces.
  */
 import { useCallback, useState } from "react";
 import { useParams } from "react-router";

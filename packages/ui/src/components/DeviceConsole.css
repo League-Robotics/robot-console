@@ -89,17 +89,41 @@
 .console-log {
   flex: 1;
   /* Stakeholder (2026-09-13): the console never grows past the screen.
-   * Floor brought down from `12rem` to `8rem` (ticket 018-018) -- the
-   * viewport-bound column override (`RobotPage.css`'s
-   * `.robot-page-column-right .console-log`) repeats this same `8rem`
-   * floor so a short window (e.g. 700px tall) shrinks the log down to
-   * roughly this size rather than pushing the send line below it off
-   * screen. This `max-height` is the base (non-column-bound) rule still
-   * used by `RelayPage`/`UnknownDevicePage`, where `DeviceConsole` sits
-   * in plain document flow with no viewport-bound ancestor to defer to;
-   * on the three robot-page tabs the column override's own
-   * `max-height: none` wins (higher specificity), so the two rules
-   * never fight in practice. */
+   * Floor brought down from `12rem` to `8rem` (ticket 018-018).
+   *
+   * **Sprint 022 ticket 008 correction**: the paragraph this comment
+   * used to carry claimed `RelayPage`/`UnknownDevicePage` mounted
+   * `DeviceConsole` directly, in plain document flow, with this
+   * `max-height` as the only thing capping it there, and that a
+   * `RobotPage.css` `.robot-page-column-right .console-log` override
+   * with `max-height: none` took precedence on the three robot-page
+   * tabs. Both halves of that went stale as of sprint 022 ticket 007,
+   * which this comment was never updated to reflect: every page-level
+   * `DeviceConsole` mount was deleted in favor of the one `ConsoleDock`
+   * mount (`console-dock/ConsoleDock.tsx`), and the
+   * `.robot-page-column-right .console-log` override was deleted
+   * alongside it (`RobotPage.css`'s own doc comment has the account).
+   * The only two places `DeviceConsole` mounts today are
+   * `.console-dock-pane` (the docked case -- `ConsoleDock.css`, an
+   * explicit pixel `height` set by `ConsoleDock.tsx`'s own inline
+   * style) and `.popup-console-window` (the popped-out case --
+   * `PopupConsoleWindow.css`, `height: 100vh` of the popup's *own*,
+   * separate browser window). Both already give `.device-console` a
+   * hard, flex-bounded height from their own container
+   * (`flex: 1 1 auto; min-height: 0` in each stylesheet), so this
+   * `max-height` is no longer the operative constraint in either case
+   * -- it is a generous backstop that in practice sits well above
+   * whatever room either container actually has left to give it.
+   *
+   * Left deliberately as a viewport-relative literal, **not** rewritten
+   * to `var(--console-dock-height)` (ticket 008's own new custom
+   * property -- see `console-dock/ConsoleDock.tsx`'s "Ticket 008" doc
+   * comment section for the full contract): this rule does not reserve
+   * room *for* the dock the way `RobotPage.css`'s
+   * `.robot-page-column-console` or `DevicePage.css`'s
+   * `.device-page-shell` do. It lives *inside* the console itself, in
+   * both of its current mount sites, so the dock's own footprint on the
+   * page around it is simply not a concern here. */
   min-height: 8rem;
   max-height: calc(100vh - 22rem);
   overflow-y: auto;

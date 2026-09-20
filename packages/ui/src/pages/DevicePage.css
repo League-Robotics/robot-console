@@ -13,13 +13,38 @@
 
 /* Sprint 022 ticket 003: the dock's own flex column wrapper, used by
    every dispatch arm that mounts a `ConsoleDock` (see DevicePage.tsx's
-   own doc comment for the "reflow, not overlay" reasoning). Deliberately
-   not `max-width`-constrained like `.device-page` above -- the dispatched
-   page inside keeps whatever width/column layout it already has
-   (`RobotPage.css`, `RelayPage.css`, etc., all unchanged by this
-   ticket), and `ConsoleDock` itself is full width per SUC-001. */
+   own doc comment for the original "reflow, not overlay" reasoning).
+   Deliberately not `max-width`-constrained like `.device-page` above --
+   the dispatched page inside keeps whatever width/column layout it
+   already has (`RobotPage.css`, `RelayPage.css`, etc., all unchanged by
+   this ticket), and `ConsoleDock` itself is full width per SUC-001.
+
+   Sprint 022 ticket 008 supersedes the "reflow" half of that reasoning
+   (see sprint.md's Architecture §Revision, 2026-09-20): `ConsoleDock` is
+   now `position: fixed` to the viewport bottom (`ConsoleDock.css`), so
+   it is no longer a layout participant of this flex column at all --
+   only the dispatched page content is. This wrapper is kept, repurposed:
+   `padding-bottom: var(--console-dock-height, 0px)` reserves exactly
+   the dock's own current live height (collapsed-bar height, or bar plus
+   `heightPx` when open, tracking a drag live -- see
+   `console-dock/ConsoleDock.tsx`'s own doc comment, "Ticket 008," for
+   the canonical explanation of this property's contract and who else
+   reads it) as blank space at the end of every device page's own
+   content. That is what keeps the "never cover a page's bottom
+   controls" property the old reflow approach used to provide as a side
+   effect -- the Copy button on both code blocks and
+   `CalibrationTable`'s "Start over" (neither of which sits in a
+   viewport-bound/sticky column the way `DriveTab`'s right column does;
+   see `RobotPage.css`'s own ticket 008 comment for that case) now scroll
+   fully into view above the dock because there is real, reserved space
+   below them, not because the dock happens to be a sibling occupying
+   flow space beneath them. The `, 0px` fallback only matters for the
+   one-render gap before `ConsoleDock`'s own layout effect has run for
+   the first time this component tree exists; in practice that gap is
+   imperceptible. */
 .device-page-shell {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  padding-bottom: var(--console-dock-height, 0px);
 }

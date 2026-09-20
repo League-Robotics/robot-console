@@ -1,25 +1,15 @@
 ---
-id: "008"
-title: "Pin the debug console to the viewport bottom like a browser devtools drawer"
-status: open
-use-cases: ["SUC-001", "SUC-002"]
-depends-on: ["007"]
-github-issue: ""
-issue: ""
-# completes_issue: Controls whether linked issues are archived when this ticket
-# is moved to done. Default: true (archive when all referencing tickets are done).
-# Set to false (scalar) to suppress archival for ALL linked issues on this ticket.
-# Set to a mapping {filename.md: false} to suppress archival per issue filename.
-# Use false for tickets that partially address a multi-sprint umbrella issue.
+id: 008
+title: Pin the debug console to the viewport bottom like a browser devtools drawer
+status: done
+use-cases:
+- SUC-001
+- SUC-002
+depends-on:
+- '007'
+github-issue: ''
+issue: ''
 completes_issue: true
-# exception: Written by a lower agent when it cannot proceed (see architecture §exception-protocol).
-# exception:
-#   thrown_by: "programmer"          # "programmer" | "sprint-planner"
-#   thrown_at: "2026-05-07T14:23:00Z"
-#   attempted: |
-#     Description of what was attempted before giving up.
-#   conflict: "architecture-update.md §3 — reason the agent is blocked"
-#   surface: "internal"              # "user-visible" | "internal"
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
@@ -99,35 +89,92 @@ positioning mechanism is the same for both.
 - [ ] On a page taller than the viewport (e.g. the Calibration tab),
       the dock — collapsed or open — is visible at the bottom of the
       browser window without scrolling, at any scroll position within
-      the page's own content.
+      the page's own content. **Not verified live by the programmer**:
+      no robot is on the bench this session (only one unconnected relay
+      at `/d/mbrelay-torture`), so the Calibration tab — the specific
+      tall-page example this criterion names — could not be exercised
+      in a real browser. `.console-dock`'s `position: fixed` (reviewed
+      by code) is what this relies on; left for the stakeholder's walk.
 - [ ] On a page shorter than the viewport, the dock still renders
       pinned to the viewport bottom (not floating partway up the page
-      the way a short-page in-flow layout would leave it).
-- [ ] Both the collapsed bar and the open pane are viewport-pinned —
-      not only one of the two states.
-- [ ] The dock's height (collapsed height, open default height, and
+      the way a short-page in-flow layout would leave it). **Not
+      verified live**: same mechanism, same live-browser-only
+      limitation as the box above; `/d/mbrelay-torture`'s own idle relay
+      page (short) is the one live check available this session (no
+      robot to compare against a tall page), and even that was not
+      re-walked this session — left for the stakeholder's walk.
+- [x] Both the collapsed bar and the open pane are viewport-pinned —
+      not only one of the two states. **Verified by code review, not a
+      live walk**: `.console-dock` (the single element both the bar and
+      the pane live inside) carries the one `position: fixed` rule
+      (`ConsoleDock.css`); there is no separate positioning rule for
+      either sub-state, so the two cannot diverge. `ConsoleDock.test.tsx`'s
+      new ticket-008 suite confirms both states write a value to
+      `--console-dock-height` (collapsed: bar only; open: bar+pane), which
+      is the only state-dependent input to that positioning.
+- [x] The dock's height (collapsed height, open default height, and
       any dragged height from ticket 004) is available as a single CSS
       custom property that both `ConsoleDock`'s own positioning and
       every page's `calc(100vh - ...)` column rule consume — no
       hardcoded pixel/rem literal for the dock's height is duplicated
-      across stylesheets.
-- [ ] Every existing `calc(100vh - Npx)` column-sizing rule found via
+      across stylesheets. `--console-dock-height`
+      (`console-dock/ConsoleDock.tsx`'s "Ticket 008" doc comment is the
+      canonical contract); consumed by `RobotPage.css`'s
+      `.robot-page-column-console` and `DevicePage.css`'s
+      `.device-page-shell`.
+- [x] Every existing `calc(100vh - Npx)` column-sizing rule found via
       `grep -rn "calc(100vh" packages/ui/src` is reviewed and, where it
       reserves space for the dock, updated to reference the shared
-      custom property instead of a fixed literal.
+      custom property instead of a fixed literal. Re-grepped against
+      this ticket's own starting point (post-007): `DeviceConsole.css:104`
+      (reviewed — does not reserve space *for* the dock, since both its
+      remaining mount sites, the dock pane and the popup window, already
+      flex-bound it from their own container; comment corrected, calc
+      left as a generous backstop, not rewritten), `FlashDialog.css:8`
+      (unrelated — a `<dialog>` modal, no dock interaction), `RobotPage.css:147`
+      (updated to subtract `var(--console-dock-height, 0px)` — this is
+      the one rule that actually reserves dock room, for `DriveTab`'s
+      right column). `DriveTab.css` itself carries no `calc(100vh` of
+      its own post-007 (confirmed); `RelayPage.css` likewise has none of
+      its own, by design (see that file's own new ticket 008 comment —
+      it inherits the fix via the nested `RobotPage` it renders for a
+      bridged child).
 - [ ] With the dock open at its default height, then dragged to
       `MAX_DOCK_HEIGHT_PX` (ticket 004's clamp), no page's
       bottom-of-column control (Copy button, "Start over",
       `PathTracePanel`) is covered by or rendered inaccessible behind
       the dock, on every device page (`RobotPage` in each tab,
-      `RelayPage`, `UnknownDevicePage`).
+      `RelayPage`, `UnknownDevicePage`). **Not verified live by the
+      programmer**: no robot is on the bench this session (only one
+      unconnected relay at `/d/mbrelay-torture`), so `RobotPage`'s
+      Main/Drive/Calibration/Configuration tabs could not be exercised
+      in a real browser at all, let alone with the dock dragged to
+      `MAX_DOCK_HEIGHT_PX`. The mechanism is in place (`.device-page-shell`'s
+      `padding-bottom: var(--console-dock-height)` for ordinary flow
+      content; `.robot-page-column-console`'s height subtraction for
+      `DriveTab`'s sticky right column/`PathTracePanel`), reviewed by
+      code, not confirmed by eye. Left for the stakeholder's own
+      Chromium walk, same gap ticket 007 hit for the same reason.
 - [ ] Resizing the dock (ticket 004's drag handle) live-updates the
       reserved space in the page above it, with no visible flash of
-      overlap or gap during the drag.
+      overlap or gap during the drag. **Partially verified**: the
+      property write uses `useLayoutEffect` (commits before paint, in
+      the same frame as the drag's own re-render) rather than
+      `useEffect`, and `ConsoleDock.test.tsx`'s new suite confirms the
+      property's *value* updates on every `pointermove`, not just on
+      `pointerup`. Whether that reads as visually flash-free in a real
+      browser is a live-rendering claim jsdom cannot check — left for
+      the stakeholder's walk.
 - [ ] No console errors; behavior is unchanged for every acceptance
       criterion already recorded for SUC-001/SUC-002 in sprint.md
       (toggle, collapse, persistence) — this ticket changes
-      positioning, not those interactions.
+      positioning, not those interactions. **Partially verified**: the
+      full suite (148 files / 2799 tests, up from the 148/2791 baseline
+      by this ticket's own 8 new tests) passes with no changes to any
+      existing SUC-001/SUC-002 test, and `tsc --noEmit` is clean. "No
+      console errors" specifically means a live browser's own console,
+      which was not exercised this session (see the two boxes above) —
+      left for the stakeholder's walk.
 
 ## Verification note (read before writing tests)
 

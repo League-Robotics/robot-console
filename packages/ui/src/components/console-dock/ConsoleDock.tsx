@@ -157,8 +157,136 @@
  * console at once until ticket 007's single clean removal pass. That is
  * intentional incremental delivery (sprint.md's Migration Concerns), not
  * a defect to fix here.
+ *
+ * ## Ticket 008: pinned to the viewport bottom, and `--console-dock-height`
+ *
+ * The stakeholder's own analogy for this whole feature, from the very
+ * start, was a browser's JavaScript devtools console — "like you can
+ * with the console, the debug console, on a web browser for JavaScript.
+ * Same idea" — and, asked directly with the two layouts shown side by
+ * side (sprint 022, 2026-09-20), he confirmed "pinned to the bottom"
+ * meant the browser **viewport**, not the bottom of the page's own
+ * scrollable content. Tickets 002/003 built the latter: `ConsoleDock`
+ * was a flex-column participant of `DevicePage.tsx`'s
+ * `.device-page-shell`, so it sat after page content in normal document
+ * flow — verified live in Chromium that a page taller than the viewport
+ * (e.g. the Calibration tab) required scrolling to reach the dock at
+ * all, exactly the devtools-console behavior the stakeholder's own
+ * analogy rules out. See sprint.md's Architecture §Revision
+ * (2026-09-20) and the Design Rationale entry it replaces for the full
+ * decision record.
+ *
+ * `ConsoleDock.css` now makes `.console-dock` `position: fixed` to the
+ * viewport's own bottom edge — both the always-present collapsed bar
+ * and the open pane, since both live inside this one element, per this
+ * ticket's own Acceptance Criteria ("both dock states are pinned, not
+ * only the open pane"). That repositioning is the easy part; the hazard
+ * it introduces is not. Several stylesheets already size page columns
+ * against the *old*, in-flow dock's assumed footprint with fixed
+ * `calc(100vh - Npx)` literals (`RobotPage.css`'s
+ * `.robot-page-column-console`, before this ticket), and ticket 004's
+ * drag handle makes the dock's own height a **live, student-controlled
+ * variable** — collapsed-bar height in one state, bar height plus
+ * `heightPx` in the other, changing continuously during a drag. A fixed
+ * literal in page CSS and a variable-height fixed-position dock cannot
+ * both be right at the same time: either a hardcoded reservation is too
+ * small (page content hides behind the dock) or too large (a dead gap
+ * opens beneath it) the moment the student drags the handle away from
+ * whatever height the literal assumed.
+ *
+ * **The fix: exactly one number, computed here, written to one CSS
+ * custom property, read by every page rule that needs to reserve room
+ * for the dock.** `--console-dock-height` (see
+ * {@link CONSOLE_DOCK_HEIGHT_PROPERTY}) is set on `document.
+ * documentElement.style` — global, not scoped to this component's own
+ * subtree, because the pages that need to read it
+ * (`RobotPage.css`'s `.robot-page-column-console`, `DevicePage.css`'s
+ * `.device-page-shell`) are siblings/ancestors of `ConsoleDock` in the
+ * render tree, not descendants, and a plain CSS custom property
+ * inherits from the document root to everywhere regardless of DOM
+ * nesting, with no context/prop-threading required. This is the "single
+ * source of truth" sprint.md's Design Rationale calls for: the dock's
+ * own positioning and every page's reserved space read the *same* live
+ * value, so they cannot drift apart the way two independently
+ * hand-maintained numbers eventually would.
+ *
+ * **Why a computed formula, not a `ResizeObserver`/`getBoundingClientRect`
+ * measurement of the real rendered dock.** A measurement would in
+ * principle need no maintained constant at all and could never drift
+ * from the truth. It was rejected specifically because this project's
+ * test environment, jsdom, implements no layout engine — every element's
+ * `getBoundingClientRect()`/`offsetHeight` is always `0` there (the same
+ * gap `useDragResize`'s own doc comment already documents for the
+ * Pointer Capture API) — so a measured value would make this property's
+ * value *untestable*: every jsdom assertion would read back `"0px"`
+ * regardless of `open`/`heightPx`, which is exactly the "vacuous CSS
+ * assertion" failure mode this ticket's own Verification note warns
+ * against. A small set of documented pixel constants, combined with
+ * state this component already tracks precisely (`open`, `liveHeightPx`
+ * — the exact same number already driving `.console-dock-pane`'s own
+ * inline `style.height` a few lines below, so the two can never
+ * disagree with each other), keeps the value both correct and
+ * assertable in a plain jsdom test (`document.documentElement.style.
+ * getPropertyValue(CONSOLE_DOCK_HEIGHT_PROPERTY)`), on mount, on
+ * toggle, and live during a drag — see `ConsoleDock.test.tsx`'s own
+ * ticket 008 suite.
+ *
+ * {@link COLLAPSED_DOCK_HEIGHT_PX} is therefore a *judgment-call
+ * constant*, not a measurement — matching this codebase's already-
+ * established discipline for exactly this kind of number (see
+ * `RobotPage.css`'s own `12rem` comment: "approximates the measured
+ * height... measured live at ~189px... leaves a little headroom rather
+ * than cutting it exactly"). It was chosen by measuring
+ * `.console-dock-bar`'s actual rendered height live in Chromium (title
+ * text, the quiet indicator, the pop-out/toggle buttons, one row,
+ * `align-items: center`, plus `.console-dock`'s own 1px top border) and
+ * rounding up slightly for headroom, the same discipline. **If
+ * `.console-dock-bar`'s own CSS ever changes height** (a new element
+ * added to the bar, a font-size or padding change), this constant must
+ * be re-measured and updated to match, or the dock's real footprint and
+ * every page's reserved space will silently drift apart — the exact
+ * hazard this ticket exists to prevent for the drag-resizable pane
+ * height, now equally true for this fixed collapsed height. There is no
+ * compiler or test that catches that drift; it is a manual invariant,
+ * called out here so a future editor of `ConsoleDock.css` knows to look
+ * for it.
+ *
+ * **Who reads `--console-dock-height`, and who deliberately does not:**
+ *
+ *  - `RobotPage.css`'s `.robot-page-column-console` (`DriveTab.tsx`'s
+ *    right column, the one remaining user of that class post-ticket-007)
+ *    subtracts it from its own `calc(100vh - ...)` height so its
+ *    `position: sticky` box — and therefore `PathTracePanel`, which
+ *    fills the rest of that column — never extends its own bottom edge
+ *    underneath the fixed dock.
+ *  - `DevicePage.css`'s `.device-page-shell` adds it as
+ *    `padding-bottom`, reserving the same live height as blank space at
+ *    the end of every device page's own content, so ordinary
+ *    bottom-of-column controls that are not viewport-bound at all (the
+ *    Copy button on both code blocks, `CalibrationTable`'s "Start
+ *    over") still scroll fully into view above the dock rather than
+ *    ending up hidden behind it.
+ *  - `DeviceConsole.css`'s `.console-log` does **not** read this
+ *    property, deliberately — see that file's own ticket 008 comment
+ *    for why: it lives *inside* the console itself (mounted either in
+ *    `.console-dock-pane`, whose own inline `style.height` already
+ *    bounds it exactly, or in the popup window's `.popup-console-window`,
+ *    which has no dock inside it to reserve room for at all), not in a
+ *    page column reserving room *around* the dock — the two concerns
+ *    that `--console-dock-height` exists to keep synchronized are simply
+ *    not in play there.
+ *
+ * **Reset on unmount.** The effect below that writes the property also
+ * removes it when `ConsoleDock` itself unmounts (navigating back to `/`,
+ * which unmounts `DevicePage` and everything beneath it) — so a future
+ * consumer mounted after this one never inherits a stale reservation
+ * left over from a previous device page visit's dock height. `/`
+ * (`FrontPage.tsx`) never reads this property today, but leaving a
+ * document-root style property set indefinitely after its owning
+ * component is gone is exactly the kind of silent-drift hazard this
+ * ticket is otherwise working to eliminate everywhere else.
  */
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { DeviceConsole } from "../DeviceConsole";
 import { CommandStrip } from "../CommandStrip";
@@ -197,6 +325,37 @@ export const MIN_DOCK_HEIGHT_PX = 140;
  * student is trying to look at. Also a judgment call per the ticket's
  * Description, not a stakeholder-specified number. */
 export const MAX_DOCK_HEIGHT_PX = 640;
+
+/** The CSS custom property `ConsoleDock` writes its own live rendered
+ * height to, and every page CSS rule that needs to reserve room for the
+ * dock reads back via `var(--console-dock-height, 0px)` — see this
+ * file's own doc comment, "Ticket 008," for the full contract. Exported
+ * as a named constant (rather than each site spelling the string
+ * literal) so `ConsoleDock.test.tsx` and any future consumer share
+ * exactly one spelling of the property name. */
+export const CONSOLE_DOCK_HEIGHT_PROPERTY = "--console-dock-height";
+
+/** The collapsed bar's own rendered height in pixels, including
+ * `.console-dock`'s own 1px top border — the dock's total footprint
+ * while `open` is false. A documented constant, not a live
+ * `getBoundingClientRect()` measurement — see this file's own doc
+ * comment, "Ticket 008," for why (in short: jsdom has no layout engine,
+ * so a measured value would always read back `0` in this project's
+ * tests, making it unassertable). Re-measure and update this if
+ * `.console-dock-bar`'s own CSS ever changes height. */
+export const COLLAPSED_DOCK_HEIGHT_PX = 44;
+
+/** Extra pixels `.console-dock-pane`'s own top border contributes once
+ * the dock is open, on top of {@link COLLAPSED_DOCK_HEIGHT_PX} (which
+ * already counts `.console-dock`'s own outer border, present in both
+ * states). The pane's own *content* height is never approximated —
+ * it's `liveHeightPx`, the exact number already driving that element's
+ * inline `style.height` a few lines below `ConsoleDock`'s own render,
+ * so the two can never disagree. Exported (like the constants above)
+ * so `ConsoleDock.test.tsx` can compute the exact expected
+ * `--console-dock-height` value from named constants rather than a
+ * bare magic `+ 1` in the test file itself. */
+export const OPEN_PANE_BORDER_PX = 1;
 
 /** Clamp a candidate height to the documented [min, max] range. Shared
  * by the live-drag path and the persisted-restore path so a height
@@ -372,6 +531,40 @@ export function ConsoleDock({ link, name }: ConsoleDockProps) {
     [updateDockState],
   );
   const { heightPx: liveHeightPx, isDragging, onHandlePointerDown } = useDragResize(heightPx, commitHeight);
+
+  // Sprint 022 ticket 008: the dock's own current total footprint --
+  // just the collapsed bar while closed, or the bar plus the open
+  // pane's own live height (already `liveHeightPx`, which already
+  // tracks a drag in progress) while open. See this file's own doc
+  // comment, "Ticket 008," for why this is a computed formula from
+  // state already tracked here rather than a DOM measurement.
+  const dockHeightPx = open ? COLLAPSED_DOCK_HEIGHT_PX + OPEN_PANE_BORDER_PX + liveHeightPx : COLLAPSED_DOCK_HEIGHT_PX;
+
+  // `useLayoutEffect`, not `useEffect`: this must commit before the
+  // browser paints the frame that changed `dockHeightPx` (a toggle or a
+  // drag), or a page reading `var(--console-dock-height)` for its own
+  // `calc(100vh - ...)` sizing would paint one frame using the *old*
+  // reservation against the *new* dock height -- exactly the "visible
+  // flash of overlap or gap during the drag" this ticket's Acceptance
+  // Criteria rule out.
+  useLayoutEffect(() => {
+    document.documentElement.style.setProperty(CONSOLE_DOCK_HEIGHT_PROPERTY, `${dockHeightPx}px`);
+  }, [dockHeightPx]);
+
+  // Cleanup only, deliberately on its own effect with an empty
+  // dependency array (matching the popup-close-on-unmount effect
+  // below): removing the property is something that should happen
+  // exactly once, when this component itself unmounts, not every time
+  // `dockHeightPx` happens to change -- folding it into the effect
+  // above would remove the property on every render's cleanup pass,
+  // immediately before that same render's own `setProperty` call put it
+  // right back, which is harmless but pointless churn.
+  useEffect(() => {
+    return () => {
+      document.documentElement.style.removeProperty(CONSOLE_DOCK_HEIGHT_PROPERTY);
+    };
+  }, []);
+
   const linkNotices = useLinkNotices();
   const notice = linkNotices.get(link.id);
   // Bench defect 010 addendum's `LinkNotice.level` is already

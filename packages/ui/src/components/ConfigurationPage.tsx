@@ -100,6 +100,11 @@ import {
   type CalibrationPatch,
   type CalibrationState,
 } from "../lib/calibration";
+import {
+  buildCalibrationWrites,
+  describeCalibrationWrites,
+  writeCalibration,
+} from "../lib/calibrationWrite";
 import { useCopied } from "../lib/clipboard";
 import { validateRadioOverrideInput } from "../lib/radioAddress";
 import { isLinkUsable } from "../deviceDisplay";
@@ -156,7 +161,7 @@ export interface ConfigurationPageProps {
 
 export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
   const robotName = device.name;
-  const { send } = useWsActions();
+  const { send, sendCommand } = useWsActions();
   // Ticket 011 (carried from 009's send-gating sweep): Save (via
   // `saveWifi`) and Write to robot both send over the wire, so both
   // gate on `useSendable()` the same way every other send-capable
@@ -254,6 +259,38 @@ export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
       setTimeout(() => setSavedNote(null), 2000);
     }
   }
+  // Ticket 2026-09-19: calibration is writable over the wire now.
+  // `wheel_diameter` (ordinal 40) and `track_width` (41) landed in
+  // nezha-diffdrive alongside the `rotational_slip` (16) that was
+  // already there, so the three values this page has always been able
+  // to EDIT can finally be SENT -- see `lib/calibrationWrite.ts`, which
+  // owns the cm->mm conversion the track-width field needs.
+  const calibrationWrites = useMemo(
+    () => buildCalibrationWrites(calibration, derived),
+    [calibration, derived],
+  );
+  const [calibrationNote, setCalibrationNote] = useState<string | null>(null);
+
+  // One button, both jobs, because the page has one "Write to robot"
+  // (stakeholder direction) and a student who pressed it means "put
+  // what is on this page onto the robot". Wi-Fi still goes through the
+  // host's own provisioning message; calibration goes straight out as
+  // SETs on this link. Either half is skipped when it has nothing to
+  // say, so a page with only calibration filled in writes calibration
+  // and does not report a Wi-Fi failure it never attempted.
+  function writeToRobot(): void {
+    if (!openLink || !sendable) return;
+    if (stored?.ssid) {
+      send({ type: "provision-wifi", linkId: openLink.id, slot: 0 });
+    }
+    if (calibrationWrites.length > 0) {
+      writeCalibration(sendCommand, openLink.id, calibrationWrites);
+      setCalibrationNote(`Sent ${describeCalibrationWrites(calibrationWrites)}.`);
+    } else {
+      setCalibrationNote(null);
+    }
+  }
+
   const code = useMemo(
     () =>
       configurationCode({
@@ -349,6 +386,11 @@ export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
               {provisionResult.message}
             </p>
           )}
+          {calibrationNote && (
+            <p className="credentials-result credentials-result-ok" role="status" data-testid="configuration-calibration-written">
+              {calibrationNote}
+            </p>
+          )}
           {savedNote && (
             <p className="credentials-result credentials-result-ok" role="status" data-testid="configuration-saved">
               {savedNote}
@@ -367,22 +409,25 @@ export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
             <button
               type="button"
               data-testid="configuration-write"
-              disabled={!openLink || !stored?.ssid || !sendable}
+              disabled={!openLink || !sendable || (!stored?.ssid && calibrationWrites.length === 0)}
               title={
                 !sendable
                   ? "Disconnected from the host"
-                  : openLink
-                    ? "Write the saved Wi-Fi network to the robot's credential slot 0"
-                    : "Open a link to the robot first"
+                  : !openLink
+                    ? "Open a link to the robot first"
+                    : !stored?.ssid && calibrationWrites.length === 0
+                      ? "Nothing to write yet -- enter a calibration value or a Wi-Fi network"
+                      : "Write the calibration values and the saved Wi-Fi network to the robot"
               }
-              onClick={() => openLink && sendable && send({ type: "provision-wifi", linkId: openLink.id, slot: 0 })}
+              onClick={writeToRobot}
             >
               Write to robot
             </button>
           </div>
           <p className="credentials-note">
-            Write to robot stores the Wi-Fi network on the robot itself; calibration and radio settings reach it
-            through the code on the right.
+            Write to robot sends the calibration values and stores the Wi-Fi network on the robot itself.
+            Calibration sent this way lasts until the robot is power-cycled -- paste the code on the right into the
+            program to make it stick. Radio settings reach the robot only through that code.
           </p>
         </div>
       </div>

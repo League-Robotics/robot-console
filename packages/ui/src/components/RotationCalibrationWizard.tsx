@@ -31,11 +31,18 @@
  * Measured on hardware (the issue's own table): `rotational_slip`
  * **works** over `SET`. So a succeeded `calturn` run really can be
  * one-click: this panel's own Apply button sends
- * `SET rotational_slip <slip>` directly. Contrast
- * `DistanceCalibrationWizard.tsx`, whose `calwheels` result has no
- * config field to write to at all and therefore has no Apply control
- * of any kind, not even a disabled one -- the two wizards are
- * deliberately asymmetric because the hardware is asymmetric.
+ * `SET rotational_slip <slip>` directly.
+ *
+ * 2026-09-19: `rotational_slip` is no longer the only writable leg --
+ * nezha-diffdrive added `wheel_diameter` (40) and `track_width` (41),
+ * and the Configuration tab writes all three through
+ * `lib/calibrationWrite.ts`. This button still sends ONLY the slip, and
+ * that is not an oversight: a spin measures `b`, and `calturn.result`'s
+ * `tw` is the robot's own existing track-width record (a caliper
+ * measurement somebody typed at flash time), not something this run
+ * discovered. Writing `tw` back would send the robot the number it
+ * already has, dressed up as a result. The track width is entered on
+ * the Configuration tab, where a human is actually reading a caliper.
  *
  * ## The anchor-overwrite and its restore
  *

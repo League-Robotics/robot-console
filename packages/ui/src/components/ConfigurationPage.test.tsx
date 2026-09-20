@@ -222,6 +222,74 @@ describe("ConfigurationPage", () => {
     expect(sent(socket).length).toBe(sentBeforeClicks);
   });
 
+  // 2026-09-19: calibration became writable over the wire
+  // (`wheel_diameter` 40, `track_width` 41, alongside the existing
+  // `rotational_slip` 16). These three cover the whole point of that
+  // change -- a value typed on this page reaching the robot -- and in
+  // particular the cm->mm conversion, which nothing in the protocol
+  // would catch if it regressed.
+  it("Write to robot sends the entered calibration as SETs, track width converted to mm", () => {
+    const { el, socket } = mountPage();
+    act(() => {
+      socket.emitMessage({ type: "wifi-credentials", ssid: null, hasPassword: false, source: "none" });
+    });
+    // Nothing entered and no Wi-Fi stored: nothing to write.
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.disabled).toBe(true);
+
+    type(el, "#configuration-wheel-diameter", "81.45");
+    type(el, "#configuration-track-width", "12.85");
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.disabled).toBe(false);
+
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.click();
+    });
+    // 12.85 cm leaves as 128.5 mm. A 12.85 on the wire would be a
+    // 1.3 cm robot and a turn a tenth of the size it was asked for.
+    expect(sent(socket).slice(-3)).toEqual([
+      { type: "send-command", linkId: "usb-ROBOT-A", verb: "SET", fields: ["wheel_diameter", "81.45"] },
+      { type: "send-command", linkId: "usb-ROBOT-A", verb: "SET", fields: ["track_width", "128.5"] },
+      // ...and the store verb, so it survives the power cycle. cm here,
+      // mm above: calsave is a program on the robot calling
+      // setTrackWidth(), whose unit is centimetres.
+      { type: "send-command", linkId: "usb-ROBOT-A", verb: "RUN", fields: ["calsave", "81.45", "12.85", "0"] },
+    ]);
+    expect(el.querySelector('[data-testid="configuration-calibration-written"]')?.textContent).toContain(
+      "track_width 128.5 mm",
+    );
+  });
+
+  it("Write to robot still provisions Wi-Fi, and sends both when both are filled in", () => {
+    const { el, socket } = mountPage();
+    act(() => {
+      socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "stored" });
+    });
+    type(el, "#configuration-wheel-diameter", "81.45");
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.click();
+    });
+    expect(sent(socket).slice(-3)).toEqual([
+      { type: "provision-wifi", linkId: "usb-ROBOT-A", slot: 0 },
+      { type: "send-command", linkId: "usb-ROBOT-A", verb: "SET", fields: ["wheel_diameter", "81.45"] },
+      { type: "send-command", linkId: "usb-ROBOT-A", verb: "RUN", fields: ["calsave", "81.45", "0", "0"] },
+    ]);
+  });
+
+  it("sends no calibration SET for a value this session does not have", () => {
+    const { el, socket } = mountPage();
+    act(() => {
+      socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "stored" });
+    });
+    const before = sent(socket).length;
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.click();
+    });
+    // Wi-Fi only: no calibration entered, so no SETs and no claim of one.
+    expect(sent(socket).slice(before)).toEqual([
+      { type: "provision-wifi", linkId: "usb-ROBOT-A", slot: 0 },
+    ]);
+    expect(el.querySelector('[data-testid="configuration-calibration-written"]')).toBeNull();
+  });
+
   it("seeds the radio draft from device.radio and shows its source via the shared AddressSourceChip", () => {
     const device = robot({ radio: { channel: 55, group: 114, source: "override" } });
     const el = mount(

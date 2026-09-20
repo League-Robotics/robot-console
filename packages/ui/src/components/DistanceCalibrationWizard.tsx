@@ -41,16 +41,21 @@
  *    phase is recomputed from `log.filter(id >= runStartId)` on every
  *    render.
  *
- * ## No Apply control -- ever
+ * ## No Apply control, and why it is still right
  *
- * Measured on hardware (the issue's own table): `travel_calib` returns
- * `err 1` over `SET` -- there is no such config field. `calwheels`'s
- * result cannot be applied live at all; it needs a full rebuild and
- * reflash. This panel shows the measured diameter and the line to paste
- * into a rebuilt program, and nothing else -- no disabled button, no
- * button that would error if pressed. A control that cannot work must
- * not exist (see `RotationCalibrationWizard.tsx`'s own doc comment for
- * the contrasting case: `calturn`'s result genuinely can be applied).
+ * There used to be a hard reason: `travel_calib` returned `err 1` over
+ * `SET`, so a `calwheels` result could not be applied live at all, and
+ * a control that cannot work must not exist. That reason expired on
+ * 2026-09-19, when nezha-diffdrive added `wheel_diameter` (ordinal 40).
+ *
+ * The button still does not belong here, for a softer reason: a
+ * succeeded `calwheels` run has ALREADY applied and stored its own
+ * result on the robot (`calSaveWheel()`, and `result.stored`), so an
+ * Apply button would send the robot a number it is already running and
+ * report that as an action. What the new field buys is the case this
+ * panel is not: typing in a diameter you already know, without driving
+ * a course to rediscover it. That lives on the Configuration tab, via
+ * `lib/calibrationWrite.ts`.
  *
  * No nudge control, no beam-pointer UI: this routine has neither (see
  * `sprint.md`'s Detail-planning findings, unchanged since ticket 003).
@@ -390,8 +395,9 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
             </p>
           ) : (
             <p className="distance-calibration-no-apply" data-testid="distance-calibration-no-apply">
-              This can't be applied live — the robot has no config field for wheel calibration over the wire. Paste
-              the line below into your program and reflash to use it.
+              This firmware has no wire field for it. Paste the line below into your program and reflash to use
+              it — or flash a build carrying <code>wheel_diameter</code> (nezha-diffdrive 2026-09-19 or later),
+              where the Configuration tab can write it straight to the robot.
             </p>
           )}
           <p className="distance-calibration-note">

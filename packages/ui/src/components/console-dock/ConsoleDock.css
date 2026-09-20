@@ -61,8 +61,34 @@
   background: var(--rc-danger-bg);
 }
 
-.console-dock-toggle {
+/* Ticket 005's pop-out button. Sits on the always-present bar (not
+   inside `.console-dock-pane`) so it works whether the dock is open or
+   collapsed, per SUC-003's own precondition -- unlike the toggle
+   button, `margin-left: auto` is deliberately NOT set here, so this
+   button and the toggle sit next to each other rather than both trying
+   to hug the bar's right edge. */
+.console-dock-popout {
   margin-left: auto;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.3rem 0.85rem;
+  border-radius: 0.4rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+/* Shown in the pop-out button's place while a popup is already open --
+   this sprint's Out of Scope excludes a second simultaneous popup, so
+   there is nothing for a second click to do. Quiet, matching
+   `.console-dock-title`, since this is informational, not actionable. */
+.console-dock-popped-out-hint {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--rc-text-muted);
+}
+
+.console-dock-toggle {
   border: 1px solid var(--rc-border);
   background: var(--rc-surface);
   color: var(--rc-text);

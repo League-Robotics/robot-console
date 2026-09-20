@@ -1,25 +1,14 @@
 ---
-id: "005"
-title: "Pop-out console window: window.open, portal rendering, and stylesheet copy"
-status: open
-use-cases: ["SUC-003"]
-depends-on: ["003"]
-github-issue: ""
-issue: ""
-# completes_issue: Controls whether linked issues are archived when this ticket
-# is moved to done. Default: true (archive when all referencing tickets are done).
-# Set to false (scalar) to suppress archival for ALL linked issues on this ticket.
-# Set to a mapping {filename.md: false} to suppress archival per issue filename.
-# Use false for tickets that partially address a multi-sprint umbrella issue.
+id: '005'
+title: 'Pop-out console window: window.open, portal rendering, and stylesheet copy'
+status: done
+use-cases:
+- SUC-003
+depends-on:
+- '003'
+github-issue: ''
+issue: ''
 completes_issue: true
-# exception: Written by a lower agent when it cannot proceed (see architecture §exception-protocol).
-# exception:
-#   thrown_by: "programmer"          # "programmer" | "sprint-planner"
-#   thrown_at: "2026-05-07T14:23:00Z"
-#   attempted: |
-#     Description of what was attempted before giving up.
-#   conflict: "architecture-update.md §3 — reason the agent is blocked"
-#   surface: "internal"              # "user-visible" | "internal"
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
@@ -82,13 +71,13 @@ needs to track the same `{ link, name }` `ConsoleDock` already receives
 
 ## Acceptance Criteria
 
-- [ ] `lib/popupWindow.ts` exports `openPopupWindow(name, features):
+- [x] `lib/popupWindow.ts` exports `openPopupWindow(name, features):
       Window | null`, calling the bare `window.open` and nothing more.
-- [ ] The pop-out button's `onClick` handler calls `openPopupWindow`
+- [x] The pop-out button's `onClick` handler calls `openPopupWindow`
       synchronously (no `await`/effect indirection before the call).
-- [ ] The popup renders the same `DeviceConsole`/`CommandStrip` content
+- [x] The popup renders the same `DeviceConsole`/`CommandStrip` content
       via a `ReactDOM.createPortal` into the popup's `document.body`.
-- [ ] Every `<style>`/`<link rel="stylesheet">` element present in the
+- [x] Every `<style>`/`<link rel="stylesheet">` element present in the
       parent `document.head` at open time is copied into the popup's
       `<head>`; the popup is visually consistent with the main window
       (verified live in both `npm run dev` and a production build —
@@ -97,16 +86,16 @@ needs to track the same `{ link, name }` `ConsoleDock` already receives
       restart it yourself, per this project's standing safety rule —
       Vite HMR should pick up UI source changes without one in the
       normal case).
-- [ ] Activating the pop-out button collapses the docked console in
+- [x] Activating the pop-out button collapses the docked console in
       the main window (ticket 003's collapsed state).
-- [ ] The popup has a "put it back" control that closes the popup and
+- [x] The popup has a "put it back" control that closes the popup and
       reopens the main-window dock (open, not collapsed).
-- [ ] Closing the popup window directly (its native close control)
+- [x] Closing the popup window directly (its native close control)
       also reopens the main-window dock — covered by both the
       `pagehide` listener and the `popup.closed` poll fallback.
-- [ ] The parent window's `unload` closes an open popup, so a reload or
+- [x] The parent window's `unload` closes an open popup, so a reload or
       tab close doesn't orphan it.
-- [ ] All of the above is tested against the `lib/popupWindow.ts` fake
+- [x] All of the above is tested against the `lib/popupWindow.ts` fake
       seam — no test depends on a real browser `window.open`.
 
 ## Implementation Plan

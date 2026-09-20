@@ -74,11 +74,61 @@
  * this as a documented limitation rather than requiring it, and nothing
  * else in this dock is keyboard-resizable yet either.
  *
+ * ## Ticket 005: pop-out into a separate browser window
+ *
+ * The stakeholder's own words: "you'll have a button to expand it to
+ * its own window... the console in the main window gets collapsed...
+ * if I uncollapse it, it will delete the window and open it back up on
+ * the bottom." The pop-out button (`.console-dock-popout`, rendered on
+ * the always-present bar so it works whether the dock is open or
+ * collapsed, per SUC-003's own precondition) calls
+ * `lib/popupWindow.ts`'s `openPopupWindow` **synchronously, inside its
+ * own `onClick` handler** — not from an effect, not after an `await` —
+ * because a `window.open` call whose user-gesture chain has already
+ * ended by the time it runs is treated as an unrequested popup and
+ * silently blocked. The returned `Window` is stored in this
+ * component's own `popup` state; `PopupConsoleWindow` (mounted only
+ * while `popup` is non-null) owns everything that happens *inside*
+ * that window from then on — the actual `window.open` call
+ * deliberately does not live inside `PopupConsoleWindow` itself, so
+ * that component's mount effects (which do run on a later tick) are
+ * never on the critical path for the user-gesture requirement. See
+ * `PopupConsoleWindow.tsx`'s own doc comment for the full reasoning,
+ * the stylesheet-copy mechanics, and the three-signal close lifecycle.
+ *
+ * Three things all converge on the same `open`/`popup` state pair,
+ * matching the stakeholder's own description of the dock and the
+ * popup as two views of one console, never both at once:
+ *
+ *  - Activating the pop-out button always collapses the dock (`open:
+ *    false`), regardless of whether it was open or already collapsed
+ *    beforehand — this is what SUC-003's own postcondition ("exactly
+ *    one visible console exists at a time") requires.
+ *  - Reopening the docked console (the ordinary toggle button) while a
+ *    popup is active closes that popup first, then opens the dock —
+ *    the stakeholder's own words for this exact case: "if I do that,
+ *    it closes the window, and now I'm seeing the console at the
+ *    bottom of the screen." This is not one of ticket 005's own
+ *    checklist bullets in isolation, but it is squarely dock-shell
+ *    interaction (ticket 003/005's territory, not ticket 006's
+ *    route-driven retargeting), explicitly called out in the
+ *    stakeholder's brief, and directly testable with the seam this
+ *    ticket already introduces — so it is built now rather than left
+ *    for later.
+ *  - `PopupConsoleWindow`'s `onClose` (fired by "put it back", a native
+ *    close, or the closed-poll fallback — see that component's own doc
+ *    comment) clears `popup` and reopens the dock (`open: true`, never
+ *    collapsed — per SUC-003's Alternate Flow, closing the popup is the
+ *    student asking for the console *back*, not asking for it gone).
+ *
  * ## Still deliberately incomplete after this ticket
  *
- * No pop-out window (ticket 005), no route-driven retargeting/teardown
- * for relay bridging (ticket 006). **No per-tab console mount is removed
- * by this ticket** — every page that already renders
+ * No route-driven retargeting/teardown for relay bridging or
+ * navigation to `/` (ticket 006) — this dock's popup only tracks
+ * whatever `{ link, name }` it is currently given; it does not yet
+ * close on navigation to the device list, nor retarget in place when
+ * the routed device changes. **No per-tab console mount is removed by
+ * this ticket** — every page that already renders
  * `ConsolePane`/`CommandStrip` keeps doing so unchanged, so the running
  * app shows both the dock and the old per-tab console at once until
  * ticket 007's single clean removal pass. That is intentional
@@ -91,7 +141,24 @@ import { DeviceConsole } from "../DeviceConsole";
 import { CommandStrip } from "../CommandStrip";
 import { useLinkNotices } from "../../ws/WsProvider";
 import { useDockPersistence } from "./useDockPersistence";
+import { openPopupWindow } from "../../lib/popupWindow";
+import { PopupConsoleWindow } from "./PopupConsoleWindow";
 import "./ConsoleDock.css";
+
+/** The pop-out window's `window.open` target name. A fixed name (rather
+ * than one derived from the link id) is fine per this sprint's Out of
+ * Scope ("multi-window support beyond one popup at a time") — nothing
+ * in this codebase ever opens two of these at once. */
+const POPUP_WINDOW_NAME = "robot-console-debug-console";
+
+/** The pop-out window's initial `features` string. Sized close to
+ * `DEFAULT_DOCK_HEIGHT_PX`'s own footprint plus room for the popup's own
+ * title bar (`PopupConsoleWindow`'s `.popup-console-window-bar`) so the
+ * window opens at a size that shows real content immediately rather
+ * than a sliver the student has to resize by hand first. Ordinary
+ * browser window chrome (resize handles, its own titlebar) still lets
+ * the student resize it afterward — nothing here pins the size. */
+const POPUP_WINDOW_FEATURES = "width=640,height=480";
 
 /** Minimum dock height: the send box (`CommandStrip`'s own row) plus a
  * couple of log lines at `DeviceConsole.css`'s `.console-log` line
@@ -293,9 +360,63 @@ export function ConsoleDock({ link, name }: ConsoleDockProps) {
   // bar this ticket sets.
   const showIndicator = notice !== undefined && (notice.level === "warn" || notice.level === "error");
 
+  // `null` whenever no popup is open. Holding the actual `Window` here
+  // (rather than a plain boolean "is popped out" flag) is what lets
+  // `handleToggleOpen`/`handlePopupClosed` below call `.close()` on the
+  // *same* window object `PopupConsoleWindow` is managing, with no
+  // second source of truth to keep in sync.
+  const [popup, setPopup] = useState<Window | null>(null);
+
+  const handlePopOut = useCallback(() => {
+    // Must be a direct, synchronous call from inside this click
+    // handler -- see this file's own doc comment ("Ticket 005: pop-out
+    // into a separate browser window") and `lib/popupWindow.ts`'s own
+    // doc comment for why an effect or a promise continuation here
+    // would risk the browser silently blocking the popup.
+    const popupWindow = openPopupWindow(POPUP_WINDOW_NAME, POPUP_WINDOW_FEATURES);
+    if (!popupWindow) {
+      // Blocked by the browser (no popup-blocker exception granted) or
+      // simply unavailable (e.g. jsdom's own `window.open`, which
+      // always returns `null` -- this ticket's own Description).
+      // Nothing opened, so the dock stays exactly as it was rather
+      // than collapsing into a state with no popup to show for it.
+      return;
+    }
+    setPopup(popupWindow);
+    updateDockState({ open: false });
+  }, [updateDockState]);
+
+  const handlePopupClosed = useCallback(() => {
+    setPopup(null);
+    // Restored to *open*, never collapsed -- SUC-003's Alternate Flow:
+    // closing the popup (by its own "put it back" button, its native
+    // close control, or the closed-poll fallback -- see
+    // `PopupConsoleWindow.tsx`) is the student asking for the console
+    // back, not asking for it to disappear.
+    updateDockState({ open: true });
+  }, [updateDockState]);
+
   const toggleOpen = useCallback(() => {
+    if (popup) {
+      // The stakeholder's own words for this exact case: "if I do that,
+      // it closes the window, and now I'm seeing the console at the
+      // bottom of the screen." Reopening the docked console while a
+      // popup is active is treated as "bring it back," not "also show a
+      // second copy" -- SUC-003's postcondition is exactly one visible
+      // console at a time. `popup.close()` here does not by itself
+      // update this component's own state (a real browser's `pagehide`
+      // would eventually notify `PopupConsoleWindow`, but there's no
+      // reason to wait on that round trip for an action already known
+      // to have succeeded from right here), so this handler also does
+      // what `handlePopupClosed` would.
+      if (!popup.closed) {
+        popup.close();
+      }
+      handlePopupClosed();
+      return;
+    }
     updateDockState({ open: !open });
-  }, [open, updateDockState]);
+  }, [open, popup, handlePopupClosed, updateDockState]);
 
   return (
     <section className="console-dock" aria-label="Debug console" data-testid="console-dock">
@@ -310,6 +431,26 @@ export function ConsoleDock({ link, name }: ConsoleDockProps) {
             title={notice!.text}
           />
         )}
+        {popup ? (
+          // No second pop-out while one is already active -- this
+          // sprint's Out of Scope excludes multi-window support, and
+          // there is nothing meaningful for a second click to do (the
+          // same content is already showing in the open popup).
+          <span className="console-dock-popped-out-hint" data-testid="console-dock-popped-out-hint">
+            Open in a separate window
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="console-dock-popout"
+            data-testid="console-dock-popout"
+            aria-label="Open console in a separate window"
+            title="Open console in a separate window"
+            onClick={handlePopOut}
+          >
+            Pop out ⧉
+          </button>
+        )}
         <button
           type="button"
           className="console-dock-toggle"
@@ -320,6 +461,7 @@ export function ConsoleDock({ link, name }: ConsoleDockProps) {
           {open ? "Hide ▾" : "Show ▸"}
         </button>
       </div>
+      {popup && <PopupConsoleWindow popupWindow={popup} link={link} name={name} onClose={handlePopupClosed} />}
       {open && (
         <div
           className={`console-dock-pane${isDragging ? " console-dock-pane-dragging" : ""}`}

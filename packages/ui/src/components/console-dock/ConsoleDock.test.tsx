@@ -30,12 +30,30 @@
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { ConsoleDock, MIN_DOCK_HEIGHT_PX, MAX_DOCK_HEIGHT_PX } from "./ConsoleDock";
 import { DEFAULT_DOCK_HEIGHT_PX } from "./useDockPersistence";
 import { WsProvider } from "../../ws/WsProvider";
 import { FakeSocket } from "../../testing/FakeSocket";
+import { createFakePopupWindow } from "../../testing/FakePopupWindow";
+import { openPopupWindow } from "../../lib/popupWindow";
+
+/**
+ * Ticket 005: `lib/popupWindow.ts` is mocked wholesale so these tests
+ * never depend on jsdom's own nonexistent `window.open` (this ticket's
+ * own Testability note) — `openPopupWindow` becomes a `vi.fn()` each
+ * pop-out test points at a fresh `createFakePopupWindow()` fake (the
+ * same fake `PopupConsoleWindow.test.tsx` uses to exercise that
+ * component's own mechanics directly). This file's own pop-out tests
+ * are about `ConsoleDock`'s *wiring* — does the click handler call the
+ * seam synchronously, does the dock collapse, does reopening the dock
+ * close the popup — not `PopupConsoleWindow`'s portal/stylesheet/
+ * lifecycle internals, which that component's own suite already covers.
+ */
+vi.mock("../../lib/popupWindow", () => ({
+  openPopupWindow: vi.fn(),
+}));
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -136,6 +154,7 @@ afterEach(() => {
   // its own localStorage-backed state, so a later test never inherits
   // an earlier test's toggled-open choice.
   window.localStorage.clear();
+  vi.mocked(openPopupWindow).mockReset();
 });
 
 describe("ConsoleDock", () => {
@@ -415,5 +434,167 @@ describe("ConsoleDock resize handle (sprint 022 ticket 004, SUC-002)", () => {
       firePointer(window, "pointermove", 300);
       firePointer(window, "pointerup", 300);
     }).not.toThrow();
+  });
+});
+
+function getPopOutButton(el: HTMLDivElement): HTMLButtonElement {
+  const button = el.querySelector<HTMLButtonElement>('[data-testid="console-dock-popout"]');
+  expect(button).not.toBeNull();
+  return button!;
+}
+
+describe("ConsoleDock pop-out window (sprint 022 ticket 005, SUC-003)", () => {
+  it("calls openPopupWindow synchronously, exactly once, when the pop-out button is clicked", () => {
+    const fakePopup = createFakePopupWindow();
+    vi.mocked(openPopupWindow).mockReturnValue(fakePopup as unknown as Window);
+    const { el } = mountDock();
+
+    act(() => {
+      getPopOutButton(el).click();
+    });
+
+    expect(openPopupWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it("collapses the docked console once popped out, even if it was open beforehand", () => {
+    const fakePopup = createFakePopupWindow();
+    vi.mocked(openPopupWindow).mockReturnValue(fakePopup as unknown as Window);
+    const { el } = mountDock();
+    toggle(el); // open it first
+    expect(el.querySelector('[data-testid="console-dock-pane"]')).not.toBeNull();
+
+    act(() => {
+      getPopOutButton(el).click();
+    });
+
+    expect(el.querySelector('[data-testid="console-dock-pane"]')).toBeNull();
+    expect(el.querySelector('[data-testid="console-dock-toggle"]')?.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("renders the console content inside the popup's own document, not the main window", () => {
+    const fakePopup = createFakePopupWindow();
+    vi.mocked(openPopupWindow).mockReturnValue(fakePopup as unknown as Window);
+    const { el } = mountDock();
+
+    act(() => {
+      getPopOutButton(el).click();
+    });
+
+    expect(fakePopup.document.body.querySelector('[data-testid="popup-console-window"]')).not.toBeNull();
+    expect(fakePopup.document.body.querySelector('[data-testid="console-log"]')).not.toBeNull();
+    // The main window's own dock never gets a second copy of the log --
+    // SUC-003's postcondition is exactly one visible console at a time.
+    expect(el.querySelector('[data-testid="console-log"]')).toBeNull();
+  });
+
+  it("replaces the pop-out button with a quiet hint while popped out", () => {
+    const fakePopup = createFakePopupWindow();
+    vi.mocked(openPopupWindow).mockReturnValue(fakePopup as unknown as Window);
+    const { el } = mountDock();
+
+    expect(el.querySelector('[data-testid="console-dock-popped-out-hint"]')).toBeNull();
+    act(() => {
+      getPopOutButton(el).click();
+    });
+    expect(el.querySelector('[data-testid="console-dock-popout"]')).toBeNull();
+    expect(el.querySelector('[data-testid="console-dock-popped-out-hint"]')).not.toBeNull();
+  });
+
+  it("does nothing to the dock when openPopupWindow returns null (a blocked popup)", () => {
+    vi.mocked(openPopupWindow).mockReturnValue(null);
+    const { el } = mountDock();
+    toggle(el); // open it first
+    expect(el.querySelector('[data-testid="console-dock-pane"]')).not.toBeNull();
+
+    act(() => {
+      getPopOutButton(el).click();
+    });
+
+    // Still open, still showing the pop-out button (not the hint) --
+    // nothing opened, so nothing about the dock's own state changes.
+    expect(el.querySelector('[data-testid="console-dock-pane"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="console-dock-popout"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="console-dock-popped-out-hint"]')).toBeNull();
+  });
+
+  it("reopening the docked console (the toggle) while popped out closes the popup", () => {
+    const fakePopup = createFakePopupWindow();
+    vi.mocked(openPopupWindow).mockReturnValue(fakePopup as unknown as Window);
+    const { el } = mountDock();
+
+    act(() => {
+      getPopOutButton(el).click();
+    });
+    expect(fakePopup.closed).toBe(false);
+
+    toggle(el);
+
+    // The stakeholder's own words for this exact case: "if I do that,
+    // it closes the window, and now I'm seeing the console at the
+    // bottom of the screen."
+    expect(fakePopup.closed).toBe(true);
+    expect(el.querySelector('[data-testid="console-dock-pane"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="console-dock-toggle"]')?.getAttribute("aria-expanded")).toBe("true");
+    expect(el.querySelector('[data-testid="console-dock-popout"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="console-dock-popped-out-hint"]')).toBeNull();
+  });
+
+  it("the popup's own 'put it back' button reopens the docked console (open, not collapsed)", () => {
+    const fakePopup = createFakePopupWindow();
+    vi.mocked(openPopupWindow).mockReturnValue(fakePopup as unknown as Window);
+    const { el } = mountDock();
+
+    act(() => {
+      getPopOutButton(el).click();
+    });
+    const restoreButton = fakePopup.document.body.querySelector<HTMLButtonElement>('[data-testid="popup-console-restore"]');
+    expect(restoreButton).not.toBeNull();
+
+    act(() => {
+      restoreButton!.click();
+    });
+
+    expect(fakePopup.closed).toBe(true);
+    expect(el.querySelector('[data-testid="console-dock-pane"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="console-dock-toggle"]')?.getAttribute("aria-expanded")).toBe("true");
+    expect(el.querySelector('[data-testid="console-dock-popout"]')).not.toBeNull();
+  });
+
+  it("closing the popup window directly (simulated via pagehide) reopens the docked console", () => {
+    const fakePopup = createFakePopupWindow();
+    vi.mocked(openPopupWindow).mockReturnValue(fakePopup as unknown as Window);
+    const { el } = mountDock();
+
+    act(() => {
+      getPopOutButton(el).click();
+    });
+
+    act(() => {
+      fakePopup.firePagehide();
+    });
+
+    // Restored to *open*, never collapsed -- SUC-003's Alternate Flow:
+    // closing the popup by hand is the student asking for the console
+    // back, not asking for it to disappear.
+    expect(el.querySelector('[data-testid="console-dock-pane"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="console-dock-toggle"]')?.getAttribute("aria-expanded")).toBe("true");
+    expect(el.querySelector('[data-testid="console-dock-popped-out-hint"]')).toBeNull();
+  });
+
+  it("the parent window's unload closes an open popup", () => {
+    const fakePopup = createFakePopupWindow();
+    vi.mocked(openPopupWindow).mockReturnValue(fakePopup as unknown as Window);
+    const { el } = mountDock();
+
+    act(() => {
+      getPopOutButton(el).click();
+    });
+    expect(fakePopup.closed).toBe(false);
+
+    act(() => {
+      window.dispatchEvent(new Event("unload"));
+    });
+
+    expect(fakePopup.closed).toBe(true);
   });
 });

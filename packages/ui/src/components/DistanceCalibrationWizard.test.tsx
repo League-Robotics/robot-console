@@ -216,6 +216,31 @@ describe("DistanceCalibrationWizard progress rendering and drop tolerance", () =
 });
 
 describe("DistanceCalibrationWizard terminal states", () => {
+  it("never reports a driven distance -- `measured` is shaft turns scaled by the OLD calibration, not a measurement", () => {
+    // Stakeholder, 2026-09-19: the panel showed "Measured 100.3 cm
+    // against a tape-measured 90.5 cm". The robot cannot measure
+    // distance; `measured` is its rotation count times the wheel number
+    // it was already running -- the wrong one this run replaces. Shown
+    // beside the operator's own tape reading it contradicts them with a
+    // number nobody measured. The fields must still parse (they gate a
+    // malformed line) but must never reach the screen.
+    const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
+    clickGo(el);
+    emitLine(socket, '{"ev":"calwheels.result","calib":0.7132,"diameter":81.45,"measured":100.3,"true":90.5,"error":9.8,"was":0.7878,"stored":1}');
+
+    // The answer is still there...
+    expect(el.querySelector('[data-testid="distance-calibration-diameter"]')!.textContent).toContain("81.45 mm");
+    // ...and the fabricated distance is not, in any form.
+    expect(el.querySelector('[data-testid="distance-calibration-detail"]')).toBeNull();
+    // `measured` and `error` appear nowhere, and neither does the
+    // sentence that set them against the operator's own reading. (The
+    // input's own "Tape-measured line-to-line distance" label is the
+    // operator's number and stays.)
+    expect(el.textContent).not.toContain("100.3");
+    expect(el.textContent).not.toContain("9.8");
+    expect(el.textContent).not.toMatch(/against a tape-measured/i);
+  });
+
   it("reports the wheel diameter from calwheels.result, with no Apply control anywhere on the panel", () => {
     const { el, socket } = mountWizard(linkWithFunctions([{ name: "calwheels" }]));
     clickGo(el);

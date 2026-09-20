@@ -362,7 +362,7 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
             <>
               <br />
               <span data-testid="distance-calibration-failed-implied">
-                The distance it drove implies a <strong>{run.implied} mm</strong> wheel
+                The turns it counted over that course imply a <strong>{run.implied} mm</strong> wheel
                 {run.lo !== undefined && run.hi !== undefined ? ` (it accepts ${run.lo}–${run.hi} cm of travel)` : ""}. A
                 wildly wrong number here usually means the start or finish line was misread on the field, not that the
                 robot is broken.
@@ -378,9 +378,28 @@ export function DistanceCalibrationWizard({ link, onRun }: DistanceCalibrationWi
             Wheel diameter: <strong>{diameterMm} mm</strong>
             {wasDiameterMm !== undefined && wasDiameterMm !== diameterMm ? ` (was ${wasDiameterMm} mm)` : ""}
           </p>
-          <p className="distance-calibration-detail" data-testid="distance-calibration-detail">
-            Measured {result.measuredCm} cm against a tape-measured {result.trueCm} cm (error {result.errorCm} cm).
-          </p>
+          {/* There used to be a "Measured {measured} cm against a
+              tape-measured {true} cm (error {error} cm)" line here.
+              Removed on stakeholder instruction, 2026-09-19, because it
+              was not a measurement of anything.
+
+              The robot has no way to measure distance. It counts shaft
+              rotations and multiplies them by the wheel calibration it
+              was ALREADY running -- the old, wrong one this whole
+              routine exists to replace. So `measured` is "how far the
+              robot would have gone if its old wheel number were right",
+              a number nobody measured and nobody should act on. Print
+              it next to a tape measurement and it reads as a
+              contradiction of the operator: the stakeholder typed 90.5
+              cm, drove the course, and was told the run "measured"
+              100.3 cm. It had not.
+
+              `measured`/`true`/`error` stay REQUIRED in
+              `parseWheelsResult` -- their presence is still how a
+              malformed `.result` line is caught -- they are just not
+              shown. The number worth showing is the diameter above,
+              which is the answer, and the one input worth trusting is
+              the tape measurement the operator typed into the field. */}
           {result.stored === true ? (
             // Profile calibration-0.20260919.4: `calwheels.result` gains
             // `stored:1` -- the robot is already running this

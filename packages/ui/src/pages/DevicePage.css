@@ -10,3 +10,16 @@
   color: var(--rc-text-muted);
   font-size: 0.95rem;
 }
+
+/* Sprint 022 ticket 003: the dock's own flex column wrapper, used by
+   every dispatch arm that mounts a `ConsoleDock` (see DevicePage.tsx's
+   own doc comment for the "reflow, not overlay" reasoning). Deliberately
+   not `max-width`-constrained like `.device-page` above -- the dispatched
+   page inside keeps whatever width/column layout it already has
+   (`RobotPage.css`, `RelayPage.css`, etc., all unchanged by this
+   ticket), and `ConsoleDock` itself is full width per SUC-001. */
+.device-page-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}

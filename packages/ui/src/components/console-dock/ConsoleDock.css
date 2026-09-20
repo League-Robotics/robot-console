@@ -1,24 +1,82 @@
-/* ConsoleDock.css — deliberately minimal for ticket 002 (relocation
-   only). This is a fixed-height, full-width block for now; the
-   collapsed/open chrome (ticket 003), the drag-resize handle (ticket
-   004), and the pinned-to-viewport-bottom layout (ticket 006's
-   `DevicePage` wrapping) are later tickets' work, not this one's. This
-   file exists mainly so the dock reads as its own visual block next to
-   whichever per-tab console still shares the page until ticket 007. */
+/* ConsoleDock.css — ticket 002 laid this down as a fixed-height,
+   always-open block; ticket 003 replaces that with real dock chrome: a
+   bar that is always present (`.console-dock-bar`) and an open pane
+   (`.console-dock-pane`) that only exists in the DOM while `open` is
+   true (ConsoleDock.tsx renders it conditionally -- there is no
+   `display: none` case to style here). The drag-resize handle (ticket
+   004) and the pinned-to-viewport-bottom layout refinement (ticket 006's
+   `DevicePage` wrapping) remain later tickets' work. */
 .console-dock {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
   width: 100%;
-  max-height: 22rem;
   min-height: 0;
-  overflow: hidden;
   border-top: 1px solid var(--rc-border);
-  padding-top: 0.75rem;
-  margin-top: 0.75rem;
+  background: var(--rc-surface);
 }
 
-.console-dock .device-console {
+/* The bar is deliberately quiet -- per sprint.md's Design Rationale,
+   this project's stakeholder has already called the current console UI
+   "visually noisy," so collapsed-by-default state gets a plain label
+   and a toggle, nothing louder. */
+.console-dock-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.9rem;
+}
+
+.console-dock-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--rc-text-muted);
+}
+
+/* The quiet indicator (ConsoleDock.tsx: `warn`/`error`-level
+   `LinkNotice` on the active link, never a numeric badge). Two color
+   variants so a student can tell "something to look at" (warn) apart
+   from "something is wrong" (error) at a glance, without either one
+   being a number or a wall of text -- both read as a small solid dot,
+   not a banner. */
+.console-dock-indicator {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  flex: none;
+}
+
+.console-dock-indicator-warn {
+  background: var(--rc-warn-border);
+}
+
+.console-dock-indicator-error {
+  background: var(--rc-danger-bg);
+}
+
+.console-dock-toggle {
+  margin-left: auto;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.3rem 0.85rem;
+  border-radius: 0.4rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.console-dock-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 0.9rem 0.75rem;
+  border-top: 1px solid var(--rc-border);
+}
+
+.console-dock-pane .device-console {
   flex: 1 1 auto;
   min-height: 0;
 }

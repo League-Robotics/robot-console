@@ -75,6 +75,22 @@
  * per-tab mounts. See the comment on the `consoleDock` element below for
  * why it is fed the routed link/device rather than the eventual
  * "active console target" (deferred to ticket 006).
+ *
+ * ## Sprint 022 ticket 003: the dock's own flex column wrapper
+ *
+ * Per sprint.md's Design Rationale ("the dock takes layout space at the
+ * bottom of the page... not a page-covering overlay"): each of the
+ * three dispatch arms below now wraps its dispatched page plus
+ * `consoleDock` in `.device-page-shell`, a plain flex column. Several
+ * pages already put their own controls at the bottom of a column (the
+ * Copy button on both code blocks, `CalibrationTable`'s "Start over",
+ * `DriveTab`'s `PathTracePanel`) — an overlay would sit on top of those
+ * whenever the dock is open; a flex column instead stacks the dock
+ * *after* the page content in normal document flow, so opening it can
+ * never cover anything, only push it up. `App.tsx`/`main.tsx`/
+ * `FrontPage.tsx` need no change, matching that Design Rationale entry:
+ * this wrapper lives entirely inside `DevicePage`'s own render, and `/`
+ * is never in this component's subtree.
  */
 import { useParams } from "react-router";
 import { useDeviceForLink, useHasSnapshot, useLink } from "../ws/WsProvider";
@@ -126,27 +142,27 @@ export function DevicePage() {
     // old `"unknown"` classification (see this module's own doc
     // comment).
     return (
-      <>
+      <div className="device-page-shell">
         <UnknownDevicePage link={link} />
         {consoleDock}
-      </>
+      </div>
     );
   }
 
   switch (device.kind) {
     case "relay":
       return (
-        <>
+        <div className="device-page-shell">
           <RelayPage device={device} />
           {consoleDock}
-        </>
+        </div>
       );
     case "robot":
       return (
-        <>
+        <div className="device-page-shell">
           <RobotPage device={device} link={link} />
           {consoleDock}
-        </>
+        </div>
       );
     default: {
       // `SnapshotDevice.kind` is a closed `"robot" | "relay"` union today

@@ -62,6 +62,10 @@ afterEach(() => {
     container.remove();
     container = null;
   }
+  // `ConsoleDock`'s `useDockPersistence` (sprint 022 ticket 003) writes
+  // to a single fixed `localStorage` key -- clear it between tests so a
+  // later test never inherits an earlier one's toggled-open choice.
+  window.localStorage.clear();
 });
 
 function link(id: string, overrides: Partial<SnapshotLink> = {}): SnapshotLink {

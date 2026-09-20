@@ -1415,3 +1415,31 @@ describe("RadioMigrationOffers (carried from ticket 006: leftover localStorage r
     expect(el.querySelector(".radio-migration-offer")).toBeNull();
   });
 });
+
+describe("no console dock on the device list (sprint 022 ticket 003, SUC-001)", () => {
+  // `ConsoleDock` mounts from `DevicePage.tsx` only (sprint 022 ticket
+  // 002's own doc comment) -- `FrontPage` is never in `DevicePage`'s
+  // subtree, so "no dock (not even collapsed) renders on `/`" needs no
+  // guard of its own here, only this assertion that it stays true.
+  // `withRouter`'s default `initialEntries` is already `["/"]`.
+  it("renders no dock-related element, collapsed or open, on the front page", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    act(() => {
+      socket!.emitMessage(snapshot({ devices: [device(1, { name: "tigez" })] }));
+    });
+
+    expect(el.querySelector('[data-testid="console-dock"]')).toBeNull();
+    expect(el.querySelector('[data-testid="console-dock-toggle"]')).toBeNull();
+    expect(el.querySelector('[data-testid="console-dock-pane"]')).toBeNull();
+  });
+});

@@ -1,25 +1,14 @@
 ---
-id: "003"
-title: "Dock shell: collapse and toggle chrome with persisted open state"
-status: open
-use-cases: ["SUC-001"]
-depends-on: ["002"]
-github-issue: ""
-issue: ""
-# completes_issue: Controls whether linked issues are archived when this ticket
-# is moved to done. Default: true (archive when all referencing tickets are done).
-# Set to false (scalar) to suppress archival for ALL linked issues on this ticket.
-# Set to a mapping {filename.md: false} to suppress archival per issue filename.
-# Use false for tickets that partially address a multi-sprint umbrella issue.
+id: '003'
+title: 'Dock shell: collapse and toggle chrome with persisted open state'
+status: in-progress
+use-cases:
+- SUC-001
+depends-on:
+- '002'
+github-issue: ''
+issue: ''
 completes_issue: true
-# exception: Written by a lower agent when it cannot proceed (see architecture §exception-protocol).
-# exception:
-#   thrown_by: "programmer"          # "programmer" | "sprint-planner"
-#   thrown_at: "2026-05-07T14:23:00Z"
-#   attempted: |
-#     Description of what was attempted before giving up.
-#   conflict: "architecture-update.md §3 — reason the agent is blocked"
-#   surface: "internal"              # "user-visible" | "internal"
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
@@ -62,23 +51,23 @@ as visual noise on the current calibration screen.
 
 ## Acceptance Criteria
 
-- [ ] A full-width bar labelled "Debug Console" is always present at
+- [x] A full-width bar labelled "Debug Console" is always present at
       the bottom of any device page that has a link (per ticket 002's
       mount condition), with a toggle control.
-- [ ] Collapsed state shows no log content, no toolbar, no send box —
+- [x] Collapsed state shows no log content, no toolbar, no send box —
       just the bar (and the quiet indicator, when applicable).
-- [ ] Toggling open reveals the ticket-002 content (log, toolbar,
+- [x] Toggling open reveals the ticket-002 content (log, toolbar,
       `SequencingIndicator`, send box, `CommandStrip`) at a sensible
       default height (~10 lines).
-- [ ] Toggling closed returns to the collapsed bar without unmounting
+- [x] Toggling closed returns to the collapsed bar without unmounting
       the page content above it (page content reflows, not the dock
       overlaying it).
-- [ ] Open/collapsed state persists to `localStorage` and is restored
+- [x] Open/collapsed state persists to `localStorage` and is restored
       on reload; a fresh/cleared browser defaults to collapsed.
-- [ ] The collapsed bar shows a small indicator only when the active
+- [x] The collapsed bar shows a small indicator only when the active
       link has a `warn`/`error`-level `LinkNotice`; otherwise the bar
       shows no indicator at all.
-- [ ] No dock (not even collapsed) renders on `/` (confirmed by a
+- [x] No dock (not even collapsed) renders on `/` (confirmed by a
       `FrontPage.test.tsx` assertion that no dock-related test id is
       present).
 

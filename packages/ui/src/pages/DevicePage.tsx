@@ -68,11 +68,18 @@
  *
  * This module now also mounts `ConsoleDock` (see that component's own
  * doc comment) alongside whichever page it dispatches to, fed by the
- * same `link`/`device` this component already resolves. This is
- * additive, relocation-only work: every page dispatched to below still
- * mounts its own `ConsolePane`/`CommandStrip` unchanged, so the console
- * appears twice on screen until sprint 022 ticket 007 deletes the old
- * per-tab mounts.
+ * same `link`/`device` this component already resolves.
+ *
+ * **Ticket 007 update**: landed additive at first, on purpose --
+ * `ConsoleDock` went in here (ticket 002) while every page dispatched to
+ * below still mounted its own `ConsolePane`/`CommandStrip`, so the
+ * console deliberately appeared twice on screen for the length of
+ * tickets 002-006 (sprint.md's Migration Concerns: incremental delivery,
+ * not a defect, so the dock could be proven live in a real browser
+ * before its predecessor was torn out). Ticket 007 deleted every one of
+ * those per-tab mounts and `ConsolePane.tsx` itself; this is now the
+ * only console mount for any device page, exactly as the stakeholder's
+ * Success Criteria required.
  *
  * ## Sprint 022 ticket 006: the active console target
  *

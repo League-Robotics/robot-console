@@ -75,6 +75,15 @@
  * and scrolls internally before the console log's own floor gives; see
  * `RobotPage.css`'s doc comment on both classes for the full mechanism.
  *
+ * **Sprint 022 ticket 007 update**: the console that moved to the left
+ * column above has since been deleted outright (superseded by
+ * `ConsoleDock`) -- the left column no longer carries
+ * `robot-page-column-console` either. This right column was never
+ * viewport-bound to begin with (no console ever sat in it), so it is
+ * unaffected by that deletion; it is documented here only so a reader
+ * following "the console moved to the left column" above does not go
+ * looking for it there and find nothing.
+ *
  * ## Ticket 022-001: the code block now calls `programCode()`, not
  * `calibrationCode()` directly -- radio and Wi-Fi join calibration
  *
@@ -117,7 +126,6 @@ import { CalibrationHelp } from "./CalibrationHelp";
 import { NewCalibrationPanel } from "./NewCalibrationPanel";
 import { deriveCalStoreState } from "./CalibrationStore";
 import { CalibrationTable } from "./CalibrationTable";
-import { ConsolePane } from "./ConsolePane";
 import "./CalibrationPage.css";
 
 export interface CalibrationPageProps {
@@ -362,20 +370,22 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
 
   return (
     <div className="robot-page-columns calibration-page" data-testid="robot-tab-panel-calibration">
-      {/* Console on the LEFT, the things you act on on the right
-          (stakeholder, 2026-09-19). A run's own lines land in the
-          console, so it is the thing you watch while the panels on the
-          right are what you press. */}
-      {/* LEFT: what you flash and what you press, above the console you
-          watch while it runs (stakeholder, 2026-09-19). The console
-          keeps `robot-page-column-console`'s viewport binding, so the
-          two panels above it shrink it rather than pushing it off. */}
-      <div className="robot-page-column robot-page-column-left robot-page-column-console">
+      {/* Sprint 022 ticket 007: no more console on the left. Until this
+          ticket, a run's own lines landed in a `ConsolePane` mounted
+          below these two panels (stakeholder, 2026-09-19: "console on
+          the left, the things you act on on the right") -- kept
+          alongside the already-working `ConsoleDock` for four tickets so
+          the dock could be proven live before this copy was deleted
+          (sprint.md's Migration Concerns). That proof is done: a run's
+          output now shows up in the one dock every device page already
+          has, and this column drops `robot-page-column-console`'s
+          viewport binding along with the console it used to leave room
+          for -- the firmware panel and the calibration flow below just
+          take their own natural height now. */}
+      <div className="robot-page-column robot-page-column-left">
         <CalibrationFirmwarePanel device={device} link={link} />
 
         <NewCalibrationPanel link={link} state={state} onPatch={update} onStoreChanged={refreshCalStore} />
-
-        <ConsolePane link={link} name={robotName} />
       </div>
 
       <div className="robot-page-column robot-page-column-right">

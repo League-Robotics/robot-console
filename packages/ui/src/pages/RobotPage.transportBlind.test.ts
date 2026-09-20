@@ -223,7 +223,13 @@ describe("RobotPage renders correctly for a relay-transport link (sprint 8 ticke
     }
   });
 
-  it("renders the usual robot controls (estop, drive, console) for a relay-radio-transport link", () => {
+  it("renders the usual robot controls (estop, drive) for a relay-radio-transport link -- no console on this page any more (sprint 022 ticket 007)", () => {
+    // The console assertion this test originally carried
+    // (`[aria-label="Console"]` present) is inverted, not deleted: this
+    // page's own console/CommandStrip mount is gone (superseded by
+    // `ConsoleDock`, which lives in `DevicePage.tsx`, not `RobotPage`),
+    // so there is nothing transport-specific left to prove about a
+    // console `RobotPage` no longer renders at all.
     const link = relayTransportLink();
     const device = baseDevice(link);
     let socket: FakeSocket | null = null;
@@ -245,7 +251,7 @@ describe("RobotPage renders correctly for a relay-transport link (sprint 8 ticke
 
     expect(container.querySelector('[data-testid="estop-button"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="drive-forward"]')).not.toBeNull();
-    expect(container.querySelector('[aria-label="Console"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Console"]')).toBeNull();
     expect(container.textContent).toContain("vevav");
   });
 });
@@ -273,7 +279,7 @@ describe("RobotPage renders correctly for a wifi-transport link (sprint 10 ticke
     }
   });
 
-  it("renders the usual robot controls (estop, drive, console) for a wifi-transport link", () => {
+  it("renders the usual robot controls (estop, drive) for a wifi-transport link -- no console on this page any more (sprint 022 ticket 007)", () => {
     const link = wifiTransportLink();
     const device = baseDevice(link, { name: "gopiv" });
     let socket: FakeSocket | null = null;
@@ -295,7 +301,7 @@ describe("RobotPage renders correctly for a wifi-transport link (sprint 10 ticke
 
     expect(container.querySelector('[data-testid="estop-button"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="drive-forward"]')).not.toBeNull();
-    expect(container.querySelector('[aria-label="Console"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Console"]')).toBeNull();
     expect(container.textContent).toContain("gopiv");
   });
 });

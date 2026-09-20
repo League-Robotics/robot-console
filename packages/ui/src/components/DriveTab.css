@@ -1,32 +1,19 @@
-/* The left column reuses RobotPage.css's `.robot-page-column-console`
- * (sticky, viewport-tall), and wraps pad + aids in its
- * `.robot-page-column-top` (capped height, scrolls internally on a short
- * window): the console takes the rest and its log is what shrinks, so
- * the send line stays at the bottom of the screen. */
+/* Sprint 022 ticket 007: the left column used to reuse RobotPage.css's
+ * `.robot-page-column-console` (sticky, viewport-tall) and wrap pad +
+ * aids in `.robot-page-column-top` (capped height, scrolling
+ * internally on a short window) so a `ConsolePane` mounted below could
+ * take the rest of the column, its log shrinking first to keep the send
+ * line on screen. That `ConsolePane` is deleted (see `DriveTab.tsx`'s
+ * own doc comment -- the console lives in the dock now, not here), and
+ * with it every rule below that only existed to size the column around
+ * it: `.drive-tab-left > .robot-page-column-top`'s cap and the
+ * `.drive-tab-left .device-console`/`.console-log` overrides. This
+ * plain flex column is now all `.drive-tab-controls` needs -- pad, aids
+ * and Functions at their own natural height, nothing to shrink for. */
 .drive-tab-controls {
   display: flex;
   flex-direction: column;
   gap: 1rem;
-}
-
-/* Functions shares the capped top block with the pad, so this column
- * trades some of the console's floor for it: 14rem (the log floor drops
- * from 8rem to 4rem) instead of RobotPage.css's 19rem, and the top
- * block's cap is recomputed from that same 14rem. */
-.drive-tab-left > .robot-page-column-top {
-  max-height: calc(100vh - 12rem - 1rem - 1rem - 14rem);
-}
-
-.drive-tab-left .device-console {
-  flex: 1;
-  min-height: 14rem;
-  max-width: none;
-}
-
-.drive-tab-left .console-log {
-  flex: 1;
-  min-height: 4rem;
-  max-height: none;
 }
 
 /* Right column, also viewport-bound: Charts keeps its natural height

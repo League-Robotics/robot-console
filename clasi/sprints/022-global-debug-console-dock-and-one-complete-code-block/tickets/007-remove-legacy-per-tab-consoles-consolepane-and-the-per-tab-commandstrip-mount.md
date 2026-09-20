@@ -1,25 +1,14 @@
 ---
-id: "007"
-title: "Remove legacy per-tab consoles, ConsolePane, and the per-tab CommandStrip mount"
-status: open
-use-cases: ["SUC-001"]
-depends-on: ["006"]
-github-issue: ""
-issue: ""
-# completes_issue: Controls whether linked issues are archived when this ticket
-# is moved to done. Default: true (archive when all referencing tickets are done).
-# Set to false (scalar) to suppress archival for ALL linked issues on this ticket.
-# Set to a mapping {filename.md: false} to suppress archival per issue filename.
-# Use false for tickets that partially address a multi-sprint umbrella issue.
+id: '007'
+title: Remove legacy per-tab consoles, ConsolePane, and the per-tab CommandStrip mount
+status: in-progress
+use-cases:
+- SUC-001
+depends-on:
+- '006'
+github-issue: ''
+issue: ''
 completes_issue: true
-# exception: Written by a lower agent when it cannot proceed (see architecture §exception-protocol).
-# exception:
-#   thrown_by: "programmer"          # "programmer" | "sprint-planner"
-#   thrown_at: "2026-05-07T14:23:00Z"
-#   attempted: |
-#     Description of what was attempted before giving up.
-#   conflict: "architecture-update.md §3 — reason the agent is blocked"
-#   surface: "internal"              # "user-visible" | "internal"
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
@@ -66,26 +55,40 @@ Coverage moves, it doesn't disappear.
 
 ## Acceptance Criteria
 
-- [ ] `grep -rn "ConsolePane" packages/ui/src` returns no matches
+- [x] `grep -rn "ConsolePane" packages/ui/src` returns no matches
       outside `console-dock/`'s own history (i.e. the file and all its
-      mount sites are gone).
-- [ ] `CommandStrip` has exactly one runtime mount site left: inside
-      `console-dock/ConsoleDock.tsx`.
-- [ ] `RobotPage.test.tsx`, `RelayPage.test.tsx`,
+      mount sites are gone). Verified: `ConsolePane.tsx`/`.css`/
+      `.test.tsx` are deleted and every remaining grep hit is a dated
+      comment explaining the removal, none an import/mount.
+- [x] `CommandStrip` has exactly one runtime mount site left: inside
+      `console-dock/ConsoleDock.tsx`. Note: `console-dock/PopupConsoleWindow.tsx`
+      also mounts it (pre-existing from ticket 005, for the popped-out
+      window's own content) — both are inside `console-dock/`, mutually
+      exclusive at render time, and neither is a per-tab page mount, so
+      this satisfies the AC's intent (no `CommandStrip` left outside the
+      dock module) even though it is not literally a single mount site
+      in one literal file.
+- [x] `RobotPage.test.tsx`, `RelayPage.test.tsx`,
       `UnknownDevicePage.test.tsx`, `DriveTab.test.tsx`,
       `CalibrationPage.test.tsx`, `ConfigurationPage.test.tsx` each
       assert the *absence* of a per-tab console/`CommandStrip` and
       that the dock alone carries the log — not simply have their old
       console assertions deleted with nothing put in their place.
-- [ ] Each touched page's column layout reclaims the space previously
+- [x] Each touched page's column layout reclaims the space previously
       reserved for its embedded console (no dead gap where the console
       used to sit).
-- [ ] `DeviceConsole.tsx`, `CommandStrip.tsx`, `SequencingIndicator.tsx`
-      are unmodified — their own existing test files pass unchanged.
+- [x] `DeviceConsole.tsx`, `CommandStrip.tsx`, `SequencingIndicator.tsx`
+      are unmodified — their own existing test files pass unchanged
+      (verified in the full suite run).
 - [ ] The stakeholder's Success Criteria from sprint.md — "there is
       exactly one console on screen, in the bottom dock — never a
       per-tab embedded console" — holds on every device page,
-      confirmed live.
+      confirmed live. **Not verified by the programmer**: no robot is
+      on the bench this session (only one unconnected relay), so the
+      Main/Drive/Calibration/Configuration tabs of a real robot device
+      page could not be exercised in a live browser. The stakeholder's
+      own dispatch note says he will re-run his Chromium walk after
+      this lands; this box is left for that confirmation.
 
 ## Implementation Plan
 

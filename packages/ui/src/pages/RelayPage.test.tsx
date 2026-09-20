@@ -18,6 +18,13 @@
  * child branch regardless of its own migration state (sprint 015 ticket
  * 009) -- this file's job is `RelayPage`'s own dispatch/rendering, not
  * `RobotPage`'s internals.
+ *
+ * Sprint 022 ticket 007: the idle branch's own `ConsolePane` mount (a
+ * raw console on the relay's own connectivity link, once it became
+ * usable) is deleted -- `ConsoleDock` already shows this exact link's
+ * log via this page's own "active console target" report (sprint 022
+ * ticket 006). The test that used to prove that mount appeared once the
+ * relay's own link had an open session now proves the opposite.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -286,7 +293,14 @@ describe("RelayPage: not connected", () => {
     expect(el.textContent).not.toContain("sequencing state");
   });
 
-  it("renders the relay's own DeviceConsole once its own connectivity link actually has an open session", () => {
+  it("sprint 022 ticket 007: still renders no console of its own, even once its own connectivity link has an open session -- ConsoleDock covers this now", () => {
+    // Originally "renders the relay's own DeviceConsole once its own
+    // connectivity link actually has an open session" -- proved the
+    // idle branch's `ConsolePane` mount appeared for exactly this case
+    // (a raw console session opened directly on the relay, not a
+    // bridged robot). That mount is deleted; `ConsoleDock` already shows
+    // this same link's log via this page's own "active console target"
+    // report (sprint 022 ticket 006), so this page renders none itself.
     const withSession = device(3, {
       name: "rly01",
       kind: "relay",
@@ -299,7 +313,7 @@ describe("RelayPage: not connected", () => {
     });
     const { el, socket } = mountRelayPage(withSession);
     pushSnapshot(socket, { devices: [withSession] });
-    expect(el.querySelector('[aria-label="Console"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Console"]')).toBeNull();
   });
 
   it("lists every kind: robot device's name in the picker, sorted", () => {

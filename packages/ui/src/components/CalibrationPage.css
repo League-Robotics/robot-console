@@ -46,29 +46,20 @@
   overflow-wrap: anywhere;
 }
 
-/* `.calibration-code-panel` also carries `.robot-page-column-top`
- * (`RobotPage.css`) on `ConfigurationPage` only -- that class caps a
- * panel's height and scrolls it internally, to reserve room for
- * `ConsolePane`, still mounted below it in the same column until
- * sprint 022 ticket 007 deletes that mount outright. The stakeholder's
- * requirement for this panel specifically is unconditional -- "no
- * matter how many lines you got, I want to expand that so that it
- * shows all of them" -- so this compound selector (two classes; it
- * beats the single-class `.robot-page-column-top` rule on specificity
- * alone, regardless of which stylesheet loads first) removes the cap
- * for this one panel, rather than for every panel that shares the
- * class. The tradeoff while `ConsolePane` is still mounted below it: a
- * very long code block can push the console further down the page than
- * before, needing a scroll to reach -- exactly the "intermediate
- * tickets show both the dock and the legacy console" tradeoff
- * sprint.md's own Migration Concerns already names, not a new one.
- * Ticket 007 deletes `ConsolePane` from this column entirely, at which
- * point nothing is left below the code panel to reserve room for and
- * this override stops mattering -- but stays correct regardless. */
-.calibration-code-panel.robot-page-column-top {
-  max-height: none;
-  overflow-y: visible;
-}
+/* Sprint 022 ticket 007: the `.calibration-code-panel.robot-page-column-top`
+ * override that used to live here is deleted. It removed
+ * `.robot-page-column-top`'s height cap for this one panel only (on
+ * `ConfigurationPage`, which carried both classes) so a very long code
+ * block could always show every line -- unconditionally, per the
+ * stakeholder's own requirement -- while `ConsolePane` was still mounted
+ * below it reserving room. `.robot-page-column-top` itself is deleted
+ * now that `ConsolePane` is gone everywhere (`RobotPage.css`'s own doc
+ * comment has the full account), which is exactly the outcome this
+ * comment predicted when it was written: "nothing is left below the
+ * code panel to reserve room for and this override stops mattering."
+ * `ConfigurationPage.tsx`'s code panel no longer carries either class --
+ * it just renders at its own natural height, same as this page's
+ * "Current calibration"/"Code for your program" panels always did. */
 
 .calibration-code-empty {
   margin: 0;
@@ -86,9 +77,10 @@
   font-size: 0.85rem;
 }
 
-.calibration-page .device-console {
-  max-width: none;
-}
+/* Sprint 022 ticket 007: `.calibration-page .device-console { max-width:
+ * none; }` is deleted -- this page no longer renders a `.device-console`
+ * anywhere (its own `ConsolePane` mount is gone; the log lives in
+ * `ConsoleDock` now, which is not a descendant of `.calibration-page`). */
 
 .calibration-firmware-panel p {
   margin: 0 0 0.5rem;

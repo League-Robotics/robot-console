@@ -35,20 +35,33 @@
  *   the `cala` rotation-calibration wizard, same `FUNCS`-gating
  *   discipline, mounted below Distance calibration; see that
  *   component's own doc comment).
- * - **Right column**: exactly one `DeviceConsole`, sized to fill the
- *   column's available height (`RobotPage.css` overrides
- *   `DeviceConsole`'s own fixed `max-height` scoped to this column
- *   only -- every other page embedding `DeviceConsole` is unaffected),
- *   with `CommandStrip` beneath it. `CommandStrip` offers
- *   HELLO/ID/VER/STATUS (unsequenced, dispatched via plain
- *   `sendCommand`) and a free-text GET/SET pair (sequenced, dispatched
- *   the same way the retired Get/Set panel did). **No panel renders a
- *   reply area of its own** -- every reply, including `HELLO`'s
- *   host-side refusal, lands in this one `DeviceConsole`.
+ * - **Right column**: originally exactly one `DeviceConsole`, sized to
+ *   fill the column's available height, with `CommandStrip` beneath it
+ *   -- see "Sprint 022 ticket 007" below for why this column no longer
+ *   exists.
  * - Sprint 006's separate status-request panel and Get/Set panel, along
  *   with their separate reply areas, are retired outright (deleted, not
  *   deprecated -- both are fully superseded by `CommandStrip` + the
  *   unified console).
+ *
+ * ## Sprint 022 ticket 007: the Main tab's right column is gone
+ *
+ * The console+`CommandStrip` right column described above (and the
+ * `robot-page-columns` two-column grid that gave it a place to sit) is
+ * deleted, not just emptied. `ConsoleDock` (`DevicePage.tsx`, sprint 022
+ * tickets 002-006) has been the one place a student watches this
+ * robot's log since ticket 002, mounted once per device page regardless
+ * of tab; this page's own console/`CommandStrip` mount had been kept
+ * alongside it deliberately for four tickets (sprint.md's Migration
+ * Concerns: "intentional incremental delivery, not a defect") so the
+ * dock could be proven live before its predecessor was torn out. That
+ * proof is done (tickets 002-006 all verified live in Chromium), so this
+ * ticket removes the second copy: the Main tab is now a single column,
+ * the former left column's content (`StatusPanel`, `DriveControls`)
+ * rendered directly instead of sitting beside a now-empty sibling. A
+ * `CommandStrip` import that had no other caller on this page is removed
+ * with it -- `ConsoleDock` is `CommandStrip`'s one remaining runtime
+ * mount site (`console-dock/ConsoleDock.tsx`).
  *
  * **STOP/E-STOP moved into `DriveControls`'s pad, `EstopControl.tsx`
  * retired outright (out-of-process, 2026-09-10).** See `DriveControls`'s
@@ -173,10 +186,8 @@ import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMes
 import type { ActiveConsoleTarget } from "./DevicePage";
 import { nameDisplay } from "../deviceDisplay";
 import { CalibrationPage } from "../components/CalibrationPage";
-import { CommandStrip } from "../components/CommandStrip";
 import { ConfigurationPage } from "../components/ConfigurationPage";
 import { DiagnosticsPanel } from "../components/DiagnosticsPanel";
-import { ConsolePane } from "../components/ConsolePane";
 import { DriveControls } from "../components/DriveControls";
 import { DriveTab } from "../components/DriveTab";
 import { StatusPanel } from "../components/StatusPanel";
@@ -205,19 +216,20 @@ export interface RobotPageProps {
 }
 
 /** OOP 2026-09-10: the robot page is split into tabs next to the
- * robot's name (stakeholder direction): Main (status, drive, console),
- * Drive (`DriveTab`: a larger pad with cursor keys, a gamepad, and a
- * console on one side; functions, charts and the path trace on the other
- * -- OOP 2026-09-14 folded the separate "Functions & charts" tab in),
- * Calibration (`CalibrationPage`: the Flash-calibration-firmware/verify
- * panel, the always-on Calibrate X/Calibrate A wizards plus any other
- * `cal*` function `FUNCS` reports, and the code block feeding one
- * calibration state -- always offered, ticket 018-013, not gated on the
- * robot currently running a calibration build), and Configuration (`ConfigurationPage`: per-robot settings,
- * with the robot's full serial log under the code block -- see that
- * page's own doc comment). Sequencing state moved
- * into the console's own header (`DeviceConsole`) rather than a page
- * panel. */
+ * robot's name (stakeholder direction): Main (status, drive), Drive
+ * (`DriveTab`: a larger pad with cursor keys, a gamepad, and functions
+ * on one side; charts and the path trace on the other -- OOP 2026-09-14
+ * folded the separate "Functions & charts" tab in), Calibration
+ * (`CalibrationPage`: the Flash-calibration-firmware/verify panel, the
+ * always-on Calibrate X/Calibrate A wizards plus any other `cal*`
+ * function `FUNCS` reports, and the code block feeding one calibration
+ * state -- always offered, ticket 018-013, not gated on the robot
+ * currently running a calibration build), and Configuration
+ * (`ConfigurationPage`: per-robot settings and the generated code
+ * block). Sprint 022 ticket 007: none of these tabs mount a console of
+ * their own any more -- `ConsoleDock` (`DevicePage.tsx`) is the one
+ * console for the whole device page, regardless of which tab is
+ * showing, so tabbing here never touches it. */
 export type RobotTab = "main" | "drive" | "calibration" | "configuration" | "diagnostics";
 
 export function RobotPage({ device, link, onActiveTargetChange }: RobotPageProps) {
@@ -296,22 +308,21 @@ export function RobotPage({ device, link, onActiveTargetChange }: RobotPageProps
         </p>
       )}
 
+      {/* Sprint 022 ticket 007: single column now -- the console+
+          CommandStrip right column this tab used to render beside this
+          content is deleted outright (see this file's own doc comment).
+          `data-testid="robot-tab-panel-main"` stays on this element so
+          it keeps identifying "the Main tab's content" for tests/AppHeader
+          regardless of how many columns that content happens to need. */}
       {tab === "main" && (
-        <div className="robot-page-columns" data-testid="robot-tab-panel-main">
-          <div className="robot-page-column robot-page-column-left">
-            <div className="robot-page-panel">
-              <StatusPanel link={link} />
-            </div>
-
-            <div className="robot-page-panel">
-              <h3>Drive</h3>
-              <DriveControls link={link} />
-            </div>
+        <div className="robot-page-column robot-page-column-left" data-testid="robot-tab-panel-main">
+          <div className="robot-page-panel">
+            <StatusPanel link={link} />
           </div>
 
-          <div className="robot-page-column robot-page-column-right robot-page-column-console">
-            <ConsolePane link={link} name={device.name} />
-            <CommandStrip link={link} />
+          <div className="robot-page-panel">
+            <h3>Drive</h3>
+            <DriveControls link={link} />
           </div>
         </div>
       )}
@@ -320,7 +331,10 @@ export function RobotPage({ device, link, onActiveTargetChange }: RobotPageProps
 
       {tab === "calibration" && <CalibrationPage link={link} name={device.name} device={device} />}
 
-      {tab === "configuration" && <ConfigurationPage device={device} link={link} />}
+      {/* Sprint 022 ticket 007: `link` dropped from this call -- see
+          `ConfigurationPage.tsx`'s own doc comment. It only ever fed
+          that page's now-deleted `ConsolePane` mount. */}
+      {tab === "configuration" && <ConfigurationPage device={device} />}
 
       {tab === "diagnostics" && <DiagnosticsPanel device={device} current={link} />}
     </section>

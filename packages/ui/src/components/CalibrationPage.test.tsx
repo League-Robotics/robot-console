@@ -625,25 +625,28 @@ describe("CalibrationPage", () => {
     });
   });
 
-  it("console on the LEFT, the things you press on the right (stakeholder, 2026-09-19)", () => {
+  it("no console anywhere -- the firmware panel and the flow are on the left, the values and code on the right (sprint 022 ticket 007; stakeholder, 2026-09-19)", () => {
+    // Originally "console on the LEFT, the things you press on the
+    // right": the left column carried `robot-page-column-console` and a
+    // `ConsolePane` mounted below the firmware panel and the calibration
+    // flow, because a run's own output landed there. Sprint 022 ticket
+    // 007 deletes that mount -- `ConsoleDock` is the one place a run's
+    // output shows up now -- so the left column drops the viewport-bound
+    // class along with it, and neither column renders a console any
+    // more. The firmware-panel/flow-on-the-left,
+    // values/code-on-the-right structure this test originally proved is
+    // otherwise unchanged.
     const { el } = mountPage();
     const left = el.querySelector(".robot-page-column-left")!;
     const right = el.querySelector(".robot-page-column-right")!;
 
-    // The console is what you watch while a run happens, so it gets the
-    // viewport-bound column class and the left side.
-    expect(left.classList.contains("robot-page-column-console")).toBe(true);
-    expect(left.contains(el.querySelector('[aria-label="Console"]')!)).toBe(true);
+    expect(left.classList.contains("robot-page-column-console")).toBe(false);
+    expect(el.querySelector('[aria-label="Console"]')).toBeNull();
 
-    // The firmware panel and the flow sit ABOVE the console, on the
-    // left: what you flash and what you press, over what you watch
-    // while it runs.
     const firmware = el.querySelector('[aria-label="Calibration firmware"]') ?? left.firstElementChild!;
     const flow = el.querySelector('[aria-label="New calibration"]')!;
-    const consoleEl = el.querySelector('[aria-label="Console"]')!;
     expect(left.contains(flow)).toBe(true);
     expect(left.contains(firmware)).toBe(true);
-    expect(flow.compareDocumentPosition(consoleEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     // The values and the code you paste are on the right.
     expect(right.contains(el.querySelector('[aria-label="Current calibration"]')!)).toBe(true);

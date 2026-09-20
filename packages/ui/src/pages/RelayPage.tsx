@@ -94,6 +94,21 @@
  * console makes sense for a link with no session while a child owns the
  * port) -- a one-line note says it returns after Disconnect.
  *
+ * ## Sprint 022 ticket 007: this page's own console mount is gone
+ * entirely, bridged or not
+ *
+ * Before this ticket, the idle (not-bridged) branch below mounted a
+ * `ConsolePane` for the relay's own connectivity link once it became
+ * usable -- "a student opened a raw console on the relay itself," per
+ * that branch's own comment. That mount is deleted, not conditioned any
+ * differently: `ConsoleDock` (sprint 022 tickets 002-006) already shows
+ * this exact link's log whenever this page is the one on screen (this
+ * page's own "active console target" effect, above, reports the relay's
+ * own `relayLink`/`relayName` while idle), so a second, per-tab copy of
+ * the same log added nothing a student couldn't already see one scroll
+ * away. `isLinkUsable` and `ConsolePane` are both gone from this file's
+ * imports with it -- neither had another caller here.
+ *
  * **"Connected to `<name>`" requires the child's link to actually have
  * answered, not just be present** (mirrors sprint 013's own follow-up;
  * tightened by ticket 018-010 from "state === connected" to
@@ -162,11 +177,10 @@ import { useEffect } from "react";
 import type { SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
 import type { ActiveConsoleTarget } from "./DevicePage";
 import { AddressSourceChip } from "../components/AddressSourceChip";
-import { ConsolePane } from "../components/ConsolePane";
 import { RelayConnectControls } from "../components/RelayConnectControls";
 import { RobotPage } from "./RobotPage";
 import { useDevices, useRelays, useSendable, useWsActions } from "../ws/WsProvider";
-import { currentRelayChild, isLinkUsable, nameDisplay, roleDisplay } from "../deviceDisplay";
+import { currentRelayChild, nameDisplay, roleDisplay } from "../deviceDisplay";
 import "./RelayPage.css";
 
 export interface RelayPageProps {
@@ -324,12 +338,13 @@ export function RelayPage({ device, onActiveTargetChange }: RelayPageProps) {
               sending." / "No session — sequencing state…") -- this
               relay's own state (idle / sweeping / bridging), already
               rendered by RelayConnectControls above, is the only thing
-              worth showing while there is no session on this link. The
-              console only mounts once the relay's own connectivity link
-              is actually usable (a student opened a raw console on the
-              relay itself, a rare direct case distinct from bridging to
-              a robot child). */}
-          {relayLink && isLinkUsable(relayLink) && <ConsolePane link={relayLink} name={relayName} />}
+              worth showing while there is no session on this link.
+              Sprint 022 ticket 007: this branch used to also mount a
+              `ConsolePane` once the relay's own connectivity link became
+              usable (a student opened a raw console on the relay
+              itself); that mount is deleted -- `ConsoleDock` already
+              shows this same link's log via this page's own "active
+              console target" report, above, so nothing is lost. */}
         </>
       )}
     </section>

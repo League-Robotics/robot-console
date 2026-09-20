@@ -8,10 +8,15 @@
  *
  * What's covered here: the page header (the link's own `label`), the
  * link's own failure reason note (page-level, not part of the flash
- * flow), that `FlashControls` is actually wired up as a child (a thin
- * smoke test -- the flash behavior itself is exercised against the
+ * flow), and that `FlashControls` is actually wired up as a child (a
+ * thin smoke test -- the flash behavior itself is exercised against the
  * standalone component, `../components/FlashControls.test.tsx`, not
- * duplicated here), and that `DeviceConsole` renders alongside it.
+ * duplicated here).
+ *
+ * Sprint 022 ticket 007: this page's own `DeviceConsole` mount (via
+ * `ConsolePane`) is deleted -- `ConsoleDock` is the one place a student
+ * watches this link's log now. The test that used to prove that mount
+ * rendered alongside the flash controls now proves the opposite.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -168,10 +173,10 @@ describe("UnknownDevicePage", () => {
     expect(flashTrigger).toBeUndefined();
   });
 
-  it("renders DeviceConsole alongside the flash controls", () => {
+  it("sprint 022 ticket 007: no longer renders a DeviceConsole alongside the flash controls -- the log moved to ConsoleDock", () => {
     const { el } = mountUnknownPage(baseLink());
-    expect(el.querySelector('[aria-label="Console"]')).not.toBeNull();
-    expect(el.querySelector('[data-testid="console-send-input"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Console"]')).toBeNull();
+    expect(el.querySelector('[data-testid="console-send-input"]')).toBeNull();
   });
 });
 

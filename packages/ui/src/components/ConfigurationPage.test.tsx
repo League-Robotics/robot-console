@@ -5,15 +5,19 @@
  * unfiltered `DeviceConsole` under "Code for your program"; a same-day
  * stakeholder correction ("put it under Calibrate") moved the firmware
  * block and the run buttons to `CalibrationPage.test.tsx`, leaving only
- * the `DeviceConsole` mount here. This page still takes `link` (see
- * `mountPage` below) -- now only to mount that console, not to flash or
- * run calx/cala.
+ * the `DeviceConsole` mount here.
  *
  * Ticket 022-001 moved this page's own `configurationCode`/
  * `MASKED_PASSWORD`/`jsString` out to `lib/programCode.ts` (renamed
  * `programCode`) -- its own unit tests moved with it, to
  * `lib/programCode.test.ts`. This file keeps only the mounted,
  * FakeSocket-driven `ConfigurationPage` behavior.
+ *
+ * **Sprint 022 ticket 007**: the `DeviceConsole` mount described above
+ * is deleted outright -- `ConsoleDock` is the one place a student
+ * watches this robot's log now. `link` is gone from this page's props
+ * entirely (it only ever fed that console), so `mountPage` below no
+ * longer passes one.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -96,7 +100,7 @@ function mountPage(
   const device = robot(overrides, linkOverrides);
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <ConfigurationPage device={device} link={device.links[0]!} />
+      <ConfigurationPage device={device} />
     </WsProvider>,
   );
   act(() => {
@@ -283,7 +287,7 @@ describe("ConfigurationPage", () => {
     const device = robot({ radio: { channel: 55, group: 114, source: "override" } });
     const el = mount(
       <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
-        <ConfigurationPage device={device} link={device.links[0]!} />
+        <ConfigurationPage device={device} />
       </WsProvider>,
     );
     expect(el.querySelector<HTMLInputElement>('[data-testid="configuration-radio-channel"]')!.value).toBe("55");
@@ -300,32 +304,36 @@ describe("ConfigurationPage", () => {
     expect(el.querySelector('[data-testid="configuration-code"]')?.textContent).toContain("diffDrive.setWheelCalibration(91.5 * Math.PI / 360)");
   });
 
-  describe("ticket 018-013: the full serial log under the code", () => {
-    it("mounts the unfiltered DeviceConsole in the right column, showing every line (not just calibration traffic)", () => {
-      const { el, socket } = mountPage();
-      act(() => {
-        socket.emitMessage({ type: "line", linkId: "usb-ROBOT-A", direction: "rx", line: "status a=1" });
-      });
-      const right = el.querySelector(".robot-page-column-right")!;
-      expect(right.querySelector('[aria-label="Console"]')).not.toBeNull();
-      expect(right.querySelector('[data-testid="console-log"]')?.textContent).toContain("status a=1");
-    });
-
-    it("ticket 018-018: the right column is viewport-bound (shares RobotPage.css's `robot-page-column-console` with the Main tab), and the 'Code for your program' panel above the console carries the shrink/scroll wrapper class, in document order before the console", () => {
+  describe("ticket 018-013's console mount is gone (sprint 022 ticket 007)", () => {
+    it("no longer mounts a DeviceConsole in the right column -- the full serial log moved to ConsoleDock", () => {
+      // Originally: "mounts the unfiltered DeviceConsole in the right
+      // column, showing every line (not just calibration traffic)."
+      // `ConsoleDock` (mounted once per device page, not per tab) is
+      // where a student watches this robot's log now -- see that
+      // component's own test file for the "shows every line" behavior,
+      // which no longer needs a `ConfigurationPage` to exercise it.
       const { el } = mountPage();
       const right = el.querySelector(".robot-page-column-right")!;
-      expect(right.classList.contains("robot-page-column-console")).toBe(true);
+      expect(right.querySelector('[aria-label="Console"]')).toBeNull();
+      expect(right.querySelector('[data-testid="console-log"]')).toBeNull();
+    });
+
+    it("the right column no longer carries the viewport-bound console class, and the code panel no longer carries the shrink/scroll wrapper class -- nothing is left below either to reserve room for", () => {
+      // Originally ticket 018-018's own test, pinning that the right
+      // column shared `RobotPage.css`'s `robot-page-column-console` with
+      // the Main tab and that the code panel above the (now-deleted)
+      // console carried `robot-page-column-top`. Both classes existed
+      // only to leave room for a console mounted below; with that
+      // console gone, both are dropped -- see `RobotPage.css`'s own doc
+      // comment ("Sprint 022 ticket 007: `.robot-page-column-top` is
+      // deleted") for the full account.
+      const { el } = mountPage();
+      const right = el.querySelector(".robot-page-column-right")!;
+      expect(right.classList.contains("robot-page-column-console")).toBe(false);
 
       const top = el.querySelector('[aria-label="Configuration code"]')!;
-      expect(top.classList.contains("robot-page-column-top")).toBe(true);
+      expect(top.classList.contains("robot-page-column-top")).toBe(false);
       expect(right.contains(top)).toBe(true);
-
-      const consoleEl = el.querySelector('[aria-label="Console"]')!;
-      expect(right.contains(consoleEl)).toBe(true);
-      // `robot-page-column-top`'s own `max-height` formula (RobotPage.css)
-      // reserves room for `.device-console` below it -- this only holds
-      // if the panel really does precede the console in the column.
-      expect(top.compareDocumentPosition(consoleEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
   });
 });

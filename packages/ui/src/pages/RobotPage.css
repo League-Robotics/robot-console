@@ -1,10 +1,30 @@
 /* RobotPage.css — two-column relayout (ticket 012-005 / SUC-006).
  *
  * `max-width: 46rem` (sprint 006's single-column shell) is gone -- the
- * page now uses the full window width, split roughly in half between
- * `.robot-page-column-left` (StatusPanel, DriveControls,
- * SequencingIndicator, FunctionsPanel, a stubbed charts placeholder)
- * and `.robot-page-column-right` (DeviceConsole + CommandStrip).
+ * page uses the full window width.
+ *
+ * **Sprint 022 ticket 007: the Main tab is single-column again.** The
+ * two-column split this comment used to describe -- `.robot-page-column-left`
+ * (StatusPanel, DriveControls) beside `.robot-page-column-right`
+ * (DeviceConsole + CommandStrip) -- is gone along with the right
+ * column's own console mount: `ConsoleDock` (sprint 022 tickets 002-006)
+ * is the one place a student watches this robot's log now, mounted once
+ * per device page regardless of tab, and this page's own second copy
+ * was only ever kept around so the dock could be proven live before its
+ * predecessor was deleted (sprint.md's Migration Concerns). `RobotPage.tsx`
+ * now renders `.robot-page-column-left`'s content directly, at full
+ * page width, with no sibling column. `.robot-page-column-left`,
+ * `.robot-page-column-right` and `.robot-page-column-console` all
+ * remain defined below -- `DriveTab.tsx` (Drive tab) and
+ * `CalibrationPage.tsx`/`ConfigurationPage.tsx` (Calibration/
+ * Configuration tabs) still use the left/right split for their own,
+ * still-two-column content, and `DriveTab`'s right column still needs
+ * the viewport-bound sizing `.robot-page-column-console` provides (see
+ * that rule's own comment, below, for why that is no longer only a "the
+ * console lives here" class). `.robot-page-column-top` does NOT remain
+ * -- it capped a panel to leave room for a `ConsolePane` below it, and
+ * every such panel lost its console (see the comment above
+ * `.robot-page-title-row`, below, for the deletion note).
  *
  * **No sticky e-stop bar any more (out-of-process, 2026-09-10).** Sprint
  * 006's separate `EstopControl` used to mount directly under the `h2`,
@@ -50,19 +70,18 @@
    * column stacks under the left one instead of sitting beside it, so
    * there is no longer a taller sibling for `position: sticky` to
    * track -- drop back to plain document flow (matches every other
-   * column at this width) and give the log a fixed viewport-relative
-   * height instead of a flex-filled one, so it still can't grow the
-   * page unboundedly on a narrow/short device. */
+   * column at this width). Sprint 022 ticket 007 removed the
+   * `.robot-page-column-console .console-log` companion rule that used
+   * to live here: it gave a *console's* log a fixed viewport-relative
+   * height at this breakpoint so a narrow/short device couldn't grow
+   * the page unboundedly, but `.robot-page-column-console`'s one
+   * remaining user (`DriveTab.tsx`'s right column: Charts + path trace)
+   * has no `.console-log` inside it to size -- `PathTracePanel`'s own
+   * media-query rule (`DriveTab.css`) already handles that column at
+   * this width. */
   .robot-page-column-console {
     position: static;
     height: auto;
-  }
-
-  .robot-page-column-console .console-log {
-    flex: none;
-    height: 50vh;
-    min-height: 8rem;
-    max-height: none;
   }
 }
 
@@ -73,13 +92,27 @@
   min-width: 0;
 }
 
-/* Shared viewport-bound right-column pattern (ticket 018-018),
- * applied to all three tabs that embed a `DeviceConsole` in
- * `.robot-page-column-right` -- Main (`RobotPage.tsx`), Calibration
- * (`CalibrationPage.tsx`) and Configuration (`ConfigurationPage.tsx`).
- * Stakeholder direction, verbatim: "the console on the right must
- * always completely fit on the screen... The entry where you type and
- * send a command is always at the bottom of the screen."
+/* Shared viewport-bound column pattern (ticket 018-018). Originally
+ * applied to every column that embedded a `DeviceConsole` -- Main
+ * (`RobotPage.tsx`), Calibration (`CalibrationPage.tsx`) and
+ * Configuration (`ConfigurationPage.tsx`) -- per the stakeholder
+ * direction, verbatim: "the console on the right must always
+ * completely fit on the screen... The entry where you type and send a
+ * command is always at the bottom of the screen."
+ *
+ * **Sprint 022 ticket 007: this class no longer bounds a console
+ * anywhere.** Every mount above lost its `ConsolePane` to `ConsoleDock`
+ * (sprint 022 tickets 002-006) and dropped this class along with it --
+ * `DriveTab.tsx`'s right column (Charts + path trace) is the one
+ * survivor, and it was only ever using this rule's *second*,
+ * console-independent property: a sticky, viewport-tall box that gives
+ * a `flex: 1` child (there, `PathTracePanel`) room to fill all the way
+ * to the bottom of the screen. The rule itself, and its "why sticky, why
+ * `12rem`, why no min-height" reasoning below, is unchanged and still
+ * correct for that job -- only the doc comment's claim about *what*
+ * fills the column needed correcting, so a future reader does not go
+ * looking for a `DeviceConsole` under `.robot-page-column-right` in
+ * `DriveTab` and wonder why there isn't one.
  *
  * Was a flow-positioned `height: calc(100vh - 11rem)` (Main tab only) --
  * that alone kept the *column* from outgrowing a viewport it started
@@ -115,47 +148,38 @@
   min-height: 0;
 }
 
-/* The Calibration/Configuration right columns stack a panel ("Current
- * calibration", "Code for your program") above the console in this
- * same viewport-bound column, marked with `.robot-page-column-top`.
- * That panel keeps its natural height when there's room, but must give
- * way -- shrinking, then scrolling internally once it can't shrink any
- * further (`overflow-y: auto`) -- *before* `.device-console`'s own
- * `19rem` floor does (see that rule's own doc comment below), rather
- * than growing the column past the viewport the way an unwrapped
- * `.robot-page-panel` used to.
+/* Sprint 022 ticket 007: `.robot-page-column-top` is deleted.
  *
- * Plain `flex: 0 1 auto; min-height: 0` here does NOT actually give
- * this panel shrink priority, in either flexbox or CSS Grid -- both
- * layout models decide a container's available free space by summing
- * every *other* sibling's own flex-basis/track-minimum up front, and
- * `.device-console`'s is `0` (from its own `flex: 1`); a sibling with
- * `flex-grow: 0` (this rule) or a `minmax(0, auto)`/`minmax(0,
- * max-content)` grid row gets frozen at its full natural size in that
- * first pass and is never revisited later even once `.device-console`
- * is forced back up to its real minimum -- live-measured on this
- * ticket's own bench trying both: at 1400x700 the Calibration tab's
- * send line landed 25-57px below `window.innerHeight` either way. The
- * fix that actually works is a `max-height` computed with the SAME
- * `calc()` constants as `.robot-page-column-console`'s own `height`
- * above, explicitly reserving room for `.device-console`'s `19rem`
- * floor plus the `1rem` gap between them -- deterministic arithmetic
- * instead of relying on either layout model's shrink-priority
- * ordering, which neither actually provides here. */
-.robot-page-column-top {
-  flex: 0 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  max-height: calc(100vh - 12rem - 1rem - 1rem - 19rem);
-}
-
-/* CommandStrip sits below the console on the Main tab only, inside the
- * same bounded column -- pinned to the column's bottom (flex: none, no
- * grow/shrink) so it never fights DeviceConsole's own `flex: 1` for
- * space; the console is what shrinks/scrolls, not this. */
-.robot-page-column-console .command-strip {
-  flex: none;
-}
+ * It used to cap a panel that sat above a `ConsolePane` in the same
+ * column -- "Current calibration"/"Code for your program" on
+ * Calibration/Configuration, the pad/aids/Functions block on the Drive
+ * tab's left column -- shrinking and then scrolling that panel
+ * internally, before the console below it was ever forced under its own
+ * floor. With every one of those `ConsolePane` mounts deleted (this
+ * ticket; see `RobotPage.tsx`/`CalibrationPage.tsx`/`ConfigurationPage.tsx`/
+ * `DriveTab.tsx`'s own doc comments), nothing is left below any of those
+ * panels to reserve room for -- `CalibrationPage.css`'s own doc comment
+ * on `.calibration-code-panel.robot-page-column-top` predicted this
+ * exact outcome back when it was written ("Ticket 007 deletes
+ * `ConsolePane` from this column entirely, at which point nothing is
+ * left below the code panel to reserve room for and this override stops
+ * mattering") -- that override is deleted alongside this rule, for the
+ * same reason. Every former user of this class now renders its content
+ * at natural height instead.
+ *
+ * `.robot-page-column-console .command-strip { flex: none; }` is
+ * deleted for the same reason: `CommandStrip`'s one remaining mount
+ * site is inside `ConsoleDock` (`console-dock/ConsoleDock.css` sizes it
+ * there), not under any `.robot-page-column-console`.
+ *
+ * `.robot-page-column-right .device-console`/`.console-log` (a
+ * `min-height: 19rem`/`8rem` pair sizing the *console itself* to leave
+ * the send line always reachable) are deleted too, for the same root
+ * cause: there is no `.device-console` under `.robot-page-column-right`
+ * anywhere any more -- Main tab's right column is gone outright, and
+ * Calibration/Configuration's right columns never held one to begin
+ * with (Calibration's console lived in the left column; Configuration's
+ * lost its only console to `ConsoleDock`). */
 
 /* OOP 2026-09-10: tabs beside the robot's name. */
 .robot-page-title-row {
@@ -209,44 +233,11 @@
   font-size: 1rem;
 }
 
-/* DeviceConsole fills the right column and scrolls within it -- scoped
- * to this column only (via descendant selectors against DeviceConsole's
- * own classes) so RelayPage/UnknownDevicePage, which embed the same
- * component in normal document flow, are completely unaffected.
- *
- * `min-height: 19rem`, not `0` and not the default `auto` (ticket
- * 018-018). `0` was tried first and is wrong the other direction from
- * `.robot-page-column-top`'s own `max-height` above: it lets
- * `.device-console` get shrunk below what its own non-log rows need
- * whenever `.robot-page-column-top`'s calc'd cap turns out larger than
- * intended (e.g. a future edit to either constant drifting out of
- * sync) -- this is the backstop that keeps `.device-console` itself
- * safe even then, and is also what `.robot-page-column-top`'s own
- * `max-height` formula is computed FROM (see that rule). `auto` (the
- * default, i.e. omitting this rule) was tried next and over-corrects:
- * a flex item's *automatic* minimum size is content-based, and for a
- * flex column containing a `flex: 1` log, that content-based
- * measurement is computed as if the log rendered *all* of its lines
- * without scrolling (its own `overflow-y: auto` only suppresses this
- * for the log's own min-height floor, not for `.device-console`'s own
- * outer intrinsic size) -- live-measured on this ticket's own bench:
- * injecting 300 log lines then blew the Main tab's column out to a
- * 12000px+ `sendBottom`. `19rem` is instead an explicit,
- * content-measured constant (not content-*based*, so it can't blow up
- * with more log lines): the toolbar (~28px) + one hint banner (~34px)
- * + the sequencing row's "no session" state (~28px) + the log's own
- * `8rem`/128px floor + the send row (~32px) + four `0.6rem` row gaps
- * (~38px), measured live at 1400x900 -- ~289px == ~18.1rem; 19rem
- * leaves a little headroom, matching this file's own "approximation,
- * not exact" discipline elsewhere. */
-.robot-page-column-right .device-console {
-  flex: 1;
-  min-height: 19rem;
-  max-width: none;
-}
-
-.robot-page-column-right .console-log {
-  flex: 1;
-  min-height: 8rem;
-  max-height: none;
-}
+/* Sprint 022 ticket 007 deleted the `.robot-page-column-right
+ * .device-console`/`.console-log` rules that used to live here (a
+ * `min-height: 19rem`/`8rem` pair sizing a console mounted in this
+ * column so its send line always stayed reachable) -- see this file's
+ * own comment above `.robot-page-title-row`, "Sprint 022 ticket 007:
+ * `.robot-page-column-top` is deleted," for the full explanation of why
+ * every console-sizing rule scoped to `.robot-page-column-right`
+ * became dead at the same time. */

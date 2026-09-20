@@ -4,25 +4,42 @@
  * page (ticket 012-005 / SUC-001, SUC-003, SUC-004, SUC-006, SUC-007;
  * migrated to the `Snapshot` contract, sprint 015 ticket 009).
  *
- * This ticket replaces the sprint 006 single-column shell (three
+ * This ticket replaced the sprint 006 single-column shell (three
  * separate response areas reading the same rx log, one of them -- the
- * retired Get/Set panel -- with a real `-1`-watermark bug) with a two-column
- * layout: left column `DriveControls` + `SequencingIndicator` + a
- * stubbed charts placeholder; right column exactly one `DeviceConsole`
- * with `CommandStrip` beneath it. STOP/E-STOP (out-of-process,
- * 2026-09-10) no longer have a separate sticky `EstopControl` sibling --
- * they render inside `DriveControls`'s own pad in the left column; see
- * `DriveControls.test.tsx` for their behavior.
+ * retired Get/Set panel -- with a real `-1`-watermark bug) with a
+ * two-column Main tab: left column `DriveControls` + `SequencingIndicator`
+ * + a stubbed charts placeholder; right column exactly one
+ * `DeviceConsole` with `CommandStrip` beneath it. STOP/E-STOP
+ * (out-of-process, 2026-09-10) no longer have a separate sticky
+ * `EstopControl` sibling -- they render inside `DriveControls`'s own pad
+ * in the left column; see `DriveControls.test.tsx` for their behavior.
+ *
+ * **Sprint 022 ticket 007: the right column (and its console) is gone.**
+ * `ConsoleDock` (mounted once per device page by `DevicePage.tsx`,
+ * tickets 002-006) is the one place a student watches a robot's log now,
+ * so this page's own `ConsolePane`/`CommandStrip` mount -- kept
+ * alongside the dock for four tickets on purpose, per sprint.md's
+ * Migration Concerns, so the dock could be proven live before its
+ * predecessor was deleted -- is gone. The Main tab is single-column;
+ * every test below that used to assert a console/`CommandStrip`
+ * *present* in the right column now asserts one is *absent* everywhere
+ * on this page instead -- coverage moved to `ConsoleDock.test.tsx`
+ * (mounting/toggling/notice-indicator behavior) and `CommandStrip.test.tsx`
+ * (HELLO/ID/VER/STATUS/GET/SET dispatch), neither of which needs
+ * `RobotPage` at all to exercise `CommandStrip`'s own behavior.
  *
  * Focused per-component behavior lives in each component's own test
  * file (`DriveControls.test.tsx`, `SequencingIndicator.test.tsx`,
- * `CommandStrip.test.tsx`); this file proves the page assembles them
- * correctly, that the layout's structural constraints hold (no second
- * console/reply region anywhere on the page, `EstopControl` not nested
- * inside either column's scroll container), and that a host `notice`
- * routed by ticket 012-003 (now `type: "notice"`, ticket 004) actually
- * surfaces here. `RobotPage.transportBlind.test.ts` separately enforces
- * the transport-blindness property with a source scan.
+ * `CommandStrip.test.tsx`); this file proves the page assembles what it
+ * still owns correctly, that the layout's structural constraints hold
+ * (no console/`CommandStrip` mount of its own anywhere on the page,
+ * `EstopControl` not nested inside either column's scroll container),
+ * and that a host `notice` routed by ticket 012-003 (now `type:
+ * "notice"`, ticket 004) is no longer this page's concern to surface
+ * (there is no console here to surface it in -- see
+ * `ConsoleDock.test.tsx`'s own notice-indicator suite instead).
+ * `RobotPage.transportBlind.test.ts` separately enforces the
+ * transport-blindness property with a source scan.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -134,25 +151,27 @@ describe("RobotPage", () => {
     expect(el.textContent).toContain("vevav");
   });
 
-  it("OOP 2026-09-10: the Main tab shows status and drive on the left, console (with sequencing at its top) and command strip on the right", () => {
+  it("OOP 2026-09-10: the Main tab shows status and drive in a single column", () => {
     const { el } = mountRobotPage();
     const left = el.querySelector(".robot-page-column-left");
     expect(left).not.toBeNull();
     expect(left!.querySelector('[aria-label="Robot status"]')).not.toBeNull();
     expect(left!.querySelector('[aria-label="Drive controls"]')).not.toBeNull();
     expect(Array.from(left!.querySelectorAll("h3")).map((h) => h.textContent)).toEqual(["Status", "Drive"]);
-    const consoleEl = el.querySelector('[aria-label="Console"]')!;
-    expect(consoleEl.querySelector('[aria-label="Sequencing state"]')).not.toBeNull();
-    // Sequencing precedes the log inside the console.
-    const seq = consoleEl.querySelector('[aria-label="Sequencing state"]')!;
-    const log = consoleEl.querySelector('[data-testid="console-log"]')!;
-    expect(seq.compareDocumentPosition(log) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // Nothing from the other tabs is mounted.
     expect(el.querySelector('[aria-label="Functions"]')).toBeNull();
     expect(el.querySelector('[aria-label="Charts"]')).toBeNull();
     expect(el.querySelector('[aria-label="Distance calibration"]')).toBeNull();
     expect(el.textContent).not.toContain("Showing up to");
     expect(el.textContent).not.toContain("Hold a direction");
+  });
+
+  it("sprint 022 ticket 007: the Main tab has no right column any more -- the console/CommandStrip it used to hold moved to ConsoleDock, which this page doesn't mount", () => {
+    const { el } = mountRobotPage();
+    expect(el.querySelector(".robot-page-column-right")).toBeNull();
+    expect(el.querySelector('[aria-label="Console"]')).toBeNull();
+    expect(el.querySelector('[aria-label="Command strip"]')).toBeNull();
+    expect(el.querySelector('[data-testid="console-log"]')).toBeNull();
   });
 
   it("ticket 018-013: tabs sit beside the name; every robot (including a plain, non-calibration one) gets Main, Drive, Calibration, Configuration and Diagnostics", () => {
@@ -169,7 +188,7 @@ describe("RobotPage", () => {
     expect(el.querySelector('[data-testid="robot-tab-main"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("OOP 2026-09-14: the Drive tab (Functions & charts folded in) has the pad, keyboard/gamepad aids and a viewport-bound console on the left, and functions, charts and path trace on the right", () => {
+  it("OOP 2026-09-14: the Drive tab (Functions & charts folded in) has the pad, keyboard/gamepad aids and Functions on the left, and a viewport-bound Charts/path-trace column on the right", () => {
     const { el } = mountRobotPage();
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-drive"]')!.click();
@@ -177,11 +196,8 @@ describe("RobotPage", () => {
     expect(el.querySelector('[data-testid="robot-tab-panel-main"]')).toBeNull();
     const left = el.querySelector(".robot-page-column-left")!;
     const right = el.querySelector(".robot-page-column-right")!;
-    expect(left.classList.contains("robot-page-column-console")).toBe(true);
     expect(left.querySelector('[aria-label="Drive controls"]')).not.toBeNull();
     expect(left.querySelector('[data-testid="drive-tab-keyboard"]')).not.toBeNull();
-    expect(left.querySelector('[aria-label="Console"]')).not.toBeNull();
-    expect(el.querySelectorAll('[aria-label="Console"]')).toHaveLength(1);
     expect(left.querySelector('[aria-label="Functions"]')).not.toBeNull();
     expect(right.classList.contains("robot-page-column-console")).toBe(true);
     expect(right.querySelector('[aria-label="Charts"]')).not.toBeNull();
@@ -189,21 +205,33 @@ describe("RobotPage", () => {
     expect(el.querySelector('[data-testid="robot-tab-drive"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("the Calibration tab (offered for any robot) shows the flow above the console on the left, the values right", () => {
+  it("sprint 022 ticket 007: the Drive tab's left column no longer carries the viewport-bound console class, and no console/CommandStrip renders anywhere on the page", () => {
+    const { el } = mountRobotPage();
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-drive"]')!.click();
+    });
+    const left = el.querySelector(".robot-page-column-left")!;
+    expect(left.classList.contains("robot-page-column-console")).toBe(false);
+    expect(el.querySelector('[aria-label="Console"]')).toBeNull();
+    expect(el.querySelector('[aria-label="Command strip"]')).toBeNull();
+  });
+
+  it("the Calibration tab (offered for any robot) shows the flow on the left, the values right -- no console on either side (sprint 022 ticket 007)", () => {
     const { el } = mountRobotPage(robotDevice({ program: "calibration-1", version: "1" }));
     expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Calibration", "Configuration", "Diagnostics"]);
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
     });
     // Stakeholder, 2026-09-19: the firmware panel and the guided run sit
-    // above the console on the left -- what you flash and what you press,
-    // over what you watch while it runs -- and the values and the code
-    // you paste are on the right. The two standalone wizard panels are
-    // gone, replaced by the flow.
-    expect(el.querySelector('.robot-page-column-left [aria-label="Console"]')).not.toBeNull();
+    // on the left, over what used to be the console it feeds -- and the
+    // values and the code you paste are on the right. The two standalone
+    // wizard panels are gone, replaced by the flow. Ticket 007 deleted
+    // the console itself (superseded by ConsoleDock): neither column
+    // renders one any more.
     expect(el.querySelector('.robot-page-column-left [aria-label="New calibration"]')).not.toBeNull();
     expect(el.querySelector('.robot-page-column-right [aria-label="Current calibration"]')).not.toBeNull();
     expect(el.querySelector('.robot-page-column-right [aria-label="Calibration code"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Console"]')).toBeNull();
     expect(el.querySelector('[aria-label="Distance calibration"]')).toBeNull();
     expect(el.querySelector('[aria-label="Rotation calibration"]')).toBeNull();
   });
@@ -229,30 +257,6 @@ describe("RobotPage", () => {
     expect(Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash calibration firmware")).toBeUndefined();
   });
 
-  it("renders exactly one console and a command strip in the right column", () => {
-    const { el } = mountRobotPage();
-    const right = el.querySelector(".robot-page-column-right");
-    expect(right).not.toBeNull();
-    expect(right!.querySelector('[aria-label="Console"]')).not.toBeNull();
-    expect(right!.querySelector('[aria-label="Command strip"]')).not.toBeNull();
-
-    // Exactly one console/log region anywhere on the page -- no
-    // component still renders its own reply area alongside it.
-    expect(el.querySelectorAll('[aria-label="Console"]').length).toBe(1);
-    expect(el.querySelectorAll('[data-testid="console-log"]').length).toBe(1);
-  });
-
-  it("ticket 018-018: the Main tab's right column carries the shared viewport-bound class, with CommandStrip directly under the console", () => {
-    const { el } = mountRobotPage();
-    const right = el.querySelector(".robot-page-column-right")!;
-    expect(right.classList.contains("robot-page-column-console")).toBe(true);
-
-    const consoleEl = right.querySelector('[aria-label="Console"]')!;
-    const strip = right.querySelector('[aria-label="Command strip"]')!;
-    expect(consoleEl.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  });
-
-
   it("renders STOP/E-STOP inside DriveControls' pad in the left column, not as a page-level sibling (out-of-process, 2026-09-10)", () => {
     const { el } = mountRobotPage();
     const stop = el.querySelector('[data-testid="stop-button"]');
@@ -266,19 +270,28 @@ describe("RobotPage", () => {
     expect(driveControls!.contains(stop)).toBe(true);
     expect(driveControls!.contains(estop)).toBe(true);
 
-    // No separate top-level e-stop control sitting outside the columns
-    // any more -- `.robot-page`'s only children are the heading and the
-    // two-column grid.
-    const right = el.querySelector(".robot-page-column-right");
-    expect(right!.contains(stop)).toBe(false);
-    expect(right!.contains(estop)).toBe(false);
+    // No separate top-level e-stop control sitting outside the left
+    // column either -- sprint 022 ticket 007 removed the Main tab's
+    // right column outright (`.robot-page`'s only children are the
+    // heading and the single left column), so there is no longer a
+    // second column to check for a stray copy at all.
+    expect(el.querySelector(".robot-page-column-right")).toBeNull();
   });
 
   it("removes the old single-column max-width from RobotPage.css", () => {
     expect(robotPageCssSource).not.toMatch(/max-width:\s*46rem/);
   });
 
-  it("has no second echoed region anywhere on the page for a populated rx log with nothing sent (retired Get/Set panel bug regression)", () => {
+  it("renders no rx log echo anywhere on the page for a populated rx log with nothing sent (retired Get/Set panel bug regression; sprint 022 ticket 007 update)", () => {
+    // Originally: the retired Get/Set panel's bug (a `-1` watermark
+    // matching the entire rx history) echoed every rx line a second
+    // time in its own reply area, alongside `ConsolePane`'s single
+    // legitimate copy -- this test pinned "exactly one copy of each
+    // line, in the console." Sprint 022 ticket 007 deletes that
+    // page-level console entirely (superseded by `ConsoleDock`, which
+    // this test does not mount), so the correct count on THIS page is
+    // now zero, not one -- `ConsoleDock.test.tsx` covers the log
+    // actually rendering exactly once wherever it does mount.
     const { el, socket } = mountRobotPage();
 
     act(() => {
@@ -287,12 +300,7 @@ describe("RobotPage", () => {
       socket.emitMessage({ type: "line", linkId: LINK_ID, direction: "rx", line: "ack 1 0 none" });
     });
 
-    // Each rx line appears exactly once on the whole page -- the
-    // retired Get/Set panel's bug (a `-1` watermark matching the entire
-    // rx history) would have echoed these a second time in a separate
-    // reply area.
-    const rxLines = el.querySelectorAll('[data-testid="console-line-rx"]');
-    expect(rxLines.length).toBe(3);
+    expect(el.querySelectorAll('[data-testid="console-line-rx"]').length).toBe(0);
     expect(el.querySelectorAll('[data-testid="get-set-replies"]').length).toBe(0);
     expect(el.querySelector(".get-set-panel")).toBeNull();
     expect(el.querySelector(".status-panel")).toBeNull();
@@ -346,29 +354,31 @@ describe("RobotPage", () => {
     expect(socket.sent.filter((raw) => raw.includes('"get-wifi-credentials"'))).toHaveLength(1);
   });
 
-  it("command strip's HELLO/ID/VER/STATUS buttons send their bare verb via sendCommand", () => {
-    const { el, socket } = mountRobotPage();
-
-    for (const [testId, verb] of [
-      ["command-strip-hello", "HELLO"],
-      ["command-strip-id", "ID"],
-      ["command-strip-ver", "VER"],
-      ["command-strip-status", "STATUS"],
-    ] as const) {
-      socket.sent.length = 0;
-      act(() => {
-        el.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`)!.click();
-      });
-      expect(socket.sent).toEqual([JSON.stringify({ type: "send-command", linkId: LINK_ID, verb })]);
+  it("sprint 022 ticket 007: no command-strip-* controls render on this page any more -- CommandStrip's HELLO/ID/VER/STATUS dispatch is CommandStrip.test.tsx's own coverage now", () => {
+    // Originally: "command strip's HELLO/ID/VER/STATUS buttons send
+    // their bare verb via sendCommand," clicking `command-strip-hello`/
+    // `-id`/`-ver`/`-status` on this page and asserting the exact
+    // `sendCommand` payload. `CommandStrip` is deleted from this page
+    // (its one remaining mount site is `ConsoleDock`), so that behavior
+    // is no longer this page's to prove -- `CommandStrip.test.tsx`
+    // already covers HELLO/ID/VER/STATUS/GET/SET dispatch directly
+    // against the component, with no `RobotPage` needed to exercise it.
+    const { el } = mountRobotPage();
+    for (const testId of ["command-strip-hello", "command-strip-id", "command-strip-ver", "command-strip-status"]) {
+      expect(el.querySelector(`[data-testid="${testId}"]`)).toBeNull();
     }
   });
 
-  it("shows the host's notice text in the single console when a HELLO resync gets no reply", () => {
+  it("sprint 022 ticket 007: a HELLO-refusal notice has nowhere to surface on this page any more -- there is no console here to show it in", () => {
+    // Originally: "shows the host's notice text in the single console
+    // when a HELLO resync gets no reply" -- clicked `command-strip-hello`
+    // (this page's own `CommandStrip` mount) and asserted the resulting
+    // `notice` message rendered in this page's own console log. Both the
+    // button and the console are gone from this page; `ConsoleDock`'s
+    // notice-indicator suite (`ConsoleDock.test.tsx`, "sprint 022 ticket
+    // 003, sprint.md Design Rationale") covers a notice actually
+    // surfacing wherever the console does mount now.
     const { el, socket } = mountRobotPage();
-
-    act(() => {
-      el.querySelector<HTMLButtonElement>('[data-testid="command-strip-hello"]')!.click();
-    });
 
     const refusal =
       '"HELLO" cannot be sent as a live command -- it resets the robot\'s sequence state ' +
@@ -377,13 +387,8 @@ describe("RobotPage", () => {
       socket.emitMessage({ type: "notice", level: "error", linkId: LINK_ID, text: refusal, at: 0, seq: 1 });
     });
 
-    const log = el.querySelector('[data-testid="console-log"]')!;
-    expect(log.textContent).toContain(refusal);
-    expect(log.querySelector('[data-host-error="true"]')).not.toBeNull();
-
-    // Still exactly one console region -- the rejection lands in the
-    // same log, not a second surface.
-    expect(el.querySelectorAll('[aria-label="Console"]').length).toBe(1);
+    expect(el.querySelector('[data-testid="console-log"]')).toBeNull();
+    expect(el.textContent).not.toContain(refusal);
   });
 });
 

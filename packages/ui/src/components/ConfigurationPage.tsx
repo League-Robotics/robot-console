@@ -67,24 +67,30 @@
  * need flash." So this page no longer renders a "Calibration firmware"
  * block or calx/cala run buttons, and no longer requests `FUNCS` -- all
  * of that (see `CalibrationPage.tsx`'s own doc comment) lives on the
- * Calibration tab now, including the flash button. This page still
- * takes `link` -- not for flashing/running any more, only to mount the
- * unfiltered `DeviceConsole` in the right column, unchanged from ticket
- * 018-013's own addition. Otherwise this page keeps only what
- * ticket-017-008 already gave it: the Calibration *values* table (shared
- * per-robot state, editable here too), Wi-Fi, Radio, the footer actions,
- * and the generated code block.
+ * Calibration tab now, including the flash button. This page used to
+ * keep taking `link` for one remaining reason -- mounting the
+ * unfiltered `DeviceConsole` in the right column -- but that mount is
+ * gone too now (sprint 022 ticket 007, below), so `link` is gone from
+ * this page's props entirely: nothing left here needs it. Otherwise
+ * this page keeps only what ticket-017-008 already gave it: the
+ * Calibration *values* table (shared per-robot state, editable here
+ * too), Wi-Fi, Radio, the footer actions, and the generated code block.
  *
- * ## Ticket 018-018: the right column is viewport-bound too
+ * ## Ticket 018-018 / sprint 022 ticket 007: the right column's
+ * viewport binding came and went
  *
- * The right column now carries `robot-page-column-console`
- * (`RobotPage.css`), the same sticky/viewport-height class the Main
- * tab's column already used -- previously it had no height bound, so
- * the generated-code block plus a growing console log could push the
- * send line off screen (stakeholder report, 2026-09-14). The code
- * block above the console also carries `robot-page-column-top`, so it
- * shrinks and scrolls internally before the console log's own floor
- * gives; see `RobotPage.css`'s doc comment on both classes.
+ * Ticket 018-018 gave the right column `robot-page-column-console`
+ * (`RobotPage.css`, the same sticky/viewport-height class the Main
+ * tab's column used) plus `robot-page-column-top` on the code block
+ * above it, because a growing console log below could otherwise push
+ * the send line off screen. Sprint 022 ticket 007 deletes the console
+ * that justified both classes (`ConsoleDock` is where a student watches
+ * this robot's log now, mounted once per device page regardless of
+ * tab) -- with it gone, there is nothing left in this column for either
+ * class to size around, so both are dropped: the code block renders at
+ * its own natural height, same as this page's left-column panels always
+ * have. See `RobotPage.css`'s own doc comment for the fuller account of
+ * why both classes are deleted everywhere, not just here.
  *
  * ## Ticket 022-001: `configurationCode`/`MASKED_PASSWORD`/`jsString`
  * moved to `lib/programCode.ts` (renamed `programCode`)
@@ -103,7 +109,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { nameToRadioAddress } from "@robot-console/protocol";
-import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import type { SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
 import { useSendable, useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
 import type { RadioAddress } from "../pages/RelayPage";
 import {
@@ -125,22 +131,15 @@ import { validateRadioOverrideInput } from "../lib/radioAddress";
 import { isLinkUsable } from "../deviceDisplay";
 import { AddressSourceChip } from "./AddressSourceChip";
 import { CalibrationTable } from "./CalibrationTable";
-import { ConsolePane } from "./ConsolePane";
 import { WifiCredentialsForm, validateWifiInput } from "./WifiCredentialsForm";
 import "./CalibrationTable.css";
 import "./ConfigurationPage.css";
 
 export interface ConfigurationPageProps {
   device: SnapshotDevice;
-  /** The specific link this page is showing a session for -- the routed
-   * link `RobotPage.tsx` already resolves for every other tab. Used here
-   * only to mount the unfiltered `DeviceConsole` in the right column
-   * (ticket 018-013); flashing and running calx/cala moved to the
-   * Calibration tab (stakeholder correction, 2026-09-13). */
-  link: SnapshotLink;
 }
 
-export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
+export function ConfigurationPage({ device }: ConfigurationPageProps) {
   const robotName = device.name;
   const { send, sendCommand } = useWsActions();
   // Ticket 011 (carried from 009's send-gating sweep): Save (via
@@ -411,8 +410,14 @@ export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
         </div>
       </div>
 
-      <div className="robot-page-column robot-page-column-right robot-page-column-console">
-        <div className="robot-page-panel calibration-code-panel robot-page-column-top" aria-label="Configuration code">
+      {/* Sprint 022 ticket 007: no more `robot-page-column-console`/
+          `robot-page-column-top` -- this column's own `ConsolePane`
+          mount is deleted (superseded by `ConsoleDock`), so there is
+          nothing below the code block any more to reserve viewport
+          height for. It renders at its own natural height now, same as
+          the left column's panels always have. */}
+      <div className="robot-page-column robot-page-column-right">
+        <div className="robot-page-panel calibration-code-panel" aria-label="Configuration code">
           <h3>Code for your program</h3>
           {code === "" ? (
             <p className="calibration-code-empty" data-testid="configuration-code-empty">
@@ -436,8 +441,6 @@ export function ConfigurationPage({ device, link }: ConfigurationPageProps) {
             </>
           )}
         </div>
-
-        <ConsolePane link={link} name={robotName} />
       </div>
     </div>
   );

@@ -4,6 +4,15 @@
  * migrated to the `Snapshot` contract, sprint 015 ticket 009). Both
  * must speak DriveControls' held-button dialect exactly: `WHEELS_V left
  * right 400` on press, re-sent every 150 ms, one `STOP` on release.
+ *
+ * Sprint 022 ticket 007: this tab's own `ConsolePane` mount (left
+ * column, below the pad/aids/Functions block) is deleted -- `ConsoleDock`
+ * is the one place a student watches this robot's log now, regardless of
+ * tab. This file never had its own console-presence assertions to
+ * rewrite (that coverage lived in `RobotPage.test.tsx`, which now
+ * asserts absence instead -- see that file's own doc comment), so the
+ * one addition here is the absence check below, per this ticket's own
+ * "replace coverage, don't just delete it" requirement.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -246,5 +255,14 @@ describe("DriveTab gamepad", () => {
       vi.advanceTimersByTime(60);
     });
     expect(el.querySelector('[data-testid="drive-tab-gamepad"]')?.textContent).toContain("none detected");
+  });
+});
+
+describe("DriveTab has no console of its own (sprint 022 ticket 007)", () => {
+  it("renders no console or CommandStrip anywhere -- the log lives in ConsoleDock now, not this tab", () => {
+    const { el } = mountTab();
+    expect(el.querySelector('[aria-label="Console"]')).toBeNull();
+    expect(el.querySelector('[aria-label="Command strip"]')).toBeNull();
+    expect(el.querySelector('[data-testid="console-log"]')).toBeNull();
   });
 });

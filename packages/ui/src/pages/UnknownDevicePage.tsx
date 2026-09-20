@@ -31,12 +31,17 @@
  * every other dispatch arm so `RelayPage`'s one genuinely divergent case
  * doesn't need special-cased wiring. See `DevicePage.tsx`'s own doc
  * comment for the full mechanism.
+ *
+ * Sprint 022 ticket 007: this page's own `ConsolePane` mount (below the
+ * `FlashDialog`) is deleted. `ConsoleDock` already shows this exact
+ * link's log -- fed by the `onActiveTargetChange` report immediately
+ * above -- so a second copy here added nothing a student couldn't
+ * already see in the one dock every device page has.
  */
 import { useEffect } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import type { ActiveConsoleTarget } from "./DevicePage";
 import { FlashDialog } from "../components/FlashDialog";
-import { ConsolePane } from "../components/ConsolePane";
 import "./UnknownDevicePage.css";
 
 export interface UnknownDevicePageProps {
@@ -58,8 +63,6 @@ export function UnknownDevicePage({ link, onActiveTargetChange }: UnknownDeviceP
       {showReason && <p className="device-note">Link attempt: {link.reason}</p>}
 
       <FlashDialog link={link} name={link.label} />
-
-      <ConsolePane link={link} name={link.label} />
     </section>
   );
 }

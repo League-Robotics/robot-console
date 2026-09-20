@@ -186,18 +186,21 @@ describe("RobotPage", () => {
     expect(el.querySelector('[data-testid="robot-tab-drive"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("ticket 018-013: the Calibration tab (offered for any robot) shows both wizards, the code block, and the current calibration", () => {
+  it("the Calibration tab (offered for any robot) shows the console left, the flow and the values right", () => {
     const { el } = mountRobotPage(robotDevice({ program: "calibration-1", version: "1" }));
     expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Calibration", "Configuration", "Diagnostics"]);
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
     });
-    // CalibrationPage: both wizards and the code block on the left, the
-    // current-calibration table on the right.
-    expect(el.querySelector(".robot-page-column-left [aria-label=\"Distance calibration\"]")).not.toBeNull();
-    expect(el.querySelector(".robot-page-column-left [aria-label=\"Rotation calibration\"]")).not.toBeNull();
-    expect(el.querySelector(".robot-page-column-left [aria-label=\"Calibration code\"]")).not.toBeNull();
-    expect(el.querySelector(".robot-page-column-right [aria-label=\"Current calibration\"]")).not.toBeNull();
+    // Stakeholder, 2026-09-19: console on the left (it is what you watch
+    // while a run happens), everything you press on the right. The two
+    // standalone wizard panels are gone, replaced by the guided flow.
+    expect(el.querySelector('.robot-page-column-left [aria-label="Console"]')).not.toBeNull();
+    expect(el.querySelector('.robot-page-column-right [aria-label="New calibration"]')).not.toBeNull();
+    expect(el.querySelector('.robot-page-column-right [aria-label="Current calibration"]')).not.toBeNull();
+    expect(el.querySelector('.robot-page-column-right [aria-label="Calibration code"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Distance calibration"]')).toBeNull();
+    expect(el.querySelector('[aria-label="Rotation calibration"]')).toBeNull();
   });
 
   it("stakeholder correction 2026-09-13: a plain, non-calibration robot's Calibration tab shows the Calibration firmware block (flash button, program/version text)", () => {

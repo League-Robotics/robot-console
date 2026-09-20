@@ -147,68 +147,109 @@ function type(el: HTMLDivElement, id: string, value: string): void {
 }
 
 describe("CalibrationPage", () => {
-  it("starts empty: no code, rotation blocked, and a wheel run unlocks rotation and fills the code block", () => {
-    const { el, socket } = mountPage();
+  /** A succeeded `calwheels` run, as the firmware emits it. */
+  const WHEELS =
+    '{"ev":"calwheels.result","calib":0.7912,"diameter":90.68,"measured":89.61,"true":90,"error":-0.39,"was":0.7878}';
+
+  it("starts with nothing but Start: no code, no run buttons until the flow begins", () => {
+    const { el } = mountPage();
     expect(el.querySelector('[data-testid="calibration-code-empty"]')).not.toBeNull();
-    expect(el.querySelector('[data-testid="rotation-calibration-blocked"]')).not.toBeNull();
-    expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(true);
+    expect(el.querySelector('[data-testid="new-calibration-start"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="new-calibration-wheels"]')).toBeNull();
+    expect(el.querySelector('[data-testid="new-calibration-turns"]')).toBeNull();
+    expect(el.querySelector('[data-testid="new-calibration-done"]')).toBeNull();
+  });
 
-    click(el, '[data-testid="distance-calibration-go"]');
-    rx(socket, '{"ev":"calwheels.result","calib":0.7912,"diameter":90.68,"measured":89.61,"true":90,"error":-0.39,"was":0.7878}');
+  it("Start -> wheels -> turns -> Done, each step appearing only once the one before it has run", () => {
+    const { el, socket } = mountPage();
+    click(el, '[data-testid="new-calibration-start"]');
+    // Wheels is offered; turns and Done are not, because a turn
+    // measured against no wheel means nothing.
+    expect(el.querySelector('[data-testid="new-calibration-wheels"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="new-calibration-turns"]')).toBeNull();
 
+    click(el, '[data-testid="new-calibration-wheels"]');
+    rx(socket, WHEELS);
     expect(el.querySelector<HTMLInputElement>("#calibration-wheel-diameter")!.value).toBe("90.68");
-    expect(el.querySelector('[data-testid="calibration-code"]')?.textContent).toContain(
-      "diffDrive.setWheelCalibration(90.68 * Math.PI / 360)",
-    );
-    expect(el.querySelector('[data-testid="rotation-calibration-blocked"]')).toBeNull();
-    expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(false);
+    expect(el.querySelector('[data-testid="new-calibration-turns"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="new-calibration-done"]')).toBeNull();
+
+    click(el, '[data-testid="new-calibration-turns"]');
+    rx(socket, '{"ev":"calturn.result","b":8.84,"tw":11.5,"slip":1.301}');
+    expect(el.querySelector('[data-testid="calibration-effective-track"]')?.textContent).toContain("8.84 cm");
+    expect(el.querySelector('[data-testid="new-calibration-done"]')).not.toBeNull();
   });
 
-  it("a rotation run's own slip goes into the pasted code; typing a ruler measurement then overrides it", () => {
-    // OOP 2026-09-19, found in a browser walk: this used to assert
-    // `RotationalSlip, 1)` for the first phase -- i.e. the snippet said
-    // 1 while the rotation wizard's Apply button had just sent the
-    // firmware's own slip (1.008 in the observed case) over the wire.
-    // Two contradictory answers on one screen, and the student pastes
-    // the one that silently undoes the calibration they just applied.
-    // The firmware's slip is now what the snippet carries.
-    //
-    // A typed ruler measurement still wins over it -- that is a
-    // deliberate human act and the page advertises the switch.
+  it("re-running wheels invalidates the turn: Done disappears until turns is run again", () => {
+    // A turn is denominated in the wheel that was on the robot when it
+    // spun. Pairing a fresh diameter with the previous slip is the
+    // silent wrong answer this gate exists to prevent.
     const { el, socket } = mountPage();
-    type(el, "calibration-wheel-diameter", "90.28");
-    click(el, '[data-testid="rotation-calibration-go"]');
+    click(el, '[data-testid="new-calibration-start"]');
+    click(el, '[data-testid="new-calibration-wheels"]');
+    rx(socket, WHEELS);
+    click(el, '[data-testid="new-calibration-turns"]');
     rx(socket, '{"ev":"calturn.result","b":8.84,"tw":11.5,"slip":1.301}');
+    expect(el.querySelector('[data-testid="new-calibration-done"]')).not.toBeNull();
 
-    expect(el.querySelector('[data-testid="calibration-effective-track"]')?.textContent).toBe("8.84 cm");
-    let code = el.querySelector('[data-testid="calibration-code"]')?.textContent ?? "";
-    expect(code).toContain("diffDrive.setTrackWidth(8.84)");
-    // The firmware's own slip, not the local fallback of 1.
-    expect(code).toContain("ConfigField.RotationalSlip, 1.301)");
-    expect(code).not.toContain("ConfigField.RotationalSlip, 1)");
-
-    type(el, "calibration-track-width", "11.5");
-    code = el.querySelector('[data-testid="calibration-code"]')?.textContent ?? "";
-    expect(code).toContain("diffDrive.setTrackWidth(11.5)");
-    expect(code).toContain("ConfigField.RotationalSlip, 1.301)");
-    expect(el.querySelector('[data-testid="calibration-slip"]')?.textContent).toContain("1.301");
-  });
-
-  it("a later failed rotation run drops an earlier succeeded run's result again", () => {
-    // The current contract ends a single run in exactly one of
-    // `.result`/`.fail`, never both -- so a run flipping from succeeded
-    // to failed only happens across two separate Go presses, unlike the
-    // old `cala`'s own re-verification pass.
-    const { el, socket } = mountPage();
-    type(el, "calibration-wheel-diameter", "90.28");
-    click(el, '[data-testid="rotation-calibration-go"]');
-    rx(socket, '{"ev":"calturn.result","b":8.84,"tw":11.5,"slip":1.301}');
-    expect(el.querySelector('[data-testid="calibration-effective-track"]')?.textContent).toBe("8.84 cm");
-
-    click(el, '[data-testid="rotation-calibration-go"]');
-    rx(socket, '{"ev":"calturn.fail","why":"too few usable gaps; centre the robot on the cross"}');
+    click(el, '[data-testid="new-calibration-wheels"]');
+    rx(socket, '{"ev":"calwheels.result","calib":0.7101,"diameter":81.37,"measured":100.3,"true":90.5,"error":9.8,"was":0.7878}');
+    expect(el.querySelector('[data-testid="new-calibration-done"]')).toBeNull();
     expect(el.querySelector('[data-testid="calibration-effective-track"]')?.textContent).toContain("not measured yet");
-    expect(el.querySelector('[data-testid="calibration-code"]')?.textContent).not.toContain("setTrackWidth");
+
+    click(el, '[data-testid="new-calibration-turns"]');
+    rx(socket, '{"ev":"calturn.result","b":12.9,"tw":11.36,"slip":0.88}');
+    expect(el.querySelector('[data-testid="new-calibration-done"]')).not.toBeNull();
+  });
+
+  it("repeated wheel runs are collected, averaged and given a standard deviation", () => {
+    const { el, socket } = mountPage();
+    click(el, '[data-testid="new-calibration-start"]');
+    click(el, '[data-testid="new-calibration-wheels"]');
+    rx(socket, '{"ev":"calwheels.result","calib":0.71,"diameter":81.40,"measured":100,"true":90.5,"error":9.5,"was":0.7878}');
+    // One run has no spread -- and says nothing, rather than claiming 0.
+    expect(el.querySelector('[data-testid="new-calibration-wheel-stat"]')?.textContent).toContain("1 run");
+    expect(el.querySelector('[data-testid="new-calibration-wheel-stat"]')?.textContent).not.toContain("sd");
+
+    click(el, '[data-testid="new-calibration-wheels"]');
+    rx(socket, '{"ev":"calwheels.result","calib":0.71,"diameter":81.50,"measured":100,"true":90.5,"error":9.5,"was":0.7878}');
+    const stat = el.querySelector('[data-testid="new-calibration-wheel-stat"]')?.textContent ?? "";
+    expect(stat).toContain("2 runs");
+    expect(stat).toContain("mean 81.45 mm");
+    // Sample sd of {81.40, 81.50} is 0.0707...
+    expect(stat).toContain("sd 0.071 mm");
+    expect(el.querySelector<HTMLInputElement>("#calibration-wheel-diameter")!.value).toBe("81.45");
+  });
+
+  it("Done writes the averages to the robot and clears the collection", () => {
+    const { el, socket } = mountPage();
+    click(el, '[data-testid="new-calibration-start"]');
+    click(el, '[data-testid="new-calibration-wheels"]');
+    rx(socket, WHEELS);
+    click(el, '[data-testid="new-calibration-turns"]');
+    rx(socket, '{"ev":"calturn.result","b":8.84,"tw":11.5,"slip":1.301}');
+
+    const before = socket.sent.length;
+    click(el, '[data-testid="new-calibration-done"]');
+    const after = socket.sent.slice(before).map((raw) => JSON.parse(raw));
+    expect(after).toContainEqual(
+      expect.objectContaining({ type: "send-command", verb: "SET", fields: ["wheel_diameter", "90.68"] }),
+    );
+    // ...and the store verb, so it survives the power cycle.
+    expect(after.some((msg) => msg.verb === "RUN" && msg.fields?.[0] === "calsave")).toBe(true);
+    expect(el.querySelector('[data-testid="new-calibration-written"]')?.textContent).toContain("Written to the robot");
+    // Back to Start: the records were only ever there to be averaged.
+    expect(el.querySelector('[data-testid="new-calibration-start"]')).not.toBeNull();
+  });
+
+  it("a failed run records nothing and says so", () => {
+    const { el, socket } = mountPage();
+    click(el, '[data-testid="new-calibration-start"]');
+    click(el, '[data-testid="new-calibration-wheels"]');
+    rx(socket, '{"ev":"calwheels.fail","why":"not on clear white","implied":778}');
+    expect(el.querySelector('[data-testid="new-calibration-failure"]')?.textContent).toContain("not on clear white");
+    expect(el.querySelector('[data-testid="new-calibration-failure"]')?.textContent).toContain("Nothing was recorded");
+    expect(el.querySelector('[data-testid="new-calibration-turns"]')).toBeNull();
   });
 
   it("persists per robot name and Start over clears it", () => {
@@ -243,29 +284,21 @@ describe("CalibrationPage", () => {
       expect(socket.sent.filter((line) => line.includes('"verb":"FUNCS"'))).toEqual([]);
     });
 
-    it("both wizards still render, Calibrate turn included, even when FUNCS lists only calwheels -- an absent name proves nothing (dropped Wi-Fi burst lines)", () => {
+    it("the flow renders whatever FUNCS listed -- an absent name proves nothing (dropped Wi-Fi burst lines)", () => {
       const { el } = mountPage({ functions: [{ name: "calwheels" }] });
-      expect(el.querySelector('.robot-page-column-left [aria-label="Distance calibration"]')).not.toBeNull();
-      expect(el.querySelector('.robot-page-column-left [aria-label="Rotation calibration"]')).not.toBeNull();
-      // Calibrate turn is still blocked pending a wheel diameter (an
-      // unrelated, legitimate gate this page itself applies) -- typing
-      // one clears that gate, leaving only the FUNCS-derived hint below,
-      // never a disabled button caused by the missing `calturn` listing.
-      type(el, "calibration-wheel-diameter", "90.28");
-      expect(el.querySelector<HTMLButtonElement>('[data-testid="rotation-calibration-go"]')!.disabled).toBe(false);
-      expect(el.querySelector('[data-testid="rotation-calibration-unavailable"]')?.textContent).toContain(
-        "didn't include calturn",
-      );
+      expect(el.querySelector('[aria-label="New calibration"]')).not.toBeNull();
+      expect(el.querySelector('[data-testid="new-calibration-start"]')).not.toBeNull();
     });
 
-    it("both wizards still render, with their own hints, even when FUNCS lists no calibration functions at all", () => {
+    it("the flow renders even when FUNCS lists no calibration functions at all", () => {
       const { el } = mountPage({ functions: [{ name: "line" }, { name: "sense" }] });
-      expect(el.querySelector('.robot-page-column-left [aria-label="Distance calibration"]')).not.toBeNull();
-      expect(el.querySelector('.robot-page-column-left [aria-label="Rotation calibration"]')).not.toBeNull();
-      expect(el.querySelector<HTMLButtonElement>('[data-testid="distance-calibration-go"]')!.disabled).toBe(false);
-      // Rotation is blocked pending a wheel diameter until the distance
-      // wizard succeeds -- unrelated to FUNCS -- but shows its own hint.
-      expect(el.querySelector('[data-testid="rotation-calibration-blocked"]')).not.toBeNull();
+      expect(el.querySelector('[data-testid="new-calibration-start"]')).not.toBeNull();
+    });
+
+    it("never renders a generic Run button for calsave -- 'Calibrate save' means nothing and writes the store", () => {
+      const { el } = mountPage({ functions: [{ name: "calwheels" }, { name: "calturn" }, { name: "calsave" }] });
+      expect(el.querySelector('[data-testid="calibration-run-calsave"]')).toBeNull();
+      expect(el.textContent).not.toMatch(/Calibrate save/);
     });
 
     it("renders a generic run control for a cal* function neither wizard owns, labelled from its name, and running it sends a bare RUN", () => {
@@ -296,39 +329,46 @@ describe("CalibrationPage", () => {
     });
   });
 
-  describe("OOP 2026-09-18: robot-reported track width, boot-record tw, and firmware slip in the Current calibration table", () => {
-    it("a successful rotation run fills the robot-reported track width, robot track width, and firmware-slip rows alongside the derived values", () => {
+  describe("the retired rows (stakeholder, 2026-09-19: four values, no more)", () => {
+    it("a turn run fills the effective width and no longer surfaces the boot record or a second slip", () => {
       const { el, socket } = mountPage();
-      type(el, "calibration-wheel-diameter", "90.28");
-      click(el, '[data-testid="rotation-calibration-go"]');
+      click(el, '[data-testid="new-calibration-start"]');
+      click(el, '[data-testid="new-calibration-wheels"]');
+      rx(socket, WHEELS);
+      click(el, '[data-testid="new-calibration-turns"]');
       rx(socket, '{"ev":"calturn.result","b":8.84,"tw":11.16,"slip":1.008}');
 
-      expect(el.querySelector('[data-testid="calibration-reported-track-width"]')?.textContent).toContain("8.84 cm");
-      expect(el.querySelector('[data-testid="calibration-reported-track-width"]')?.textContent).toContain(
-        "robot-reported, from rotation calibration",
-      );
-      expect(el.querySelector('[data-testid="calibration-robot-track-width"]')?.textContent).toContain("11.16 cm");
-      expect(el.querySelector('[data-testid="calibration-firmware-slip"]')?.textContent).toContain("1.008");
+      expect(el.querySelector('[data-testid="calibration-effective-track"]')?.textContent).toContain("8.84 cm");
+      // `tw` is a baked boot record, not a measurement, and a second
+      // slip beside the computed one only ever raised the question of
+      // which was real.
+      expect(el.querySelector('[data-testid="calibration-robot-track-width"]')).toBeNull();
+      expect(el.querySelector('[data-testid="calibration-firmware-slip"]')).toBeNull();
+      expect(el.textContent).not.toMatch(/Robot's own track width/);
     });
 
-    it("a later failed rotation run clears the robot-reported track width and firmware slip an earlier succeeded run left standing", () => {
+    it("with no caliper entry the slip is 1, and says why -- directly under the effective width it is using", () => {
       const { el, socket } = mountPage();
-      type(el, "calibration-wheel-diameter", "90.28");
-      click(el, '[data-testid="rotation-calibration-go"]');
+      click(el, '[data-testid="new-calibration-start"]');
+      click(el, '[data-testid="new-calibration-wheels"]');
+      rx(socket, WHEELS);
+      click(el, '[data-testid="new-calibration-turns"]');
       rx(socket, '{"ev":"calturn.result","b":8.84,"tw":11.16,"slip":1.008}');
-      expect(el.querySelector('[data-testid="calibration-firmware-slip"]')).not.toBeNull();
+      expect(el.querySelector('[data-testid="calibration-slip"]')?.textContent).toContain(
+        "no measured track width, so the effective width is used as the track",
+      );
 
-      click(el, '[data-testid="rotation-calibration-go"]');
-      rx(socket, '{"ev":"calturn.fail","why":"too few usable gaps; centre the robot on the cross"}');
-      expect(el.querySelector('[data-testid="calibration-firmware-slip"]')).toBeNull();
-      expect(el.querySelector('[data-testid="calibration-reported-track-width"]')?.textContent).toContain("not measured yet");
+      type(el, "calibration-track-width", "11.16");
+      expect(el.querySelector('[data-testid="calibration-slip"]')?.textContent).toContain("11.16 ÷ 8.84");
     });
   });
 
   describe("profile calibration-0.20260919.4: calshow-fed store panel, page-level 'still missing' banner, and calshow refresh after a wizard run", () => {
-    it("mounts the store panel above the Current calibration table and sends calshow on connect", () => {
+    it("no longer mounts a separate stored-calibration panel -- the stored values ARE the current calibration", () => {
       const { el, socket } = mountPage();
-      expect(el.querySelector('[data-testid="calibration-store-panel"]')).not.toBeNull();
+      expect(el.querySelector('[data-testid="calibration-store-panel"]')).toBeNull();
+      // calshow is still asked for on connect: it is where the current
+      // calibration comes from for a robot this browser never measured.
       expect(socket.sent.some((line) => line.includes('"fields":["calshow"]'))).toBe(true);
     });
 
@@ -351,11 +391,12 @@ describe("CalibrationPage", () => {
       expect(el.querySelector('[data-testid="calibration-code-missing"]')).toBeNull();
     });
 
-    it("a succeeded distance-calibration run re-asks calshow, so the store panel doesn't wait on a manual Refresh", () => {
+    it("a succeeded wheel run re-asks calshow, so the current calibration doesn't go stale", () => {
       const { el, socket } = mountPage();
+      click(el, '[data-testid="new-calibration-start"]');
       const before = socket.sent.filter((line) => line.includes('"fields":["calshow"]')).length;
-      click(el, '[data-testid="distance-calibration-go"]');
-      rx(socket, '{"ev":"calwheels.result","calib":0.7912,"diameter":90.68,"measured":89.61,"true":90,"error":-0.39,"was":0.7878}');
+      click(el, '[data-testid="new-calibration-wheels"]');
+      rx(socket, WHEELS);
       const after = socket.sent.filter((line) => line.includes('"fields":["calshow"]')).length;
       expect(after).toBeGreaterThan(before);
     });
@@ -454,21 +495,35 @@ describe("CalibrationPage", () => {
     });
   });
 
-  it("ticket 018-018: the right column is viewport-bound (shares RobotPage.css's `robot-page-column-console` with the Main tab), and the 'Current calibration' panel above the console carries the shrink/scroll wrapper class, in document order before the console", () => {
+  it("console on the LEFT, the things you press on the right (stakeholder, 2026-09-19)", () => {
     const { el } = mountPage();
+    const left = el.querySelector(".robot-page-column-left")!;
     const right = el.querySelector(".robot-page-column-right")!;
-    expect(right.classList.contains("robot-page-column-console")).toBe(true);
 
-    const top = el.querySelector('[aria-label="Current calibration"]')!;
-    expect(top.classList.contains("robot-page-column-top")).toBe(true);
-    expect(right.contains(top)).toBe(true);
+    // The console is what you watch while a run happens, so it gets the
+    // viewport-bound column class and the left side.
+    expect(left.classList.contains("robot-page-column-console")).toBe(true);
+    expect(left.contains(el.querySelector('[aria-label="Console"]')!)).toBe(true);
 
-    const consoleEl = el.querySelector('[aria-label="Console"]')!;
-    expect(right.contains(consoleEl)).toBe(true);
-    // `robot-page-column-top`'s own `max-height` formula (RobotPage.css)
-    // reserves room for `.device-console` below it -- this only holds if
-    // the panel really does precede the console in the column.
-    expect(top.compareDocumentPosition(consoleEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Everything you act on -- the flow, the values, the code -- is on
+    // the right, in that order.
+    expect(right.contains(el.querySelector('[aria-label="New calibration"]')!)).toBe(true);
+    expect(right.contains(el.querySelector('[aria-label="Current calibration"]')!)).toBe(true);
+    expect(right.contains(el.querySelector('[aria-label="Calibration code"]')!)).toBe(true);
+  });
+
+  it("the how-to is behind a button, not inline on the page", () => {
+    const { el } = mountPage();
+    expect(el.querySelector('[data-testid="calibration-help"]')).toBeNull();
+    expect(el.textContent).not.toMatch(/iron cross/i);
+
+    click(el, '[data-testid="calibration-help-open"]');
+    const help = el.querySelector('[data-testid="calibration-help"]')!;
+    expect(help.getAttribute("role")).toBe("dialog");
+    expect(help.textContent).toMatch(/iron cross/i);
+
+    click(el, '[data-testid="calibration-help-close"]');
+    expect(el.querySelector('[data-testid="calibration-help"]')).toBeNull();
   });
 });
 

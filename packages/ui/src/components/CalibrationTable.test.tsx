@@ -1,11 +1,28 @@
 // @vitest-environment jsdom
 /**
  * CalibrationTable.test.tsx — the shared calibration table's own
- * rendering coverage (ticket 017-008), collapsing what used to be
- * near-duplicate assertions across `CalibrationPage.test.tsx` and
- * `ConfigurationPage.test.tsx` into one place: both variants' ids/
- * `data-testid`s, the `calibration`-only annotations, and the two
- * pages' differing not-yet-measured/unmeasured-slip copy.
+ * rendering coverage.
+ *
+ * ## The four-row model (stakeholder, 2026-09-19)
+ *
+ * The table carries exactly four things, two of them enterable:
+ *
+ *   Wheel diameter        entered, or filled by the wheel calibration
+ *   Measured track width  entered -- a caliper across the wheel centres
+ *   Effective track width what the spin measured, scaled to the wheel
+ *   Rotational slip       measured / effective, or 1
+ *
+ * What it no longer carries is the reason these tests were rewritten.
+ * There used to be a row labelled "Measured track width" holding
+ * `calturn`'s raw `b`, directly above a row labelled "Effective track
+ * width" holding the same number after a wheel rescale -- one
+ * measurement printed twice, the first under a name belonging to a
+ * different quantity. Beneath both sat "Rotational slip: 1 (no measured
+ * track width...)", contradicting the row three lines above it. There
+ * was also a "Robot's own track width" row showing a baked boot record
+ * that is not a measurement at all.
+ *
+ * A spin measures ONE thing. These tests pin that the table says so.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -49,128 +66,117 @@ function type(el: HTMLDivElement, id: string, value: string): void {
 }
 
 describe("CalibrationTable", () => {
-  it("calibration variant: ids/testids, the distance-calibration and measured-width notes, and the explanatory unmeasured-slip text", () => {
-    const state: CalibrationState = { wheelDiameterMm: 90.68, wheelDiameterSource: "distance-calibration" };
-    const derived: DerivedCalibration = { effectiveTrackWidthCm: 8.84, trackWidthCm: 8.84, rotationalSlip: 1 };
+  const FULL: CalibrationState = { wheelDiameterMm: 81.37, measuredTrackWidthCm: 12.85 };
+  const DERIVED: DerivedCalibration = { effectiveTrackWidthCm: 12.88, trackWidthCm: 12.85, rotationalSlip: 0.998 };
+
+  it("renders exactly the four rows, and none of the retired ones", () => {
+    const el = mount(<CalibrationTable variant="calibration" state={FULL} derived={DERIVED} onPatch={vi.fn()} />);
+    const headers = [...el.querySelectorAll("th")].map((th) => th.textContent?.trim());
+    expect(headers).toEqual([
+      "Wheel diameter",
+      "Measured track width",
+      "Effective track width",
+      "Rotational slip",
+    ]);
+    // The row that showed a baked boot record as though it were a
+    // measurement is gone.
+    expect(el.textContent).not.toMatch(/Robot's own track width/);
+    expect(el.querySelector('[data-testid="calibration-robot-track-width"]')).toBeNull();
+    // As is the duplicate of the effective width under a wrong name.
+    expect(el.querySelector('[data-testid="calibration-reported-track-width"]')).toBeNull();
+  });
+
+  it("Measured track width is the caliper input, not a robot-reported value", () => {
     const onPatch = vi.fn();
-    const el = mount(<CalibrationTable variant="calibration" state={state} derived={derived} onPatch={onPatch} />);
-
-    expect(el.querySelector('[data-testid="calibration-table"]')).not.toBeNull();
-    expect(el.querySelector<HTMLInputElement>("#calibration-wheel-diameter")!.value).toBe("90.68");
-    expect(el.textContent).toContain("from distance calibration");
-    expect(el.textContent).toContain("wheel centre to wheel centre, if you measured it");
-    expect(el.querySelector('[data-testid="calibration-effective-track"]')?.textContent).toBe("8.84 cm");
-    expect(el.querySelector('[data-testid="calibration-slip"]')?.textContent).toBe(
-      "1 (no measured track width, so the effective width is used directly)",
-    );
-
-    type(el, "calibration-wheel-diameter", "91");
-    expect(onPatch).toHaveBeenCalledWith({ wheelDiameterMm: 91, wheelDiameterSource: "entered" });
+    const el = mount(<CalibrationTable variant="calibration" state={{}} derived={{}} onPatch={onPatch} />);
+    const input = el.querySelector<HTMLInputElement>("#calibration-track-width")!;
+    expect(input.placeholder).toBe("optional");
+    expect(el.textContent).toMatch(/wheel centre to wheel centre, measured with a caliper/);
+    expect(el.textContent).not.toMatch(/robot-reported/);
+    type(el, "calibration-track-width", "12.85");
+    expect(onPatch).toHaveBeenCalledWith({ measuredTrackWidthCm: 12.85 });
   });
 
-  it("calibration variant: unmeasured effective track and no-run slip read their own not-yet-measured copy", () => {
-    const el = mount(<CalibrationTable variant="calibration" state={{}} derived={{}} onPatch={vi.fn()} />);
-    expect(el.querySelector('[data-testid="calibration-effective-track"]')?.textContent).toBe(
-      "not measured yet — run the rotation calibration",
-    );
-    expect(el.querySelector('[data-testid="calibration-slip"]')?.textContent).toBe("—");
-  });
-
-  it("configuration variant: ids/testids, no distance/measured-width notes, and the plain not-yet-measured/slip copy", () => {
-    const state: CalibrationState = { wheelDiameterMm: 90.68, wheelDiameterSource: "distance-calibration" };
-    const derived: DerivedCalibration = { effectiveTrackWidthCm: 8.84, trackWidthCm: 8.84, rotationalSlip: 1 };
+  it("wheel diameter is enterable and reports its source when the calibration filled it", () => {
     const onPatch = vi.fn();
-    const el = mount(<CalibrationTable variant="configuration" state={state} derived={derived} onPatch={onPatch} />);
-
-    expect(el.querySelector('[data-testid="configuration-calibration"]')).not.toBeNull();
-    expect(el.querySelector<HTMLInputElement>("#configuration-wheel-diameter")!.value).toBe("90.68");
-    expect(el.textContent).not.toContain("from distance calibration");
-    expect(el.textContent).not.toContain("wheel centre to wheel centre");
-    expect(el.querySelector('[data-testid="configuration-effective-track"]')?.textContent).toBe("8.84 cm");
-    // Unlike the calibration variant, the configuration table shows the
-    // bare slip number even when it was never actually measured.
-    expect(el.querySelector('[data-testid="configuration-slip"]')?.textContent).toBe("1");
-
-    type(el, "configuration-track-width", "11.5");
-    expect(onPatch).toHaveBeenCalledWith({ measuredTrackWidthCm: 11.5 });
+    const el = mount(
+      <CalibrationTable
+        variant="calibration"
+        state={{ wheelDiameterMm: 81.45, wheelDiameterSource: "distance-calibration" }}
+        derived={{}}
+        onPatch={onPatch}
+      />,
+    );
+    expect(el.textContent).toMatch(/from distance calibration/);
+    type(el, "calibration-wheel-diameter", "81.37");
+    expect(onPatch).toHaveBeenCalledWith({ wheelDiameterMm: 81.37, wheelDiameterSource: "entered" });
   });
 
-  it("configuration variant: unmeasured effective track reads 'run the rotation calibration' with no 'not measured yet' prefix", () => {
-    const el = mount(<CalibrationTable variant="configuration" state={{}} derived={{}} onPatch={vi.fn()} />);
-    expect(el.querySelector('[data-testid="configuration-effective-track"]')?.textContent).toBe("run the rotation calibration");
-    expect(el.querySelector('[data-testid="configuration-slip"]')?.textContent).toBe("—");
+  it("effective track width says it is the spin, scaled to the wheel above", () => {
+    const el = mount(<CalibrationTable variant="calibration" state={FULL} derived={DERIVED} onPatch={vi.fn()} />);
+    const cell = el.querySelector('[data-testid="calibration-effective-track"]')!;
+    expect(cell.textContent).toMatch(/12\.88 cm/);
+    expect(cell.textContent).toMatch(/what the spin measured, scaled to the wheel above/);
   });
 
-  describe("ticket 018-013: 'Wheel track' vs 'Measured track width (robot-reported)', and the robot-reported slip", () => {
-    it("calibration variant: the ruler-measured input row is now labelled 'Wheel track', freeing 'Measured track width' for the robot-reported row", () => {
-      const el = mount(<CalibrationTable variant="calibration" state={{}} derived={{}} onPatch={vi.fn()} />);
-      const rowLabels = Array.from(el.querySelectorAll("th")).map((th) => th.textContent);
-      expect(rowLabels).toEqual([
-        "Wheel diameter",
-        "Wheel track",
-        "Measured track width",
-        "Effective track width",
-        "Robot's own track width",
-        "Rotational slip",
-      ]);
-      expect(el.querySelector('label[for="calibration-track-width"]')?.textContent).toBe("Wheel track");
-    });
-
-    it("calibration variant: the robot-reported track width shows the value, its source, and the not-yet-measured copy when absent", () => {
-      const withValue = mount(
-        <CalibrationTable
-          variant="calibration"
-          state={{ reportedTrackWidthCm: 8.84, reportedWithDiameterMm: 90.28 }}
-          derived={{}}
-          onPatch={vi.fn()}
-        />,
-      );
-      const cell = withValue.querySelector('[data-testid="calibration-reported-track-width"]');
-      expect(cell?.textContent).toContain("8.84 cm");
-      expect(cell?.textContent).toContain("robot-reported, from rotation calibration");
-
-      const empty = mount(<CalibrationTable variant="calibration" state={{}} derived={{}} onPatch={vi.fn()} />);
-      expect(empty.querySelector('[data-testid="calibration-reported-track-width"]')?.textContent).toBe(
-        "not measured yet — run the rotation calibration",
-      );
-    });
-
-    it("configuration variant: the robot-reported track width row shows the bare value with no source annotation", () => {
+  describe("rotational slip -- the three cases, which is the whole point of the row", () => {
+    it("no effective width: says so, rather than showing a slip nobody could have computed", () => {
       const el = mount(
-        <CalibrationTable variant="configuration" state={{ reportedTrackWidthCm: 8.84 }} derived={{}} onPatch={vi.fn()} />,
+        <CalibrationTable variant="calibration" state={{ measuredTrackWidthCm: 12.85 }} derived={{}} onPatch={vi.fn()} />,
       );
-      expect(el.querySelector('[data-testid="configuration-reported-track-width"]')?.textContent).toBe("8.84 cm");
+      const cell = el.querySelector('[data-testid="calibration-slip"]')!;
+      expect(cell.textContent).toMatch(/needs the effective track width, so run the turn calibration/);
+      expect(cell.textContent).not.toMatch(/\b1\b/);
     });
 
-    it("calibration variant: the firmware's own calturn.result slip shows alongside the computed slip, only when known", () => {
-      const withoutFirmwareSlip = mount(
-        <CalibrationTable variant="calibration" state={{ measuredTrackWidthCm: 11.5 }} derived={{ rotationalSlip: 1.301 }} onPatch={vi.fn()} />,
-      );
-      expect(withoutFirmwareSlip.querySelector('[data-testid="calibration-firmware-slip"]')).toBeNull();
-
-      const withFirmwareSlip = mount(
+    it("effective but no caliper: 1, and says the effective width is being used as the track", () => {
+      const el = mount(
         <CalibrationTable
           variant="calibration"
-          state={{ measuredTrackWidthCm: 11.5, firmwareSlip: 1.008 }}
-          derived={{ rotationalSlip: 1.301 }}
+          state={{ wheelDiameterMm: 81.37 }}
+          derived={{ effectiveTrackWidthCm: 12.88, trackWidthCm: 12.88, rotationalSlip: 1 }}
           onPatch={vi.fn()}
         />,
       );
-      const slipCell = withFirmwareSlip.querySelector('[data-testid="calibration-slip"]');
-      expect(slipCell?.textContent).toContain("1.301");
-      expect(slipCell?.textContent).toContain("firmware computed 1.008");
+      const cell = el.querySelector('[data-testid="calibration-slip"]')!;
+      expect(cell.textContent).toMatch(/^1 — no measured track width, so the effective width is used as the track/);
     });
 
-    it("OOP 2026-09-18: the robot's own boot-record track width (tw) shows with its provenance, and 'not reported yet' when absent", () => {
-      const withValue = mount(
-        <CalibrationTable variant="calibration" state={{ robotTrackWidthCm: 11.16 }} derived={{}} onPatch={vi.fn()} />,
-      );
-      const cell = withValue.querySelector('[data-testid="calibration-robot-track-width"]');
-      expect(cell?.textContent).toContain("11.16 cm");
-      expect(cell?.textContent).toContain("boot record");
+    it("both present: the ratio, and shows the division it came from", () => {
+      const el = mount(<CalibrationTable variant="calibration" state={FULL} derived={DERIVED} onPatch={vi.fn()} />);
+      const cell = el.querySelector('[data-testid="calibration-slip"]')!;
+      expect(cell.textContent).toMatch(/0\.998/);
+      expect(cell.textContent).toMatch(/12\.85 ÷ 12\.88/);
+    });
+  });
 
-      const empty = mount(<CalibrationTable variant="calibration" state={{}} derived={{}} onPatch={vi.fn()} />);
-      expect(empty.querySelector('[data-testid="calibration-robot-track-width"]')?.textContent).toContain("not reported yet");
+  describe("configuration variant: same rows, no prose", () => {
+    it("uses its own ids and drops the calibration-only annotations", () => {
+      const el = mount(<CalibrationTable variant="configuration" state={FULL} derived={DERIVED} onPatch={vi.fn()} />);
+      expect(el.querySelector('[data-testid="configuration-calibration"]')).not.toBeNull();
+      expect(el.querySelector("#configuration-wheel-diameter")).not.toBeNull();
+      expect(el.querySelector("#configuration-track-width")).not.toBeNull();
+      expect(el.textContent).not.toMatch(/measured with a caliper/);
+      expect(el.textContent).not.toMatch(/scaled to the wheel above/);
+    });
+
+    it("renders a bare 1 for the no-caliper slip, without the explanation", () => {
+      const el = mount(
+        <CalibrationTable
+          variant="configuration"
+          state={{}}
+          derived={{ effectiveTrackWidthCm: 12.88, trackWidthCm: 12.88, rotationalSlip: 1 }}
+          onPatch={vi.fn()}
+        />,
+      );
+      expect(el.querySelector('[data-testid="configuration-slip"]')!.textContent).toBe("1");
+    });
+
+    it("says to run the turn calibration when there is no effective width yet", () => {
+      const el = mount(<CalibrationTable variant="configuration" state={{}} derived={{}} onPatch={vi.fn()} />);
+      const cell = el.querySelector('[data-testid="configuration-effective-track"]')!;
+      expect(cell.textContent).toBe("run the turn calibration");
+      expect(cell.textContent).not.toMatch(/not measured yet/);
     });
   });
 });

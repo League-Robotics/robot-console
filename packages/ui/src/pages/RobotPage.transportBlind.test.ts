@@ -79,8 +79,9 @@ import statusPanelSource from "../components/StatusPanel.tsx?raw";
 import functionsPanelSource from "../components/FunctionsPanel.tsx?raw";
 import chartsPanelSource from "../components/ChartsPanel.tsx?raw";
 import pathTracePanelSource from "../components/PathTracePanel.tsx?raw";
-import distanceCalibrationWizardSource from "../components/DistanceCalibrationWizard.tsx?raw";
-import rotationCalibrationWizardSource from "../components/RotationCalibrationWizard.tsx?raw";
+import newCalibrationPanelSource from "../components/NewCalibrationPanel.tsx?raw";
+import calibrationHelpSource from "../components/CalibrationHelp.tsx?raw";
+import calibrationRunSource from "../lib/calibrationRun.ts?raw";
 import calibrationReportSource from "../components/CalibrationReport.ts?raw";
 import { RobotPage } from "./RobotPage";
 import { WsProvider } from "../ws/WsProvider";
@@ -112,15 +113,16 @@ const FILES_UNDER_TEST: Record<string, string> = {
   // it reads only `useTelemetry`/`useTelemetryHeader`/`useWsActions`,
   // never a transport/link type.
   "components/PathTracePanel.tsx": pathTracePanelSource,
-  // Sprint 011 ticket 003: the distance-calibration wizard and its
-  // shared report parser are held to the same property -- both read
-  // only `link.session.functions`/`useLinkLog`/`useWsActions`, never a
-  // transport/link type or `link.transport`.
-  "components/DistanceCalibrationWizard.tsx": distanceCalibrationWizardSource,
-  // Sprint 011 ticket 004: the rotation-calibration wizard is held to
-  // the same property -- it reads only `link.session.functions`/
-  // `useLinkLog`/`useWsActions`, never a transport/link type.
-  "components/RotationCalibrationWizard.tsx": rotationCalibrationWizardSource,
+  // 2026-09-19: the two calibration wizards this list used to name were
+  // replaced by one guided panel (`NewCalibrationPanel`), its help
+  // dialog, and the run derivation they both used, now in `lib`. The
+  // property carries over unchanged -- the panel reads only
+  // `useLinkLog`/`useWsActions`/`isLinkUsable`, never a transport or a
+  // link type, which is what lets a calibration run over a relay or
+  // Wi-Fi exactly as it does over USB.
+  "components/NewCalibrationPanel.tsx": newCalibrationPanelSource,
+  "components/CalibrationHelp.tsx": calibrationHelpSource,
+  "lib/calibrationRun.ts": calibrationRunSource,
   "components/CalibrationReport.ts": calibrationReportSource,
 };
 

@@ -49,7 +49,7 @@
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RobotFunction, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { CalibrationPage } from "./CalibrationPage";
 import { WsProvider } from "../ws/WsProvider";
@@ -412,6 +412,152 @@ describe("CalibrationPage", () => {
       expect(el.querySelector('[data-testid="calibration-robot-track-width"]')).toBeNull();
       expect(el.querySelector('[data-testid="calibration-firmware-slip"]')).toBeNull();
       expect(el.textContent).not.toMatch(/Robot's own track width/);
+    });
+
+    it("ends the run when the link drops mid-calibration, and names the link", () => {
+      // Stakeholder, 2026-09-20: "we're having the robot console lock up
+      // when we're doing calibration ... it says it's running the wheel
+      // calibration. There's just resolutely nothing happening." The
+      // relay bridge to the robot had gone away mid-run. A run ends only
+      // on .result/.fail/err, none of which can cross a dead link, so
+      // `running` stayed true forever and every control stayed disabled
+      // behind `!linkOpen || running` -- with no way back but a reload.
+      const { el, socket } = mountPage();
+      click(el, '[data-testid="new-calibration-start"]');
+      click(el, '[data-testid="new-calibration-wheels"]');
+      expect(el.querySelector('[data-testid="new-calibration-running"]')).not.toBeNull();
+
+      // The link goes away. `CalibrationPage` takes it as a prop, so a
+      // re-render with the dropped link is how this component learns --
+      // the same thing `DevicePage` does when a snapshot says the
+      // session is gone. `isLinkUsable` is `state === "connected" &&
+      // session !== undefined`, so dropping the session is enough.
+      const { session: _gone, ...noSession } = link();
+      const dropped = { ...noSession } as SnapshotLink;
+      act(() => {
+        root!.render(
+          <WsProvider url="ws://test/" socketFactory={() => socket}>
+            <CalibrationPage link={dropped} name={NAME} device={device(dropped)} />
+          </WsProvider>,
+        );
+      });
+
+      expect(el.querySelector('[data-testid="new-calibration-running"]')).toBeNull();
+      const failure = el.querySelector('[data-testid="new-calibration-failure"]')?.textContent ?? "";
+      expect(failure).toContain("dropped");
+      // Named, so it is obvious WHICH link died on a bench with several.
+      expect(failure).toContain("USB · /dev/cu.usbmodemC");
+      // And it says nothing was stored, because nothing was.
+      expect(failure).toContain("nothing was stored");
+    });
+
+    it("gives up after two minutes when the link looks fine but no result ever comes", () => {
+      // The backstop for everything the link-drop guard cannot see: the
+      // robot reset, the firmware ignored the verb, the routine never
+      // started. The link stays "connected" throughout, so nothing else
+      // in this panel would ever notice.
+      vi.useFakeTimers();
+      try {
+        const { el } = mountPage();
+        click(el, '[data-testid="new-calibration-start"]');
+        click(el, '[data-testid="new-calibration-wheels"]');
+        expect(el.querySelector('[data-testid="new-calibration-running"]')).not.toBeNull();
+
+        // Well past the slowest honest run, still short of the deadline.
+        act(() => {
+          vi.advanceTimersByTime(119_000);
+        });
+        expect(el.querySelector('[data-testid="new-calibration-running"]')).not.toBeNull();
+        expect(el.querySelector('[data-testid="new-calibration-failure"]')).toBeNull();
+
+        act(() => {
+          vi.advanceTimersByTime(2_000);
+        });
+        expect(el.querySelector('[data-testid="new-calibration-running"]')).toBeNull();
+        const why = el.querySelector('[data-testid="new-calibration-failure"]')?.textContent ?? "";
+        expect(why).toContain("within two minutes");
+        // Usable again, not stranded.
+        expect(el.querySelector<HTMLButtonElement>('[data-testid="new-calibration-wheels"]')!.disabled).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not fire the deadline against a run that already finished", () => {
+      // The timer is keyed on `pending`, so a settled run tears it down.
+      // If it did not, a student who finished a wheel run and then sat
+      // reading the result for two minutes would watch it turn into a
+      // failure message in front of them.
+      vi.useFakeTimers();
+      try {
+        const { el, socket } = mountPage();
+        click(el, '[data-testid="new-calibration-start"]');
+        click(el, '[data-testid="new-calibration-wheels"]');
+        rx(socket, WHEELS);
+        expect(el.querySelector('[data-testid="new-calibration-wheel-stat"]')).not.toBeNull();
+
+        act(() => {
+          vi.advanceTimersByTime(300_000);
+        });
+        expect(el.querySelector('[data-testid="new-calibration-failure"]')).toBeNull();
+        expect(el.querySelector('[data-testid="new-calibration-wheel-stat"]')).not.toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("offers a way out while a run is in flight, and is honest that it does not stop the robot", () => {
+      const { el } = mountPage();
+      click(el, '[data-testid="new-calibration-start"]');
+      click(el, '[data-testid="new-calibration-wheels"]');
+
+      const stop = el.querySelector<HTMLButtonElement>('[data-testid="new-calibration-stop"]');
+      expect(stop).not.toBeNull();
+      expect(stop!.disabled).toBe(false);
+      act(() => {
+        stop!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+
+      expect(el.querySelector('[data-testid="new-calibration-running"]')).toBeNull();
+      const why = el.querySelector('[data-testid="new-calibration-failure"]')?.textContent ?? "";
+      // The wording must not imply the robot was halted -- it was not,
+      // and a student who believes otherwise will let it keep driving.
+      expect(why).toContain("was not told to stop");
+      expect(why).toMatch(/press A or B/i);
+      // The panel is usable again: the run buttons are back, not stuck
+      // behind a run that will never finish.
+      expect(el.querySelector<HTMLButtonElement>('[data-testid="new-calibration-wheels"]')!.disabled).toBe(false);
+    });
+
+    it("clears a previous abandonment message once a new run actually starts", () => {
+      const { el } = mountPage();
+      click(el, '[data-testid="new-calibration-start"]');
+      click(el, '[data-testid="new-calibration-wheels"]');
+      act(() => {
+        el.querySelector('[data-testid="new-calibration-stop"]')!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(el.querySelector('[data-testid="new-calibration-failure"]')).not.toBeNull();
+
+      click(el, '[data-testid="new-calibration-wheels"]');
+      // Leaving the old message up beside a live run reads as if the new
+      // run had failed too.
+      expect(el.querySelector('[data-testid="new-calibration-failure"]')).toBeNull();
+      expect(el.querySelector('[data-testid="new-calibration-running"]')).not.toBeNull();
+    });
+
+    it("ignores a result that arrives after the run was abandoned", () => {
+      // An abandoned run is one we have already told the student we
+      // stopped believing in; folding a late result into the averages
+      // behind their back would be worse than dropping it.
+      const { el, socket } = mountPage();
+      click(el, '[data-testid="new-calibration-start"]');
+      click(el, '[data-testid="new-calibration-wheels"]');
+      act(() => {
+        el.querySelector('[data-testid="new-calibration-stop"]')!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      rx(socket, WHEELS);
+      expect(el.querySelector('[data-testid="new-calibration-wheel-stat"]')).toBeNull();
+      expect(el.querySelector('[data-testid="new-calibration-running"]')).toBeNull();
     });
 
     it("keeps the calibration in the table after Done writes it -- Done is not an invalidation", () => {

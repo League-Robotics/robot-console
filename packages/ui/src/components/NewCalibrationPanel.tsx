@@ -32,7 +32,7 @@
  * at all rather than 0.00, because one run has no spread -- which is
  * not the same as a spread of zero.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useLinkLog, useSendable, useWsActions } from "../ws/WsProvider";
 import { isLinkUsable } from "../deviceDisplay";
@@ -62,6 +62,40 @@ const DEFAULT_TAPE_CM = "90.5";
  * is given to the nearest valid 8n+2 anyway, and 10 is the only value
  * anybody used -- so it is no longer a control (stakeholder, 2026-09-19). */
 const TURN_EDGES = "10";
+
+/** How long a single calibration run may go without reaching a terminal
+ * event before this panel stops waiting for it.
+ *
+ * ## Why a deadline exists at all (stakeholder, 2026-09-20)
+ *
+ * "We're having the robot console lock up when we're doing calibration
+ * ... it says it's running the wheel calibration. There's just
+ * resolutely nothing happening."
+ *
+ * A run ended on exactly three things (`lib/calibrationRun.ts`): a
+ * `.result`, a `.fail`, or a bare `err` reply. Nothing else. So any run
+ * that could never produce one of those -- the link dropped mid-drive,
+ * the robot reset, the firmware silently ignored the verb -- left
+ * `pending` set forever, `running` true forever, and every button on
+ * this panel disabled behind `disabled={!linkOpen || running}`. The
+ * panel said "Running the wheel calibration…" and there was no way out
+ * but a page reload. The robot was not hanging; this component simply
+ * had no concept of giving up.
+ *
+ * ## Why two minutes
+ *
+ * It has to clear the slowest honest run by a wide margin, because
+ * cutting off a calibration that was about to succeed is a worse
+ * failure than waiting too long: the student loses the drive AND the
+ * result. `calwheels` drives the tape-measured course (90.5 cm by
+ * default) at calibration speed, `calturn` does ten edges; both are
+ * tens of seconds, not minutes. Two minutes is comfortably past either
+ * and still short enough that nobody stares at a dead panel for long.
+ *
+ * This is the backstop, not the main mechanism -- a dropped link is
+ * caught immediately and precisely by the effect below, which does not
+ * wait for this at all. */
+const RUN_DEADLINE_MS = 120_000;
 
 /** A finished wheel run worth keeping: the diameter it measured. */
 interface WheelRecord {
@@ -119,6 +153,61 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
   }, [log, pending]);
 
   const running = run?.kind === "running";
+
+  /** Stop waiting for the current run and say why.
+   *
+   * Clearing `pending` is what actually unsticks the panel: `run` is
+   * derived from it, so `running` goes false in the same render and
+   * every control gated on `!linkOpen || running` comes back. A late
+   * `.result` that arrives afterwards is ignored rather than folded in
+   * -- `pending` is gone, so the settle effect never sees it -- which
+   * is the right call for a run we have already told the student we
+   * stopped believing in. */
+  const abandonRun = useCallback((why: string) => {
+    setPending(undefined);
+    setFailure(why);
+  }, []);
+
+  const runLabel = pending?.kind === "wheels" ? "wheel calibration" : "turn calibration";
+
+  // A dropped link ends the run immediately, by name. This is the case
+  // the stakeholder actually hit: the relay bridge to the robot went
+  // away mid-calibration, the console knew (the relay page said "Not
+  // linked"), and this panel carried on claiming the run was in
+  // progress. A `.result` cannot cross a link that no longer exists, so
+  // there is nothing to wait for and no reason to make anyone wait the
+  // full RUN_DEADLINE_MS to be told.
+  //
+  // Gated on `isLinkUsable(link)` alone, NOT on `linkOpen` -- `linkOpen`
+  // also folds in `useSendable()`, which goes false on a brief
+  // host-socket blip that the robot itself knows nothing about. A run
+  // that survives such a blip should be allowed to finish; the deadline
+  // below covers it if it does not.
+  const linkUsable = isLinkUsable(link);
+  const linkLabel = link.label;
+  useEffect(() => {
+    if (!pending || linkUsable) return;
+    abandonRun(
+      `The link to ${linkLabel} dropped during the ${pending.kind === "wheels" ? "wheel" : "turn"} calibration, ` +
+        "so its result can never arrive. Reconnect the robot and run it again — nothing was stored.",
+    );
+  }, [pending, linkUsable, linkLabel, abandonRun]);
+
+  // The backstop: the link looks fine but no terminal event ever came.
+  // Keyed on `pending` (a new object per run), so each run gets its own
+  // fresh deadline and the timer is torn down the moment the run
+  // settles normally.
+  useEffect(() => {
+    if (!pending) return undefined;
+    const kind = pending.kind;
+    const timer = setTimeout(() => {
+      abandonRun(
+        `The ${kind === "wheels" ? "wheel" : "turn"} calibration did not report a result within two minutes. ` +
+          "The robot may have stopped, reset, or never started the routine — check it, then run it again.",
+      );
+    }, RUN_DEADLINE_MS);
+    return () => clearTimeout(timer);
+  }, [pending, abandonRun]);
 
   // A terminal run is folded into the records exactly once. Keyed on
   // the pending window's own startId so a re-render cannot double-count
@@ -222,6 +311,10 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
     if (!linkOpen || running) return;
     const last = log[log.length - 1];
     setWrittenNote(undefined);
+    // Clear any abandonment message from a previous attempt -- leaving
+    // "the link dropped" on screen beside a run that is now genuinely
+    // under way reads as if the new run had failed too.
+    setFailure(undefined);
     setPending({ kind, startId: last ? last.id + 1 : 0 });
     if (kind === "wheels") {
       if (tapeCm === undefined) return;
@@ -344,9 +437,34 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
           )}
 
           {running && (
-            <p className="new-calibration-running" role="status" data-testid="new-calibration-running">
-              Running {pending?.kind === "wheels" ? "the wheel calibration" : "the turn calibration"}…
-            </p>
+            <div className="new-calibration-step">
+              <p className="new-calibration-running" role="status" data-testid="new-calibration-running">
+                Running the {runLabel}…
+              </p>
+              {/* The third thing the stakeholder asked for: a way out
+                  that does not require reloading the page. Deliberately
+                  worded "Stop waiting", not "Stop" -- it ends the
+                  CONSOLE's wait, it does not command the robot to halt.
+                  Claiming otherwise would be worse than offering
+                  nothing, since a student would press it expecting a
+                  moving robot to stop and it would keep driving. The
+                  robot's own A/B button stop is the control that
+                  actually halts it (see `isButtonStop` in
+                  lib/calibration.ts). */}
+              <button
+                type="button"
+                className="new-calibration-stop"
+                data-testid="new-calibration-stop"
+                onClick={() =>
+                  abandonRun(
+                    `Stopped waiting for the ${runLabel}. The robot was not told to stop — if it is still moving, ` +
+                      "press A or B on the robot itself.",
+                  )
+                }
+              >
+                Stop waiting
+              </button>
+            </div>
           )}
         </>
       )}

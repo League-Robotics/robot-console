@@ -310,7 +310,10 @@
 
 .remembered-robot-card {
   display: flex;
-  align-items: baseline;
+  /* `center`, not `baseline`: the name/last-seen block is two lines
+     tall as of 2026-09-21, and baseline-aligning the action buttons
+     against the first of them hung them off the top of the card. */
+  align-items: center;
   flex-wrap: wrap;
   gap: 0.5rem 0.9rem;
   border: 1px dashed var(--rc-border);
@@ -319,9 +322,14 @@
   color: var(--rc-text-muted);
 }
 
+/* Name over "Last seen", stacked -- the stakeholder's own arrangement,
+   2026-09-21. */
 .remembered-robot-header {
   display: flex;
-  align-items: baseline;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  min-width: 0;
 }
 
 .remembered-robot-name {

@@ -1242,8 +1242,14 @@ function NotSeenRecentlySection({
             <div className="remembered-robot-card" data-testid={`not-seen-device-${device.id}`}>
               <div className="remembered-robot-header">
                 <h3 className="remembered-robot-name">{nameDisplay(device).text}</h3>
+                {/* Stakeholder, 2026-09-21: "Last seen" belongs under
+                    the name, not beside it. The card is a wrapping flex
+                    row, so a sibling `<p>` sat on the name's baseline;
+                    moving it inside the header (a column) stacks the two
+                    without disturbing the actions, which stay on the
+                    card's right edge. */}
+                <p className="remembered-robot-note">Last seen {new Date(device.lastSeen).toLocaleString()}</p>
               </div>
-              <p className="remembered-robot-note">Last seen {new Date(device.lastSeen).toLocaleString()}</p>
               <div className="remembered-robot-actions">
                 <NotSeenRadioButton
                   device={device}

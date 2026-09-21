@@ -159,9 +159,30 @@
   transition: none;
 }
 
-.console-dock-pane .device-console {
+/* `.console-body` (ConsoleBody.css) owns the log-versus-command-rail
+   split inside the pane as of 2026-09-20; the pane itself only has to
+   let that row take whatever height the resize handle above it leaves.
+   This rule used to target `.device-console` directly, back when the
+   pane stacked the log above `CommandStrip` in a plain column. */
+.console-dock-pane .console-body {
   flex: 1 1 auto;
   min-height: 0;
+}
+
+/* The command rail's toggle. Sits between the pop-out button and the
+   Show/Hide toggle, and deliberately carries no `margin-left: auto` of
+   its own -- `.console-dock-popout` already pushes the whole cluster to
+   the bar's right edge, and a second one here would split them apart.
+   Slightly tighter horizontal padding than its neighbours because its
+   label is the longest of the three and the bar should stay quiet. */
+.console-dock-commands-toggle {
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.3rem 0.7rem;
+  border-radius: 0.4rem;
+  font-size: 0.8rem;
+  cursor: pointer;
 }
 
 /* The drag handle itself: a thin full-width strip that is the pane's

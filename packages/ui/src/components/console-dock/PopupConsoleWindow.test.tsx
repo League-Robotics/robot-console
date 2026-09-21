@@ -52,12 +52,19 @@ function mount(node: ReactElement): HTMLDivElement {
 function mountPopup(
   popupWindow: FakePopupWindow,
   onClose: () => void,
-  overrides: { name?: string } = {},
+  overrides: { name?: string; commandsOpen?: boolean; onToggleCommands?: () => void } = {},
 ): void {
   let socket: FakeSocket | null = null;
   mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-      <PopupConsoleWindow popupWindow={popupWindow as unknown as Window} link={link} name={overrides.name ?? "tigez"} onClose={onClose} />
+      <PopupConsoleWindow
+        popupWindow={popupWindow as unknown as Window}
+        link={link}
+        name={overrides.name ?? "tigez"}
+        onClose={onClose}
+        commandsOpen={overrides.commandsOpen ?? false}
+        onToggleCommands={overrides.onToggleCommands ?? (() => {})}
+      />
     </WsProvider>,
   );
   void socket;
@@ -135,11 +142,38 @@ describe("PopupConsoleWindow rendering (sprint 022 ticket 005, SUC-003)", () => 
     expect(popup.document.body.querySelector('[data-testid="popup-console-window"]')).not.toBeNull();
     expect(popup.document.body.querySelector('[aria-label="Console"]')).not.toBeNull();
     expect(popup.document.body.querySelector('[data-testid="console-log"]')).not.toBeNull();
-    expect(popup.document.body.querySelector('[aria-label="Command strip"]')).not.toBeNull();
+    // The command rail is opt-in here exactly as it is in the dock
+    // (2026-09-20), and `mountPopup` defaults `commandsOpen` to false.
+    expect(popup.document.body.querySelector('[aria-label="Command strip"]')).toBeNull();
     // Nothing is portaled into the *real* test document -- the whole
     // point of the portal is that this content lives in the popup's
     // own document instead.
     expect(container!.querySelector('[data-testid="popup-console-window"]')).toBeNull();
+  });
+
+  it("shows the command rail in the popup when the dock says it is on", () => {
+    // The flag is owned by ConsoleDock and passed down, so that a rail
+    // toggled in one view is the same rail in the other -- see
+    // PopupConsoleWindowProps' own comment on why this component does
+    // not read the persisted state itself.
+    const popup = createFakePopupWindow();
+    mountPopup(popup, () => {}, { commandsOpen: true });
+    expect(popup.document.body.querySelector('[data-testid="console-body-commands"]')).not.toBeNull();
+    expect(popup.document.body.querySelector('[data-testid="command-strip-hello"]')).not.toBeNull();
+  });
+
+  it("asks its owner to flip the rail rather than writing the state itself", () => {
+    const popup = createFakePopupWindow();
+    let toggles = 0;
+    mountPopup(popup, () => {}, { onToggleCommands: () => (toggles += 1) });
+    const button = popup.document.body.querySelector<HTMLButtonElement>(
+      '[data-testid="popup-console-commands-toggle"]',
+    )!;
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    act(() => {
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(toggles).toBe(1);
   });
 
   it("sets the popup document's title from the active device name", () => {

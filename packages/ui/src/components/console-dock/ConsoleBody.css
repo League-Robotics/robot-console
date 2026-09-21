@@ -1,0 +1,131 @@
+/* ConsoleBody.css -- the log/commands row, plus the compaction that
+   makes `CommandStrip` fit a narrow rail.
+
+   See ConsoleBody.tsx's own doc comment for why the commands moved off
+   the bottom of the console and onto the right (stakeholder,
+   2026-09-20). This file only has to make that arrangement hold up at
+   the sizes it actually gets used at.
+
+   `container-type: inline-size` on the row, and a container query
+   rather than a `@media` query, on purpose: this component renders both
+   in the dock (as wide as the browser window) and inside the popped-out
+   window (which opens at 640px and can be dragged far narrower). A
+   viewport media query would ask the wrong question in the popup --
+   there the *container* and the viewport are nearly the same thing, but
+   in the dock they are not, and a dock inside a narrow browser window
+   and a wide popup must each get the layout that fits them, not the
+   layout the other one needs. */
+.console-body {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 0.6rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* The log takes everything the rail does not. `min-width: 0` is load
+   bearing: without it a flex item refuses to shrink below its content's
+   intrinsic width, and a single long wire line (a FUNCS reply, say)
+   would push the rail off the edge instead of wrapping/scrolling. */
+.console-body-log {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.console-body-log .device-console {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* The rail itself. Fixed-ish width rather than a fraction, so the log
+   does not reflow to a different width every time the dock is resized,
+   and so the rail is exactly as wide as its widest control ("STATUS"
+   plus padding) rather than as wide as whatever is left over. */
+.console-body-commands {
+  flex: 0 0 13rem;
+  min-height: 0;
+  overflow-y: auto;
+  padding-left: 0.6rem;
+  border-left: 1px solid var(--rc-border);
+}
+
+/* Compaction, scoped to the rail so `CommandStrip` keeps its roomier
+   proportions anywhere else it is ever mounted. The stakeholder asked
+   for "compact" explicitly; the controls are also no longer competing
+   with the log for the eye, so they can afford to be quieter. */
+.console-body-commands .command-strip {
+  gap: 0.45rem;
+}
+
+/* Two per row at 13rem: HELLO/ID, VER/STATUS, FUNCS -- and GET/SET as
+   their own pair under the form. A grid rather than `flex-wrap` so the
+   buttons are all one width instead of ragged by label length. */
+.console-body-commands .command-strip-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem;
+}
+
+.console-body-commands .command-strip-button {
+  padding: 0.3rem 0.4rem;
+  font-size: 0.78rem;
+}
+
+/* The name/value fields stack full-width instead of sitting side by
+   side -- at 13rem there is no side-by-side worth having. */
+.console-body-commands .command-strip-form {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.45rem;
+}
+
+.console-body-commands .command-strip-field {
+  font-size: 0.72rem;
+}
+
+.console-body-commands .command-strip-field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.3rem 0.45rem;
+  font-size: 0.8rem;
+}
+
+.console-body-commands .command-strip-hint {
+  padding: 0.35rem 0.5rem;
+  font-size: 0.72rem;
+}
+
+/* Too narrow for a side: the rail becomes a row beneath the log. It is
+   still out of the log's way, which is the point -- it is just out of
+   the way downwards instead of sideways. Buttons go back to wrapping
+   horizontally, since width is the one thing there is now plenty of. */
+@container (max-width: 34rem) {
+  .console-body {
+    flex-direction: column;
+  }
+
+  .console-body-commands {
+    flex: 0 0 auto;
+    max-height: 45%;
+    padding-left: 0;
+    padding-top: 0.5rem;
+    border-left: none;
+    border-top: 1px solid var(--rc-border);
+  }
+
+  .console-body-commands .command-strip-buttons {
+    grid-template-columns: repeat(auto-fit, minmax(4.5rem, 1fr));
+  }
+
+  .console-body-commands .command-strip-form {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-end;
+  }
+}

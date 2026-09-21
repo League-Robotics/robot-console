@@ -55,7 +55,32 @@
   cursor: pointer;
 }
 
-.popup-console-window .device-console {
+/* The commands toggle sits to the LEFT of "Put it back", which keeps
+   `margin-left: auto` on the restore button alone and lets the two
+   cluster at the bar's right edge in that order -- the same
+   arrangement, and the same reading order, as the docked bar's own
+   Commands/Pop out/Show trio. */
+.popup-console-window-commands-toggle {
+  margin-left: auto;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.3rem 0.7rem;
+  border-radius: 0.4rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+/* With both buttons present the restore button no longer needs to push
+   itself right -- the toggle before it already did. */
+.popup-console-window-commands-toggle + .popup-console-window-restore {
+  margin-left: 0.4rem;
+}
+
+/* `.console-body` (ConsoleBody.css) now owns how the log and the
+   command rail divide this window; all that is left here is letting
+   that row take the height the bar does not. */
+.popup-console-window .console-body {
   flex: 1 1 auto;
   min-height: 0;
 }

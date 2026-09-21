@@ -45,3 +45,23 @@
 .new-calibration-written {
   color: #0a6;
 }
+
+/* "Stop waiting" -- the escape hatch beside the running line (2026-09-21).
+   Deliberately quiet: it is not the action anyone should be reaching
+   for in a normal run, only the one that has to exist when a run can no
+   longer finish. Styled as a plain secondary control rather than a
+   danger button, because nothing destructive happens when it is pressed
+   -- the console stops waiting, the robot is untouched. */
+.new-calibration-stop {
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text-muted);
+  padding: 0.25rem 0.7rem;
+  border-radius: 0.4rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.new-calibration-stop:hover {
+  color: var(--rc-text);
+}

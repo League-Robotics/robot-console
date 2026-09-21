@@ -337,8 +337,51 @@
   color: var(--rc-text-muted);
 }
 
-.remembered-robot-forget {
+/* Radio and Forget sit on one row at the card's right edge. The row
+   owns the `margin-left: auto` that Forget used to carry on its own, so
+   the two stay together instead of Forget alone hugging the edge. */
+.remembered-robot-actions {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+/* "Radio" -- try to reach this robot over a bridge right now
+   (stakeholder, 2026-09-21: "it can just be white; it doesn't have to
+   be a particular color"). Deliberately identical in shape to Forget
+   beside it, and deliberately NOT green: green on this page means "a
+   connection is live" (see `.device-chip[data-state="linked"]`), and a
+   button that merely attempts one must not borrow that meaning. */
+.remembered-robot-radio {
+  font-size: 0.82rem;
+  padding: 0.25rem 0.7rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: inherit;
+  cursor: pointer;
+}
+
+.remembered-robot-radio:hover,
+.remembered-robot-radio:focus-visible {
+  border-color: var(--rc-accent);
+}
+
+.remembered-robot-radio[aria-disabled="true"] {
+  color: var(--rc-text-muted);
+  cursor: default;
+}
+
+/* Why an attempt did not happen, or did not land. Muted: it is an
+   explanation, not an alarm -- a robot that is off is the normal case
+   for this section, not a fault. */
+.remembered-robot-problem {
+  font-size: 0.78rem;
+  color: var(--rc-text-muted);
+}
+
+.remembered-robot-forget {
   font-size: 0.82rem;
   padding: 0.25rem 0.7rem;
   border-radius: 0.4rem;
@@ -462,10 +505,22 @@ button.device-chip-face:not([aria-disabled="true"]) {
   cursor: pointer;
 }
 
+/* A linked connection chip -- USB, a radio bridge, Wi-Fi. Stakeholder,
+   2026-09-21: "when I do the bridge badge, it's a lighter green than
+   radio, and they should be the same color green." It was: this rule
+   used `--rc-ok-*` (#e8f6ec, a pale wash) while the radio chip below
+   uses `--rc-link-on-*` (#bbf7d0 with a real border). Two greens for
+   one meaning -- "this connection is live" -- with nothing to
+   distinguish them but which chip you happened to be looking at.
+
+   Both now use the `--rc-link-on-*` set. Note the radio chip carries
+   BOTH classes (`device-chip device-chip-radio`), so its own rule below
+   still wins on equal specificity by being later in the file; these two
+   rules now simply agree. */
 .device-chip[data-state="linked"] .device-chip-face {
-  background: var(--rc-ok-bg);
-  border-color: transparent;
-  color: var(--rc-ok-text);
+  background: var(--rc-link-on-bg);
+  border-color: var(--rc-link-on-border);
+  color: var(--rc-link-on-text);
   font-weight: 600;
 }
 

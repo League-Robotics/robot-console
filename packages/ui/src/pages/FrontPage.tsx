@@ -322,7 +322,16 @@ export function DevicesList({
         </>
       )}
       {notSeenRecently.length > 0 && (
-        <NotSeenRecentlySection devices={notSeenRecently} onForget={onForgetDevice} />
+        <NotSeenRecentlySection
+          devices={notSeenRecently}
+          onForget={onForgetDevice}
+          // The bridges live among the *present* devices, not among the
+          // not-seen ones, so `allocateRadioBridge` has to be handed the
+          // list that actually contains relays.
+          bridgeCandidates={devices}
+          sendable={sendable}
+          onRadioConnect={onRadioConnect}
+        />
       )}
     </section>
   );
@@ -1026,12 +1035,101 @@ function UnassignedCard({ link }: { link: SnapshotLink }) {
  * than joined from a separate roster (see this module's own doc
  * comment). Rendered only when non-empty. Deliberately not a
  * `react-router` `Link` -- there is no link to navigate to. */
+/**
+ * "Radio" beside Forget on a not-seen-recently card — try to reach this
+ * robot over a radio bridge right now (stakeholder, 2026-09-21: "the
+ * radio button in Not seen recently is going to try to make radio
+ * contact with that robot, and if it succeeds, then it moves it up to
+ * the top").
+ *
+ * ## Why there is no success path in here
+ *
+ * Because there does not need to be one, and writing one would be a
+ * second source of truth. A device is listed here purely because
+ * `cardLinks(device).length === 0` — it has no live link. The moment a
+ * radio connect lands, the host's next snapshot gives it one, it stops
+ * matching that filter, and it is rendered as an ordinary card up top
+ * instead. "Moves it up to the top" is what the existing split already
+ * does; this button only has to make the attempt.
+ *
+ * So this component tracks exactly one thing the snapshot cannot tell
+ * it: that an attempt is outstanding, and that it has been outstanding
+ * too long. Failure is reported here; success is reported by the card
+ * simply disappearing from this section.
+ */
+function NotSeenRadioButton({
+  device,
+  bridgeCandidates,
+  sendable,
+  onRadioConnect,
+}: {
+  device: SnapshotDevice;
+  bridgeCandidates: SnapshotDevice[];
+  sendable: boolean;
+  onRadioConnect: (relayLinkId: string, name: string) => void;
+}) {
+  const [trying, setTrying] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  // Same give-up budget the robot cards' own radio chip uses, for the
+  // same reason: a bridge that never answers must not leave "Trying…"
+  // on screen forever. (The calibration panel learned this the hard
+  // way on 2026-09-20 — a wait with no end is indistinguishable from a
+  // hang.) On success this component is unmounted with the card before
+  // the timer matters.
+  useEffect(() => {
+    if (!trying) return undefined;
+    const timer = setTimeout(() => {
+      setTrying(false);
+      setProblem("No answer over radio");
+    }, RADIO_CONNECT_GIVE_UP_MS);
+    return () => clearTimeout(timer);
+  }, [trying]);
+
+  function handleClick(): void {
+    if (!sendable || trying) return;
+    const relayLinkId = allocateRadioBridge(bridgeCandidates);
+    if (relayLinkId === undefined) {
+      setProblem("No radio bridge is free");
+      return;
+    }
+    setProblem(null);
+    setTrying(true);
+    onRadioConnect(relayLinkId, device.name);
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        className="remembered-robot-radio"
+        data-testid={`not-seen-radio-${device.id}`}
+        aria-disabled={!sendable || trying}
+        onClick={handleClick}
+      >
+        {trying ? "Trying…" : "Radio"}
+      </button>
+      {problem !== null && (
+        <span className="remembered-robot-problem" role="status" data-testid={`not-seen-radio-problem-${device.id}`}>
+          {problem}
+        </span>
+      )}
+    </>
+  );
+}
+
 function NotSeenRecentlySection({
   devices,
   onForget,
+  bridgeCandidates,
+  sendable,
+  onRadioConnect,
 }: {
   devices: SnapshotDevice[];
   onForget: (deviceId: number) => void;
+  bridgeCandidates: SnapshotDevice[];
+  sendable: boolean;
+  onRadioConnect: (relayLinkId: string, name: string) => void;
 }) {
   return (
     <section className="remembered-robots" aria-label="Devices not seen recently">
@@ -1047,14 +1145,22 @@ function NotSeenRecentlySection({
                 <h3 className="remembered-robot-name">{nameDisplay(device).text}</h3>
               </div>
               <p className="remembered-robot-note">Last seen {new Date(device.lastSeen).toLocaleString()}</p>
-              <button
-                type="button"
-                className="remembered-robot-forget"
-                data-testid={`not-seen-forget-${device.id}`}
-                onClick={() => onForget(device.id)}
-              >
-                Forget
-              </button>
+              <div className="remembered-robot-actions">
+                <NotSeenRadioButton
+                  device={device}
+                  bridgeCandidates={bridgeCandidates}
+                  sendable={sendable}
+                  onRadioConnect={onRadioConnect}
+                />
+                <button
+                  type="button"
+                  className="remembered-robot-forget"
+                  data-testid={`not-seen-forget-${device.id}`}
+                  onClick={() => onForget(device.id)}
+                >
+                  Forget
+                </button>
+              </div>
             </div>
           </li>
         ))}

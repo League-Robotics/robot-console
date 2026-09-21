@@ -28,6 +28,15 @@ const RELAY_SOURCE: FirmwareSource = {
   repoUrl: "https://github.com/League-Robotics/microbit-radio-relay",
   tag: "latest",
 };
+// Sprint 023 ticket 003: joystick is a third FIRMWARE_KINDS entry now
+// that ticket 001 widened FirmwareKind -- this fixture only exists to
+// prove the watcher schedules a third independent poll timer for it.
+// The real ROBOT_CONSOLE_JOYSTICK_FIRMWARE .env value stays unset until
+// ticket 007, once the joystick repo actually ships MICROBIT.hex.
+const JOYSTICK_SOURCE: FirmwareSource = {
+  repoUrl: "https://github.com/League-Robotics/pxt-joystick",
+  tag: "latest",
+};
 
 const VALID_ASSETS = [{ name: "MICROBIT.hex" }, { name: "MICROBIT.hex.txt" }];
 
@@ -422,5 +431,33 @@ describe("startFirmwareWatcher -- unconfigured kind / heartbeat / stop", () => {
     const robotRow = store.projectionRows().firmware.find((f) => f.kind === "robot");
     expect(relayRow).toMatchObject({ tag: "v-relay-1", available: true });
     expect(robotRow).toMatchObject({ tag: "v-robot-1", available: true });
+  });
+
+  it("023/003: polls relay, robot, and joystick independently -- a third self-rescheduling timer starts for joystick alongside the existing two", async () => {
+    const store = freshStore();
+    const fetchFn: FirmwareFetchFn = vi.fn(async (url: string) => {
+      if (url.includes("microbit-radio-relay")) return releaseResponse("v-relay-1", VALID_ASSETS);
+      if (url.includes("pxt-joystick")) return releaseResponse("v-joystick-1", VALID_ASSETS);
+      return releaseResponse("v-robot-1", VALID_ASSETS);
+    });
+
+    const handle = startFirmwareWatcher(store, {
+      fetch: fetchFn,
+      config: { relay: RELAY_SOURCE, robot: ROBOT_SOURCE, joystick: JOYSTICK_SOURCE },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    handle.stop();
+
+    const relayRow = store.projectionRows().firmware.find((f) => f.kind === "relay");
+    const robotRow = store.projectionRows().firmware.find((f) => f.kind === "robot");
+    const joystickRow = store.projectionRows().firmware.find((f) => f.kind === "joystick");
+    expect(relayRow).toMatchObject({ tag: "v-relay-1", available: true });
+    expect(robotRow).toMatchObject({ tag: "v-robot-1", available: true });
+    expect(joystickRow).toMatchObject({ tag: "v-joystick-1", available: true });
+    // All three kinds' rows were actually written, not just relay/robot --
+    // the failure mode a `FIRMWARE_KINDS` array quietly missing "joystick"
+    // would produce (it type-checks fine as a readonly FirmwareKind[]
+    // subset, so only a behavioral test like this one catches it).
+    expect(fetchFn.mock.calls.length).toBe(3);
   });
 });

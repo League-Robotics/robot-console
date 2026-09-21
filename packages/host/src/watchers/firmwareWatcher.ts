@@ -90,8 +90,16 @@ const TASK_NAME = "firmwareWatcher";
 
 /** Ordered list of every {@link FirmwareKind}, for iterating a
  * {@link FirmwareConfigMap} without relying on object key enumeration
- * order -- same convention `releases.ts`'s retired cache used. */
-const FIRMWARE_KINDS: readonly FirmwareKind[] = ["relay", "robot"];
+ * order -- same convention `releases.ts`'s retired cache used.
+ *
+ * 2026-09-21: joystick added as a third FirmwareKind (sprint 023) --
+ * this starts a third independent self-rescheduling poll timer
+ * alongside the existing relay/robot ones, with no other change to
+ * the polling/backoff algorithm. This array's type, `readonly
+ * FirmwareKind[]`, is satisfied by a subset array too, so a missing
+ * kind here is not a type error -- unlike a `Record<FirmwareKind,
+ * ...>` literal, the compiler will not find an omission for you. */
+const FIRMWARE_KINDS: readonly FirmwareKind[] = ["relay", "robot", "joystick"];
 
 /** Healthy-path poll interval: re-checked on every `304`/`200`. Not a
  * stakeholder-specified value (`sprint.md`'s Step 7 open question) --

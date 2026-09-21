@@ -88,7 +88,7 @@ function snapshot(devices: SnapshotDevice[], hostVersion?: string): Snapshot {
     devices,
     unassigned: [],
     relays: [],
-    firmware: { relay: { configured: false }, robot: { configured: false } },
+    firmware: { relay: { configured: false }, robot: { configured: false }, joystick: { configured: false } },
     wifi: { ssid: null, source: null },
     tasks: [],
   };

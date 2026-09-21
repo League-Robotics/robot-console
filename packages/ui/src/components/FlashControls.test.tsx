@@ -125,6 +125,10 @@ function firmwareStatusFixture(
       checkedAt: 1000,
       reason: "no-releases",
     },
+    // Joystick's real .env value is deliberately unset until ticket 007
+    // (the joystick repo's release is missing the MICROBIT.hex assets
+    // releases.ts requires) -- not-configured is the honest default here.
+    joystick: { configured: false },
     ...overrides,
   };
 }
@@ -329,7 +333,7 @@ describe("FlashControls release-flash rendering", () => {
 
   it("018-017: falls back to the generic firmware word when the release isn't (or isn't yet) configured", () => {
     const { el, socket } = mountFlashControls(baseLink(), {
-      firmwareStatus: { relay: { configured: false }, robot: { configured: false } },
+      firmwareStatus: { relay: { configured: false }, robot: { configured: false }, joystick: { configured: false } },
     });
     act(() => {
       socket().emitMessage({
@@ -613,7 +617,7 @@ describe("018-017: firmware source line (repo link, tag, checked-at)", () => {
 
   it("shows no source line at all when nothing is configured for this classroom", () => {
     const { el } = mountFlashControls(baseLink(), {
-      firmwareStatus: { relay: { configured: false }, robot: { configured: false } },
+      firmwareStatus: { relay: { configured: false }, robot: { configured: false }, joystick: { configured: false } },
     });
     expect(el.querySelector('[data-testid="flash-source-relay"]')).toBeNull();
     expect(el.querySelector('[data-testid="flash-source-robot"]')).toBeNull();

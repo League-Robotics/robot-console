@@ -88,6 +88,7 @@ afterEach(() => {
 const NO_FIRMWARE: Snapshot["firmware"] = {
   relay: { configured: false },
   robot: { configured: false },
+  joystick: { configured: false },
 };
 
 /** Minimal link fixture -- these tests only ever assert on `id` and
@@ -554,7 +555,11 @@ describe("useRelays / useFirmware / useWifiSetting / useTasks", () => {
       getSocket().emitMessage(
         snapshotFixture({
           relays: [{ linkId: "usb-relay-1", lease: "sweep" }],
-          firmware: { relay: { configured: false }, robot: { configured: true, repoUrl: "r", tag: "t", available: true, checkedAt: null } },
+          firmware: {
+            relay: { configured: false },
+            robot: { configured: true, repoUrl: "r", tag: "t", available: true, checkedAt: null },
+            joystick: { configured: false },
+          },
           wifi: { ssid: "classroom-net", source: "stored" },
           tasks: [{ name: "usbWatcher", state: "running", heartbeatAt: 1 }],
         }),

@@ -311,6 +311,7 @@ export function firmwareSourceText(
 export const FIRMWARE_LABEL: Record<FirmwareKind, string> = {
   relay: "relay",
   robot: "robot",
+  joystick: "joystick",
 };
 
 /** Student-facing label for one stage of an in-flight flash. */

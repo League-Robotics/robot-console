@@ -1,11 +1,13 @@
 ---
-id: "003"
-title: "Availability plumbing and fixtures for a third firmware kind"
-status: open
-use-cases: ["SUC-001"]
-depends-on: ["002"]
-github-issue: ""
-issue: ""
+id: '003'
+title: Availability plumbing and fixtures for a third firmware kind
+status: done
+use-cases:
+- SUC-001
+depends-on:
+- '002'
+github-issue: ''
+issue: ''
 completes_issue: true
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
@@ -41,17 +43,17 @@ Files to change:
 
 ## Acceptance Criteria
 
-- [ ] `buildSnapshotFromRows`'s output `firmware` object always has
+- [x] `buildSnapshotFromRows`'s output `firmware` object always has
       exactly three keys: `relay`, `robot`, `joystick`.
-- [ ] `firmwareWatcher`'s `startFirmwareWatcher` starts and independently
+- [x] `firmwareWatcher`'s `startFirmwareWatcher` starts and independently
       schedules a third poll timer for `joystick`.
-- [ ] `golden-snapshot.json` has a `joystick` entry and
+- [x] `golden-snapshot.json` has a `joystick` entry and
       `projection.test.ts`'s golden-fixture test passes unmodified in
       its assertion style (still a `toEqual` against the whole object,
       not narrowed to specific keys).
-- [ ] Every other hand-built `Record<FirmwareKind, ...>` literal found by
+- [x] Every other hand-built `Record<FirmwareKind, ...>` literal found by
       the searches above has a `joystick` entry added.
-- [ ] No test's assertion was loosened (no `toEqual` -> `toMatchObject`,
+- [x] No test's assertion was loosened (no `toEqual` -> `toMatchObject`,
       no field-by-field partial check introduced to dodge a missing key)
       to make a failure disappear.
 

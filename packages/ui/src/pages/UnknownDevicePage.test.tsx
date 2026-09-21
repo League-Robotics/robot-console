@@ -85,6 +85,10 @@ function firmwareStatusFixture(): Record<FirmwareKind, FirmwareAvailability> {
       available: true,
       checkedAt: 1000,
     },
+    // Joystick's real .env value is deliberately unset until ticket 007
+    // (the joystick repo's release is missing the MICROBIT.hex assets
+    // releases.ts requires) -- not-configured is the honest default here.
+    joystick: { configured: false },
   };
 }
 

@@ -615,6 +615,10 @@ describe("front-page lightning Flash button (ticket 018-015)", () => {
     expect(text).toContain("Flash zeguz");
     expect(text).toContain("Flash relay firmware");
     expect(text).toContain("Flash robot firmware");
+    // Sprint 023 ticket 005: a widening from the pre-023 two-button
+    // behavior -- the front page's own device card is a "permissive"
+    // surface per the stakeholder's own stated front-page list.
+    expect(text).toContain("Flash joystick firmware");
     expect(text).toContain("Flash a hex file from disk");
   });
 

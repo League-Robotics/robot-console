@@ -42,6 +42,7 @@ import { useEffect } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import type { ActiveConsoleTarget } from "./DevicePage";
 import { FlashDialog } from "../components/FlashDialog";
+import { ALL_FLASHABLE_FIRMWARE } from "../deviceDisplay";
 import "./UnknownDevicePage.css";
 
 export interface UnknownDevicePageProps {
@@ -62,7 +63,11 @@ export function UnknownDevicePage({ link, onActiveTargetChange }: UnknownDeviceP
 
       {showReason && <p className="device-note">Link attempt: {link.reason}</p>}
 
-      <FlashDialog link={link} name={link.label} />
+      {/* Sprint 023 ticket 005: a not-yet-identified board has no "own
+       * kind" to restrict to -- narrowing this page's flash options
+       * would defeat its actual purpose, which is deciding what to make
+       * the board. Permissive: every release kind plus local hex. */}
+      <FlashDialog link={link} name={link.label} allowedFirmware={ALL_FLASHABLE_FIRMWARE} allowLocalHex={true} />
     </section>
   );
 }

@@ -95,6 +95,7 @@ import {
   useWsActions,
 } from "../ws/WsProvider";
 import {
+  ALL_FLASHABLE_FIRMWARE,
   allocateRadioBridge,
   cardLinks,
   connectionLabel,
@@ -652,11 +653,21 @@ function DeviceCard({
               </Link>
             )}
             {usbLink && hasWsStore && (
+              // Sprint 023 ticket 005: the front page's own device card
+              // is a "permissive" surface (sprint.md's Design Rationale,
+              // Decision 2/SUC-001) -- a widening from the pre-023
+              // two-button behavior, per the stakeholder's own stated
+              // front-page list (relay, robot, joystick, local hex).
+              // This is distinct from `AppHeader.tsx`'s device-page
+              // Flash button, which narrows to the routed device's own
+              // kind (ticket 006).
               <FlashDialog
                 link={usbLink}
                 name={device.name}
                 triggerIcon={<LightningIcon />}
                 triggerClassName="device-flash-button"
+                allowedFirmware={ALL_FLASHABLE_FIRMWARE}
+                allowLocalHex={true}
               />
             )}
           </div>
@@ -1094,7 +1105,17 @@ function UnassignedCard({ link }: { link: SnapshotLink }) {
           <p className="device-connection-state" data-testid={`unassigned-status-${link.id}`}>
             {linkStateText(link)}
           </p>
-          <FlashDialog link={link} name={link.label} triggerIcon={<LightningIcon />} triggerClassName="device-flash-button" />
+          {/* Sprint 023 ticket 005: same permissive set as the
+           * identified-device card above -- an unassigned board has no
+           * "own kind" yet, so it stays permissive. */}
+          <FlashDialog
+            link={link}
+            name={link.label}
+            triggerIcon={<LightningIcon />}
+            triggerClassName="device-flash-button"
+            allowedFirmware={ALL_FLASHABLE_FIRMWARE}
+            allowLocalHex={true}
+          />
         </div>
         <Link
           to={`/d/${link.id}`}

@@ -166,6 +166,11 @@ describe("UnknownDevicePage", () => {
     });
     expect(el.textContent).toContain("Flash relay firmware");
     expect(el.textContent).toContain("Flash robot firmware");
+    // Sprint 023 ticket 005: a not-yet-identified board has no "own
+    // kind" to restrict to, so it stays permissive -- all three release
+    // kinds plus local hex, matching FrontPage.tsx's own call sites.
+    expect(el.textContent).toContain("Flash joystick firmware");
+    expect(el.textContent).toContain("Flash a hex file from disk");
   });
 
   it("shows no Flash trigger for a non-flashable link (FlashDialog's own canBeFlashed gate)", () => {

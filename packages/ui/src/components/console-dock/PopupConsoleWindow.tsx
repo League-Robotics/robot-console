@@ -139,8 +139,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { DeviceConsole } from "../DeviceConsole";
-import { CommandStrip } from "../CommandStrip";
+import { ConsoleBody } from "./ConsoleBody";
 import "./PopupConsoleWindow.css";
 
 /** How often to poll `popupWindow.closed` as the belt-and-suspenders
@@ -190,9 +189,25 @@ export interface PopupConsoleWindowProps {
    * *open*, never collapsed — closing the popup is the student asking
    * for the console back, not asking for it to disappear entirely). */
   onClose: () => void;
+  /** Whether the compact command rail is showing, and the handler that
+   * flips it. Both come from `ConsoleDock`, which owns the persisted
+   * dock state — this component deliberately does NOT read
+   * `useDockPersistence` itself. Two independent `useState` copies of
+   * one persisted record do not notify each other, so a rail toggled in
+   * the popup would leave the dock rendering from a stale value the
+   * moment the popup was put back. One owner, passed down. */
+  commandsOpen: boolean;
+  onToggleCommands: () => void;
 }
 
-export function PopupConsoleWindow({ popupWindow, link, name, onClose }: PopupConsoleWindowProps) {
+export function PopupConsoleWindow({
+  popupWindow,
+  link,
+  name,
+  onClose,
+  commandsOpen,
+  onToggleCommands,
+}: PopupConsoleWindowProps) {
   const [container, setContainer] = useState<HTMLElement | null>(null);
   const notifiedRef = useRef(false);
   const onCloseRef = useRef(onClose);
@@ -287,6 +302,21 @@ export function PopupConsoleWindow({ popupWindow, link, name, onClose }: PopupCo
     <div className="popup-console-window" data-testid="popup-console-window">
       <div className="popup-console-window-bar">
         <span className="popup-console-window-title">Debug Console — {name}</span>
+        {/* Same opt-in command rail as the docked console, driven by
+            the same persisted flag -- the popup and the dock are two
+            views of one console (popping out collapses the dock;
+            closing the popup restores it), so turning the rail on in
+            one and finding it off in the other would be a difference
+            with no meaning behind it. */}
+        <button
+          type="button"
+          className="popup-console-window-commands-toggle"
+          data-testid="popup-console-commands-toggle"
+          aria-expanded={commandsOpen}
+          onClick={onToggleCommands}
+        >
+          {commandsOpen ? "Commands ▾" : "Commands ▸"}
+        </button>
         <button
           type="button"
           className="popup-console-window-restore"
@@ -296,8 +326,7 @@ export function PopupConsoleWindow({ popupWindow, link, name, onClose }: PopupCo
           Put it back ▾
         </button>
       </div>
-      <DeviceConsole link={link} name={name} />
-      <CommandStrip link={link} />
+      <ConsoleBody link={link} name={name} commandsOpen={commandsOpen} />
     </div>,
     container,
   );

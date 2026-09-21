@@ -190,12 +190,59 @@ describe("ConsoleDock", () => {
     expect(el.querySelector('[data-testid="console-send-input"]')).not.toBeNull();
   });
 
-  it("mounts CommandStrip's verb buttons for the given link, unchanged, once opened", () => {
+  it("keeps CommandStrip OUT of the open pane until the Commands rail is asked for", () => {
+    // Stakeholder, 2026-09-20, on the HELLO/ID/VER/STATUS/FUNCS and
+    // GET/SET controls sitting under every open console: "We don't need
+    // that most of the time. Let's move that off to a side menu... try
+    // to get it out of the way." So opening the dock now gets the log
+    // and nothing else; the rail is opt-in.
     const { el } = mountDock();
     toggle(el);
+    expect(el.querySelector('[data-testid="console-body"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Command strip"]')).toBeNull();
+    expect(el.querySelector('[data-testid="command-strip-hello"]')).toBeNull();
+  });
+
+  it("mounts CommandStrip's verb buttons, unchanged, in the rail once Commands is toggled on", () => {
+    const { el } = mountDock();
+    toggle(el);
+    const commands = el.querySelector<HTMLButtonElement>('[data-testid="console-dock-commands-toggle"]')!;
+    expect(commands.getAttribute("aria-expanded")).toBe("false");
+    act(() => {
+      commands.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(commands.getAttribute("aria-expanded")).toBe("true");
+    // The rail is a distinct region beside the log, not a second
+    // stacked block under it.
+    expect(el.querySelector('[data-testid="console-body-commands"]')).not.toBeNull();
     expect(el.querySelector('[aria-label="Command strip"]')).not.toBeNull();
     expect(el.querySelector('[data-testid="command-strip-hello"]')).not.toBeNull();
     expect(el.querySelector('[data-testid="command-strip-get"]')).not.toBeNull();
+  });
+
+  it("offers no Commands toggle while the dock is collapsed -- the rail lives inside the pane", () => {
+    const { el } = mountDock();
+    expect(el.querySelector('[data-testid="console-dock-commands-toggle"]')).toBeNull();
+    toggle(el);
+    expect(el.querySelector('[data-testid="console-dock-commands-toggle"]')).not.toBeNull();
+  });
+
+  it("remembers the rail across a collapse/reopen, and across a remount", () => {
+    // Independent of `open`: collapsing the console must not quietly
+    // discard a rail the student deliberately turned on.
+    const first = mountDock();
+    toggle(first.el);
+    act(() => {
+      first.el
+        .querySelector('[data-testid="console-dock-commands-toggle"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    toggle(first.el);
+    toggle(first.el);
+    expect(first.el.querySelector('[data-testid="console-body-commands"]')).not.toBeNull();
+
+    const second = mountDock();
+    expect(second.el.querySelector('[data-testid="console-body-commands"]')).not.toBeNull();
   });
 
   it("passes the given name through to DeviceConsole's 'no link open' hint, once opened", () => {

@@ -288,8 +288,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { DeviceConsole } from "../DeviceConsole";
-import { CommandStrip } from "../CommandStrip";
+import { ConsoleBody } from "./ConsoleBody";
 import { useLinkNotices } from "../../ws/WsProvider";
 import { useDockPersistence } from "./useDockPersistence";
 import { openPopupWindow } from "../../lib/popupWindow";
@@ -523,7 +522,7 @@ export interface ConsoleDockProps {
 }
 
 export function ConsoleDock({ link, name }: ConsoleDockProps) {
-  const [{ open, heightPx }, updateDockState] = useDockPersistence();
+  const [{ open, commands: commandsOpen, heightPx }, updateDockState] = useDockPersistence();
   const commitHeight = useCallback(
     (nextHeightPx: number) => {
       updateDockState({ heightPx: nextHeightPx });
@@ -688,6 +687,14 @@ export function ConsoleDock({ link, name }: ConsoleDockProps) {
     updateDockState({ open: !open });
   }, [open, popup, handlePopupClosed, updateDockState]);
 
+  /** Show/hide the compact command rail beside the log. Deliberately
+   * independent of `toggleOpen`: closing and reopening the dock must
+   * not silently drop the rail a student turned on, and turning the
+   * rail off is not a reason to collapse the console. */
+  const toggleCommands = useCallback(() => {
+    updateDockState({ commands: !commandsOpen });
+  }, [commandsOpen, updateDockState]);
+
   return (
     <section className="console-dock" aria-label="Debug console" data-testid="console-dock">
       <div className="console-dock-bar">
@@ -721,6 +728,24 @@ export function ConsoleDock({ link, name }: ConsoleDockProps) {
             Pop out ⧉
           </button>
         )}
+        {/* The command rail's own toggle. Rendered only while the dock
+            is open, because the rail lives inside the pane -- offering
+            to reveal something inside a collapsed container would be a
+            control that appears to do nothing. Stakeholder, 2026-09-20:
+            the commands are "off to a side menu... we mostly don't need
+            it much", so this reads as an opt-in, and the rail is hidden
+            until asked for. */}
+        {open && (
+          <button
+            type="button"
+            className="console-dock-commands-toggle"
+            data-testid="console-dock-commands-toggle"
+            aria-expanded={commandsOpen}
+            onClick={toggleCommands}
+          >
+            {commandsOpen ? "Commands ▾" : "Commands ▸"}
+          </button>
+        )}
         <button
           type="button"
           className="console-dock-toggle"
@@ -731,7 +756,16 @@ export function ConsoleDock({ link, name }: ConsoleDockProps) {
           {open ? "Hide ▾" : "Show ▸"}
         </button>
       </div>
-      {popup && <PopupConsoleWindow popupWindow={popup} link={link} name={name} onClose={handlePopupClosed} />}
+      {popup && (
+        <PopupConsoleWindow
+          popupWindow={popup}
+          link={link}
+          name={name}
+          onClose={handlePopupClosed}
+          commandsOpen={commandsOpen}
+          onToggleCommands={toggleCommands}
+        />
+      )}
       {open && (
         <div
           className={`console-dock-pane${isDragging ? " console-dock-pane-dragging" : ""}`}
@@ -754,8 +788,7 @@ export function ConsoleDock({ link, name }: ConsoleDockProps) {
             aria-label="Resize debug console"
             onPointerDown={onHandlePointerDown}
           />
-          <DeviceConsole link={link} name={name} />
-          <CommandStrip link={link} />
+          <ConsoleBody link={link} name={name} commandsOpen={commandsOpen} />
         </div>
       )}
     </section>

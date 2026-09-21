@@ -193,8 +193,15 @@ describe("App shell: disconnected-from-host banner reaches a mounted RobotPage r
     // (always-visible) Main tab column into `ConsoleDock`, which starts
     // collapsed -- toggle it open once so `command-strip-hello` actually
     // exists to query, same as a student would before looking at it.
+    // And since 2026-09-20 the verb buttons live in an opt-in command
+    // rail beside the log (stakeholder: "we mostly don't need it much"),
+    // so the student takes a second step to reveal them. Two clicks
+    // here, both of them real ones a person would make.
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="console-dock-toggle"]')!.click();
+    });
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="console-dock-commands-toggle"]')!.click();
     });
     expect(banner(el)).toBeNull();
     // Enabled while connected with an open session.

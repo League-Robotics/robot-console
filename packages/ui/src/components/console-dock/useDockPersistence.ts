@@ -68,6 +68,23 @@ export interface DockPersistedState {
   /** Whether the open pane (log, toolbar, `SequencingIndicator`, send
    * box, `CommandStrip`) is showing below the "Debug Console" bar. */
   open: boolean;
+  /** Whether the compact command rail (`CommandStrip`'s HELLO / ID /
+   * VER / STATUS / FUNCS buttons and the GET/SET name-value form) is
+   * showing beside the log.
+   *
+   * Stakeholder, 2026-09-20, on seeing those controls occupying the
+   * bottom of every open dock: "We don't need that most of the time.
+   * Let's move that off to a side menu... try to get it out of the way.
+   * Make it compact. We mostly don't need it much." So it defaults to
+   * HIDDEN -- unlike `open`, whose default-collapsed is only a
+   * first-load behaviour, this one is a statement about how often the
+   * control is wanted at all.
+   *
+   * Persisted rather than component-local for the same reason `open` is:
+   * a student who does want the rail (someone poking at config fields
+   * with GET/SET) wants it for a whole working session, not per tab
+   * visit, and `ConsoleDock` remounts on every device-page navigation. */
+  commands: boolean;
   /** The open pane's height in pixels. Read/written from the start
    * (see this module's own doc comment) but only ever set by ticket
    * 004's drag handle -- ticket 003 always writes/reads the default. */
@@ -76,6 +93,7 @@ export interface DockPersistedState {
 
 const DEFAULT_DOCK_STATE: DockPersistedState = {
   open: false,
+  commands: false,
   heightPx: DEFAULT_DOCK_HEIGHT_PX,
 };
 
@@ -95,9 +113,15 @@ export function readDockState(): DockPersistedState {
     if (typeof parsed !== "object" || parsed === null) {
       return DEFAULT_DOCK_STATE;
     }
-    const { open, heightPx } = parsed as Partial<DockPersistedState>;
+    const { open, commands, heightPx } = parsed as Partial<DockPersistedState>;
     return {
       open: typeof open === "boolean" ? open : DEFAULT_DOCK_STATE.open,
+      // A record written before the rail existed simply has no
+      // `commands` key, and falls back to the default the same way a
+      // hand-corrupted one does -- which is why every field is read
+      // independently rather than the whole record being discarded on
+      // one bad key.
+      commands: typeof commands === "boolean" ? commands : DEFAULT_DOCK_STATE.commands,
       heightPx: typeof heightPx === "number" && Number.isFinite(heightPx) && heightPx > 0 ? heightPx : DEFAULT_DOCK_STATE.heightPx,
     };
   } catch {

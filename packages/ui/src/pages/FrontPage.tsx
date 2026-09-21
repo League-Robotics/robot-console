@@ -140,6 +140,31 @@ export function FrontPage() {
   // could never call without a variable number of hooks per render.
   const linkNotices = useLinkNotices();
 
+  /** Radio attempts started from a "Not seen recently" card, by device
+   * id. `trying` holds the card down here until contact is made;
+   * `failed` leaves it down with an explanation. Lives at this level,
+   * not in the button, because the section a device belongs to is
+   * decided here -- the button cannot both be inside the card and
+   * decide whether the card exists. */
+  const [radioAttempts, setRadioAttempts] = useState<Record<number, { state: "trying" | "failed"; message?: string }>>({});
+
+  // Contact made: drop the hold so the device takes its place up top.
+  // Keyed off the snapshot rather than off an ack, so it is the same
+  // fact the rest of the page is already rendering from.
+  useEffect(() => {
+    const arrived = devices.filter(
+      (device) => radioAttempts[device.id]?.state === "trying" && device.links.some(isLinkUsable),
+    );
+    if (arrived.length === 0) return;
+    setRadioAttempts((previous) => {
+      const next = { ...previous };
+      for (const device of arrived) {
+        delete next[device.id];
+      }
+      return next;
+    });
+  }, [devices, radioAttempts]);
+
   // Stakeholder (2026-09-13): "pay attention to things that are
   // connected or disconnected ... put it in a list of things we've seen
   // before, but don't put it on my list of things that are available."
@@ -147,7 +172,7 @@ export function FrontPage() {
   // that is not `stale` (`cardLinks`); a device whose every link has
   // aged out (unplugged, powered off, no longer advertised) goes to
   // "Not seen recently" instead of a card full of hidden connections.
-  const present = devices.filter((device) => cardLinks(device).length > 0);
+  const presentBeforeHold = devices.filter((device) => cardLinks(device).length > 0);
   // Ticket 017-010 fix (team-lead bench evidence, 2026-09-13): a
   // known-robots.json placeholder that hasn't merged with its real,
   // currently-linked row yet (e.g. `mergeNamePlaceholderIfAny` hasn't
@@ -158,8 +183,38 @@ export function FrontPage() {
   // tovez" alongside a real `tovez` card). Filtering by name, not id, is
   // deliberate: the whole point is to hide a *different* device row that
   // merely shares a name with one already on screen.
+  // Stakeholder, 2026-09-21: "they shouldn't move up to the top as soon
+  // as you click the radio button. You should try to make contact
+  // first... if it connects and goes green, then you put it in the top
+  // section. If you can't connect to it? Leave it down below."
+  //
+  // Clicking sends `session-open`, and the host answers with a link in
+  // `connecting` almost immediately. `cardLinks` counts that, so the
+  // card leapt to the Robots section on the click rather than on the
+  // contact -- announcing a robot as present before anything had
+  // answered, and leaving it stranded up there if nothing ever did.
+  //
+  // So a device with an attempt outstanding is HELD in this section
+  // until one of its links is genuinely usable (`isLinkUsable`: state
+  // `connected` AND a live session). That is the same test the radio
+  // chip up top uses to call itself linked, so "moves up" and "goes
+  // green" become the same event rather than two guesses about it.
+  // Both `trying` AND `failed` hold the card here. A failed attempt
+  // usually leaves a link behind -- `connecting`, then `failed` -- and
+  // `cardLinks` counts those, so without this the card would float up
+  // to Robots the moment the attempt gave up: the exact opposite of
+  // "if you can't connect to it? Leave it down below." Only a genuinely
+  // usable link releases the hold.
+  const heldDown = new Set(
+    devices
+      .filter((device) => radioAttempts[device.id] !== undefined && !device.links.some(isLinkUsable))
+      .map((device) => device.id),
+  );
+  const present = presentBeforeHold.filter((device) => !heldDown.has(device.id));
   const presentNames = new Set(present.map((device) => device.name));
-  const notSeenRecently = devices.filter((device) => cardLinks(device).length === 0 && !presentNames.has(device.name));
+  const notSeenRecently = devices.filter(
+    (device) => (cardLinks(device).length === 0 || heldDown.has(device.id)) && !presentNames.has(device.name),
+  );
   return (
     <>
       <RadioMigrationOffers offers={radioMigrationOffers} onResolve={resolveRadioMigration} />
@@ -171,6 +226,17 @@ export function FrontPage() {
         sendable={sendable}
         onForgetDevice={(deviceId) => send({ type: "forget-device", deviceId })}
         onRadioConnect={(relayLinkId, name) => send({ type: "session-open", relayLinkId, name })}
+        radioAttempts={radioAttempts}
+        onRadioAttempt={(deviceId, attempt) =>
+          setRadioAttempts((previous) => {
+            if (attempt === null) {
+              const next = { ...previous };
+              delete next[deviceId];
+              return next;
+            }
+            return { ...previous, [deviceId]: attempt };
+          })
+        }
         onLinkClose={(linkId) => send({ type: "session-close", linkId })}
         onLinkConnect={onLinkConnect}
         linkNotices={linkNotices}
@@ -248,12 +314,22 @@ export interface DevicesListProps {
    * so call sites (and this component's own tests) that don't care are
    * unaffected. */
   linkNotices?: ReadonlyMap<string, LinkNotice>;
+  /** Outstanding/failed radio attempts from "Not seen recently" cards,
+   * by device id -- owned by {@link FrontPage}, which needs them to
+   * decide which section a device belongs to. Defaults to empty. */
+  radioAttempts?: Record<number, { state: "trying" | "failed"; message?: string }>;
+  /** Report an attempt starting, failing, or being abandoned. */
+  onRadioAttempt?: (deviceId: number, attempt: { state: "trying" | "failed"; message?: string } | null) => void;
 }
 
 /** Stable empty-map default for {@link DevicesListProps.linkNotices} --
  * avoids allocating a fresh `Map` every render for every call site that
  * does not pass one. */
 const EMPTY_LINK_NOTICES: ReadonlyMap<string, LinkNotice> = new Map();
+
+/** Stable empty default for {@link DevicesListProps.radioAttempts},
+ * same reasoning as {@link EMPTY_LINK_NOTICES}. */
+const EMPTY_RADIO_ATTEMPTS: Record<number, { state: "trying" | "failed"; message?: string }> = {};
 
 export function DevicesList({
   status,
@@ -266,6 +342,8 @@ export function DevicesList({
   onLinkConnect = () => {},
   sendable = true,
   linkNotices = EMPTY_LINK_NOTICES,
+  radioAttempts = EMPTY_RADIO_ATTEMPTS,
+  onRadioAttempt = () => {},
 }: DevicesListProps) {
   const empty = devices.length === 0 && unassigned.length === 0;
   const robots = devices.filter((device) => device.kind !== "relay");
@@ -331,6 +409,8 @@ export function DevicesList({
           bridgeCandidates={devices}
           sendable={sendable}
           onRadioConnect={onRadioConnect}
+          attempts={radioAttempts}
+          onAttempt={onRadioAttempt}
         />
       )}
     </section>
@@ -1062,14 +1142,19 @@ function NotSeenRadioButton({
   bridgeCandidates,
   sendable,
   onRadioConnect,
+  attempt,
+  onAttempt,
 }: {
   device: SnapshotDevice;
   bridgeCandidates: SnapshotDevice[];
   sendable: boolean;
   onRadioConnect: (relayLinkId: string, name: string) => void;
+  attempt: { state: "trying" | "failed"; message?: string } | undefined;
+  onAttempt: (deviceId: number, attempt: { state: "trying" | "failed"; message?: string } | null) => void;
 }) {
-  const [trying, setTrying] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
+  const trying = attempt?.state === "trying";
+  const problem = attempt?.state === "failed" ? (attempt.message ?? null) : null;
+  const deviceId = device.id;
 
   // Same give-up budget the robot cards' own radio chip uses, for the
   // same reason: a bridge that never answers must not leave "Trying…"
@@ -1080,38 +1165,48 @@ function NotSeenRadioButton({
   useEffect(() => {
     if (!trying) return undefined;
     const timer = setTimeout(() => {
-      setTrying(false);
-      setProblem("No answer over radio");
+      onAttempt(deviceId, { state: "failed", message: "No answer over radio" });
     }, RADIO_CONNECT_GIVE_UP_MS);
     return () => clearTimeout(timer);
-  }, [trying]);
+  }, [trying, deviceId, onAttempt]);
 
   function handleClick(): void {
     if (!sendable || trying) return;
     const relayLinkId = allocateRadioBridge(bridgeCandidates);
     if (relayLinkId === undefined) {
-      setProblem("No radio bridge is free");
+      onAttempt(deviceId, { state: "failed", message: "No radio bridge is free" });
       return;
     }
-    setProblem(null);
-    setTrying(true);
+    onAttempt(deviceId, { state: "trying" });
     onRadioConnect(relayLinkId, device.name);
   }
 
   return (
     <>
+      {/* The same radio symbol the robot cards up top use for their own
+          radio chip (`TransportIcon transport="radio"`), not a button
+          reading "Radio" -- stakeholder, 2026-09-21. It is the same
+          action on the same kind of thing, so it gets the same symbol;
+          a word here would read as a different feature.
+
+          Round and chip-shaped like those, but white rather than
+          coloured: up there the chip's fill reports a live state, and
+          nothing here is live yet. `aria-label` carries what the icon
+          says silently, since there is no text to read. */}
       <button
         type="button"
         className="remembered-robot-radio"
         data-testid={`not-seen-radio-${device.id}`}
+        data-state={trying ? "busy" : "idle"}
+        aria-label={trying ? `Trying ${device.name} over radio…` : `Try ${device.name} over radio`}
         aria-disabled={!sendable || trying}
         onClick={handleClick}
       >
-        {trying ? "Trying…" : "Radio"}
+        <TransportIcon transport="radio" size={20} />
       </button>
-      {problem !== null && (
+      {(trying || problem !== null) && (
         <span className="remembered-robot-problem" role="status" data-testid={`not-seen-radio-problem-${device.id}`}>
-          {problem}
+          {trying ? "Trying…" : problem}
         </span>
       )}
     </>
@@ -1124,12 +1219,16 @@ function NotSeenRecentlySection({
   bridgeCandidates,
   sendable,
   onRadioConnect,
+  attempts,
+  onAttempt,
 }: {
   devices: SnapshotDevice[];
   onForget: (deviceId: number) => void;
   bridgeCandidates: SnapshotDevice[];
   sendable: boolean;
   onRadioConnect: (relayLinkId: string, name: string) => void;
+  attempts: Record<number, { state: "trying" | "failed"; message?: string }>;
+  onAttempt: (deviceId: number, attempt: { state: "trying" | "failed"; message?: string } | null) => void;
 }) {
   return (
     <section className="remembered-robots" aria-label="Devices not seen recently">
@@ -1151,6 +1250,8 @@ function NotSeenRecentlySection({
                   bridgeCandidates={bridgeCandidates}
                   sendable={sendable}
                   onRadioConnect={onRadioConnect}
+                  attempt={attempts[device.id]}
+                  onAttempt={onAttempt}
                 />
                 <button
                   type="button"

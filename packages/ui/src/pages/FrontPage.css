@@ -354,13 +354,38 @@
    connection is live" (see `.device-chip[data-state="linked"]`), and a
    button that merely attempts one must not borrow that meaning. */
 .remembered-robot-radio {
-  font-size: 0.82rem;
-  padding: 0.25rem 0.7rem;
-  border-radius: 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border-radius: 999px;
   border: 1px solid var(--rc-border);
   background: var(--rc-surface);
-  color: inherit;
+  color: var(--rc-text-muted);
+  line-height: 1;
   cursor: pointer;
+}
+
+/* An attempt in flight goes yellow -- the stakeholder's own
+   progression, 2026-09-21: "the button starts off as white. You click
+   it, maybe it goes yellow, and then, if it connects and goes green,
+   then you put it in the top section."
+
+   Yellow deliberately uses `--rc-link-off-*`, the exact tokens the
+   robot cards' own radio chip uses for "not linked yet", so the three
+   states read as one scale across both sections: white (never tried)
+   -> yellow (trying, still down here) -> green (linked, and by then the
+   card has moved up and this button no longer exists). The green end of
+   that scale is `.device-chip-radio[data-state="linked"]`; there is
+   deliberately no green case in this file, because a robot that is
+   green is no longer in this section. */
+.remembered-robot-radio[data-state="busy"] {
+  background: var(--rc-link-off-bg);
+  border-color: var(--rc-link-off-border);
+  color: var(--rc-link-off-text);
+  cursor: default;
 }
 
 .remembered-robot-radio:hover,

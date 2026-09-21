@@ -1009,7 +1009,12 @@ describe("not seen recently (devices the host still knows about with zero curren
 
     const radio = el.querySelector<HTMLButtonElement>('[data-testid="not-seen-radio-9"]');
     expect(radio).not.toBeNull();
-    expect(radio!.textContent).toBe("Radio");
+    // The same radio symbol the robot cards use, not the word "Radio"
+    // (stakeholder, 2026-09-21). An icon-only control carries its name
+    // in `aria-label`, so that is what there is to assert.
+    expect(radio!.querySelector("svg")).not.toBeNull();
+    expect(radio!.textContent).toBe("");
+    expect(radio!.getAttribute("aria-label")).toBe("Try nuvek over radio");
     act(() => {
       radio!.click();
     });
@@ -1017,7 +1022,114 @@ describe("not seen recently (devices the host still knows about with zero curren
     // Exactly the message the robot cards' own radio chip sends, so
     // there is one way to open a radio session, not two.
     expect(socket!.sent).toContain(JSON.stringify({ type: "session-open", relayLinkId: "usb-vitut", name: "nuvek" }));
-    expect(el.querySelector('[data-testid="not-seen-radio-9"]')!.textContent).toBe("Trying…");
+    expect(el.querySelector('[data-testid="not-seen-radio-9"]')!.getAttribute("data-state")).toBe("busy");
+    expect(el.querySelector('[data-testid="not-seen-radio-problem-9"]')?.textContent).toBe("Trying…");
+  });
+
+  it("holds the card down until contact is made, then lets it move up", () => {
+    // Stakeholder, 2026-09-21: "they shouldn't move up to the top as
+    // soon as you click the radio button. You should try to make
+    // contact first... if it connects and goes green, then you put it
+    // in the top section. If you can't connect to it? Leave it down
+    // below." Clicking produces a `connecting` link almost at once, and
+    // `cardLinks` counts that -- so without the hold the card jumped up
+    // on the click rather than on the answer.
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    const relay = device(7, {
+      name: "vitut",
+      kind: "relay",
+      role: "RADIOBRIDGE",
+      links: [link("usb-vitut", { state: "connectable", transport: "usb" })],
+    });
+    act(() => {
+      socket!.emitMessage(snapshot({ devices: [relay, device(9, { name: "nuvek", links: [] })] }));
+    });
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="not-seen-radio-9"]')!.click();
+    });
+
+    // The host answers with a link that is merely CONNECTING. Not
+    // contact -- stay put, and stay yellow.
+    const connecting = device(9, { name: "nuvek", links: [link("radio-nuvek", { transport: "radio", state: "connecting" })] });
+    act(() => {
+      socket!.emitMessage(snapshot({ devices: [relay, connecting] }));
+    });
+    expect(el.querySelector('[data-testid="not-seen-device-9"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="not-seen-radio-9"]')!.getAttribute("data-state")).toBe("busy");
+
+    // Contact. `isLinkUsable` is state `connected` AND a live session --
+    // the same test the radio chip up top uses to call itself linked.
+    // `isLinkUsable` needs a live SESSION as well as `connected` -- a
+    // connected link with no session is a bridge that answered, not a
+    // robot that did.
+    const linked = device(9, {
+      name: "nuvek",
+      links: [
+        link("radio-nuvek", {
+          transport: "radio",
+          state: "connected",
+          session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null },
+        }),
+      ],
+    });
+    act(() => {
+      socket!.emitMessage(snapshot({ devices: [relay, linked] }));
+    });
+    expect(el.querySelector('[data-testid="not-seen-device-9"]')).toBeNull();
+    expect(el.querySelector('[data-testid="device-card-9"]') ?? el.querySelector('[data-testid="device-radio-chip-9"]')).not.toBeNull();
+  });
+
+  it("leaves a robot that never answers down below, not stranded up top", () => {
+    vi.useFakeTimers();
+    try {
+      let socket: FakeSocket | null = null;
+      const el = mount(
+        withRouter(
+          <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+            <FrontPage />
+          </WsProvider>,
+        ),
+      );
+      act(() => {
+        socket!.emitOpen();
+      });
+      const relay = device(7, {
+        name: "vitut",
+        kind: "relay",
+        role: "RADIOBRIDGE",
+        links: [link("usb-vitut", { state: "connectable", transport: "usb" })],
+      });
+      act(() => {
+        socket!.emitMessage(snapshot({ devices: [relay, device(9, { name: "nuvek", links: [] })] }));
+      });
+      act(() => {
+        el.querySelector<HTMLButtonElement>('[data-testid="not-seen-radio-9"]')!.click();
+      });
+      const connecting = device(9, { name: "nuvek", links: [link("radio-nuvek", { transport: "radio", state: "connecting" })] });
+      act(() => {
+        socket!.emitMessage(snapshot({ devices: [relay, connecting] }));
+      });
+
+      act(() => {
+        vi.advanceTimersByTime(61_000);
+      });
+      // Still here, back to white, and saying why.
+      expect(el.querySelector('[data-testid="not-seen-device-9"]')).not.toBeNull();
+      expect(el.querySelector('[data-testid="not-seen-radio-9"]')!.getAttribute("data-state")).toBe("idle");
+      expect(el.querySelector('[data-testid="not-seen-radio-problem-9"]')?.textContent).toBe("No answer over radio");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("says so, and sends nothing, when no radio bridge is free", () => {
@@ -1043,7 +1155,7 @@ describe("not seen recently (devices the host still knows about with zero curren
     expect(socket!.sent).toEqual([]);
     // Still offering to try, not stuck on "Trying…" for an attempt that
     // never left the building.
-    expect(el.querySelector('[data-testid="not-seen-radio-9"]')!.textContent).toBe("Radio");
+    expect(el.querySelector('[data-testid="not-seen-radio-9"]')!.getAttribute("data-state")).toBe("idle");
   });
 
   it("stops saying 'Trying…' when the bridge never answers", () => {
@@ -1072,12 +1184,12 @@ describe("not seen recently (devices the host still knows about with zero curren
       act(() => {
         el.querySelector<HTMLButtonElement>('[data-testid="not-seen-radio-9"]')!.click();
       });
-      expect(el.querySelector('[data-testid="not-seen-radio-9"]')!.textContent).toBe("Trying…");
+      expect(el.querySelector('[data-testid="not-seen-radio-9"]')!.getAttribute("data-state")).toBe("busy");
 
       act(() => {
         vi.advanceTimersByTime(61_000);
       });
-      expect(el.querySelector('[data-testid="not-seen-radio-9"]')!.textContent).toBe("Radio");
+      expect(el.querySelector('[data-testid="not-seen-radio-9"]')!.getAttribute("data-state")).toBe("idle");
       expect(el.querySelector('[data-testid="not-seen-radio-problem-9"]')?.textContent).toBe("No answer over radio");
     } finally {
       vi.useRealTimers();

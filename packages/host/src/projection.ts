@@ -322,16 +322,35 @@ function buildLink(link: ProjectionLinkRow, ctx: LinkContext): SnapshotLink {
     capabilities: {
       open: !hasSession && !isConnecting && (!requiresOwned(link.transport) || (device?.owned ?? false)),
       close: hasSession || isConnecting,
-      // Ticket 018-014: a usb link can always be flashed (unchanged);
-      // a mbserial/wifi link can be flashed too, but only once its
-      // device currently advertises `_mbflash._tcp` (a farm robot's
-      // mbdeploy daemon) -- radio/mbrelay links never get this (the
-      // flash service is dialed directly, never through a relay).
+      // A usb link can always be flashed (DAPLink, directly attached).
+      // Anything else can be flashed exactly when its DEVICE currently
+      // advertises `_mbflash._tcp` -- a robot's own mbdeploy daemon.
+      //
+      // Stakeholder, 2026-09-21: "we can flash to devices that are
+      // plugged directly into the computer, but we don't get an option
+      // to flash when it's an MB relay. If the device is connected to
+      // an MB relay, then we can flash to it, and we should allow
+      // that."
+      //
+      // He is right, and the old rule's own reasoning is what gives it
+      // away. Ticket 018-014 restricted this to `mbserial`/`wifi`
+      // because "the flash service is dialed directly, never through a
+      // relay" -- but that is precisely why the link's transport does
+      // not matter. `resolveFlashTarget` builds a `network` target from
+      // the service's OWN host and port and connects to it; the link
+      // this console happens to be talking over carries none of the
+      // flash traffic and is never consulted. So a robot bridged by
+      // radio through an mbrelay is flashable on exactly the same terms
+      // as one on mbserial: does it advertise the service, or not.
+      //
+      // What this does NOT do is invent a flash path for a robot that
+      // has no mbflash service (a radio-only robot with no network
+      // presence). That one still cannot be flashed -- but it is now
+      // refused for the true reason, by name, rather than for having
+      // the wrong transport.
       flash:
         link.transport === "usb" ||
-        ((link.transport === "mbserial" || link.transport === "wifi") &&
-          device !== undefined &&
-          findCurrentMbflashService(ctx.services, device) !== undefined),
+        (device !== undefined && findCurrentMbflashService(ctx.services, device) !== undefined),
       provisionWifi: hasSession,
     },
   };

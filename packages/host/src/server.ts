@@ -561,24 +561,24 @@ export async function resolveFlashLinkTarget(
     }
     return { ok: true, target: { kind: "usb", usbSerial, device } };
   }
-  if (linkRow.transport === "mbserial" || linkRow.transport === "wifi") {
-    const deviceRow = linkRow.deviceId !== null ? rows.devices.find((candidate) => candidate.id === linkRow.deviceId) : undefined;
-    if (!deviceRow) {
-      return { ok: false, reason: `link "${linkId}" has no identified device to flash` };
-    }
-    const service = findCurrentMbflashService(rows.services, deviceRow);
-    if (!service || service.host === null || service.port === null) {
-      return {
-        ok: false,
-        reason: `no _mbflash._tcp service is currently advertised for "${deviceRow.name}" -- this robot cannot be flashed over the network right now`,
-      };
-    }
-    return { ok: true, target: { kind: "network", device: deviceRow, service } };
+  // Every non-usb link takes the network path, whatever its transport
+  // (2026-09-21 -- see `projection.ts`'s own `flash:` capability comment
+  // for the stakeholder's request and why transport was never the real
+  // question). The target below is built from the SERVICE's own host and
+  // port; `linkRow` contributes nothing but the device identity, so a
+  // radio/mbrelay link is no different here from an mbserial one.
+  const deviceRow = linkRow.deviceId !== null ? rows.devices.find((candidate) => candidate.id === linkRow.deviceId) : undefined;
+  if (!deviceRow) {
+    return { ok: false, reason: `link "${linkId}" has no identified device to flash` };
   }
-  return {
-    ok: false,
-    reason: `flashing requires a directly attached USB link or a network-flashable mbserial/wifi link (link "${linkId}" is ${linkRow.transport})`,
-  };
+  const service = findCurrentMbflashService(rows.services, deviceRow);
+  if (!service || service.host === null || service.port === null) {
+    return {
+      ok: false,
+      reason: `no _mbflash._tcp service is currently advertised for "${deviceRow.name}" -- this robot cannot be flashed over the network right now`,
+    };
+  }
+  return { ok: true, target: { kind: "network", device: deviceRow, service } };
 }
 
 /** Starts a flash on `linkId` immediately and returns its terminal

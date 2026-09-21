@@ -1,11 +1,14 @@
 ---
-id: "006"
-title: "Robot page and relay page restrict flashing to their own firmware kind"
-status: open
-use-cases: ["SUC-002", "SUC-003"]
-depends-on: ["004"]
-github-issue: ""
-issue: ""
+id: '006'
+title: Robot page and relay page restrict flashing to their own firmware kind
+status: done
+use-cases:
+- SUC-002
+- SUC-003
+depends-on:
+- '004'
+github-issue: ''
+issue: ''
 completes_issue: true
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
@@ -49,26 +52,29 @@ ticket's `allowedFirmware`/`allowLocalHex` change.
 
 ## Acceptance Criteria
 
-- [ ] Routed to an identified `kind: "robot"` device's own page,
+- [x] Routed to an identified `kind: "robot"` device's own page,
       `AppHeader`'s Flash dialog renders exactly one option: "Flash
       robot firmware". No relay button, no joystick button, no
       local-hex uploader — verify by asserting their absence from the
       DOM, not merely that they're disabled.
-- [ ] Routed to an identified `kind: "relay"` device's own page,
+- [x] Routed to an identified `kind: "relay"` device's own page,
       `AppHeader`'s Flash dialog renders exactly one option: "Flash
       relay firmware", with the same absence checks.
-- [ ] Routed to a link with no resolved device yet (an unassigned board
+- [x] Routed to a link with no resolved device yet (an unassigned board
       reached via `/d/:linkId`), `AppHeader`'s Flash dialog renders all
       four options (relay, robot, joystick, local hex) — matching
       `UnknownDevicePage`'s own permissive behavior (ticket 005), since
       the same link is simultaneously shown by both components on that
       route.
-- [ ] This restriction holds regardless of what firmware is or isn't
+- [x] This restriction holds regardless of what firmware is or isn't
       configured for the other kinds — they are absent from the DOM,
       never merely disabled.
-- [ ] Existing `AppHeader.test.tsx` assertions about its Flash dialog are
+- [x] Existing `AppHeader.test.tsx` assertions about its Flash dialog are
       updated to check the exact button set per device kind, not just
-      that a trigger exists.
+      that a trigger exists (new describe block "AppHeader Flash button
+      set restricted to device kind (sprint 023 ticket 006)" pins the
+      exact set per case; the older forceShow-mechanism tests are
+      untouched since they test a different, unrelated concern).
 
 ## Testing
 

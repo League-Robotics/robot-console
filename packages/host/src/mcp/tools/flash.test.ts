@@ -367,7 +367,7 @@ describe("request_flash: tool-call-empty-args.md survivability", () => {
     }
   });
 
-  it("a firmwareRef outside the two-member enum is rejected by Zod validation", async () => {
+  it("a firmwareRef outside the three-member enum is rejected by Zod validation", async () => {
     const store = openStore({ filePath: ":memory:" });
     try {
       seedUsbFlashableDevice(store);

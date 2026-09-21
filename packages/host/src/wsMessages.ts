@@ -99,8 +99,24 @@ import type { WireField } from "@robot-console/protocol";
  * configured release build. `"relay"` is the radio-relay board's
  * firmware, `"robot"` the diff-drive robot's -- see `config.ts`'s
  * `FirmwareConfigMap` for how each maps to a configured
- * `<repo-url>:<tag>` source. */
-export type FirmwareKind = "relay" | "robot";
+ * `<repo-url>:<tag>` source.
+ *
+ * `"joystick"` (sprint 023, stakeholder request 2026-09-21) is a bare
+ * micro:bit running `League-Microbit/Remote-Joystick-Student` -- the
+ * student remote used to drive a robot over radio. It carries no robot
+ * identity of its own (it never becomes a `devices` row of `kind:
+ * "robot"`; it is just another release a board can be flashed with,
+ * same as relay and robot), which is why it sits beside those two here
+ * rather than needing a parallel `devices.kind` value or any change to
+ * {@link FirmwareSourceRef}/{@link FirmwareAvailability} -- both are
+ * already generic over this union and need no shape change, only the
+ * union itself widens. Unlike relay/robot, a joystick's own device page
+ * is never restricted to "only its own kind" (there is no such page --
+ * a joystick never gets identified as a device in the first place); it
+ * is only ever offered from the permissive front-page/unidentified-board
+ * flash surfaces (`packages/ui`'s `ALL_FLASHABLE_FIRMWARE`, added in a
+ * later ticket of this same sprint). */
+export type FirmwareKind = "relay" | "robot" | "joystick";
 
 /** Where the hex a flash operation writes comes from: a configured
  * release build (`config.ts`/`releases.ts`), or a file the student
@@ -813,7 +829,7 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 function isFirmwareKind(value: unknown): value is FirmwareKind {
-  return value === "relay" || value === "robot";
+  return value === "relay" || value === "robot" || value === "joystick";
 }
 
 function isFlagsFieldShape(value: unknown): value is { wireType: "flags"; value: number } {

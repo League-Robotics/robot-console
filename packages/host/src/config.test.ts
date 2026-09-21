@@ -197,6 +197,26 @@ describe("getFirmwareConfig", () => {
     const second = getFirmwareConfig(store);
     expect(second.robot?.tag).toBe("v2.0.0");
   });
+
+  // Sprint 023 ticket 002: joystick is a third firmware kind, following
+  // the exact relay/robot pattern -- round-trips through the same
+  // `settings` key/`getFirmwareConfig` path, and reads as `undefined`
+  // ("not configured") when unset, exactly like relay/robot above. The
+  // real `.env` value is deliberately not set until ticket 007.
+  it("resolves the joystick source when its settings row is present, following the relay/robot pattern", () => {
+    store.setSetting(SETTINGS_KEY_BY_FIRMWARE.joystick, "https://github.com/League-Microbit/Remote-Joystick-Student:v0.1.0");
+
+    const result = getFirmwareConfig(store);
+    expect(result.joystick).toEqual({
+      repoUrl: "https://github.com/League-Microbit/Remote-Joystick-Student",
+      tag: "v0.1.0",
+    });
+  });
+
+  it("reports joystick as undefined ('not configured') when its settings row is absent, same as relay/robot", () => {
+    const result = getFirmwareConfig(store);
+    expect(result.joystick).toBeUndefined();
+  });
 });
 
 describe("loadEnvFile", () => {

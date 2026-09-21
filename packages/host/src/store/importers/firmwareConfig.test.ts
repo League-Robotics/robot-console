@@ -27,6 +27,12 @@ import { findRepoRootEnvPath, importFirmwareConfig } from "./firmwareConfig.js";
 
 const RELAY_KEY = "ROBOT_CONSOLE_RELAY_FIRMWARE";
 const ROBOT_KEY = "ROBOT_CONSOLE_ROBOT_FIRMWARE";
+// Sprint 023 ticket 002: joystick is a third firmware kind. Every
+// `result` assertion below now expects `joystick: false` alongside
+// relay/robot's own outcome, since none of the existing cases configure
+// it -- see the dedicated joystick cases further down for its own
+// env-var/.env-file resolution, mirroring relay/robot exactly.
+const JOYSTICK_KEY = "ROBOT_CONSOLE_JOYSTICK_FIRMWARE";
 
 function freshStore(): { store: Store; db: DatabaseSync } {
   const db = openStoreDb({ filePath: ":memory:" });
@@ -58,7 +64,7 @@ describe("importFirmwareConfig", () => {
       };
       const result = importFirmwareConfig(store, { env, stateDir }, { findRepoRootEnvPath: NO_CHECKOUT_FOUND });
 
-      expect(result).toEqual({ relay: true, robot: true });
+      expect(result).toEqual({ relay: true, robot: true, joystick: false });
       expect(store.getSetting(SETTINGS_KEY_BY_FIRMWARE.relay)).toBe(
         "https://github.com/League-Robotics/microbit-radio-relay:latest",
       );
@@ -84,7 +90,7 @@ describe("importFirmwareConfig", () => {
 
       const result = importFirmwareConfig(store, { env: {}, stateDir }, { findRepoRootEnvPath: NO_CHECKOUT_FOUND });
 
-      expect(result).toEqual({ relay: true, robot: true });
+      expect(result).toEqual({ relay: true, robot: true, joystick: false });
       expect(store.getSetting(SETTINGS_KEY_BY_FIRMWARE.relay)).toBe("https://example.test/relay:v1");
       expect(store.getSetting(SETTINGS_KEY_BY_FIRMWARE.robot)).toBe("https://example.test/robot:v2");
     } finally {
@@ -106,7 +112,7 @@ describe("importFirmwareConfig", () => {
         { findRepoRootEnvPath: () => repoRootEnvPath },
       );
 
-      expect(result).toEqual({ relay: true, robot: false });
+      expect(result).toEqual({ relay: true, robot: false, joystick: false });
       expect(store.getSetting(SETTINGS_KEY_BY_FIRMWARE.relay)).toBe("https://example.test/from-repo-root:v3");
       expect(store.getSetting(SETTINGS_KEY_BY_FIRMWARE.robot)).toBeUndefined();
     } finally {
@@ -132,7 +138,7 @@ describe("importFirmwareConfig", () => {
         },
       );
 
-      expect(result).toEqual({ relay: false, robot: false });
+      expect(result).toEqual({ relay: false, robot: false, joystick: false });
     } finally {
       store.close();
     }
@@ -158,11 +164,11 @@ describe("importFirmwareConfig", () => {
     try {
       const result = importFirmwareConfig(store, { env: {}, stateDir }, { findRepoRootEnvPath: NO_CHECKOUT_FOUND });
 
-      expect(result).toEqual({ relay: false, robot: false });
+      expect(result).toEqual({ relay: false, robot: false, joystick: false });
       expect(store.getSetting(SETTINGS_KEY_BY_FIRMWARE.relay)).toBeUndefined();
       expect(store.getSetting(SETTINGS_KEY_BY_FIRMWARE.robot)).toBeUndefined();
       expect(() => getFirmwareConfig(store)).not.toThrow();
-      expect(getFirmwareConfig(store)).toEqual({ relay: undefined, robot: undefined });
+      expect(getFirmwareConfig(store)).toEqual({ relay: undefined, robot: undefined, joystick: undefined });
     } finally {
       store.close();
     }
@@ -178,6 +184,42 @@ describe("importFirmwareConfig", () => {
 
       expect(result.relay).toBe(true);
       expect(store.getSetting(SETTINGS_KEY_BY_FIRMWARE.relay)).toBe("https://example.test/from-file:v9");
+    } finally {
+      store.close();
+    }
+  });
+
+  // Sprint 023 ticket 002: joystick follows the exact relay/robot
+  // resolution pattern -- env var first, then a `.env` file -- but this
+  // ticket deliberately never sets `ROBOT_CONSOLE_JOYSTICK_FIRMWARE` in
+  // the repo's own `.env` (ticket 007 does that, once the live release
+  // publishes the asset names `releases.ts` requires). These cases only
+  // exercise the resolution mechanism with an injected `env`/`.env`
+  // fixture, never the real `.env`.
+  it("resolves the joystick kind from its own env var, writing settings, following the relay/robot pattern", () => {
+    const { store } = freshStore();
+    try {
+      const env = { [JOYSTICK_KEY]: "https://github.com/League-Microbit/Remote-Joystick-Student:v0.1.0" };
+      const result = importFirmwareConfig(store, { env, stateDir }, { findRepoRootEnvPath: NO_CHECKOUT_FOUND });
+
+      expect(result).toEqual({ relay: false, robot: false, joystick: true });
+      expect(store.getSetting(SETTINGS_KEY_BY_FIRMWARE.joystick)).toBe(
+        "https://github.com/League-Microbit/Remote-Joystick-Student:v0.1.0",
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  it("resolves the joystick kind from a state-dir .env file when its env var is absent", () => {
+    const { store } = freshStore();
+    try {
+      writeFileSync(path.join(stateDir, ".env"), `${JOYSTICK_KEY}=https://example.test/joystick:v4\n`);
+
+      const result = importFirmwareConfig(store, { env: {}, stateDir }, { findRepoRootEnvPath: NO_CHECKOUT_FOUND });
+
+      expect(result).toEqual({ relay: false, robot: false, joystick: true });
+      expect(store.getSetting(SETTINGS_KEY_BY_FIRMWARE.joystick)).toBe("https://example.test/joystick:v4");
     } finally {
       store.close();
     }

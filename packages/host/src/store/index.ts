@@ -73,6 +73,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { EventEmitter } from "node:events";
 import { deviceIdToName, nameToValue } from "@robot-console/protocol";
+import type { FirmwareKind } from "../wsMessages.js";
 import { openStoreDb, type StoreDbOptions } from "./db.js";
 import { clearDeadProcessState } from "./repair/clearDeadProcessState.js";
 import { mergeDuplicateDeviceRows } from "./repair/mergeDuplicateDeviceRows.js";
@@ -328,7 +329,11 @@ export interface AgentActionRow {
 }
 
 export interface SetFirmwareInput {
-  kind: "relay" | "robot";
+  // Sprint 023 ticket 002: import `FirmwareKind` (now "relay" | "robot" |
+  // "joystick") rather than restating the union a fifth place -- see
+  // this ticket's own note in the sprint architecture about the four
+  // call sites in this file that used to hardcode it.
+  kind: FirmwareKind;
   repo?: string | null;
   tag?: string | null;
   available?: boolean | null;
@@ -502,7 +507,7 @@ export interface ProjectionRelayLeaseRow {
 
 /** One `firmware` row, as {@link Store.projectionRows} needs it. */
 export interface ProjectionFirmwareRow {
-  readonly kind: "relay" | "robot";
+  readonly kind: FirmwareKind;
   readonly repo: string | null;
   readonly tag: string | null;
   readonly available: boolean | null;
@@ -1749,7 +1754,7 @@ export class Store {
    * implementation detail the UI never needs), so this is its own
    * narrow typed read, per "nothing outside `store/` issues SQL"
    * (architecture.md §3 rule 3). */
-  getFirmwareEtag(kind: "relay" | "robot"): string | undefined {
+  getFirmwareEtag(kind: FirmwareKind): string | undefined {
     const row = this.db.prepare("SELECT etag FROM firmware WHERE kind = ?").get(kind) as
       | { etag: string | null }
       | undefined;
@@ -1969,7 +1974,7 @@ export class Store {
     const firmwareRows = this.db
       .prepare("SELECT kind, repo, tag, available, reason, message, checked_at FROM firmware")
       .all() as Array<{
-      kind: "relay" | "robot";
+      kind: FirmwareKind;
       repo: string | null;
       tag: string | null;
       available: number | null;

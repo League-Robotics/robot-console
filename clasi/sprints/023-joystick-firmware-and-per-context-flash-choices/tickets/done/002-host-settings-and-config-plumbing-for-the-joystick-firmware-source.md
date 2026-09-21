@@ -1,11 +1,13 @@
 ---
-id: "002"
-title: "Host settings and config plumbing for the joystick firmware source"
-status: open
-use-cases: ["SUC-001"]
-depends-on: ["001"]
-github-issue: ""
-issue: ""
+id: '002'
+title: Host settings and config plumbing for the joystick firmware source
+status: done
+use-cases:
+- SUC-001
+depends-on:
+- '001'
+github-issue: ''
+issue: ''
 completes_issue: true
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
@@ -54,18 +56,18 @@ Files to change:
 
 ## Acceptance Criteria
 
-- [ ] `getFirmwareConfig(store)` returns a map with a `joystick` key
+- [x] `getFirmwareConfig(store)` returns a map with a `joystick` key
       (`undefined` when unset, matching the existing convention).
-- [ ] `SETTINGS_KEY_BY_FIRMWARE.joystick` and
+- [x] `SETTINGS_KEY_BY_FIRMWARE.joystick` and
       `ENV_VAR_BY_FIRMWARE.joystick`/`FIRMWARE_KINDS` (in
       `firmwareConfig.ts`) are both defined and consistent with each
       other.
-- [ ] All four `store/index.ts` type-union spots accept `"joystick"`.
-- [ ] The `firmware` table schema's DDL text is unchanged except for the
+- [x] All four `store/index.ts` type-union spots accept `"joystick"`.
+- [x] The `firmware` table schema's DDL text is unchanged except for the
       updated comment.
-- [ ] `ROBOT_CONSOLE_JOYSTICK_FIRMWARE` is deliberately **not** added to
+- [x] `ROBOT_CONSOLE_JOYSTICK_FIRMWARE` is deliberately **not** added to
       `.env` in this ticket.
-- [ ] `npx tsc --noEmit` is clean for `packages/host`.
+- [x] `npx tsc --noEmit` is clean for `packages/host`.
 
 ## Testing
 

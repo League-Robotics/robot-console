@@ -125,6 +125,13 @@ const DEFAULT_TAG = "latest";
 export const SETTINGS_KEY_BY_FIRMWARE: Record<FirmwareKind, string> = {
   relay: "firmware.relay.source",
   robot: "firmware.robot.source",
+  // Sprint 023 ticket 002: joystick is a third flashable firmware kind
+  // (`League-Microbit/Remote-Joystick-Student`). This ticket deliberately
+  // leaves `ROBOT_CONSOLE_JOYSTICK_FIRMWARE` unset in `.env` -- see
+  // `firmwareConfig.ts`'s `ENV_VAR_BY_FIRMWARE` doc comment and ticket
+  // 007 -- so `getFirmwareConfig` reports `undefined` here, same as an
+  // unset `relay`/`robot` does today.
+  joystick: "firmware.joystick.source",
 };
 
 /**
@@ -304,6 +311,7 @@ export function getFirmwareConfig(store: Store): FirmwareConfigMap {
   return {
     relay: parseConfiguredSetting(store, "relay"),
     robot: parseConfiguredSetting(store, "robot"),
+    joystick: parseConfiguredSetting(store, "joystick"),
   };
 }
 

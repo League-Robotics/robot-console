@@ -123,14 +123,21 @@ export function isCalibrationProgram(program: string | null): boolean {
   return program !== null && program.startsWith("calibration-");
 }
 
-/** Whether a link is eligible for the flash controls -- now a direct
- * read of the host-computed `SnapshotLink.capabilities.flash`
- * (`projection.ts`: true for any `usb` link, regardless of whether its
- * owning device has identified) rather than a UI-side `role === null`
- * guess. Renamed input only (`link`, not `device`) -- flashability is a
- * per-link capability under the new contract, since a device can have
- * several links (only its `usb` one is ever flashable) and an
- * unidentified board (no device at all) is still flashable. */
+/** Whether a link is eligible for the flash controls -- a direct read
+ * of the host-computed `SnapshotLink.capabilities.flash` rather than a
+ * UI-side guess. The rule lives in `projection.ts` and is deliberately
+ * not restated here beyond its shape: any `usb` link, plus any link
+ * whose DEVICE currently advertises `_mbflash._tcp`.
+ *
+ * Note the second half is about the device, not the link's transport
+ * (corrected 2026-09-21): a robot bridged by radio through an mbrelay
+ * is flashable when it advertises the service, because the flash dials
+ * that service directly and never crosses the link this console is
+ * talking over. An earlier version of this comment claimed "only its
+ * `usb` one is ever flashable", which was already untrue when written
+ * -- mbserial/wifi links could be flashed too -- and is now doubly so.
+ * Flashability remains per-link only because an unidentified board (no
+ * device at all) is still flashable over USB. */
 export function canBeFlashed(link: SnapshotLink): boolean {
   return link.capabilities.flash;
 }

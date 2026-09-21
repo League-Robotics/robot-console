@@ -498,7 +498,7 @@ describe("buildSnapshotFromRows: capabilities", () => {
     expect(snapshot.devices[0]?.links[0]?.capabilities.flash).toBe(false);
   });
 
-  it("a radio link on a device with a current _mbflash._tcp service: flash stays false (network flash never applies through a relay)", () => {
+  it("a radio link on a device with a current _mbflash._tcp service IS flashable -- the service is dialed directly, not through the relay", () => {
     const rows = emptyRows();
     const name = deviceIdToName(16);
     rows.devices = [
@@ -512,7 +512,38 @@ describe("buildSnapshotFromRows: capabilities", () => {
     rows.services = [{ instance: name, type: MBFLASH_SERVICE_TYPE, host: "x.local", port: 9000, txt: null }];
     const snapshot = buildSnapshotFromRows(rows, 1, 1);
     const radioDevice = snapshot.devices.find((d) => d.id === 16);
-    expect(radioDevice?.links[0]?.capabilities.flash).toBe(false);
+    // Reversed on 2026-09-21 (stakeholder: "if the device is connected
+    // to an MB relay, then we can flash to it, and we should allow
+    // that"). This case used to assert `false`, on the reasoning that
+    // "network flash never applies through a relay" -- which is true and
+    // is exactly why it does not matter: `resolveFlashTarget` builds the
+    // target from the SERVICE's own host/port ("x.local", 9000 here) and
+    // connects to that. The radio link carries none of the flash
+    // traffic. What the robot is reachable-for-commands over and what it
+    // is flashable over are two independent facts, and only the second
+    // one belongs in this capability.
+    expect(radioDevice?.links[0]?.capabilities.flash).toBe(true);
+  });
+
+  it("a radio link on a device with NO mbflash service is still not flashable", () => {
+    // The other half of the same rule, and the one that keeps this
+    // honest: dropping the transport gate must not invent a flash path
+    // for a radio-only robot that has no network presence at all. That
+    // is the common case on this bench -- a robot bridged through a
+    // relay precisely because it is not on the network.
+    const rows = emptyRows();
+    const name = deviceIdToName(18);
+    rows.devices = [
+      { id: 18, name, kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+      { id: 19, name: deviceIdToName(19), kind: "relay", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+    ];
+    rows.links = [
+      { id: "relay-link-2", deviceId: 19, transport: "usb", address: { path: "/dev/y" }, state: "connected", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
+      { id: "l2", deviceId: 18, transport: "radio", address: { relayLinkId: "relay-link-2", channel: 1, group: 1 }, state: "connectable", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
+    ];
+    rows.services = [];
+    const snapshot = buildSnapshotFromRows(rows, 1, 1);
+    expect(snapshot.devices.find((d) => d.id === 18)?.links[0]?.capabilities.flash).toBe(false);
   });
 
   it("an unassigned usb link (no device yet) is still open-able and flashable", () => {

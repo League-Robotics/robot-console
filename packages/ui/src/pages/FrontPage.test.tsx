@@ -982,6 +982,108 @@ describe("not seen recently (devices the host still knows about with zero curren
     expect(socket!.sent).toEqual([JSON.stringify({ type: "forget-device", deviceId: 9 })]);
   });
 
+  it("offers a Radio button beside Forget that tries the robot over a free bridge", () => {
+    // Stakeholder, 2026-09-21: "the radio button in Not seen recently is
+    // going to try to make radio contact with that robot, and if it
+    // succeeds, then it moves it up to the top."
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    const relay = device(7, {
+      name: "vitut",
+      kind: "relay",
+      role: "RADIOBRIDGE",
+      links: [link("usb-vitut", { state: "connectable", transport: "usb" })],
+    });
+    act(() => {
+      socket!.emitMessage(snapshot({ devices: [relay, device(9, { name: "nuvek", links: [] })] }));
+    });
+
+    const radio = el.querySelector<HTMLButtonElement>('[data-testid="not-seen-radio-9"]');
+    expect(radio).not.toBeNull();
+    expect(radio!.textContent).toBe("Radio");
+    act(() => {
+      radio!.click();
+    });
+
+    // Exactly the message the robot cards' own radio chip sends, so
+    // there is one way to open a radio session, not two.
+    expect(socket!.sent).toContain(JSON.stringify({ type: "session-open", relayLinkId: "usb-vitut", name: "nuvek" }));
+    expect(el.querySelector('[data-testid="not-seen-radio-9"]')!.textContent).toBe("Trying…");
+  });
+
+  it("says so, and sends nothing, when no radio bridge is free", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    // No relay in the snapshot at all -- nothing to allocate.
+    act(() => {
+      socket!.emitMessage(snapshot({ devices: [device(9, { name: "nuvek", links: [] })] }));
+    });
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="not-seen-radio-9"]')!.click();
+    });
+    expect(el.querySelector('[data-testid="not-seen-radio-problem-9"]')?.textContent).toBe("No radio bridge is free");
+    expect(socket!.sent).toEqual([]);
+    // Still offering to try, not stuck on "Trying…" for an attempt that
+    // never left the building.
+    expect(el.querySelector('[data-testid="not-seen-radio-9"]')!.textContent).toBe("Radio");
+  });
+
+  it("stops saying 'Trying…' when the bridge never answers", () => {
+    vi.useFakeTimers();
+    try {
+      let socket: FakeSocket | null = null;
+      const el = mount(
+        withRouter(
+          <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+            <FrontPage />
+          </WsProvider>,
+        ),
+      );
+      act(() => {
+        socket!.emitOpen();
+      });
+      const relay = device(7, {
+        name: "vitut",
+        kind: "relay",
+        role: "RADIOBRIDGE",
+        links: [link("usb-vitut", { state: "connectable", transport: "usb" })],
+      });
+      act(() => {
+        socket!.emitMessage(snapshot({ devices: [relay, device(9, { name: "nuvek", links: [] })] }));
+      });
+      act(() => {
+        el.querySelector<HTMLButtonElement>('[data-testid="not-seen-radio-9"]')!.click();
+      });
+      expect(el.querySelector('[data-testid="not-seen-radio-9"]')!.textContent).toBe("Trying…");
+
+      act(() => {
+        vi.advanceTimersByTime(61_000);
+      });
+      expect(el.querySelector('[data-testid="not-seen-radio-9"]')!.textContent).toBe("Radio");
+      expect(el.querySelector('[data-testid="not-seen-radio-problem-9"]')?.textContent).toBe("No answer over radio");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("FrontPage lists a device whose every link is stale under not-seen-recently, not as an available card", () => {
     let socket: FakeSocket | null = null;
     const el = mount(

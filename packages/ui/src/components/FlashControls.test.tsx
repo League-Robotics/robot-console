@@ -61,6 +61,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { FirmwareAvailability, FirmwareKind, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { UPLOAD_ID_BYTE_LENGTH } from "@robot-console/host/src/wsMessages.js";
 import { FlashControls, MAX_LOCAL_HEX_BYTES } from "./FlashControls";
+import { ALL_FLASHABLE_FIRMWARE } from "../deviceDisplay";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 import { withRouter } from "../testing/renderWithRouter";
@@ -135,13 +136,22 @@ function firmwareStatusFixture(
 
 function mountFlashControls(
   link: SnapshotLink,
-  options: { firmwareStatus?: Record<FirmwareKind, FirmwareAvailability>; initialEntries?: string[] } = {},
+  options: {
+    firmwareStatus?: Record<FirmwareKind, FirmwareAvailability>;
+    initialEntries?: string[];
+    allowedFirmware?: readonly FirmwareKind[];
+    allowLocalHex?: boolean;
+  } = {},
 ): { el: HTMLDivElement; socket: () => FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     withRouter(
       <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-        <FlashControls link={link} />
+        <FlashControls
+          link={link}
+          allowedFirmware={options.allowedFirmware ?? ALL_FLASHABLE_FIRMWARE}
+          allowLocalHex={options.allowLocalHex ?? true}
+        />
       </WsProvider>,
       { initialEntries: options.initialEntries ?? [`/d/${link.id}`] },
     ),
@@ -593,6 +603,85 @@ describe("FlashControls: flash-overlay attribution (sprint 019 ticket 006, SUC-0
       { firmwareStatus: firmwareStatusFixture() },
     );
     expect(el.querySelector('[data-testid="flash-agent-usb-SERIAL-UNRESPONSIVE"]')).toBeNull();
+  });
+});
+
+describe("FlashControls: allowedFirmware/allowLocalHex (sprint 023 ticket 004)", () => {
+  // The core mechanism this ticket adds: `FlashControls` renders exactly
+  // the `device-flash-control` blocks named in `allowedFirmware`, in
+  // that order, and nothing else -- this is what lets `AppHeader.tsx`
+  // narrow a robot's own device page to one button (ticket 006) while
+  // `FrontPage.tsx`/`UnknownDevicePage.tsx` stay permissive (ticket 005).
+  function controlKinds(el: HTMLDivElement): string[] {
+    return Array.from(el.querySelectorAll(".device-flash-control button")).map((b) => b.textContent ?? "");
+  }
+
+  it("renders exactly one device-flash-control block for allowedFirmware=['robot']", () => {
+    const { el } = mountFlashControls(baseLink(), {
+      firmwareStatus: firmwareStatusFixture(),
+      allowedFirmware: ["robot"],
+    });
+    expect(controlKinds(el)).toEqual(["Flash robot firmware"]);
+    expect(el.textContent).not.toContain("Flash relay firmware");
+    expect(el.textContent).not.toContain("Flash joystick firmware");
+  });
+
+  it("renders exactly one device-flash-control block for allowedFirmware=['relay']", () => {
+    const { el } = mountFlashControls(baseLink(), {
+      firmwareStatus: firmwareStatusFixture(),
+      allowedFirmware: ["relay"],
+    });
+    expect(controlKinds(el)).toEqual(["Flash relay firmware"]);
+    expect(el.textContent).not.toContain("Flash robot firmware");
+    expect(el.textContent).not.toContain("Flash joystick firmware");
+  });
+
+  it("renders all three blocks, in order, for allowedFirmware=['robot','relay','joystick']", () => {
+    const { el } = mountFlashControls(baseLink(), {
+      firmwareStatus: firmwareStatusFixture(),
+      allowedFirmware: ["robot", "relay", "joystick"],
+    });
+    expect(controlKinds(el)).toEqual(["Flash robot firmware", "Flash relay firmware", "Flash joystick firmware"]);
+  });
+
+  it("renders no device-flash-control blocks at all for an empty allowedFirmware", () => {
+    const { el } = mountFlashControls(baseLink(), {
+      firmwareStatus: firmwareStatusFixture(),
+      allowedFirmware: [],
+    });
+    expect(el.querySelectorAll(".device-flash-control")).toHaveLength(0);
+  });
+
+  it("renders the joystick button's disabled reason/source identically to relay/robot when it is included", () => {
+    const { el } = mountFlashControls(baseLink(), {
+      firmwareStatus: firmwareStatusFixture({
+        joystick: {
+          configured: true,
+          repoUrl: "https://github.com/League-Microbit/Remote-Joystick-Student",
+          tag: "v0.20260921.3",
+          available: true,
+          checkedAt: 1000,
+        },
+      }),
+      allowedFirmware: ["joystick"],
+    });
+    const source = el.querySelector('[data-testid="flash-source-joystick"]');
+    expect(source).not.toBeNull();
+    expect(source!.textContent).toContain("Remote-Joystick-Student");
+    expect(source!.textContent).toContain("v0.20260921.3");
+  });
+
+  it("renders the 'Flash a hex file from disk' section when allowLocalHex is true", () => {
+    const { el } = mountFlashControls(baseLink(), { firmwareStatus: firmwareStatusFixture(), allowLocalHex: true });
+    expect(el.textContent).toContain("Flash a hex file from disk");
+    expect(el.querySelector('[data-testid="local-hex-file-input"]')).not.toBeNull();
+  });
+
+  it("omits the 'Flash a hex file from disk' section entirely (not just visually hidden) when allowLocalHex is false", () => {
+    const { el } = mountFlashControls(baseLink(), { firmwareStatus: firmwareStatusFixture(), allowLocalHex: false });
+    expect(el.textContent).not.toContain("Flash a hex file from disk");
+    expect(el.querySelector('[data-testid="local-hex-file-input"]')).toBeNull();
+    expect(el.querySelector(".device-flash-local")).toBeNull();
   });
 });
 

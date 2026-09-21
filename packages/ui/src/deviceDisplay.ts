@@ -314,6 +314,27 @@ export const FIRMWARE_LABEL: Record<FirmwareKind, string> = {
   joystick: "joystick",
 };
 
+/** The full permissive firmware option set -- every release kind a flash
+ * dialog can ever offer, in the display order the front page and
+ * not-yet-identified device page render buttons in (sprint 023 ticket
+ * 004). Order is `relay, robot, joystick` -- this is what SUC-001's own
+ * Acceptance Criteria and ticket 005's Acceptance Criteria both pin
+ * explicitly ("in this order: relay, robot, joystick, local hex"),
+ * which takes precedence over sprint.md's own Step 3/Design Rationale
+ * prose (which happens to list the array as `["robot", "relay",
+ * "joystick"]` in passing) -- the Acceptance Criteria are what the
+ * component tests actually check, and preserving today's existing
+ * relay-then-robot order (unchanged since before this sprint) with
+ * joystick appended is also the smaller, safer diff. This is the ONE
+ * place the set is spelled out: `FrontPage.tsx` (both its
+ * identified-device card and its unassigned-board card),
+ * `UnknownDevicePage.tsx`, and `AppHeader.tsx`'s no-device-yet fallback
+ * all import this rather than each re-typing the array -- so a future
+ * fourth firmware kind is added in exactly one place and every
+ * permissive call site picks it up automatically, instead of some of
+ * them drifting out of sync with the others. */
+export const ALL_FLASHABLE_FIRMWARE: readonly FirmwareKind[] = ["relay", "robot", "joystick"];
+
 /** Student-facing label for one stage of an in-flight flash. */
 export const PHASE_LABEL: Record<FlashPhase, string> = {
   fetching: "downloading",

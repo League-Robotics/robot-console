@@ -88,6 +88,16 @@
  * owning `SnapshotDevice` does, and an `unassigned` link has no device
  * at all), so the caller (which already knows whether it has a device
  * to name) supplies it directly rather than this component guessing one.
+ *
+ * ## Sprint 023 ticket 004: `allowedFirmware`/`allowLocalHex` pass-through
+ *
+ * This component owns no opinion of its own about which firmware
+ * buttons or local-hex upload a call site should offer -- that decision
+ * belongs entirely to each call site (`AppHeader.tsx` narrows to the
+ * routed device's own kind; `FrontPage.tsx`/`UnknownDevicePage.tsx` stay
+ * permissive; see `deviceDisplay.ts`'s `ALL_FLASHABLE_FIRMWARE`). Both
+ * props are required with no default and are forwarded verbatim to
+ * `FlashControls`, which is the one place that actually renders them.
  */
 import {
   useCallback,
@@ -99,7 +109,7 @@ import {
   type ReactNode,
   type SyntheticEvent,
 } from "react";
-import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import type { FirmwareKind, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useFlashProgress, useSendable } from "../ws/WsProvider";
 import { canBeFlashed } from "../deviceDisplay";
 import { FlashControls } from "./FlashControls";
@@ -112,6 +122,15 @@ export interface FlashDialogProps {
    * device's name, or the link's own label when there is no device yet
    * (an `unassigned` board). */
   name: string;
+  /** Forwarded straight through to `FlashControls` -- see that
+   * component's own doc comment for why this is required with no
+   * default (sprint 023 ticket 004). This component adds no logic of
+   * its own around it; its own `canBeFlashed`/`forceShow` trigger-gating
+   * is unrelated and unaffected. */
+  allowedFirmware: readonly FirmwareKind[];
+  /** Forwarded straight through to `FlashControls` -- see that
+   * component's own doc comment. Also required, no default. */
+  allowLocalHex: boolean;
   /** Bypass the `canBeFlashed` gate on the trigger button and render it
    * regardless of `link.capabilities.flash` -- see this module's doc
    * comment. Default `false`; only `AppHeader` passes `true`, for an
@@ -158,6 +177,8 @@ function focusableElements(container: HTMLElement): HTMLElement[] {
 export function FlashDialog({
   link,
   name,
+  allowedFirmware,
+  allowLocalHex,
   forceShow = false,
   triggerLabel = "Flash",
   triggerClassName = "device-button",
@@ -310,7 +331,7 @@ export function FlashDialog({
               Reflashing "{deviceLabel}" will interrupt whatever it's currently running.
             </p>
           )}
-          <FlashControls link={link} />
+          <FlashControls link={link} allowedFirmware={allowedFirmware} allowLocalHex={allowLocalHex} />
         </div>
       </Modal>
     </>

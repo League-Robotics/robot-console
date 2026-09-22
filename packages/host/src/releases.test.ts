@@ -373,6 +373,37 @@ describe("fetchAndVerifyHex", () => {
     }
   });
 
+  it("downloads and returns the hex unverified when the release publishes no manifest (2026-09-21 joystick case)", async () => {
+    // `Remote-Joystick-Student`'s live release (v0.20260921.3, reconfirmed
+    // 2026-09-22 via `gh api`) has no `.hex.txt` beside its hex --
+    // `resolveRelease` therefore returns a `ResolvedRelease` with no
+    // `manifestUrl` key at all (see the "asset naming widened" describe
+    // block above). This is the one real safety reduction this sprint
+    // makes: a hex with no manifest is downloaded and returned as-is,
+    // with no sha256 check. That must not rest on the module doc comment
+    // alone -- this pins it as behavior.
+    const hexBytes = relayHexFixtureBytes();
+    const resolvedWithoutManifest: ResolvedRelease = {
+      tag: RELAY_TAG,
+      hexUrl: HEX_DOWNLOAD_URL,
+    };
+
+    const fetchFn = vi.fn<FetchFn>(async (url) => {
+      if (url === HEX_DOWNLOAD_URL) return hexAssetResponse(hexBytes);
+      throw new Error(`unexpected url: ${url} -- no manifest URL exists to fetch when resolved.manifestUrl is absent`);
+    });
+
+    const result = await fetchAndVerifyHex(resolvedWithoutManifest, { fetch: fetchFn });
+
+    expect("hex" in result).toBe(true);
+    if ("hex" in result) {
+      expect(result.hex.equals(hexBytes)).toBe(true);
+    }
+    // Exactly one HTTP call -- the hex itself. No manifest fetch, no
+    // checksum comparison, because there is nothing to check against.
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses the hex on a sha256 mismatch, and never returns it as valid", async () => {
     const hexBytes = relayHexFixtureBytes();
     const manifestText = `sha256: ${"0".repeat(64)}\n`;

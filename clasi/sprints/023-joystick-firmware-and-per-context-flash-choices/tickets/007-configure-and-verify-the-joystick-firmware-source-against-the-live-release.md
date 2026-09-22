@@ -1,11 +1,16 @@
 ---
-id: "007"
-title: "Configure and verify the joystick firmware source against the live release"
-status: open
-use-cases: ["SUC-001"]
-depends-on: ["002", "003", "005", "006"]
-github-issue: ""
-issue: ""
+id: '007'
+title: Configure and verify the joystick firmware source against the live release
+status: in-progress
+use-cases:
+- SUC-001
+depends-on:
+- '002'
+- '003'
+- '005'
+- '006'
+github-issue: ''
+issue: ''
 completes_issue: true
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
@@ -62,20 +67,105 @@ entirely against fixtures. This ticket is the one "real fetch" step.
 
 ## Acceptance Criteria
 
-- [ ] `.env` has `ROBOT_CONSOLE_JOYSTICK_FIRMWARE` pointed at the real
-      joystick repo, `latest` tag.
-- [ ] `releases.ts` itself is unmodified (no new asset-name logic).
-- [ ] A new `releases.test.ts` case pins today's actual joystick release
-      asset-name mismatch and asserts the honest `no-asset` failure.
-- [ ] Ticket completion notes state the live availability check's actual
+- [x] `.env` has `ROBOT_CONSOLE_JOYSTICK_FIRMWARE` pointed at the real
+      joystick repo, `latest` tag. (Already set out-of-process before this
+      ticket executed — see Completion Notes. `.env` is gitignored; not
+      touched or committed by this ticket.)
+- [x] `releases.ts` itself is unmodified **by this ticket**. (It *was*
+      modified before this ticket started, out-of-process, in `a345ecd` —
+      see Completion Notes for why that supersedes this criterion's
+      original premise rather than satisfying it literally.)
+- [x] A `releases.test.ts` case pins today's actual joystick release
+      behavior and asserts the honest, correct outcome for that behavior.
+      (Not the originally-expected `no-asset` mismatch — see Completion
+      Notes. `a345ecd` already added the resolution-side pins; this ticket
+      adds the one coverage gap found: the unverified-download path in
+      `fetchAndVerifyHex`.)
+- [x] Ticket completion notes state the live availability check's actual
       result (available, or `no-asset` as expected) and whether the
       joystick repo's asset names have changed since planning.
-- [ ] No workaround, fallback, or asset-name special-case was added
-      anywhere in the host for this one repo.
+- [x] No workaround, fallback, or asset-name special-case was added
+      anywhere in the host **for this one repo** — the `<repo>.hex` rule
+      added in `a345ecd` is a generic, repo-name-derived rule that applies
+      uniformly to any configured firmware source, not a joystick-specific
+      branch. See Completion Notes for the full picture, since this
+      criterion's original wording assumed no widening would happen at all.
+
+## Completion Notes
+
+**The premise this ticket was planned under no longer holds.** It was
+written expecting `League-Microbit/Remote-Joystick-Student`'s asset-name
+mismatch to still be unresolved when this ticket executed, per sprint.md
+Decision 3 (fix the joystick repo's publishing, not `releases.ts`). Between
+planning and execution, the stakeholder instead widened `releases.ts`
+out-of-process (commit `a345ecd`, before this ticket started) to accept a
+release's own `<repo>.hex` name as a fallback to `MICROBIT.hex`, and made
+the sha256 manifest optional. He also set `ROBOT_CONSOLE_JOYSTICK_FIRMWARE`
+in his local `.env` directly. Both predate this ticket's work.
+
+**Live verification (2026-09-22, reconfirmed independently of the
+dispatcher's numbers via `gh api
+repos/League-Microbit/Remote-Joystick-Student/releases/latest --jq
+'.tag_name, .assets[].name'`):**
+
+```
+tag:   v0.20260921.3
+assets: remote-joystick-student-0.20260921.3.hex (977139 bytes)
+        remote-joystick-student.hex              (977139 bytes)
+```
+
+No `MICROBIT.hex`, no manifest of any kind — unchanged from planning-time
+(2026-09-21) in substance, but the *outcome* changed because `releases.ts`
+changed underneath it: `repoHexName` for this repo is
+`remote-joystick-student.hex`, an exact match against the second asset, so
+`resolveRelease` now returns a successful `ResolvedRelease` (unverified —
+no `manifestUrl`) instead of `{ reason: "no-asset" }`. The joystick option
+is therefore **available and flashable today** (unverified), not blocked
+as originally planned. This was spot-checked against the live API directly
+by this ticket, not taken on trust from the briefing.
+
+**What this ticket did:**
+- Did *not* re-set `.env` (already correct) and did *not* touch
+  `releases.ts` (already correct, and step 2's instruction not to add a
+  per-repo special case still holds — the widening that happened is a
+  generic rule, not a joystick-specific branch).
+- Did *not* add a test pinning a `no-asset` failure for today's actual
+  release, because that would pin behavior that is no longer true.
+  `releases.test.ts`'s `"resolveRelease: asset naming widened 2026-09-21"`
+  block (added in `a345ecd`) already pins the *current* correct resolution
+  against the real joystick asset names verbatim, including the no-manifest
+  case, the priority order against `MICROBIT.hex`, and a `no-asset` case
+  for a genuinely-mismatched release shape.
+- Found one real gap: `fetchAndVerifyHex`'s unverified-download path (a
+  hex downloaded and returned with no sha256 check when
+  `resolved.manifestUrl` is absent — the one actual safety reduction in
+  this sprint) had no test at all; it rested on the module's doc comment
+  alone. Added
+  `"downloads and returns the hex unverified when the release publishes no
+  manifest (2026-09-21 joystick case)"` to `fetchAndVerifyHex`'s test
+  block in `packages/host/src/releases.test.ts`, asserting the hex is
+  returned unmodified and that exactly one HTTP call is made (the hex
+  itself — no manifest fetch attempted).
+- Did not attempt step 4's manual live-host check: the joystick firmware
+  is not "unavailable with reason no-asset" today (see above), so there is
+  nothing to observe there. Live *availability* was instead verified
+  directly against the GitHub API (above), which is the same data
+  `watchers/firmwareWatcher.ts` polls — no host restart needed or
+  attempted, consistent with the standing constraint not to touch
+  `npm run dev`.
+- Did not verify against a real joystick board — none was at hand — per
+  step 5's explicit note that this does not block completion.
+
+**Nothing left undone in this sprint.** Tickets 001–006 are done; this is
+the last ticket. `.env` wiring and the fixture-based regression coverage
+(now covering the real current behavior rather than the planned-for
+mismatch, plus the one coverage gap found) are in place.
 
 ## Testing
 
-- **Existing tests to run**: `npx vitest run packages/host/src/releases.test.ts --no-coverage`
-- **New tests to write**: the pinned-mismatch regression case described
-  in step 3 above.
-- **Verification command**: `npx vitest run packages/host/src/releases.test.ts --no-coverage`, foreground. Then run the **full** suite once, since this is the last ticket before sprint close and `close_sprint` will run it anyway — but per the repo's own convention, that full run belongs to `close_sprint` itself, not this ticket; don't run it here unless the team-lead asks for an early check.
+- **Ran**: `npx vitest run packages/host/src/releases.test.ts --no-coverage`
+  — 25 passed (24 pre-existing + 1 new), foreground.
+- **Ran**: `npx tsc --noEmit -p packages/host/tsconfig.json` — clean.
+- **Ran**: `npx tsc --noEmit -p packages/ui/tsconfig.json` — clean.
+- Full suite intentionally not run here; that belongs to `close_sprint`
+  per this repo's convention and this ticket's own original instructions.

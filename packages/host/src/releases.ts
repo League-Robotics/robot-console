@@ -112,7 +112,11 @@ export interface ReleasesOptions {
 export interface ResolvedRelease {
   tag: string;
   hexUrl: string;
-  manifestUrl: string;
+  /** The `<hex>.txt` sha256 manifest beside the hex, when the release
+   * publishes one. OPTIONAL as of 2026-09-21: see `resolveRelease`'s own
+   * doc comment -- a release that ships a hex and no manifest is
+   * flashable, unverified, rather than unflashable. */
+  manifestUrl?: string;
 }
 
 /**
@@ -276,11 +280,37 @@ export async function resolveRelease(
     return { reason: "network", message: `malformed GitHub release response from ${url}` };
   }
 
-  const hexAsset = release.assets.find((asset) => asset.name.toLowerCase() === HEX_ASSET_NAME);
-  const manifestAsset = release.assets.find(
-    (asset) => asset.name.toLowerCase() === MANIFEST_ASSET_NAME,
-  );
-  if (!hexAsset || !manifestAsset) {
+  // Asset naming, widened 2026-09-21.
+  //
+  // This used to demand the exact pair `MICROBIT.hex` + `MICROBIT.hex.txt`
+  // and reject everything else. `nezha-robot-template` and
+  // `microbit-radio-relay` both publish that pair, so the rule was
+  // invisible until the stakeholder pointed this console at
+  // `League-Microbit/Remote-Joystick-Student`, which publishes
+  // `remote-joystick-student.hex` (plus a versioned copy) and no
+  // manifest at all. He supplied the repo URL and expected it to work;
+  // being told "not set up for this classroom yet" because of a
+  // filename is the console being precious about its own convention.
+  //
+  // Two names are accepted now, in priority order, and NOTHING is
+  // guessed: `MICROBIT.hex` first (the existing convention, so the two
+  // repos that follow it are unaffected), then `<repo>.hex` -- the
+  // repository's own name, lowercased. That second rule is exact, not a
+  // heuristic: it is derived from the URL already being fetched, so a
+  // release carrying several `.hex` files (this one carries a versioned
+  // one too) resolves deterministically to the stable, unversioned
+  // artifact rather than to whichever happened to sort first.
+  const repoHexName = `${repo.toLowerCase()}.hex`;
+  const findAsset = (name: string) => release.assets.find((asset) => asset.name.toLowerCase() === name);
+  const hexAsset = findAsset(HEX_ASSET_NAME) ?? findAsset(repoHexName);
+  // The manifest is looked for beside whichever hex was chosen, and is
+  // now OPTIONAL. It carries the sha256 the download is checked
+  // against, so a release without one is flashed unverified -- a real
+  // reduction in safety, and the honest trade against refusing to flash
+  // a hex the maintainer clearly published on purpose. `downloadRelease`
+  // below skips the checksum step when it is absent and says so.
+  const manifestAsset = hexAsset === undefined ? undefined : findAsset(`${hexAsset.name.toLowerCase()}.txt`);
+  if (!hexAsset) {
     // Sprint 017 ticket 002 / issue
     // `host-rejects-robot-template-release-asset-naming.md` step 3: name
     // the asset(s) actually found, not just which required name is
@@ -291,11 +321,15 @@ export async function resolveRelease(
     const foundText = foundNames.length > 0 ? `has ${foundNames.join(", ")}` : "has no assets";
     return {
       reason: "no-asset",
-      message: `release ${release.tagName} ${foundText}; expected "MICROBIT.hex" and "MICROBIT.hex.txt"`,
+      message: `release ${release.tagName} ${foundText}; expected "MICROBIT.hex" or "${repoHexName}"`,
     };
   }
 
-  return { tag: release.tagName, hexUrl: hexAsset.downloadUrl, manifestUrl: manifestAsset.downloadUrl };
+  return {
+    tag: release.tagName,
+    hexUrl: hexAsset.downloadUrl,
+    ...(manifestAsset !== undefined ? { manifestUrl: manifestAsset.downloadUrl } : {}),
+  };
 }
 
 /**
@@ -314,12 +348,24 @@ function extractManifestSha256(manifestText: string): string | undefined {
 }
 
 /**
- * Download a resolved release's `MICROBIT.hex` and `MICROBIT.hex.txt`,
- * and verify the downloaded hex's sha256 against the manifest's
- * declared value before ever returning it. A mismatch -- or any
- * download/parse failure along the way -- comes back as `{ error }`;
+ * Download a resolved release's hex and, when the release published one,
+ * its sha256 manifest -- verifying the downloaded bytes against the
+ * manifest's declared value before ever returning them. A mismatch, or
+ * any download/parse failure along the way, comes back as `{ error }`;
  * the hex is never returned as if it were valid in that case. Never
  * throws.
+ *
+ * ## Unverified downloads (2026-09-21)
+ *
+ * `resolved.manifestUrl` is optional. A release that publishes a hex and
+ * no `<hex>.txt` beside it is downloaded and returned WITHOUT a checksum
+ * check -- there is nothing to check against. That is a genuine
+ * reduction in safety and is not hidden: `resolveRelease`'s own comment
+ * records why the alternative (refusing to flash a hex a maintainer
+ * deliberately published, because of a missing sidecar file) was judged
+ * worse. Both `nezha-robot-template` and `microbit-radio-relay` publish
+ * manifests and are unaffected; `Remote-Joystick-Student` currently does
+ * not, and adding one there restores verification with no change here.
  */
 export async function fetchAndVerifyHex(
   resolved: ResolvedRelease,
@@ -337,14 +383,23 @@ export async function fetchAndVerifyHex(
     return { error: `failed to download ${resolved.hexUrl}: HTTP ${hexResponse.status}` };
   }
 
-  let manifestResponse: ReleasesFetchResponse;
-  try {
-    manifestResponse = await fetchFn(resolved.manifestUrl);
-  } catch (error) {
-    return { error: `failed to download ${resolved.manifestUrl}: ${errorMessage(error)}` };
-  }
-  if (!manifestResponse.ok) {
-    return { error: `failed to download ${resolved.manifestUrl}: HTTP ${manifestResponse.status}` };
+  // No manifest published beside the hex (2026-09-21): download it and
+  // skip the checksum. The alternative -- refusing a hex a maintainer
+  // deliberately published because no `.txt` sits next to it -- is what
+  // made a correctly-configured joystick firmware read as "not set up
+  // for this classroom yet". A release WITH a manifest is still fully
+  // verified below; nothing about that path is relaxed.
+  const manifestUrl = resolved.manifestUrl;
+  let manifestResponse: ReleasesFetchResponse | undefined;
+  if (manifestUrl !== undefined) {
+    try {
+      manifestResponse = await fetchFn(manifestUrl);
+    } catch (error) {
+      return { error: `failed to download ${manifestUrl}: ${errorMessage(error)}` };
+    }
+    if (!manifestResponse.ok) {
+      return { error: `failed to download ${manifestUrl}: HTTP ${manifestResponse.status}` };
+    }
   }
 
   let hexBytes: Buffer;
@@ -354,23 +409,25 @@ export async function fetchAndVerifyHex(
     return { error: `could not read downloaded hex bytes: ${errorMessage(error)}` };
   }
 
-  let manifestText: string;
-  try {
-    manifestText = await manifestResponse.text();
-  } catch (error) {
-    return { error: `could not read manifest text: ${errorMessage(error)}` };
-  }
+  if (manifestResponse !== undefined && manifestUrl !== undefined) {
+    let manifestText: string;
+    try {
+      manifestText = await manifestResponse.text();
+    } catch (error) {
+      return { error: `could not read manifest text: ${errorMessage(error)}` };
+    }
 
-  const expectedSha256 = extractManifestSha256(manifestText);
-  if (!expectedSha256) {
-    return { error: `manifest at ${resolved.manifestUrl} did not contain a recognizable sha256 line` };
-  }
+    const expectedSha256 = extractManifestSha256(manifestText);
+    if (!expectedSha256) {
+      return { error: `manifest at ${manifestUrl} did not contain a recognizable sha256 line` };
+    }
 
-  const actualSha256 = createHash("sha256").update(hexBytes).digest("hex");
-  if (actualSha256 !== expectedSha256) {
-    return {
-      error: `sha256 mismatch for ${resolved.hexUrl}: manifest says ${expectedSha256}, downloaded bytes hash to ${actualSha256}`,
-    };
+    const actualSha256 = createHash("sha256").update(hexBytes).digest("hex");
+    if (actualSha256 !== expectedSha256) {
+      return {
+        error: `sha256 mismatch for ${resolved.hexUrl}: manifest says ${expectedSha256}, downloaded bytes hash to ${actualSha256}`,
+      };
+    }
   }
 
   return { hex: hexBytes };

@@ -71,7 +71,7 @@ import type { BannerDialect, ParsedBanner } from "./banner.js";
  * student one) -- only {@link refineForCalibration}, applied after a
  * matching `ID` reply, ever narrows a `"robot"` classification to
  * `"calibration"`. */
-export type DeviceType = "unknown" | "relay" | "robot" | "calibration";
+export type DeviceType = "unknown" | "relay" | "robot" | "joystick" | "calibration";
 
 /** Which signal (if any) produced a {@link DeviceClassification}'s
  * `type`, for diagnostics -- never branched on by the UI. `"none"`: no
@@ -125,6 +125,21 @@ const RELAY_ROLES = new Set(["RADIORELAY", "RADIOBRIDGE"]);
  * doc comment. */
 const ROBOT_ROLES = new Set(["NEZHA2"]);
 
+/** Role tokens that classify as `"joystick"` -- a micro:bit running
+ * `League-Microbit/Remote-Joystick-Student`, which drives a robot over
+ * radio and is not itself driveable.
+ *
+ * Agreed with that repo's own session on 2026-09-21, after the
+ * stakeholder told the two of us to settle the announcement between
+ * ourselves. The banner it emits is
+ *
+ *   DEVICE:JOYSTICK:joystick:gopiv:2175407711
+ *
+ * with the serial in DECIMAL -- deliberately matching this parser's
+ * existing `DEFAULT_SERIAL_RADIX`, so no radix registration was needed
+ * and the change here stays purely additive. */
+const JOYSTICK_ROLES = new Set(["JOYSTICK"]);
+
 /**
  * Classify a parsed banner (or its absence) into a {@link
  * DeviceClassification}, per the module doc comment's precedence rule.
@@ -158,6 +173,18 @@ export function classifyBanner(banner: ParsedBanner | null): DeviceClassificatio
     };
   }
 
+  if (commonName === "joystick") {
+    return {
+      type: "joystick",
+      role: banner.role,
+      commonName: banner.commonName,
+      dialect: banner.dialect,
+      evidence: "common-name",
+      program: null,
+      version: null,
+    };
+  }
+
   if (RELAY_ROLES.has(banner.role)) {
     return {
       type: "relay",
@@ -172,6 +199,18 @@ export function classifyBanner(banner: ParsedBanner | null): DeviceClassificatio
   if (ROBOT_ROLES.has(banner.role)) {
     return {
       type: "robot",
+      role: banner.role,
+      commonName: banner.commonName,
+      dialect: banner.dialect,
+      evidence: "role",
+      program: null,
+      version: null,
+    };
+  }
+
+  if (JOYSTICK_ROLES.has(banner.role)) {
+    return {
+      type: "joystick",
       role: banner.role,
       commonName: banner.commonName,
       dialect: banner.dialect,

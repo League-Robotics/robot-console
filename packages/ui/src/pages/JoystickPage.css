@@ -1,0 +1,26 @@
+/* JoystickPage.css -- see JoystickPage.tsx's own doc comment for why
+   this page is deliberately sparse. Sized to read as a short statement
+   of fact rather than a dashboard with nothing on it. */
+.joystick-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 1rem 0 0;
+}
+
+.joystick-page-name {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.joystick-page-role {
+  margin: 0;
+  color: var(--rc-text-muted);
+}
+
+.joystick-page-note {
+  margin: 0;
+  max-width: 44rem;
+  color: var(--rc-text-muted);
+  line-height: 1.5;
+}

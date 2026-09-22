@@ -164,6 +164,7 @@ import { useParams } from "react-router";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useDeviceForLink, useHasSnapshot, useLink } from "../ws/WsProvider";
 import { UnknownDevicePage } from "./UnknownDevicePage";
+import { JoystickPage } from "./JoystickPage";
 import { RelayPage } from "./RelayPage";
 import { RobotPage } from "./RobotPage";
 import { ConsoleDock } from "../components/console-dock/ConsoleDock";
@@ -256,11 +257,20 @@ export function DevicePage() {
           {consoleDock}
         </div>
       );
+    case "joystick":
+      return (
+        <div className="device-page-shell">
+          <JoystickPage device={device} link={link} onActiveTargetChange={handleActiveTargetChange} />
+          {consoleDock}
+        </div>
+      );
     default: {
-      // `SnapshotDevice.kind` is a closed `"robot" | "relay"` union today
-      // (wsMessages.ts) -- this arm exists only so a future third kind
-      // fails loudly here (a tsc error on the `never` assignment) rather
-      // than silently falling through to nothing rendered.
+      // `SnapshotDevice.kind` is `"robot" | "relay" | "joystick"` -- this
+      // arm exists only so a future FOURTH kind fails loudly here (a tsc
+      // error on the `never` assignment) rather than silently falling
+      // through to nothing rendered. It did its job on 2026-09-21: adding
+      // "joystick" to the union failed the build right here, which is
+      // exactly the point of keeping it.
       const exhaustive: never = device.kind;
       throw new Error(`DevicePage: unrecognized device kind ${String(exhaustive)}`);
     }

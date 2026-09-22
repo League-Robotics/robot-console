@@ -475,7 +475,7 @@ export interface SnapshotDevice {
   id: number;
   /** `devices.name` -- `deviceIdToName(id)`. */
   name: string;
-  kind: "robot" | "relay";
+  kind: "robot" | "relay" | "joystick";
   role: string | null;
   /** Banner `commonName` (`packages/protocol/src/banner.ts`'s
    * `ParsedBanner.commonName`, e.g. `"robot"`) -- `null` until this

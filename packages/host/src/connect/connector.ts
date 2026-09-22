@@ -1177,7 +1177,14 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
       const classification = classifyBanner(banner);
       const deviceId = banner.serial;
       const name = deviceIdToName(deviceId);
-      const kind: DeviceKind = classification.type === "relay" ? "relay" : "robot";
+      // `classification.type` also carries "calibration" and "unknown",
+      // neither of which is a device KIND -- a calibration build is a
+      // robot running a particular program, and an unknown banner is
+      // still most usefully treated as a robot until something says
+      // otherwise. So only the two types that name a real kind are
+      // mapped, and everything else stays "robot" as before.
+      const kind: DeviceKind =
+        classification.type === "relay" ? "relay" : classification.type === "joystick" ? "joystick" : "robot";
       const usbSerial = link.transport === "usb" ? usbSerialFromLinkId(link.id) : undefined;
 
       store.upsertDevice({

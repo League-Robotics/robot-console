@@ -958,6 +958,40 @@ describe("not seen recently (devices the host still knows about with zero curren
     expect(card?.querySelector("a")).toBeNull();
   });
 
+  it("puts a joystick in its own Joysticks section, not under Robots", () => {
+    // Stakeholder, 2026-09-21: "There should be a joystick section. It
+    // should go into joysticks."
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, { name: "gopiv", kind: "joystick", role: "JOYSTICK", commonName: "joystick" }),
+            device(2, { name: "tovez", kind: "robot", role: "NEZHA2" }),
+          ]}
+          unassigned={[]}
+          notSeenRecently={[]}
+        />,
+      ),
+    );
+    const joysticks = el.querySelector('[data-testid="devices-group-joysticks"]');
+    const robots = el.querySelector('[data-testid="devices-group-robots"]');
+    expect(joysticks).not.toBeNull();
+    expect(joysticks!.textContent).toContain("gopiv");
+    // The bug this guards: `robots` used to be "not a relay", which
+    // would have swept a joystick into the Robots list under a heading
+    // that is wrong about what it is.
+    expect(robots!.textContent).not.toContain("gopiv");
+    expect(robots!.textContent).toContain("tovez");
+  });
+
+  it("renders no Joysticks section when there are none", () => {
+    const el = mount(
+      withRouter(<DevicesList status="open" devices={[device(1, { kind: "robot" })]} unassigned={[]} notSeenRecently={[]} />),
+    );
+    expect(el.querySelector('[data-testid="devices-group-joysticks"]')).toBeNull();
+  });
+
   it("renders no not-seen-recently section when the list is empty", () => {
     const el = mount(withRouter(<DevicesList status="open" devices={[device(1)]} unassigned={[]} notSeenRecently={[]} />));
     expect(el.querySelector(".remembered-robots")).toBeNull();

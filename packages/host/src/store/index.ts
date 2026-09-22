@@ -141,7 +141,12 @@ export class DeviceNameMismatchError extends Error {
   }
 }
 
-export type DeviceKind = "robot" | "relay";
+/** 2026-09-21: `joystick` joins robot/relay. A joystick is a micro:bit
+ * running `Remote-Joystick-Student` -- it drives a robot over radio and
+ * is not itself driveable, so it is a distinct kind rather than a robot
+ * with an odd role. See `protocol/src/deviceType.ts`'s `JOYSTICK_ROLES`
+ * for the banner it announces. */
+export type DeviceKind = "robot" | "relay" | "joystick";
 export type RadioSource = "override" | "registry" | null;
 export type Transport = "usb" | "wifi" | "radio" | "mbrelay" | "mbserial";
 export type LinkState =

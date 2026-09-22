@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { classifyBanner, parseIdReply, refineForCalibration } from "./deviceType.js";
 import type { DeviceClassification } from "./deviceType.js";
 import type { ParsedBanner } from "./banner.js";
+import { parseBanner } from "./banner.js";
 
 function banner(overrides: Partial<ParsedBanner> = {}): ParsedBanner {
   return {
@@ -192,5 +193,52 @@ describe("refineForCalibration", () => {
       name: "gopiv",
     });
     expect(relay.type).toBe("relay");
+  });
+});
+
+describe("classifyBanner: joysticks (2026-09-21)", () => {
+  // Format settled with the Remote-Joystick-Student session directly,
+  // after the stakeholder told the two of us to work it out between
+  // ourselves. Serial is DECIMAL on purpose -- it matches this parser's
+  // existing default radix, so no registration was needed.
+  const LIVE = "DEVICE:JOYSTICK:joystick:gopiv:2175407711";
+
+  it("classifies the exact banner the joystick firmware emits", () => {
+    const result = classifyBanner(parseBanner(LIVE));
+    expect(result.type).toBe("joystick");
+    expect(result.role).toBe("JOYSTICK");
+    expect(result.commonName).toBe("joystick");
+    expect(result.evidence).toBe("common-name");
+  });
+
+  it("classifies on the ROLE alone, for a banner whose commonName is something else", () => {
+    // commonName is free text from the firmware; the role token is the
+    // part we agreed on, so it has to stand on its own.
+    const result = classifyBanner(parseBanner("DEVICE:JOYSTICK:remote:gopiv:2175407711"));
+    expect(result.type).toBe("joystick");
+    expect(result.evidence).toBe("role");
+  });
+
+  it("classifies on the commonName alone, for an unfamiliar role token", () => {
+    const result = classifyBanner(parseBanner("DEVICE:JOYSTICKV2:joystick:gopiv:2175407711"));
+    expect(result.type).toBe("joystick");
+    expect(result.evidence).toBe("common-name");
+  });
+
+  it("does not turn unrelated devices into joysticks", () => {
+    // The two kinds that already existed must be untouched by this
+    // addition -- the whole change was meant to be additive.
+    expect(classifyBanner(parseBanner("DEVICE:NEZHA2:robot:gopiv:2175407711")).type).toBe("robot");
+    expect(classifyBanner(parseBanner("DEVICE:RADIOBRIDGE:relay:gopiv:2175407711")).type).toBe("relay");
+    // And an unrecognized banner is still unknown, not swept into the
+    // newest kind.
+    expect(classifyBanner(parseBanner("DEVICE:WIDGET:widget:gopiv:2175407711")).type).toBe("unknown");
+  });
+
+  it("classifies a joystick banner arriving with MakeCode's line padding", () => {
+    // The two halves of this change meeting: padded banners parse now
+    // (banner.ts), and a parsed JOYSTICK banner classifies (here).
+    const result = classifyBanner(parseBanner(`${LIVE}${" ".repeat(21)}\r\n`));
+    expect(result.type).toBe("joystick");
   });
 });

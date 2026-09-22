@@ -1,7 +1,7 @@
 ---
 id: '007'
 title: Configure and verify the joystick firmware source against the live release
-status: in-progress
+status: done
 use-cases:
 - SUC-001
 depends-on:

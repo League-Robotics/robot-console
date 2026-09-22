@@ -126,6 +126,32 @@ function buildBanner(
  * neither grammar, rather than attempting a partial/garbage parse.
  */
 export function parseBanner(line: string): ParsedBanner | null {
+  // Trim before matching (2026-09-21). Both grammars anchor their last
+  // field with `$` against a non-space class, so ANY trailing whitespace
+  // makes the whole line fail to match.
+  //
+  // That is not a hypothetical. MakeCode's `serial.writeLine()` pads
+  // every line out to a 32-byte boundary with spaces placed BEFORE the
+  // newline (`core/serial.ts`, `writeLinePadding = 32`, on by default).
+  // A 41-character banner therefore arrives as
+  //
+  //   'DEVICE:JOYSTICK:joystick:gopiv:2175407711' + 21 spaces + '\r\n'
+  //
+  // and was rejected outright. Verified against this exact regex: the
+  // padded line parses to `null`, the trimmed one parses correctly.
+  //
+  // What makes it worth fixing in the parser rather than at one call
+  // site: from the host's side a non-matching line and no line at all
+  // are indistinguishable -- both present as "produced no banner within
+  // the identify budget". A board announcing itself perfectly well every
+  // five seconds looks exactly like a board that is saying nothing, and
+  // the natural conclusion is that the firmware change never landed.
+  // The Remote-Joystick-Student session found this before it cost
+  // anyone a debugging session, and stopped padding on their side too;
+  // this trim is here so the next device to reach for the obvious
+  // `serial write line` block is not invisible for the same reason.
+  line = line.trim();
+
   const colonMatch = COLON_FORM.exec(line);
   if (colonMatch) {
     // Non-null assertions are safe here: COLON_FORM has exactly four

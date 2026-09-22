@@ -120,3 +120,50 @@ describe("bannerNameMatchesSerial", () => {
     expect(deviceIdToName(1779042496)).not.toBe("getez");
   });
 });
+
+describe("parseBanner: MakeCode's 32-byte line padding (2026-09-21)", () => {
+  // `serial.writeLine()` pads to a 32-byte boundary with spaces placed
+  // BEFORE the newline. Both grammars anchor their final field with `$`
+  // against a non-space class, so an unpadded parser rejects the lot --
+  // and a rejected line is indistinguishable from silence at the host,
+  // presenting as "produced no banner within the identify budget".
+  // Agreed with the Remote-Joystick-Student session, which stopped
+  // padding on its side as well; this is the belt to their braces, and
+  // it covers every future device that reaches for the obvious
+  // `serial write line` block.
+  const CLEAN = "DEVICE:JOYSTICK:joystick:gopiv:2175407711";
+  // 41 chars + CRLF -> (32 - (41 + 2) % 32) % 32 = 21 spaces.
+  const PADDING = " ".repeat(21);
+
+  it("parses a colon banner padded exactly as MakeCode emits it", () => {
+    const parsed = parseBanner(`${CLEAN}${PADDING}\r`);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.role).toBe("JOYSTICK");
+    expect(parsed?.commonName).toBe("joystick");
+    expect(parsed?.name).toBe("gopiv");
+    expect(parsed?.serial).toBe(2175407711);
+  });
+
+  it("parses a space-form banner with the same padding", () => {
+    const parsed = parseBanner(`device NEZHA2 robot gopiv 2175407711${PADDING}\r\n`);
+    expect(parsed?.role).toBe("NEZHA2");
+    expect(parsed?.name).toBe("gopiv");
+  });
+
+  it("still returns the TRIMMED text as `raw`, so downstream sees no padding", () => {
+    expect(parseBanner(`${CLEAN}${PADDING}`)?.raw).toBe(CLEAN);
+  });
+
+  it("a padded banner still validates its own name against its serial", () => {
+    // Trimming must not smuggle whitespace into the serial token and
+    // quietly change the decoded number.
+    const parsed = parseBanner(`${CLEAN}${PADDING}\r\n`)!;
+    expect(bannerNameMatchesSerial(parsed)).toBe(true);
+  });
+
+  it("still rejects a line that is genuinely not a banner, padded or not", () => {
+    // The trim must widen what parses, not what is accepted as a banner.
+    expect(parseBanner(`DBG:wifi state=1${PADDING}`)).toBeNull();
+    expect(parseBanner(`   ${PADDING}   `)).toBeNull();
+  });
+});

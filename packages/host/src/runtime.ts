@@ -481,7 +481,17 @@ export async function startRuntime(options: StartRuntimeOptions = {}): Promise<R
 
   const bridger = createRelayBridgerFn(
     store,
-    { ...options.relayBridgerDeps, harvester, revocation: relayLeaseRevocation },
+    // Ticket 018-011 finding 1: `relayBridger` gained
+    // `mbregistryClient`/`mbregistryLabel` in ticket 007, but this
+    // composition root never forwarded them (the same values `connector`
+    // above already receives) -- bridging a relay discovered only through
+    // mbregistry failed immediately with "relayBridger: mbregistry
+    // transport requires RelayBridgerDeps.mbregistryClient". `relaySweeper`
+    // was audited for the same gap and has none: it only ever opens a
+    // relay's raw `usb` serial port directly (`resolveRelayPhysical(store,
+    // relayLinkId, "usb")` in watchers/relaySweeper.ts), so it never needs
+    // an mbregistry client at all.
+    { ...options.relayBridgerDeps, harvester, revocation: relayLeaseRevocation, mbregistryClient, mbregistryLabel },
     options.relayBridgerOptions,
   );
   // 020-003: real production wiring opts into the wrong-robot-hazard

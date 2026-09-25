@@ -69,6 +69,9 @@
  * {@link FlashOutcome}, never throws.
  */
 import * as net from "node:net";
+import * as fsp from "node:fs/promises";
+import * as os from "node:os";
+import * as nodePath from "node:path";
 import { LineReassembler } from "../link/lineStream.js";
 import type { FlashOutcome, FlashPhase } from "../flash.js";
 
@@ -93,7 +96,26 @@ function defaultConnect(target: RemoteFlashTarget): net.Socket {
 
 export interface RemoteFlashDeps {
   connect?: RemoteFlashConnectFn;
+  /** Ticket 018-011 finding 3: bound on the initial TCP connect, in place
+   * of the OS's own SYN-retry timeout (~75s on macOS/Linux) an
+   * unreachable host otherwise sat behind, reporting the *previous*
+   * phase ("verifying") the whole time -- reading as a stuck flash, not
+   * a connection attempt in progress. Defaults to {@link
+   * FLASH_CONNECT_TIMEOUT_MS}; tests override it to something tiny so a
+   * "the connection never completes" case doesn't have to wait out even
+   * the real default. */
+  connectTimeoutMs?: number;
 }
+
+/** Ticket 018-011 finding 3's own connect-timeout bound — see {@link
+ * RemoteFlashDeps.connectTimeoutMs}'s doc comment for why ~10s (chosen
+ * to be comfortably longer than any real LAN/same-host connect, but far
+ * short of the OS's own ~75s default) rather than leaving the OS
+ * default in place. Shared by both {@link flashViaMbregistry} (remote
+ * TCP) and {@link flashViaLocalSocket} (local Unix socket/pipe) — a
+ * stale/unresponsive local registry deserves the same bound, even though
+ * this finding's own bench repro was against a remote host. */
+export const FLASH_CONNECT_TIMEOUT_MS = 10_000;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -136,20 +158,32 @@ export function classifyLogPhase(line: string): FlashPhase {
   return "writing";
 }
 
-/** Opens one raw TCP socket to `target`, resolving once connected. */
-function openSocket(target: RemoteFlashTarget, connect: RemoteFlashConnectFn): Promise<net.Socket> {
+/** Opens one raw TCP socket to `target`, resolving once connected, or
+ * rejecting with a message naming `host:port` on the first error OR once
+ * `timeoutMs` elapses with no connection at all (ticket 018-011 finding
+ * 3 -- see {@link RemoteFlashDeps.connectTimeoutMs}'s doc comment). */
+function openSocket(target: RemoteFlashTarget, connect: RemoteFlashConnectFn, timeoutMs: number): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const socket = connect(target);
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      reject(new Error(`timed out connecting to mbregistry at ${target.host}:${target.port} after ${timeoutMs}ms`));
+    }, timeoutMs);
+    (timer as unknown as { unref?: () => void }).unref?.();
     const onError = (err: Error) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       socket.destroy();
       reject(err);
     };
     const onConnect = () => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       socket.off("error", onError);
       resolve(socket);
     };
@@ -224,6 +258,61 @@ class FlashWire {
   }
 }
 
+/** Sends `lock`(`flash`) on `wire` and reads its one response line —
+ * shared by {@link flashViaMbregistry} (remote) and {@link
+ * flashViaLocalSocket} (ticket 011 finding 2): the lock step is
+ * identical wire choreography on both transports, only what follows it
+ * (`send_hex` vs. a directly-staged `hex_path`) differs. Returns a
+ * classified {@link FlashOutcome} on a `locked`/other lock failure,
+ * `undefined` on success (caller proceeds to `flash`). */
+async function runFlashLock(wire: FlashWire, uid: string, label: string | undefined): Promise<FlashOutcome | undefined> {
+  const lockOp: Record<string, unknown> = { op: "lock", uid, kind: "flash" };
+  if (label !== undefined) {
+    lockOp.label = label;
+  }
+  wire.write(lockOp);
+  const lockResponse = JSON.parse(await wire.nextLine()) as Record<string, unknown>;
+  if (lockResponse.ok !== true) {
+    if (lockResponse.code === "locked") {
+      return ownerUnavailable(formatLockedMessage(lockResponse.holder as { label?: unknown } | undefined));
+    }
+    return flashFailure(String(lockResponse.error ?? `mbregistry refused to lock "${uid}" for flashing`));
+  }
+  return undefined;
+}
+
+/** Sends `flash` with an already-resolved `hexPath` on `wire` and drives
+ * its streamed `log`/terminal `result` lines to a {@link FlashOutcome} —
+ * shared by {@link flashViaMbregistry} (remote, `hexPath` from its own
+ * `send_hex` response) and {@link flashViaLocalSocket} (local, `hexPath`
+ * a temp file this process staged itself). See the module doc comment's
+ * point 3 for the wire shape. */
+async function runFlashRequest(
+  wire: FlashWire,
+  uid: string,
+  hexPath: string,
+  onProgress: (phase: FlashPhase) => void,
+): Promise<FlashOutcome> {
+  wire.write({ op: "flash", uid, hex_path: hexPath });
+  for (;;) {
+    const parsed = JSON.parse(await wire.nextLine()) as Record<string, unknown>;
+    if (parsed.type === "log") {
+      onProgress(classifyLogPhase(String(parsed.line ?? "")));
+      continue;
+    }
+    if (parsed.type === "result") {
+      if (parsed.ok === false || parsed.success === false) {
+        return flashFailure(String(parsed.error ?? "mbregistry flash failed"));
+      }
+      return { status: "ok", method: "mbregistry" };
+    }
+    // An unrecognized streamed shape is well-formed JSON this module
+    // simply has no use for -- not a decode error -- so it is
+    // silently ignored rather than treated as fatal, mirroring
+    // `mbregistryStream.ts`'s own "unrecognized frame type" handling.
+  }
+}
+
 /**
  * Drives `lock`(`flash`)/`send_hex`/`flash` against `target` for `uid`
  * to completion — see the module doc comment for the full wire
@@ -239,27 +328,25 @@ export async function flashViaMbregistry(
   deps: RemoteFlashDeps = {},
 ): Promise<FlashOutcome> {
   const connect = deps.connect ?? defaultConnect;
+  const connectTimeoutMs = deps.connectTimeoutMs ?? FLASH_CONNECT_TIMEOUT_MS;
 
+  // Ticket 018-011 finding 3: report "connecting" (not the previous
+  // phase, "verifying") for the whole time this connect attempt is in
+  // flight -- an unreachable host used to sit reporting "verifying" for
+  // up to the OS's own ~75s SYN timeout, reading as a stuck flash.
+  onProgress("connecting");
   let socket: net.Socket;
   try {
-    socket = await openSocket(target, connect);
+    socket = await openSocket(target, connect, connectTimeoutMs);
   } catch (err) {
     return flashFailure(`could not connect to mbregistry at ${target.host}:${target.port}: ${errorMessage(err)}`);
   }
 
   const wire = new FlashWire(socket);
   try {
-    const lockOp: Record<string, unknown> = { op: "lock", uid, kind: "flash" };
-    if (label !== undefined) {
-      lockOp.label = label;
-    }
-    wire.write(lockOp);
-    const lockResponse = JSON.parse(await wire.nextLine()) as Record<string, unknown>;
-    if (lockResponse.ok !== true) {
-      if (lockResponse.code === "locked") {
-        return ownerUnavailable(formatLockedMessage(lockResponse.holder as { label?: unknown } | undefined));
-      }
-      return flashFailure(String(lockResponse.error ?? `mbregistry refused to lock "${uid}" for flashing`));
+    const lockFailure = await runFlashLock(wire, uid, label);
+    if (lockFailure) {
+      return lockFailure;
     }
 
     wire.write({ op: "send_hex", data: Buffer.from(hexText, "utf8").toString("base64") });
@@ -272,27 +359,170 @@ export async function flashViaMbregistry(
       return flashFailure('mbregistry\'s send_hex response is missing a string "hex_path"');
     }
 
-    wire.write({ op: "flash", uid, hex_path: hexPath });
-    for (;;) {
-      const parsed = JSON.parse(await wire.nextLine()) as Record<string, unknown>;
-      if (parsed.type === "log") {
-        onProgress(classifyLogPhase(String(parsed.line ?? "")));
-        continue;
-      }
-      if (parsed.type === "result") {
-        if (parsed.ok === false || parsed.success === false) {
-          return flashFailure(String(parsed.error ?? "mbregistry flash failed"));
-        }
-        return { status: "ok", method: "mbregistry" };
-      }
-      // An unrecognized streamed shape is well-formed JSON this module
-      // simply has no use for -- not a decode error -- so it is
-      // silently ignored rather than treated as fatal, mirroring
-      // `mbregistryStream.ts`'s own "unrecognized frame type" handling.
-    }
+    return await runFlashRequest(wire, uid, hexPath, onProgress);
   } catch (err) {
     return flashFailure(errorMessage(err));
   } finally {
     wire.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// flashViaLocalSocket -- ticket 018-011 finding 2's fix: flash a *local*
+// device via mbregistry's own local Unix socket/pipe `flash` op, instead
+// of requiring this console's own remote TCP port (`MbregistryClient.
+// remotePort`, only known when this console itself spawned the instance
+// -- see `link/adapters/mbregistryStream.ts#resolveFlashPlan`'s own doc
+// comment for the full decision tree this function is the "local" leaf
+// of).
+//
+// The local Unix socket/pipe `flash` op takes a `hex_path` already on
+// this same host's filesystem (mbtools `docs/design/registry-api.md`,
+// read-only reference: the local op has no `send_hex`-style staging
+// step at all -- that step exists specifically because a *remote* TCP
+// client has no filesystem this registry process can read directly). A
+// "local device" by definition shares a filesystem with this console's
+// own local mbregistry instance, so this function stages the hex text
+// into a fresh temp file itself and passes that path straight to
+// `flash` -- no remote port, no `send_hex` round trip.
+// ---------------------------------------------------------------------------
+
+/** Where a local-socket flash connects — this console's own resolved
+ * local Unix socket or (Windows) named pipe, exactly the shape
+ * `MbregistryClient.resolvedEndpoint` reports for either kind. */
+export interface LocalFlashTarget {
+  kind: "unix" | "pipe";
+  path: string;
+}
+
+/** Injectable in place of `net.connect({path})`, mirroring
+ * `RemoteFlashConnectFn`'s own convention — production code never
+ * overrides this; tests substitute a fake Unix-socket server (per this
+ * sprint's Test Strategy: no real mbregistry anywhere in this suite). */
+export type LocalFlashConnectFn = (target: LocalFlashTarget) => net.Socket;
+
+function defaultLocalConnect(target: LocalFlashTarget): net.Socket {
+  return net.connect({ path: target.path });
+}
+
+/** A hex file staged on disk for the local `flash` op, plus how to
+ * remove it once the exchange is done (success or failure alike — this
+ * function's own temp file, unlike the remote path's server-side
+ * `send_hex` staging, is never mbregistry's responsibility to clean up). */
+export interface StagedHexFile {
+  path: string;
+  cleanup: () => Promise<void>;
+}
+
+/** Writes `hexText` to a fresh temp file and returns its path plus a
+ * cleanup callback. Defaults to a real `fs`/`os.tmpdir()` temp
+ * directory; tests substitute a fake that never touches the real
+ * filesystem. */
+async function defaultWriteHexFile(hexText: string): Promise<StagedHexFile> {
+  const dir = await fsp.mkdtemp(nodePath.join(os.tmpdir(), "robot-console-flash-"));
+  const filePath = nodePath.join(dir, "firmware.hex");
+  await fsp.writeFile(filePath, hexText, "utf8");
+  return {
+    path: filePath,
+    cleanup: async () => {
+      await fsp.rm(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+export interface LocalFlashDeps {
+  connect?: LocalFlashConnectFn;
+  writeHexFile?: (hexText: string) => Promise<StagedHexFile>;
+  /** See {@link RemoteFlashDeps.connectTimeoutMs}'s doc comment — same
+   * bound, applied to the local Unix socket/pipe connect. Defaults to
+   * {@link FLASH_CONNECT_TIMEOUT_MS}. */
+  connectTimeoutMs?: number;
+}
+
+/** Opens `target` (a Unix socket or named pipe), resolving once
+ * connected, or rejecting with a message naming `target.path` on the
+ * first error OR once `timeoutMs` elapses with no connection at all —
+ * mirrors `openSocket`'s own contract for the remote-TCP path above
+ * (ticket 018-011 finding 3). */
+function openLocalSocket(target: LocalFlashTarget, connect: LocalFlashConnectFn, timeoutMs: number): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const socket = connect(target);
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      reject(new Error(`timed out connecting to mbregistry's local socket at ${target.path} after ${timeoutMs}ms`));
+    }, timeoutMs);
+    (timer as unknown as { unref?: () => void }).unref?.();
+    const onError = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      reject(err);
+    };
+    const onConnect = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.off("error", onError);
+      resolve(socket);
+    };
+    socket.once("error", onError);
+    socket.once("connect", onConnect);
+  });
+}
+
+/**
+ * Drives `lock`(`flash`)/`flash` against `target` (this console's own
+ * local Unix socket/pipe) for `uid` to completion, staging `hexText` to
+ * a temp file passed as `hex_path` instead of `send_hex`ing it — see this
+ * section's own doc comment for why. Never throws/rejects; every failure
+ * resolves to a classified {@link FlashOutcome}. The staged temp file is
+ * always removed (`finally`), whether the flash succeeded or not.
+ */
+export async function flashViaLocalSocket(
+  target: LocalFlashTarget,
+  uid: string,
+  label: string | undefined,
+  hexText: string,
+  onProgress: (phase: FlashPhase) => void,
+  deps: LocalFlashDeps = {},
+): Promise<FlashOutcome> {
+  const connect = deps.connect ?? defaultLocalConnect;
+  const writeHexFile = deps.writeHexFile ?? defaultWriteHexFile;
+  const connectTimeoutMs = deps.connectTimeoutMs ?? FLASH_CONNECT_TIMEOUT_MS;
+
+  // Ticket 018-011 finding 3: see flashViaMbregistry's own comment above.
+  onProgress("connecting");
+  let socket: net.Socket;
+  try {
+    socket = await openLocalSocket(target, connect, connectTimeoutMs);
+  } catch (err) {
+    return flashFailure(`could not connect to mbregistry's local socket at ${target.path}: ${errorMessage(err)}`);
+  }
+
+  const wire = new FlashWire(socket);
+  let staged: StagedHexFile | undefined;
+  try {
+    const lockFailure = await runFlashLock(wire, uid, label);
+    if (lockFailure) {
+      return lockFailure;
+    }
+
+    staged = await writeHexFile(hexText);
+    return await runFlashRequest(wire, uid, staged.path, onProgress);
+  } catch (err) {
+    return flashFailure(errorMessage(err));
+  } finally {
+    wire.close();
+    if (staged) {
+      await staged.cleanup().catch(() => {
+        // Best-effort only -- a leftover temp file in os.tmpdir() is not
+        // worth failing an already-completed (or already-failed) flash
+        // attempt over.
+      });
+    }
   }
 }

@@ -115,9 +115,12 @@ import { readLocalHex as defaultReadLocalHex } from "./localFirmware.js";
 import { flash as defaultFlash, type FlashOutcome } from "./flash.js";
 import { createFlasher } from "./connect/flasher.js";
 import { flashOverMbflash as defaultFlashOverMbflash, type MbflashOutcome } from "./connect/mbflashClient.js";
-import { flashViaMbregistry as defaultFlashViaMbregistry } from "./mbregistry/remoteFlash.js";
+import {
+  flashViaLocalSocket as defaultFlashViaLocalSocket,
+  flashViaMbregistry as defaultFlashViaMbregistry,
+} from "./mbregistry/remoteFlash.js";
 import { parseHostPort, type MbregistryClient } from "./mbregistry/client.js";
-import { resolveFlashTarget, type MbregistryStreamDevice } from "./link/adapters/mbregistryStream.js";
+import { resolveFlashPlan, type MbregistryStreamDevice } from "./link/adapters/mbregistryStream.js";
 import {
   enumerateDaplinkDevices as defaultEnumerateDaplinkDevices,
   type DaplinkDevice,
@@ -279,10 +282,16 @@ export interface StartServerOptions {
    * real `flashViaMbregistry` (`mbregistry/remoteFlash.ts`) —
    * tests substitute a fake, mirroring {@link flash}'s own convention. */
   flashViaMbregistry?: typeof defaultFlashViaMbregistry;
+  /** Injectable local-socket mbregistry flash orchestration (ticket
+   * 018-011 finding 2), for a local `mbregistry`-transport `flash-start`.
+   * Defaults to the real `flashViaLocalSocket` (`mbregistry/remoteFlash.ts`)
+   * — tests substitute a fake, mirroring {@link flashViaMbregistry}'s own
+   * convention. */
+  flashViaLocalSocket?: typeof defaultFlashViaLocalSocket;
   /** The already-connected {@link MbregistryClient} (sprint 018 ticket
    * 001) an `mbregistry`-transport `flash-start` uses to resolve which
-   * `uid`/target to flash (`find`) and this console's own remote TCP
-   * port (`remotePort`) for a local device. `undefined` fails any
+   * `uid`/plan to flash (`find`, {@link resolveFlashPlan}'s own
+   * `resolvedEndpoint`/`remotePort`). `undefined` fails any
    * `mbregistry`-transport flash descriptively rather than silently
    * no-op'ing — wiring the real client in from `runtime.ts`'s
    * composition root is ticket 006's job, kept separate exactly like
@@ -671,6 +680,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   const readLocalHexFn = options.readLocalHex ?? defaultReadLocalHex;
   const flashFn = options.flash ?? defaultFlash;
   const flashViaMbregistryFn = options.flashViaMbregistry ?? defaultFlashViaMbregistry;
+  const flashViaLocalSocketFn = options.flashViaLocalSocket ?? defaultFlashViaLocalSocket;
   const mbregistryClient = options.mbregistryClient;
   const mbregistryLabel = options.mbregistryLabel;
   // Sprint 017 ticket 003: flash orchestration's board_owner exclusivity
@@ -680,7 +690,14 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   // flasher actually calls once it has acquired the owner. Sprint 018
   // ticket 005 adds `flashViaMbregistry` alongside it, for the
   // `mbregistry`-transport sibling path (`flasher.flashMbregistry`).
-  const flasher = createFlasher(store, { reconciler: runtime.reconciler, flash: flashFn, flashViaMbregistry: flashViaMbregistryFn });
+  // Ticket 018-011 finding 2 adds `flashViaLocalSocket` alongside that,
+  // for a local device's own `FlashPlan.kind === "local"` leaf.
+  const flasher = createFlasher(store, {
+    reconciler: runtime.reconciler,
+    flash: flashFn,
+    flashViaMbregistry: flashViaMbregistryFn,
+    flashViaLocalSocket: flashViaLocalSocketFn,
+  });
   // Ticket 018-014: the network-flash counterpart for a mbserial/wifi
   // link whose device has a current `_mbflash._tcp` service -- no
   // `board_owner`/`connect/flasher.ts` involved (that module's
@@ -1077,7 +1094,11 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
               const device = await mbregistryClient.find(target.uid);
               return { uid: target.uid, host: device.host, endpoint: parseHostPort(device.endpoint) };
             })();
-        const plan = resolveFlashTarget(streamDevice, mbregistryClient.remotePort);
+        // Ticket 018-011 finding 2: `resolveFlashPlan` (not the retired
+        // `resolveFlashTarget`) picks the local-socket leaf when this
+        // console's own connection has no remote TCP port but does have
+        // a local socket/pipe -- see that function's own doc comment.
+        const plan = resolveFlashPlan(streamDevice, mbregistryClient);
         const outcome = await flasher.flashMbregistry(linkId, target.uid, plan, mbregistryLabel, hexText, (phase) =>
           setFlashPhase(linkId, source, phase, identity),
         );

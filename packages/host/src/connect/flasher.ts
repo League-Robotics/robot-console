@@ -58,7 +58,11 @@
  */
 import type { DaplinkDevice } from "../devices.js";
 import { flash as defaultFlash, type FlashOptions, type FlashOutcome, type FlashPhase } from "../flash.js";
-import { flashViaMbregistry as defaultFlashViaMbregistry, type RemoteFlashTarget } from "../mbregistry/remoteFlash.js";
+import {
+  flashViaLocalSocket as defaultFlashViaLocalSocket,
+  flashViaMbregistry as defaultFlashViaMbregistry,
+} from "../mbregistry/remoteFlash.js";
+import type { FlashPlan } from "../link/adapters/mbregistryStream.js";
 import type { Store } from "../store/index.js";
 
 /** The exact `board_owner.owner` literal this module acquires/releases
@@ -106,11 +110,16 @@ export interface FlasherDeps {
    * on demand, e.g. to exercise this module's own owner-release
    * guarantee without a real `dapjs`/HID stack. */
   flash?: typeof defaultFlash;
-  /** Injectable mbregistry flash orchestration (sprint 018 ticket 005).
-   * Defaults to the real `mbregistry/remoteFlash.ts#flashViaMbregistry`
-   * — tests substitute a fake that resolves/rejects on demand, mirroring
-   * `flash`'s own injection convention. */
+  /** Injectable mbregistry flash orchestration (sprint 018 ticket 005),
+   * for a *remote*-transport {@link FlashPlan}. Defaults to the real
+   * `mbregistry/remoteFlash.ts#flashViaMbregistry` — tests substitute a
+   * fake that resolves/rejects on demand, mirroring `flash`'s own
+   * injection convention. */
   flashViaMbregistry?: typeof defaultFlashViaMbregistry;
+  /** Injectable local-socket mbregistry flash orchestration (ticket
+   * 018-011 finding 2), for a *local*-transport {@link FlashPlan}.
+   * Defaults to the real `mbregistry/remoteFlash.ts#flashViaLocalSocket`. */
+  flashViaLocalSocket?: typeof defaultFlashViaLocalSocket;
   /** Wall-clock reader for the acquire-retry loop's own deadline.
    * Defaults to `Date.now`. */
   now?: () => number;
@@ -169,18 +178,19 @@ export interface Flasher {
    * `flash`-kind lock is the sole exclusivity for this transport,
    * matching `connect/connector.ts`'s `resolveExclusivity`'s
    * `Exclusivity.kind: "none"` for `"mbregistry"` (ticket 004). Once the
-   * session is closed, delegates straight to `mbregistry/remoteFlash.ts`'s
-   * `flashViaMbregistry` against the already-resolved `target` (this
-   * module never decides *which* target — `server.ts#runFlashTask`/
-   * `link/adapters/mbregistryStream.ts`'s `resolveFlashTarget` do that).
-   * Never throws for a failure `flashViaMbregistry` itself already
-   * classifies (same "failure is a value" convention as {@link flash});
-   * does propagate a rejection from `reconciler.requestClose` itself.
+   * session is closed, delegates to `mbregistry/remoteFlash.ts`'s
+   * `flashViaMbregistry` or (ticket 018-011 finding 2) `flashViaLocalSocket`,
+   * chosen by `plan.kind` — this module never decides *which* plan;
+   * `server.ts#runFlashTask`/`link/adapters/mbregistryStream.ts`'s
+   * `resolveFlashPlan` does that. Never throws for a failure either
+   * orchestration function itself already classifies (same "failure is a
+   * value" convention as {@link flash}); does propagate a rejection from
+   * `reconciler.requestClose` itself.
    */
   flashMbregistry(
     linkId: string,
     uid: string,
-    target: RemoteFlashTarget,
+    plan: FlashPlan,
     label: string | undefined,
     hexText: string,
     onProgress: (phase: FlashPhase) => void,
@@ -196,6 +206,7 @@ export function createFlasher(store: FlasherStore, deps: FlasherDeps, opts: Flas
   const reconciler = deps.reconciler;
   const flashFn = deps.flash ?? defaultFlash;
   const flashViaMbregistryFn = deps.flashViaMbregistry ?? defaultFlashViaMbregistry;
+  const flashViaLocalSocketFn = deps.flashViaLocalSocket ?? defaultFlashViaLocalSocket;
   const now = deps.now ?? (() => Date.now());
   const delay = deps.delay ?? defaultDelay;
   const acquireTimeoutMs = opts.acquireTimeoutMs ?? DEFAULT_ACQUIRE_TIMEOUT_MS;
@@ -253,13 +264,16 @@ export function createFlasher(store: FlasherStore, deps: FlasherDeps, opts: Flas
     async flashMbregistry(
       linkId: string,
       uid: string,
-      target: RemoteFlashTarget,
+      plan: FlashPlan,
       label: string | undefined,
       hexText: string,
       onProgress: (phase: FlashPhase) => void,
     ): Promise<FlashOutcome> {
       await reconciler.requestClose(linkId);
-      return flashViaMbregistryFn(target, uid, label, hexText, onProgress);
+      if (plan.kind === "local") {
+        return flashViaLocalSocketFn(plan.endpoint, uid, label, hexText, onProgress);
+      }
+      return flashViaMbregistryFn(plan.target, uid, label, hexText, onProgress);
     },
   };
 }

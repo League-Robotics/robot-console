@@ -41,7 +41,7 @@ import type { FlashOutcome } from "./flash.js";
 import type { MbflashOutcome } from "./connect/mbflashClient.js";
 import type { DaplinkDevice } from "./devices.js";
 import type { MbregistryClient, RegistryDevice } from "./mbregistry/client.js";
-import type { RemoteFlashTarget } from "./mbregistry/remoteFlash.js";
+import type { LocalFlashTarget, RemoteFlashTarget } from "./mbregistry/remoteFlash.js";
 
 // ---------------------------------------------------------------------
 // Fakes
@@ -1592,7 +1592,11 @@ function fakeRegistryDevice(overrides: Partial<RegistryDevice> = {}): RegistryDe
   };
 }
 
-function fakeMbregistryClient(device: RegistryDevice, remotePort: number | undefined): MbregistryClient {
+function fakeMbregistryClient(
+  device: RegistryDevice,
+  remotePort: number | undefined,
+  resolvedEndpoint?: MbregistryClient["resolvedEndpoint"],
+): MbregistryClient {
   return {
     connect: vi.fn(),
     close: vi.fn(),
@@ -1602,7 +1606,7 @@ function fakeMbregistryClient(device: RegistryDevice, remotePort: number | undef
     unlock: vi.fn(),
     watch: vi.fn(),
     stream: vi.fn(),
-    resolvedEndpoint: undefined,
+    resolvedEndpoint,
     remotePort,
   };
 }
@@ -1629,7 +1633,14 @@ async function driveLocalHexFlash(ws: ReturnType<typeof fakeWebSocket>, linkId: 
 }
 
 describe("server.ts: flash-start (mbregistry transport)", () => {
-  it("resolves a local target -- 127.0.0.1 on this client's own remote port -- and flashes via flashMbregistry", async () => {
+  // Ticket 018-011 finding 2's own local-flash path: a local device whose
+  // client connection is a local Unix socket/pipe goes through
+  // `flashViaLocalSocket`, never touching `remotePort` at all -- see the
+  // next test. This one covers the narrower fallback that still exists
+  // for a client connected over TCP with no local socket of its own
+  // (`resolvedEndpoint` left `undefined` here, mirroring a bare TCP
+  // client -- `resolveFlashPlan`'s own doc comment).
+  it("falls back to 127.0.0.1 on this client's own remote port when there is no local socket, and flashes via flashMbregistry", async () => {
     const device = fakeRegistryDevice({ uid: "uid-1", host: null, endpoint: null });
     const mbregistryClient = fakeMbregistryClient(device, 7440);
     const flashViaMbregistryMock = vi.fn(async (_target: RemoteFlashTarget, _uid: string, _label: string | undefined, _hex: string, onProgress: (phase: string) => void) => {
@@ -1658,6 +1669,45 @@ describe("server.ts: flash-start (mbregistry transport)", () => {
     expect(call[1]).toBe("uid-1");
     expect(call[2]).toBe("console-label");
     expect(h.runtime.requestClose).toHaveBeenCalledWith("mbregistry-uid-1");
+    expect(result).toMatchObject({ type: "flash-result", status: "ok" });
+  });
+
+  // Ticket 018-011 finding 2: the common real-bench case -- this
+  // console's own mbregistry connection IS a local Unix socket (it
+  // resolved via the standard client-socket-candidates path, not a
+  // TCP override), so a local device flashes through
+  // `flashViaLocalSocket` against that same socket, with no dependency
+  // on `remotePort` at all (left `undefined` here to prove it).
+  it("flashes a local device via flashViaLocalSocket against this client's own local socket when no remote port is known (a pre-existing registry this console didn't spawn)", async () => {
+    const device = fakeRegistryDevice({ uid: "uid-1a", host: null, endpoint: null });
+    const mbregistryClient = fakeMbregistryClient(device, undefined, { kind: "unix", path: "/tmp/fake/api.sock" });
+    const flashViaLocalSocketMock = vi.fn(
+      async (_target: LocalFlashTarget, _uid: string, _label: string | undefined, _hex: string, onProgress: (phase: string) => void) => {
+        onProgress("writing");
+        return { status: "ok", method: "mbregistry" } satisfies FlashOutcome;
+      },
+    );
+    const h = await harness({
+      mbregistryClient,
+      mbregistryLabel: "console-label",
+      flashViaLocalSocket: flashViaLocalSocketMock as unknown as StartServerOptions["flashViaLocalSocket"],
+    });
+    h.store.upsertLink({ id: "mbregistry-uid-1a", transport: "mbregistry", address: { endpoint: null, uid: "uid-1a" }, at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const result = await driveLocalHexFlash(ws, "mbregistry-uid-1a");
+
+    expect(flashViaLocalSocketMock).toHaveBeenCalledTimes(1);
+    const call = flashViaLocalSocketMock.mock.calls[0]!;
+    expect(call[0]).toEqual({ kind: "unix", path: "/tmp/fake/api.sock" });
+    expect(call[1]).toBe("uid-1a");
+    expect(call[2]).toBe("console-label");
+    expect(h.runtime.requestClose).toHaveBeenCalledWith("mbregistry-uid-1a");
     expect(result).toMatchObject({ type: "flash-result", status: "ok" });
   });
 

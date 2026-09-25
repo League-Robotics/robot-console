@@ -107,47 +107,86 @@ export function resolveStreamTarget(device: MbregistryStreamDevice): { host: str
   return device.endpoint;
 }
 
+/** Where a `flash`/`send_hex` exchange should be sent — either straight
+ * to the local mbregistry instance's own Unix socket/pipe (the local
+ * `flash` op, `hex_path` already on this shared filesystem — ticket
+ * 018-011 finding 2), or to a remote TCP endpoint (the pre-011 remote
+ * `send_hex`+`flash` path, unchanged for a peer-owned device or for the
+ * fallback case documented on {@link resolveFlashPlan}). */
+export type FlashPlan =
+  | { kind: "remote"; target: { host: string; port: number } }
+  | { kind: "local"; endpoint: { kind: "unix" | "pipe"; path: string } };
+
+/** The slice of {@link MbregistryClient} {@link resolveFlashPlan} needs —
+ * deliberately not the whole interface, mirroring this module's existing
+ * narrow-Pick convention. */
+export interface FlashPlanClient {
+  readonly resolvedEndpoint: { kind: "unix" | "pipe" | "tcp"; path?: string; host?: string; port?: number } | undefined;
+  readonly remotePort: number | undefined;
+}
+
 /**
  * Sprint 018 ticket 005's own extension of {@link resolveStreamTarget},
- * for `send_hex`/`flash` — remote-TCP-only ops (mbtools
- * `docs/design/registry-api.md`'s "Remote flash and hex staging": never
- * the local Unix socket/pipe, unlike `lock`+`stream` which tries the
- * local socket first). Unlike `resolveStreamTarget`, a *local* device
- * cannot resolve to "no target, `MbregistryClient.stream()` sorts it
- * out" here — there is no such fallback for these two ops — so this
- * function always returns a concrete `{host, port}`:
+ * for `send_hex`/`flash`; reworked by ticket 011 finding 2 to fix a bug
+ * against a *pre-existing* mbregistry (one this console didn't itself
+ * spawn): `MbregistryClient.remotePort` is only ever set when this
+ * console's own `connect()` call spawned the instance and read its
+ * `--ready-json` line — connecting to an already-running registry (the
+ * common case, and exactly what real-bench testing exercised) leaves it
+ * `undefined`, so the pre-011 "always go over 127.0.0.1:remotePort for a
+ * local device" rule failed immediately with "no remote TCP port known".
  *
+ * The fix (per `docs/design/registry-api.md`'s "Remote flash and hex
+ * staging" and its local-socket `flash` op entry, both mbtools, read-only
+ * reference): the local Unix socket/pipe's own `flash` op takes a
+ * `hex_path` already on *this same host's filesystem* — no `send_hex`
+ * staging step exists for it (that step exists specifically because a
+ * *remote* TCP client has no filesystem this registry process can read
+ * directly). A "local device" by definition shares a filesystem with
+ * this console's own local mbregistry instance, so `link/adapters/
+ * mbregistryStream.ts`'s local-flash caller (`mbregistry/remoteFlash.ts#
+ * flashViaLocalSocket`) can write the hex text to a temp file and pass
+ * its path straight to the local socket's `flash` op — no remote port
+ * needed at all for the common case.
+ *
+ * Decision tree:
  * - `device.endpoint` set (a remote, peer-owned device — same check
- *   {@link resolveStreamTarget} makes): that device's own endpoint,
- *   unchanged — connect straight to the owning peer, never proxying
- *   through the local instance.
- * - Otherwise (a local device): `127.0.0.1` on `localRemotePort` — this
- *   console's own connected {@link MbregistryClient}'s own remote TCP
- *   port (`MbregistryClient.remotePort`), the only way to reach even a
- *   *locally* attached board's `flash`-kind lock/`send_hex`/`flash`,
- *   which never exist on the local socket at all.
- *
- * Throws when neither is available (a local device whose own instance's
- * remote port is unknown) — this codebase's usual "throw a descriptive
- * `Error`, let the caller's own outer failure handling turn it into a
- * classified/reported failure" convention (mirrors `parseLinkAddress`'s
- * own throw-on-malformed-input contract in `connect/connector.ts`).
+ *   {@link resolveStreamTarget} makes): `{kind: "remote", target:
+ *   device.endpoint}`, unchanged from before — connect straight to the
+ *   owning peer's remote TCP port, never proxying through the local
+ *   instance.
+ * - Otherwise (a local device) and this console's own connection is
+ *   itself a local Unix socket/pipe (`client.resolvedEndpoint.kind !==
+ *   "tcp"` — true whenever mbregistry was resolved via the standard
+ *   client-socket-candidates path or a previously-spawned console-owned
+ *   socket, i.e. essentially always): `{kind: "local", endpoint:
+ *   client.resolvedEndpoint}`.
+ * - Otherwise (a local device, but this console's own connection is
+ *   itself over TCP — e.g. `$ROBOT_CONSOLE_MBREGISTRY` pointed at a
+ *   `host:port`, so there is no local socket to use at all): falls back
+ *   to the pre-011 `127.0.0.1:remotePort` path, which still requires
+ *   `client.remotePort` to be known (only true if this console itself
+ *   spawned that instance) — throws the same descriptive error as before
+ *   when it isn't. This is a narrow, documented edge case: a console
+ *   connecting to mbregistry over TCP with no remote port of its own has
+ *   no way to reach the local `flash` op at all.
  */
-export function resolveFlashTarget(
-  device: MbregistryStreamDevice,
-  localRemotePort: number | undefined,
-): { host: string; port: number } {
+export function resolveFlashPlan(device: MbregistryStreamDevice, client: FlashPlanClient): FlashPlan {
   const remote = resolveStreamTarget(device);
   if (remote !== undefined) {
-    return remote;
+    return { kind: "remote", target: remote };
   }
-  if (localRemotePort === undefined) {
+  const resolvedEndpoint = client.resolvedEndpoint;
+  if (resolvedEndpoint !== undefined && resolvedEndpoint.kind !== "tcp" && resolvedEndpoint.path !== undefined) {
+    return { kind: "local", endpoint: { kind: resolvedEndpoint.kind, path: resolvedEndpoint.path } };
+  }
+  if (client.remotePort === undefined) {
     throw new Error(
-      `mbregistry: no remote TCP port known for local device "${device.uid}" -- ` +
-        "flash/send_hex require the owning instance's own remote port, and none was reported",
+      `mbregistry: no local socket and no remote TCP port known for local device "${device.uid}" -- ` +
+        "flash requires either the local instance's own socket or its own remote port, and neither was available",
     );
   }
-  return { host: "127.0.0.1", port: localRemotePort };
+  return { kind: "remote", target: { host: "127.0.0.1", port: client.remotePort } };
 }
 
 /** A {@link ByteStream} with sprint 018's reset primitives added —

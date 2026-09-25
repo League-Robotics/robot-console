@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createMbregistryClient, type LockKind, type MbregistryClient } from "../../mbregistry/client.js";
 import { FRAME_BREAK, FRAME_CLOSE, FRAME_DATA, FRAME_SET_DTR, FRAME_SET_RTS, HEADER_SIZE, encodeFrame } from "../../mbregistry/streamFrame.js";
-import { mbregistryStream, type MbregistryStreamDevice } from "./mbregistryStream.js";
+import { mbregistryStream, resolveFlashTarget, type MbregistryStreamDevice } from "./mbregistryStream.js";
 
 // ---------------------------------------------------------------------------
 // Fake server: JSON-lines lock/unlock/stream, then binary frames
@@ -293,5 +293,29 @@ describe("mbregistryStream", () => {
     await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0));
     await vi.waitFor(() => expect(closed).toBe(true));
     expect(errors[0]?.message).toMatch(/exceeds/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveFlashTarget -- sprint 018 ticket 005's extension of
+// resolveStreamTarget for send_hex/flash (remote-TCP-only, no local-
+// socket fallback of any kind).
+// ---------------------------------------------------------------------------
+
+describe("resolveFlashTarget", () => {
+  it("a remote (peer-owned) device's own endpoint is used unchanged, ignoring localRemotePort entirely", () => {
+    const device: MbregistryStreamDevice = { uid: "peer-uid", endpoint: { host: "10.0.0.5", port: 7440 } };
+    expect(resolveFlashTarget(device, 9999)).toEqual({ host: "10.0.0.5", port: 7440 });
+    expect(resolveFlashTarget(device, undefined)).toEqual({ host: "10.0.0.5", port: 7440 });
+  });
+
+  it("a local device (no endpoint) resolves to 127.0.0.1 on this console's own remote port", () => {
+    const device: MbregistryStreamDevice = { uid: "local-uid" };
+    expect(resolveFlashTarget(device, 7440)).toEqual({ host: "127.0.0.1", port: 7440 });
+  });
+
+  it("throws a descriptive error for a local device when no remote port is known", () => {
+    const device: MbregistryStreamDevice = { uid: "local-uid" };
+    expect(() => resolveFlashTarget(device, undefined)).toThrow(/local-uid/);
   });
 });

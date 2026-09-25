@@ -228,6 +228,8 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
       id: chipId,
       name: fields.deviceName,
       kind: classifyDeviceKind(fields),
+      role: fields.role,
+      commonName: fields.commonName,
       usbSerial: uid,
       at: now(),
     });

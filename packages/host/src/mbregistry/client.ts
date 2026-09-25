@@ -159,6 +159,17 @@ export interface RegistryDevice {
   lock_label: string | null;
   lock_since: number | null;
   host?: string | null;
+  /** `host:port` of the *owning* registry's own remote TCP listener —
+   * `null`/absent for a locally-owned row (`host` also `null`/absent),
+   * `"<host>:<port>"` for a peer-owned row (mbtools
+   * `_api_base.BaseAPIServer._device_to_dict`'s own `d["endpoint"]`,
+   * sourced from the `peer` table's `endpoint` column —
+   * `docs/design/registry-api.md`'s "Store schema additions for
+   * peering"). Sprint 018 ticket 005's own `mbregistry/remoteFlash.ts`
+   * is this client's first caller that actually reads it, to dial a
+   * remote board's owning instance directly for `send_hex`/`flash`
+   * rather than the local instance's own remote port. */
+  endpoint?: string | null;
   [key: string]: unknown;
 }
 
@@ -316,6 +327,33 @@ export function parseEndpointSpec(spec: string): ResolvedEndpoint {
     }
   }
   return { kind: process.platform === "win32" ? "pipe" : "unix", path: spec };
+}
+
+/** Parses a `"<host>:<port>"` string — {@link RegistryDevice.endpoint}'s
+ * own wire shape for a peer-owned device — into `{host, port}`, or
+ * `undefined` for `null`/`undefined`/a malformed value (never throws;
+ * sprint 018 ticket 005's `mbregistry/remoteFlash.ts` caller treats an
+ * unparseable endpoint the same as "no endpoint" — the local-instance
+ * fallback, {@link resolveFlashTarget} in `link/adapters/
+ * mbregistryStream.ts`, then applies). IPv6 hosts are not a case this
+ * needs to handle: `registry-api.md`'s peer endpoints are always
+ * `record_peer_seen`'s own `f"{address}:{remote_port}"`, itself built
+ * from IPv4 mDNS/`--peer` addresses only, per that module's own doc
+ * comment. */
+export function parseHostPort(spec: string | null | undefined): { host: string; port: number } | undefined {
+  if (spec === null || spec === undefined || spec.length === 0) {
+    return undefined;
+  }
+  const lastColon = spec.lastIndexOf(":");
+  if (lastColon <= 0) {
+    return undefined;
+  }
+  const host = spec.slice(0, lastColon);
+  const port = Number(spec.slice(lastColon + 1));
+  if (host.length === 0 || !Number.isInteger(port) || port <= 0 || port >= 65536) {
+    return undefined;
+  }
+  return { host, port };
 }
 
 // ---------------------------------------------------------------------------

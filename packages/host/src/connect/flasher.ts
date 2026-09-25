@@ -58,6 +58,7 @@
  */
 import type { DaplinkDevice } from "../devices.js";
 import { flash as defaultFlash, type FlashOptions, type FlashOutcome, type FlashPhase } from "../flash.js";
+import { flashViaMbregistry as defaultFlashViaMbregistry, type RemoteFlashTarget } from "../mbregistry/remoteFlash.js";
 import type { Store } from "../store/index.js";
 
 /** The exact `board_owner.owner` literal this module acquires/releases
@@ -105,6 +106,11 @@ export interface FlasherDeps {
    * on demand, e.g. to exercise this module's own owner-release
    * guarantee without a real `dapjs`/HID stack. */
   flash?: typeof defaultFlash;
+  /** Injectable mbregistry flash orchestration (sprint 018 ticket 005).
+   * Defaults to the real `mbregistry/remoteFlash.ts#flashViaMbregistry`
+   * — tests substitute a fake that resolves/rejects on demand, mirroring
+   * `flash`'s own injection convention. */
+  flashViaMbregistry?: typeof defaultFlashViaMbregistry;
   /** Wall-clock reader for the acquire-retry loop's own deadline.
    * Defaults to `Date.now`. */
   now?: () => number;
@@ -153,6 +159,32 @@ export interface Flasher {
     onProgress: (phase: FlashPhase) => void,
     flashOptions?: FlashOptions,
   ): Promise<FlashOutcome>;
+
+  /**
+   * The `mbregistry`-transport sibling to {@link flash} (sprint 018
+   * ticket 005). Closes any open/opening session on `linkId` first — the
+   * same `reconciler.requestClose` seam {@link flash} already uses — but
+   * never touches `board_owner` (no `acquireBoardOwner`/
+   * `releaseBoardOwner` call anywhere in this method): mbregistry's own
+   * `flash`-kind lock is the sole exclusivity for this transport,
+   * matching `connect/connector.ts`'s `resolveExclusivity`'s
+   * `Exclusivity.kind: "none"` for `"mbregistry"` (ticket 004). Once the
+   * session is closed, delegates straight to `mbregistry/remoteFlash.ts`'s
+   * `flashViaMbregistry` against the already-resolved `target` (this
+   * module never decides *which* target — `server.ts#runFlashTask`/
+   * `link/adapters/mbregistryStream.ts`'s `resolveFlashTarget` do that).
+   * Never throws for a failure `flashViaMbregistry` itself already
+   * classifies (same "failure is a value" convention as {@link flash});
+   * does propagate a rejection from `reconciler.requestClose` itself.
+   */
+  flashMbregistry(
+    linkId: string,
+    uid: string,
+    target: RemoteFlashTarget,
+    label: string | undefined,
+    hexText: string,
+    onProgress: (phase: FlashPhase) => void,
+  ): Promise<FlashOutcome>;
 }
 
 /**
@@ -163,6 +195,7 @@ export interface Flasher {
 export function createFlasher(store: FlasherStore, deps: FlasherDeps, opts: FlasherOptions = {}): Flasher {
   const reconciler = deps.reconciler;
   const flashFn = deps.flash ?? defaultFlash;
+  const flashViaMbregistryFn = deps.flashViaMbregistry ?? defaultFlashViaMbregistry;
   const now = deps.now ?? (() => Date.now());
   const delay = deps.delay ?? defaultDelay;
   const acquireTimeoutMs = opts.acquireTimeoutMs ?? DEFAULT_ACQUIRE_TIMEOUT_MS;
@@ -215,6 +248,18 @@ export function createFlasher(store: FlasherStore, deps: FlasherDeps, opts: Flas
       } finally {
         store.releaseBoardOwner(usbSerial, FLASH_OWNER);
       }
+    },
+
+    async flashMbregistry(
+      linkId: string,
+      uid: string,
+      target: RemoteFlashTarget,
+      label: string | undefined,
+      hexText: string,
+      onProgress: (phase: FlashPhase) => void,
+    ): Promise<FlashOutcome> {
+      await reconciler.requestClose(linkId);
+      return flashViaMbregistryFn(target, uid, label, hexText, onProgress);
     },
   };
 }

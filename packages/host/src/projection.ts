@@ -327,7 +327,8 @@ function buildLink(link: ProjectionLinkRow, ctx: LinkContext): SnapshotLink {
     capabilities: {
       open: !hasSession && !isConnecting && (!requiresOwned(link.transport) || (device?.owned ?? false)),
       close: hasSession || isConnecting,
-      // A usb link can always be flashed (DAPLink, directly attached).
+      // A usb or mbregistry link can always be flashed (DAPLink directly
+      // attached, or the mbregistry daemon dialing the device directly).
       // Anything else can be flashed exactly when its DEVICE currently
       // advertises `_mbflash._tcp` -- a robot's own mbdeploy daemon.
       //
@@ -355,6 +356,7 @@ function buildLink(link: ProjectionLinkRow, ctx: LinkContext): SnapshotLink {
       // the wrong transport.
       flash:
         link.transport === "usb" ||
+        link.transport === "mbregistry" ||
         (device !== undefined && findCurrentMbflashService(ctx.services, device) !== undefined),
       provisionWifi: hasSession,
     },

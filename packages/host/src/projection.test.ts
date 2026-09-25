@@ -546,6 +546,19 @@ describe("buildSnapshotFromRows: capabilities", () => {
     expect(snapshot.devices.find((d) => d.id === 18)?.links[0]?.capabilities.flash).toBe(false);
   });
 
+  it("sprint 018 ticket 005: an mbregistry link with no open session: open/flash true, same as usb", () => {
+    const rows = emptyRows();
+    rows.devices = [
+      { id: 10, name: deviceIdToName(10), kind: "robot", role: null, commonName: null, program: null, version: null, radioChannel: null, radioGroup: null, radioSource: null, owned: true, lastSeen: 1 },
+    ];
+    rows.links = [
+      { id: "mbregistry-uid-1", deviceId: 10, transport: "mbregistry", address: { endpoint: null, uid: "uid-1" }, state: "connectable", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
+    ];
+    const snapshot = buildSnapshotFromRows(rows, 1, 1);
+    const link = snapshot.devices[0]?.links[0];
+    expect(link?.capabilities).toEqual({ open: true, close: false, flash: true, provisionWifi: false });
+  });
+
   it("an unassigned usb link (no device yet) is still open-able and flashable", () => {
     const rows = emptyRows();
     rows.links = [

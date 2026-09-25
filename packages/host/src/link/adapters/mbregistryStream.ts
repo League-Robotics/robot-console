@@ -107,6 +107,49 @@ export function resolveStreamTarget(device: MbregistryStreamDevice): { host: str
   return device.endpoint;
 }
 
+/**
+ * Sprint 018 ticket 005's own extension of {@link resolveStreamTarget},
+ * for `send_hex`/`flash` — remote-TCP-only ops (mbtools
+ * `docs/design/registry-api.md`'s "Remote flash and hex staging": never
+ * the local Unix socket/pipe, unlike `lock`+`stream` which tries the
+ * local socket first). Unlike `resolveStreamTarget`, a *local* device
+ * cannot resolve to "no target, `MbregistryClient.stream()` sorts it
+ * out" here — there is no such fallback for these two ops — so this
+ * function always returns a concrete `{host, port}`:
+ *
+ * - `device.endpoint` set (a remote, peer-owned device — same check
+ *   {@link resolveStreamTarget} makes): that device's own endpoint,
+ *   unchanged — connect straight to the owning peer, never proxying
+ *   through the local instance.
+ * - Otherwise (a local device): `127.0.0.1` on `localRemotePort` — this
+ *   console's own connected {@link MbregistryClient}'s own remote TCP
+ *   port (`MbregistryClient.remotePort`), the only way to reach even a
+ *   *locally* attached board's `flash`-kind lock/`send_hex`/`flash`,
+ *   which never exist on the local socket at all.
+ *
+ * Throws when neither is available (a local device whose own instance's
+ * remote port is unknown) — this codebase's usual "throw a descriptive
+ * `Error`, let the caller's own outer failure handling turn it into a
+ * classified/reported failure" convention (mirrors `parseLinkAddress`'s
+ * own throw-on-malformed-input contract in `connect/connector.ts`).
+ */
+export function resolveFlashTarget(
+  device: MbregistryStreamDevice,
+  localRemotePort: number | undefined,
+): { host: string; port: number } {
+  const remote = resolveStreamTarget(device);
+  if (remote !== undefined) {
+    return remote;
+  }
+  if (localRemotePort === undefined) {
+    throw new Error(
+      `mbregistry: no remote TCP port known for local device "${device.uid}" -- ` +
+        "flash/send_hex require the owning instance's own remote port, and none was reported",
+    );
+  }
+  return { host: "127.0.0.1", port: localRemotePort };
+}
+
 /** A {@link ByteStream} with sprint 018's reset primitives added —
  * ticket 006 (`relayBridger`) and the connector's own reset paths call
  * these on the same locked connection instead of opening a second one

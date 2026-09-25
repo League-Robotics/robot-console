@@ -416,8 +416,16 @@ export async function main(
   // 018-010: the sweeper defaults off; `--sweep`/`ROBOT_CONSOLE_ENABLE_SWEEP`
   // is the explicit opt back in (`hasSweepFlag`'s own doc comment). An
   // explicit `deps.runtimeOptions.disableSweep` (a test's own override)
-  // still wins, since it spreads last.
-  const runtime = startRuntimeFn({ storeOptions: { env }, disableSweep: !hasSweepFlag(argv, env), ...deps.runtimeOptions });
+  // still wins, since it spreads last. Sprint 018 ticket 006:
+  // `startRuntime` is now `async` (it resolves/spawns and connects the
+  // mbregistry client before returning), so this is awaited -- a
+  // resolution/spawn failure here propagates out of `main` itself,
+  // exactly like a real `startServer` failure already did.
+  const runtime = await startRuntimeFn({
+    storeOptions: { env },
+    disableSweep: !hasSweepFlag(argv, env),
+    ...deps.runtimeOptions,
+  });
 
   // Sprint 017 ticket 001: `getFirmwareConfig` reads `settings` via the
   // store, not `env`/a `.env` file directly, so it must be called after
@@ -432,6 +440,12 @@ export async function main(
       runtime,
       ...(port !== undefined ? { port } : {}),
       firmwareConfig,
+      // Sprint 018 ticket 006: the same already-connected mbregistry
+      // client/label `startRuntime` resolved and handed to the connector
+      // -- `server.ts#runFlashTask`'s `mbregistry`-transport branch uses
+      // this, not a second, separately-resolved client.
+      mbregistryClient: runtime.mbregistryClient,
+      mbregistryLabel: runtime.mbregistryLabel,
       // Sprint 019 ticket 004 (SUC-004): mounts the MCP Streamable HTTP
       // endpoint on this same server's own Express app -- see this
       // module's own doc comment, "MCP server", and `server.ts`'s doc

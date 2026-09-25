@@ -194,15 +194,30 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
   const now = deps.now ?? (() => Date.now());
   let stopped = false;
 
-  function linkAddress(uid: string): { endpoint: unknown; uid: string } {
-    return { endpoint: client.resolvedEndpoint, uid };
+  /** Sprint 018 ticket 006: the link row's own `address` carries the
+   * *peer device's* own routing info -- `RegistryDevice.endpoint`
+   * (`"<host>:<port>"`, or `null` for a device local to this console's
+   * own mbregistry instance) and `RegistryDevice.host` -- not this
+   * client's own `resolvedEndpoint` (which every row previously, and
+   * uselessly, carried identically regardless of which device the row
+   * was for). This is what lets `connect/connector.ts`'s
+   * `createMbregistryStream` default and `server.ts#runFlashTask` route
+   * a connect/flash straight from the stored row instead of a live
+   * `mbregistryClient.find()` round-trip. `host`/`endpoint` default to
+   * `null` for a `watch()`-event-driven upsert (`attach`/`identity`/
+   * `lock_state`): every such event is this instance's own local probe
+   * result (module doc comment's "Per-observation flow"), so there is no
+   * peer endpoint to record -- only a `list` entry for a peer-owned
+   * device ever carries a non-null value here. */
+  function linkAddress(uid: string, host: string | null, endpoint: string | null): { endpoint: string | null; host: string | null; uid: string } {
+    return { endpoint, host, uid };
   }
 
-  function upsertLinkRow(uid: string, deviceId: number | null): void {
+  function upsertLinkRow(uid: string, deviceId: number | null, host: string | null = null, endpoint: string | null = null): void {
     store.upsertLink({
       id: mbregistryLinkId(uid),
       transport: MBREGISTRY_TRANSPORT,
-      address: linkAddress(uid),
+      address: linkAddress(uid, host, endpoint),
       deviceId,
       at: now(),
     });
@@ -217,10 +232,16 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
    * `fields` does not yet carry a decodable serial/name pair (still
    * `attached_unprobed`, e.g.).
    */
-  function identify(uid: string, fields: IdentityFields, owned: boolean): number | undefined {
+  function identify(
+    uid: string,
+    fields: IdentityFields,
+    owned: boolean,
+    host: string | null = null,
+    endpoint: string | null = null,
+  ): number | undefined {
     const chipId = decodeChipId(fields.serialPayload, fields.role);
     if (chipId === undefined || fields.deviceName === null || fields.deviceName.length === 0) {
-      upsertLinkRow(uid, null);
+      upsertLinkRow(uid, null, host, endpoint);
       return undefined;
     }
 
@@ -238,7 +259,7 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
     }
     mergeNamePlaceholderIfAny(store, fields.deviceName, chipId, now());
 
-    upsertLinkRow(uid, chipId);
+    upsertLinkRow(uid, chipId, host, endpoint);
     if (owned) {
       store.setLinkState({ id: mbregistryLinkId(uid), state: "connectable", at: now() });
     }
@@ -267,7 +288,9 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
 
   function upsertFromListEntry(device: RegistryDevice): void {
     const owned = device.host === null || device.host === undefined;
-    identify(device.uid, fieldsFromListEntry(device), owned);
+    const host = device.host ?? null;
+    const endpoint = device.endpoint ?? null;
+    identify(device.uid, fieldsFromListEntry(device), owned, host, endpoint);
   }
 
   function handleAttach(event: WatchEvent): void {

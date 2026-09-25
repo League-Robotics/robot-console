@@ -17,9 +17,9 @@ pin `22` for `nvm`/`fnm`/similar version managers.
 sprint 018 — robot-console talks to boards, locks, and flashing through
 a local `mbregistry` daemon rather than opening USB/HID devices itself.
 It is not bundled and robot-console does not install it: install
-`mbtools` yourself (`League-Microbit/mbtools`), at least the version
-`packages/host/src/mbregistry/client.ts`'s `MIN_MBREGISTRY_VERSION`
-declares. robot-console looks for the `mbregistry` executable on
+`mbtools` yourself (`League-Microbit/mbtools`), at least version
+`0.20260924.7` (`packages/host/src/mbregistry/client.ts`'s
+`MIN_MBREGISTRY_VERSION`). robot-console looks for the `mbregistry` executable on
 `$MBREGISTRY_BIN`, then `$PATH`, and starts its own instance
 automatically if none is already running (see that module's own doc
 comment for the resolution order) — there is no direct-USB fallback, so

@@ -349,6 +349,40 @@ describe("server.ts: binding", () => {
       await new Promise<void>((resolve) => blocker.close(() => resolve()));
     }
   });
+
+  // Sprint 018 ticket 006 / sprint.md's own explicit success criterion:
+  // "Two robot-console instances can run on one machine on different
+  // ports". `cli.ts`'s `--port`/`ROBOT_CONSOLE_PORT` resolution already
+  // existed before this sprint; this is the first end-to-end regression
+  // test confirming two concurrently `startServer`-run instances, each
+  // with its own store, neither collide on their port nor leak state
+  // into each other.
+  it("two startServer calls on two different ports, each with its own store, run independently with no shared state", async () => {
+    const h1 = await harness();
+    const h2 = await harness();
+
+    expect(h1.server.port).not.toBe(h2.server.port);
+    expect(h1.store).not.toBe(h2.store);
+
+    const name1 = deviceIdToName(1);
+    const name2 = deviceIdToName(2);
+    h1.store.upsertDevice({ id: 1, name: name1, kind: "robot", usbSerial: "SN1", at: 1 });
+    h2.store.upsertDevice({ id: 2, name: name2, kind: "robot", usbSerial: "SN2", at: 1 });
+
+    const names1 = h1.store.projectionRows().devices.map((d) => d.name);
+    const names2 = h2.store.projectionRows().devices.map((d) => d.name);
+    expect(names1).toEqual([name1]);
+    expect(names2).toEqual([name2]);
+
+    // Closing one instance never touches the other's own listener/store.
+    await h1.server.close();
+    h1.store.close();
+    harnesses.splice(harnesses.indexOf(h1), 1);
+
+    expect(h2.store.projectionRows().devices.map((d) => d.name)).toEqual([name2]);
+    const stillUp = await fetch(h2.server.url).catch(() => undefined);
+    expect(stillUp).toBeDefined();
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -1666,7 +1700,48 @@ describe("server.ts: flash-start (mbregistry transport)", () => {
     expect((result as { message?: string }).message).toMatch(/mbregistry client/);
   });
 
-  it("a link on an unrecognized (non-usb, non-mbregistry) transport still fails descriptively", async () => {
+  // Sprint 018 ticket 006 (closing a gap flagged by ticket 005's own
+  // Description): once `mbregistryWatcher` persists a device's own
+  // `host`/`endpoint` into the link row's address, routing comes
+  // straight from that stored row -- no live `find()` round-trip.
+  it("routes straight from the stored link address (host/endpoint persisted by mbregistryWatcher) -- no live find() call at all", async () => {
+    const device = fakeRegistryDevice({ uid: "uid-4", host: "peer-host", endpoint: "10.0.0.9:7440" });
+    const mbregistryClient = fakeMbregistryClient(device, 5555);
+    const flashViaMbregistryMock = vi.fn(async () => ({ status: "ok", method: "mbregistry" }) satisfies FlashOutcome);
+    const h = await harness({
+      mbregistryClient,
+      flashViaMbregistry: flashViaMbregistryMock as unknown as StartServerOptions["flashViaMbregistry"],
+    });
+    // The stored address already carries host/endpoint (as
+    // mbregistryWatcher.ts now writes) -- unlike the tests above, which
+    // simulate a pre-018-006 row with no "host" key at all.
+    h.store.upsertLink({
+      id: "mbregistry-uid-4",
+      transport: "mbregistry",
+      address: { endpoint: "10.0.0.9:7440", host: "peer-host", uid: "uid-4" },
+      at: 1,
+    });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const result = await driveLocalHexFlash(ws, "mbregistry-uid-4");
+
+    expect(mbregistryClient.find).not.toHaveBeenCalled();
+    const call = flashViaMbregistryMock.mock.calls[0]!;
+    expect(call[0]).toEqual({ host: "10.0.0.9", port: 7440 });
+    expect(result).toMatchObject({ type: "flash-result", status: "ok" });
+  });
+
+  // Ticket 018-014 (see `projection.ts`'s own doc comment): a `wifi`
+  // link is a legitimate network-flash candidate on L, not an
+  // unrecognized transport -- so a `wifi` link with no identified
+  // device fails on that precondition, not on a "USB link required"
+  // message left over from before that ticket.
+  it("a wifi link with no identified device still fails descriptively (no fallback to USB wording)", async () => {
     const h = await harness({});
     h.store.upsertLink({ id: "wifi-1", transport: "wifi", address: { host: "x", port: 1 }, at: 1 });
     await flush();
@@ -1679,7 +1754,7 @@ describe("server.ts: flash-start (mbregistry transport)", () => {
     const result = await driveLocalHexFlash(ws, "wifi-1");
 
     expect(result).toMatchObject({ type: "flash-result", status: "error" });
-    expect((result as { message?: string }).message).toMatch(/USB link/);
+    expect((result as { message?: string }).message).toMatch(/has no identified device to flash/);
   });
 });
 

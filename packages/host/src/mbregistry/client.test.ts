@@ -393,10 +393,28 @@ describe("resolveMbregistryConnection — step 4: version check gates spawning",
     expect(compareVersions("1.0", "0.9.9")).toBe(1);
   });
 
+  // Sprint 018 ticket 006: MIN_MBREGISTRY_VERSION is now a date-style
+  // dotted-integer version (e.g. "0.20260924.7"), not semver -- a
+  // lexicographic string compare would misorder these (the character
+  // "9" sorts after "2", so "0.9.0" would wrongly look newer than
+  // "0.20260924.7"). compareVersions must compare numerically per
+  // component instead.
+  it("compareVersions compares date-style middle components numerically, not lexicographically", () => {
+    expect(compareVersions("0.9.0", "0.20260924.7")).toBe(-1);
+    expect(compareVersions("0.20260924.7", "0.9.0")).toBe(1);
+    expect(compareVersions("0.20260924.7", MIN_MBREGISTRY_VERSION)).toBe(0);
+    expect(compareVersions("0.20260924.6", MIN_MBREGISTRY_VERSION)).toBe(-1);
+    expect(compareVersions("0.20260925.0", MIN_MBREGISTRY_VERSION)).toBe(1);
+  });
+
   it("extractVersion pulls a semver token out of banner text", () => {
     expect(extractVersion("mbregistry 0.9.2\n")).toBe("0.9.2");
     expect(extractVersion("v1.2.3")).toBe("1.2.3");
     expect(extractVersion("no version here")).toBeUndefined();
+  });
+
+  it("extractVersion parses mbregistry --version's own exact pinned-version banner", () => {
+    expect(extractVersion("mbregistry 0.20260924.7\n")).toBe("0.20260924.7");
   });
 });
 
@@ -480,6 +498,59 @@ describe("resolveMbregistryConnection — step 5: spawn on demand", () => {
 
     const runCall = (spawnFn as unknown as { mock: { calls: unknown[][] } }).mock.calls.find((c) => c[1][0] === "run");
     expect(runCall?.[1]).not.toContain("--no-peering");
+  });
+
+  // Sprint 018 ticket 006: the `--ready-json` line's own top-level
+  // `"version"` key (mbtools 0.20260924.7+) is re-verified against the
+  // same floor `checkMbregistryVersion` already gated the binary
+  // against -- belt-and-braces against a `$PATH`/`$MBREGISTRY_BIN` race
+  // between that check and this spawn.
+  it("verifies the --ready-json line's own top-level \"version\" key too, and rejects (killing the child) if it is older than MIN_MBREGISTRY_VERSION", async () => {
+    const { env, homedirFn } = await unresolvableEnv();
+    let spawnedChild: ReturnType<typeof fakeChild> | undefined;
+    const spawnFn = vi.fn((command: string, args: readonly string[]) => {
+      const child = fakeChild();
+      if (args[0] === "--version") {
+        queueMicrotask(() => {
+          child.stdout.emit("data", Buffer.from(`mbregistry ${MIN_MBREGISTRY_VERSION}\n`));
+          child.emit("exit", 0);
+        });
+        return child;
+      }
+      spawnedChild = child;
+      const socketIdx = args.indexOf("--socket");
+      const socketPath = args[socketIdx + 1] as string;
+      queueMicrotask(() => {
+        child.stdout.emit(
+          "data",
+          Buffer.from(JSON.stringify({ ready: true, socket: socketPath, version: "0.1.0", ports: { remote: 17440 } }) + "\n"),
+        );
+      });
+      return child;
+    }) as unknown as SpawnFn;
+
+    await expect(
+      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, livenessTimeoutMs: 200, spawnReadyTimeoutMs: 2000 }),
+    ).rejects.toMatchObject({ code: "version_too_old", details: { found: "0.1.0", required: MIN_MBREGISTRY_VERSION } });
+    expect(spawnedChild?.kill).toHaveBeenCalled();
+  });
+
+  it("a --ready-json line with no \"version\" key at all (an older mbregistry) is not itself treated as a failure", async () => {
+    const { env, homedirFn } = await unresolvableEnv();
+    const server = new FakeRegistryServer([{ uid: "u2", short_uid: "u2" }]);
+    const spawnFn = spawnFnStartingServer(server);
+
+    const resolved = await resolveMbregistryConnection({
+      env,
+      connect,
+      spawnFn,
+      homedirFn,
+      livenessTimeoutMs: 200,
+      spawnReadyTimeoutMs: 2000,
+    });
+    expect(resolved.spawned).toBe(true);
+    resolved.socket.destroy();
+    await server.close();
   });
 });
 

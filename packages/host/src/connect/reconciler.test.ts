@@ -95,6 +95,46 @@ describe("plan() -- pure per-device connect decisions", () => {
     expect(plan(input, NOW)).toEqual([{ kind: "connect", linkId: "usb-1" }]);
   });
 
+  // Sprint 018 ticket 006: `AUTO_CONNECT_TRANSPORTS` gains `"mbregistry"`,
+  // first in preference order -- effective policy becomes
+  // `mbregistry > wifi > radio` once `usbWatcher`/the disabled mDNS
+  // branches stop producing `usb`/`mbserial`/`mbrelay` rows (`runtime.ts`).
+  // These cases mirror the `usb`-priority ones above, with `mbregistry`
+  // now winning instead.
+  it("mbregistry and wifi both connectable for one device -> an mbregistry-only job (mbregistry now outranks wifi, mirroring usb's old priority)", () => {
+    const input = rows({
+      devices: [deviceRow(1, true)],
+      links: [
+        linkRow({ id: "wifi-1", transport: "wifi", deviceId: 1 }),
+        linkRow({ id: "mbregistry-1", transport: "mbregistry", deviceId: 1 }),
+      ],
+    });
+    expect(plan(input, NOW)).toEqual([{ kind: "connect", linkId: "mbregistry-1" }]);
+  });
+
+  it("mbregistry, usb, and wifi all connectable for one device -> an mbregistry-only job (mbregistry outranks usb too)", () => {
+    const input = rows({
+      devices: [deviceRow(1, true)],
+      links: [
+        linkRow({ id: "wifi-1", transport: "wifi", deviceId: 1 }),
+        linkRow({ id: "usb-1", transport: "usb", deviceId: 1 }),
+        linkRow({ id: "mbregistry-1", transport: "mbregistry", deviceId: 1 }),
+      ],
+    });
+    expect(plan(input, NOW)).toEqual([{ kind: "connect", linkId: "mbregistry-1" }]);
+  });
+
+  it("a radio link is never auto-connected even when an mbregistry link for the same device exists, exactly as it never was against usb/wifi", () => {
+    const input = rows({
+      devices: [deviceRow(1, true)],
+      links: [
+        linkRow({ id: "radio-1", transport: "radio", deviceId: 1, address: { relayLinkId: "relay-1", channel: 1, group: 1 } }),
+        linkRow({ id: "mbregistry-1", transport: "mbregistry", deviceId: 1 }),
+      ],
+    });
+    expect(plan(input, NOW)).toEqual([{ kind: "connect", linkId: "mbregistry-1" }]);
+  });
+
   it("closed_by_user -> no job ever, even though the link is otherwise connectable and owned", () => {
     const input = rows({
       devices: [deviceRow(1, true)],

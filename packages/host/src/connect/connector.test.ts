@@ -181,9 +181,14 @@ function radioLink(relayLinkId: string, id = "radio-vevov-via-relay"): LinkRow {
 function mbrelayLink(relayLinkId: string, id = "mbrelay-vevov-via-relay"): LinkRow {
   return { id, transport: "mbrelay", address: { relayLinkId, channel: 47, group: 60 } };
 }
-/** A `mbregistry`-transport link, mirroring exactly what
+/** A `mbregistry`-transport link, mirroring the shape
  * `watchers/mbregistryWatcher.ts`'s own `linkAddress()` writes:
- * `{endpoint: client.resolvedEndpoint, uid}`. */
+ * `{endpoint, host, uid}` (sprint 018 ticket 006: the device's own
+ * routing info, not this client's `resolvedEndpoint`) -- `endpoint`'s
+ * exact value is opaque to `connector.ts` except through the default
+ * `createMbregistryStream`, which every test here overrides with a fake
+ * (`mbregistryDeps`), so the placeholder object below is never actually
+ * parsed as a `host:port` string. */
 function mbregistryLink(id = "mbregistry-XYZ", uid = "XYZ"): LinkRow {
   return { id, transport: "mbregistry", address: { endpoint: { kind: "tcp", host: "127.0.0.1", port: 7440 }, uid } };
 }

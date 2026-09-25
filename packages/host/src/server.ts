@@ -540,7 +540,16 @@ export const UI_FLASH_IDENTITY: FlashIdentity = { origin: "ui" };
 export type FlashTarget =
   | { readonly kind: "usb"; readonly usbSerial: string; readonly device: DaplinkDevice }
   | { readonly kind: "network"; readonly device: ProjectionDeviceRow; readonly service: ProjectionServiceRow }
-  | { readonly kind: "mbregistry"; readonly uid: string; readonly device: MbregistryStreamDevice };
+  | {
+      readonly kind: "mbregistry";
+      readonly uid: string;
+      readonly device: MbregistryStreamDevice;
+      /** See `resolveFlashLinkTarget`'s own `mbregistry` branch doc
+       * comment: `false` means this link's stored address predates
+       * ticket 006's persisted `host`/`endpoint`, so `runFlashTask` must
+       * fall back to a live `mbregistryClient.find()`. */
+      readonly hasPersistedHost: boolean;
+    };
 
 export interface ResolveFlashTargetDeps {
   readonly enumerateDaplinkDevices: DaplinkDeviceLister;
@@ -587,15 +596,21 @@ export async function resolveFlashLinkTarget(
     // Sprint 018 ticket 005: built purely from the link's own stored
     // address (`watchers/mbregistryWatcher.ts`'s `linkAddress()`) -- a
     // pure read, same as the `usb` branch above, with no live
-    // `mbregistryClient.find()` round-trip. `runFlashTask` is what
-    // actually needs the connected client to flash.
+    // `mbregistryClient.find()` round-trip needed in the common case.
+    // Sprint 018 ticket 006: `mbregistryWatcher` now persists the peer
+    // device's own `host`/`endpoint` into this same stored address, so
+    // routing normally comes straight from here. `address.host ===
+    // undefined` (the key absent entirely, not merely `null`) means this
+    // row predates that change; `hasPersistedHost` tells `runFlashTask`
+    // it must fall back to a live `find()` for this one link.
     const address = parseLinkAddress("mbregistry", linkRow.address) as MbregistryAddress;
     const uid = address.uid;
     const device: MbregistryStreamDevice = {
       uid,
+      host: address.host,
       endpoint: parseHostPort(typeof address.endpoint === "string" ? address.endpoint : undefined),
     };
-    return { ok: true, target: { kind: "mbregistry", uid, device } };
+    return { ok: true, target: { kind: "mbregistry", uid, device, hasPersistedHost: address.host !== undefined } };
   }
   // Every non-usb/non-mbregistry link takes the network path, whatever
   // its transport (2026-09-21 -- see `projection.ts`'s own `flash:`
@@ -1049,7 +1064,20 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
         if (!mbregistryClient) {
           return fail(`flashing link "${linkId}" requires a configured mbregistry client`);
         }
-        const plan = resolveFlashTarget(target.device, mbregistryClient.remotePort);
+        // Sprint 018 ticket 006: mbregistryWatcher now persists the peer
+        // device's own `host`/`endpoint` into the link's stored address
+        // (`resolveFlashLinkTarget`'s own `mbregistry` branch), so
+        // routing normally comes straight from `target.device` -- no
+        // live `find()` round-trip. `target.hasPersistedHost === false`
+        // means this link row predates that change; only then is a live
+        // `find()` used as a fallback.
+        const streamDevice: MbregistryStreamDevice = target.hasPersistedHost
+          ? target.device
+          : await (async () => {
+              const device = await mbregistryClient.find(target.uid);
+              return { uid: target.uid, host: device.host, endpoint: parseHostPort(device.endpoint) };
+            })();
+        const plan = resolveFlashTarget(streamDevice, mbregistryClient.remotePort);
         const outcome = await flasher.flashMbregistry(linkId, target.uid, plan, mbregistryLabel, hexText, (phase) =>
           setFlashPhase(linkId, source, phase, identity),
         );

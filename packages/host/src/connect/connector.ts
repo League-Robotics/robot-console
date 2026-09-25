@@ -123,7 +123,7 @@ import { LineLink, type ByteStream, type LineLinkOptions } from "../link/LineLin
 import { serialStream } from "../link/adapters/serialStream.js";
 import { tcpStream } from "../link/adapters/tcpStream.js";
 import { mbregistryStream } from "../link/adapters/mbregistryStream.js";
-import type { MbregistryClient } from "../mbregistry/client.js";
+import { parseHostPort, type MbregistryClient } from "../mbregistry/client.js";
 import { realScheduler, WritePacer, type Scheduler } from "../link/pacing.js";
 import {
   DEFAULT_IDENTIFY_BUDGET_MS,
@@ -351,15 +351,20 @@ export interface RelayAddress {
   readonly group: number;
 }
 /** `mbregistry`-transport `links.address` shape -- exactly what
- * `watchers/mbregistryWatcher.ts`'s own `linkAddress()` writes:
- * `{endpoint: client.resolvedEndpoint, uid}`. `endpoint` is carried
- * through opaquely (this module never interprets its own shape) --
- * required to be present per this ticket's own malformed-address
- * acceptance criterion, but only `uid` is actually read downstream
- * today (`ConnectorDeps.createMbregistryStream`'s default only needs
- * the board's own uid to `lock`/`stream` it). */
+ * `watchers/mbregistryWatcher.ts`'s own `linkAddress()` writes (sprint
+ * 018 ticket 006): the peer device's own `RegistryDevice.endpoint`
+ * (`"<host>:<port>"` string, or `null` for a device local to this
+ * console's own mbregistry instance) and `RegistryDevice.host`, plus
+ * `uid`. `endpoint`/`host` let `createMbregistryStream`'s default and
+ * `server.ts#runFlashTask` route a connect/flash straight from this
+ * stored row -- no live `mbregistryClient.find()` round-trip needed for
+ * a row this ticket's watcher wrote. `host` is `undefined` (not just
+ * `null`) for a link row written before this ticket landed (no `host`
+ * key in the JSON at all) -- callers use that distinction to fall back
+ * to a live `find()` only for such a pre-018-006 row. */
 export interface MbregistryAddress {
   readonly endpoint: unknown;
+  readonly host?: string | null;
   readonly uid: string;
 }
 export type ParsedAddress = UsbAddress | TcpAddress | RelayAddress | MbregistryAddress;
@@ -406,7 +411,11 @@ export function parseLinkAddress(transport: Transport, raw: unknown): ParsedAddr
       if (rec.endpoint === undefined || typeof rec.uid !== "string" || rec.uid.length === 0) {
         throw new Error(`connector: mbregistry address missing "endpoint"/string "uid" (got ${JSON.stringify(rec)})`);
       }
-      return { endpoint: rec.endpoint, uid: rec.uid };
+      return {
+        endpoint: rec.endpoint,
+        uid: rec.uid,
+        ...("host" in rec ? { host: rec.host as string | null } : {}),
+      };
     }
     default: {
       const exhaustive: never = transport;
@@ -660,7 +669,14 @@ export function resolveRelayPhysical(store: Store, relayLinkId: string, expected
     if (rec.endpoint === undefined || typeof rec.uid !== "string" || rec.uid.length === 0) {
       throw new Error(`connector: relay link "${relayLinkId}" (mbregistry) address missing "endpoint"/string "uid"`);
     }
-    return { transport: "mbregistry", address: { endpoint: rec.endpoint, uid: rec.uid } };
+    return {
+      transport: "mbregistry",
+      address: {
+        endpoint: rec.endpoint,
+        uid: rec.uid,
+        ...("host" in rec ? { host: rec.host as string | null } : {}),
+      },
+    };
   }
   if (expectedTransport === "usb") {
     if (typeof rec.path !== "string") {
@@ -1056,7 +1072,11 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
         );
       }
       return mbregistryStream(
-        { uid: address.uid },
+        {
+          uid: address.uid,
+          host: address.host ?? null,
+          endpoint: parseHostPort(typeof address.endpoint === "string" ? address.endpoint : undefined),
+        },
         {
           client: deps.mbregistryClient,
           kind,

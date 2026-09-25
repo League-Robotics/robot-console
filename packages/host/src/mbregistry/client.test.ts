@@ -346,6 +346,62 @@ describe("resolveMbregistryConnection — step 3: console-owned socket", () => {
     resolved.socket.destroy();
     await server.close();
   });
+
+  // Bench fix 010(a): a state dir long enough to push the derived
+  // `<state-dir>/mbregistry/api.sock` past AF_UNIX's `sun_path` limit
+  // (104 bytes on macOS/BSD, 108 on Linux) must not silently produce an
+  // unusable path -- `consoleOwnedEndpoint` (this resolution step, and
+  // `spawnMbregistry`'s own `--socket` derivation) falls back to a short,
+  // deterministic path under the system temp dir instead.
+  it("consoleOwnedEndpoint falls back to a short, deterministic temp-dir path when the derived socket path is too long", () => {
+    if (process.platform === "win32") return; // no AF_UNIX path on Windows
+    const longStateDir = path.join("/tmp", "x".repeat(200));
+    const otherLongStateDir = path.join("/tmp", "y".repeat(200));
+
+    const first = consoleOwnedEndpoint({ ROBOT_CONSOLE_STATE_DIR: longStateDir });
+    const second = consoleOwnedEndpoint({ ROBOT_CONSOLE_STATE_DIR: longStateDir });
+    if (first.kind !== "unix") throw new Error("expected a unix endpoint on this platform");
+    tmpDirs.push(path.dirname(first.path));
+
+    expect(first.path.length).toBeLessThan(100);
+    expect(first.path).not.toContain(longStateDir);
+    // Deterministic: the same state dir always derives the same fallback
+    // path, so a second launch against it finds the first's socket.
+    expect(first).toEqual(second);
+
+    const other = consoleOwnedEndpoint({ ROBOT_CONSOLE_STATE_DIR: otherLongStateDir });
+    if (other.kind !== "unix") throw new Error("expected a unix endpoint on this platform");
+    tmpDirs.push(path.dirname(other.path));
+    expect(other).not.toEqual(first);
+  });
+
+  it("resolveMbregistryConnection step 3 finds a previously-spawned instance at the too-long-path fallback location", async () => {
+    if (process.platform === "win32") return; // no AF_UNIX path on Windows
+    const longStateDir = path.join("/tmp", "z".repeat(200));
+    const fakeHome = freshTmpDir();
+    const env = { ROBOT_CONSOLE_STATE_DIR: longStateDir };
+
+    const endpoint = consoleOwnedEndpoint(env);
+    if (endpoint.kind !== "unix") throw new Error("expected a unix endpoint on this platform");
+    tmpDirs.push(path.dirname(endpoint.path));
+    const server = new FakeRegistryServer();
+    await server.listen(endpoint.path);
+    const spawnFn = vi.fn() as unknown as SpawnFn;
+
+    const resolved = await resolveMbregistryConnection({
+      env,
+      connect,
+      spawnFn,
+      homedirFn: () => fakeHome,
+      livenessTimeoutMs: 300,
+    });
+
+    expect(resolved.endpoint).toEqual(endpoint);
+    expect(resolved.spawned).toBe(false);
+    expect(spawnFn).not.toHaveBeenCalled();
+    resolved.socket.destroy();
+    await server.close();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -569,6 +625,92 @@ describe("resolveMbregistryConnection — step 5: spawn on demand", () => {
     expect(resolved.spawned).toBe(true);
     resolved.socket.destroy();
     await server.close();
+  });
+
+  // Bench fix 010(a): spawnMbregistry's own `--socket` derivation shares
+  // `consoleOwnedEndpoint` with resolution step 3 (see that suite), so a
+  // too-long state dir must make it spawn against the short fallback
+  // path instead of a path the child would die on with `OSError: AF_UNIX
+  // path too long`.
+  it("spawns with the too-long-path fallback socket when the state dir would exceed AF_UNIX's limit", async () => {
+    if (process.platform === "win32") return; // no AF_UNIX path on Windows
+    const longStateDir = path.join("/tmp", "w".repeat(200));
+    const fakeHome = freshTmpDir();
+    const env = { ROBOT_CONSOLE_STATE_DIR: longStateDir };
+    const server = new FakeRegistryServer();
+    const spawnFn = spawnFnStartingServer(server);
+
+    const resolved = await resolveMbregistryConnection({
+      env,
+      connect,
+      spawnFn,
+      homedirFn: () => fakeHome,
+      livenessTimeoutMs: 200,
+      spawnReadyTimeoutMs: 2000,
+    });
+
+    const runCall = (spawnFn as unknown as { mock: { calls: unknown[][] } }).mock.calls.find((c) => c[1][0] === "run");
+    const runArgs = runCall?.[1] as string[];
+    const socketPath = runArgs[runArgs.indexOf("--socket") + 1] as string;
+    expect(socketPath.length).toBeLessThan(100);
+    expect(socketPath).not.toContain(longStateDir);
+    tmpDirs.push(path.dirname(socketPath));
+
+    resolved.socket.destroy();
+    await server.close();
+  });
+
+  // Bench fix 010(b): "mbregistry exited before reporting ready (code 1)"
+  // with no further detail was the only signal available on the bench --
+  // the too-long-socket-path failure (and any other exit-before-ready
+  // failure) must now surface the child's own captured stderr.
+  it("includes the tail of captured stderr when the spawned process exits before reporting ready", async () => {
+    const { env, homedirFn } = await unresolvableEnv();
+    const spawnFn = vi.fn((command: string, args: readonly string[]) => {
+      const child = fakeChild();
+      if (args[0] === "--version") {
+        queueMicrotask(() => {
+          child.stdout.emit("data", Buffer.from(`mbregistry ${MIN_MBREGISTRY_VERSION}\n`));
+          child.emit("exit", 0);
+        });
+        return child;
+      }
+      queueMicrotask(() => {
+        child.stderr.emit("data", Buffer.from("OSError: AF_UNIX path too long\n"));
+        child.emit("exit", 1);
+      });
+      return child;
+    }) as unknown as SpawnFn;
+
+    await expect(
+      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, livenessTimeoutMs: 200, spawnReadyTimeoutMs: 2000 }),
+    ).rejects.toMatchObject({ code: "spawn_exited" });
+    await expect(
+      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, livenessTimeoutMs: 200, spawnReadyTimeoutMs: 2000 }),
+    ).rejects.toThrow(/AF_UNIX path too long/);
+  });
+
+  it("an exit-before-ready failure with no stderr output at all still reports the plain exit-code message", async () => {
+    const { env, homedirFn } = await unresolvableEnv();
+    const spawnFn = vi.fn((command: string, args: readonly string[]) => {
+      const child = fakeChild();
+      if (args[0] === "--version") {
+        queueMicrotask(() => {
+          child.stdout.emit("data", Buffer.from(`mbregistry ${MIN_MBREGISTRY_VERSION}\n`));
+          child.emit("exit", 0);
+        });
+        return child;
+      }
+      queueMicrotask(() => child.emit("exit", 1));
+      return child;
+    }) as unknown as SpawnFn;
+
+    await expect(
+      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, livenessTimeoutMs: 200, spawnReadyTimeoutMs: 2000 }),
+    ).rejects.toMatchObject({ code: "spawn_exited" });
+    await expect(
+      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, livenessTimeoutMs: 200, spawnReadyTimeoutMs: 2000 }),
+    ).rejects.toThrow(/mbregistry exited before reporting ready \(code 1\)$/);
   });
 });
 

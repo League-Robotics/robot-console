@@ -1,7 +1,7 @@
 ---
 id: '010'
 title: 'Bench fixes: skip gone boards, spawn socket-path robustness'
-status: in-progress
+status: done
 use-cases:
 - SUC-002
 - SUC-004
@@ -56,18 +56,42 @@ pattern `connector.ts`'s own banner-identify path already uses
 (`packages/host/src/connect/connector.ts` around line 944), and
 `DeviceKind` (`packages/host/src/store/index.ts`) currently only has
 `"robot" | "relay"` — there is no third value to map an unrecognized
-device to today. Given that, prefer the narrower fix that doesn't touch
-the shared `DeviceKind` type or UI dispatch: when `classifyBanner`
-returns `evidence: "unrecognized"` (`type: "unknown"`), treat it the
-same way `identify()` already treats an incomplete identification
-(missing chip id / device name) — don't upsert a `devices` row or
-promote the link at all, leaving it `discovered`/`stale` instead of
-mislabeling it `"robot"`. If that turns out to be insufficient (e.g. a
-later ticket needs to actually display "unknown device" in the UI for
-this transport), adding a real `"unknown"`/`"other"` `DeviceKind` value
-is the fallback — flag that as an open question in the PR rather than
-doing it here, since it would touch UI dispatch outside this ticket's
-scope.
+device to today.
+
+**Decision (superseding this section's original draft, made during
+implementation):** do not drop an unrecognized-banner device from the
+device list — flashing a board with unknown/other firmware is a core
+use case, and the device must keep its flash controls. No new
+`DeviceKind` value is needed either, though: this codebase already has
+an established pattern for exactly this case on the `usb` transport —
+a board that hasn't identified yet gets no `devices` row at all, and
+shows up instead as a bare link in `Snapshot.unassigned`, rendered by
+`UnknownDevicePage.tsx` (generic over `SnapshotLink`, flash controls and
+all), per `DevicePage.tsx`'s own dispatch (`no device owns this link ->
+UnknownDevicePage`; `device.kind === "relay" | "robot"` are the only
+other two arms, both exhaustively `switch`ed, so a third `DeviceKind`
+would touch that dispatch and every other `kind ===` call site
+codebase-wide). `mbregistryWatcher.ts`'s `identify()` already follows
+that same "no devices row, no promotion" shape for its own "incomplete
+identification" case (missing chip id/device name); this ticket extends
+it to `classifyBanner`'s `evidence: "unrecognized"` (`type: "unknown"`)
+outcome too, treated identically.
+
+The one gap that pattern didn't already cover: `projection.ts`'s
+`unassignedLinks` gate only ever collected `transport === "usb"` links
+with `deviceId === null` — a `mbregistry` link in the same shape was
+being silently dropped ("The owned gate" doc comment: "a non-usb link
+with no device_id ... is simply dropped"), which would have made an
+unrecognized mbregistry device invisible rather than merely
+unlabeled. Fixed by widening that one condition to `transport === "usb"
+|| transport === "mbregistry"` — `buildLink`'s `capabilities.flash`
+already covers `mbregistry` (sprint 018 ticket 005), and
+`UnassignedCard`/`UnknownDevicePage` are both already transport-agnostic
+(`SnapshotLink`-typed), so no UI change was needed beyond that one
+gate. See `packages/host/src/projection.ts`'s own updated doc comment
+and the `unassignedLinks` loop for the change, and
+`mbregistryWatcher.ts`'s `classifyDeviceKind`/`identify()` for the
+unrecognized-banner half.
 
 **2. `spawnMbregistry` can silently fail on a too-long socket path.**
 `packages/host/src/mbregistry/client.ts`'s `spawnMbregistry` derives the
@@ -92,25 +116,27 @@ re-running the spawn by hand outside the console. Expected fixes:
 
 ## Acceptance Criteria
 
-- [ ] A `list` entry (or a device already known from a prior `list`)
+- [x] A `list` entry (or a device already known from a prior `list`)
       with `state: "disconnected"` is never promoted to a `connectable`
       link and never triggers `store.setOwned` — its link is `stale`.
-- [ ] A device replugged after being `disconnected` still becomes
+- [x] A device replugged after being `disconnected` still becomes
       `connectable` again normally, via `attach`/`identity`, matching
       existing detach/reattach behavior.
-- [ ] A device whose banner classifies as `"unknown"`
+- [x] A device whose banner classifies as `"unknown"`
       (`evidence: "unrecognized"`) is not stored with `devices.kind =
-      "robot"` — either no `devices` row is upserted for it, or (if a
-      broader fix is chosen) it is stored with a kind other than
-      `"robot"`/`"relay"`.
-- [ ] `spawnMbregistry` falls back to a short, deterministic socket path
+      "robot"` — no `devices` row is upserted for it at all (matching
+      `identify()`'s existing "incomplete identification" treatment), and
+      it still shows up with its flash controls via
+      `Snapshot.unassigned`/`UnknownDevicePage`, per the Decision above
+      (`projection.ts`'s `unassignedLinks` gate widened to `mbregistry`).
+- [x] `spawnMbregistry` falls back to a short, deterministic socket path
       under the system temp dir when the state-dir-derived path would
       exceed the AF_UNIX length limit, and that fallback location is
       also checked when resolving a previously-spawned console-owned
       socket.
-- [ ] When a spawned mbregistry process exits before reporting ready,
+- [x] When a spawned mbregistry process exits before reporting ready,
       the error/log includes the tail of its stderr output.
-- [ ] No regression in existing `mbregistryWatcher`/`mbregistry/client`
+- [x] No regression in existing `mbregistryWatcher`/`mbregistry/client`
       tests.
 
 ## Implementation Plan
@@ -122,9 +148,12 @@ re-running the spawn by hand outside the console. Expected fixes:
 - **Files to modify**:
   - `packages/host/src/watchers/mbregistryWatcher.ts` (`upsertFromListEntry`,
     `identify`, `classifyDeviceKind`)
-  - `packages/host/src/mbregistry/client.ts` (`spawnMbregistry` and its
-    socket-path resolution step)
-  - Corresponding test files for both modules.
+  - `packages/host/src/mbregistry/client.ts` (`spawnMbregistry`,
+    `consoleOwnedEndpoint`, and their shared socket-path derivation)
+  - `packages/host/src/projection.ts` (`unassignedLinks` gate, widened
+    from `usb`-only to also include `mbregistry` — see the Decision
+    above; this is the one file added beyond the original plan)
+  - Corresponding test files for all three modules.
 - **Testing plan**:
   - New watcher test: a `list` entry with `state: "disconnected"` and
     `host: null` does not promote its link to `connectable` and does not

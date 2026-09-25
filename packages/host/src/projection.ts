@@ -31,10 +31,11 @@
  * is `null` (an mDNS observation that never matched a known device) is
  * hidden for the same reason one step further back — there is no device
  * for it to be owned by — and is not placed in {@link
- * Snapshot.unassigned} either, since that list is specifically "USB
- * boards not yet named/identified" (architecture.md §9); a network
- * observation with no device match has nothing displayable about it at
- * all (no port, no serial, no name).
+ * Snapshot.unassigned} either, since that list is specifically "boards
+ * not yet named/identified" (architecture.md §9, originally `usb`-only;
+ * ticket 018-010 widened it to `mbregistry` too — see the `unassigned`
+ * loop below); a network observation with no device match has nothing
+ * displayable about it at all (no port, no serial, no name).
  *
  * ## Radio address resolution
  *
@@ -117,12 +118,23 @@ export function buildSnapshotFromRows(rows: ProjectionRows, seq: number, at: num
       } else {
         linksByDevice.set(link.deviceId, [link]);
       }
-    } else if (link.transport === "usb") {
+    } else if (link.transport === "usb" || link.transport === "mbregistry") {
       // A usb link with no device_id yet is an unnamed/unidentified USB
-      // board -- architecture.md §9's `unassigned` list. A non-usb link
-      // with no device_id has no device to attach to and nothing
-      // displayable of its own; it is simply dropped (see this module's
-      // own doc comment, "The owned gate").
+      // board -- architecture.md §9's `unassigned` list. Ticket 018-010
+      // (bench fix) widens this to `mbregistry` too: a board whose
+      // banner classifies as unrecognized (a non-robot/non-relay
+      // firmware, e.g. a joystick) is deliberately left with no owning
+      // `devices` row by `mbregistryWatcher.ts`'s `identify()` -- the
+      // same "not yet identified" shape a `usb` board has before SWD
+      // naming succeeds -- specifically so it still surfaces here
+      // instead of being dropped outright: flashing a board with
+      // unknown/other firmware is a core use case, and `unassigned`/
+      // `UnknownDevicePage` already carries the flash controls (SUC-002,
+      // SUC-004) generically off `SnapshotLink`, no `devices` row needed.
+      // A different non-usb/non-mbregistry link with no device_id still
+      // has no device to attach to and nothing displayable of its own;
+      // it is simply dropped (see this module's own doc comment, "The
+      // owned gate").
       unassignedLinks.push(link);
     }
   }

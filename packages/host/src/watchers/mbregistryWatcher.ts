@@ -146,8 +146,30 @@ interface IdentityFields {
  * logical fields out for us. `dialect`/`serial` are unused by
  * `classifyBanner` itself; `dialect: "colon"` is an arbitrary, harmless
  * placeholder (registry-api.md's own identify fields never carry which
- * dialect the original banner used). */
-function classifyDeviceKind(fields: IdentityFields): DeviceKind {
+ * dialect the original banner used).
+ *
+ * Bench fix 010: returns `null` when the banner is unrecognized
+ * (`classification.type === "unknown"`, `evidence: "unrecognized"` —
+ * e.g. the JOYSTICK-firmware device observed on the bench, which has no
+ * `commonName`/`role` this classifier matches). `identify()` treats a
+ * `null` result exactly like its existing "incomplete identification"
+ * case (missing chip id/name): no `devices` row is upserted and the
+ * link is left unpromoted, so the device still shows up — via
+ * `Snapshot.unassigned`/`UnknownDevicePage`, the same place an
+ * unidentified `usb` board already shows up, with its flash controls
+ * intact — instead of being silently mislabeled `"robot"` and then
+ * auto-connected-and-retried-forever as one. This mirrors
+ * `usbWatcher.ts`'s own behavior for a board that never
+ * identifies (no `devices` row, `unassigned` link, `UnknownDevicePage`)
+ * rather than adding a third `DeviceKind` value: `DeviceKind` today
+ * drives `DevicePage.tsx`'s exhaustive `switch (device.kind)` UI dispatch
+ * (`"robot"` -> `RobotPage`, `"relay"` -> `RelayPage`), so a device with
+ * no recognizable kind is represented the same way "no kind decided yet"
+ * already is — no `devices` row at all — rather than teaching that
+ * dispatch a third arm. See `projection.ts`'s `unassignedLinks` gate,
+ * widened by this same ticket to include `mbregistry` alongside `usb`,
+ * for the other half of this fix. */
+function classifyDeviceKind(fields: IdentityFields): DeviceKind | null {
   const dialect: BannerDialect = "colon";
   const classification = classifyBanner({
     role: fields.role ?? "",
@@ -157,6 +179,9 @@ function classifyDeviceKind(fields: IdentityFields): DeviceKind {
     dialect,
     raw: fields.rawAnnouncement ?? "",
   });
+  if (classification.type === "unknown") {
+    return null;
+  }
   return classification.type === "relay" ? "relay" : "robot";
 }
 
@@ -245,10 +270,19 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
       return undefined;
     }
 
+    const kind = classifyDeviceKind(fields);
+    if (kind === null) {
+      // Unrecognized banner (bench fix 010) -- same treatment as an
+      // incomplete identification above: see classifyDeviceKind's own
+      // doc comment for why.
+      upsertLinkRow(uid, null, host, endpoint);
+      return undefined;
+    }
+
     store.upsertDevice({
       id: chipId,
       name: fields.deviceName,
-      kind: classifyDeviceKind(fields),
+      kind,
       usbSerial: uid,
       at: now(),
     });
@@ -284,10 +318,30 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
     };
   }
 
+  /** mbtools' `disconnected` state — what mbregistry's own CLI renders
+   * as `gone` (bench fix 010): a locally-known but currently-unplugged
+   * device (the joystick observed on the bench). */
+  const DISCONNECTED_STATE = "disconnected";
+
   function upsertFromListEntry(device: RegistryDevice): void {
-    const owned = device.host === null || device.host === undefined;
     const host = device.host ?? null;
     const endpoint = device.endpoint ?? null;
+    if (device.state === DISCONNECTED_STATE) {
+      // Never owned/promoted for a gone device: `identify(..., false,
+      // ...)` still decodes+upserts the devices/link rows as usual (so a
+      // previously-seen device stays visible/named) but skips
+      // `store.setOwned` and the connectable promotion, since `owned` is
+      // `false`. Then explicitly mark the link `stale` -- the same call
+      // `handleDetach` uses for a live `detach` event -- since
+      // `identify`'s own `upsertLinkRow` never downgrades an existing
+      // link's state on its own. It becomes `connectable` again the
+      // normal way, via a later `attach`/`identity` event (both always
+      // `owned: true`), when replugged.
+      identify(device.uid, fieldsFromListEntry(device), false, host, endpoint);
+      store.setLinkState({ id: mbregistryLinkId(device.uid), state: "stale", at: now() });
+      return;
+    }
+    const owned = device.host === null || device.host === undefined;
     identify(device.uid, fieldsFromListEntry(device), owned, host, endpoint);
   }
 

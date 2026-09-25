@@ -63,9 +63,10 @@
  */
 
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync } from "node:fs";
 import * as net from "node:net";
-import { homedir, hostname } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import path from "node:path";
 
 import { LineReassembler } from "../link/lineStream.js";
@@ -298,17 +299,59 @@ export function clientSocketCandidates(
   return paths.map((p) => ({ kind: "unix", path: p }));
 }
 
+/** `AF_UNIX`'s `sun_path` length limit — 104 bytes on macOS/BSD, 108 on
+ * Linux (ticket 018-010's Description, from a real bench failure: a
+ * deeply-nested `$XDG_STATE_HOME` pushed the derived socket path past
+ * this, and the spawned mbregistry died immediately with `OSError:
+ * AF_UNIX path too long`). Deliberately compared with a little slack
+ * below the true limit (which also has to leave room for the trailing
+ * NUL the kernel appends) rather than the exact boundary — this only
+ * ever needs to decide "derive it normally" vs. "use the short
+ * fallback", not shave the last byte off a barely-fitting path. */
+const AF_UNIX_PATH_LIMIT = process.platform === "darwin" ? 104 : 108;
+
+/** Short, deterministic hash of `stateDir`, keying the too-long-path
+ * fallback socket location (below) so the same console instance (same
+ * state dir) always derives the same fallback path — required by
+ * resolution step 3 (`resolveMbregistryConnection`'s "this console's own
+ * previously-spawned instance" check): a second launch against the same
+ * state dir must find the first launch's spawned instance there. */
+function shortStateDirHash(stateDir: string): string {
+  return createHash("sha256").update(stateDir).digest("hex").slice(0, 16);
+}
+
+/** The state-dir-derived socket path, or — when that path would exceed
+ * {@link AF_UNIX_PATH_LIMIT} — a short, deterministic fallback path
+ * under the system temp dir instead (ticket 018-010, fix (a)). The
+ * fallback's containing directory is created mode `0700` (owner-only):
+ * unlike the state dir itself, a temp-dir path is otherwise a
+ * predictable, world-visible location any local user could pre-create
+ * and race to hijack the socket at. */
+function consoleOwnedUnixSocketPath(stateDir: string): string {
+  const derived = path.join(stateDir, "mbregistry", "api.sock");
+  if (derived.length < AF_UNIX_PATH_LIMIT) {
+    return derived;
+  }
+  const dir = path.join(tmpdir(), `robot-console-mbregistry-${shortStateDirHash(stateDir)}`);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return path.join(dir, "api.sock");
+}
+
 /** This console's own previously-spawned instance, per the ticket
- * Description's step 3 — `<console-state>/mbregistry/api.sock`, or the
- * fixed Windows pipe name (mbtools has no per-instance pipe naming
- * without `--pipe`, which this module does not pass — a known
- * limitation shared with mbtools itself as of this ticket; see
- * `robot-console-integration.md` §5 item 4). */
+ * Description's step 3 — `<console-state>/mbregistry/api.sock` (or the
+ * too-long-path fallback {@link consoleOwnedUnixSocketPath} derives
+ * instead), or the fixed Windows pipe name (mbtools has no per-instance
+ * pipe naming without `--pipe`, which this module does not pass — a
+ * known limitation shared with mbtools itself as of this ticket; see
+ * `robot-console-integration.md` §5 item 4). {@link spawnMbregistry} and
+ * this resolution step both call this same function, so a socket
+ * spawned via the fallback path is still found here on a later launch
+ * against the same state dir. */
 export function consoleOwnedEndpoint(env: NodeJS.ProcessEnv = process.env): ResolvedEndpoint {
   if (process.platform === "win32") {
     return { kind: "pipe", path: WINDOWS_PIPE_NAME };
   }
-  return { kind: "unix", path: path.join(resolveStateDir({}, env), "mbregistry", "api.sock") };
+  return { kind: "unix", path: consoleOwnedUnixSocketPath(resolveStateDir({}, env)) };
 }
 
 /** `<console-state>/mbregistry/devices.db` — the spawned instance's own
@@ -644,6 +687,24 @@ function toNotFoundError(bin: string, cause?: unknown): MbregistryError {
   );
 }
 
+/** Cap on how much captured stderr a thrown error's own message ever
+ * carries — a runaway/binary-garbage child must not blow up an error
+ * message without bound. */
+const STDERR_TAIL_LIMIT = 4000;
+
+/** Formats captured stderr as an ` -- stderr: <tail>` suffix for an
+ * error message (ticket 018-010 fix (b)), or `""` when nothing was
+ * captured — the exact tail (last {@link STDERR_TAIL_LIMIT} characters)
+ * regardless of *why* the process exited, not just the too-long-socket-
+ * path case this ticket started from. */
+function stderrTail(stderr: string): string {
+  if (stderr.trim().length === 0) {
+    return "";
+  }
+  const tail = stderr.length > STDERR_TAIL_LIMIT ? stderr.slice(-STDERR_TAIL_LIMIT) : stderr;
+  return ` -- stderr: ${tail.trim()}`;
+}
+
 // ---------------------------------------------------------------------------
 // Spawn-on-demand
 // ---------------------------------------------------------------------------
@@ -740,6 +801,7 @@ export async function spawnMbregistry(options: SpawnMbregistryOptions): Promise<
 
   const ready = await new Promise<ReadyJson>((resolve, reject) => {
     let settled = false;
+    let stderr = "";
     const reassembler = new LineReassembler();
     const timer = setTimeout(() => {
       if (settled) return;
@@ -770,12 +832,26 @@ export async function spawnMbregistry(options: SpawnMbregistryOptions): Promise<
         }
       }
     });
+    // Ticket 018-010 fix (b): capture stderr the whole time we're
+    // waiting for --ready-json, so an exit-before-ready failure below
+    // can report *why* -- previously this was read (Node buffers an
+    // unlistened stream internally) but never surfaced, so the only way
+    // to learn what actually happened was to re-run the spawn by hand
+    // outside the console.
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
     child.once("error", (err) => {
       settle(() => reject(toNotFoundError(bin, err)));
     });
     child.once("exit", (code) => {
       settle(() =>
-        reject(new MbregistryError(`mbregistry exited before reporting ready (code ${String(code)})`, "spawn_exited")),
+        reject(
+          new MbregistryError(
+            `mbregistry exited before reporting ready (code ${String(code)})${stderrTail(stderr)}`,
+            "spawn_exited",
+          ),
+        ),
       );
     });
   });

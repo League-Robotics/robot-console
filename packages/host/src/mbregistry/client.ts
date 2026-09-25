@@ -43,15 +43,18 @@
  *
  * Per `registry-api.md`, `{"op": "stream", "uid": ...}` requires a
  * `serial`- or `relay`-kind lock already held by *this same connection*.
- * `stream` is also TCP-remote-API-only as of this mbtools version (not
- * yet on the local Unix socket/pipe — `robot-console-integration.md` §5
- * item 8 lists that as a still-desired future mbtools change). So
- * {@link MbregistryClient.stream} opens its own dedicated TCP connection
- * to the remote endpoint learned from a spawn's `--ready-json` line (or
- * supplied by a caller that already knows it), issues `lock` then
- * `stream` on that one connection, and hands back the raw, post-ack
- * socket — the future `mbregistryStream` adapter's own concern is the
- * binary frame format layered on top of it, not this handshake.
+ * `stream` shipped TCP-remote-API-only at first (sprint 003), then
+ * landed on the local Unix socket/pipe too (mbtools 008-004) — so
+ * {@link MbregistryClient.stream} now tries a fresh connection to this
+ * client's own local endpoint first for a local device (no
+ * `remoteEndpoint` argument), falling back to the remote TCP port (the
+ * only path before 008-004, and still the only path for a *remote*
+ * device — see that method's own doc comment) if the local socket's
+ * `stream` request is unrecognized by an older mbregistry. Either way,
+ * `lock` then `stream` happen on one dedicated connection, and the raw,
+ * post-ack socket is handed back — the `mbregistryStream` adapter
+ * (018-003)'s own concern is the binary frame format layered on top of
+ * it, not this handshake.
  */
 
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
@@ -903,26 +906,187 @@ export interface MbregistryClient {
    * that). Ends when the connection closes. */
   watch(): AsyncIterable<WatchEvent>;
   /**
-   * Opens a dedicated connection to the remote TCP endpoint (learned
-   * from a spawn's `--ready-json`, or `remoteEndpoint` if this client
-   * connected to a pre-existing daemon whose remote port is already
-   * known some other way), and performs `lock` then `stream` on it —
+   * Performs `lock` then `stream` on one dedicated connection —
    * `registry-api.md`'s own precondition that both must come from the
-   * *same* connection. Resolves to the raw, post-ack socket for a
-   * binary-framing layer (the `mbregistryStream` adapter ticket) to
-   * take over; `unlockAndClose()` releases the lock by closing that
+   * *same* connection — and resolves to the raw, post-ack socket for a
+   * binary-framing layer (ticket 018-003's `mbregistryStream` adapter)
+   * to take over; `unlockAndClose()` releases the lock by closing that
    * connection.
+   *
+   * `remoteEndpoint` omitted (a local device, per `mbregistryStream`'s
+   * own `resolveStreamTarget`): if this client's own {@link
+   * resolvedEndpoint} is a local Unix socket/pipe, a fresh connection to
+   * that *same* local endpoint is tried first (mbtools 008-004 added
+   * `stream` there too, per ticket 018-003's coordinator note — no extra
+   * TCP hop, no dependency on knowing this instance's own remote port).
+   * That attempt falls back to the remote TCP port ({@link remotePort}
+   * on `127.0.0.1`, the only path before 008-004) if the local socket's
+   * own `stream` request comes back `invalid_request` — the shape an
+   * older mbregistry that predates 008-004 gives an unrecognized op (the
+   * lock it took first is released before falling back, so nothing is
+   * left dangling). `remoteEndpoint` present (a remote device) always
+   * goes straight to that host's own remote TCP port — a peer's local
+   * socket is never reachable from here.
+   *
+   * `leftover`: any raw bytes that arrived immediately after `stream`'s
+   * own ack line, in the very same chunk — the caller (`mbregistryStream`)
+   * must feed these into its own frame decoder before anything else the
+   * socket's `"data"` event later delivers; see `client.ts`'s own
+   * `performStreamHandshake` doc comment for why this exists (never
+   * silently dropped or corrupted by a JSON-line string decode).
    */
   stream(
     uid: string,
     kind: Extract<LockKind, "serial" | "relay">,
     remoteEndpoint?: { host: string; port: number },
-  ): Promise<{ socket: net.Socket; unlockAndClose: () => void }>;
+    label?: string,
+  ): Promise<{ socket: net.Socket; unlockAndClose: () => void; leftover: Buffer }>;
   /** Set once {@link connect} resolves. */
   readonly resolvedEndpoint: ResolvedEndpoint | undefined;
   /** Set once {@link connect} resolves, only when this call spawned a
    * new instance and it reported a remote port. */
   readonly remotePort: number | undefined;
+}
+
+function buildLockOp(uid: string, kind: LockKind, label: string | undefined): Record<string, unknown> {
+  const op: Record<string, unknown> = { op: "lock", uid, kind };
+  if (label !== undefined) {
+    op.label = label;
+  }
+  return op;
+}
+
+/** The result of a successful `lock` + `stream` handshake — see {@link
+ * performStreamHandshake}'s own doc comment for why `leftover` exists. */
+interface StreamHandshakeResult {
+  socket: net.Socket;
+  unlockAndClose: () => void;
+  leftover: Buffer;
+}
+
+/** `stream` came back `invalid_request` (an older mbregistry that
+ * predates 008-004 doesn't recognize the op at all) — the caller's cue
+ * to fall back to the remote TCP port. The lock this attempt took has
+ * already been released and its connection closed. */
+interface StreamHandshakeFallback {
+  fallback: true;
+}
+
+/** Reads exactly one raw wire line (up to and not including the first
+ * `0x0A` byte) off `socket`, via a temporary listener installed and torn
+ * down within this call — used only for the one line that matters most,
+ * `stream`'s own ack, whose exact byte boundary decides where JSON
+ * framing ends and binary framing begins (see {@link
+ * performStreamHandshake}). Resolves with that line (`utf8`-decoded —
+ * safe, since the protocol guarantees this one line is itself valid
+ * JSON/UTF-8) and `leftover`: whatever raw bytes arrived immediately
+ * after it, in the very same chunk — untouched, as a `Buffer`, never
+ * routed through any string decode that could corrupt binary payload. */
+function readRawLine(socket: net.Socket): Promise<{ line: string; leftover: Buffer }> {
+  return new Promise((resolve, reject) => {
+    let buffer = Buffer.alloc(0);
+    const cleanup = () => {
+      socket.off("data", onData);
+      socket.off("error", onError);
+      socket.off("close", onClose);
+    };
+    const onData = (chunk: Buffer) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      const newlineIndex = buffer.indexOf(0x0a);
+      if (newlineIndex >= 0) {
+        cleanup();
+        resolve({ line: buffer.subarray(0, newlineIndex).toString("utf8"), leftover: buffer.subarray(newlineIndex + 1) });
+      }
+    };
+    const onError = (err: Error) => {
+      cleanup();
+      reject(err);
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new MbregistryError("mbregistry connection closed", "connection_closed"));
+    };
+    socket.on("data", onData);
+    socket.once("error", onError);
+    socket.once("close", onClose);
+  });
+}
+
+/**
+ * Performs `lock` then `stream` on `socket`/`conn` (already open, not
+ * yet used for anything) and hands back the raw post-ack socket — or a
+ * {@link StreamHandshakeFallback} marker if `stream` is unrecognized on
+ * this transport.
+ *
+ * **The handoff race this function exists to close** (flagged in this
+ * ticket's own Approach and `registry-api.md`'s "Client synchronization
+ * requirement"): once `stream`'s ack is sent, the server may write its
+ * first binary frame immediately after — nothing prevents the OS/network
+ * stack from coalescing that ack line and the frame bytes that follow it
+ * into one TCP segment, delivered to this client as a single `"data"`
+ * event. `JsonLinesConnection`'s own line reassembler decodes through a
+ * JS string, which is lossy for arbitrary binary payload and, worse,
+ * has no way to hand back "the bytes after the line" once `detach()` is
+ * called — they would simply be discarded, silently corrupting or
+ * dropping a session's very first frame. So this function never lets
+ * `JsonLinesConnection` see the `stream` request at all: it detaches
+ * *right after* `lock`'s own response (a point at which, by protocol,
+ * the server has nothing left to say until we write again — safe to stop
+ * string-based parsing there), writes the `stream` request line to the
+ * raw socket itself, and reads its ack back via {@link readRawLine},
+ * which never routes anything past that one line's own terminating
+ * newline through a string at all.
+ */
+async function performStreamHandshake(
+  conn: JsonLinesConnection,
+  uid: string,
+  kind: LockKind,
+  label: string | undefined,
+): Promise<StreamHandshakeResult | StreamHandshakeFallback> {
+  unwrap(await conn.request(buildLockOp(uid, kind, label)));
+  const rawSocket = conn.detach();
+  rawSocket.write(JSON.stringify({ op: "stream", uid }) + "\n");
+  const { line, leftover } = await readRawLine(rawSocket);
+  const response = JSON.parse(line) as WireResponse;
+  if (!response.ok) {
+    if (response.code === "invalid_request") {
+      rawSocket.write(JSON.stringify({ op: "unlock", uid }) + "\n");
+      rawSocket.end();
+      return { fallback: true };
+    }
+    throw new MbregistryError(response.error, response.code, response);
+  }
+  return { socket: rawSocket, unlockAndClose: () => rawSocket.end(), leftover };
+}
+
+function isFallback(result: StreamHandshakeResult | StreamHandshakeFallback): result is StreamHandshakeFallback {
+  return "fallback" in result;
+}
+
+/** {@link MbregistryClient.stream}'s local-socket-first attempt (mbtools
+ * 008-004) — a fresh connection to `endpoint` (this client's own
+ * resolved local Unix socket/pipe), `lock` then `stream` on it via
+ * {@link performStreamHandshake}. Returns `undefined` when that reports
+ * a {@link StreamHandshakeFallback} — the caller falls back to the
+ * remote TCP port unchanged. Any other failure (`locked`, `not_found`,
+ * ...) propagates, and the attempt's own socket is always torn down on
+ * any failure path (never left dangling). */
+async function tryLocalSocketStream(
+  endpoint: ResolvedEndpoint,
+  connect: ConnectFn,
+  uid: string,
+  kind: LockKind,
+  label: string | undefined,
+): Promise<StreamHandshakeResult | undefined> {
+  const socket = await openSocket(endpoint, connect);
+  const conn = new JsonLinesConnection(socket);
+  try {
+    const result = await performStreamHandshake(conn, uid, kind, label);
+    return isFallback(result) ? undefined : result;
+  } catch (err) {
+    socket.destroy();
+    throw err;
+  }
 }
 
 /**
@@ -996,19 +1160,34 @@ export function createMbregistryClient(deps: MbregistryClientDeps = {}): Mbregis
       uid: string,
       kind: Extract<LockKind, "serial" | "relay">,
       remoteEndpoint?: { host: string; port: number },
-    ): Promise<{ socket: net.Socket; unlockAndClose: () => void }> {
+      label?: string,
+    ): Promise<{ socket: net.Socket; unlockAndClose: () => void; leftover: Buffer }> {
+      if (remoteEndpoint === undefined && resolvedEndpoint !== undefined && resolvedEndpoint.kind !== "tcp") {
+        const local = await tryLocalSocketStream(resolvedEndpoint, connect, uid, kind, label);
+        if (local !== undefined) {
+          return local;
+        }
+      }
       const target = remoteEndpoint ?? (remotePort !== undefined ? { host: "127.0.0.1", port: remotePort } : undefined);
       if (target === undefined) {
         throw new MbregistryError("no remote endpoint known for stream() — pass one explicitly", "internal_error");
       }
       const socket = await openSocket({ kind: "tcp", host: target.host, port: target.port }, connect);
       const conn = new JsonLinesConnection(socket);
-      unwrap(await conn.request({ op: "lock", uid, kind }));
-      unwrap(await conn.request({ op: "stream", uid }));
-      return {
-        socket: conn.detach(),
-        unlockAndClose: () => socket.end(),
-      };
+      try {
+        const result = await performStreamHandshake(conn, uid, kind, label);
+        if (isFallback(result)) {
+          // The remote TCP API has supported `stream` since sprint 003 --
+          // an `invalid_request` here means this mbregistry is far older
+          // than robot-console's own MIN_MBREGISTRY_VERSION floor, not a
+          // case to silently swallow.
+          throw new MbregistryError("mbregistry's remote API does not support the 'stream' op", "invalid_request");
+        }
+        return result;
+      } catch (err) {
+        socket.destroy();
+        throw err;
+      }
     },
     get resolvedEndpoint(): ResolvedEndpoint | undefined {
       return resolvedEndpoint;

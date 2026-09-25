@@ -41,30 +41,70 @@ import {
  * like a real unrecognized/unhandled case would surface to a client. */
 class FakeRegistryServer {
   private readonly server: net.Server;
+  private tcpServer: net.Server | undefined;
   private readonly sockets = new Set<net.Socket>();
   private readonly locks = new Map<string, LockKind>();
+  /** Ticket 018-003's local-socket-first `stream` fallback tests: which
+   * transport(s), if any, answer `{"op": "stream"}` for real instead of
+   * falling through to the generic "unknown op" `invalid_request` every
+   * other unhandled op already gets — mirrors a real mbregistry that has
+   * `stream` on its remote TCP port (sprint 003) but not yet on the
+   * local socket (predates mbtools 008-004). Empty by default: every
+   * pre-018-003 test in this file never sends `stream` at all. */
+  private readonly streamOn: Set<"unix" | "tcp">;
 
-  constructor(private readonly devices: Record<string, unknown>[] = []) {
-    this.server = net.createServer((socket) => {
-      this.sockets.add(socket);
-      socket.on("close", () => this.sockets.delete(socket));
-      let buffer = "";
-      socket.on("data", (chunk: Buffer) => {
-        buffer += chunk.toString("utf8");
-        let idx: number;
-        while ((idx = buffer.indexOf("\n")) >= 0) {
-          const line = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + 1);
-          if (line.trim().length === 0) continue;
-          this.handleLine(socket, JSON.parse(line));
-        }
-      });
+  constructor(
+    private readonly devices: Record<string, unknown>[] = [],
+    options: { streamOn?: Array<"unix" | "tcp"> } = {},
+  ) {
+    this.streamOn = new Set(options.streamOn ?? []);
+    this.server = net.createServer((socket) => this.attachConnection(socket, "unix"));
+  }
+
+  /** Starts a second, TCP listener sharing this same fake's dispatch —
+   * mirrors a real mbregistry's remote TCP control plane sharing one
+   * dispatch implementation with its local Unix socket
+   * (`_api_base.BaseAPIServer`). */
+  listenTcp(port: number): Promise<void> {
+    this.tcpServer = net.createServer((socket) => this.attachConnection(socket, "tcp"));
+    return new Promise((resolve, reject) => {
+      this.tcpServer?.once("error", reject);
+      this.tcpServer?.listen(port, "127.0.0.1", () => resolve());
     });
   }
 
-  private handleLine(socket: net.Socket, op: Record<string, unknown>): void {
+  private attachConnection(socket: net.Socket, transport: "unix" | "tcp"): void {
+    this.sockets.add(socket);
+    socket.on("close", () => this.sockets.delete(socket));
+    let buffer = "";
+    socket.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString("utf8");
+      let idx: number;
+      while ((idx = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 1);
+        if (line.trim().length === 0) continue;
+        this.handleLine(socket, JSON.parse(line), transport);
+      }
+    });
+  }
+
+  private handleLine(socket: net.Socket, op: Record<string, unknown>, transport: "unix" | "tcp"): void {
     const write = (resp: unknown) => socket.write(JSON.stringify(resp) + "\n");
     switch (op.op) {
+      case "stream": {
+        if (!this.streamOn.has(transport)) {
+          write({ ok: false, code: "invalid_request", error: "unknown op: stream" });
+          return;
+        }
+        const uid = String(op.uid);
+        if (!this.locks.has(uid)) {
+          write({ ok: false, code: "not_locked", error: "no serial/relay-kind lock held by this connection" });
+          return;
+        }
+        write({ ok: true });
+        return;
+      }
       case "list":
         write({ ok: true, devices: this.devices });
         return;
@@ -122,11 +162,14 @@ class FakeRegistryServer {
     });
   }
 
-  close(): Promise<void> {
+  async close(): Promise<void> {
     for (const socket of this.sockets) {
       socket.destroy();
     }
-    return new Promise((resolve) => this.server.close(() => resolve()));
+    await new Promise((resolve) => this.server.close(() => resolve()));
+    if (this.tcpServer !== undefined) {
+      await new Promise((resolve) => this.tcpServer?.close(() => resolve()));
+    }
   }
 }
 
@@ -547,6 +590,90 @@ describe("createMbregistryClient — typed ops (list/lock/unlock/watch)", () => 
     const result = await firstEvent;
     expect(result.done).toBe(false);
     expect(result.value).toMatchObject({ type: "attach", uid: "abc123" });
+    client.close();
+    await server.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stream() -- ticket 018-003's local-socket-first / remote-TCP-fallback policy
+// ---------------------------------------------------------------------------
+
+describe("createMbregistryClient().stream() -- local-socket-first, remote-TCP fallback", () => {
+  const REMOTE_PORT = 17442;
+
+  /** Spawns a fake instance (so `remotePort` is known) whose local Unix
+   * socket answers `stream` per `streamOn`, and which also listens on
+   * `REMOTE_PORT` over TCP -- mirrors a real mbregistry that may support
+   * `stream` on one transport but not (yet) the other. */
+  async function connectedClientWithStreamSupport(streamOn: Array<"unix" | "tcp">) {
+    const stateDir = freshTmpDir();
+    const fakeHome = freshTmpDir();
+    const env = { ROBOT_CONSOLE_STATE_DIR: stateDir };
+    const server = new FakeRegistryServer([], { streamOn });
+    await server.listenTcp(REMOTE_PORT);
+
+    const spawnFn = vi.fn((command: string, args: readonly string[]) => {
+      const child = fakeChild();
+      if (args[0] === "--version") {
+        queueMicrotask(() => {
+          child.stdout.emit("data", Buffer.from(`mbregistry ${MIN_MBREGISTRY_VERSION}\n`));
+          child.emit("exit", 0);
+        });
+        return child;
+      }
+      const socketIdx = args.indexOf("--socket");
+      const socketPath = args[socketIdx + 1] as string;
+      void server.listen(socketPath).then(() => {
+        child.stdout.emit(
+          "data",
+          Buffer.from(JSON.stringify({ ready: true, socket: socketPath, ports: { remote: REMOTE_PORT } }) + "\n"),
+        );
+      });
+      return child;
+    }) as unknown as SpawnFn;
+
+    const client = createMbregistryClient({
+      env,
+      connect,
+      spawnFn,
+      homedirFn: () => fakeHome,
+      livenessTimeoutMs: 200,
+      spawnReadyTimeoutMs: 2000,
+    });
+    await client.connect();
+    expect(client.resolvedEndpoint?.kind).toBe("unix");
+    return { client, server };
+  }
+
+  it("streams over the local socket when it supports `stream`, sending the given label", async () => {
+    const { client, server } = await connectedClientWithStreamSupport(["unix"]);
+    const result = await client.stream("board-1", "serial", undefined, "robot-console");
+    expect(result.leftover).toEqual(Buffer.alloc(0));
+    result.unlockAndClose();
+    client.close();
+    await server.close();
+  });
+
+  it("falls back to the remote TCP port when the local socket's `stream` is invalid_request", async () => {
+    const { client, server } = await connectedClientWithStreamSupport(["tcp"]);
+    const result = await client.stream("board-2", "serial", undefined, "robot-console");
+    expect(result.socket.remoteAddress).toBeDefined();
+    // A TCP socket has a remotePort matching where this fell back to --
+    // the local Unix socket path never has one at all.
+    expect(result.socket.remotePort).toBe(REMOTE_PORT);
+    result.unlockAndClose();
+    client.close();
+    await server.close();
+  });
+
+  it("propagates a real lock failure without ever falling back to TCP", async () => {
+    const { client, server } = await connectedClientWithStreamSupport(["unix", "tcp"]);
+    await client.lock("board-3", "serial", "someone-else");
+    // A second connection (this attempt's own fresh local-socket
+    // connection) sees the uid already locked -- a real outcome, not a
+    // "this transport doesn't support stream" signal.
+    await expect(client.stream("board-3", "serial", undefined, "robot-console")).rejects.toMatchObject({ code: "locked" });
     client.close();
     await server.close();
   });

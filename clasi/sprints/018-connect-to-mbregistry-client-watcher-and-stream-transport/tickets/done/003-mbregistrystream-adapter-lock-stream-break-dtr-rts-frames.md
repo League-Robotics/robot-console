@@ -1,9 +1,13 @@
 ---
 id: '003'
 title: 'mbregistryStream adapter: lock, stream, BREAK/DTR/RTS frames'
-status: open
-use-cases: [SUC-004, SUC-005, SUC-006]
-depends-on: ['001']
+status: done
+use-cases:
+- SUC-004
+- SUC-005
+- SUC-006
+depends-on:
+- '001'
 github-issue: ''
 issue: use-mbregistry-for-boards-locks-and-flashing.md
 completes_issue: true
@@ -61,25 +65,58 @@ releases the lock (mbregistry releases on connection close per
 
 ## Acceptance Criteria
 
-- [ ] `open()` on an unlocked device succeeds and the resulting
+- [x] `open()` on an unlocked device succeeds and the resulting
       `ByteStream` carries `DATA` frames both directions, indistinguishable
       to `LineLink` from `serialStream`/`tcpStream`.
-- [ ] `open()` on an already-locked device rejects with `"in use by
+- [x] `open()` on an already-locked device rejects with `"in use by
       <label>"` when a label is present.
-- [ ] `open()` on an already-locked device with no `holder.label`
+- [x] `open()` on an already-locked device with no `holder.label`
       rejects with plain `"in use"` — no `undefined` substring anywhere.
-- [ ] A stale-looking lock's rejection message includes the exact
+- [x] A stale-looking lock's rejection message includes the exact
       `mbregistry unlock --force <name>` command and the owning host.
-- [ ] `sendBreak()` sends a `BREAK` frame; `setDtr`/`setRts` send
+- [x] `sendBreak()` sends a `BREAK` frame; `setDtr`/`setRts` send
       `SET_DTR`/`SET_RTS` with the correct one-byte payload.
-- [ ] `close()` sends `CLOSE` and the socket closes; no dangling lock (a
+- [x] `close()` sends `CLOSE` and the socket closes; no dangling lock (a
       fake server test asserts the lock is released on disconnect).
-- [ ] A malformed/oversized frame from the fake server is handled
+- [x] A malformed/oversized frame from the fake server is handled
       without crashing the adapter (mirrors `stream_frame.py`'s own
       `FrameError` cases) — surfaces as an `onClose`/`onError`, per
       `ByteStream`'s existing contract.
-- [ ] All tests run against a fake JSON-lines + binary-frame server
+- [x] All tests run against a fake JSON-lines + binary-frame server
       (per sprint.md's Test Strategy) — no real mbregistry required.
+
+## Implementation Notes (deviations from plan)
+
+- **Local-socket-first `stream`, coordinator update mid-ticket**: mbtools
+  008-004 landed `stream` on the local Unix socket/pipe (previously
+  TCP-remote-API-only) while this ticket was in progress. `mbregistryClient.stream()`
+  (`packages/host/src/mbregistry/client.ts`) now tries a fresh connection
+  to this client's own local endpoint first for a local device, falling
+  back to the remote TCP port only if that local attempt's `stream`
+  request comes back `invalid_request` (an older registry). This *is* a
+  change to a file outside the ticket's own new files (the plan said
+  "none outside new files") — necessary because `resolveStreamTarget`'s
+  "one-place change" seam lives one layer up, in what target `stream()`
+  itself picks, not in `mbregistryStream.ts`.
+- **`client.stream()` gained a `label` parameter** (4th, optional) — the
+  original ticket-001 signature had no way to pass `lock`'s own `label`
+  field, which this ticket's own acceptance criteria require.
+- **Fixed a real dangling-connection/data-loss bug found while testing**:
+  `client.stream()`'s handshake now reads `stream`'s own ack line off the
+  raw socket directly (`performStreamHandshake`/`readRawLine`) rather
+  than through the shared JSON-line reassembler, and returns any bytes
+  that arrived in the very same TCP chunk as that ack (`leftover`) for
+  `mbregistryStream` to feed into its frame decoder first. Without this,
+  a frame the server writes immediately after its own ack (plausible on
+  a fast loopback connection) could be silently dropped or corrupted by
+  the string-based JSON reassembler's own `detach()`. Confirmed via the
+  malformed-frame test, which failed until this fix landed. Every
+  lock/stream failure path now also always tears down its own socket
+  (previously a `locked` failure on the local-first attempt left a
+  connection open, hanging `net.Server.close()` in tests).
+- `DEFAULT_STALE_LOCK_AFTER_S` (5 minutes) is this module's own fixed
+  *display* threshold — SUC-006 is explicit this is not an enforced
+  timeout.
 
 ## Implementation Plan
 

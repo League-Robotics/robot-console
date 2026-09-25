@@ -1,8 +1,9 @@
 ---
 id: '001'
 title: 'mbregistryClient: transport, resolution, spawn-on-demand, version check'
-status: open
-use-cases: [SUC-001]
+status: done
+use-cases:
+- SUC-001
 depends-on: []
 github-issue: ''
 issue: use-mbregistry-for-boards-locks-and-flashing.md
@@ -56,21 +57,21 @@ paragraph: "requires mbtools >= X, install separately, not bundled").
 
 ## Acceptance Criteria
 
-- [ ] `mbregistryClient` connects via each of the 4 resolution paths in
+- [x] `mbregistryClient` connects via each of the 4 resolution paths in
       isolation (unit tests with a fake socket/process, no real
       mbregistry).
-- [ ] `$ROBOT_CONSOLE_MBREGISTRY` set → never spawns, even if unreachable
+- [x] `$ROBOT_CONSOLE_MBREGISTRY` set → never spawns, even if unreachable
       (surfaces a clear connect error instead).
-- [ ] No mbregistry running and nothing set → spawns one with
+- [x] No mbregistry running and nothing set → spawns one with
       `--exit-with-parent`; the client's own request/response calls
       (`list`, `lock`, `unlock`, `stream`, `watch`) work against the
       spawned instance's reported socket/ports.
-- [ ] `mbregistry` missing from `$MBREGISTRY_BIN`/`PATH` → startup fails
+- [x] `mbregistry` missing from `$MBREGISTRY_BIN`/`PATH` → startup fails
       with a message naming `MIN_MBREGISTRY_VERSION`.
-- [ ] Installed mbregistry below `MIN_MBREGISTRY_VERSION` → same clear
+- [x] Installed mbregistry below `MIN_MBREGISTRY_VERSION` → same clear
       failure, no spawn attempted.
-- [ ] README documents mbtools as a separately-installed prerequisite.
-- [ ] Every wire call (`list`/`find`/`lock`/`unlock`/`watch`/`stream`
+- [x] README documents mbtools as a separately-installed prerequisite.
+- [x] Every wire call (`list`/`find`/`lock`/`unlock`/`watch`/`stream`
       request lines) is typed against `docs/design/registry-api.md`'s
       documented shapes, not re-derived ad hoc.
 

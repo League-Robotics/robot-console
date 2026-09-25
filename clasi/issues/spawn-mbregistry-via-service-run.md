@@ -1,6 +1,6 @@
 ---
 status: pending
-sprint: 025
+sprint: '025'
 ---
 
 # Spawn mbregistry with `mbregistry service run` instead of `mbregistry run`

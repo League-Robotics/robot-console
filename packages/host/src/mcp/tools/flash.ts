@@ -143,11 +143,21 @@ export interface FlashToolsDeps {
  * action already executed by the time this value is chosen. */
 const UNKNOWN_CALLER = "unknown";
 
-/** The two {@link FirmwareKind} values `request_flash` accepts --
+/** The three {@link FirmwareKind} values `request_flash` accepts --
  * kept as a literal tuple (not re-derived from the type) so `z.enum`
  * has a concrete value to validate against; `flash.test.ts` asserts
- * this stays exactly `FirmwareKind`'s own two members. */
-const FIRMWARE_KINDS = ["relay", "robot"] as const;
+ * this stays exactly `FirmwareKind`'s own three members. Deliberately a
+ * separate constant from `wsMessages.ts`'s own union (this file's
+ * narrow-surface convention -- see this module's own doc comment): the
+ * MCP tool surface names its own accepted values rather than importing
+ * a type-derived list, so a future widening of `FirmwareKind` cannot
+ * silently change what an agent can request without a corresponding
+ * edit here. "joystick" (sprint 023, 2026-09-21) is included with no
+ * context-based restriction -- an MCP-connected agent is not "on a
+ * robot's device page", so it can already flash relay or robot firmware
+ * onto any device today with no such restriction; joystick joins on the
+ * same unrestricted footing. */
+const FIRMWARE_KINDS = ["relay", "robot", "joystick"] as const;
 
 function jsonResult(value: unknown, isError = false): { content: [{ type: "text"; text: string }]; isError?: boolean } {
   return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }], ...(isError ? { isError: true } : {}) };
@@ -190,7 +200,7 @@ export function registerFlashTools(server: McpServer, deps: FlashToolsDeps): voi
           .number()
           .int()
           .describe("The target device's numeric id (devices.id), e.g. from list_devices/get_device_status's own `id` field."),
-        firmwareRef: z.enum(FIRMWARE_KINDS).describe('Which firmware to flash -- "relay" or "robot" (the fleet\'s own configured release for each).'),
+        firmwareRef: z.enum(FIRMWARE_KINDS).describe('Which firmware to flash -- "relay", "robot", or "joystick" (the fleet\'s own configured release for each).'),
       },
     },
     async ({ deviceId, firmwareRef }) => {

@@ -96,7 +96,12 @@ import type {
 import path from "node:path";
 import { isLocalHexPath } from "./config.js";
 
-const FIRMWARE_KINDS: readonly FirmwareKind[] = ["relay", "robot"];
+// 2026-09-21: joystick added as a third FirmwareKind (sprint 023).
+// This array type-checks fine even when it's missing a kind -- a
+// subset array satisfies `readonly FirmwareKind[]` -- so the compiler
+// will not catch an omission here the way it catches a missing
+// Record<FirmwareKind, ...> key elsewhere. Keep it exhaustive by hand.
+const FIRMWARE_KINDS: readonly FirmwareKind[] = ["relay", "robot", "joystick"];
 
 /** Reads {@link Store.projectionRows} and builds the {@link Snapshot}.
  * `seq`/`at` are the caller's (see this module's own doc comment for

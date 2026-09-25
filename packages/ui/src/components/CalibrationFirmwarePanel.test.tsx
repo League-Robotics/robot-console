@@ -113,6 +113,7 @@ function markRobotFirmwareAvailable(socket: FakeSocket): void {
           available: true,
           checkedAt: 1000,
         },
+        joystick: { configured: false },
       },
       wifi: { ssid: null, source: null },
       tasks: [],

@@ -26,8 +26,9 @@
 import { act, type ReactElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import type { FirmwareKind, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { FlashDialog } from "./FlashDialog";
+import { ALL_FLASHABLE_FIRMWARE } from "../deviceDisplay";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
 import { withRouter } from "../testing/renderWithRouter";
@@ -75,13 +76,26 @@ function baseLink(overrides: Partial<SnapshotLink> = {}): SnapshotLink {
 
 function mountFlashDialog(
   link: SnapshotLink,
-  props: { forceShow?: boolean; name?: string; triggerIcon?: ReactNode } = {},
+  props: {
+    forceShow?: boolean;
+    name?: string;
+    triggerIcon?: ReactNode;
+    allowedFirmware?: readonly FirmwareKind[];
+    allowLocalHex?: boolean;
+  } = {},
 ): { el: HTMLDivElement; socket: () => FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     withRouter(
       <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-        <FlashDialog link={link} name={props.name ?? "zeguz"} forceShow={props.forceShow ?? false} triggerIcon={props.triggerIcon} />
+        <FlashDialog
+          link={link}
+          name={props.name ?? "zeguz"}
+          forceShow={props.forceShow ?? false}
+          triggerIcon={props.triggerIcon}
+          allowedFirmware={props.allowedFirmware ?? ALL_FLASHABLE_FIRMWARE}
+          allowLocalHex={props.allowLocalHex ?? true}
+        />
       </WsProvider>,
       { initialEntries: [`/d/${link.id}`] },
     ),
@@ -211,6 +225,42 @@ describe("FlashDialog icon trigger (triggerIcon, ticket 018-015)", () => {
   });
 });
 
+// Sprint 023 ticket 004: `FlashDialog` has no opinion of its own about
+// which firmware/local-hex options to offer -- it forwards both props
+// straight through to `FlashControls`, which is exercised in more
+// detail in `FlashControls.test.tsx`. These pin only the pass-through.
+describe("FlashDialog allowedFirmware/allowLocalHex pass-through (sprint 023 ticket 004)", () => {
+  it("forwards a narrowed allowedFirmware to FlashControls (exactly one button)", () => {
+    const { el } = mountFlashDialog(baseLink(), { allowedFirmware: ["robot"], allowLocalHex: false });
+    act(() => {
+      trigger(el)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(el.textContent).toContain("Flash robot firmware");
+    expect(el.textContent).not.toContain("Flash relay firmware");
+    expect(el.textContent).not.toContain("Flash joystick firmware");
+    expect(el.textContent).not.toContain("Flash a hex file from disk");
+  });
+
+  it("forwards allowLocalHex=false so no local-hex section renders", () => {
+    const { el } = mountFlashDialog(baseLink(), { allowedFirmware: ["relay"], allowLocalHex: false });
+    act(() => {
+      trigger(el)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(el.querySelector('[data-testid="local-hex-file-input"]')).toBeNull();
+  });
+
+  it("forwards the full permissive set with allowLocalHex=true (today's default call sites)", () => {
+    const { el } = mountFlashDialog(baseLink());
+    act(() => {
+      trigger(el)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(el.textContent).toContain("Flash relay firmware");
+    expect(el.textContent).toContain("Flash robot firmware");
+    expect(el.textContent).toContain("Flash joystick firmware");
+    expect(el.textContent).toContain("Flash a hex file from disk");
+  });
+});
+
 describe("FlashDialog open/close roundtrip", () => {
   it("is closed initially, with no FlashControls content mounted", () => {
     const { el } = mountFlashDialog(baseLink());
@@ -257,7 +307,7 @@ describe("FlashDialog open/close roundtrip", () => {
     const el = mount(
       withRouter(
         <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-          <FlashDialog link={linkA} name="zeguz" forceShow />
+          <FlashDialog link={linkA} name="zeguz" forceShow allowedFirmware={ALL_FLASHABLE_FIRMWARE} allowLocalHex={true} />
         </WsProvider>,
         { initialEntries: ["/d/usb-A"] },
       ),
@@ -275,7 +325,7 @@ describe("FlashDialog open/close roundtrip", () => {
       root!.render(
         withRouter(
           <WsProvider url="ws://test/" socketFactory={() => socket!}>
-            <FlashDialog link={linkB} name="zeguz" forceShow />
+            <FlashDialog link={linkB} name="zeguz" forceShow allowedFirmware={ALL_FLASHABLE_FIRMWARE} allowLocalHex={true} />
           </WsProvider>,
           { initialEntries: ["/d/usb-A"] },
         ),

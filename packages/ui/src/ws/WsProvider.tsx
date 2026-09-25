@@ -246,6 +246,7 @@ export interface FlashProgressState {
 const DEFAULT_FIRMWARE_STATUS: Record<FirmwareKind, FirmwareAvailability> = {
   relay: { configured: false },
   robot: { configured: false },
+  joystick: { configured: false },
 };
 
 const DEFAULT_WIFI_SETTING: Snapshot["wifi"] = { ssid: null, source: null };

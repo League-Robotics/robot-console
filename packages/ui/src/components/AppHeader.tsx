@@ -138,10 +138,24 @@
  *   === "usb"` -- see the call site's own comment for why every other
  *   transport can never actually flash (`server.ts`'s `runFlashTask`
  *   itself refuses anything but a directly-attached USB link).
+ *
+ * ## Sprint 023 ticket 006: `allowedFirmware`/`allowLocalHex` narrow to
+ * the routed device's own kind
+ *
+ * This header's one `FlashDialog` instance is reused across every
+ * route match, so it -- not `FlashDialog` itself -- is the one place
+ * that can know "is this an identified robot's own page, an identified
+ * relay's own page, or neither". See the call site's own comment for
+ * the derivation; the short version is: an identified `kind: "robot"`
+ * device narrows to `["robot"]`, an identified `kind: "relay"` device
+ * narrows to `["relay"]`, and no identified device (including an
+ * unassigned board reached via `/d/:linkId`) stays permissive
+ * (`ALL_FLASHABLE_FIRMWARE`) -- with local-hex upload offered only in
+ * that last, no-device-yet case.
  */
 import { Link, useMatch } from "react-router";
-import type { SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
-import { connectionLabel, currentRelayChild, isLinkUsable, linkStateText, plainFailureReason } from "../deviceDisplay";
+import type { FirmwareKind, SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
+import { ALL_FLASHABLE_FIRMWARE, connectionLabel, currentRelayChild, isLinkUsable, linkStateText, plainFailureReason } from "../deviceDisplay";
 import {
   useDeviceForLink,
   useDevices,
@@ -295,6 +309,22 @@ export function AppHeader() {
   const relays = useRelays();
   const relayInfo = isRelayLink && link ? relays.find((r) => r.linkId === link.id) : undefined;
   const relayChild = isRelayLink && link ? currentRelayChild(devices, link.id) : undefined;
+  // Sprint 023 ticket 006 (SUC-002/SUC-003, sprint.md's Design Rationale
+  // Decision 2): an identified device's own page must offer only that
+  // device's own firmware kind -- flashing relay or joystick firmware
+  // onto a live robot (or robot/joystick onto a live relay bridge) is
+  // exactly the accidental-overwrite risk the stakeholder asked to
+  // close off. `device` is `undefined` both before an identified device
+  // resolves (an unassigned board reached via `/d/:linkId`, or no route
+  // match at all) and for a `SnapshotLink` with no device row -- both
+  // cases stay permissive, matching `UnknownDevicePage`'s own behavior
+  // for the same link (ticket 005), since a board with no "own kind"
+  // yet has nothing narrower to offer. Local-hex upload is likewise
+  // restricted to only the no-device-yet case: an identified device's
+  // own page never gets the raw-file escape hatch, regardless of kind.
+  const allowedFirmware: readonly FirmwareKind[] =
+    device?.kind === "robot" ? ["robot"] : device?.kind === "relay" ? ["relay"] : ALL_FLASHABLE_FIRMWARE;
+  const allowLocalHex = device === undefined;
 
   return (
     <header className="app-header">
@@ -355,7 +385,14 @@ export function AppHeader() {
                 changes nothing; for every other transport it now falls
                 through to `canBeFlashed`'s own (correctly false) gate,
                 same as every other `FlashDialog` call site. */}
-            <FlashDialog link={link} name={name} forceShow={link.transport === "usb"} triggerClassName="app-header-flash-toggle" />
+            <FlashDialog
+              link={link}
+              name={name}
+              forceShow={link.transport === "usb"}
+              triggerClassName="app-header-flash-toggle"
+              allowedFirmware={allowedFirmware}
+              allowLocalHex={allowLocalHex}
+            />
           </div>
         )}
       </div>

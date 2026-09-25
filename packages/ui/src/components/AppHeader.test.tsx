@@ -14,7 +14,7 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Snapshot, SnapshotDevice } from "@robot-console/host/src/wsMessages.js";
+import type { Snapshot, SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { AppHeader } from "./AppHeader";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
@@ -79,22 +79,25 @@ function device(
   };
 }
 
-function snapshot(devices: SnapshotDevice[], hostVersion?: string): Snapshot {
+function snapshot(devices: SnapshotDevice[], hostVersion?: string, unassigned: SnapshotLink[] = []): Snapshot {
   return {
     type: "snapshot",
     seq: 1,
     at: 0,
     ...(hostVersion !== undefined ? { hostVersion } : {}),
     devices,
-    unassigned: [],
+    unassigned,
     relays: [],
-    firmware: { relay: { configured: false }, robot: { configured: false } },
+    firmware: { relay: { configured: false }, robot: { configured: false }, joystick: { configured: false } },
     wifi: { ssid: null, source: null },
     tasks: [],
   };
 }
 
-function mountAt(initialPath: string, options: { devices?: SnapshotDevice[] } = {}): { el: HTMLDivElement; socket: () => FakeSocket } {
+function mountAt(
+  initialPath: string,
+  options: { devices?: SnapshotDevice[]; unassigned?: SnapshotLink[] } = {},
+): { el: HTMLDivElement; socket: () => FakeSocket } {
   let socket: FakeSocket | null = null;
   const el = mount(
     withRouter(
@@ -107,9 +110,9 @@ function mountAt(initialPath: string, options: { devices?: SnapshotDevice[] } = 
   act(() => {
     socket!.emitOpen();
   });
-  if (options.devices) {
+  if (options.devices || options.unassigned) {
     act(() => {
-      socket!.emitMessage(snapshot(options.devices!));
+      socket!.emitMessage(snapshot(options.devices ?? [], undefined, options.unassigned ?? []));
     });
   }
   return { el, socket: () => socket! };
@@ -695,6 +698,140 @@ describe("AppHeader Flash gating by transport (ticket 018-010, defect 4)", () =>
       ],
     });
     expect(flashTrigger(el)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------
+// Sprint 023 ticket 006 (SUC-002/SUC-003): the header's Flash dialog
+// narrows to the routed device's own firmware kind once identified, and
+// stays permissive (all three kinds + local hex) with no identified
+// device yet -- see AppHeader.tsx's own doc comment ("Sprint 023 ticket
+// 006") for the derivation. Each assertion below checks *absence* from
+// the DOM, not merely a disabled button -- the acceptance criteria's own
+// requirement, since a disabled-but-present button could still be
+// re-enabled by a firmware-availability change with no code change here.
+// ---------------------------------------------------------------------
+
+const ALL_FIRMWARE_BUTTON_TEXTS = ["Flash relay firmware", "Flash robot firmware", "Flash joystick firmware"];
+
+function openFlashDialog(el: HTMLDivElement): void {
+  act(() => {
+    flashTrigger(el)!.click();
+  });
+}
+
+describe("AppHeader Flash button set restricted to device kind (sprint 023 ticket 006)", () => {
+  it("an identified robot's own page offers exactly 'Flash robot firmware' -- no relay, no joystick, no local hex", () => {
+    const { el } = mountAt("/d/usb-SERIAL-A", {
+      devices: [
+        device({
+          role: "NEZHA2",
+          links: [
+            {
+              id: "usb-SERIAL-A",
+              transport: "usb",
+              label: "USB · /dev/cu.usbmodemA",
+              state: "connected",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              capabilities: { open: false, close: true, flash: false, provisionWifi: true },
+            },
+          ],
+        }),
+      ],
+    });
+    openFlashDialog(el);
+    expect(el.textContent).toContain("Flash robot firmware");
+    expect(el.textContent).not.toContain("Flash relay firmware");
+    expect(el.textContent).not.toContain("Flash joystick firmware");
+    expect(el.querySelector('[data-testid="local-hex-file-input"]')).toBeNull();
+    expect(el.textContent).not.toContain("Flash a hex file from disk");
+  });
+
+  it("an identified relay's own page offers exactly 'Flash relay firmware' -- no robot, no joystick, no local hex", () => {
+    const { el } = mountAt("/d/usb-RELAY-A", {
+      devices: [
+        device({
+          id: 2,
+          kind: "relay",
+          role: "RADIOBRIDGE",
+          links: [
+            {
+              id: "usb-RELAY-A",
+              transport: "usb",
+              label: "USB · relay",
+              state: "connected",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              capabilities: { open: false, close: true, flash: true, provisionWifi: false },
+            },
+          ],
+        }),
+      ],
+    });
+    openFlashDialog(el);
+    expect(el.textContent).toContain("Flash relay firmware");
+    expect(el.textContent).not.toContain("Flash robot firmware");
+    expect(el.textContent).not.toContain("Flash joystick firmware");
+    expect(el.querySelector('[data-testid="local-hex-file-input"]')).toBeNull();
+    expect(el.textContent).not.toContain("Flash a hex file from disk");
+  });
+
+  it("this restriction holds even when the OTHER kind's firmware is available -- absent from the DOM, not merely disabled", () => {
+    // A robot's own page must never show a relay button, even one that
+    // would render enabled if it were shown at all -- the acceptance
+    // criterion this test exists to pin.
+    const { el } = mountAt("/d/usb-SERIAL-A", {
+      devices: [
+        device({
+          role: "NEZHA2",
+          links: [
+            {
+              id: "usb-SERIAL-A",
+              transport: "usb",
+              label: "USB · /dev/cu.usbmodemA",
+              state: "connected",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              capabilities: { open: false, close: true, flash: false, provisionWifi: true },
+            },
+          ],
+        }),
+      ],
+    });
+    openFlashDialog(el);
+    for (const disallowedText of ["Flash relay firmware", "Flash joystick firmware"]) {
+      expect(Array.from(el.querySelectorAll("button")).some((b) => b.textContent === disallowedText)).toBe(false);
+    }
+  });
+
+  it("a link with no resolved device yet (an unassigned board reached via /d/:linkId) offers all four options, matching UnknownDevicePage", () => {
+    const { el } = mountAt("/d/usb-unknown-1", {
+      unassigned: [
+        {
+          id: "usb-unknown-1",
+          transport: "usb",
+          label: "USB · /dev/tty.usbmodem-unknown",
+          state: "connectable",
+          reason: null,
+          since: 0,
+          lastSeen: 0,
+          nextRetryAt: null,
+          capabilities: { open: true, close: false, flash: true, provisionWifi: false },
+        },
+      ],
+    });
+    openFlashDialog(el);
+    for (const text of ALL_FIRMWARE_BUTTON_TEXTS) {
+      expect(el.textContent).toContain(text);
+    }
+    expect(el.textContent).toContain("Flash a hex file from disk");
   });
 });
 

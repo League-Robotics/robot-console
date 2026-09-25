@@ -71,9 +71,18 @@ const ENV_FILENAME = ".env";
 const ENV_VAR_BY_FIRMWARE: Record<FirmwareKind, string> = {
   relay: "ROBOT_CONSOLE_RELAY_FIRMWARE",
   robot: "ROBOT_CONSOLE_ROBOT_FIRMWARE",
+  // Sprint 023 ticket 002: joystick is a third flashable firmware kind
+  // (`League-Microbit/Remote-Joystick-Student`). Deliberately left unset
+  // in `.env` by this ticket -- the live joystick release doesn't yet
+  // publish the `MICROBIT.hex`/`MICROBIT.hex.txt` asset pair `releases.ts`
+  // requires (sprint.md Design Rationale, Decision 3), so pointing this
+  // at the real repo waits for ticket 007, once that publishing gap is
+  // fixed upstream. Until then this resolves to `undefined` below, same
+  // as an unconfigured `relay`/`robot` does today.
+  joystick: "ROBOT_CONSOLE_JOYSTICK_FIRMWARE",
 };
 
-const FIRMWARE_KINDS: readonly FirmwareKind[] = ["relay", "robot"];
+const FIRMWARE_KINDS: readonly FirmwareKind[] = ["relay", "robot", "joystick"];
 
 export interface ImportFirmwareConfigOptions {
   /** Defaults to `process.env`. */

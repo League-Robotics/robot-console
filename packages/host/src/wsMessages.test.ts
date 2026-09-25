@@ -99,6 +99,20 @@ describe("parseClientMessage", () => {
     });
   });
 
+  it("accepts a well-formed flash-start message sourced from a release build for the joystick firmware (sprint 023: FirmwareKind's third member)", () => {
+    expect(
+      parseClientMessage({
+        type: "flash-start",
+        linkId: "usb-abc",
+        source: { kind: "release", firmware: "joystick" },
+      }),
+    ).toEqual({
+      type: "flash-start",
+      linkId: "usb-abc",
+      source: { kind: "release", firmware: "joystick" },
+    });
+  });
+
   it("accepts a well-formed flash-start message sourced from a local-hex upload", () => {
     expect(
       parseClientMessage({

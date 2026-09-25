@@ -177,6 +177,9 @@
       "tag": "v1.2.3",
       "available": true,
       "checkedAt": 200
+    },
+    "joystick": {
+      "configured": false
     }
   },
   "wifi": {

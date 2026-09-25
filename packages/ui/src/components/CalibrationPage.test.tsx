@@ -716,6 +716,7 @@ describe("CalibrationPage", () => {
           firmware: {
             relay: { configured: false },
             robot: { configured: true, repoUrl: "https://x", tag: "latest", available: true, checkedAt: 1000 },
+            joystick: { configured: false },
           },
           wifi: { ssid: null, source: null },
           tasks: [],

@@ -96,7 +96,7 @@ function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
     devices: [],
     unassigned: [],
     relays: [],
-    firmware: { relay: { configured: false }, robot: { configured: false } },
+    firmware: { relay: { configured: false }, robot: { configured: false }, joystick: { configured: false } },
     wifi: { ssid: null, source: null },
     tasks: [],
     ...overrides,
@@ -615,6 +615,10 @@ describe("front-page lightning Flash button (ticket 018-015)", () => {
     expect(text).toContain("Flash zeguz");
     expect(text).toContain("Flash relay firmware");
     expect(text).toContain("Flash robot firmware");
+    // Sprint 023 ticket 005: a widening from the pre-023 two-button
+    // behavior -- the front page's own device card is a "permissive"
+    // surface per the stakeholder's own stated front-page list.
+    expect(text).toContain("Flash joystick firmware");
     expect(text).toContain("Flash a hex file from disk");
   });
 
@@ -952,6 +956,40 @@ describe("not seen recently (devices the host still knows about with zero curren
     expect(card).not.toBeNull();
     expect(card?.tagName).not.toBe("A");
     expect(card?.querySelector("a")).toBeNull();
+  });
+
+  it("puts a joystick in its own Joysticks section, not under Robots", () => {
+    // Stakeholder, 2026-09-21: "There should be a joystick section. It
+    // should go into joysticks."
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, { name: "gopiv", kind: "joystick", role: "JOYSTICK", commonName: "joystick" }),
+            device(2, { name: "tovez", kind: "robot", role: "NEZHA2" }),
+          ]}
+          unassigned={[]}
+          notSeenRecently={[]}
+        />,
+      ),
+    );
+    const joysticks = el.querySelector('[data-testid="devices-group-joysticks"]');
+    const robots = el.querySelector('[data-testid="devices-group-robots"]');
+    expect(joysticks).not.toBeNull();
+    expect(joysticks!.textContent).toContain("gopiv");
+    // The bug this guards: `robots` used to be "not a relay", which
+    // would have swept a joystick into the Robots list under a heading
+    // that is wrong about what it is.
+    expect(robots!.textContent).not.toContain("gopiv");
+    expect(robots!.textContent).toContain("tovez");
+  });
+
+  it("renders no Joysticks section when there are none", () => {
+    const el = mount(
+      withRouter(<DevicesList status="open" devices={[device(1, { kind: "robot" })]} unassigned={[]} notSeenRecently={[]} />),
+    );
+    expect(el.querySelector('[data-testid="devices-group-joysticks"]')).toBeNull();
   });
 
   it("renders no not-seen-recently section when the list is empty", () => {

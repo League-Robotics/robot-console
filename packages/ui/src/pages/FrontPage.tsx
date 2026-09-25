@@ -95,6 +95,7 @@ import {
   useWsActions,
 } from "../ws/WsProvider";
 import {
+  ALL_FLASHABLE_FIRMWARE,
   allocateRadioBridge,
   cardLinks,
   connectionLabel,
@@ -346,8 +347,15 @@ export function DevicesList({
   onRadioAttempt = () => {},
 }: DevicesListProps) {
   const empty = devices.length === 0 && unassigned.length === 0;
-  const robots = devices.filter((device) => device.kind !== "relay");
+  // 2026-09-21: joysticks get their own group. `robots` was written as
+  // "not a relay", which quietly swept every future kind into the Robots
+  // list -- a joystick would have appeared there, under a heading that
+  // is wrong about what it is. Each group now names the kind it wants,
+  // so the next kind added is missing from the page (visible, fixable)
+  // rather than silently mislabelled (invisible).
+  const robots = devices.filter((device) => device.kind === "robot");
   const bridges = devices.filter((device) => device.kind === "relay");
+  const joysticks = devices.filter((device) => device.kind === "joystick");
   const renderCard = (device: SnapshotDevice) => (
     <li key={device.id}>
       <DeviceCard
@@ -395,6 +403,18 @@ export function DevicesList({
             <section className="devices-group" aria-label="Radio bridges" data-testid="devices-group-bridges">
               <h2 className="devices-group-heading">Radio bridges</h2>
               <ul className="devices-list">{bridges.map(renderCard)}</ul>
+            </section>
+          )}
+          {/* Stakeholder, 2026-09-21: "There should be a joystick
+              section. It should go into joysticks." Below the robots and
+              bridges a student is usually here for, above "not seen
+              recently", and rendered with the same card as everything
+              else -- a joystick is a device on this bench like any
+              other, not a special case. */}
+          {joysticks.length > 0 && (
+            <section className="devices-group" aria-label="Joysticks" data-testid="devices-group-joysticks">
+              <h2 className="devices-group-heading">Joysticks</h2>
+              <ul className="devices-list">{joysticks.map(renderCard)}</ul>
             </section>
           )}
         </>
@@ -652,11 +672,21 @@ function DeviceCard({
               </Link>
             )}
             {usbLink && hasWsStore && (
+              // Sprint 023 ticket 005: the front page's own device card
+              // is a "permissive" surface (sprint.md's Design Rationale,
+              // Decision 2/SUC-001) -- a widening from the pre-023
+              // two-button behavior, per the stakeholder's own stated
+              // front-page list (relay, robot, joystick, local hex).
+              // This is distinct from `AppHeader.tsx`'s device-page
+              // Flash button, which narrows to the routed device's own
+              // kind (ticket 006).
               <FlashDialog
                 link={usbLink}
                 name={device.name}
                 triggerIcon={<LightningIcon />}
                 triggerClassName="device-flash-button"
+                allowedFirmware={ALL_FLASHABLE_FIRMWARE}
+                allowLocalHex={true}
               />
             )}
           </div>
@@ -1094,7 +1124,17 @@ function UnassignedCard({ link }: { link: SnapshotLink }) {
           <p className="device-connection-state" data-testid={`unassigned-status-${link.id}`}>
             {linkStateText(link)}
           </p>
-          <FlashDialog link={link} name={link.label} triggerIcon={<LightningIcon />} triggerClassName="device-flash-button" />
+          {/* Sprint 023 ticket 005: same permissive set as the
+           * identified-device card above -- an unassigned board has no
+           * "own kind" yet, so it stays permissive. */}
+          <FlashDialog
+            link={link}
+            name={link.label}
+            triggerIcon={<LightningIcon />}
+            triggerClassName="device-flash-button"
+            allowedFirmware={ALL_FLASHABLE_FIRMWARE}
+            allowLocalHex={true}
+          />
         </div>
         <Link
           to={`/d/${link.id}`}

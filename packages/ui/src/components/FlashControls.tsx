@@ -31,6 +31,21 @@
  * `FlashDialog.tsx`'s doc comment for the gating/dismissal/focus
  * decisions -- this file is unchanged in every other respect.
  *
+ * **Per-context option list (sprint 023 ticket 004).** This component
+ * used to hardcode exactly two release buttons (relay, robot) at every
+ * call site. It now takes `allowedFirmware: readonly FirmwareKind[]`
+ * and renders one `device-flash-control` block per entry, in the order
+ * given, via the shared `renderFirmwareControl` render function below --
+ * and `allowLocalHex: boolean` gates the entire "Flash a hex file from
+ * disk" section. Both props are required with no default value (see
+ * `FlashControlsProps`'s own doc comment for why) so a robot's own
+ * device page (`AppHeader.tsx`) can pass exactly `["robot"]` with no
+ * local hex, while the front page and an unidentified board's own page
+ * pass every kind (`deviceDisplay.ts`'s `ALL_FLASHABLE_FIRMWARE`) plus
+ * local hex enabled. No change to the per-button
+ * disabled/hint/source/detail logic itself -- only which buttons exist
+ * and in what order.
+ *
  * Two flash affordances, both ported from `DevicesTab.tsx`'s
  * `DeviceCard` (moved, not redesigned) plus one added in sprint 8:
  *
@@ -116,7 +131,7 @@
  * `linkId` field) -- `useFirmwareStatus` is unaffected (still one
  * global `Record<FirmwareKind, FirmwareAvailability>`, not per-link).
  */
-import { useCallback, useEffect, useState, type ChangeEvent } from "react";
+import { useCallback, useEffect, useState, type ChangeEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import type {
   FirmwareAvailability,
@@ -195,9 +210,79 @@ function flashProgressText(progress: FlashProgressState, firmwareStatus: Record<
 
 export interface FlashControlsProps {
   link: SnapshotLink;
+  /** Which release buttons to render, in this order -- sprint 023
+   * ticket 004. **Deliberately required, with no default value in the
+   * function signature.** An optional prop defaulting to (say) every
+   * kind would mean a call site that simply forgot to pass it gets the
+   * *permissive* set -- exactly backwards from the reason this prop
+   * exists at all (a robot's own device page must show only "Flash
+   * robot firmware", never silently fall back to also offering relay/
+   * joystick). Omitting this prop is a TypeScript compile error, which
+   * is the point: see sprint 023's sprint.md, Design Rationale Decision
+   * 1. If a future reader is tempted to "simplify" this by adding
+   * `= ALL_FLASHABLE_FIRMWARE` as a default -- don't; that silently
+   * reopens the exact hole this ticket closed. */
+  allowedFirmware: readonly FirmwareKind[];
+  /** Whether to render the "Flash a hex file from disk" section at all
+   * (sprint 023 ticket 004). Also required, with no default, for the
+   * same reason as {@link allowedFirmware} above -- a robot's own
+   * device page must not silently keep offering local-hex upload just
+   * because some call site forgot to pass `false`. */
+  allowLocalHex: boolean;
 }
 
-export function FlashControls({ link }: FlashControlsProps) {
+/** One release-firmware button plus its reason/source/detail lines --
+ * the body every `device-flash-control` block shares, extracted so
+ * `FlashControls` can `.map()` over `allowedFirmware` (sprint 023
+ * ticket 004) instead of hardcoding one hand-written block per kind.
+ * Pulled out as a small render function rather than a separate
+ * component: it closes over no state of its own, and keeping it a
+ * function (not a `<FirmwareControlButton />` component) means no new
+ * prop-drilling boundary for the handful of values it needs. */
+function renderFirmwareControl(
+  kind: FirmwareKind,
+  firmwareStatus: Record<FirmwareKind, FirmwareAvailability>,
+  sendable: boolean,
+  onFlash: (firmware: FirmwareKind) => void,
+): ReactNode {
+  const reason = firmwareDisabledReason(firmwareStatus[kind]);
+  const detail = firmwareDiagnosticDetail(firmwareStatus[kind]);
+  const source = firmwareSourceText(firmwareStatus[kind]);
+  return (
+    <div className="device-flash-control" key={kind}>
+      <button type="button" className="device-button" disabled={reason !== null || !sendable} onClick={() => onFlash(kind)}>
+        Flash {FIRMWARE_LABEL[kind]} firmware
+      </button>
+      {/* Ticket 018-017: mutually exclusive with the reason paragraph --
+       * "if unavailable, show the plain reason instead" of the source
+       * line. */}
+      {reason ? (
+        <p className="device-flash-hint">{reason}</p>
+      ) : (
+        source && (
+          <p className="device-flash-source" data-testid={`flash-source-${kind}`}>
+            {source.href === null ? (
+              source.repoName
+            ) : (
+              <a href={source.href} target="_blank" rel="noreferrer noopener">
+                {source.repoName}
+              </a>
+            )}{" "}
+            {source.tag} · {source.checkedText}
+          </p>
+        )
+      )}
+      {detail && (
+        <details className="device-flash-detail">
+          <summary>Details for instructors</summary>
+          <p>{detail}</p>
+        </details>
+      )}
+    </div>
+  );
+}
+
+export function FlashControls({ link, allowedFirmware, allowLocalHex }: FlashControlsProps) {
   const firmwareStatus = useFirmwareStatus();
   const progress = useFlashProgress(link.id);
   const { send, sendBinary, onFlashResult, onFlashLocalReady } = useWsActions();
@@ -320,12 +405,6 @@ export function FlashControls({ link }: FlashControlsProps) {
     setLocalHex({ phase: "idle" });
   }, [link.id, localHex, send, sendable]);
 
-  const relayReason = firmwareDisabledReason(firmwareStatus.relay);
-  const robotReason = firmwareDisabledReason(firmwareStatus.robot);
-  const relayDetail = firmwareDiagnosticDetail(firmwareStatus.relay);
-  const robotDetail = firmwareDiagnosticDetail(firmwareStatus.robot);
-  const relaySource = firmwareSourceText(firmwareStatus.relay);
-  const robotSource = firmwareSourceText(firmwareStatus.robot);
   const localHexBusy = localHex.phase === "awaiting-ready";
 
   return (
@@ -353,116 +432,52 @@ export function FlashControls({ link }: FlashControlsProps) {
       ) : (
         <div className="device-flash-section">
           <div className="device-flash-actions">
-            <div className="device-flash-control">
-              <button
-                type="button"
-                className="device-button"
-                disabled={relayReason !== null || !sendable}
-                onClick={() => flashRelease("relay")}
-              >
-                Flash relay firmware
-              </button>
-              {/* Ticket 018-017: mutually exclusive with the reason
-               * paragraph -- "if unavailable, show the plain reason
-               * instead" of the source line. */}
-              {relayReason ? (
-                <p className="device-flash-hint">{relayReason}</p>
-              ) : (
-                relaySource && (
-                  <p className="device-flash-source" data-testid="flash-source-relay">
-                    {relaySource.href === null ? (
-                      relaySource.repoName
-                    ) : (
-                      <a href={relaySource.href} target="_blank" rel="noreferrer noopener">
-                        {relaySource.repoName}
-                      </a>
-                    )}{" "}
-                    {relaySource.tag} · {relaySource.checkedText}
-                  </p>
-                )
-              )}
-              {relayDetail && (
-                <details className="device-flash-detail">
-                  <summary>Details for instructors</summary>
-                  <p>{relayDetail}</p>
-                </details>
-              )}
-            </div>
-            <div className="device-flash-control">
-              <button
-                type="button"
-                className="device-button"
-                disabled={robotReason !== null || !sendable}
-                onClick={() => flashRelease("robot")}
-              >
-                Flash robot firmware
-              </button>
-              {robotReason ? (
-                <p className="device-flash-hint">{robotReason}</p>
-              ) : (
-                robotSource && (
-                  <p className="device-flash-source" data-testid="flash-source-robot">
-                    {robotSource.href === null ? (
-                      robotSource.repoName
-                    ) : (
-                      <a href={robotSource.href} target="_blank" rel="noreferrer noopener">
-                        {robotSource.repoName}
-                      </a>
-                    )}{" "}
-                    {robotSource.tag} · {robotSource.checkedText}
-                  </p>
-                )
-              )}
-              {robotDetail && (
-                <details className="device-flash-detail">
-                  <summary>Details for instructors</summary>
-                  <p>{robotDetail}</p>
-                </details>
-              )}
-            </div>
+            {allowedFirmware.map((kind) => renderFirmwareControl(kind, firmwareStatus, sendable, flashRelease))}
           </div>
 
-          <div className="device-flash-local">
-            <h3>Flash a hex file from disk</h3>
-            <p className="device-flash-hint">
-              This doesn't check whether the file matches this board's hardware. If you flash
-              the wrong kind of hex, the board may just stop responding — that's fine, plug it
-              back in and flash it again; a micro:bit can always be re-flashed.
-            </p>
-            <input
-              type="file"
-              accept=".hex"
-              data-testid="local-hex-file-input"
-              onChange={handleFileSelected}
-              disabled={localHexBusy || !sendable}
-            />
-            {localHex.phase === "oversize" && (
-              <p className="device-note device-note-error" role="alert">
-                "{localHex.fileName}" is too large ({Math.ceil(localHex.byteLength / 1024)}KB) —
-                files over 4MB can't be uploaded. Pick a smaller file.
+          {allowLocalHex && (
+            <div className="device-flash-local">
+              <h3>Flash a hex file from disk</h3>
+              <p className="device-flash-hint">
+                This doesn't check whether the file matches this board's hardware. If you flash
+                the wrong kind of hex, the board may just stop responding — that's fine, plug it
+                back in and flash it again; a micro:bit can always be re-flashed.
               </p>
-            )}
-            {localHex.phase === "awaiting-ready" && (
-              <p className="device-flash-hint" role="status">
-                Preparing "{localHex.fileName}"…
-              </p>
-            )}
-            {localHex.phase === "uploaded" && (
-              <>
-                <p className="device-flash-hint">
-                  Ready to flash "{localHex.fileName}" ({Math.ceil(localHex.byteLength / 1024)}KB).
+              <input
+                type="file"
+                accept=".hex"
+                data-testid="local-hex-file-input"
+                onChange={handleFileSelected}
+                disabled={localHexBusy || !sendable}
+              />
+              {localHex.phase === "oversize" && (
+                <p className="device-note device-note-error" role="alert">
+                  "{localHex.fileName}" is too large ({Math.ceil(localHex.byteLength / 1024)}KB) —
+                  files over 4MB can't be uploaded. Pick a smaller file.
                 </p>
-                <button
-                  type="button"
-                  className="device-button device-button-primary"
-                  disabled={!sendable}
-                  onClick={flashLocalFile}
-                >
-                  Flash this file
-                </button>
-              </>
-            )}
-          </div>
+              )}
+              {localHex.phase === "awaiting-ready" && (
+                <p className="device-flash-hint" role="status">
+                  Preparing "{localHex.fileName}"…
+                </p>
+              )}
+              {localHex.phase === "uploaded" && (
+                <>
+                  <p className="device-flash-hint">
+                    Ready to flash "{localHex.fileName}" ({Math.ceil(localHex.byteLength / 1024)}KB).
+                  </p>
+                  <button
+                    type="button"
+                    className="device-button device-button-primary"
+                    disabled={!sendable}
+                    onClick={flashLocalFile}
+                  >
+                    Flash this file
+                  </button>
+                </>
+              )}
+            </div>
+          )}
         </div>
       )}
 

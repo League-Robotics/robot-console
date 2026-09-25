@@ -76,7 +76,7 @@ CREATE TABLE relay_leases (
 );
 
 CREATE TABLE firmware (
-  kind TEXT PRIMARY KEY,               -- 'relay' | 'robot'
+  kind TEXT PRIMARY KEY,               -- 'relay' | 'robot' | 'joystick'
   repo TEXT, tag TEXT, available INTEGER, reason TEXT, message TEXT,
   etag TEXT, checked_at INTEGER
 );

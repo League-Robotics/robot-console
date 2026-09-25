@@ -99,6 +99,94 @@ function githubNotFoundBody(): unknown {
   return { message: "Not Found" };
 }
 
+describe("resolveRelease: asset naming widened 2026-09-21", () => {
+  // The stakeholder pointed this console at
+  // League-Microbit/Remote-Joystick-Student, which publishes
+  // `remote-joystick-student.hex` and no manifest. Demanding the exact
+  // pair MICROBIT.hex + MICROBIT.hex.txt made a correctly-configured
+  // firmware read as "not set up for this classroom yet" purely because
+  // of a filename.
+  const JOYSTICK_SOURCE: FirmwareSource = {
+    repoUrl: "https://github.com/League-Microbit/Remote-Joystick-Student",
+    tag: "latest",
+  };
+  const JOY_TAG = "v0.20260921.3";
+  const JOY_HEX = `https://github.com/League-Microbit/Remote-Joystick-Student/releases/download/${JOY_TAG}/remote-joystick-student.hex`;
+
+  it("accepts <repo>.hex when the release publishes no MICROBIT.hex, and reports no manifest", async () => {
+    const fetchFn = async () =>
+      jsonResponse(
+        200,
+        githubReleaseBody(JOY_TAG, {
+          assets: [
+            // The real release also carries a versioned copy. The rule
+            // is an exact match on the repository's own name, so the
+            // stable artifact wins deterministically rather than
+            // whichever happens to sort first.
+            { name: "remote-joystick-student-0.20260921.3.hex", browser_download_url: `${JOY_HEX}.versioned` },
+            { name: "remote-joystick-student.hex", browser_download_url: JOY_HEX },
+          ],
+        }),
+      );
+    const result = await resolveRelease(JOYSTICK_SOURCE, { fetch: fetchFn as never });
+    expect(result).toEqual({ tag: JOY_TAG, hexUrl: JOY_HEX });
+    // Explicitly: no manifestUrl key at all, not a key set to undefined.
+    expect("manifestUrl" in (result as object)).toBe(false);
+  });
+
+  it("still prefers MICROBIT.hex when a release publishes both spellings", async () => {
+    const fetchFn = async () =>
+      jsonResponse(
+        200,
+        githubReleaseBody(JOY_TAG, {
+          assets: [
+            { name: "remote-joystick-student.hex", browser_download_url: JOY_HEX },
+            { name: "MICROBIT.hex", browser_download_url: HEX_DOWNLOAD_URL },
+            { name: "MICROBIT.hex.txt", browser_download_url: MANIFEST_DOWNLOAD_URL },
+          ],
+        }),
+      );
+    const result = await resolveRelease(JOYSTICK_SOURCE, { fetch: fetchFn as never });
+    // The existing convention keeps priority, so the two repos that
+    // follow it are untouched by this widening.
+    expect(result).toEqual({ tag: JOY_TAG, hexUrl: HEX_DOWNLOAD_URL, manifestUrl: MANIFEST_DOWNLOAD_URL });
+  });
+
+  it("finds the manifest beside whichever hex it chose, not only beside MICROBIT.hex", async () => {
+    const fetchFn = async () =>
+      jsonResponse(
+        200,
+        githubReleaseBody(JOY_TAG, {
+          assets: [
+            { name: "remote-joystick-student.hex", browser_download_url: JOY_HEX },
+            { name: "remote-joystick-student.hex.txt", browser_download_url: `${JOY_HEX}.txt` },
+          ],
+        }),
+      );
+    const result = await resolveRelease(JOYSTICK_SOURCE, { fetch: fetchFn as never });
+    expect(result).toEqual({ tag: JOY_TAG, hexUrl: JOY_HEX, manifestUrl: `${JOY_HEX}.txt` });
+  });
+
+  it("still refuses a release whose only hex matches neither accepted spelling", async () => {
+    // The widening must not become "take any .hex you find" -- a
+    // versioned-only release is still a maintainer mistake worth
+    // naming, and the message names both spellings it would accept.
+    const fetchFn = async () =>
+      jsonResponse(
+        200,
+        githubReleaseBody(JOY_TAG, {
+          assets: [{ name: "remote-joystick-student-0.20260921.3.hex", browser_download_url: JOY_HEX }],
+        }),
+      );
+    const result = await resolveRelease(JOYSTICK_SOURCE, { fetch: fetchFn as never });
+    expect(result).toEqual({
+      reason: "no-asset",
+      message:
+        'release v0.20260921.3 has "remote-joystick-student-0.20260921.3.hex"; expected "MICROBIT.hex" or "remote-joystick-student.hex"',
+    });
+  });
+});
+
 describe("resolveRelease", () => {
   it("resolves the latest-tag release for a real-shaped relay fixture and identifies both asset URLs", async () => {
     const fetchFn = vi.fn<FetchFn>(async (url) => {
@@ -227,7 +315,7 @@ describe("resolveRelease", () => {
     expect(result).toEqual({
       reason: "no-asset",
       message:
-        'release v0.20260909.1 has "nezha-robot-template-v0.20260909.1.hex"; expected "MICROBIT.hex" and "MICROBIT.hex.txt"',
+        'release v0.20260909.1 has "nezha-robot-template-v0.20260909.1.hex"; expected "MICROBIT.hex" or "pxt-nezha-diffdrive.hex"',
     });
   });
 
@@ -283,6 +371,37 @@ describe("fetchAndVerifyHex", () => {
       expect(result.hex).toHaveLength(RELAY_HEX_SIZE);
       expect(result.hex.equals(hexBytes)).toBe(true);
     }
+  });
+
+  it("downloads and returns the hex unverified when the release publishes no manifest (2026-09-21 joystick case)", async () => {
+    // `Remote-Joystick-Student`'s live release (v0.20260921.3, reconfirmed
+    // 2026-09-22 via `gh api`) has no `.hex.txt` beside its hex --
+    // `resolveRelease` therefore returns a `ResolvedRelease` with no
+    // `manifestUrl` key at all (see the "asset naming widened" describe
+    // block above). This is the one real safety reduction this sprint
+    // makes: a hex with no manifest is downloaded and returned as-is,
+    // with no sha256 check. That must not rest on the module doc comment
+    // alone -- this pins it as behavior.
+    const hexBytes = relayHexFixtureBytes();
+    const resolvedWithoutManifest: ResolvedRelease = {
+      tag: RELAY_TAG,
+      hexUrl: HEX_DOWNLOAD_URL,
+    };
+
+    const fetchFn = vi.fn<FetchFn>(async (url) => {
+      if (url === HEX_DOWNLOAD_URL) return hexAssetResponse(hexBytes);
+      throw new Error(`unexpected url: ${url} -- no manifest URL exists to fetch when resolved.manifestUrl is absent`);
+    });
+
+    const result = await fetchAndVerifyHex(resolvedWithoutManifest, { fetch: fetchFn });
+
+    expect("hex" in result).toBe(true);
+    if ("hex" in result) {
+      expect(result.hex.equals(hexBytes)).toBe(true);
+    }
+    // Exactly one HTTP call -- the hex itself. No manifest fetch, no
+    // checksum comparison, because there is nothing to check against.
+    expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
   it("refuses the hex on a sha256 mismatch, and never returns it as valid", async () => {

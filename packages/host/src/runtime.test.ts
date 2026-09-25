@@ -248,6 +248,20 @@ describe("startRuntime -- composition", () => {
     // as the connector.
     expect(f.getCapturedReconcilerDeps()?.bridger).toBe(f.fakeBridger);
     expect(f.getCapturedRelayBridgerDeps()?.harvester).toBe(f.fakeHarvester);
+    // Ticket 018-011 finding 1: `relayBridger` must receive the same
+    // mbregistryClient/mbregistryLabel the connector receives -- ticket
+    // 007 added `RelayBridgerDeps.mbregistryClient`/`mbregistryLabel`, but
+    // this composition root never forwarded them, so bridging a relay
+    // discovered only through mbregistry failed immediately. This
+    // assertion fails if that wiring gap ever regresses.
+    expect(f.getCapturedRelayBridgerDeps()?.mbregistryClient).toBe(f.fakeMbregistryClient);
+    expect(f.getCapturedRelayBridgerDeps()?.mbregistryLabel).toBe(f.getCapturedConnectorDeps()?.mbregistryLabel);
+    expect(typeof f.getCapturedRelayBridgerDeps()?.mbregistryLabel).toBe("string");
+    expect(f.createRelayBridgerMock).toHaveBeenCalledWith(
+      f.fakeStore,
+      expect.objectContaining({ harvester: f.fakeHarvester, mbregistryClient: f.fakeMbregistryClient }),
+      undefined,
+    );
     expect(f.installUnhandledRejectionBackstopMock).toHaveBeenCalledWith(f.fakeStore, undefined);
 
     // Ticket 016-003/004: the revocation seam this runtime itself built

@@ -141,6 +141,7 @@ export const FIRMWARE_LABEL: Record<FirmwareKind, string> = {
 export const PHASE_LABEL: Record<FlashPhase, string> = {
   fetching: "downloading",
   verifying: "verifying",
+  connecting: "connecting",
   erasing: "erasing",
   writing: "writing",
   resetting: "resetting",

@@ -97,9 +97,12 @@ import { resolveRelease as defaultResolveRelease, fetchAndVerifyHex as defaultFe
 import { LocalHexUploadManager, MAX_UPLOAD_BYTE_LENGTH } from "./localHexUpload.js";
 import { flash as defaultFlash, type FlashOutcome } from "./flash.js";
 import { createFlasher } from "./connect/flasher.js";
-import { flashViaMbregistry as defaultFlashViaMbregistry } from "./mbregistry/remoteFlash.js";
+import {
+  flashViaLocalSocket as defaultFlashViaLocalSocket,
+  flashViaMbregistry as defaultFlashViaMbregistry,
+} from "./mbregistry/remoteFlash.js";
 import { parseHostPort, type MbregistryClient } from "./mbregistry/client.js";
-import { resolveFlashTarget, type MbregistryStreamDevice } from "./link/adapters/mbregistryStream.js";
+import { resolveFlashPlan, type MbregistryStreamDevice } from "./link/adapters/mbregistryStream.js";
 import { enumerateDaplinkDevices as defaultEnumerateDaplinkDevices, type DaplinkDeviceLister } from "./devices.js";
 import {
   parseClientMessage,
@@ -231,10 +234,16 @@ export interface StartServerOptions {
    * real `flashViaMbregistry` (`mbregistry/remoteFlash.ts`) —
    * tests substitute a fake, mirroring {@link flash}'s own convention. */
   flashViaMbregistry?: typeof defaultFlashViaMbregistry;
+  /** Injectable local-socket mbregistry flash orchestration (ticket
+   * 018-011 finding 2), for a local `mbregistry`-transport `flash-start`.
+   * Defaults to the real `flashViaLocalSocket` (`mbregistry/remoteFlash.ts`)
+   * — tests substitute a fake, mirroring {@link flashViaMbregistry}'s own
+   * convention. */
+  flashViaLocalSocket?: typeof defaultFlashViaLocalSocket;
   /** The already-connected {@link MbregistryClient} (sprint 018 ticket
    * 001) an `mbregistry`-transport `flash-start` uses to resolve which
-   * `uid`/target to flash (`find`) and this console's own remote TCP
-   * port (`remotePort`) for a local device. `undefined` fails any
+   * `uid`/plan to flash (`find`, {@link resolveFlashPlan}'s own
+   * `resolvedEndpoint`/`remotePort`). `undefined` fails any
    * `mbregistry`-transport flash descriptively rather than silently
    * no-op'ing — wiring the real client in from `runtime.ts`'s
    * composition root is ticket 006's job, kept separate exactly like
@@ -446,6 +455,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   const fetchAndVerifyHexFn = options.fetchAndVerifyHex ?? defaultFetchAndVerifyHex;
   const flashFn = options.flash ?? defaultFlash;
   const flashViaMbregistryFn = options.flashViaMbregistry ?? defaultFlashViaMbregistry;
+  const flashViaLocalSocketFn = options.flashViaLocalSocket ?? defaultFlashViaLocalSocket;
   const mbregistryClient = options.mbregistryClient;
   const mbregistryLabel = options.mbregistryLabel;
   // Sprint 017 ticket 003: flash orchestration's board_owner exclusivity
@@ -455,7 +465,14 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   // flasher actually calls once it has acquired the owner. Sprint 018
   // ticket 005 adds `flashViaMbregistry` alongside it, for the
   // `mbregistry`-transport sibling path (`flasher.flashMbregistry`).
-  const flasher = createFlasher(store, { reconciler: runtime.reconciler, flash: flashFn, flashViaMbregistry: flashViaMbregistryFn });
+  // Ticket 018-011 finding 2 adds `flashViaLocalSocket` alongside that,
+  // for a local device's own `FlashPlan.kind === "local"` leaf.
+  const flasher = createFlasher(store, {
+    reconciler: runtime.reconciler,
+    flash: flashFn,
+    flashViaMbregistry: flashViaMbregistryFn,
+    flashViaLocalSocket: flashViaLocalSocketFn,
+  });
 
   const app = buildApp(staticDir);
   const httpServer = createServer(app);
@@ -717,14 +734,14 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
                 const device = await mbregistryClient.find(uid);
                 return { uid, host: device.host, endpoint: parseHostPort(device.endpoint) };
               })();
-        const target = resolveFlashTarget(streamDevice, mbregistryClient.remotePort);
+        const plan = resolveFlashPlan(streamDevice, mbregistryClient);
 
         const resolved = await resolveHexText(linkId, source);
         if ("error" in resolved) {
           return;
         }
 
-        const outcome = await flasher.flashMbregistry(linkId, uid, target, mbregistryLabel, resolved.hexText, (phase) =>
+        const outcome = await flasher.flashMbregistry(linkId, uid, plan, mbregistryLabel, resolved.hexText, (phase) =>
           setFlashPhase(linkId, source, phase),
         );
         finishFlash(linkId, source, outcome);

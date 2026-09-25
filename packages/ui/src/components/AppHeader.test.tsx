@@ -558,6 +558,61 @@ describe("AppHeader connection label + state (ticket 017-011)", () => {
     // no-session case.
     expect(el.querySelector('[data-testid="app-header-connect"]')).not.toBeNull();
   });
+
+  // Ticket 018-011 finding 5: a link that never had a session at all
+  // (e.g. a relay's own connectivity link -- RelayPage.tsx's own doc
+  // comment: "the relay link's own session-independent state, it never
+  // has a session itself") still carries a `state`/`reason` from its own
+  // failed connect attempt. Before this fix, that reason was silently
+  // discarded here even though the front page's own device card (via
+  // `linkStateText`) showed it for the exact same link.
+  it("a link with no session but a failed connect attempt shows the same 'Couldn't connect: <reason>' text the front-page card shows, not the plain 'no session' text (finding 5)", () => {
+    const { el } = mountAt("/d/mbregistry-RELAY", {
+      devices: [
+        device({
+          kind: "relay",
+          links: [
+            {
+              id: "mbregistry-RELAY",
+              transport: "mbregistry",
+              label: "mbregistry · RELAY",
+              state: "failed",
+              reason: "in use by bench-raw",
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              capabilities: { open: true, close: false, flash: false, provisionWifi: false },
+            },
+          ],
+        }),
+      ],
+    });
+    expect(el.querySelector('[data-testid="app-header-not-usable"]')?.textContent).toBe("Couldn't connect: in use by bench-raw");
+  });
+
+  it("a link with no session and no reason still shows the plain 'No open session on this link' text (unchanged)", () => {
+    const { el } = mountAt("/d/mbregistry-RELAY", {
+      devices: [
+        device({
+          kind: "relay",
+          links: [
+            {
+              id: "mbregistry-RELAY",
+              transport: "mbregistry",
+              label: "mbregistry · RELAY",
+              state: "unresponsive",
+              reason: null,
+              since: 0,
+              lastSeen: 0,
+              nextRetryAt: null,
+              capabilities: { open: true, close: false, flash: false, provisionWifi: false },
+            },
+          ],
+        }),
+      ],
+    });
+    expect(el.querySelector('[data-testid="app-header-not-usable"]')?.textContent).toBe("No open session on this link");
+  });
 });
 
 describe("AppHeader Set Wi-Fi (sprint 015 ticket 008 restore)", () => {

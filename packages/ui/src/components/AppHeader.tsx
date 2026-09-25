@@ -145,7 +145,19 @@ export function disconnectedBannerText(status: "connecting" | "open" | "closed",
  *
  *  - `link.session === undefined`: no session has ever been opened on
  *    this link (or it was explicitly closed) -- the ticket's own
- *    literal text, "No open session on this link".
+ *    literal text, "No open session on this link", UNLESS the link
+ *    itself already carries a connect failure (`state: "failed"` or
+ *    `"unresponsive"`, e.g. a relay's own connectivity link that just
+ *    failed a `session-open` -- ticket 018-011 finding 5), in which case
+ *    this now renders the same {@link linkStateText} the front page's
+ *    device card already shows for that link ("Couldn't connect: `<
+ *    reason>`") instead of silently discarding the reason. Before this
+ *    finding's fix, a relay device page showed the flat "No open session
+ *    on this link" even when its own front-page card, for the exact same
+ *    link, showed "Couldn't connect: in use by bench-raw" -- the two
+ *    surfaces disagreeing about whether a reason existed at all, because
+ *    only the front page ever read `link.reason` for a link with no
+ *    session.
  *  - `link.session !== undefined` but `link.state !== "connected"`: a
  *    session row is still present, but the link itself dropped
  *    (`unresponsive`/`failed`/`stale`/...) while the student may still
@@ -158,6 +170,9 @@ export function disconnectedBannerText(status: "connecting" | "open" | "closed",
  */
 export function connectionStatusText(link: SnapshotLink): string {
   if (link.session === undefined) {
+    if ((link.state === "failed" || link.state === "unresponsive") && link.reason) {
+      return linkStateText(link);
+    }
     return "No open session on this link";
   }
   return link.reason ? `Not connected over ${connectionLabel(link)}: ${link.reason}` : `Not connected over ${connectionLabel(link)}`;

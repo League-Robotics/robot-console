@@ -23,6 +23,7 @@ import {
 } from "./flasher.js";
 import type { FlashOutcome } from "../flash.js";
 import type { DaplinkDevice } from "../devices.js";
+import type { FlashPlan } from "../link/adapters/mbregistryStream.js";
 
 function freshStore(): Store {
   return new Store(openStoreDb({ filePath: ":memory:" }));
@@ -241,15 +242,15 @@ describe("createFlasher: flashMbregistry", () => {
     });
     const flasher = createFlasher(store, { reconciler: { requestClose }, flashViaMbregistry });
 
-    const target = { host: "10.0.0.5", port: 7440 };
-    const outcome = await flasher.flashMbregistry("mbregistry-uid-1", "uid-1", target, "console-label", "hex", () => {});
+    const plan: FlashPlan = { kind: "remote", target: { host: "10.0.0.5", port: 7440 } };
+    const outcome = await flasher.flashMbregistry("mbregistry-uid-1", "uid-1", plan, "console-label", "hex", () => {});
 
     expect(outcome).toEqual(MBREGISTRY_OK_OUTCOME);
     expect(calls).toEqual(["requestClose:mbregistry-uid-1", "flashViaMbregistry"]);
     store.close();
   });
 
-  it("forwards uid/target/label/hexText/onProgress to flashViaMbregistry unchanged", async () => {
+  it("forwards uid/target/label/hexText/onProgress to flashViaMbregistry unchanged for a remote-kind plan", async () => {
     const store = freshStore();
     const phases: string[] = [];
     const target = { host: "127.0.0.1", port: 7440 };
@@ -266,10 +267,57 @@ describe("createFlasher: flashMbregistry", () => {
       flashViaMbregistry,
     });
 
-    await flasher.flashMbregistry("mbregistry-uid-1", "uid-1", target, "console-label", "hex-bytes", (phase) => phases.push(phase));
+    await flasher.flashMbregistry(
+      "mbregistry-uid-1",
+      "uid-1",
+      { kind: "remote", target },
+      "console-label",
+      "hex-bytes",
+      (phase) => phases.push(phase),
+    );
 
     expect(flashViaMbregistry).toHaveBeenCalledTimes(1);
     expect(phases).toEqual(["erasing"]);
+    store.close();
+  });
+
+  // Ticket 018-011 finding 2: a `local`-kind plan dispatches to
+  // `flashViaLocalSocket` instead -- `flashViaMbregistry` must never be
+  // called for it.
+  it("dispatches a local-kind plan to flashViaLocalSocket instead of flashViaMbregistry", async () => {
+    const store = freshStore();
+    const phases: string[] = [];
+    const endpoint = { kind: "unix" as const, path: "/tmp/fake/api.sock" };
+    const flashViaMbregistry = vi.fn();
+    const flashViaLocalSocket = vi.fn(
+      async (target, uid: string, label: string | undefined, hexText: string, onProgress: (phase: string) => void) => {
+        onProgress("writing");
+        expect(target).toEqual(endpoint);
+        expect(uid).toBe("uid-1");
+        expect(label).toBe("console-label");
+        expect(hexText).toBe("hex-bytes");
+        return MBREGISTRY_OK_OUTCOME;
+      },
+    );
+    const flasher = createFlasher(store, {
+      reconciler: { requestClose: vi.fn().mockResolvedValue(undefined) },
+      flashViaMbregistry,
+      flashViaLocalSocket,
+    });
+
+    const outcome = await flasher.flashMbregistry(
+      "mbregistry-uid-1",
+      "uid-1",
+      { kind: "local", endpoint },
+      "console-label",
+      "hex-bytes",
+      (phase) => phases.push(phase),
+    );
+
+    expect(outcome).toEqual(MBREGISTRY_OK_OUTCOME);
+    expect(flashViaLocalSocket).toHaveBeenCalledTimes(1);
+    expect(flashViaMbregistry).not.toHaveBeenCalled();
+    expect(phases).toEqual(["writing"]);
     store.close();
   });
 
@@ -289,7 +337,14 @@ describe("createFlasher: flashMbregistry", () => {
       flashViaMbregistry,
     });
 
-    await flasher.flashMbregistry("mbregistry-uid-1", "uid-1", { host: "127.0.0.1", port: 7440 }, undefined, "hex", () => {});
+    await flasher.flashMbregistry(
+      "mbregistry-uid-1",
+      "uid-1",
+      { kind: "remote", target: { host: "127.0.0.1", port: 7440 } },
+      undefined,
+      "hex",
+      () => {},
+    );
 
     expect(flashViaMbregistry).toHaveBeenCalledTimes(1);
     store.close();
@@ -307,7 +362,14 @@ describe("createFlasher: flashMbregistry", () => {
     });
 
     await expect(
-      flasher.flashMbregistry("mbregistry-uid-1", "uid-1", { host: "127.0.0.1", port: 7440 }, undefined, "hex", () => {}),
+      flasher.flashMbregistry(
+        "mbregistry-uid-1",
+        "uid-1",
+        { kind: "remote", target: { host: "127.0.0.1", port: 7440 } },
+        undefined,
+        "hex",
+        () => {},
+      ),
     ).rejects.toBe(boom);
     expect(flashViaMbregistry).not.toHaveBeenCalled();
     store.close();
@@ -321,7 +383,14 @@ describe("createFlasher: flashMbregistry", () => {
       flashViaMbregistry: vi.fn().mockResolvedValue(failure),
     });
 
-    const outcome = await flasher.flashMbregistry("mbregistry-uid-1", "uid-1", { host: "127.0.0.1", port: 7440 }, undefined, "hex", () => {});
+    const outcome = await flasher.flashMbregistry(
+      "mbregistry-uid-1",
+      "uid-1",
+      { kind: "remote", target: { host: "127.0.0.1", port: 7440 } },
+      undefined,
+      "hex",
+      () => {},
+    );
 
     expect(outcome).toEqual(failure);
     store.close();

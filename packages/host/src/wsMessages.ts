@@ -114,12 +114,19 @@ export type FirmwareSourceRef =
 
 /** Stage of an in-flight flash, in the order `flash.ts`/the connector
  * report them: `"fetching"`/`"verifying"` come from `releases.ts`
- * resolving and checking the hex; `"erasing"`/`"writing"`/`"resetting"`
- * come from `flash.ts` writing it to the board; `"reidentifying"` is the
- * server waiting for the freshly-flashed board to announce itself again
- * before reporting the terminal {@link FlashResultMessage}. Purely
- * informational for the UI's progress text. */
-export type FlashPhase = "fetching" | "verifying" | "erasing" | "writing" | "resetting" | "reidentifying";
+ * resolving and checking the hex; `"connecting"` (ticket 018-011 finding
+ * 3) comes from `mbregistry/remoteFlash.ts#flashViaMbregistry`/
+ * `flashViaLocalSocket` while their own TCP/socket connect is still in
+ * flight -- before this, an unreachable remote host sat reporting the
+ * *previous* phase ("verifying") for up to the OS's own ~75s SYN
+ * timeout, reading as a stuck flash rather than a connection attempt in
+ * progress; `"erasing"`/`"writing"`/`"resetting"` come from `flash.ts`
+ * writing it to the board (the mbregistry path's own coarse
+ * `classifyLogPhase` maps onto these same three); `"reidentifying"` is
+ * the server waiting for the freshly-flashed board to announce itself
+ * again before reporting the terminal {@link FlashResultMessage}.
+ * Purely informational for the UI's progress text. */
+export type FlashPhase = "fetching" | "verifying" | "connecting" | "erasing" | "writing" | "resetting" | "reidentifying";
 
 /** Which transport a link is reachable over -- mirrors `store/index.ts`'s
  * own `Transport` union verbatim, independently declared here (this

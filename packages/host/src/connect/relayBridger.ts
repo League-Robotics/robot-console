@@ -124,7 +124,9 @@ import { serialStream, type SerialResettableStream } from "../link/adapters/seri
 import { tcpStream } from "../link/adapters/tcpStream.js";
 import { mbregistryStream, type MbregistryResettableStream } from "../link/adapters/mbregistryStream.js";
 import { parseHostPort, type MbregistryClient } from "../mbregistry/client.js";
-import { realScheduler, type Scheduler } from "../link/pacing.js";
+import { realScheduler, WritePacer, type Scheduler } from "../link/pacing.js";
+import { sync as syncRelayCommandPlane, type RelayLinkIO } from "../link/RelayCommandPlane.js";
+import { LineReassembler } from "../link/lineStream.js";
 import { DEFAULT_IDENTIFY_BUDGET_MS, DEFAULT_IDENTIFY_SCHEDULE_MS } from "../link/bootWindowIdentify.js";
 import { HID as HidTransport, CortexM } from "../vendor/dapjs/index.js";
 import { HID as NodeHidDevice } from "node-hid";
@@ -142,6 +144,7 @@ import {
   DEFAULT_BACKOFF_CAP_MS,
   DEFAULT_CONNECT_TIMEOUT_MS,
   NO_OP_HARVESTER,
+  RELAY_PREAMBLE_WRITE_PACE_MS,
   abortError,
   buildRelayPreamble,
   identifyWithAbort,
@@ -350,6 +353,58 @@ export function chooseResetMethod(hidPath: string | null, relayTransport: "usb" 
   return hidPath ? "hid" : "break";
 }
 
+/** Small, real-time-safe defaults for {@link mbregistryResetSequence}'s
+ * own pre-reset `sync()` check (ticket 018-011 finding 4) — deliberately
+ * shorter than `RelayCommandPlane.ts`'s own real 8s/4s defaults: this is
+ * "is the relay already answering right now", not a recovery loop with
+ * its own retry budget (that's what the BREAK fallback below is for). */
+export const MBREGISTRY_RESET_SYNC_ATTEMPTS = 2;
+export const MBREGISTRY_RESET_SYNC_RETRY_MS = 200;
+
+/** A minimal raw line write/subscribe pair over `stream` for {@link
+ * mbregistryResetSequence}'s own `sync()` probe — mirrors
+ * `watchers/relaySweeper.ts`'s own `buildRawLineIO` (that module's own
+ * doc comment: "Raw line write/subscribe pair over a directly-opened
+ * ByteStream"), duplicated in miniature here rather than shared/exported
+ * from there, since this call site needs no write-failure reporting hook
+ * (a write failure here surfaces via `sync()`'s own confirmation timeout,
+ * exactly like the sweeper's own primary use). */
+function buildResetProbeIO(stream: ByteStream, scheduler: Scheduler): RelayLinkIO {
+  const pacer = new WritePacer(RELAY_PREAMBLE_WRITE_PACE_MS, scheduler);
+  const reassembler = new LineReassembler();
+  const listeners = new Set<(line: string) => void>();
+
+  stream.on("data", (chunk) => {
+    for (const line of reassembler.push(chunk)) {
+      for (const listener of [...listeners]) {
+        listener(line);
+      }
+    }
+  });
+
+  const write = (line: string): void => {
+    pacer.schedule(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          stream.write(line, (err) => (err ? reject(err) : resolve()));
+        }),
+      () => {
+        // No separate reporting channel -- a real write failure surfaces
+        // via sync()'s own confirmation wait timing out.
+      },
+    );
+  };
+
+  const subscribe = (listener: (line: string) => void): (() => void) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  };
+
+  return { write, subscribe };
+}
+
 /**
  * The mbregistry-backed relay reset primitive (sprint 018 ticket 007):
  * a single `BREAK` frame sent over the candidate's own already-open
@@ -358,33 +413,75 @@ export function chooseResetMethod(hidPath: string | null, relayTransport: "usb" 
  * Rationale, "reuse the *same* `mbregistryStream` connection already
  * open for the candidate being bridged").
  *
- * **Which primitive actually resets a board is genuinely unresolved as
- * of this ticket.** sprint.md's own Design Rationale describes the reset
- * as "DTR/RTS" toggling, while mbtools' own `mbserial --reset` uses a
- * `BREAK` on a Linux-owned instance and a bare serial-port reopen on a
- * macOS-owned one — i.e. the right primitive is platform-*of-the-owning-
- * mbregistry-host* dependent, and mbregistry's wire protocol currently
- * exposes `BREAK`/`SET_DTR`/`SET_RTS` as three independent frames with no
- * documented "reset" combination of them (`stream_frame.py`, mbtools
- * `docs/design/registry-api.md`). Rather than inventing an unverified
- * DTR/RTS pulse sequence, this function does the one thing already known
- * to reset a relay elsewhere in this same module — `sendBreak()`, exactly
- * `performReset`'s existing `"break"` branch's own primitive over a
- * plain serial stream — so behavior is at least consistent between the
- * legacy serial-break path and this one. This is the *one* function to
- * change if that assumption turns out wrong for a given platform (a DTR
- * low pulse via {@link MbregistryResettableStream.setDtr}, an RTS toggle,
- * or a choice conditioned on the owning host's own reported platform —
- * every primitive `MbregistryResettableStream` exposes is already
- * available here). Sprint 018 ticket 009 (bench verification) must
- * confirm this actually resets a DAPLink board through both a
- * macOS-owned and a Linux-owned mbregistry instance before this is
- * treated as settled.
+ * **Ticket 018-011 finding 4's own bench result — BREAK is not safe to
+ * send unconditionally.** This function's own doc comment previously
+ * flagged the choice of `sendBreak()` as "genuinely unresolved... sprint
+ * 018 ticket 009 (bench verification) must confirm this actually resets
+ * a DAPLink board... before this is treated as settled." That
+ * verification's result: against a real mbregistry-connected relay
+ * (`getez`) that a raw `lock`+`stream` client confirmed was already
+ * healthy and answering its command plane (`< PING` heartbeat lines,
+ * registry side fine), sending this unconditional `BREAK` anyway — every
+ * single bridge attempt did, every candidate, regardless of whether the
+ * relay needed resetting at all — produced a connection that appeared to
+ * bridge successfully for a few seconds and then dropped with no
+ * diagnosable reason (`harvester.ts`'s own `onClose`-with-no-`reason`
+ * `fail()` branch: "unresponsive: link closed"). The most likely
+ * mechanism (not independently confirmed against mbregistry's own
+ * server-side logs, which this ticket had no access to): a raw serial
+ * `BREAK` condition is also how several USB-CDC bridge chips signal a
+ * target MCU reset, so an *already-healthy* relay's own microcontroller
+ * physically reboots on every attempt; a directly-opened local serial
+ * port (the legacy `usb`-transport `"break"` branch, unaffected by this
+ * finding) tolerates that fine, but the *remote*, pyserial-backed port
+ * mbregistry itself owns does not survive its target disappearing and
+ * reappearing mid-connection, and mbregistry closes its end of the
+ * stream without telling this client why.
+ *
+ * **The fix**: mirror `watchers/relaySweeper.ts`'s own
+ * `ensureCommandPlaneReady` pattern — try a quick `sync()` (a `?`/status
+ * round trip, {@link MBREGISTRY_RESET_SYNC_ATTEMPTS}/{@link
+ * MBREGISTRY_RESET_SYNC_RETRY_MS}) over this same connection first; a
+ * relay that already answers needs no reset at all, so no `BREAK` is
+ * sent. Only a relay that fails to answer (genuinely parked mid a prior
+ * session — the scenario `resetBetweenCandidates` exists for in the
+ * first place, and this function's own pre-011 headline test, "candidate
+ * 2 succeeds only because the relay was reset first") still gets the
+ * `BREAK` fallback.
+ *
+ * **Which primitive actually performs that fallback reset remains the
+ * same open question this doc comment flagged before** — `sendBreak()`
+ * mirrors `performReset`'s existing `"break"` branch for a plain serial
+ * stream, but mbregistry's wire protocol also exposes
+ * `SET_DTR`/`SET_RTS` with no documented "reset" combination of them
+ * (`stream_frame.py`, mbtools `docs/design/registry-api.md`); this is
+ * still the *one* function to change if `sendBreak()` itself turns out
+ * to be the wrong fallback primitive for a given platform. What ticket
+ * 011's own bench finding resolves is narrower and more urgent: never
+ * send it to a relay that was never broken in the first place.
  */
-export async function mbregistryResetSequence(stream: ByteStream): Promise<void> {
+export async function mbregistryResetSequence(stream: ByteStream, signal: AbortSignal, scheduler: Scheduler = realScheduler): Promise<void> {
   const resettable = stream as Partial<MbregistryResettableStream>;
   if (typeof resettable.sendBreak !== "function") {
     throw new Error("relayBridger: mbregistry reset method chosen but the stream has no sendBreak()");
+  }
+
+  const io = buildResetProbeIO(stream, scheduler);
+  try {
+    await syncRelayCommandPlane({
+      ...io,
+      scheduler,
+      syncAttempts: MBREGISTRY_RESET_SYNC_ATTEMPTS,
+      syncRetryMs: MBREGISTRY_RESET_SYNC_RETRY_MS,
+      signal,
+    });
+    // Already answering -- no reset needed at all (finding 4's own fix:
+    // see this function's own doc comment for why sending BREAK anyway
+    // was actively harmful here).
+    return;
+  } catch {
+    // Not answering -- parked mid a prior session. Fall through to the
+    // one-time BREAK fallback below, exactly the pre-011 behavior.
   }
   await resettable.sendBreak();
 }
@@ -450,6 +547,12 @@ export async function performReset(
   hidResetFn: (hidPath: string, signal: AbortSignal) => Promise<void>,
   breakMs: number | undefined,
   signal: AbortSignal,
+  /** Ticket 018-011 finding 4: governs the "mbregistry" method's own
+   * pre-reset `sync()` check ({@link mbregistryResetSequence}); ignored
+   * by every other method. Defaults to {@link realScheduler} -- only
+   * `relayBridger.ts`'s own tests (and `relaySweeper.ts`, which never
+   * reaches the "mbregistry" branch at all) ever override it. */
+  scheduler: Scheduler = realScheduler,
 ): Promise<void> {
   if (signal.aborted) {
     throw abortError(signal);
@@ -470,7 +573,7 @@ export async function performReset(
     return;
   }
   if (method === "mbregistry") {
-    await mbregistryResetSequence(stream);
+    await mbregistryResetSequence(stream, signal, scheduler);
     return;
   }
   // "reconnect": this candidate's own freshly-opened TCP stream already
@@ -734,7 +837,7 @@ export function createRelayBridger(store: Store, deps: RelayBridgerDeps = {}, op
     );
     const preamble = async (openedStream: ByteStream, abortSignal: AbortSignal): Promise<void> => {
       if (resetBetweenCandidates) {
-        await performReset(resetMethod, openedStream, hidPath, hidResetFn, breakMs, abortSignal);
+        await performReset(resetMethod, openedStream, hidPath, hidResetFn, breakMs, abortSignal, scheduler);
       }
       await runPreamble(openedStream, abortSignal);
     };

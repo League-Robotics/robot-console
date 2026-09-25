@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createMbregistryClient, type LockKind, type MbregistryClient } from "../../mbregistry/client.js";
 import { FRAME_BREAK, FRAME_CLOSE, FRAME_DATA, FRAME_SET_DTR, FRAME_SET_RTS, HEADER_SIZE, encodeFrame } from "../../mbregistry/streamFrame.js";
-import { mbregistryStream, resolveFlashTarget, type MbregistryStreamDevice } from "./mbregistryStream.js";
+import { mbregistryStream, resolveFlashPlan, type FlashPlanClient, type MbregistryStreamDevice } from "./mbregistryStream.js";
 
 // ---------------------------------------------------------------------------
 // Fake server: JSON-lines lock/unlock/stream, then binary frames
@@ -297,25 +297,59 @@ describe("mbregistryStream", () => {
 });
 
 // ---------------------------------------------------------------------------
-// resolveFlashTarget -- sprint 018 ticket 005's extension of
-// resolveStreamTarget for send_hex/flash (remote-TCP-only, no local-
-// socket fallback of any kind).
+// resolveFlashPlan -- sprint 018 ticket 005's extension of
+// resolveStreamTarget for send_hex/flash, reworked by ticket 011 finding 2
+// to use the local socket's own `flash` op for a local device instead of
+// requiring this console's own remote TCP port (only known when this
+// console itself spawned the instance).
 // ---------------------------------------------------------------------------
 
-describe("resolveFlashTarget", () => {
-  it("a remote (peer-owned) device's own endpoint is used unchanged, ignoring localRemotePort entirely", () => {
+describe("resolveFlashPlan", () => {
+  function client(overrides: Partial<FlashPlanClient> = {}): FlashPlanClient {
+    return {
+      resolvedEndpoint: { kind: "unix", path: "/tmp/fake/api.sock" },
+      remotePort: undefined,
+      ...overrides,
+    };
+  }
+
+  it("a remote (peer-owned) device's own endpoint is used unchanged, ignoring the client entirely", () => {
     const device: MbregistryStreamDevice = { uid: "peer-uid", endpoint: { host: "10.0.0.5", port: 7440 } };
-    expect(resolveFlashTarget(device, 9999)).toEqual({ host: "10.0.0.5", port: 7440 });
-    expect(resolveFlashTarget(device, undefined)).toEqual({ host: "10.0.0.5", port: 7440 });
+    expect(resolveFlashPlan(device, client({ remotePort: 9999 }))).toEqual({
+      kind: "remote",
+      target: { host: "10.0.0.5", port: 7440 },
+    });
+    expect(resolveFlashPlan(device, client())).toEqual({ kind: "remote", target: { host: "10.0.0.5", port: 7440 } });
   });
 
-  it("a local device (no endpoint) resolves to 127.0.0.1 on this console's own remote port", () => {
+  it("a local device resolves to the local socket's own flash op when this console's own connection is a local socket -- even with no remote port known (a pre-existing registry this console didn't spawn)", () => {
     const device: MbregistryStreamDevice = { uid: "local-uid" };
-    expect(resolveFlashTarget(device, 7440)).toEqual({ host: "127.0.0.1", port: 7440 });
+    expect(resolveFlashPlan(device, client({ resolvedEndpoint: { kind: "unix", path: "/tmp/fake/api.sock" }, remotePort: undefined }))).toEqual({
+      kind: "local",
+      endpoint: { kind: "unix", path: "/tmp/fake/api.sock" },
+    });
   });
 
-  it("throws a descriptive error for a local device when no remote port is known", () => {
+  it("a local device on a Windows named pipe resolves to that pipe", () => {
     const device: MbregistryStreamDevice = { uid: "local-uid" };
-    expect(() => resolveFlashTarget(device, undefined)).toThrow(/local-uid/);
+    expect(resolveFlashPlan(device, client({ resolvedEndpoint: { kind: "pipe", path: "\\\\.\\pipe\\mbregistry" } }))).toEqual({
+      kind: "local",
+      endpoint: { kind: "pipe", path: "\\\\.\\pipe\\mbregistry" },
+    });
+  });
+
+  it("a local device falls back to 127.0.0.1:remotePort when this console's own connection is itself over TCP", () => {
+    const device: MbregistryStreamDevice = { uid: "local-uid" };
+    expect(resolveFlashPlan(device, client({ resolvedEndpoint: { kind: "tcp", host: "10.0.0.9", port: 4795 }, remotePort: 7440 }))).toEqual({
+      kind: "remote",
+      target: { host: "127.0.0.1", port: 7440 },
+    });
+  });
+
+  it("throws a descriptive error for a local device when this console's own connection is over TCP and no remote port is known", () => {
+    const device: MbregistryStreamDevice = { uid: "local-uid" };
+    expect(() =>
+      resolveFlashPlan(device, client({ resolvedEndpoint: { kind: "tcp", host: "10.0.0.9", port: 4795 }, remotePort: undefined })),
+    ).toThrow(/local-uid/);
   });
 });

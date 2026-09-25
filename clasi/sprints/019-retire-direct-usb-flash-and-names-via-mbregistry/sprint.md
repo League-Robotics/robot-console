@@ -6,6 +6,7 @@ branch: sprint/019-retire-direct-usb-flash-and-names-via-mbregistry
 use-cases: []
 issues:
 - retire-direct-usb-flash-and-names-via-mbregistry.md
+- spawn-mbregistry-via-service-run.md
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 

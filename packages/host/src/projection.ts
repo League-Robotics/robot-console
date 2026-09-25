@@ -460,6 +460,15 @@ function buildLabel(link: ProjectionLinkRow): string {
       // radio address, so `channelGroup` here always produced junk
       // ("mbrelay · ch?/grp?", bench defect, team-lead walk 017-012).
       return `mbrelay · ${hostPort(link.address)}`;
+    case "mbregistry": {
+      // Sprint 018 ticket 002: `mbregistryWatcher.ts` writes
+      // `address: {endpoint, uid}` -- no `host`/`port` to reuse
+      // `hostPort` with, so this reads `uid` directly. `capabilities`
+      // (flash, open) for this transport land in later tickets in this
+      // sprint (004/008); this is only the display label.
+      const uid = addressField(link.address, "uid");
+      return `mbregistry · ${typeof uid === "string" ? uid : "unknown uid"}`;
+    }
     default: {
       const exhaustive: never = link.transport;
       return String(exhaustive);

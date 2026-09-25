@@ -148,7 +148,7 @@ export class DeviceNameMismatchError extends Error {
  * for the banner it announces. */
 export type DeviceKind = "robot" | "relay" | "joystick";
 export type RadioSource = "override" | "registry" | null;
-export type Transport = "usb" | "wifi" | "radio" | "mbrelay" | "mbserial";
+export type Transport = "usb" | "wifi" | "radio" | "mbrelay" | "mbserial" | "mbregistry";
 export type LinkState =
   | "discovered"
   | "connectable"

@@ -4,7 +4,15 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openStoreDb } from "./store/db.js";
 import { Store } from "./store/index.js";
-import { getFirmwareConfig, loadEnvFile, parseEnvFile, parseFirmwareSource, SETTINGS_KEY_BY_FIRMWARE } from "./config.js";
+import {
+  getFirmwareConfig,
+  getMbregistryShareBoards,
+  loadEnvFile,
+  MBREGISTRY_SHAREBOARDS_SETTINGS_KEY,
+  parseEnvFile,
+  parseFirmwareSource,
+  SETTINGS_KEY_BY_FIRMWARE,
+} from "./config.js";
 
 /** A path that never resolves to a real file, so `parseEnvFile`/
  * `loadEnvFile` calls in tests that don't care about `.env` reading
@@ -119,6 +127,58 @@ describe("getFirmwareConfig", () => {
     store.setSetting(SETTINGS_KEY_BY_FIRMWARE.robot, "https://github.com/League-Robotics/pxt-nezha-diffdrive:v2.0.0");
     const second = getFirmwareConfig(store);
     expect(second.robot?.tag).toBe("v2.0.0");
+  });
+});
+
+/**
+ * Sprint 018 ticket 008: `mbregistry.shareBoards` -- the host-only
+ * toggle deciding whether a console-spawned mbregistry instance keeps
+ * `--no-peering` or turns peering on. Mirrors `getFirmwareConfig`'s own
+ * "settings row -> typed value, never throw" contract.
+ */
+describe("getMbregistryShareBoards", () => {
+  let store: Store;
+
+  beforeEach(() => {
+    store = freshStore();
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it("defaults to false when no settings row exists", () => {
+    expect(getMbregistryShareBoards(store)).toBe(false);
+  });
+
+  it("is true when the settings row is the string 'true'", () => {
+    store.setSetting(MBREGISTRY_SHAREBOARDS_SETTINGS_KEY, "true");
+    expect(getMbregistryShareBoards(store)).toBe(true);
+  });
+
+  it("is case-insensitive and tolerates surrounding whitespace", () => {
+    store.setSetting(MBREGISTRY_SHAREBOARDS_SETTINGS_KEY, " TRUE ");
+    expect(getMbregistryShareBoards(store)).toBe(true);
+  });
+
+  it("is false for 'false', empty, or any other unrecognized value -- never throws", () => {
+    store.setSetting(MBREGISTRY_SHAREBOARDS_SETTINGS_KEY, "false");
+    expect(getMbregistryShareBoards(store)).toBe(false);
+
+    store.setSetting(MBREGISTRY_SHAREBOARDS_SETTINGS_KEY, "");
+    expect(getMbregistryShareBoards(store)).toBe(false);
+
+    store.setSetting(MBREGISTRY_SHAREBOARDS_SETTINGS_KEY, "banana");
+    expect(() => getMbregistryShareBoards(store)).not.toThrow();
+    expect(getMbregistryShareBoards(store)).toBe(false);
+  });
+
+  it("reflects a settings row updated between calls", () => {
+    store.setSetting(MBREGISTRY_SHAREBOARDS_SETTINGS_KEY, "true");
+    expect(getMbregistryShareBoards(store)).toBe(true);
+
+    store.setSetting(MBREGISTRY_SHAREBOARDS_SETTINGS_KEY, "false");
+    expect(getMbregistryShareBoards(store)).toBe(false);
   });
 });
 

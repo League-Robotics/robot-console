@@ -216,3 +216,50 @@ function parseConfiguredSetting(store: Store, kind: FirmwareKind): FirmwareSourc
   }
   return parseFirmwareSource(raw);
 }
+
+/**
+ * `mbregistry.shareBoards` (sprint 018 ticket 008) — the host-only
+ * toggle deciding whether a *console-spawned* mbregistry instance is
+ * started with peering on (`--peer`, boards visible to/from other
+ * peered instances) or off (`--no-peering`, the default —
+ * `mbregistry/client.ts#spawnMbregistry`'s own `shareBoards` option,
+ * which this setting feeds). Stored the same way {@link
+ * SETTINGS_KEY_BY_FIRMWARE} is -- a `settings` row written by a
+ * bootstrap-time importer ({@link
+ * "./store/importers/mbregistryConfig.js"}) from a `ROBOT_CONSOLE_*`
+ * environment variable, read back here as a typed value -- rather than
+ * a new UI settings surface: this codebase has none yet (`config.ts`'s
+ * own module doc comment), and both existing host-only toggles
+ * (firmware sources) follow this exact convention.
+ */
+export const MBREGISTRY_SHAREBOARDS_SETTINGS_KEY = "mbregistry.shareBoards";
+
+/** Values of the `mbregistry.shareBoards` `settings` row that read as
+ * `true` -- case-insensitive, matching the `ROBOT_CONSOLE_*` boolean-env
+ * convention this codebase otherwise has no precedent for (every other
+ * `ROBOT_CONSOLE_*` variable this module reads is a string/URL, not a
+ * flag) rather than inventing a stricter one. Anything else (absent,
+ * empty, `"false"`, a typo) reads as `false` -- the documented default
+ * (`--no-peering` stays on) -- never a thrown error. */
+/** Tokens (case-insensitive) that read as `true` for a boolean-flavored
+ * `ROBOT_CONSOLE_*` setting -- shared by {@link getMbregistryShareBoards}
+ * (reading the `settings` row) and `store/importers/mbregistryConfig.ts`
+ * (reading and normalizing the environment variable that feeds it), so
+ * the two never drift into recognizing different spellings of "on".
+ * Every other `ROBOT_CONSOLE_*` variable this module reads is a
+ * string/URL, not a flag -- this is the first, so there is no existing
+ * convention to match beyond "be permissive and never throw". */
+export const TRUTHY_SETTING_VALUES = new Set(["true", "1", "yes", "on"]);
+
+/**
+ * Reads the `mbregistry.shareBoards` `settings` row and returns whether
+ * a spawned mbregistry instance should have peering turned on. Never
+ * throws -- an absent/malformed row is `false`, the documented default.
+ * The sole production reader is `runtime.ts#startRuntime`, which passes
+ * the result as {@link
+ * "./mbregistry/client.js".SpawnMbregistryOptions.shareBoards}.
+ */
+export function getMbregistryShareBoards(store: Store): boolean {
+  const raw = store.getSetting(MBREGISTRY_SHAREBOARDS_SETTINGS_KEY);
+  return raw !== undefined && TRUTHY_SETTING_VALUES.has(raw.trim().toLowerCase());
+}

@@ -34,6 +34,7 @@ import { resolveWifiCredentialsFilePath } from "./wifiCredentials.js";
 import { importKnownRobots } from "./importers/knownRobots.js";
 import { importWifiCredentials } from "./importers/wifiCredentials.js";
 import { importFirmwareConfig } from "./importers/firmwareConfig.js";
+import { importMbregistryConfig } from "./importers/mbregistryConfig.js";
 
 /**
  * Opens the store (creating/migrating as needed, exactly like
@@ -67,6 +68,7 @@ export function openStoreWithImports(options: StoreDbOptions = {}): Store {
   importKnownRobots(store, knownRobotsPath);
   importWifiCredentials(store, wifiCredentialsPath);
   importFirmwareConfig(store, { ...pathOptions, env });
+  importMbregistryConfig(store, { env });
 
   return store;
 }

@@ -37,6 +37,8 @@ import type { HarvesterTelemetryEvent } from "./connect/harvester.js";
 import type { Snapshot, ServerMessage, FirmwareSourceRef } from "./wsMessages.js";
 import type { FlashOutcome } from "./flash.js";
 import type { DaplinkDevice } from "./devices.js";
+import type { MbregistryClient, RegistryDevice } from "./mbregistry/client.js";
+import type { RemoteFlashTarget } from "./mbregistry/remoteFlash.js";
 
 // ---------------------------------------------------------------------
 // Fakes
@@ -938,6 +940,164 @@ describe("server.ts: flash-start", () => {
     expect(h.store.acquireBoardOwner("SERIAL123", "someone-else", Date.now())).toBe(true);
     const result = ws.sent.find((m) => m.type === "flash-result");
     expect(result).toMatchObject({ type: "flash-result", status: "ok" });
+  });
+});
+
+// ---------------------------------------------------------------------
+// flash-start (mbregistry transport) -- sprint 018 ticket 005
+// ---------------------------------------------------------------------
+
+function fakeRegistryDevice(overrides: Partial<RegistryDevice> = {}): RegistryDevice {
+  return {
+    uid: "uid-1",
+    short_uid: "1",
+    port: null,
+    vid_pid: null,
+    role: null,
+    common_name: null,
+    device_name: null,
+    serial_payload: null,
+    raw_announcement: null,
+    state: "connected",
+    error_note: null,
+    flash_count: 0,
+    chip_identity_name: null,
+    chip_identity_serial: null,
+    first_seen: 0,
+    last_seen: 0,
+    last_probe: null,
+    lock_kind: null,
+    lock_pid: null,
+    lock_label: null,
+    lock_since: null,
+    host: null,
+    endpoint: null,
+    ...overrides,
+  };
+}
+
+function fakeMbregistryClient(device: RegistryDevice, remotePort: number | undefined): MbregistryClient {
+  return {
+    connect: vi.fn(),
+    close: vi.fn(),
+    list: vi.fn(),
+    find: vi.fn(async () => device),
+    lock: vi.fn(),
+    unlock: vi.fn(),
+    watch: vi.fn(),
+    stream: vi.fn(),
+    resolvedEndpoint: undefined,
+    remotePort,
+  };
+}
+
+/** Drives the same `flash-local-begin` -> binary frame -> `flash-start`
+ * handshake `describe("server.ts: flash-start")`'s own usb tests use,
+ * against `linkId`, and returns the `flash-result` message once it
+ * lands. */
+async function driveLocalHexFlash(ws: ReturnType<typeof fakeWebSocket>, linkId: string): Promise<ServerMessage | undefined> {
+  const sha256 = createHash("sha256").update("hello").digest("hex");
+  ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-local-begin", fileName: "a.hex", byteLength: 5, sha256 })), false);
+  await flush();
+  const ready = ws.sent.find((m) => m.type === "flash-local-ready") as { uploadId: string } | undefined;
+  const uploadId = ready!.uploadId;
+  ws.emit("message", Buffer.concat([Buffer.from(uploadId, "ascii"), Buffer.from("hello")]), true);
+  await flush();
+
+  const source: FirmwareSourceRef = { kind: "local-hex", uploadId, fileName: "a.hex", sha256 };
+  ws.emit("message", Buffer.from(JSON.stringify({ type: "flash-start", linkId, source })), false);
+  await flush();
+  await flush();
+
+  return ws.sent.find((m) => m.type === "flash-result");
+}
+
+describe("server.ts: flash-start (mbregistry transport)", () => {
+  it("resolves a local target -- 127.0.0.1 on this client's own remote port -- and flashes via flashMbregistry", async () => {
+    const device = fakeRegistryDevice({ uid: "uid-1", host: null, endpoint: null });
+    const mbregistryClient = fakeMbregistryClient(device, 7440);
+    const flashViaMbregistryMock = vi.fn(async (_target: RemoteFlashTarget, _uid: string, _label: string | undefined, _hex: string, onProgress: (phase: string) => void) => {
+      onProgress("writing");
+      return { status: "ok", method: "mbregistry" } satisfies FlashOutcome;
+    });
+    const h = await harness({
+      mbregistryClient,
+      mbregistryLabel: "console-label",
+      flashViaMbregistry: flashViaMbregistryMock as unknown as StartServerOptions["flashViaMbregistry"],
+    });
+    h.store.upsertLink({ id: "mbregistry-uid-1", transport: "mbregistry", address: { endpoint: null, uid: "uid-1" }, at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const result = await driveLocalHexFlash(ws, "mbregistry-uid-1");
+
+    expect(mbregistryClient.find).toHaveBeenCalledWith("uid-1");
+    expect(flashViaMbregistryMock).toHaveBeenCalledTimes(1);
+    const call = flashViaMbregistryMock.mock.calls[0]!;
+    expect(call[0]).toEqual({ host: "127.0.0.1", port: 7440 });
+    expect(call[1]).toBe("uid-1");
+    expect(call[2]).toBe("console-label");
+    expect(h.runtime.requestClose).toHaveBeenCalledWith("mbregistry-uid-1");
+    expect(result).toMatchObject({ type: "flash-result", status: "ok" });
+  });
+
+  it("resolves a remote target straight from the device's own endpoint -- no proxying through the local instance", async () => {
+    const device = fakeRegistryDevice({ uid: "uid-2", host: "peer-host", endpoint: "10.0.0.9:7440" });
+    const mbregistryClient = fakeMbregistryClient(device, 5555);
+    const flashViaMbregistryMock = vi.fn(async () => ({ status: "ok", method: "mbregistry" }) satisfies FlashOutcome);
+    const h = await harness({
+      mbregistryClient,
+      flashViaMbregistry: flashViaMbregistryMock as unknown as StartServerOptions["flashViaMbregistry"],
+    });
+    h.store.upsertLink({ id: "mbregistry-uid-2", transport: "mbregistry", address: { endpoint: null, uid: "uid-2" }, at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const result = await driveLocalHexFlash(ws, "mbregistry-uid-2");
+
+    const call = flashViaMbregistryMock.mock.calls[0]!;
+    expect(call[0]).toEqual({ host: "10.0.0.9", port: 7440 });
+    expect(result).toMatchObject({ type: "flash-result", status: "ok" });
+  });
+
+  it("reports a descriptive flash-result error, without throwing, when no mbregistry client is configured", async () => {
+    const h = await harness({});
+    h.store.upsertLink({ id: "mbregistry-uid-3", transport: "mbregistry", address: { endpoint: null, uid: "uid-3" }, at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const result = await driveLocalHexFlash(ws, "mbregistry-uid-3");
+
+    expect(result).toMatchObject({ type: "flash-result", status: "error" });
+    expect((result as { message?: string }).message).toMatch(/mbregistry client/);
+  });
+
+  it("a link on an unrecognized (non-usb, non-mbregistry) transport still fails descriptively", async () => {
+    const h = await harness({});
+    h.store.upsertLink({ id: "wifi-1", transport: "wifi", address: { host: "x", port: 1 }, at: 1 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const result = await driveLocalHexFlash(ws, "wifi-1");
+
+    expect(result).toMatchObject({ type: "flash-result", status: "error" });
+    expect((result as { message?: string }).message).toMatch(/USB link/);
   });
 });
 

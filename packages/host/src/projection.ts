@@ -249,7 +249,7 @@ function buildLink(link: ProjectionLinkRow, ctx: LinkContext): SnapshotLink {
     capabilities: {
       open: !hasSession && !isConnecting && (!requiresOwned(link.transport) || (device?.owned ?? false)),
       close: hasSession || isConnecting,
-      flash: link.transport === "usb",
+      flash: link.transport === "usb" || link.transport === "mbregistry",
       provisionWifi: hasSession,
     },
   };

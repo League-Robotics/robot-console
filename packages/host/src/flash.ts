@@ -293,8 +293,12 @@ export function isValidIntelHexText(hexText: string): { valid: boolean; reason?:
 
 /** Which path actually wrote the firmware — logging/diagnostics only,
  * per `sprint.md`'s "no leak" note this is never part of the WebSocket
- * wire contract (`wsMessages.ts` has no `method` field). */
-export type FlashMethod = "swd" | "msd";
+ * wire contract (`wsMessages.ts` has no `method` field). `"mbregistry"`
+ * (sprint 018 ticket 005) is produced only by `mbregistry/remoteFlash.ts`/
+ * `connect/flasher.ts#flashMbregistry` — never by this module's own
+ * `flash()`, mirroring how `"owner-unavailable"` below is `connect/
+ * flasher.ts`-only despite living on this shared type. */
+export type FlashMethod = "swd" | "msd" | "mbregistry";
 
 /** A flash that completed successfully via the named {@link FlashMethod}. */
 export interface FlashSuccess {
@@ -334,6 +338,16 @@ export interface FlashSuccess {
  *     because `connect/flasher.ts` returns the same {@link FlashOutcome}
  *     type this module does, per its own "thin orchestrator" design
  *     (`sprint.md`'s Design Rationale).
+ *   - `"flash-failed"` (sprint 018 ticket 005) — produced only by
+ *     `mbregistry/remoteFlash.ts`: mbregistry's own `lock`/`send_hex`/
+ *     `flash` exchange failed at any step other than a `locked` lock
+ *     response (which maps to `"owner-unavailable"` instead, matching
+ *     `mbregistryStream.ts`'s own degrade-gracefully convention) — a
+ *     `send_hex` rejection, a malformed/unexpected wire response, or the
+ *     terminal `{"type":"result", "ok":false, ...}` pyocd failure shape.
+ *     Listed here for the same reason `"owner-unavailable"` is: one
+ *     shared {@link FlashOutcome} type, produced by more than one
+ *     module.
  */
 export interface FlashFailure {
   status: "error";
@@ -347,6 +361,7 @@ export interface FlashFailure {
     | "no-volume"
     | "write-failed"
     | "timeout"
+    | "flash-failed"
     | "owner-unavailable";
   error: string;
 }

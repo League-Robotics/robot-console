@@ -87,7 +87,7 @@ import { isSequencedVerb } from "@robot-console/protocol";
 import { WifiCredentialsStore } from "./store/wifiCredentials.js";
 import type { Store } from "./store/index.js";
 import type { Reconciler } from "./connect/reconciler.js";
-import type { ConnectedSession } from "./connect/connector.js";
+import { parseLinkAddress, type ConnectedSession, type MbregistryAddress } from "./connect/connector.js";
 import type { HarvesterTelemetryEvent } from "./connect/harvester.js";
 import { buildSnapshotFromRows } from "./projection.js";
 import { isValidRadioOverride, resolveDeviceRadio, type DeviceRadioOverride } from "./radioOverride.js";
@@ -97,6 +97,9 @@ import { resolveRelease as defaultResolveRelease, fetchAndVerifyHex as defaultFe
 import { LocalHexUploadManager, MAX_UPLOAD_BYTE_LENGTH } from "./localHexUpload.js";
 import { flash as defaultFlash, type FlashOutcome } from "./flash.js";
 import { createFlasher } from "./connect/flasher.js";
+import { flashViaMbregistry as defaultFlashViaMbregistry } from "./mbregistry/remoteFlash.js";
+import { parseHostPort, type MbregistryClient } from "./mbregistry/client.js";
+import { resolveFlashTarget, type MbregistryStreamDevice } from "./link/adapters/mbregistryStream.js";
 import { enumerateDaplinkDevices as defaultEnumerateDaplinkDevices, type DaplinkDeviceLister } from "./devices.js";
 import {
   parseClientMessage,
@@ -223,6 +226,24 @@ export interface StartServerOptions {
    * demand, e.g. to exercise ticket 005's signal-handling acceptance
    * criterion without ever touching real SWD/HID hardware. */
   flash?: typeof defaultFlash;
+  /** Injectable mbregistry flash orchestration for an `mbregistry`-
+   * transport `flash-start` (sprint 018 ticket 005). Defaults to the
+   * real `flashViaMbregistry` (`mbregistry/remoteFlash.ts`) —
+   * tests substitute a fake, mirroring {@link flash}'s own convention. */
+  flashViaMbregistry?: typeof defaultFlashViaMbregistry;
+  /** The already-connected {@link MbregistryClient} (sprint 018 ticket
+   * 001) an `mbregistry`-transport `flash-start` uses to resolve which
+   * `uid`/target to flash (`find`) and this console's own remote TCP
+   * port (`remotePort`) for a local device. `undefined` fails any
+   * `mbregistry`-transport flash descriptively rather than silently
+   * no-op'ing — wiring the real client in from `runtime.ts`'s
+   * composition root is ticket 006's job, kept separate exactly like
+   * `connect/connector.ts`'s own `ConnectorDeps.mbregistryClient`. */
+  mbregistryClient?: MbregistryClient;
+  /** This console's own identity, forwarded as the `lock` op's own
+   * `label` for an `mbregistry`-transport flash — display-only, mirrors
+   * `connect/connector.ts`'s `ConnectorDeps.mbregistryLabel`. */
+  mbregistryLabel?: string;
   /** Injectable `WebSocketServer` construction — defaults to a real
    * `new WebSocketServer({server: httpServer, maxPayload})`. See
    * {@link WebSocketServerLike}. */
@@ -424,12 +445,17 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   const resolveReleaseFn = options.resolveRelease ?? defaultResolveRelease;
   const fetchAndVerifyHexFn = options.fetchAndVerifyHex ?? defaultFetchAndVerifyHex;
   const flashFn = options.flash ?? defaultFlash;
+  const flashViaMbregistryFn = options.flashViaMbregistry ?? defaultFlashViaMbregistry;
+  const mbregistryClient = options.mbregistryClient;
+  const mbregistryLabel = options.mbregistryLabel;
   // Sprint 017 ticket 003: flash orchestration's board_owner exclusivity
   // and session close-first handoff now live in `connect/flasher.ts`,
   // not inline here -- see that module's own doc comment. `flashFn`
   // (still the injectable seam `server.test.ts` uses) is what the
-  // flasher actually calls once it has acquired the owner.
-  const flasher = createFlasher(store, { reconciler: runtime.reconciler, flash: flashFn });
+  // flasher actually calls once it has acquired the owner. Sprint 018
+  // ticket 005 adds `flashViaMbregistry` alongside it, for the
+  // `mbregistry`-transport sibling path (`flasher.flashMbregistry`).
+  const flasher = createFlasher(store, { reconciler: runtime.reconciler, flash: flashFn, flashViaMbregistry: flashViaMbregistryFn });
 
   const app = buildApp(staticDir);
   const httpServer = createServer(app);
@@ -598,61 +624,106 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
    * {@link inFlightFlashes}) before returning, so a flash in progress at
    * shutdown finishes (and closes its DAPLink/HID handle via
    * `flash.ts`'s own `finally`) before the process exits. */
+  /** Resolves `source` (a firmware release or an already-uploaded local
+   * hex) into hex text — the part of `runFlashTask` shared by every
+   * transport branch below, unchanged by sprint 018 ticket 005 beyond
+   * being pulled out into its own function so the `usb`/`mbregistry`
+   * branches don't each re-derive it. Returns the hex text, or `{error}`
+   * once this function has itself already called `failFlash` -- the
+   * caller's job on that branch is only to `return` immediately. */
+  async function resolveHexText(linkId: string, source: FirmwareSourceRef): Promise<{ hexText: string } | { error: true }> {
+    if (source.kind === "release") {
+      const firmwareSource = firmwareConfig[source.firmware];
+      if (!firmwareSource) {
+        failFlash(linkId, source, `no firmware source configured for "${source.firmware}"`);
+        return { error: true };
+      }
+      const resolved = await resolveReleaseFn(firmwareSource);
+      if ("reason" in resolved) {
+        failFlash(linkId, source, resolved.message);
+        return { error: true };
+      }
+      setFlashPhase(linkId, source, "verifying");
+      const fetched = await fetchAndVerifyHexFn(resolved);
+      if ("error" in fetched) {
+        failFlash(linkId, source, fetched.error);
+        return { error: true };
+      }
+      return { hexText: fetched.hex.toString("utf-8") };
+    }
+    const uploaded = localHexUpload.consumeUpload(source.uploadId);
+    if (uploaded === undefined) {
+      failFlash(
+        linkId,
+        source,
+        `no pending local-hex upload found for id ${source.uploadId} -- it may have expired, ` +
+          `already been used, or never completed the upload handshake`,
+      );
+      return { error: true };
+    }
+    return { hexText: uploaded.toString("utf-8") };
+  }
+
   async function runFlashTask(linkId: string, source: FirmwareSourceRef): Promise<void> {
     setFlashPhase(linkId, source, source.kind === "release" ? "fetching" : "verifying");
     try {
       const linkRow = store.projectionRows().links.find((candidate) => candidate.id === linkId);
-      if (!linkRow || linkRow.transport !== "usb") {
-        failFlash(linkId, source, `flashing requires a directly attached USB link (link "${linkId}" is ${linkRow ? linkRow.transport : "unknown"})`);
-        return;
-      }
-      const usbSerial = usbSerialFromLinkId(linkId);
-      if (usbSerial === undefined) {
-        failFlash(linkId, source, `link "${linkId}" does not follow the "usb-<serial>" id convention`);
-        return;
-      }
-      const devices = await enumerateDaplinkDevicesFn();
-      const device = devices.find((candidate) => candidate.serialNumber === usbSerial);
-      if (!device) {
-        failFlash(linkId, source, `no USB device is currently enumerated for link "${linkId}" -- is it still plugged in?`);
+      if (!linkRow) {
+        failFlash(linkId, source, `flashing requires a directly attached USB link (link "${linkId}" is unknown)`);
         return;
       }
 
-      let hexText: string;
-      if (source.kind === "release") {
-        const firmwareSource = firmwareConfig[source.firmware];
-        if (!firmwareSource) {
-          failFlash(linkId, source, `no firmware source configured for "${source.firmware}"`);
+      if (linkRow.transport === "usb") {
+        const usbSerial = usbSerialFromLinkId(linkId);
+        if (usbSerial === undefined) {
+          failFlash(linkId, source, `link "${linkId}" does not follow the "usb-<serial>" id convention`);
           return;
         }
-        const resolved = await resolveReleaseFn(firmwareSource);
-        if ("reason" in resolved) {
-          failFlash(linkId, source, resolved.message);
+        const devices = await enumerateDaplinkDevicesFn();
+        const device = devices.find((candidate) => candidate.serialNumber === usbSerial);
+        if (!device) {
+          failFlash(linkId, source, `no USB device is currently enumerated for link "${linkId}" -- is it still plugged in?`);
           return;
         }
-        setFlashPhase(linkId, source, "verifying");
-        const fetched = await fetchAndVerifyHexFn(resolved);
-        if ("error" in fetched) {
-          failFlash(linkId, source, fetched.error);
+
+        const resolved = await resolveHexText(linkId, source);
+        if ("error" in resolved) {
           return;
         }
-        hexText = fetched.hex.toString("utf-8");
-      } else {
-        const uploaded = localHexUpload.consumeUpload(source.uploadId);
-        if (uploaded === undefined) {
-          failFlash(
-            linkId,
-            source,
-            `no pending local-hex upload found for id ${source.uploadId} -- it may have expired, ` +
-              `already been used, or never completed the upload handshake`,
-          );
-          return;
-        }
-        hexText = uploaded.toString("utf-8");
+
+        const outcome = await flasher.flash(linkId, usbSerial, device, resolved.hexText, (phase) => setFlashPhase(linkId, source, phase));
+        finishFlash(linkId, source, outcome);
+        return;
       }
 
-      const outcome = await flasher.flash(linkId, usbSerial, device, hexText, (phase) => setFlashPhase(linkId, source, phase));
-      finishFlash(linkId, source, outcome);
+      if (linkRow.transport === "mbregistry") {
+        if (!mbregistryClient) {
+          failFlash(linkId, source, `flashing link "${linkId}" requires a configured mbregistry client`);
+          return;
+        }
+        const address = parseLinkAddress("mbregistry", linkRow.address) as MbregistryAddress;
+        const uid = address.uid;
+        const device = await mbregistryClient.find(uid);
+        const streamDevice: MbregistryStreamDevice = {
+          uid,
+          host: device.host,
+          endpoint: parseHostPort(device.endpoint),
+        };
+        const target = resolveFlashTarget(streamDevice, mbregistryClient.remotePort);
+
+        const resolved = await resolveHexText(linkId, source);
+        if ("error" in resolved) {
+          return;
+        }
+
+        const outcome = await flasher.flashMbregistry(linkId, uid, target, mbregistryLabel, resolved.hexText, (phase) =>
+          setFlashPhase(linkId, source, phase),
+        );
+        finishFlash(linkId, source, outcome);
+        return;
+      }
+
+      failFlash(linkId, source, `flashing requires a directly attached USB link (link "${linkId}" is ${linkRow.transport})`);
     } catch (error) {
       failFlash(linkId, source, errorMessage(error));
     }

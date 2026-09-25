@@ -1,9 +1,12 @@
 ---
 id: '005'
 title: 'Flash via mbregistry: send_hex + flash'
-status: open
-use-cases: [SUC-008]
-depends-on: ['001', '004']
+status: done
+use-cases:
+- SUC-008
+depends-on:
+- '001'
+- '004'
 github-issue: ''
 issue: retire-direct-usb-flash-and-names-via-mbregistry.md
 completes_issue: false
@@ -127,34 +130,34 @@ existing dapjs path already feeds — no new UI code.
 
 ## Acceptance Criteria
 
-- [ ] A local `mbregistry`-transport board flashes successfully via
+- [x] A local `mbregistry`-transport board flashes successfully via
       `send_hex`/`flash` against the local instance's own remote port,
       producing the same `flash-progress`/`flash-result` ws messages a
       `usb`-transport flash produces today.
-- [ ] A remote `mbregistry`-transport board (a peer's own board) flashes
+- [x] A remote `mbregistry`-transport board (a peer's own board) flashes
       successfully by connecting directly to that host's `endpoint` —
       no proxying through the local instance.
-- [ ] A board this console currently has an open session on (its own
+- [x] A board this console currently has an open session on (its own
       `mbregistryStream` `serial`-kind lock) can still be flashed: the
       session is closed first, the flash's own `flash`-kind lock then
       acquires cleanly, and the session is not left half-open.
-- [ ] A board locked `flash`-kind (or any kind) by a *different* client
+- [x] A board locked `flash`-kind (or any kind) by a *different* client
       returns a classified failure naming `holder.label` when present,
       else plain "in use" — no `undefined` in the message.
-- [ ] `flash`'s streamed `log` lines map to `FlashPhase` values the
+- [x] `flash`'s streamed `log` lines map to `FlashPhase` values the
       existing `flash-progress` broadcast already carries; the terminal
       `result` maps to the existing `flash-result` `status: "ok"` /
       `status: "error"` shape.
-- [ ] After a successful flash, the board re-identifies through
+- [x] After a successful flash, the board re-identifies through
       `mbregistryWatcher`'s `watch` events and the reconciler
       auto-connects it again, with no bespoke reidentify code added.
-- [ ] `projection.ts`'s `capabilities.flash` is `true` for an
+- [x] `projection.ts`'s `capabilities.flash` is `true` for an
       `mbregistry`-transport link; the existing `usb`-transport case is
       unchanged.
-- [ ] Existing `usb`-transport flash tests (`flash.test.ts`,
+- [x] Existing `usb`-transport flash tests (`flash.test.ts`,
       `connect/flasher.test.ts`, relevant `server.test.ts` cases) are
       unmodified and still pass.
-- [ ] All new tests run against a fake JSON-lines TCP server (per
+- [x] All new tests run against a fake JSON-lines TCP server (per
       sprint.md's Test Strategy) — no real mbregistry required.
 
 ## Testing

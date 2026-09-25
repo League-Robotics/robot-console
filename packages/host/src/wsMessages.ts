@@ -129,8 +129,9 @@ export type FlashPhase = "fetching" | "verifying" | "erasing" | "writing" | "res
  * `"radio"` is a robot reached over a relay's radio; `"mbrelay"` is a
  * robot reached through a remote TCP relay pool; `"mbserial"` is a
  * direct-to-robot TCP link; `"wifi"` is a direct-to-robot roster-gated
- * TCP/UDP link. */
-export type Transport = "usb" | "wifi" | "radio" | "mbrelay" | "mbserial";
+ * TCP/UDP link; `"mbregistry"` (sprint 018) is a board reached through
+ * the mbregistry daemon. */
+export type Transport = "usb" | "wifi" | "radio" | "mbrelay" | "mbserial" | "mbregistry";
 
 /** A link's place in the state machine `docs/design/architecture.md` §5
  * diagrams. Mirrors `store/index.ts`'s own `LinkState` verbatim -- see

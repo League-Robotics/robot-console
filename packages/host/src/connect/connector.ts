@@ -311,6 +311,13 @@ export function parseLinkAddress(transport: Transport, raw: unknown): ParsedAddr
       }
       return { relayLinkId: rec.relayLinkId, channel: rec.channel, group: rec.group };
     }
+    case "mbregistry":
+      // Sprint 018 ticket 004 wires the real `{endpoint, uid}` shape
+      // (`mbregistryWatcher.ts`'s own `address`) through here, plus the
+      // stream/exclusivity plumbing that reads it. Ticket 002 (this
+      // watcher) only ever writes the row; nothing yet calls
+      // `parseLinkAddress` for it.
+      throw new Error(`connector: mbregistry transport not yet supported here (sprint 018 ticket 004)`);
     default: {
       const exhaustive: never = transport;
       throw new Error(`connector: unrecognized transport "${String(exhaustive)}"`);
@@ -351,6 +358,14 @@ export function resolveExclusivity(link: LinkRow, address: ParsedAddress): Exclu
       return { kind: "relay_leases", resourceKey: (address as RelayAddress).relayLinkId };
     case "wifi":
     case "mbserial":
+      return { kind: "none" };
+    case "mbregistry":
+      // sprint.md's Architecture (Step 3, `connect/connector.ts`):
+      // "a new no-op `Exclusivity.kind` for it (mbregistry's own lock
+      // replaces `board_owner`/`relay_leases` for this transport)" --
+      // this is the already-decided final value, not a placeholder;
+      // ticket 004 builds the actual mbregistry-lock acquisition around
+      // this case, not this `kind` itself.
       return { kind: "none" };
     default: {
       const exhaustive: never = link.transport;
@@ -514,6 +529,10 @@ function buildStreamPlan(
       const preamble = buildRelayPreamble(relay.channel, relay.group, getLink, scheduler, relayHandshakeTimeoutMs);
       return { stream, preamble };
     }
+    case "mbregistry":
+      // Sprint 018 ticket 003 (`mbregistryStream` adapter) is what this
+      // branch will hand off to; not yet built as of this ticket.
+      throw new Error(`connector: mbregistry transport not yet supported here (sprint 018 ticket 003)`);
     default: {
       const exhaustive: never = link.transport;
       throw new Error(`connector: unrecognized transport "${String(exhaustive)}"`);

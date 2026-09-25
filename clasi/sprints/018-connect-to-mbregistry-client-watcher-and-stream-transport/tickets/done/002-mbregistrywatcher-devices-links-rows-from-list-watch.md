@@ -1,9 +1,12 @@
 ---
 id: '002'
 title: 'mbregistryWatcher: devices/links rows from list + watch'
-status: open
-use-cases: [SUC-002, SUC-003]
-depends-on: ['001']
+status: done
+use-cases:
+- SUC-002
+- SUC-003
+depends-on:
+- '001'
 github-issue: ''
 issue: use-mbregistry-for-boards-locks-and-flashing.md
 completes_issue: true
@@ -47,22 +50,22 @@ uses (`host` is `NULL`/absent on that row from this instance's own
 
 ## Acceptance Criteria
 
-- [ ] `list` response rows become `devices`/`links(transport='mbregistry')`
+- [x] `list` response rows become `devices`/`links(transport='mbregistry')`
       rows with the documented field mapping (uid→usb_serial,
       serial_payload→id, device_name→name).
-- [ ] `watch` events (`attach`/`detach`/`identity`/`lock_state`) update
+- [x] `watch` events (`attach`/`detach`/`identity`/`lock_state`) update
       the same rows without a full re-`list`.
-- [ ] A board previously known by name (placeholder from
+- [x] A board previously known by name (placeholder from
       `known-robots.json` or a different transport) merges into one row
       via `mergeNamePlaceholderIfAny` once mbregistry identifies it.
-- [ ] The "owned" rule holds: only boards local to this console's own
+- [x] The "owned" rule holds: only boards local to this console's own
       mbregistry instance are marked owned, even when `list` returns
       remote peers' boards too.
-- [ ] A `detach` event ages/closes the link and any open session, exactly
+- [x] A `detach` event ages/closes the link and any open session, exactly
       as `usbWatcher.handleRemoved` does today for USB.
-- [ ] `tasks` row heartbeats every `list`/event cycle (a wedged watcher
+- [x] `tasks` row heartbeats every `list`/event cycle (a wedged watcher
       stays visible, per architecture.md §3 rule 5).
-- [ ] No test in this ticket's suite requires a real mbregistry process —
+- [x] No test in this ticket's suite requires a real mbregistry process —
       a fake JSON-lines server per sprint.md's Test Strategy.
 
 ## Implementation Plan
@@ -72,9 +75,23 @@ uses (`host` is `NULL`/absent on that row from this instance's own
   reuse `store/placeholderMerge.ts` unmodified.
 - **Files to create**: `packages/host/src/watchers/mbregistryWatcher.ts`,
   `packages/host/src/watchers/mbregistryWatcher.test.ts`.
-- **Files to modify**: none outside the new files (wiring into
-  `runtime.ts` is ticket 006, kept separate so this ticket's tests stay
-  isolated to the watcher itself).
+- **Files to modify**: as-planned, none of `runtime.ts` (ticket 006,
+  kept separate so this ticket's tests stay isolated to the watcher
+  itself). In practice, writing a `links(transport='mbregistry')` row
+  required widening the shared `Transport` union
+  (`store/index.ts`, plus its migration comment and its independently
+  -declared mirror in `wsMessages.ts` — that module's own doc comment
+  calls out "mirrors store/index.ts's own Transport union verbatim"),
+  which in turn tripped three pre-existing exhaustive (`never`-checked)
+  `switch (transport)` statements outside this ticket's scope
+  (`connect/connector.ts`'s `parseLinkAddress`/`resolveExclusivity`/
+  `buildStreamPlan`, `projection.ts`'s `buildLabel`). Each got the
+  minimal stub needed to keep compiling — `resolveExclusivity` got the
+  real, already-decided `{kind: "none"}` (sprint.md's own Architecture
+  Step 3 names this as the final value, not a placeholder); the other
+  three throw/render a "not yet supported, see ticket N" stand-in for
+  the transport-specific logic those later tickets (003/004) own. No
+  other behavior in those files changed.
 - **Testing plan**: fake `mbregistryClient` (from ticket 001's own test
   fixtures, or a hand-rolled fake matching its interface) driving
   `list`/`watch` scripted sequences; assert store rows, never events

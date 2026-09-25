@@ -83,7 +83,7 @@ export class DeviceNameMismatchError extends Error {
 
 export type DeviceKind = "robot" | "relay";
 export type RadioSource = "override" | "registry" | null;
-export type Transport = "usb" | "wifi" | "radio" | "mbrelay" | "mbserial";
+export type Transport = "usb" | "wifi" | "radio" | "mbrelay" | "mbserial" | "mbregistry";
 export type LinkState =
   | "discovered"
   | "connectable"

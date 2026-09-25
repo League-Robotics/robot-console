@@ -743,8 +743,9 @@ Before tickets can be created, all of the following must be true:
 | 006 | Reconciler link preference + runtime assembly: mbregistry in, usbWatcher/mDNS branches disabled | 002, 004, 005 |
 | 007 | relayBridger: DTR/RTS/BREAK reset via mbregistryStream | 003, 004 |
 | 008 | Lock label/since display, stale-lock unlock hint, mbregistry.shareBoards setting | 001, 003 |
-| 009 | Bench/hardware verification: spawn case, system-instance case, two contending clients, flash local + remote | 001, 002, 003, 004, 005, 006, 007, 008, 010 |
+| 009 | Bench/hardware verification: spawn case, system-instance case, two contending clients, flash local + remote | 001, 002, 003, 004, 005, 006, 007, 008, 010, 011 |
 | 010 | Bench fixes: skip gone boards, spawn socket-path robustness | 001, 002 |
+| 011 | Bench fixes 2: relay bridging wiring, local flash, flash timeouts, relay link hold | 010 |
 
 Tickets execute serially in the order listed. Ticket 005 (flashing)
 is deliberately sequenced before ticket 006 (which disables
@@ -759,3 +760,18 @@ re-run bench pass exercises the fixed build. No architecture-document
 change is needed — both fixes are bug fixes within already-described
 modules (`mbregistryWatcher`, the mbregistry client), not new
 responsibilities or structural changes.
+
+Ticket 011 was added after a second real-bench pass of ticket 009
+surfaced five further findings: `relayBridger`/`relaySweeper` never
+received the `mbregistryClient`/`mbregistryLabel`/`createMbregistryStream`
+deps that ticket 007 added (a wiring gap in `runtime.ts`, ticket 006);
+local flash against a pre-existing registry has no `--ready-json` remote
+port to use; remote flash has no connect timeout and misreports its
+phase while connecting; a relay's own link drops immediately after
+Connect (diagnosis TBD — real bug vs. sprint-016 by-design "link not
+held open outside bridging"); and the relay device page doesn't surface
+the same link-failure reason the front-page card shows. All five are bug
+fixes/wiring fixes within already-described modules, not new
+responsibilities — no architecture-document change beyond this note.
+Ticket 009 depends on it so the bench pass re-runs cases 4 and 6 against
+the fixed build.

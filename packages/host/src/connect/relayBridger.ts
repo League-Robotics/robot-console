@@ -588,6 +588,15 @@ export function createRelayBridger(store: Store, deps: RelayBridgerDeps = {}, op
     }
 
     const physical = resolveRelayPhysical(store, relayLinkId, relayTransport);
+    if (physical.transport === "mbregistry") {
+      // Sprint 018 ticket 004 widened `resolveRelayPhysical` to also
+      // accept an `mbregistry`-transport relay row (connector.ts's own
+      // case), but this module's own mbregistry-backed reset (DTR/RTS/
+      // BREAK over `mbregistryStream` in place of DAPLink HID) is ticket
+      // 007, not yet built -- decline explicitly rather than mis-casting
+      // `physical.address` as `UsbAddress`/`TcpAddress` below.
+      throw new Error(`relayBridger: relay link "${relayLinkId}" is transport "mbregistry", not yet supported here (sprint 018 ticket 007)`);
+    }
     const hidPath = physical.transport === "usb" ? ((physical.address as UsbAddress).hidPath ?? null) : null;
     const resetMethod = chooseResetMethod(hidPath, physical.transport);
 

@@ -122,6 +122,8 @@ import {
 import { LineLink, type ByteStream, type LineLinkOptions } from "../link/LineLink.js";
 import { serialStream } from "../link/adapters/serialStream.js";
 import { tcpStream } from "../link/adapters/tcpStream.js";
+import { mbregistryStream } from "../link/adapters/mbregistryStream.js";
+import type { MbregistryClient } from "../mbregistry/client.js";
 import { realScheduler, WritePacer, type Scheduler } from "../link/pacing.js";
 import {
   DEFAULT_IDENTIFY_BUDGET_MS,
@@ -194,6 +196,28 @@ export interface ConnectorDeps {
    * physical transport under a `radio`/`mbrelay` relay hop). Defaults to
    * the real {@link tcpStream}. */
   createTcpStream?: (host: string, port: number) => ByteStream;
+  /** Injectable mbregistry stream adapter factory (ticket 003's {@link
+   * mbregistryStream}), for an `mbregistry`-transport link's own stream
+   * or an `mbregistry`-transport relay physical (`resolveRelayPhysical`'s
+   * third branch). `kind` is `"serial"` for a direct board session,
+   * `"relay"` when this stream is the physical carrying a `radio`/
+   * `mbrelay` link's own reset/data traffic. Defaults to the real
+   * adapter bound to {@link ConnectorDeps.mbregistryClient}; tests
+   * substitute a factory returning a `FakeByteStream`, mirroring
+   * `createSerialStream`/`createTcpStream`'s own injection convention. */
+  createMbregistryStream?: (address: MbregistryAddress, kind: "serial" | "relay") => ByteStream;
+  /** The already-connected {@link MbregistryClient} (ticket 001) the
+   * default `createMbregistryStream` opens a `lock`+`stream` session
+   * against. Wiring the real client in from `runtime.ts`'s composition
+   * root is a later ticket (018-006) -- until then, an `mbregistry`-
+   * transport connect attempt with neither this nor an overriding
+   * `createMbregistryStream` fails loudly with a clear configuration
+   * error rather than silently no-op'ing. */
+  mbregistryClient?: MbregistryClient;
+  /** This console's own identity, forwarded as the default
+   * `createMbregistryStream`'s `mbregistryStream` `label` option --
+   * display-only (`registry-api.md`). */
+  mbregistryLabel?: string;
   /** Builds the `LineLink` wrapping a {@link ByteStream}. Defaults to
    * `new LineLink(stream, options)`; overridable so a test can spy on
    * the link the connector drives. */
@@ -271,7 +295,19 @@ export interface RelayAddress {
   readonly channel: number;
   readonly group: number;
 }
-export type ParsedAddress = UsbAddress | TcpAddress | RelayAddress;
+/** `mbregistry`-transport `links.address` shape -- exactly what
+ * `watchers/mbregistryWatcher.ts`'s own `linkAddress()` writes:
+ * `{endpoint: client.resolvedEndpoint, uid}`. `endpoint` is carried
+ * through opaquely (this module never interprets its own shape) --
+ * required to be present per this ticket's own malformed-address
+ * acceptance criterion, but only `uid` is actually read downstream
+ * today (`ConnectorDeps.createMbregistryStream`'s default only needs
+ * the board's own uid to `lock`/`stream` it). */
+export interface MbregistryAddress {
+  readonly endpoint: unknown;
+  readonly uid: string;
+}
+export type ParsedAddress = UsbAddress | TcpAddress | RelayAddress | MbregistryAddress;
 
 function asRecord(raw: unknown, context: string): Record<string, unknown> {
   const value = typeof raw === "string" ? (JSON.parse(raw) as unknown) : raw;
@@ -311,13 +347,12 @@ export function parseLinkAddress(transport: Transport, raw: unknown): ParsedAddr
       }
       return { relayLinkId: rec.relayLinkId, channel: rec.channel, group: rec.group };
     }
-    case "mbregistry":
-      // Sprint 018 ticket 004 wires the real `{endpoint, uid}` shape
-      // (`mbregistryWatcher.ts`'s own `address`) through here, plus the
-      // stream/exclusivity plumbing that reads it. Ticket 002 (this
-      // watcher) only ever writes the row; nothing yet calls
-      // `parseLinkAddress` for it.
-      throw new Error(`connector: mbregistry transport not yet supported here (sprint 018 ticket 004)`);
+    case "mbregistry": {
+      if (rec.endpoint === undefined || typeof rec.uid !== "string" || rec.uid.length === 0) {
+        throw new Error(`connector: mbregistry address missing "endpoint"/string "uid" (got ${JSON.stringify(rec)})`);
+      }
+      return { endpoint: rec.endpoint, uid: rec.uid };
+    }
     default: {
       const exhaustive: never = transport;
       throw new Error(`connector: unrecognized transport "${String(exhaustive)}"`);
@@ -363,9 +398,10 @@ export function resolveExclusivity(link: LinkRow, address: ParsedAddress): Exclu
       // sprint.md's Architecture (Step 3, `connect/connector.ts`):
       // "a new no-op `Exclusivity.kind` for it (mbregistry's own lock
       // replaces `board_owner`/`relay_leases` for this transport)" --
-      // this is the already-decided final value, not a placeholder;
-      // ticket 004 builds the actual mbregistry-lock acquisition around
-      // this case, not this `kind` itself.
+      // the actual lock acquisition happens inside `mbregistryStream`'s
+      // own `open()` (ticket 003), via `ConnectorDeps.createMbregistryStream`
+      // (ticket 004) -- `board_owner`/`relay_leases` are never touched
+      // for this transport.
       return { kind: "none" };
     default: {
       const exhaustive: never = link.transport;
@@ -401,8 +437,8 @@ export function releaseExclusivity(store: Store, exclusivity: Exclusivity, owner
 // ---------------------------------------------------------------------
 
 export interface RelayPhysical {
-  readonly transport: "usb" | "mbrelay";
-  readonly address: UsbAddress | TcpAddress;
+  readonly transport: "usb" | "mbrelay" | "mbregistry";
+  readonly address: UsbAddress | TcpAddress | MbregistryAddress;
 }
 
 /** Resolve `relayLinkId` (named by a `radio`/`mbrelay` link's own
@@ -410,18 +446,30 @@ export interface RelayPhysical {
  * read via {@link Store.snapshotRows}, never raw SQL (`store/README.md`'s
  * own rule). `expectedTransport` is the relay-link transport this
  * `link.transport` requires (`usb` for `radio`, `mbrelay` for
- * `mbrelay`) — see the module doc comment's address-shapes section. */
+ * `mbrelay`) — see the module doc comment's address-shapes section. A
+ * relay row of transport `"mbregistry"` is always accepted too,
+ * regardless of `expectedTransport` — sprint.md's Step 5 "Impact" calls
+ * this out explicitly: once a relay board is discovered through
+ * `mbregistryWatcher` instead of the disabled `mbrelay` mDNS branch, a
+ * `radio`/`mbrelay`-address link's `relayLinkId` can point at an
+ * `mbregistry`-transport row instead of `usb`/`mbrelay`. */
 export function resolveRelayPhysical(store: Store, relayLinkId: string, expectedTransport: "usb" | "mbrelay"): RelayPhysical {
   const row = store.snapshotRows().links.find((candidate) => candidate.id === relayLinkId);
   if (!row) {
     throw new Error(`connector: relay link "${relayLinkId}" not found in the store`);
   }
-  if (row.transport !== expectedTransport) {
+  if (row.transport !== expectedTransport && row.transport !== "mbregistry") {
     throw new Error(
       `connector: relay link "${relayLinkId}" is transport "${String(row.transport)}", expected "${expectedTransport}"`,
     );
   }
   const rec = asRecord(row.address, `relay link "${relayLinkId}"`);
+  if (row.transport === "mbregistry") {
+    if (rec.endpoint === undefined || typeof rec.uid !== "string" || rec.uid.length === 0) {
+      throw new Error(`connector: relay link "${relayLinkId}" (mbregistry) address missing "endpoint"/string "uid"`);
+    }
+    return { transport: "mbregistry", address: { endpoint: rec.endpoint, uid: rec.uid } };
+  }
   if (expectedTransport === "usb") {
     if (typeof rec.path !== "string") {
       throw new Error(`connector: relay link "${relayLinkId}" (usb) address missing string "path"`);
@@ -503,6 +551,7 @@ function buildStreamPlan(
   store: Store,
   createSerialStream: (path: string) => ByteStream,
   createTcpStream: (host: string, port: number) => ByteStream,
+  createMbregistryStream: (address: MbregistryAddress, kind: "serial" | "relay") => ByteStream,
   getLink: () => LineLink,
   scheduler: Scheduler,
   relayHandshakeTimeoutMs: number | undefined,
@@ -525,14 +574,16 @@ function buildStreamPlan(
       const stream =
         physical.transport === "usb"
           ? createSerialStream((physical.address as UsbAddress).path)
-          : createTcpStream((physical.address as TcpAddress).host, (physical.address as TcpAddress).port);
+          : physical.transport === "mbrelay"
+            ? createTcpStream((physical.address as TcpAddress).host, (physical.address as TcpAddress).port)
+            : createMbregistryStream(physical.address as MbregistryAddress, "relay");
       const preamble = buildRelayPreamble(relay.channel, relay.group, getLink, scheduler, relayHandshakeTimeoutMs);
       return { stream, preamble };
     }
-    case "mbregistry":
-      // Sprint 018 ticket 003 (`mbregistryStream` adapter) is what this
-      // branch will hand off to; not yet built as of this ticket.
-      throw new Error(`connector: mbregistry transport not yet supported here (sprint 018 ticket 003)`);
+    case "mbregistry": {
+      const mb = address as MbregistryAddress;
+      return { stream: createMbregistryStream(mb, "serial") };
+    }
     default: {
       const exhaustive: never = link.transport;
       throw new Error(`connector: unrecognized transport "${String(exhaustive)}"`);
@@ -717,6 +768,23 @@ function mergeUsbPlaceholderIfAny(store: Store, usbSerial: string | undefined, d
 export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: ConnectorOptions = {}): Connector {
   const createSerialStream = deps.createSerialStream ?? ((path: string) => serialStream(path));
   const createTcpStream = deps.createTcpStream ?? ((host: string, port: number) => tcpStream(host, port));
+  const createMbregistryStream =
+    deps.createMbregistryStream ??
+    ((address: MbregistryAddress, kind: "serial" | "relay") => {
+      if (!deps.mbregistryClient) {
+        throw new Error(
+          "connector: mbregistry transport requires ConnectorDeps.mbregistryClient (or an overriding createMbregistryStream)",
+        );
+      }
+      return mbregistryStream(
+        { uid: address.uid },
+        {
+          client: deps.mbregistryClient,
+          kind,
+          ...(deps.mbregistryLabel !== undefined ? { label: deps.mbregistryLabel } : {}),
+        },
+      );
+    });
   const createLineLink = deps.createLineLink ?? ((stream: ByteStream, options: LineLinkOptions) => new LineLink(stream, options));
   const scheduler = deps.scheduler ?? realScheduler;
   const now = deps.now ?? (() => Date.now());
@@ -775,6 +843,7 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
         store,
         createSerialStream,
         createTcpStream,
+        createMbregistryStream,
         () => lineLink as LineLink,
         scheduler,
         relayHandshakeTimeoutMs,

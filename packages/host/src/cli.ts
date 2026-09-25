@@ -264,6 +264,38 @@ function hasDumpStoreFlag(argv: readonly string[]): boolean {
   return argv.includes("--dump-store");
 }
 
+/** The legacy mDNS types (`_mbserial`/_mbflash`/`_mbrelay`) `ROBOT_CONSOLE_MDNS_LEGACY`
+ * accepts, in the same order `runtime.ts`'s own `DEFAULT_DISABLED_MDNS_TYPES` lists
+ * them. */
+const LEGACY_MDNS_TYPES = ["mbserial", "mbflash", "mbrelay"] as const;
+
+type LegacyMdnsType = (typeof LEGACY_MDNS_TYPES)[number];
+
+/** Team-lead decision, replay-guide.md §4 (2026-09-25): `_mbserial`/
+ * `_mbflash`/`_mbrelay` mDNS browsing stays disabled by default (sprint
+ * 018 ticket 006 -- `mbregistryWatcher` is the production discovery
+ * path now), but a farm that still needs one of those legacy paths
+ * turned back on (no code change, no rebuild) sets
+ * `ROBOT_CONSOLE_MDNS_LEGACY=mbserial,mbflash,mbrelay` (any subset, any
+ * order, whitespace-tolerant) -- each listed type is re-enabled;
+ * `_robotlink.*` (WiFi) is never in this list and is unaffected either
+ * way. Returns `undefined` (meaning "use `runtime.ts`'s own default,
+ * unchanged") when the env var is unset/empty, so a caller not using
+ * this env var sees no behavior change at all. */
+function mdnsLegacyTypesFromEnv(env: NodeJS.ProcessEnv): readonly LegacyMdnsType[] | undefined {
+  const raw = env.ROBOT_CONSOLE_MDNS_LEGACY;
+  if (raw === undefined || raw.trim().length === 0) {
+    return undefined;
+  }
+  const requested = new Set(
+    raw
+      .split(",")
+      .map((token) => token.trim().toLowerCase())
+      .filter((token) => token.length > 0),
+  );
+  return LEGACY_MDNS_TYPES.filter((type) => !requested.has(type));
+}
+
 /**
  * `--dump-store`: open a short-lived read-only connection (`debug/
  * dumpStore.ts`), print the JSON snapshot, and return -- no runtime, no
@@ -421,9 +453,17 @@ export async function main(
   // mbregistry client before returning), so this is awaited -- a
   // resolution/spawn failure here propagates out of `main` itself,
   // exactly like a real `startServer` failure already did.
+  // Team-lead decision, replay-guide.md §4: `ROBOT_CONSOLE_MDNS_LEGACY`
+  // re-enables listed legacy mDNS types (see `mdnsLegacyTypesFromEnv`'s
+  // own doc comment). Omitted entirely when unset, so `runtime.ts`'s own
+  // `DEFAULT_DISABLED_MDNS_TYPES` default is untouched for the common
+  // case; an explicit `deps.runtimeOptions.mdnsWatcherOptions` (a test's
+  // own override) still wins, since it spreads last.
+  const mdnsLegacyDisabledTypes = mdnsLegacyTypesFromEnv(env);
   const runtime = await startRuntimeFn({
     storeOptions: { env },
     disableSweep: !hasSweepFlag(argv, env),
+    ...(mdnsLegacyDisabledTypes !== undefined ? { mdnsWatcherOptions: { disabledTypes: mdnsLegacyDisabledTypes } } : {}),
     ...deps.runtimeOptions,
   });
 

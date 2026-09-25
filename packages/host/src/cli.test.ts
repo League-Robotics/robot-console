@@ -414,6 +414,58 @@ describe("cli: main -- production startup composes runtime then server", () => {
     logSpy.mockRestore();
   });
 
+  // Team-lead decision, replay-guide.md §4: ROBOT_CONSOLE_MDNS_LEGACY
+  // re-enables listed legacy mDNS types by removing them from
+  // runtime.ts's own default disabled set.
+  it("ROBOT_CONSOLE_MDNS_LEGACY re-enables the listed legacy mDNS types, leaving the rest disabled", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
+    };
+
+    await main([], { ROBOT_CONSOLE_MDNS_LEGACY: "mbserial, mbrelay" } as unknown as NodeJS.ProcessEnv, deps);
+
+    expect(startRuntimeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ mdnsWatcherOptions: { disabledTypes: ["mbflash"] } }),
+    );
+
+    logSpy.mockRestore();
+  });
+
+  it("omits mdnsWatcherOptions entirely when ROBOT_CONSOLE_MDNS_LEGACY is unset -- runtime.ts's own default is untouched", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
+    };
+
+    await main([], {} as NodeJS.ProcessEnv, deps);
+
+    const call = startRuntimeMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(call).not.toHaveProperty("mdnsWatcherOptions");
+
+    logSpy.mockRestore();
+  });
+
   it("logs a warning, but does not throw, when opening the browser fails", async () => {
     const startRuntimeMock = vi.fn().mockResolvedValue({ store: {}, reconciler: {}, telemetry: {}, mbregistryClient: {} as unknown as import("./mbregistry/client.js").MbregistryClient, mbregistryLabel: "test", stop: vi.fn() });
     const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });

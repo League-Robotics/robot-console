@@ -253,6 +253,49 @@ task writing `firmware` rows, with `If-None-Match`, an optional
 `GITHUB_TOKEN`, and backoff on 403/429. Unauthenticated hosts behind one
 classroom NAT share a 60 req/hr limit.
 
+### 6.5 mbregistry (sprint 018)
+
+Sprint 018 replaces direct USB/HID board access with a local `mbregistry`
+daemon (mbtools, a separate project/prerequisite — see the README): this
+console talks boards, locks, and flashing through `mbregistry`'s own
+Unix-socket/pipe control protocol instead of opening `/dev/cu.usbmodem*`
+or an HID device itself.
+
+- **Owner process.** Exactly the host process that runs `startRuntime`
+  (`runtime.ts`) owns the connected `MbregistryClient` for that host's
+  whole lifetime — resolved/spawned once, during `startRuntime`'s own
+  composition (step 1a, before any watcher/connector/reconciler is
+  constructed), and handed down to `mbregistryWatcher`, `connector.ts`,
+  `relayBridger.ts`, and `server.ts#runFlashTask` alike, so every one of
+  those consumers reaches the same instance rather than each resolving
+  its own. `mbregistryWatcher` (in place of `usbWatcher`, §6.1) is what
+  actually turns `mbregistry`'s `list()`/`watch()` output into
+  `devices`/`links`/`services` rows, mirroring §6's own "watchers write
+  rows only" rule.
+- **Link preference.** With `usbWatcher` off, nothing else ages a stale
+  `usb` link row any more, so `startRuntime` ages every `usb` link stale
+  itself right after the mbregistry connect succeeds (a fresh run always
+  starts from "no live usb links," `mbregistryWatcher` being the only
+  path that can mark one connectable again). `resolveFlashLinkTarget`
+  (`server.ts`) and `mcp/tools/flash.ts`'s own candidate-link filter both
+  prefer a device's live `mbregistry` link over a `usb` one for the same
+  reason: a `usb-<serial>` linkId still resolves to a real, physically
+  enumerable board regardless of its own store row's state, and flashing
+  it directly would race `mbregistry` for the same serial port.
+- **Disabled watchers.** `_mbserial._tcp`/`_mbflash._tcp`/`_mbrelay._tcp`
+  mDNS browsing (§6.2) is disabled by default in favor of
+  `mbregistryWatcher` — `_robotlink.*` (WiFi) is unaffected. A farm that
+  still needs one of those three legacy paths re-enables it without a
+  code change via `ROBOT_CONSOLE_MDNS_LEGACY` (see the README).
+- **Supervisor note.** A supervised deployment (not a bare `npx
+  robot-console`) that needs `mbregistry` resolved from a non-default
+  location sets `MBREGISTRY_BIN` in `/etc/robot-console/robot-console.env`
+  (the same env file convention this host's other supervisor-facing
+  settings already use), rather than exporting it into the invoking
+  shell — `mbregistry/client.ts`'s own binary-resolution order
+  (`$MBREGISTRY_BIN`, then `$PATH`) reads it from `process.env` exactly
+  the same way regardless of which mechanism set it.
+
 ## 7. Relay ownership and sweep
 
 ### 7.1 Facts (verified against `microbit-radio-relay` docs and source)

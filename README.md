@@ -26,6 +26,22 @@ comment for the resolution order) — there is no direct-USB fallback, so
 an outdated or missing `mbregistry` fails startup with a clear error
 naming the required version.
 
+Since `mbregistryWatcher` replaced `usbWatcher` as the production
+discovery path, the legacy mDNS-based discovery for a directly-attached
+board (`_mbserial._tcp`), the farm's own flash service (`_mbflash._tcp`),
+and a radio relay found over the network (`_mbrelay._tcp`) are all
+disabled by default (`_robotlink.*`/WiFi discovery is unaffected). A
+farm that still needs one of those legacy paths turned back on — without
+a code change or rebuild — sets `ROBOT_CONSOLE_MDNS_LEGACY` to a
+comma-separated list of the types to re-enable, e.g.:
+
+```sh
+ROBOT_CONSOLE_MDNS_LEGACY=mbserial,mbflash,mbrelay
+```
+
+Any subset, in any order, is accepted; whitespace around each name is
+ignored. Unset (the default) leaves all three disabled.
+
 This repository uses **git submodules** under `vendor/` for reference
 fixtures (`pxt-nezha-diffdrive`, `radio-robot-lib`) that the protocol
 test suite checks itself against. Clone with submodules included:

@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getMbregistryShareBoards } from "../config.js";
 import { openStoreWithImports } from "./bootstrap.js";
 
 const FIXTURES_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "__fixtures__");
@@ -78,6 +79,20 @@ describe("openStoreWithImports", () => {
       }
     } finally {
       rmSync(emptyDir, { recursive: true, force: true });
+    }
+  });
+
+  // Sprint 018 ticket 008: `importMbregistryConfig` runs as part of the
+  // same bootstrap, alongside `importFirmwareConfig` -- an explicit
+  // `env` here (rather than relying on the shared `beforeEach`'s ambient
+  // `process.env`) is what keeps this test from depending on whatever a
+  // real developer/CI environment happens to have set.
+  it("wires importMbregistryConfig -- ROBOT_CONSOLE_MBREGISTRY_SHARE_BOARDS becomes a persisted settings row", () => {
+    const store = openStoreWithImports({ stateDir: dir, env: { ROBOT_CONSOLE_MBREGISTRY_SHARE_BOARDS: "true" } });
+    try {
+      expect(getMbregistryShareBoards(store)).toBe(true);
+    } finally {
+      store.close();
     }
   });
 });

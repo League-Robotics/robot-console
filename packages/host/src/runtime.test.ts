@@ -24,7 +24,15 @@ import type { MbregistryWatcherDeps } from "./watchers/mbregistryWatcher.js";
 function fakeDeps() {
   const calls: string[] = [];
 
-  const fakeStore = { close: vi.fn(() => calls.push("store.close")), marker: "fake-store" };
+  // Sprint 018 ticket 008: `startRuntime` reads `mbregistry.shareBoards`
+  // off the store (`config.ts#getMbregistryShareBoards`) right after
+  // opening it, before creating the mbregistry client -- `getSetting`
+  // must exist on the fake or that read throws. Defaults to no row
+  // (`undefined`, reading as `false`, the documented default); a test
+  // that cares about a specific value overrides `getSettingMock`'s
+  // return.
+  const getSettingMock = vi.fn((_key: string): string | undefined => undefined);
+  const fakeStore = { close: vi.fn(() => calls.push("store.close")), getSetting: getSettingMock, marker: "fake-store" };
   const openStoreWithImportsMock = vi.fn(() => {
     calls.push("openStoreWithImports");
     return fakeStore;
@@ -171,6 +179,7 @@ function fakeDeps() {
     options,
     calls,
     fakeStore,
+    getSettingMock,
     fakeBackend,
     fakeHarvester,
     fakeConnector,
@@ -279,6 +288,38 @@ describe("startRuntime -- composition", () => {
     expect(runtime.reconciler).toBe(f.fakeReconciler);
     expect(runtime.mbregistryClient).toBe(f.fakeMbregistryClient);
     expect(typeof runtime.mbregistryLabel).toBe("string");
+  });
+
+  // Sprint 018 ticket 008: `mbregistry.shareBoards` is a `settings` row
+  // (`config.ts#getMbregistryShareBoards`), not an in-memory-only flag --
+  // `startRuntime` reads it off the just-opened store and passes it as
+  // `createMbregistryClient`'s own `shareBoards` default, so a spawned
+  // instance's peering follows whatever was last persisted.
+  it("reads mbregistry.shareBoards off the store and passes it as the mbregistry client's shareBoards default", async () => {
+    const f = fakeDeps();
+    f.getSettingMock.mockImplementation((key: string) => (key === "mbregistry.shareBoards" ? "true" : undefined));
+
+    await startRuntime(f.options);
+
+    expect(f.getSettingMock).toHaveBeenCalledWith("mbregistry.shareBoards");
+    expect(f.createMbregistryClientMock).toHaveBeenCalledWith(expect.objectContaining({ shareBoards: true }));
+  });
+
+  it("defaults mbregistry shareBoards to false when no settings row is stored", async () => {
+    const f = fakeDeps();
+
+    await startRuntime(f.options);
+
+    expect(f.createMbregistryClientMock).toHaveBeenCalledWith(expect.objectContaining({ shareBoards: false }));
+  });
+
+  it("lets an explicit mbregistryClientDeps.shareBoards override the stored setting", async () => {
+    const f = fakeDeps();
+    f.getSettingMock.mockImplementation((key: string) => (key === "mbregistry.shareBoards" ? "true" : undefined));
+
+    await startRuntime({ ...f.options, mbregistryClientDeps: { shareBoards: false } });
+
+    expect(f.createMbregistryClientMock).toHaveBeenCalledWith(expect.objectContaining({ shareBoards: false }));
   });
 
   it("forwards storeOptions/mdnsWatcherOptions/firmwareWatcherDeps/firmwareWatcherOptions/connectorOptions/reconcilerDeps/harvesterDeps/mbregistryClientDeps/mbregistryWatcherDeps/mbregistryLabel through untouched", async () => {

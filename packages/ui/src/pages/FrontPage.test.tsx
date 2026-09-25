@@ -371,6 +371,83 @@ describe("multi-link device (host already groups links under one device)", () =>
   });
 });
 
+/**
+ * Sprint 018 ticket 008 (SUC-005/SUC-006): the front-page card's own
+ * rendering of the exact `state_reason` shapes ticket 003's
+ * `mbregistryStream.ts#open()` produces for a locked device -- no new UI
+ * component, `linkStateText` already renders any `link.reason` on
+ * `failed`/`unresponsive` (`deviceDisplay.test.ts` covers the text
+ * translation itself; this is the same text asserted through the actual
+ * card DOM). Also documents acceptance criterion 4: no control anywhere
+ * on the card calls `unlock --force` -- the hint is text only.
+ */
+describe("locked-device (mbregistry) reason rendering on the front-page card", () => {
+  it("renders 'in use by <label>' verbatim on the link row", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          status="open"
+          devices={[
+            device(1, {
+              links: [link("mbregistry-uid-1", { transport: "mbregistry", state: "failed", reason: "in use by alice-laptop" })],
+            }),
+          ]}
+          unassigned={[]}
+        />,
+      ),
+    );
+    const row = el.querySelector('[data-testid="device-link-mbregistry-uid-1"]');
+    expect(row?.textContent).toContain("Couldn't connect: in use by alice-laptop");
+  });
+
+  it("renders the plain 'in use' reason with no label -- no undefined/null leaks into the card", () => {
+    const el = mount(
+      withRouter(
+        <DevicesList
+          devices={[
+            device(1, { links: [link("mbregistry-uid-1", { transport: "mbregistry", state: "failed", reason: "in use" })] }),
+          ]}
+          unassigned={[]}
+          status="open"
+        />,
+      ),
+    );
+    const row = el.querySelector('[data-testid="device-link-mbregistry-uid-1"]');
+    expect(row?.textContent).toContain("Couldn't connect: in use");
+    expect(row?.textContent).not.toContain("undefined");
+    expect(row?.textContent).not.toContain("null");
+  });
+
+  it("renders the stale-lock unlock --force hint verbatim, and no control anywhere calls it", () => {
+    const reason = "in use by alice-laptop -- stale; run `mbregistry unlock --force zeguz` on alice-laptop.local";
+    const el = mount(
+      withRouter(
+        <DevicesList
+          devices={[
+            device(1, {
+              name: "zeguz",
+              links: [link("mbregistry-uid-1", { transport: "mbregistry", state: "unresponsive", reason })],
+            }),
+          ]}
+          unassigned={[]}
+          status="open"
+        />,
+      ),
+    );
+    const row = el.querySelector('[data-testid="device-link-mbregistry-uid-1"]');
+    expect(row?.textContent).toContain("mbregistry unlock --force zeguz");
+    expect(row?.textContent).toContain(reason);
+
+    // Display-only: no button/link anywhere on the card references
+    // "unlock" -- this hint is text a human runs themselves.
+    const clickables = el.querySelectorAll("button, a");
+    for (const clickable of clickables) {
+      expect(clickable.textContent?.toLowerCase() ?? "").not.toContain("unlock");
+      expect((clickable as HTMLElement).getAttribute("data-testid") ?? "").not.toContain("unlock");
+    }
+  });
+});
+
 describe("extended scope (team-lead, 2026-09-13), item B: a card with no usable link", () => {
   it("renders no open arrow at all (neither the card's own nor any per-link one) when no link is usable", () => {
     const el = mount(

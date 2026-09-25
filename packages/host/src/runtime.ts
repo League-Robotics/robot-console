@@ -92,6 +92,7 @@
  * `runtime.test.ts`.
  */
 import { hostname } from "node:os";
+import { getMbregistryShareBoards } from "./config.js";
 import { openStoreWithImports as defaultOpenStoreWithImports } from "./store/bootstrap.js";
 import type { StoreDbOptions } from "./store/db.js";
 import type { Store } from "./store/index.js";
@@ -232,6 +233,13 @@ export interface StartRuntimeOptions {
    * promise outright (SUC-001's contract: no silent fallback to
    * `startUsbWatcher`). */
   createMbregistryClient?: typeof defaultCreateMbregistryClient;
+  /** Sprint 018 ticket 008: `shareBoards` here defaults to the stored
+   * `mbregistry.shareBoards` `settings` row (`config.ts
+   * #getMbregistryShareBoards`), read off the store this call just
+   * opened — an explicit `shareBoards` field on this object still wins
+   * over that default (a test seam, or a future caller that already
+   * knows the answer); every other field is passed through untouched,
+   * same as before this ticket. */
   mbregistryClientDeps?: MbregistryClientDeps;
   /** This console's own display label, sent as every mbregistry `lock`'s
    * `label` (`ConnectorDeps.mbregistryLabel`/`StartServerOptions.
@@ -404,7 +412,19 @@ export async function startRuntime(options: StartRuntimeOptions = {}): Promise<R
   // propagates out of this `await` and rejects `startRuntime` itself --
   // no `startMbregistryWatcher`/`createConnector`/anything else below is
   // ever reached, and there is no fallback to `startUsbWatcher`.
-  const mbregistryClient: MbregistryClient = createMbregistryClientFn(options.mbregistryClientDeps);
+  // Sprint 018 ticket 008: `mbregistry.shareBoards` (a `settings` row,
+  // `config.ts#getMbregistryShareBoards`) decides whether a
+  // console-*spawned* instance turns peering on -- read after `store`
+  // opens (above) but before the client is created, so it's available
+  // as this call's own default. An explicit `shareBoards` in
+  // `options.mbregistryClientDeps` (test seam, or a future caller that
+  // already knows the answer) always wins over the stored setting --
+  // this read only ever fills in what the caller didn't already decide.
+  const mbregistryClientDeps: MbregistryClientDeps = {
+    shareBoards: getMbregistryShareBoards(store),
+    ...options.mbregistryClientDeps,
+  };
+  const mbregistryClient: MbregistryClient = createMbregistryClientFn(mbregistryClientDeps);
   await mbregistryClient.connect();
   const mbregistryLabel = options.mbregistryLabel ?? defaultMbregistryLabel();
 

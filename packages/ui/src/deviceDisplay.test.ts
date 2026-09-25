@@ -394,6 +394,37 @@ describe("linkStateText", () => {
       "Couldn't connect: the robot didn't answer when we said hello — check the USB cable or that it's powered on",
     );
   });
+
+  /**
+   * Sprint 018 ticket 008 (SUC-005/SUC-006): end-to-end verification of
+   * the lock-reason text ticket 003's `mbregistryStream.ts#open()`
+   * already produces (`formatLockedMessage`) all the way through this
+   * shared `linkStateText`/front-page pipeline -- no new UI component,
+   * since `stripInternalIds`/`plainFailureReason` don't recognize (and so
+   * don't mangle) any of these "in use..." shapes; they pass through
+   * verbatim, exactly as an unrecognized-but-clean reason already does
+   * for any other transport's failure message.
+   */
+  it("renders a locked-device reason with the holder's label, verbatim", () => {
+    expect(linkStateText(link({ state: "failed", reason: "in use by alice-laptop" }), now)).toBe(
+      "Couldn't connect: in use by alice-laptop",
+    );
+  });
+
+  it("renders the plain 'in use' reason with no label -- no undefined/null substring leaks in", () => {
+    const text = linkStateText(link({ state: "failed", reason: "in use" }), now);
+    expect(text).toBe("Couldn't connect: in use");
+    expect(text).not.toContain("undefined");
+    expect(text).not.toContain("null");
+  });
+
+  it("renders the stale-lock hint verbatim, including the mbregistry unlock --force command", () => {
+    const reason =
+      "in use by alice-laptop -- stale; run `mbregistry unlock --force zeguz` on alice-laptop.local";
+    const text = linkStateText(link({ state: "unresponsive", reason }), now);
+    expect(text).toBe(`Couldn't connect: ${reason}`);
+    expect(text).toContain("mbregistry unlock --force zeguz");
+  });
 });
 
 /**

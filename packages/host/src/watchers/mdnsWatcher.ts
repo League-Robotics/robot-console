@@ -221,6 +221,18 @@ export interface MdnsWatcherOptions {
   /** `_mbflash._tcp` `services`-only TTL. Defaults to
    * {@link DEFAULT_MBFLASH_TTL_MS}. */
   mbflashTtlMs?: number;
+  /** Sprint 018 ticket 006: browsed types to skip entirely — no
+   * `backend.find()` call is ever made for a listed type, so no PTR
+   * query is issued and no `services`/`links` row for it is ever
+   * written. An additive constructor flag, not a code deletion: this
+   * module's own `_mbrelay`/`_mbserial`/`_mbflash` handling (and this
+   * suite's own tests for each) stay intact for when a future sprint
+   * re-enables them. `"robotlink"` (WiFi, `_robotlink._tcp`/
+   * `_robotlink._udp`) is deliberately not a value this accepts —
+   * disabling WiFi discovery is out of scope for whatever calls this.
+   * Defaults to `[]` (every type browsed — today's behavior unchanged
+   * for any caller that does not pass this). */
+  disabledTypes?: readonly ("mbserial" | "mbrelay" | "mbflash")[];
 }
 
 export interface MdnsWatcherHandle {
@@ -253,6 +265,7 @@ export function startMdnsWatcher(
   const mbserialTtlMs = opts.mbserialTtlMs ?? DEFAULT_MBSERIAL_TTL_MS;
   const mbrelayTtlMs = opts.mbrelayTtlMs ?? DEFAULT_MBRELAY_TTL_MS;
   const mbflashTtlMs = opts.mbflashTtlMs ?? DEFAULT_MBFLASH_TTL_MS;
+  const disabledTypes = new Set(opts.disabledTypes ?? []);
 
   /** Bench defect 1 (2026-09-12): fqdn -> replay closure that redoes the
    * last-known `services`/`links` touch for that instance. Populated by
@@ -508,13 +521,19 @@ export function startMdnsWatcher(
     return browser;
   }
 
-  const relayBrowser = subscribe(RELAY_FIND, handleMbrelay);
-  const serialBrowser = subscribe(SERIAL_FIND, handleMbserial);
-  const flashBrowser = subscribe(FLASH_FIND, () => {
-    // `_mbflash._tcp` writes `services` only -- `subscribe` already
-    // upserted that row above; no `links` row for this type this sprint
-    // (module doc comment).
-  });
+  // Sprint 018 ticket 006: a disabled type's `subscribe()` is never
+  // called at all -- no `backend.find()`, no PTR query, no `services`/
+  // `links` row for it ever written. `_robotlink.*` (WiFi) is not a
+  // value `disabledTypes` accepts, so it is always subscribed.
+  const relayBrowser = disabledTypes.has("mbrelay") ? undefined : subscribe(RELAY_FIND, handleMbrelay);
+  const serialBrowser = disabledTypes.has("mbserial") ? undefined : subscribe(SERIAL_FIND, handleMbserial);
+  const flashBrowser = disabledTypes.has("mbflash")
+    ? undefined
+    : subscribe(FLASH_FIND, () => {
+        // `_mbflash._tcp` writes `services` only -- `subscribe` already
+        // upserted that row above; no `links` row for this type this
+        // sprint (module doc comment).
+      });
   const robotlinkTcpBrowser = subscribe(ROBOTLINK_TCP_FIND, handleWifi);
   const robotlinkUdpBrowser = subscribe(ROBOTLINK_UDP_FIND, handleWifi);
 
@@ -524,7 +543,7 @@ export function startMdnsWatcher(
     flashBrowser,
     robotlinkTcpBrowser,
     robotlinkUdpBrowser,
-  ];
+  ].filter((browser): browser is MdnsBrowser => browser !== undefined);
 
   /** Bench defect 1: replay the remembered touch for whatever fqdn this
    * PTR answer named, refreshing `last_seen` without treating it as a

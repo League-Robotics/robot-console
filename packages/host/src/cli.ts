@@ -204,8 +204,12 @@ export async function main(
 
   // Ticket 005: production startup now actually opens the store and
   // starts both watchers (until this ticket, only the retired
-  // `--watch-store` flag did) -- see the module doc comment.
-  const runtime = startRuntimeFn({ storeOptions: { env }, ...deps.runtimeOptions });
+  // `--watch-store` flag did) -- see the module doc comment. Sprint 018
+  // ticket 006: `startRuntime` is now `async` (it resolves/spawns and
+  // connects the mbregistry client before returning), so this is
+  // awaited -- a resolution/spawn failure here propagates out of `main`
+  // itself, exactly like a real `startServer` failure already did.
+  const runtime = await startRuntimeFn({ storeOptions: { env }, ...deps.runtimeOptions });
 
   // Sprint 017 ticket 001: `getFirmwareConfig` reads `settings` via the
   // store, not `env`/a `.env` file directly, so it must be called after
@@ -218,6 +222,12 @@ export async function main(
     runtime,
     ...(port !== undefined ? { port } : {}),
     firmwareConfig,
+    // Sprint 018 ticket 006: the same already-connected mbregistry
+    // client/label `startRuntime` resolved and handed to the connector
+    // -- `server.ts#runFlashTask`'s `mbregistry`-transport branch uses
+    // this, not a second, separately-resolved client.
+    mbregistryClient: runtime.mbregistryClient,
+    mbregistryLabel: runtime.mbregistryLabel,
   });
   console.log(`robot-console: listening on ${server.url}`);
 

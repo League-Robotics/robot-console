@@ -102,8 +102,16 @@ export type Job =
 
 /** Link preference order for {@link plan}'s automatic per-device pass —
  * architecture.md §8 rule 1, minus `radio`/`mbrelay` (see this module's
- * own doc comment, "Automatic connect is usb/wifi/mbserial only"). */
-const AUTO_CONNECT_TRANSPORTS: readonly Transport[] = ["usb", "wifi", "mbserial"];
+ * own doc comment, "Automatic connect is usb/wifi/mbserial only").
+ * Sprint 018 ticket 006 adds `"mbregistry"`, first in preference order:
+ * once `usbWatcher`/the three disabled mDNS branches (`_mbserial`/
+ * `_mbrelay`/`_mbflash`) stop producing `usb`/`mbserial`/`mbrelay` rows
+ * (`runtime.ts`), the effective policy becomes `mbregistry > wifi >
+ * radio` — `usb`/`mbserial`/`mbrelay` are kept in this array (not
+ * removed) since the disabled-not-deleted code paths that would still
+ * produce those rows exist until sprint 019 deletes them together with
+ * their transport values. */
+const AUTO_CONNECT_TRANSPORTS: readonly Transport[] = ["mbregistry", "usb", "wifi", "mbserial"];
 
 type ReconcilerLinkRow = ReconcilerRows["links"][number];
 type ReconcilerDeviceRow = ReconcilerRows["devices"][number];

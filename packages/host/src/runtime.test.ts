@@ -4,6 +4,13 @@
  * {@link StartRuntimeOptions}, mirroring `cli.test.ts`'s existing
  * "real defaults, fakes in tests" convention -- no real store/serial/
  * HID/mDNS I/O is ever touched here.
+ *
+ * Sprint 018 ticket 006: `startRuntime` is now `async` (it resolves and
+ * connects a real {@link MbregistryClient} before anything else), so
+ * every call site below is `await`ed, and `fakeDeps()` fakes
+ * `createMbregistryClient`/`startMbregistryWatcher` instead of
+ * `startUsbWatcher` (which production wiring no longer calls -- see
+ * `runtime.ts`'s own module doc comment).
  */
 import { describe, expect, it, vi } from "vitest";
 import { startRuntime, type StartRuntimeOptions } from "./runtime.js";
@@ -12,6 +19,7 @@ import type { ConnectorDeps } from "./connect/connector.js";
 import type { ReconcilerDeps } from "./connect/reconciler.js";
 import type { RelayBridgerDeps } from "./connect/relayBridger.js";
 import type { RelaySweeperDeps } from "./watchers/relaySweeper.js";
+import type { MbregistryWatcherDeps } from "./watchers/mbregistryWatcher.js";
 
 function fakeDeps() {
   const calls: string[] = [];
@@ -22,11 +30,35 @@ function fakeDeps() {
     return fakeStore;
   }) as unknown as StartRuntimeOptions["openStoreWithImports"];
 
-  const usbStopMock = vi.fn(() => calls.push("usbWatcher.stop"));
-  const startUsbWatcherMock = vi.fn(() => {
-    calls.push("startUsbWatcher");
-    return { stop: usbStopMock };
-  }) as unknown as StartRuntimeOptions["startUsbWatcher"];
+  const mbregistryConnectMock = vi.fn(() => {
+    calls.push("mbregistryClient.connect");
+    return Promise.resolve({ kind: "unix", path: "/fake/api.sock" });
+  });
+  const mbregistryCloseMock = vi.fn(() => calls.push("mbregistryClient.close"));
+  const fakeMbregistryClient = {
+    connect: mbregistryConnectMock,
+    close: mbregistryCloseMock,
+    list: vi.fn(),
+    find: vi.fn(),
+    lock: vi.fn(),
+    unlock: vi.fn(),
+    watch: vi.fn(),
+    stream: vi.fn(),
+    resolvedEndpoint: undefined,
+    remotePort: undefined,
+  };
+  const createMbregistryClientMock = vi.fn(() => {
+    calls.push("createMbregistryClient");
+    return fakeMbregistryClient;
+  }) as unknown as StartRuntimeOptions["createMbregistryClient"];
+
+  let capturedMbregistryWatcherDeps: (MbregistryWatcherDeps & { client: unknown }) | undefined;
+  const mbregistryWatcherStopMock = vi.fn(() => calls.push("mbregistryWatcher.stop"));
+  const startMbregistryWatcherMock = vi.fn((_store: unknown, deps: MbregistryWatcherDeps) => {
+    calls.push("startMbregistryWatcher");
+    capturedMbregistryWatcherDeps = deps as MbregistryWatcherDeps & { client: unknown };
+    return { stop: mbregistryWatcherStopMock };
+  }) as unknown as StartRuntimeOptions["startMbregistryWatcher"];
 
   const mdnsStopMock = vi.fn(() => calls.push("mdnsWatcher.stop"));
   const startMdnsWatcherMock = vi.fn(() => {
@@ -107,7 +139,8 @@ function fakeDeps() {
 
   const options: StartRuntimeOptions = {
     openStoreWithImports: openStoreWithImportsMock,
-    startUsbWatcher: startUsbWatcherMock,
+    createMbregistryClient: createMbregistryClientMock,
+    startMbregistryWatcher: startMbregistryWatcherMock,
     startMdnsWatcher: startMdnsWatcherMock,
     createBonjourBackend: createBonjourBackendMock,
     startFirmwareWatcher: startFirmwareWatcherMock,
@@ -130,7 +163,10 @@ function fakeDeps() {
     fakeBridger,
     fakeReconciler,
     fakeRevocation,
-    usbStopMock,
+    fakeMbregistryClient,
+    mbregistryConnectMock,
+    mbregistryCloseMock,
+    mbregistryWatcherStopMock,
     mdnsStopMock,
     firmwareStopMock,
     startFirmwareWatcherMock,
@@ -138,7 +174,8 @@ function fakeDeps() {
     relaySweeperStopMock,
     uninstallMock,
     openStoreWithImportsMock,
-    startUsbWatcherMock,
+    createMbregistryClientMock,
+    startMbregistryWatcherMock,
     startMdnsWatcherMock,
     createBonjourBackendMock,
     createHarvesterMock,
@@ -153,18 +190,30 @@ function fakeDeps() {
     getCapturedRelayBridgerDeps: () => capturedRelayBridgerDeps,
     getCapturedReconcilerDeps: () => capturedReconcilerDeps,
     getCapturedRelaySweeperDeps: () => capturedRelaySweeperDeps,
+    getCapturedMbregistryWatcherDeps: () => capturedMbregistryWatcherDeps,
   };
 }
 
 describe("startRuntime -- composition", () => {
-  it("opens the store, starts all three watchers against it, and wires harvester -> connector -> reconciler in order", () => {
+  it("opens the store, resolves the mbregistry client, starts the mbregistry/mDNS/firmware watchers against it, and wires harvester -> connector -> reconciler in order", async () => {
     const f = fakeDeps();
 
-    const runtime = startRuntime(f.options);
+    const runtime = await startRuntime(f.options);
 
     expect(f.openStoreWithImportsMock).toHaveBeenCalledTimes(1);
-    expect(f.startUsbWatcherMock).toHaveBeenCalledWith(f.fakeStore, undefined, undefined);
-    expect(f.startMdnsWatcherMock).toHaveBeenCalledWith(f.fakeStore, { backend: f.fakeBackend }, undefined);
+    // Sprint 018 ticket 006: mbregistryClient.connect() is awaited BEFORE
+    // startMbregistryWatcher/createConnector are ever called.
+    expect(f.mbregistryConnectMock).toHaveBeenCalledTimes(1);
+    expect(f.startMbregistryWatcherMock).toHaveBeenCalledWith(
+      f.fakeStore,
+      expect.objectContaining({ client: f.fakeMbregistryClient }),
+    );
+    expect(f.getCapturedMbregistryWatcherDeps()?.client).toBe(f.fakeMbregistryClient);
+    // mdnsWatcher starts with the three legacy browses disabled by
+    // default (see `runtime.ts`'s own `DEFAULT_DISABLED_MDNS_TYPES`).
+    expect(f.startMdnsWatcherMock).toHaveBeenCalledWith(f.fakeStore, { backend: f.fakeBackend }, {
+      disabledTypes: ["mbserial", "mbrelay", "mbflash"],
+    });
     // Sprint 017 ticket 002: the firmware watcher is composed here too,
     // exactly like the other two -- replacing the retired
     // `FirmwareAvailabilityCache` server.ts used to construct itself.
@@ -172,9 +221,16 @@ describe("startRuntime -- composition", () => {
     expect(f.createHarvesterMock).toHaveBeenCalledTimes(1);
     expect(f.createHarvesterMock).toHaveBeenCalledWith(f.fakeStore, expect.any(Object));
     // The connector this runtime builds is handed the harvester this
-    // runtime itself built -- never a separately-constructed one.
+    // runtime itself built -- never a separately-constructed one -- plus
+    // the same mbregistryClient/mbregistryLabel this runtime resolved.
     expect(f.getCapturedConnectorDeps()?.harvester).toBe(f.fakeHarvester);
-    expect(f.createConnectorMock).toHaveBeenCalledWith(f.fakeStore, expect.objectContaining({ harvester: f.fakeHarvester }), undefined);
+    expect(f.getCapturedConnectorDeps()?.mbregistryClient).toBe(f.fakeMbregistryClient);
+    expect(typeof f.getCapturedConnectorDeps()?.mbregistryLabel).toBe("string");
+    expect(f.createConnectorMock).toHaveBeenCalledWith(
+      f.fakeStore,
+      expect.objectContaining({ harvester: f.fakeHarvester, mbregistryClient: f.fakeMbregistryClient }),
+      undefined,
+    );
     // Same for the reconciler and the connector.
     expect(f.getCapturedReconcilerDeps()?.connector).toBe(f.fakeConnector);
     expect(f.startReconcilerMock).toHaveBeenCalledWith(f.fakeStore, expect.objectContaining({ connector: f.fakeConnector }));
@@ -200,13 +256,16 @@ describe("startRuntime -- composition", () => {
 
     expect(runtime.store).toBe(f.fakeStore);
     expect(runtime.reconciler).toBe(f.fakeReconciler);
+    expect(runtime.mbregistryClient).toBe(f.fakeMbregistryClient);
+    expect(typeof runtime.mbregistryLabel).toBe("string");
   });
 
-  it("forwards storeOptions/usbWatcherDeps/usbWatcherOptions/mdnsWatcherOptions/firmwareWatcherDeps/firmwareWatcherOptions/connectorOptions/reconcilerDeps/harvesterDeps through untouched", () => {
+  it("forwards storeOptions/mdnsWatcherOptions/firmwareWatcherDeps/firmwareWatcherOptions/connectorOptions/reconcilerDeps/harvesterDeps/mbregistryClientDeps/mbregistryWatcherDeps/mbregistryLabel through untouched", async () => {
     const f = fakeDeps();
     const storeOptions = { filePath: ":memory:" };
-    const usbWatcherDeps = { now: () => 42 };
-    const usbWatcherOptions = { pollIntervalMs: 5 };
+    const mbregistryClientDeps = { shareBoards: true };
+    const mbregistryWatcherDeps = { now: () => 3 };
+    const mbregistryLabel = "custom-label";
     const mdnsWatcherOptions = { requeryIntervalMs: 5 };
     const firmwareWatcherDeps = { now: () => 11 };
     const firmwareWatcherOptions = { pollIntervalMs: 5 };
@@ -214,11 +273,12 @@ describe("startRuntime -- composition", () => {
     const reconcilerDeps = { now: () => 99, tickIntervalMs: 5 };
     const harvesterDeps = { now: () => 7 };
 
-    startRuntime({
+    await startRuntime({
       ...f.options,
       storeOptions,
-      usbWatcherDeps,
-      usbWatcherOptions,
+      mbregistryClientDeps,
+      mbregistryWatcherDeps,
+      mbregistryLabel,
       mdnsWatcherOptions,
       firmwareWatcherDeps,
       firmwareWatcherOptions,
@@ -228,29 +288,57 @@ describe("startRuntime -- composition", () => {
     });
 
     expect(f.openStoreWithImportsMock).toHaveBeenCalledWith(storeOptions);
-    expect(f.startUsbWatcherMock).toHaveBeenCalledWith(f.fakeStore, usbWatcherDeps, usbWatcherOptions);
-    expect(f.startMdnsWatcherMock).toHaveBeenCalledWith(f.fakeStore, { backend: f.fakeBackend }, mdnsWatcherOptions);
+    expect(f.createMbregistryClientMock).toHaveBeenCalledWith(mbregistryClientDeps);
+    expect(f.getCapturedMbregistryWatcherDeps()).toMatchObject(mbregistryWatcherDeps);
+    expect(f.getCapturedConnectorDeps()?.mbregistryLabel).toBe(mbregistryLabel);
+    // An explicit mdnsWatcherOptions still gets the disabledTypes default
+    // merged in (not overridden away) unless the caller sets its own.
+    expect(f.startMdnsWatcherMock).toHaveBeenCalledWith(
+      f.fakeStore,
+      { backend: f.fakeBackend },
+      expect.objectContaining(mdnsWatcherOptions),
+    );
     expect(f.startFirmwareWatcherMock).toHaveBeenCalledWith(f.fakeStore, firmwareWatcherDeps, firmwareWatcherOptions);
     expect(f.createConnectorMock).toHaveBeenCalledWith(f.fakeStore, expect.any(Object), connectorOptions);
     expect(f.getCapturedReconcilerDeps()).toMatchObject(reconcilerDeps);
     expect(f.getCapturedHarvesterDeps()).toMatchObject(harvesterDeps);
   });
 
-  it("uses a caller-supplied mdnsBackend instead of constructing one via createBonjourBackend", () => {
+  it("uses a caller-supplied mdnsBackend instead of constructing one via createBonjourBackend", async () => {
     const f = fakeDeps();
     const suppliedBackend = { marker: "supplied-backend" };
 
-    startRuntime({ ...f.options, mdnsBackend: suppliedBackend });
+    await startRuntime({ ...f.options, mdnsBackend: suppliedBackend });
 
     expect(f.createBonjourBackendMock).not.toHaveBeenCalled();
-    expect(f.startMdnsWatcherMock).toHaveBeenCalledWith(f.fakeStore, { backend: suppliedBackend }, undefined);
+    expect(f.startMdnsWatcherMock).toHaveBeenCalledWith(
+      f.fakeStore,
+      { backend: suppliedBackend },
+      expect.objectContaining({ disabledTypes: ["mbserial", "mbrelay", "mbflash"] }),
+    );
+  });
+
+  it("mbregistry resolution/spawn failure rejects startRuntime outright -- no mbregistryWatcher/connector/reconciler is ever constructed, and there is no fallback watcher", async () => {
+    const f = fakeDeps();
+    const failure = new Error("mbregistry ('mbregistry') not found on $MBREGISTRY_BIN/$PATH (requires >= 0.20260924.7)");
+    f.fakeMbregistryClient.connect.mockRejectedValueOnce(failure);
+
+    await expect(startRuntime(f.options)).rejects.toThrow(failure.message);
+
+    expect(f.startMbregistryWatcherMock).not.toHaveBeenCalled();
+    expect(f.createConnectorMock).not.toHaveBeenCalled();
+    expect(f.startReconcilerMock).not.toHaveBeenCalled();
+    // No usbWatcher fallback either -- production wiring has no such
+    // option to fall back to any more (see runtime.ts's own doc
+    // comment); this suite has nothing further to assert there beyond
+    // "nothing downstream of the failed connect ever ran".
   });
 });
 
 describe("startRuntime -- telemetry fan-out", () => {
-  it("forwards the harvester's onTelemetry/onNotice callbacks to every runtime.telemetry subscriber, and unsubscribe stops delivery", () => {
+  it("forwards the harvester's onTelemetry/onNotice callbacks to every runtime.telemetry subscriber, and unsubscribe stops delivery", async () => {
     const f = fakeDeps();
-    const runtime = startRuntime(f.options);
+    const runtime = await startRuntime(f.options);
 
     const harvesterDeps = f.getCapturedHarvesterDeps();
     expect(harvesterDeps?.onTelemetry).toBeInstanceOf(Function);
@@ -277,9 +365,9 @@ describe("startRuntime -- telemetry fan-out", () => {
     expect(notices).toHaveLength(1);
   });
 
-  it("supports more than one concurrent telemetry subscriber", () => {
+  it("supports more than one concurrent telemetry subscriber", async () => {
     const f = fakeDeps();
-    const runtime = startRuntime(f.options);
+    const runtime = await startRuntime(f.options);
     const harvesterDeps = f.getCapturedHarvesterDeps();
 
     const a: string[] = [];
@@ -295,9 +383,9 @@ describe("startRuntime -- telemetry fan-out", () => {
 });
 
 describe("startRuntime -- stop()", () => {
-  it("stops the backstop, the reconciler, the relay sweeper, all three watchers, then closes the store, in that order", async () => {
+  it("stops the backstop, the reconciler, the relay sweeper, all three watchers, closes the mbregistry client, then closes the store, in that order", async () => {
     const f = fakeDeps();
-    const runtime = startRuntime(f.options);
+    const runtime = await startRuntime(f.options);
     f.calls.length = 0; // only care about stop()'s own ordering from here
 
     // Ticket 016-008: stop() now awaits the relay sweeper's own stop()
@@ -310,16 +398,17 @@ describe("startRuntime -- stop()", () => {
       "uninstallUnhandledRejectionBackstop",
       "reconciler.stop",
       "relaySweeper.stop",
-      "usbWatcher.stop",
+      "mbregistryWatcher.stop",
       "mdnsWatcher.stop",
       "firmwareWatcher.stop",
+      "mbregistryClient.close",
       "store.close",
     ]);
   });
 
   it("is idempotent -- a second stop() call touches nothing again", async () => {
     const f = fakeDeps();
-    const runtime = startRuntime(f.options);
+    const runtime = await startRuntime(f.options);
 
     await runtime.stop();
     await runtime.stop();
@@ -327,9 +416,35 @@ describe("startRuntime -- stop()", () => {
     expect(f.uninstallMock).toHaveBeenCalledTimes(1);
     expect(f.reconcilerStopMock).toHaveBeenCalledTimes(1);
     expect(f.relaySweeperStopMock).toHaveBeenCalledTimes(1);
-    expect(f.usbStopMock).toHaveBeenCalledTimes(1);
+    expect(f.mbregistryWatcherStopMock).toHaveBeenCalledTimes(1);
     expect(f.mdnsStopMock).toHaveBeenCalledTimes(1);
     expect(f.firmwareStopMock).toHaveBeenCalledTimes(1);
+    expect(f.mbregistryCloseMock).toHaveBeenCalledTimes(1);
     expect(f.fakeStore.close).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("startRuntime -- two consoles on one machine (sprint 018 success criterion)", () => {
+  it("two startRuntime calls (two different ports is server.ts's own concern -- see cli.test.ts/server.test.ts) produce two fully independent stores/reconcilers/mbregistry clients with no shared state", async () => {
+    const f1 = fakeDeps();
+    const f2 = fakeDeps();
+
+    const runtime1 = await startRuntime(f1.options);
+    const runtime2 = await startRuntime(f2.options);
+
+    expect(runtime1.store).not.toBe(runtime2.store);
+    expect(runtime1.reconciler).not.toBe(runtime2.reconciler);
+    expect(runtime1.mbregistryClient).not.toBe(runtime2.mbregistryClient);
+    expect(f1.createMbregistryClientMock).toHaveBeenCalledTimes(1);
+    expect(f2.createMbregistryClientMock).toHaveBeenCalledTimes(1);
+
+    await runtime1.stop();
+    // Stopping the first instance never touches the second's own
+    // collaborators.
+    expect(f2.reconcilerStopMock).not.toHaveBeenCalled();
+    expect(f2.mbregistryCloseMock).not.toHaveBeenCalled();
+    expect(f2.fakeStore.close).not.toHaveBeenCalled();
+
+    await runtime2.stop();
   });
 });

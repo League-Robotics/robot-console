@@ -179,6 +179,48 @@ describe("startMdnsWatcher", () => {
     }
   });
 
+  // Sprint 018 ticket 006: `disabledTypes` skips `backend.find()` for the
+  // listed types entirely -- `_robotlink.*` (WiFi) is unaffected either
+  // way, and no `services`/`links` row for a disabled type is ever
+  // written, even if something drives its (never-subscribed) fake
+  // browser directly.
+  it("disabledTypes: mbrelay/mbserial/mbflash are never browsed at all -- only the two robotlink finds happen -- while WiFi rows still appear", () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const handle = start(store, backend, { disabledTypes: ["mbserial", "mbrelay", "mbflash"] });
+    try {
+      expect(backend.findCalls).toEqual([
+        { type: "robotlink", protocol: "tcp" },
+        { type: "robotlink", protocol: "udp" },
+      ]);
+
+      // Driving the disabled types' own (never-subscribed) fake browsers
+      // directly must produce nothing -- there is no listener attached.
+      backend.relay.emitUp(mbrelayService("relay-a", "relay-a.local", 7000, 8000));
+      backend.serial.emitUp(mbserialService("serial-a", "serial-a.local", 7001));
+      backend.flash.emitUp(mbflashService("flash-a", "flash-a.local", 7002));
+      expect(store.snapshotRows().services).toEqual([]);
+      expect(store.snapshotRows().links.map((l) => l.transport)).not.toContain("mbrelay");
+      expect(store.snapshotRows().links.map((l) => l.transport)).not.toContain("mbserial");
+
+      // WiFi (`_robotlink.*`) browsing is unaffected.
+      backend.robotlinkTcp.emitUp(wifiService("ddddd", "ddddd.local", 7654));
+      expect(store.snapshotRows().links.map((l) => l.id)).toContain("wifi-ddddd");
+      expect(store.snapshotRows().services.some((s) => s.type === "robotlink.tcp")).toBe(true);
+
+      // stop() only tears down the two browsers actually subscribed --
+      // the disabled types' own fake browsers' stop() is never called.
+      handle.stop();
+      expect(backend.robotlinkTcp.stop).toHaveBeenCalledTimes(1);
+      expect(backend.robotlinkUdp.stop).toHaveBeenCalledTimes(1);
+      expect(backend.relay.stop).not.toHaveBeenCalled();
+      expect(backend.serial.stop).not.toHaveBeenCalled();
+      expect(backend.flash.stop).not.toHaveBeenCalled();
+    } finally {
+      store.close();
+    }
+  });
+
   it(
     "a robot answering immediately and a second robot answering only the periodic re-query both end with links(wifi) rows",
     () => {

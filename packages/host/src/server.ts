@@ -703,12 +703,20 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
         }
         const address = parseLinkAddress("mbregistry", linkRow.address) as MbregistryAddress;
         const uid = address.uid;
-        const device = await mbregistryClient.find(uid);
-        const streamDevice: MbregistryStreamDevice = {
-          uid,
-          host: device.host,
-          endpoint: parseHostPort(device.endpoint),
-        };
+        // Sprint 018 ticket 006: mbregistryWatcher now persists the
+        // peer device's own `host`/`endpoint` into the link row's
+        // address, so routing normally comes straight from the store --
+        // no live `find()` round-trip. `address.host === undefined`
+        // (the key absent entirely, not merely `null`) means this row
+        // predates that change; only then is a live `find()` used as a
+        // fallback.
+        const streamDevice: MbregistryStreamDevice =
+          address.host !== undefined
+            ? { uid, host: address.host, endpoint: parseHostPort(typeof address.endpoint === "string" ? address.endpoint : undefined) }
+            : await (async () => {
+                const device = await mbregistryClient.find(uid);
+                return { uid, host: device.host, endpoint: parseHostPort(device.endpoint) };
+              })();
         const target = resolveFlashTarget(streamDevice, mbregistryClient.remotePort);
 
         const resolved = await resolveHexText(linkId, source);

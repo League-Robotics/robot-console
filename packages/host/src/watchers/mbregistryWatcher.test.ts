@@ -47,6 +47,7 @@ function registryDevice(overrides: Partial<RegistryDevice>): RegistryDevice {
     lock_label: null,
     lock_since: null,
     host: null,
+    endpoint: null,
     ...overrides,
   };
 }
@@ -188,7 +189,12 @@ describe("startMbregistryWatcher", () => {
     expect(link?.transport).toBe("mbregistry");
     expect(link?.device_id).toBe(VEVOV_ID);
     expect(link?.state).toBe("connectable");
-    expect(JSON.parse(link?.address as string)).toEqual({ endpoint: ENDPOINT, uid: "usb:vevov" });
+    // Sprint 018 ticket 006: the link address carries the *device's own*
+    // routing info (`RegistryDevice.endpoint`/`.host`, null for a device
+    // local to this console's own instance) -- not this client's own
+    // `resolvedEndpoint`, which every row previously carried identically
+    // regardless of which device it was for.
+    expect(JSON.parse(link?.address as string)).toEqual({ endpoint: null, host: null, uid: "usb:vevov" });
 
     handle.stop();
   });
@@ -219,6 +225,32 @@ describe("startMbregistryWatcher", () => {
     expect(Number(device?.owned)).toBe(0);
     const link = store.snapshotRows().links.find((l) => l.id === "mbregistry-usb:remote-vevov");
     expect(link?.state).toBe("discovered");
+
+    handle.stop();
+  });
+
+  // Sprint 018 ticket 006 (closing a gap flagged by ticket 004's own
+  // Implementation Notes): a peer-owned `list` entry's own `endpoint`/
+  // `host` -- not this client's `resolvedEndpoint` -- are persisted into
+  // the link row's address, so connect/flash routing (`connect/
+  // connector.ts`'s `createMbregistryStream` default, `server.ts#
+  // runFlashTask`) can dial the peer directly from the stored row,
+  // without a live `mbregistryClient.find()` round-trip.
+  it("persists a remote peer device's own endpoint/host into the link address", async () => {
+    const store = freshStore();
+    const { client } = fakeClient([
+      vevovDevice({ uid: "usb:remote-vevov", host: "other-console", endpoint: "10.0.0.9:9100" }),
+    ]);
+    const handle = startWatcher(store, client);
+
+    await waitFor(() => store.snapshotRows().links.length > 0);
+
+    const link = store.snapshotRows().links.find((l) => l.id === "mbregistry-usb:remote-vevov");
+    expect(JSON.parse(link?.address as string)).toEqual({
+      endpoint: "10.0.0.9:9100",
+      host: "other-console",
+      uid: "usb:remote-vevov",
+    });
 
     handle.stop();
   });

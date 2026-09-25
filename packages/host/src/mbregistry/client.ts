@@ -24,20 +24,25 @@
  *   for the future `mbregistryStream` adapter ticket to build binary
  *   framing on top of.
  *
- * ## Version pinning (Open Question #1, sprint.md)
+ * ## Version pinning (Open Question #1, sprint.md — resolved by sprint
+ * 018 ticket 006)
  *
- * {@link MIN_MBREGISTRY_VERSION} cannot be finalized until mbtools
- * sprint 008 closes (`watch`, lock `label`/`since`, local-socket `stream`
- * all land there) — this is today's best-known floor, explicitly pending
- * a final pin. `mbregistry --version` is not yet implemented by the
- * installed mbtools as of this ticket (no `--version`/`version`
- * subcommand exists in `mbtools/src/mbtools/registry/cli.py`'s
- * `build_parser()` today) — {@link checkMbregistryVersion} is written
- * forward-compatibly against the documented convention (run `--version`,
- * parse a semver token from stdout) so it starts working the moment
- * mbtools adds it, and fails closed (as "not found/too old", per this
- * ticket's own acceptance criteria — no direct-USB fallback) in the
- * meantime rather than silently skipping the check.
+ * {@link MIN_MBREGISTRY_VERSION} is now pinned to `0.20260924.7` — the
+ * version mbtools sprint 008 closed as (`watch`, lock `label`/`since`,
+ * local-socket `stream`, and `--version`/`--ready-json`'s `"version"`
+ * field all land there), now on mbtools `main`. `mbregistry --version`
+ * prints exactly `mbregistry 0.20260924.7\n` to stdout and exits 0;
+ * {@link checkMbregistryVersion} extracts the dotted-numeric token and
+ * compares it numerically per component via {@link compareVersions}
+ * (these are date-style version numbers, e.g. `0.20260924.7`, not
+ * semver — a lexicographic string compare would misorder them). The
+ * spawn path ({@link spawnMbregistry}) independently re-checks the
+ * `--ready-json` line's own top-level `"version"` key against the same
+ * floor, in case a differently-versioned binary is on `$PATH` than the
+ * one `checkMbregistryVersion` probed moments earlier (a `--ready-json`
+ * with no `"version"` key at all — an older mbregistry — is not treated
+ * as a failure there, since {@link checkMbregistryVersion} already
+ * gated the binary itself before any spawn was attempted).
  *
  * ## `stream` requires the *locking* connection
  *
@@ -67,13 +72,17 @@ import { LineReassembler } from "../link/lineStream.js";
 import { resolveStateDir } from "../store/stateDir.js";
 
 // ---------------------------------------------------------------------------
-// Version floor (Open Question #1 — see module doc comment)
+// Version floor (Open Question #1 — see module doc comment; pinned by
+// sprint 018 ticket 006)
 // ---------------------------------------------------------------------------
 
-/** Minimum `mbregistry` version robot-console requires, pending a final
- * pin once mbtools sprint 008 closes — see this module's own doc
- * comment. Bump this constant (only) when that pin lands. */
-export const MIN_MBREGISTRY_VERSION = "0.8.0";
+/** Minimum `mbregistry` version robot-console requires — pinned (sprint
+ * 018 ticket 006) to the version mbtools sprint 008 closed as
+ * (`0.20260924.7`, now on mbtools `main`): `watch`, lock `label`/`since`,
+ * local-socket `stream` (mbtools 008-004), and `--version`/`--ready-json`
+ * `"version"` all ship at or before this version. Bump this constant
+ * (only) if a later mbtools release becomes the new floor. */
+export const MIN_MBREGISTRY_VERSION = "0.20260924.7";
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -645,6 +654,11 @@ function toNotFoundError(bin: string, cause?: unknown): MbregistryError {
 interface ReadyJson {
   ready: true;
   instance?: string;
+  /** Sprint 018 ticket 006: the same dotted-numeric string `mbregistry
+   * --version` prints, now also carried on `--ready-json` (mbtools
+   * 0.20260924.7+) — absent for an older mbregistry, which is not
+   * itself treated as a failure here (see {@link spawnMbregistry}). */
+  version?: string;
   socket?: string;
   ports?: Record<string, number>;
 }
@@ -765,6 +779,22 @@ export async function spawnMbregistry(options: SpawnMbregistryOptions): Promise<
       );
     });
   });
+
+  // Sprint 018 ticket 006: re-verify the *spawned* instance's own
+  // reported version against the same floor `checkMbregistryVersion`
+  // already gated the binary against, above -- belt-and-braces against a
+  // `$PATH`/`$MBREGISTRY_BIN` race between that check and this spawn. No
+  // `"version"` key at all (an mbregistry older than 0.20260924.7) is
+  // not itself a failure here -- checkMbregistryVersion already turned
+  // that away before any spawn was attempted.
+  if (ready.version !== undefined && compareVersions(ready.version, MIN_MBREGISTRY_VERSION) < 0) {
+    child.kill();
+    throw new MbregistryError(
+      `spawned mbregistry ${ready.version} is older than the required minimum ${MIN_MBREGISTRY_VERSION}`,
+      "version_too_old",
+      { found: ready.version, required: MIN_MBREGISTRY_VERSION },
+    );
+  }
 
   const endpoint: ResolvedEndpoint =
     ready.socket !== undefined

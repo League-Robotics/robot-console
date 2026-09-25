@@ -590,6 +590,22 @@ export async function resolveFlashLinkTarget(
     return { ok: false, reason: `link "${linkId}" no longer exists` };
   }
   if (linkRow.transport === "usb") {
+    // Port contention (replay guide §3): `startRuntime` ages every `usb`
+    // link stale on startup now that `mbregistryWatcher` (not
+    // `usbWatcher`) owns identifying boards, but a `usb-<serial>` linkId
+    // still resolves to a real, physically-enumerable board regardless
+    // of that store row's own state -- flashing it directly here would
+    // race mbregistry for the same serial port. If this device already
+    // has its own live (non-stale) `mbregistry` link, redirect to that
+    // one instead of opening the USB device directly.
+    if (linkRow.deviceId !== null) {
+      const mbregistryLink = rows.links.find(
+        (candidate) => candidate.deviceId === linkRow.deviceId && candidate.transport === "mbregistry" && candidate.state !== "stale",
+      );
+      if (mbregistryLink !== undefined) {
+        return resolveFlashLinkTarget(rows, mbregistryLink.id, deps);
+      }
+    }
     const usbSerial = usbSerialFromLinkId(linkId);
     if (usbSerial === undefined) {
       return { ok: false, reason: `link "${linkId}" does not follow the "usb-<serial>" id convention` };

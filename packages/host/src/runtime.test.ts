@@ -32,7 +32,16 @@ function fakeDeps() {
   // that cares about a specific value overrides `getSettingMock`'s
   // return.
   const getSettingMock = vi.fn((_key: string): string | undefined => undefined);
-  const fakeStore = { close: vi.fn(() => calls.push("store.close")), getSetting: getSettingMock, marker: "fake-store" };
+  // Port contention (replay guide §3): `startRuntime` ages every `usb`
+  // link stale right after the mbregistry connect succeeds -- must
+  // exist on the fake or that call throws.
+  const ageLinksMock = vi.fn((_transport: string, _ttlMs: number, _now: number) => 0);
+  const fakeStore = {
+    close: vi.fn(() => calls.push("store.close")),
+    getSetting: getSettingMock,
+    ageLinks: ageLinksMock,
+    marker: "fake-store",
+  };
   const openStoreWithImportsMock = vi.fn(() => {
     calls.push("openStoreWithImports");
     return fakeStore;
@@ -180,6 +189,7 @@ function fakeDeps() {
     calls,
     fakeStore,
     getSettingMock,
+    ageLinksMock,
     fakeBackend,
     fakeHarvester,
     fakeConnector,
@@ -414,6 +424,30 @@ describe("startRuntime -- composition", () => {
     // option to fall back to any more (see runtime.ts's own doc
     // comment); this suite has nothing further to assert there beyond
     // "nothing downstream of the failed connect ever ran".
+  });
+
+  // Port contention (replay guide §3): a failed mbregistry connect must
+  // not leak the store this call already opened above.
+  it("closes the already-opened store when the mbregistry connect fails", async () => {
+    const f = fakeDeps();
+    f.fakeMbregistryClient.connect.mockRejectedValueOnce(new Error("spawn failed"));
+
+    await expect(startRuntime(f.options)).rejects.toThrow("spawn failed");
+
+    expect(f.fakeStore.close).toHaveBeenCalledTimes(1);
+  });
+
+  // Port contention (replay guide §3): with usbWatcher off in favor of
+  // mbregistryWatcher, nothing else ages a leftover `usb` link row --
+  // startRuntime must do it itself, right after the mbregistry connect
+  // succeeds, so the reconciler/sweeper/flasher never race mbregistry
+  // for the same serial port.
+  it("ages every usb link stale once the mbregistry connect succeeds", async () => {
+    const f = fakeDeps();
+
+    await startRuntime(f.options);
+
+    expect(f.ageLinksMock).toHaveBeenCalledWith("usb", 0, expect.any(Number));
   });
 });
 

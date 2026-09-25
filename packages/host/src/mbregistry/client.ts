@@ -908,6 +908,13 @@ export interface ResolvedConnection {
    * port it reported, for {@link MbregistryClient.stream}. */
   remotePort?: number | undefined;
   spawned: boolean;
+  /** Set only when this call spawned a new instance — the handle
+   * {@link MbregistryClient.close} terminates, so a spawned instance
+   * does not outlive an in-process `runtime.stop()` (it would otherwise
+   * only die via `--exit-with-parent` on this whole process's own exit,
+   * never on a graceful stop that keeps the process running -- e.g. an
+   * attach-then-stop in `cli.ts`, or a dev-server restart). */
+  child?: ChildProcess | undefined;
 }
 
 /** Tries to open `endpoint` and confirm it is a live mbregistry by
@@ -1015,6 +1022,7 @@ export async function resolveMbregistryConnection(deps: ResolveDeps): Promise<Re
     socket,
     remotePort: spawnedInfo.remotePort,
     spawned: true,
+    child: spawnedInfo.child,
   };
 }
 
@@ -1248,6 +1256,7 @@ export function createMbregistryClient(deps: MbregistryClientDeps = {}): Mbregis
   let controlConnection: JsonLinesConnection | undefined;
   let resolvedEndpoint: ResolvedEndpoint | undefined;
   let remotePort: number | undefined;
+  let spawnedChild: ChildProcess | undefined;
 
   async function connectClient(): Promise<ResolvedEndpoint> {
     const resolved = await resolveMbregistryConnection({
@@ -1263,6 +1272,7 @@ export function createMbregistryClient(deps: MbregistryClientDeps = {}): Mbregis
     controlConnection = new JsonLinesConnection(resolved.socket);
     resolvedEndpoint = resolved.endpoint;
     remotePort = resolved.remotePort;
+    spawnedChild = resolved.child;
     return resolved.endpoint;
   }
 
@@ -1277,6 +1287,16 @@ export function createMbregistryClient(deps: MbregistryClientDeps = {}): Mbregis
     connect: connectClient,
     close(): void {
       controlConnection?.close();
+      // A spawned instance is otherwise only tied to this process's own
+      // exit (`--exit-with-parent`, watching this process's stdin-pipe
+      // EOF) -- a graceful `close()` with the process still running
+      // (`runtime.stop()`) would otherwise leak it. Closing its stdin
+      // triggers that same `--exit-with-parent` EOF for a clean exit;
+      // `kill()` is the backstop if it doesn't take.
+      if (spawnedChild !== undefined) {
+        spawnedChild.stdin?.end();
+        spawnedChild.kill();
+      }
     },
     async list(): Promise<RegistryDevice[]> {
       const response = unwrap(await requireConnection().request({ op: "list" }));

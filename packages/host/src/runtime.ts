@@ -425,8 +425,32 @@ export async function startRuntime(options: StartRuntimeOptions = {}): Promise<R
     ...options.mbregistryClientDeps,
   };
   const mbregistryClient: MbregistryClient = createMbregistryClientFn(mbregistryClientDeps);
-  await mbregistryClient.connect();
+  try {
+    await mbregistryClient.connect();
+  } catch (error) {
+    // The store was already opened above (and may have run its
+    // one-time importers) -- a failed mbregistry resolve/spawn must not
+    // leak that open handle. Nothing else has been constructed yet (no
+    // watcher/connector/reconciler), so closing the store is the only
+    // cleanup this catch needs before re-throwing to reject
+    // `startRuntime` itself, per this function's own SUC-001 contract.
+    store.close();
+    throw error;
+  }
   const mbregistryLabel = options.mbregistryLabel ?? defaultMbregistryLabel();
+
+  // Port contention (replay guide §3): with `usbWatcher` off (in favor
+  // of `mbregistryWatcher`, above), nothing ages this store's existing
+  // `usb` link rows any more -- `clearDeadProcessState` (run by
+  // `openStoreWithImports` above) resets any that were mid-connect back
+  // to `connectable`, and the reconciler/sweeper/flasher would then try
+  // to open `/dev/cu.usbmodem*` directly, racing mbregistry for the same
+  // serial port. Age every `usb` link stale up front so the store only
+  // ever offers this run's own `mbregistry` links for a board this
+  // console also reaches over usb -- `resolveFlashLinkTarget`'s own
+  // preference for a live `mbregistry` link over a stale `usb` one
+  // (`server.ts`) handles the flash path's side of the same fix.
+  store.ageLinks("usb", 0, Date.now());
 
   const mbregistryHandle: MbregistryWatcherHandle = startMbregistryWatcherFn(store, {
     ...options.mbregistryWatcherDeps,

@@ -685,6 +685,10 @@ const NO_ANSWER_ADVICE: Record<Transport, string> = {
   wifi: "no answer from the robot over WiFi — is it on the network?",
   radio: "no radio reply — is the robot on and in range?",
   mbrelay: "no radio reply — is the robot on and in range?",
+  // Sprint 018: an mbregistry link dials the board directly (same shape
+  // as usb, just through mbregistry's own daemon rather than this
+  // console's own USB stack), so it gets the same robot-shaped advice.
+  mbregistry: "the robot didn't answer when we said hello — check the USB cable or that it's powered on",
 };
 
 /** No-answer advice for a relay device's OWN connectivity link (`kind:
@@ -993,19 +997,24 @@ const USB_BRIDGE_UNAVAILABLE_STATES = new Set<SnapshotLink["state"]>(["stale", "
  * relay link id to send in `session-open {relayLinkId, name}`, or
  * `undefined` when none is available:
  *
- * 1. the first directly-attached USB radio bridge carrying no robot
- *    (one serial port, one robot at a time);
+ * 1. the first directly-attached radio bridge (`usb`, or `mbregistry` --
+ *    sprint 018: mbregistry dials a directly-attached board exactly like
+ *    usb does, just through mbregistry's own daemon) carrying no robot
+ *    (one exclusive attach, one robot at a time);
  * 2. otherwise the first mbrelay pool -- a pool serves each connection
  *    with its own relay board, so it is never "in use" from here; a pool
  *    with no free board fails the connect instead.
  */
 export function allocateRadioBridge(devices: readonly SnapshotDevice[]): string | undefined {
   const bridgeLinks = devices.filter((device) => device.kind === "relay").flatMap((device) => device.links);
-  const freeUsb = bridgeLinks.find(
-    (link) => link.transport === "usb" && !USB_BRIDGE_UNAVAILABLE_STATES.has(link.state) && relayConnections(devices, link.id).length === 0,
+  const freeDirect = bridgeLinks.find(
+    (link) =>
+      (link.transport === "usb" || link.transport === "mbregistry") &&
+      !USB_BRIDGE_UNAVAILABLE_STATES.has(link.state) &&
+      relayConnections(devices, link.id).length === 0,
   );
-  if (freeUsb) {
-    return freeUsb.id;
+  if (freeDirect) {
+    return freeDirect.id;
   }
   return bridgeLinks.find((link) => link.transport === "mbrelay" && link.state !== "stale")?.id;
 }

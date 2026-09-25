@@ -176,10 +176,15 @@ class FakeRegistryServer {
 /** A fake `ChildProcess` — an `EventEmitter` with `stdout`/`stderr`
  * sub-emitters and a no-op `kill()`, just enough surface for
  * `client.ts` to drive. */
-function fakeChild(): ChildProcess & { stdout: EventEmitter; stderr: EventEmitter } {
-  const child = new EventEmitter() as unknown as ChildProcess & { stdout: EventEmitter; stderr: EventEmitter };
+function fakeChild(): ChildProcess & { stdout: EventEmitter; stderr: EventEmitter; stdin: { end: ReturnType<typeof vi.fn> } } {
+  const child = new EventEmitter() as unknown as ChildProcess & {
+    stdout: EventEmitter;
+    stderr: EventEmitter;
+    stdin: { end: ReturnType<typeof vi.fn> };
+  };
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
+  child.stdin = { end: vi.fn() };
   child.kill = vi.fn(() => true) as unknown as ChildProcess["kill"];
   return child;
 }
@@ -749,6 +754,7 @@ describe("createMbregistryClient — typed ops (list/lock/unlock/watch)", () => 
       },
     ]);
 
+    let spawnedRunChild: ReturnType<typeof fakeChild> | undefined;
     const spawnFn = vi.fn((command: string, args: readonly string[]) => {
       const child = fakeChild();
       if (args[0] === "--version") {
@@ -758,6 +764,7 @@ describe("createMbregistryClient — typed ops (list/lock/unlock/watch)", () => 
         });
         return child;
       }
+      spawnedRunChild = child;
       const socketIdx = args.indexOf("--socket");
       const socketPath = args[socketIdx + 1] as string;
       void server.listen(socketPath).then(() => {
@@ -778,8 +785,21 @@ describe("createMbregistryClient — typed ops (list/lock/unlock/watch)", () => 
       spawnReadyTimeoutMs: 2000,
     });
     await client.connect();
-    return { client, server };
+    return { client, server, spawnedChild: spawnedRunChild! };
   }
+
+  // Sprint 018 ticket 006 (closing the section-2 gap flagged in ticket
+  // 012's own replay guide): a spawned instance is otherwise only tied
+  // to this whole process's own exit (`--exit-with-parent`) -- close()
+  // must terminate it directly too, so a graceful `runtime.stop()` with
+  // the process still running never leaks the spawned child.
+  it("close() ends the spawned child's stdin and kills it", async () => {
+    const { client, server, spawnedChild } = await connectedClientAndServer();
+    client.close();
+    expect(spawnedChild.stdin.end).toHaveBeenCalledTimes(1);
+    expect(spawnedChild.kill).toHaveBeenCalledTimes(1);
+    await server.close();
+  });
 
   it("list() returns typed devices from the spawned instance", async () => {
     const { client, server } = await connectedClientAndServer();

@@ -33,6 +33,8 @@ export function transportShortName(transport: Transport): string {
       return "Bridge";
     case "mbrelay":
       return "Relay";
+    case "mbregistry":
+      return "mbregistry";
     default:
       return transport;
   }

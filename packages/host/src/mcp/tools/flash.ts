@@ -36,8 +36,8 @@
  * `sprint.md`'s SUC-007: "the same precondition `flash-start`'s existing
  * handler already checks — do not invent a new precondition set."
  * `deviceId` is translated to whichever of that device's own links is
- * currently a candidate to flash (`usb`, or `mbserial`/`wifi`), then
- * handed to `server.ts`'s own {@link resolveFlashLinkTarget} — the exact
+ * currently a candidate to flash (`mbregistry` preferred, else `usb`, or
+ * `mbserial`/`wifi`), then handed to `server.ts`'s own {@link resolveFlashLinkTarget} — the exact
  * function `runFlashTask` itself calls before ever touching
  * `board_owner`/`flasher.flash()`. A rejection here (no such device, no
  * candidate link, or `resolveFlashLinkTarget` itself refusing the link)
@@ -209,10 +209,22 @@ export function registerFlashTools(server: McpServer, deps: FlashToolsDeps): voi
       if (device === undefined) {
         return jsonResult({ error: `no device with id ${deviceId} is currently known to this console` }, true);
       }
-      const candidateLink = rows.links.find(
+      // Sprint 018: `mbregistry` is preferred over every other
+      // flashable transport for the same device -- a device with both a
+      // live `mbregistry` link and a stale `usb`/`mbserial`/`wifi` one
+      // (the common case once mbregistryWatcher replaces usbWatcher,
+      // per `resolveFlashLinkTarget`'s own preference over a stale usb
+      // link) should flash over the transport that's actually live.
+      const candidateLinks = rows.links.filter(
         (candidate) =>
-          candidate.deviceId === deviceId && (candidate.transport === "usb" || candidate.transport === "mbserial" || candidate.transport === "wifi"),
+          candidate.deviceId === deviceId &&
+          (candidate.transport === "mbregistry" ||
+            candidate.transport === "usb" ||
+            candidate.transport === "mbserial" ||
+            candidate.transport === "wifi"),
       );
+      const candidateLink =
+        candidateLinks.find((candidate) => candidate.transport === "mbregistry") ?? candidateLinks[0];
       if (candidateLink === undefined) {
         return jsonResult({ error: `device ${deviceId} ("${device.name}") has no USB or network-flashable link right now` }, true);
       }

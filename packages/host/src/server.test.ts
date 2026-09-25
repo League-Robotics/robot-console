@@ -1786,6 +1786,49 @@ describe("server.ts: flash-start (mbregistry transport)", () => {
     expect(result).toMatchObject({ type: "flash-result", status: "ok" });
   });
 
+  // Port contention (replay guide §3): `startRuntime` ages every `usb`
+  // link stale once mbregistryWatcher is running, but a `usb-<serial>`
+  // linkId still resolves to a real, physically-enumerable board
+  // regardless of that row's own state -- `resolveFlashLinkTarget` must
+  // redirect to this device's own live `mbregistry` link instead of
+  // opening the USB device directly, so a `flash-start` aimed at a
+  // stale `usb-<serial>` id never races mbregistry for the same serial
+  // port.
+  it("redirects a flash-start on a stale usb link to this device's own live mbregistry link instead of opening the USB device directly", async () => {
+    const device = fakeRegistryDevice({ uid: "uid-5", host: "peer-host", endpoint: "10.0.0.9:7440" });
+    const mbregistryClient = fakeMbregistryClient(device, 5555);
+    const flashViaMbregistryMock = vi.fn(async () => ({ status: "ok", method: "mbregistry" }) satisfies FlashOutcome);
+    const flashMock = vi.fn();
+    const h = await harness({
+      mbregistryClient,
+      flashViaMbregistry: flashViaMbregistryMock as unknown as StartServerOptions["flashViaMbregistry"],
+      flash: flashMock as unknown as StartServerOptions["flash"],
+      enumerateDaplinkDevices: async () => [{ serialNumber: "SERIAL5", displaySerial: "IAL5" } as unknown as DaplinkDevice],
+    });
+    h.store.upsertDevice({ id: 5, name: deviceIdToName(5), kind: "robot", usbSerial: "SERIAL5", at: 1 });
+    h.store.upsertLink({ id: "usb-SERIAL5", transport: "usb", address: { path: "/dev/x" }, deviceId: 5, at: 1 });
+    h.store.setLinkState({ id: "usb-SERIAL5", state: "stale", at: 2 });
+    h.store.upsertLink({
+      id: "mbregistry-uid-5",
+      transport: "mbregistry",
+      address: { endpoint: "10.0.0.9:7440", host: "peer-host", uid: "uid-5" },
+      deviceId: 5,
+      at: 1,
+    });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const result = await driveLocalHexFlash(ws, "usb-SERIAL5");
+
+    expect(flashMock).not.toHaveBeenCalled();
+    expect(flashViaMbregistryMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ type: "flash-result", status: "ok" });
+  });
+
   // Ticket 018-014 (see `projection.ts`'s own doc comment): a `wifi`
   // link is a legitimate network-flash candidate on L, not an
   // unrecognized transport -- so a `wifi` link with no identified

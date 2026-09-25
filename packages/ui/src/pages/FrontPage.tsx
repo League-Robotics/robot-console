@@ -465,15 +465,15 @@ function primaryLinkFor(device: SnapshotDevice): SnapshotLink | undefined {
 }
 
 
-/** A device's current (non-stale) usb link, if it has one -- the gate
- * for the front-page lightning Flash trigger (ticket 018-015). A usb
- * link's `capabilities.flash` is unconditionally true
- * (`projection.ts`'s own comment, "a usb link can always be flashed
- * (unchanged)"), so finding one here is sufficient to know
- * `FlashDialog`'s own `canBeFlashed` gate will pass -- no need to
- * duplicate that check here. */
+/** A device's current (non-stale) usb or mbregistry link, if it has one
+ * -- the gate for the front-page lightning Flash trigger (ticket
+ * 018-015; widened to `mbregistry` in sprint 018). Both transports'
+ * `capabilities.flash` are unconditionally true (`projection.ts`'s own
+ * comment), so finding one here is sufficient to know `FlashDialog`'s
+ * own `canBeFlashed` gate will pass -- no need to duplicate that check
+ * here. */
 function currentUsbLink(device: SnapshotDevice): SnapshotLink | undefined {
-  return device.links.find((link) => link.transport === "usb" && link.state !== "stale");
+  return device.links.find((link) => (link.transport === "usb" || link.transport === "mbregistry") && link.state !== "stale");
 }
 
 /** A lightning-bolt glyph for the Flash trigger buttons -- inline SVG,
@@ -1017,7 +1017,9 @@ function relayConnectionText(device: SnapshotDevice, link: SnapshotLink): string
  *   console has bridged through it otherwise.
  */
 function RelayBridgeStatus({ relay, devices }: { relay: SnapshotDevice; devices: SnapshotDevice[] }) {
-  const bridgeLinks = cardLinks(relay).filter((link) => link.transport === "usb" || link.transport === "mbrelay");
+  const bridgeLinks = cardLinks(relay).filter(
+    (link) => link.transport === "usb" || link.transport === "mbrelay" || link.transport === "mbregistry",
+  );
   const pool = bridgeLinks.some((link) => link.transport === "mbrelay");
   const connections = bridgeLinks.flatMap((link) => relayConnections(devices, link.id));
   if (pool && connections.length === 0) {

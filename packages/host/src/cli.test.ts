@@ -104,7 +104,18 @@ describe("cli: main -- production startup composes runtime then server", () => {
   });
 
   it("calls the real startRuntime, which in turn invokes openStoreWithImports and starts the mbregistry/mDNS/firmware watchers -- not by re-running --watch-store", async () => {
-    const fakeStore = { close: vi.fn(), marker: "fake-store" };
+    // Sprint 018 ticket 008: `startRuntime` reads `mbregistry.shareBoards`
+    // off the store (`config.ts#getMbregistryShareBoards`) before
+    // constructing the mbregistry client -- `getSetting` must exist on
+    // this fake for that real call to succeed. Port contention (replay
+    // guide §3): `startRuntime` also ages every usb link stale right
+    // after the mbregistry connect succeeds -- `ageLinks` must exist too.
+    const fakeStore = {
+      close: vi.fn(),
+      getSetting: vi.fn().mockReturnValue(undefined),
+      ageLinks: vi.fn().mockReturnValue(0),
+      marker: "fake-store",
+    };
     const openStoreWithImportsMock = vi.fn().mockReturnValue(fakeStore);
     // Sprint 018 ticket 006: production startRuntime() resolves/connects
     // a real mbregistry client before anything else -- faked here (a

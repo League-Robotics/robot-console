@@ -569,6 +569,35 @@ describe("buildSnapshotFromRows: capabilities", () => {
     expect(snapshot.unassigned[0]?.capabilities).toEqual({ open: true, close: false, flash: true, provisionWifi: false });
   });
 
+  // Ticket 018-010 (bench fix): an mbregistry link with no owning device
+  // -- e.g. `mbregistryWatcher.ts`'s `identify()` deliberately skipping
+  // the `devices` upsert for an unrecognized banner -- now also surfaces
+  // via `unassigned`/`UnknownDevicePage`, the same as an unidentified usb
+  // board, instead of being silently dropped (this module's own doc
+  // comment, "The owned gate": a non-usb/non-mbregistry link with no
+  // device is still dropped). Flashing a board with unknown/other
+  // firmware is a core use case, so this must not lose the flash
+  // trigger.
+  it("an unassigned mbregistry link (no device yet, e.g. an unrecognized banner) is also listed under unassigned, flashable", () => {
+    const rows = emptyRows();
+    rows.links = [
+      { id: "mbregistry-uid-1", deviceId: null, transport: "mbregistry", address: { endpoint: null, host: null, uid: "uid-1" }, state: "discovered", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
+    ];
+    const snapshot = buildSnapshotFromRows(rows, 1, 1);
+    expect(snapshot.unassigned).toHaveLength(1);
+    expect(snapshot.unassigned[0]?.id).toBe("mbregistry-uid-1");
+    expect(snapshot.unassigned[0]?.capabilities).toEqual({ open: true, close: false, flash: true, provisionWifi: false });
+  });
+
+  it("a non-usb, non-mbregistry link with no device (e.g. a stray mdns observation) is still dropped, not surfaced as unassigned", () => {
+    const rows = emptyRows();
+    rows.links = [
+      { id: "wifi-1", deviceId: null, transport: "wifi", address: { host: "1.2.3.4", port: 9000 }, state: "discovered", stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false },
+    ];
+    const snapshot = buildSnapshotFromRows(rows, 1, 1);
+    expect(snapshot.unassigned).toHaveLength(0);
+  });
+
   it("radio-address resolution: an override on the device wins over the name-derived default", () => {
     const rows = emptyRows();
     const derived = deviceIdToName(10);

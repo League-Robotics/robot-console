@@ -390,4 +390,170 @@ describe("startMbregistryWatcher", () => {
 
     handle.stop();
   });
+
+  // Bench fix 010 -- real mbregistry v0.20260924.7 bench pass: a
+  // previously-plugged, now-unplugged device ("gone" in mbregistry's own
+  // CLI render, `state: "disconnected"` on the wire) was being treated as
+  // connectable and auto-connected/retried forever.
+  describe("bench fix 010: disconnected (\"gone\") list entries", () => {
+    it("a disconnected list entry never promotes to connectable and never sets owned", async () => {
+      const store = freshStore();
+      const { client } = fakeClient([vevovDevice({ state: "disconnected" })]);
+      const handle = startWatcher(store, client);
+
+      await waitFor(() => store.snapshotRows().links.some((l) => l.id === "mbregistry-usb:vevov"));
+
+      const link = store.snapshotRows().links.find((l) => l.id === "mbregistry-usb:vevov");
+      expect(link?.state).toBe("stale");
+      const device = store.snapshotRows().devices.find((d) => d.id === VEVOV_ID);
+      expect(device).toBeDefined();
+      expect(Number(device?.owned)).toBe(0);
+
+      handle.stop();
+    });
+
+    it("marks an already-connectable link stale once a later list() reports it disconnected", async () => {
+      const store = freshStore();
+      const { client } = fakeClient([vevovDevice()]);
+      const handle = startWatcher(store, client);
+
+      await waitFor(
+        () => store.snapshotRows().links.find((l) => l.id === "mbregistry-usb:vevov")?.state === "connectable",
+      );
+
+      // Same watcher instance, driven by a second, independent list()
+      // reporting the device gone -- exercises `upsertFromListEntry`'s
+      // own disconnected branch downgrading a link this same run already
+      // promoted, not just a link seen disconnected from the start.
+      const secondList = fakeClient([vevovDevice({ state: "disconnected" })]);
+      const handle2 = startWatcher(store, secondList.client);
+      await waitFor(() => store.snapshotRows().links.find((l) => l.id === "mbregistry-usb:vevov")?.state === "stale");
+
+      handle.stop();
+      handle2.stop();
+    });
+
+    it("a device replugged after being disconnected becomes connectable again via a later identity event", async () => {
+      const store = freshStore();
+      const { client, emit } = fakeClient([vevovDevice({ state: "disconnected" })]);
+      const handle = startWatcher(store, client);
+
+      await waitFor(() => store.snapshotRows().links.find((l) => l.id === "mbregistry-usb:vevov")?.state === "stale");
+
+      emit({
+        type: "identity",
+        host: "this-console",
+        uid: "usb:vevov",
+        state: "connected",
+        role: "NEZHA2",
+        common_name: "robot",
+        device_name: VEVOV_NAME,
+        serial_payload: String(VEVOV_ID),
+        raw_announcement: `device NEZHA2 robot ${VEVOV_NAME} ${VEVOV_ID}`,
+      });
+
+      await waitFor(
+        () => store.snapshotRows().links.find((l) => l.id === "mbregistry-usb:vevov")?.state === "connectable",
+      );
+      const device = store.snapshotRows().devices.find((d) => d.id === VEVOV_ID);
+      expect(Number(device?.owned)).toBe(1);
+
+      handle.stop();
+    });
+  });
+
+  // Bench fix 010 -- the same bench pass found `vutev`, a device
+  // announcing a role/commonName `classifyBanner` doesn't recognize at
+  // all, stored with `devices.kind = "robot"`. Sprint 023 gave
+  // `classifyBanner` a `"joystick"` type for role `JOYSTICK` (a
+  // micro:bit running the student joystick firmware), so that role no
+  // longer exercises this "genuinely unrecognized" path -- this fixture
+  // now uses a role `classifyBanner` has no allowlist entry for at all.
+  describe("bench fix 010: unrecognized banner is not labeled a robot", () => {
+    function unrecognizedDevice(overrides: Partial<RegistryDevice> = {}): RegistryDevice {
+      return registryDevice({
+        uid: "usb:vutev",
+        role: "ROBOTV7",
+        common_name: null,
+        device_name: "vutev",
+        serial_payload: "12345",
+        raw_announcement: "device ROBOTV7 vutev 12345",
+        state: "connected",
+        ...overrides,
+      });
+    }
+
+    it("a list() entry with an unrecognized banner is not upserted as devices.kind = robot -- no devices row at all", async () => {
+      const store = freshStore();
+      const { client } = fakeClient([unrecognizedDevice()]);
+      const handle = startWatcher(store, client);
+
+      await waitFor(() => store.snapshotRows().links.some((l) => l.id === "mbregistry-usb:vutev"));
+
+      expect(store.snapshotRows().devices).toHaveLength(0);
+      const link = store.snapshotRows().links.find((l) => l.id === "mbregistry-usb:vutev");
+      expect(link?.device_id).toBeNull();
+      expect(link?.state).toBe("discovered");
+
+      handle.stop();
+    });
+
+    it("a watch() identity event with an unrecognized banner is likewise not upserted as a robot", async () => {
+      const store = freshStore();
+      const { client, emit } = fakeClient([registryDevice({ uid: "usb:vutev" })]);
+      const handle = startWatcher(store, client);
+
+      await waitFor(() => store.snapshotRows().links.some((l) => l.id === "mbregistry-usb:vutev"));
+
+      emit({
+        type: "identity",
+        host: "this-console",
+        uid: "usb:vutev",
+        state: "connected",
+        role: "ROBOTV7",
+        common_name: null,
+        device_name: "vutev",
+        serial_payload: "12345",
+        raw_announcement: "device ROBOTV7 vutev 12345",
+      });
+
+      // Give the (non-)upsert a moment to happen -- there is no positive
+      // condition to wait on here, only the absence of a devices row.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(store.snapshotRows().devices).toHaveLength(0);
+      const link = store.snapshotRows().links.find((l) => l.id === "mbregistry-usb:vutev");
+      expect(link?.device_id).toBeNull();
+
+      handle.stop();
+    });
+  });
+
+  // Sprint 023 gave `classifyBanner` a "joystick" DeviceType (a
+  // micro:bit running the student joystick firmware) -- this watcher's
+  // own `classifyDeviceKind` must map that through to `devices.kind =
+  // "joystick"`, not fall into the "unrecognized" bucket the suite
+  // above covers (a role `classifyBanner` genuinely has no allowlist
+  // entry for).
+  it("a JOYSTICK-role banner is upserted as devices.kind = joystick", async () => {
+    const store = freshStore();
+    const { client } = fakeClient([
+      registryDevice({
+        uid: "usb:gopiv",
+        role: "JOYSTICK",
+        common_name: null,
+        device_name: "gopiv",
+        serial_payload: "2175407711",
+        raw_announcement: "DEVICE:JOYSTICK:joystick:gopiv:2175407711",
+        state: "connected",
+      }),
+    ]);
+    const handle = startWatcher(store, client);
+
+    await waitFor(() => store.snapshotRows().devices.some((d) => d.name === "gopiv"));
+
+    const device = store.snapshotRows().devices.find((d) => d.name === "gopiv");
+    expect(device?.kind).toBe("joystick");
+
+    handle.stop();
+  });
 });

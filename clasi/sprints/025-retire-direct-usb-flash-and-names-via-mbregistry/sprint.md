@@ -1,5 +1,5 @@
 ---
-id: 025
+id: "025"
 title: 'Retire direct USB: flash and names via mbregistry'
 status: roadmap
 branch: sprint/025-retire-direct-usb-flash-and-names-via-mbregistry

@@ -1,7 +1,7 @@
 ---
-id: 024
+id: '024'
 title: 'Connect to mbregistry: client, watcher and stream transport'
-status: roadmap
+status: done
 branch: sprint/024-connect-to-mbregistry-client-watcher-and-stream-transport
 use-cases: []
 issues:

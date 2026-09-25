@@ -21,9 +21,21 @@
  * 1. {@link openStoreWithImports} — opens (creating/migrating as needed)
  *    `console.sqlite` and runs the one-time `known-robots.json`/
  *    `wifi-credentials.json` importers against it.
- * 2. `startUsbWatcher`/`startMdnsWatcher` (sprint 014) — write
- *    `devices`/`links`/`services` rows; neither opens a session itself
- *    any more (sprint 015 ticket 003's "watchers write rows only").
+ * 1a. **Sprint 018 ticket 006**: {@link createMbregistryClient} (ticket
+ *    001), then `await client.connect()` — this is the one place in this
+ *    module's otherwise-synchronous composition that must be awaited
+ *    (hence `startRuntime` is now `async`), because SUC-001's own
+ *    contract requires a resolution/spawn failure to fail startup
+ *    outright, never silently fall back to `startUsbWatcher`. Only once
+ *    this resolves does `startMbregistryWatcher` (ticket 002) start, in
+ *    place of `startUsbWatcher` (sprint 014) — `usbWatcher.ts` itself is
+ *    untouched, just no longer wired here. `startMdnsWatcher` (sprint
+ *    014) still starts too, but with its `_mbserial`/`_mbrelay`/
+ *    `_mbflash` browses disabled (`MdnsWatcherOptions.disabledTypes`) —
+ *    `_robotlink.*` (WiFi) browsing is unaffected. Both watchers write
+ *    `devices`/`links`/`services` rows only; neither opens a session
+ *    itself any more (sprint 015 ticket 003's "watchers write rows
+ *    only").
  * 2a. `startFirmwareWatcher` (sprint 017 ticket 002) — polls each
  *    firmware kind's GitHub release with `ETag`/backoff and writes
  *    `firmware` rows directly, replacing the retired
@@ -33,7 +45,10 @@
  *    implementation, wired with `onTelemetry`/`onNotice` sinks this
  *    module fans out to every subscriber of {@link Runtime.telemetry}
  *    (`server.ts`, ticket 005, is the only production subscriber).
- * 4. `createConnector` (ticket 001), given that harvester.
+ * 4. `createConnector` (ticket 001), given that harvester and (sprint
+ *    018 ticket 006) the same `mbregistryClient`/`mbregistryLabel` from
+ *    step 1a, so an `mbregistry`-transport connect/relay-physical opens
+ *    over the same already-connected client this module resolved.
  * 4a. `createRelayBridger` (ticket 016-002), given the same harvester —
  *    the reset-before-every-candidate fix for default failover's Linux
  *    bug; a sibling to the connector, not a replacement for it (see that
@@ -66,13 +81,18 @@
  * here so a real socket to a real robot never outlives this method,
  * unlike before that ticket), the relay sweeper, the harvester
  * (ticket 019-003 — clears every attached session's `pollStatus`
- * interval), all three watchers, then the store.
+ * interval), all three watchers (`mbregistryWatcher` in place of
+ * `usbWatcher` — sprint 018 ticket 006), the mbregistry client's own
+ * control connection (also ticket 006 — its spawned child process, if
+ * any, is torn down alongside it), then the store.
  *
  * Every collaborator is injectable via {@link StartRuntimeOptions},
  * mirroring `cli.ts`'s own `CliDeps` seam ("real defaults, fakes in
  * tests") — no real store/serial/HID/mDNS I/O is ever touched by
  * `runtime.test.ts`.
  */
+import { hostname } from "node:os";
+import { getMbregistryShareBoards } from "./config.js";
 import { openStoreWithImports as defaultOpenStoreWithImports } from "./store/bootstrap.js";
 import type { StoreDbOptions } from "./store/db.js";
 import type { Store } from "./store/index.js";
@@ -86,6 +106,16 @@ import {
   startMdnsWatcher as defaultStartMdnsWatcher,
   type MdnsWatcherOptions,
 } from "./watchers/mdnsWatcher.js";
+import {
+  createMbregistryClient as defaultCreateMbregistryClient,
+  type MbregistryClient,
+  type MbregistryClientDeps,
+} from "./mbregistry/client.js";
+import {
+  startMbregistryWatcher as defaultStartMbregistryWatcher,
+  type MbregistryWatcherDeps,
+  type MbregistryWatcherHandle,
+} from "./watchers/mbregistryWatcher.js";
 import {
   startFirmwareWatcher as defaultStartFirmwareWatcher,
   type FirmwareWatcherDeps,
@@ -143,6 +173,17 @@ export interface Runtime {
   readonly store: Store;
   readonly reconciler: Reconciler;
   readonly telemetry: RuntimeTelemetry;
+  /** Sprint 018 ticket 006: the same already-`connect()`ed
+   * {@link MbregistryClient} this module resolved and handed to
+   * `createConnector`/`startMbregistryWatcher` — `cli.ts`'s `main()`
+   * forwards this (and {@link mbregistryLabel}) on to
+   * `startServer`'s own `mbregistryClient`/`mbregistryLabel` options, so
+   * `server.ts#runFlashTask`'s `mbregistry`-transport branch uses the
+   * exact same client/label, not a second, separately-resolved one. */
+  readonly mbregistryClient: MbregistryClient;
+  /** This console's own display label, sent as every mbregistry `lock`'s
+   * `label` — see {@link StartRuntimeOptions.mbregistryLabel}. */
+  readonly mbregistryLabel: string;
   /** Stops the reconciler (change-feed subscription + slow tick), the
    * relay sweeper (awaited — ticket 016-008: its own `stop()` now waits
    * for every in-flight per-relay pass's cleanup before resolving, so
@@ -150,11 +191,14 @@ export interface Runtime {
    * out from under a pass's still-running `finally` block), the
    * harvester (sprint 019 ticket 003, SUC-003: every attached session's
    * `pollStatus` interval, so a stray tick can never write to the store
-   * below once it closes), all three watchers, uninstalls the
-   * unhandled-rejection backstop, and closes the store. Awaits the
-   * reconciler's own `stop()` first, which closes every session it still
-   * holds open (sprint 021 ticket 003) — so once this resolves, no
-   * session this runtime opened is still holding a real socket. */
+   * below once it closes), all three watchers (mbregistryWatcher in
+   * place of usbWatcher — sprint 018 ticket 006), closes the mbregistry
+   * client's own control connection (and any child process it spawned),
+   * uninstalls the unhandled-rejection backstop, and closes the store.
+   * Awaits the reconciler's own `stop()` first, which closes every
+   * session it still holds open (sprint 021 ticket 003) — so once this
+   * resolves, no session this runtime opened is still holding a real
+   * socket. */
   stop(): Promise<void>;
 }
 
@@ -169,9 +213,49 @@ export interface StartRuntimeOptions {
   storeOptions?: StoreDbOptions;
   openStoreWithImports?: typeof defaultOpenStoreWithImports;
 
+  /** Sprint 018 ticket 006: no longer called by production wiring
+   * (`startMbregistryWatcher` replaces it below) — `usbWatcher.ts`
+   * itself, and its own test suite, are untouched; this field/its
+   * `*Deps`/`*Options` siblings are kept only so a caller that still
+   * wants the old path for a diagnostic/manual run can inject it via an
+   * overridden {@link startMbregistryWatcher}/composition — no
+   * production code path reaches them any more. Sprint 019 is expected
+   * to remove them outright, alongside `usbWatcher.ts`'s own deletion. */
   startUsbWatcher?: typeof defaultStartUsbWatcher;
   usbWatcherDeps?: UsbWatcherDeps;
   usbWatcherOptions?: UsbWatcherOptions;
+
+  /** Sprint 018 ticket 006: constructs the {@link MbregistryClient}
+   * (ticket 001) this runtime resolves/spawns and connects *before*
+   * starting anything else that depends on it (`startMbregistryWatcher`,
+   * `createConnector`) — see the module doc comment's step 1a. A
+   * resolution/spawn failure here rejects {@link startRuntime}'s own
+   * promise outright (SUC-001's contract: no silent fallback to
+   * `startUsbWatcher`). */
+  createMbregistryClient?: typeof defaultCreateMbregistryClient;
+  /** Sprint 018 ticket 008: `shareBoards` here defaults to the stored
+   * `mbregistry.shareBoards` `settings` row (`config.ts
+   * #getMbregistryShareBoards`), read off the store this call just
+   * opened — an explicit `shareBoards` field on this object still wins
+   * over that default (a test seam, or a future caller that already
+   * knows the answer); every other field is passed through untouched,
+   * same as before this ticket. */
+  mbregistryClientDeps?: MbregistryClientDeps;
+  /** This console's own display label, sent as every mbregistry `lock`'s
+   * `label` (`ConnectorDeps.mbregistryLabel`/`StartServerOptions.
+   * mbregistryLabel`, both wired from the same value here) — purely
+   * cosmetic (`registry-api.md`: "display-only"). Defaults to
+   * `"<hostname> / robot-console"`. */
+  mbregistryLabel?: string;
+
+  /** Sprint 018 ticket 006: starts in place of `startUsbWatcher` above,
+   * once {@link createMbregistryClient}'s connection resolves — see the
+   * module doc comment's step 1a. */
+  startMbregistryWatcher?: typeof defaultStartMbregistryWatcher;
+  /** Every {@link MbregistryWatcherDeps} field except `client`, which
+   * this module always wires to its own already-connected
+   * {@link MbregistryClient}. */
+  mbregistryWatcherDeps?: Omit<MbregistryWatcherDeps, "client">;
 
   startMdnsWatcher?: typeof defaultStartMdnsWatcher;
   /** The mDNS backend `startMdnsWatcher` requires (no default of its
@@ -258,21 +342,43 @@ export interface StartRuntimeOptions {
   unhandledRejectionDeps?: UnhandledRejectionBackstopDeps;
 }
 
+/** Sprint 018 ticket 006: `_mbserial`/`_mbrelay`/`_mbflash` are disabled
+ * by default in production wiring, in favor of `mbregistryWatcher` —
+ * `_robotlink.*` (WiFi) is not in this list, unaffected either way. An
+ * explicit `mdnsWatcherOptions.disabledTypes` from the caller overrides
+ * this default entirely (see {@link startRuntime}'s own merge). */
+const DEFAULT_DISABLED_MDNS_TYPES: readonly ("mbserial" | "mbrelay" | "mbflash")[] = ["mbserial", "mbrelay", "mbflash"];
+
+/** `ConnectorDeps.mbregistryLabel`/`StartServerOptions.mbregistryLabel`'s
+ * own default — purely cosmetic (`registry-api.md`: "display-only"),
+ * naming this machine so a lock/flash contention message can say who
+ * holds it. */
+function defaultMbregistryLabel(): string {
+  return `${hostname()} / robot-console`;
+}
+
 /**
- * Compose the store, all three watchers, the harvester/connector/
- * reconciler, and the unhandled-rejection backstop into one running
- * host. See the module doc comment for composition order and every
- * collaborator's own module for what it does. Synchronous: every
- * collaborator constructed here starts (or opens) synchronously — the
- * reconciler's own initial `tick()` (and, on top of it, each watcher's
- * own poll) dispatches whatever real I/O they need fire-and-forget from
- * there, exactly as running
- * `startReconciler`/`startUsbWatcher`/`startMdnsWatcher`/
- * `startFirmwareWatcher` directly already does.
+ * Compose the store, the mbregistry client, all three watchers, the
+ * harvester/connector/reconciler, and the unhandled-rejection backstop
+ * into one running host. See the module doc comment for composition
+ * order and every collaborator's own module for what it does.
+ *
+ * `async` since sprint 018 ticket 006: resolving/spawning the
+ * mbregistry connection (step 1a) is the one genuinely asynchronous
+ * step in an otherwise-synchronous composition, and SUC-001 requires
+ * that failure to fail this call outright (rejects, no watcher/
+ * connector/reconciler is ever constructed) rather than falling back to
+ * `startUsbWatcher`. Every other collaborator constructed here still
+ * starts (or opens) synchronously once that resolves — the reconciler's
+ * own initial `tick()` (and, on top of it, each watcher's own poll)
+ * dispatches whatever real I/O they need fire-and-forget from there,
+ * exactly as running `startReconciler`/`startMbregistryWatcher`/
+ * `startMdnsWatcher`/`startFirmwareWatcher` directly already does.
  */
-export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
+export async function startRuntime(options: StartRuntimeOptions = {}): Promise<Runtime> {
   const openStoreWithImportsFn = options.openStoreWithImports ?? defaultOpenStoreWithImports;
-  const startUsbWatcherFn = options.startUsbWatcher ?? defaultStartUsbWatcher;
+  const createMbregistryClientFn = options.createMbregistryClient ?? defaultCreateMbregistryClient;
+  const startMbregistryWatcherFn = options.startMbregistryWatcher ?? defaultStartMbregistryWatcher;
   const startMdnsWatcherFn = options.startMdnsWatcher ?? defaultStartMdnsWatcher;
   const createBonjourBackendFn = options.createBonjourBackend ?? defaultCreateBonjourBackend;
   const startFirmwareWatcherFn = options.startFirmwareWatcher ?? defaultStartFirmwareWatcher;
@@ -300,9 +406,63 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
     },
   };
 
-  const usbHandle: UsbWatcherHandle = startUsbWatcherFn(store, options.usbWatcherDeps, options.usbWatcherOptions);
+  // Step 1a (module doc comment): resolve/spawn and connect the
+  // mbregistry client BEFORE anything that depends on it. A
+  // resolution/spawn failure here (ticket 001's SUC-001 error contract)
+  // propagates out of this `await` and rejects `startRuntime` itself --
+  // no `startMbregistryWatcher`/`createConnector`/anything else below is
+  // ever reached, and there is no fallback to `startUsbWatcher`.
+  // Sprint 018 ticket 008: `mbregistry.shareBoards` (a `settings` row,
+  // `config.ts#getMbregistryShareBoards`) decides whether a
+  // console-*spawned* instance turns peering on -- read after `store`
+  // opens (above) but before the client is created, so it's available
+  // as this call's own default. An explicit `shareBoards` in
+  // `options.mbregistryClientDeps` (test seam, or a future caller that
+  // already knows the answer) always wins over the stored setting --
+  // this read only ever fills in what the caller didn't already decide.
+  const mbregistryClientDeps: MbregistryClientDeps = {
+    shareBoards: getMbregistryShareBoards(store),
+    ...options.mbregistryClientDeps,
+  };
+  const mbregistryClient: MbregistryClient = createMbregistryClientFn(mbregistryClientDeps);
+  try {
+    await mbregistryClient.connect();
+  } catch (error) {
+    // The store was already opened above (and may have run its
+    // one-time importers) -- a failed mbregistry resolve/spawn must not
+    // leak that open handle. Nothing else has been constructed yet (no
+    // watcher/connector/reconciler), so closing the store is the only
+    // cleanup this catch needs before re-throwing to reject
+    // `startRuntime` itself, per this function's own SUC-001 contract.
+    store.close();
+    throw error;
+  }
+  const mbregistryLabel = options.mbregistryLabel ?? defaultMbregistryLabel();
+
+  // Port contention (replay guide §3): with `usbWatcher` off (in favor
+  // of `mbregistryWatcher`, above), nothing ages this store's existing
+  // `usb` link rows any more -- `clearDeadProcessState` (run by
+  // `openStoreWithImports` above) resets any that were mid-connect back
+  // to `connectable`, and the reconciler/sweeper/flasher would then try
+  // to open `/dev/cu.usbmodem*` directly, racing mbregistry for the same
+  // serial port. Age every `usb` link stale up front so the store only
+  // ever offers this run's own `mbregistry` links for a board this
+  // console also reaches over usb -- `resolveFlashLinkTarget`'s own
+  // preference for a live `mbregistry` link over a stale `usb` one
+  // (`server.ts`) handles the flash path's side of the same fix.
+  store.ageLinks("usb", 0, Date.now());
+
+  const mbregistryHandle: MbregistryWatcherHandle = startMbregistryWatcherFn(store, {
+    ...options.mbregistryWatcherDeps,
+    client: mbregistryClient,
+  });
+
   const mdnsBackend = options.mdnsBackend ?? createBonjourBackendFn();
-  const mdnsHandle = startMdnsWatcherFn(store, { backend: mdnsBackend }, options.mdnsWatcherOptions);
+  const mdnsWatcherOptions: MdnsWatcherOptions = {
+    disabledTypes: DEFAULT_DISABLED_MDNS_TYPES,
+    ...options.mdnsWatcherOptions,
+  };
+  const mdnsHandle = startMdnsWatcherFn(store, { backend: mdnsBackend }, mdnsWatcherOptions);
   const firmwareHandle: FirmwareWatcherHandle = startFirmwareWatcherFn(
     store,
     options.firmwareWatcherDeps,
@@ -333,15 +493,29 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
   // of the three modules importing another (`connect/relayLeaseRevocation.ts`'s
   // own doc comment).
   const relayLeaseRevocation = createRelayLeaseRevocationFn();
+  // Sprint 018 ticket 006: the same already-connected `mbregistryClient`/
+  // `mbregistryLabel` resolved in step 1a above, so an `mbregistry`-
+  // transport connect/relay-physical opens over that one connection, not
+  // a second, separately-resolved client.
   const connector = createConnectorFn(
     store,
-    { ...options.connectorDeps, harvester, revocation: relayLeaseRevocation },
+    { ...options.connectorDeps, harvester, revocation: relayLeaseRevocation, mbregistryClient, mbregistryLabel },
     options.connectorOptions,
   );
 
   const bridger = createRelayBridgerFn(
     store,
-    { ...options.relayBridgerDeps, harvester, revocation: relayLeaseRevocation },
+    // Ticket 018-011 finding 1: `relayBridger` gained
+    // `mbregistryClient`/`mbregistryLabel` in ticket 007, but this
+    // composition root never forwarded them (the same values `connector`
+    // above already receives) -- bridging a relay discovered only through
+    // mbregistry failed immediately with "relayBridger: mbregistry
+    // transport requires RelayBridgerDeps.mbregistryClient". `relaySweeper`
+    // was audited for the same gap and has none: it only ever opens a
+    // relay's raw `usb` serial port directly (`resolveRelayPhysical(store,
+    // relayLinkId, "usb")` in watchers/relaySweeper.ts), so it never needs
+    // an mbregistry client at all.
+    { ...options.relayBridgerDeps, harvester, revocation: relayLeaseRevocation, mbregistryClient, mbregistryLabel },
     options.relayBridgerOptions,
   );
   // 020-003: real production wiring opts into the wrong-robot-hazard
@@ -380,6 +554,8 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
     store,
     reconciler,
     telemetry,
+    mbregistryClient,
+    mbregistryLabel,
     async stop(): Promise<void> {
       if (stopped) {
         return;
@@ -409,9 +585,11 @@ export function startRuntime(options: StartRuntimeOptions = {}): Runtime {
       // `fail()` inert, so a poll tick that would otherwise land after
       // `store.close()` below can never write to it.
       harvester.stop();
-      usbHandle.stop();
+      // Sprint 018 ticket 006: mbregistryWatcher in place of usbWatcher.
+      mbregistryHandle.stop();
       mdnsHandle.stop();
       firmwareHandle.stop();
+      mbregistryClient.close();
       store.close();
     },
   };

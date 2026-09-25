@@ -23,6 +23,7 @@ import {
 } from "./flasher.js";
 import type { FlashOutcome } from "../flash.js";
 import type { DaplinkDevice } from "../devices.js";
+import type { FlashPlan } from "../link/adapters/mbregistryStream.js";
 
 function freshStore(): Store {
   return new Store(openStoreDb({ filePath: ":memory:" }));
@@ -213,5 +214,185 @@ describe("createFlasher", () => {
 
   it("uses DEFAULT_ACQUIRE_TIMEOUT_MS when no acquireTimeoutMs override is given", () => {
     expect(DEFAULT_ACQUIRE_TIMEOUT_MS).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// flashMbregistry -- sprint 018 ticket 005's own `mbregistry`-transport
+// sibling to `flash`. Unlike `flash`, this method never touches
+// `board_owner` at all -- mbregistry's own `flash`-kind lock is the sole
+// exclusivity for this transport (`connect/connector.ts`'s
+// `resolveExclusivity`'s `Exclusivity.kind: "none"` for `"mbregistry"`,
+// ticket 004) -- so every test below asserts that directly, the same
+// way ticket 004 asserts no `board_owner` row for `resolveExclusivity`.
+// ---------------------------------------------------------------------------
+
+const MBREGISTRY_OK_OUTCOME: FlashOutcome = { status: "ok", method: "mbregistry" };
+
+describe("createFlasher: flashMbregistry", () => {
+  it("closes the session first via the reconciler, before flashViaMbregistry ever runs", async () => {
+    const store = freshStore();
+    const calls: string[] = [];
+    const requestClose = vi.fn(async (linkId: string) => {
+      calls.push(`requestClose:${linkId}`);
+    });
+    const flashViaMbregistry = vi.fn(async () => {
+      calls.push("flashViaMbregistry");
+      return MBREGISTRY_OK_OUTCOME;
+    });
+    const flasher = createFlasher(store, { reconciler: { requestClose }, flashViaMbregistry });
+
+    const plan: FlashPlan = { kind: "remote", target: { host: "10.0.0.5", port: 7440 } };
+    const outcome = await flasher.flashMbregistry("mbregistry-uid-1", "uid-1", plan, "console-label", "hex", () => {});
+
+    expect(outcome).toEqual(MBREGISTRY_OK_OUTCOME);
+    expect(calls).toEqual(["requestClose:mbregistry-uid-1", "flashViaMbregistry"]);
+    store.close();
+  });
+
+  it("forwards uid/target/label/hexText/onProgress to flashViaMbregistry unchanged for a remote-kind plan", async () => {
+    const store = freshStore();
+    const phases: string[] = [];
+    const target = { host: "127.0.0.1", port: 7440 };
+    const flashViaMbregistry = vi.fn(async (t, uid: string, label: string | undefined, hexText: string, onProgress: (phase: string) => void) => {
+      onProgress("erasing");
+      expect(t).toEqual(target);
+      expect(uid).toBe("uid-1");
+      expect(label).toBe("console-label");
+      expect(hexText).toBe("hex-bytes");
+      return MBREGISTRY_OK_OUTCOME;
+    });
+    const flasher = createFlasher(store, {
+      reconciler: { requestClose: vi.fn().mockResolvedValue(undefined) },
+      flashViaMbregistry,
+    });
+
+    await flasher.flashMbregistry(
+      "mbregistry-uid-1",
+      "uid-1",
+      { kind: "remote", target },
+      "console-label",
+      "hex-bytes",
+      (phase) => phases.push(phase),
+    );
+
+    expect(flashViaMbregistry).toHaveBeenCalledTimes(1);
+    expect(phases).toEqual(["erasing"]);
+    store.close();
+  });
+
+  // Ticket 018-011 finding 2: a `local`-kind plan dispatches to
+  // `flashViaLocalSocket` instead -- `flashViaMbregistry` must never be
+  // called for it.
+  it("dispatches a local-kind plan to flashViaLocalSocket instead of flashViaMbregistry", async () => {
+    const store = freshStore();
+    const phases: string[] = [];
+    const endpoint = { kind: "unix" as const, path: "/tmp/fake/api.sock" };
+    const flashViaMbregistry = vi.fn();
+    const flashViaLocalSocket = vi.fn(
+      async (target, uid: string, label: string | undefined, hexText: string, onProgress: (phase: string) => void) => {
+        onProgress("writing");
+        expect(target).toEqual(endpoint);
+        expect(uid).toBe("uid-1");
+        expect(label).toBe("console-label");
+        expect(hexText).toBe("hex-bytes");
+        return MBREGISTRY_OK_OUTCOME;
+      },
+    );
+    const flasher = createFlasher(store, {
+      reconciler: { requestClose: vi.fn().mockResolvedValue(undefined) },
+      flashViaMbregistry,
+      flashViaLocalSocket,
+    });
+
+    const outcome = await flasher.flashMbregistry(
+      "mbregistry-uid-1",
+      "uid-1",
+      { kind: "local", endpoint },
+      "console-label",
+      "hex-bytes",
+      (phase) => phases.push(phase),
+    );
+
+    expect(outcome).toEqual(MBREGISTRY_OK_OUTCOME);
+    expect(flashViaLocalSocket).toHaveBeenCalledTimes(1);
+    expect(flashViaMbregistry).not.toHaveBeenCalled();
+    expect(phases).toEqual(["writing"]);
+    store.close();
+  });
+
+  it("never touches board_owner -- a flash for a usb serial matching this uid could still be acquired concurrently", async () => {
+    const store = freshStore();
+    const flashViaMbregistry = vi.fn(async () => {
+      // If flashMbregistry acquired board_owner under any key related to
+      // this uid, a fresh acquire under that same key would fail here.
+      // mbregistry-transport exclusivity is mbregistry's own lock, not
+      // this store table at all -- so every key is free.
+      expect(store.acquireBoardOwner("uid-1", "someone-else", Date.now())).toBe(true);
+      store.releaseBoardOwner("uid-1", "someone-else");
+      return MBREGISTRY_OK_OUTCOME;
+    });
+    const flasher = createFlasher(store, {
+      reconciler: { requestClose: vi.fn().mockResolvedValue(undefined) },
+      flashViaMbregistry,
+    });
+
+    await flasher.flashMbregistry(
+      "mbregistry-uid-1",
+      "uid-1",
+      { kind: "remote", target: { host: "127.0.0.1", port: 7440 } },
+      undefined,
+      "hex",
+      () => {},
+    );
+
+    expect(flashViaMbregistry).toHaveBeenCalledTimes(1);
+    store.close();
+  });
+
+  it("propagates a rejection from reconciler.requestClose without ever calling flashViaMbregistry", async () => {
+    const store = freshStore();
+    const boom = new Error("boom: requestClose rejected");
+    const flashViaMbregistry = vi.fn();
+    const flasher = createFlasher(store, {
+      reconciler: {
+        requestClose: vi.fn().mockRejectedValue(boom),
+      },
+      flashViaMbregistry,
+    });
+
+    await expect(
+      flasher.flashMbregistry(
+        "mbregistry-uid-1",
+        "uid-1",
+        { kind: "remote", target: { host: "127.0.0.1", port: 7440 } },
+        undefined,
+        "hex",
+        () => {},
+      ),
+    ).rejects.toBe(boom);
+    expect(flashViaMbregistry).not.toHaveBeenCalled();
+    store.close();
+  });
+
+  it("returns a classified failure outcome unchanged when flashViaMbregistry itself resolves one", async () => {
+    const store = freshStore();
+    const failure: FlashOutcome = { status: "error", method: "mbregistry", reason: "owner-unavailable", error: "in use by bob" };
+    const flasher = createFlasher(store, {
+      reconciler: { requestClose: vi.fn().mockResolvedValue(undefined) },
+      flashViaMbregistry: vi.fn().mockResolvedValue(failure),
+    });
+
+    const outcome = await flasher.flashMbregistry(
+      "mbregistry-uid-1",
+      "uid-1",
+      { kind: "remote", target: { host: "127.0.0.1", port: 7440 } },
+      undefined,
+      "hex",
+      () => {},
+    );
+
+    expect(outcome).toEqual(failure);
+    store.close();
   });
 });

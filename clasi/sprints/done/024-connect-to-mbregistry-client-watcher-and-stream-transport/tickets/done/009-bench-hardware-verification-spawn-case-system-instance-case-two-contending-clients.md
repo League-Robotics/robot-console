@@ -2,7 +2,7 @@
 id: 009
 title: 'Bench/hardware verification: spawn case, system-instance case, two contending
   clients'
-status: open
+status: done
 use-cases:
 - SUC-001
 - SUC-002
@@ -88,23 +88,33 @@ this project already uses for hardware acceptance (check
 
 ## Acceptance Criteria
 
-- [ ] Spawn case passes: robot-console spawns mbregistry, uses it,
+- [x] Spawn case passes: robot-console spawns mbregistry, uses it,
       discovers a real local board, opens a session; the spawned process
       exits when robot-console exits.
-- [ ] System-instance case passes: robot-console connects to a
+- [x] System-instance case passes: robot-console connects to a
       pre-existing mbregistry and does not spawn a second one.
-- [ ] Two-contending-clients case passes: the second client's failure
+- [x] Two-contending-clients case passes: the second client's failure
       message names the holder (or degrades gracefully), and a forced
       unlock is observable by the first client without a crash.
 - [ ] Relay reset via mbregistry is confirmed on real hardware to
-      actually reset the relay between candidates.
+      actually reset the relay between candidates. Note: PASS via the
+      sync-first reset path (real reboot/reconnect observed); the
+      BREAK-based fallback reset on a *parked* relay, cross-checked on
+      both a Linux-owned and macOS-owned host, was not separately
+      exercised. See bench report.
 - [ ] Minimum-version-check failure is confirmed against a real
-      below-minimum (or simulated-version) mbregistry binary.
+      below-minimum (or simulated-version) mbregistry binary. Note:
+      SKIPPED at stakeholder request this pass.
 - [ ] A local board flashes successfully through mbregistry, including
-      when this console has it open at the start of the check.
-- [ ] A remote (peer-host) board flashes successfully through
+      when this console has it open at the start of the check. Note:
+      the console's local-socket flash path itself PASSED (lock held,
+      flash reported in UI); the underlying pyocd erase step failed on
+      this Mac's bench probe/USB hub, root-caused via a direct pyocd
+      reproduction outside mbregistry — not a robot-console defect, but
+      not a clean hardware pass either. See bench report.
+- [x] A remote (peer-host) board flashes successfully through
       mbregistry, and re-identifies afterward with no manual refresh.
-- [ ] Results are written up per this project's existing hardware-
+- [x] Results are written up per this project's existing hardware-
       acceptance documentation convention (or a new one started here if
       none exists yet), reviewed by the stakeholder before sprint close.
 
@@ -126,3 +136,30 @@ this project already uses for hardware acceptance (check
   that doc tracks sprint completion, per its mbtools-side precedent) is
   optional and out of this ticket's required scope (that doc lives in
   the mbtools repo, not this one).
+
+## Outcome
+
+Bench pass executed against the merged sprint/024 branch (`5dc99e5`,
+mbregistry v0.20260924.7, macOS host "gala"). Full write-up:
+[`docs/acceptance/024-mbregistry-bench.md`](../../../../docs/acceptance/024-mbregistry-bench.md).
+
+5 of 7 cases fully PASS: spawn, system-instance, two-contending-clients,
+relay reset/bridging (with one cross-OS BREAK-fallback variant not
+separately exercised), and remote flash. Two cases closed with known
+gaps rather than a clean pass:
+
+- **Case 5 (minimum-version check)**: skipped this pass at stakeholder
+  request.
+- **Case 6 (local flash)**: robot-console's own local-socket flash path
+  passed (lock held, result reported in UI); the flash itself failed at
+  the underlying `pyocd` erase step. Root-caused to this Mac's bench
+  probe/USB hub via a direct `pyocd` reproduction outside mbregistry —
+  not a robot-console or mbregistry integration defect, but not a clean
+  hardware pass either.
+
+Per the stakeholder's direction, the ticket is closed with these two
+gaps recorded rather than blocked on a hardware/scheduling issue outside
+the code's control. A pre-existing test-hygiene issue was also noted
+(the `packages/host/src/daemon/cli.test.ts` "real process" test can
+leave an orphaned host process holding local boards) — out of scope for
+this ticket, worth a follow-up.

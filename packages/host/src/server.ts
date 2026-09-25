@@ -96,7 +96,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { WifiCredentialsStore } from "./store/wifiCredentials.js";
 import { findCurrentMbflashService, type ProjectionDeviceRow, type ProjectionRows, type ProjectionServiceRow, type Store } from "./store/index.js";
 import type { Reconciler } from "./connect/reconciler.js";
-import type { ConnectedSession } from "./connect/connector.js";
+import { parseLinkAddress, type ConnectedSession, type MbregistryAddress } from "./connect/connector.js";
 import type { HarvesterTelemetryEvent } from "./connect/harvester.js";
 import { buildSnapshotFromRows } from "./projection.js";
 import { isValidRadioOverride } from "./radioOverride.js";
@@ -115,6 +115,12 @@ import { readLocalHex as defaultReadLocalHex } from "./localFirmware.js";
 import { flash as defaultFlash, type FlashOutcome } from "./flash.js";
 import { createFlasher } from "./connect/flasher.js";
 import { flashOverMbflash as defaultFlashOverMbflash, type MbflashOutcome } from "./connect/mbflashClient.js";
+import {
+  flashViaLocalSocket as defaultFlashViaLocalSocket,
+  flashViaMbregistry as defaultFlashViaMbregistry,
+} from "./mbregistry/remoteFlash.js";
+import { parseHostPort, type MbregistryClient } from "./mbregistry/client.js";
+import { resolveFlashPlan, type MbregistryStreamDevice } from "./link/adapters/mbregistryStream.js";
 import {
   enumerateDaplinkDevices as defaultEnumerateDaplinkDevices,
   type DaplinkDevice,
@@ -271,6 +277,30 @@ export interface StartServerOptions {
    * reasoning as {@link flash} above, without ever dialing a real farm
    * host. */
   flashOverMbflash?: typeof defaultFlashOverMbflash;
+  /** Injectable mbregistry flash orchestration for an `mbregistry`-
+   * transport `flash-start` (sprint 018 ticket 005). Defaults to the
+   * real `flashViaMbregistry` (`mbregistry/remoteFlash.ts`) —
+   * tests substitute a fake, mirroring {@link flash}'s own convention. */
+  flashViaMbregistry?: typeof defaultFlashViaMbregistry;
+  /** Injectable local-socket mbregistry flash orchestration (ticket
+   * 018-011 finding 2), for a local `mbregistry`-transport `flash-start`.
+   * Defaults to the real `flashViaLocalSocket` (`mbregistry/remoteFlash.ts`)
+   * — tests substitute a fake, mirroring {@link flashViaMbregistry}'s own
+   * convention. */
+  flashViaLocalSocket?: typeof defaultFlashViaLocalSocket;
+  /** The already-connected {@link MbregistryClient} (sprint 018 ticket
+   * 001) an `mbregistry`-transport `flash-start` uses to resolve which
+   * `uid`/plan to flash (`find`, {@link resolveFlashPlan}'s own
+   * `resolvedEndpoint`/`remotePort`). `undefined` fails any
+   * `mbregistry`-transport flash descriptively rather than silently
+   * no-op'ing — wiring the real client in from `runtime.ts`'s
+   * composition root is ticket 006's job, kept separate exactly like
+   * `connect/connector.ts`'s own `ConnectorDeps.mbregistryClient`. */
+  mbregistryClient?: MbregistryClient;
+  /** This console's own identity, forwarded as the `lock` op's own
+   * `label` for an `mbregistry`-transport flash — display-only, mirrors
+   * `connect/connector.ts`'s `ConnectorDeps.mbregistryLabel`. */
+  mbregistryLabel?: string;
   /** Injectable `WebSocketServer` construction — defaults to a real
    * `new WebSocketServer({server: httpServer, maxPayload})`. See
    * {@link WebSocketServerLike}. */
@@ -518,7 +548,17 @@ export const UI_FLASH_IDENTITY: FlashIdentity = { origin: "ui" };
  * 018-014). Returned by {@link resolveFlashLinkTarget}. */
 export type FlashTarget =
   | { readonly kind: "usb"; readonly usbSerial: string; readonly device: DaplinkDevice }
-  | { readonly kind: "network"; readonly device: ProjectionDeviceRow; readonly service: ProjectionServiceRow };
+  | { readonly kind: "network"; readonly device: ProjectionDeviceRow; readonly service: ProjectionServiceRow }
+  | {
+      readonly kind: "mbregistry";
+      readonly uid: string;
+      readonly device: MbregistryStreamDevice;
+      /** See `resolveFlashLinkTarget`'s own `mbregistry` branch doc
+       * comment: `false` means this link's stored address predates
+       * ticket 006's persisted `host`/`endpoint`, so `runFlashTask` must
+       * fall back to a live `mbregistryClient.find()`. */
+      readonly hasPersistedHost: boolean;
+    };
 
 export interface ResolveFlashTargetDeps {
   readonly enumerateDaplinkDevices: DaplinkDeviceLister;
@@ -550,6 +590,22 @@ export async function resolveFlashLinkTarget(
     return { ok: false, reason: `link "${linkId}" no longer exists` };
   }
   if (linkRow.transport === "usb") {
+    // Port contention (replay guide §3): `startRuntime` ages every `usb`
+    // link stale on startup now that `mbregistryWatcher` (not
+    // `usbWatcher`) owns identifying boards, but a `usb-<serial>` linkId
+    // still resolves to a real, physically-enumerable board regardless
+    // of that store row's own state -- flashing it directly here would
+    // race mbregistry for the same serial port. If this device already
+    // has its own live (non-stale) `mbregistry` link, redirect to that
+    // one instead of opening the USB device directly.
+    if (linkRow.deviceId !== null) {
+      const mbregistryLink = rows.links.find(
+        (candidate) => candidate.deviceId === linkRow.deviceId && candidate.transport === "mbregistry" && candidate.state !== "stale",
+      );
+      if (mbregistryLink !== undefined) {
+        return resolveFlashLinkTarget(rows, mbregistryLink.id, deps);
+      }
+    }
     const usbSerial = usbSerialFromLinkId(linkId);
     if (usbSerial === undefined) {
       return { ok: false, reason: `link "${linkId}" does not follow the "usb-<serial>" id convention` };
@@ -561,12 +617,33 @@ export async function resolveFlashLinkTarget(
     }
     return { ok: true, target: { kind: "usb", usbSerial, device } };
   }
-  // Every non-usb link takes the network path, whatever its transport
-  // (2026-09-21 -- see `projection.ts`'s own `flash:` capability comment
-  // for the stakeholder's request and why transport was never the real
-  // question). The target below is built from the SERVICE's own host and
-  // port; `linkRow` contributes nothing but the device identity, so a
-  // radio/mbrelay link is no different here from an mbserial one.
+  if (linkRow.transport === "mbregistry") {
+    // Sprint 018 ticket 005: built purely from the link's own stored
+    // address (`watchers/mbregistryWatcher.ts`'s `linkAddress()`) -- a
+    // pure read, same as the `usb` branch above, with no live
+    // `mbregistryClient.find()` round-trip needed in the common case.
+    // Sprint 018 ticket 006: `mbregistryWatcher` now persists the peer
+    // device's own `host`/`endpoint` into this same stored address, so
+    // routing normally comes straight from here. `address.host ===
+    // undefined` (the key absent entirely, not merely `null`) means this
+    // row predates that change; `hasPersistedHost` tells `runFlashTask`
+    // it must fall back to a live `find()` for this one link.
+    const address = parseLinkAddress("mbregistry", linkRow.address) as MbregistryAddress;
+    const uid = address.uid;
+    const device: MbregistryStreamDevice = {
+      uid,
+      host: address.host,
+      endpoint: parseHostPort(typeof address.endpoint === "string" ? address.endpoint : undefined),
+    };
+    return { ok: true, target: { kind: "mbregistry", uid, device, hasPersistedHost: address.host !== undefined } };
+  }
+  // Every non-usb/non-mbregistry link takes the network path, whatever
+  // its transport (2026-09-21 -- see `projection.ts`'s own `flash:`
+  // capability comment for the stakeholder's request and why transport
+  // was never the real question). The target below is built from the
+  // SERVICE's own host and port; `linkRow` contributes nothing but the
+  // device identity, so a radio/mbrelay link is no different here from
+  // an mbserial one.
   const deviceRow = linkRow.deviceId !== null ? rows.devices.find((candidate) => candidate.id === linkRow.deviceId) : undefined;
   if (!deviceRow) {
     return { ok: false, reason: `link "${linkId}" has no identified device to flash` };
@@ -618,12 +695,25 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   const fetchAndVerifyHexFn = options.fetchAndVerifyHex ?? defaultFetchAndVerifyHex;
   const readLocalHexFn = options.readLocalHex ?? defaultReadLocalHex;
   const flashFn = options.flash ?? defaultFlash;
+  const flashViaMbregistryFn = options.flashViaMbregistry ?? defaultFlashViaMbregistry;
+  const flashViaLocalSocketFn = options.flashViaLocalSocket ?? defaultFlashViaLocalSocket;
+  const mbregistryClient = options.mbregistryClient;
+  const mbregistryLabel = options.mbregistryLabel;
   // Sprint 017 ticket 003: flash orchestration's board_owner exclusivity
   // and session close-first handoff now live in `connect/flasher.ts`,
   // not inline here -- see that module's own doc comment. `flashFn`
   // (still the injectable seam `server.test.ts` uses) is what the
-  // flasher actually calls once it has acquired the owner.
-  const flasher = createFlasher(store, { reconciler: runtime.reconciler, flash: flashFn });
+  // flasher actually calls once it has acquired the owner. Sprint 018
+  // ticket 005 adds `flashViaMbregistry` alongside it, for the
+  // `mbregistry`-transport sibling path (`flasher.flashMbregistry`).
+  // Ticket 018-011 finding 2 adds `flashViaLocalSocket` alongside that,
+  // for a local device's own `FlashPlan.kind === "local"` leaf.
+  const flasher = createFlasher(store, {
+    reconciler: runtime.reconciler,
+    flash: flashFn,
+    flashViaMbregistry: flashViaMbregistryFn,
+    flashViaLocalSocket: flashViaLocalSocketFn,
+  });
   // Ticket 018-014: the network-flash counterpart for a mbserial/wifi
   // link whose device has a current `_mbflash._tcp` service -- no
   // `board_owner`/`connect/flasher.ts` involved (that module's
@@ -916,20 +1006,23 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
    * `deviceRegistry.ts#runFlash`'s own "failure is a value" contract.
    * `startServer.close()` awaits every such task (via
    * {@link inFlightFlashes}) before returning, so a flash in progress at
-   * shutdown finishes (and closes its DAPLink/HID handle, or the
-   * `mbflashClient.ts` TCP socket, via each path's own `finally`) before
-   * the process exits.
+   * shutdown finishes (and closes its DAPLink/HID handle, the
+   * `mbflashClient.ts` TCP socket, or the mbregistry remote-flash
+   * connection, via each path's own `finally`) before the process
+   * exits.
    *
-   * Ticket 018-014: routes by transport once {@link resolveFlashLinkTarget}
-   * resolves the target link -- a `usb` link keeps the exact pre-existing
-   * path (`flasher.flash`, board_owner-guarded); a `mbserial`/`wifi` link
-   * whose device has a current `_mbflash._tcp` service routes to
-   * {@link runNetworkFlashTask} instead. Any other transport (or a
+   * Ticket 018-014/sprint 018 ticket 005: routes by transport once
+   * {@link resolveFlashLinkTarget} resolves the target link -- a `usb`
+   * link keeps the exact pre-existing path (`flasher.flash`,
+   * board_owner-guarded); an `mbregistry` link routes to
+   * `flasher.flashMbregistry`; a `mbserial`/`wifi` link whose device has
+   * a current `_mbflash._tcp` service routes to {@link
+   * runNetworkFlashTask} instead. Any other transport (or a
    * mbserial/wifi device with no current flash service) fails plainly,
    * same as the old USB-only check did. Either way, the hex
    * fetch/verify step below (release vs. local-hex) is shared verbatim
-   * — this ticket adds a second *destination* for the same bytes, not a
-   * second way to obtain them. */
+   * — each new transport adds a second (third) *destination* for the
+   * same bytes, not a second way to obtain them. */
   async function runFlashTask(linkId: string, source: FirmwareSourceRef, identity: FlashIdentity = UI_FLASH_IDENTITY): Promise<FlashResultLike> {
     setFlashPhase(linkId, source, source.kind === "release" ? "fetching" : "verifying", identity);
     // Reports the failure exactly as before (`failFlash`'s own
@@ -994,6 +1087,35 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
 
       if (target.kind === "usb") {
         const outcome = await flasher.flash(linkId, target.usbSerial, target.device, hexText, (phase) =>
+          setFlashPhase(linkId, source, phase, identity),
+        );
+        finishFlash(linkId, source, outcome);
+        return outcome;
+      }
+
+      if (target.kind === "mbregistry") {
+        if (!mbregistryClient) {
+          return fail(`flashing link "${linkId}" requires a configured mbregistry client`);
+        }
+        // Sprint 018 ticket 006: mbregistryWatcher now persists the peer
+        // device's own `host`/`endpoint` into the link's stored address
+        // (`resolveFlashLinkTarget`'s own `mbregistry` branch), so
+        // routing normally comes straight from `target.device` -- no
+        // live `find()` round-trip. `target.hasPersistedHost === false`
+        // means this link row predates that change; only then is a live
+        // `find()` used as a fallback.
+        const streamDevice: MbregistryStreamDevice = target.hasPersistedHost
+          ? target.device
+          : await (async () => {
+              const device = await mbregistryClient.find(target.uid);
+              return { uid: target.uid, host: device.host, endpoint: parseHostPort(device.endpoint) };
+            })();
+        // Ticket 018-011 finding 2: `resolveFlashPlan` (not the retired
+        // `resolveFlashTarget`) picks the local-socket leaf when this
+        // console's own connection has no remote TCP port but does have
+        // a local socket/pipe -- see that function's own doc comment.
+        const plan = resolveFlashPlan(streamDevice, mbregistryClient);
+        const outcome = await flasher.flashMbregistry(linkId, target.uid, plan, mbregistryLabel, hexText, (phase) =>
           setFlashPhase(linkId, source, phase, identity),
         );
         finishFlash(linkId, source, outcome);

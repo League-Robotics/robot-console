@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openStoreDb } from "../store/db.js";
 import { Store } from "../store/index.js";
 import type { ByteStream } from "../link/LineLink.js";
@@ -181,6 +181,17 @@ function radioLink(relayLinkId: string, id = "radio-vevov-via-relay"): LinkRow {
 function mbrelayLink(relayLinkId: string, id = "mbrelay-vevov-via-relay"): LinkRow {
   return { id, transport: "mbrelay", address: { relayLinkId, channel: 47, group: 60 } };
 }
+/** A `mbregistry`-transport link, mirroring the shape
+ * `watchers/mbregistryWatcher.ts`'s own `linkAddress()` writes:
+ * `{endpoint, host, uid}` (sprint 018 ticket 006: the device's own
+ * routing info, not this client's `resolvedEndpoint`) -- `endpoint`'s
+ * exact value is opaque to `connector.ts` except through the default
+ * `createMbregistryStream`, which every test here overrides with a fake
+ * (`mbregistryDeps`), so the placeholder object below is never actually
+ * parsed as a `host:port` string. */
+function mbregistryLink(id = "mbregistry-XYZ", uid = "XYZ"): LinkRow {
+  return { id, transport: "mbregistry", address: { endpoint: { kind: "tcp", host: "127.0.0.1", port: 7440 }, uid } };
+}
 
 function baseDeps(stream: ByteStream, scheduler: Scheduler = immediateScheduler): ConnectorDeps {
   return {
@@ -188,6 +199,17 @@ function baseDeps(stream: ByteStream, scheduler: Scheduler = immediateScheduler)
     createTcpStream: () => stream,
     scheduler,
     now: () => 1_000_000,
+  };
+}
+
+/** Same as {@link baseDeps}, plus a fake `createMbregistryStream` --
+ * ticket 018-004's own injection seam, mirroring `createSerialStream`/
+ * `createTcpStream` above. No real `MbregistryClient`/socket anywhere in
+ * this file's own suite. */
+function mbregistryDeps(stream: ByteStream, scheduler: Scheduler = immediateScheduler): ConnectorDeps {
+  return {
+    ...baseDeps(stream, scheduler),
+    createMbregistryStream: () => stream,
   };
 }
 
@@ -389,6 +411,36 @@ describe("connectAndIdentify -- success path, every transport", () => {
     store.close();
   });
 
+  it("mbrelay: a relayLinkId that now resolves to an mbregistry-transport row opens the relay hop through mbregistryStream, not a parse error", async () => {
+    const store = freshStore();
+    const relayLinkId = "mbregistry-RELAY-POOL";
+    // The relay board itself is now discovered via mbregistryWatcher
+    // (sprint.md Step 5 "Impact") instead of the disabled `mbrelay` mDNS
+    // branch -- its own row is transport "mbregistry", not "mbrelay".
+    store.upsertLink({
+      id: relayLinkId,
+      transport: "mbregistry",
+      address: { endpoint: { kind: "tcp", host: "127.0.0.1", port: 7440 }, uid: "RELAY-UID" },
+      at: 1,
+    });
+
+    const stream = new RelayByteStream(ROBOT_BANNER);
+    const connector = createConnector(store, mbregistryDeps(stream, realScheduler));
+    const link = mbrelayLink(relayLinkId);
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    const session = await promise;
+
+    expect(session.deviceId).toBe(ROBOT_SERIAL);
+    const bytesWritten = stream.writes.map((w) => w.bytes.trim());
+    expect(bytesWritten).toEqual(["?", "!ECHO OFF", "!MODE RAW250", "!CG 47 60", "!P 7", "!GO", "HELLO"]);
+    expect(store.snapshotRows().links.find((l) => l.id === link.id)?.state).toBe("connected");
+    store.close();
+  });
+
   // 018-005: a radio link's own `address` only ever carries
   // `{relayLinkId, channel, group}` (never a physical usb path -- see
   // `radioLink()`'s own fixture above); `buildStreamPlan`'s
@@ -430,6 +482,36 @@ describe("connectAndIdentify -- success path, every transport", () => {
     await promise;
 
     expect(openedPath).toBe("/dev/cu.usbmodem2121402");
+    store.close();
+  });
+
+  it("mbregistry: connects through connectAndIdentify exactly like usb/wifi -- banner identify, deviceId/kind/owned bookkeeping, no relay preamble", async () => {
+    const store = freshStore();
+    const stream = new BannerByteStream(ROBOT_BANNER);
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const link = mbregistryLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    const session = await promise;
+
+    expect(session.deviceId).toBe(ROBOT_SERIAL);
+    expect(session.transport).toBe("mbregistry");
+    expect(stream.writes[0]?.bytes.startsWith("HELLO")).toBe(true); // no relay preamble
+
+    const rows = store.snapshotRows();
+    const device = rows.devices.find((d) => d.id === ROBOT_SERIAL);
+    expect(device?.kind).toBe("robot");
+    // mbregistry never sets owned -- only a usb identify does, exactly
+    // like wifi/mbserial (architecture.md §4).
+    expect(device?.owned).toBe(0);
+    const linkRow = rows.links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("connected");
+    expect(linkRow?.device_id).toBe(ROBOT_SERIAL);
+    const sessionRow = rows.sessions.find((s) => s.link_id === link.id);
+    expect(sessionRow).toBeDefined();
     store.close();
   });
 
@@ -1401,6 +1483,83 @@ describe("connectAndIdentify -- direct relay session-open sweep takeover (sprint
 
     const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
     expect(linkRow?.state_reason).toBe(RELAY_EXTERNAL_LOCK_REASON);
+    store.close();
+  });
+});
+
+// ---------------------------------------------------------------------
+// Sprint 018 ticket 004: mbregistry transport, exclusivity, relay
+// physical resolution (SUC-004).
+// ---------------------------------------------------------------------
+
+describe("connectAndIdentify -- mbregistry transport (sprint 018 ticket 004, SUC-004)", () => {
+  it("resolveExclusivity for mbregistry is a no-op -- never calls acquireBoardOwner/acquireRelayLease (no board_owner/relay_leases row is written)", async () => {
+    const store = freshStore();
+    const boardOwnerSpy = vi.spyOn(store, "acquireBoardOwner");
+    const relayLeaseSpy = vi.spyOn(store, "acquireRelayLease");
+    const stream = new BannerByteStream(ROBOT_BANNER);
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const link = mbregistryLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await promise;
+
+    expect(boardOwnerSpy).not.toHaveBeenCalled();
+    expect(relayLeaseSpy).not.toHaveBeenCalled();
+    expect(store.reconcilerRows().relayLeases).toEqual([]);
+    store.close();
+  });
+
+  it.each([
+    ["missing uid", { endpoint: { kind: "tcp", host: "127.0.0.1", port: 7440 } }],
+    ["missing endpoint", { uid: "XYZ" }],
+  ])("a malformed mbregistry address (%s) fails with a descriptive Error and records the link failure, without ever opening a transport", async (_case, address) => {
+    const store = freshStore();
+    const stream = new FakeByteStream();
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const link: LinkRow = { id: "mbregistry-bad", transport: "mbregistry", address };
+    seedLink(store, link);
+
+    await expect(connector.connectAndIdentify(link, new AbortController().signal)).rejects.toThrow(
+      /mbregistry address missing/,
+    );
+
+    expect(stream.openCallCount).toBe(0);
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("failed");
+    expect(linkRow?.fail_count).toBe(1);
+    store.close();
+  });
+
+  it("a malformed mbregistry relay-physical address (missing uid) rejects with a descriptive Error when resolved as a radio/mbrelay relay hop, without ever opening a transport", async () => {
+    const store = freshStore();
+    const relayLinkId = "mbregistry-RELAY-BAD";
+    store.upsertLink({
+      id: relayLinkId,
+      transport: "mbregistry",
+      address: { endpoint: { kind: "tcp", host: "127.0.0.1", port: 7440 } }, // no uid
+      at: 1,
+    });
+
+    const stream = new FakeByteStream();
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const link = mbrelayLink(relayLinkId);
+    seedLink(store, link);
+
+    // `resolveRelayPhysical` throwing here is a data-model error, not a
+    // transport failure -- mirrors the existing (pre-ticket-004) behavior
+    // for a `radio`/`mbrelay` link whose `relayLinkId` names a not-found
+    // or wrong-transport row: rejected, but not run through
+    // `recordFailure`/`links.state`, since `buildStreamPlan` itself is
+    // called outside connector.ts's own parse/exclusivity `recordFailure`
+    // wrapping (see `attempt()`).
+    await expect(connector.connectAndIdentify(link, new AbortController().signal)).rejects.toThrow(
+      /mbregistry\) address missing/,
+    );
+    expect(stream.openCallCount).toBe(0);
     store.close();
   });
 });

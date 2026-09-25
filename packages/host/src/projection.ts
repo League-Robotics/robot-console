@@ -31,10 +31,11 @@
  * is `null` (an mDNS observation that never matched a known device) is
  * hidden for the same reason one step further back — there is no device
  * for it to be owned by — and is not placed in {@link
- * Snapshot.unassigned} either, since that list is specifically "USB
- * boards not yet named/identified" (architecture.md §9); a network
- * observation with no device match has nothing displayable about it at
- * all (no port, no serial, no name).
+ * Snapshot.unassigned} either, since that list is specifically "boards
+ * not yet named/identified" (architecture.md §9, originally `usb`-only;
+ * ticket 018-010 widened it to `mbregistry` too — see the `unassigned`
+ * loop below); a network observation with no device match has nothing
+ * displayable about it at all (no port, no serial, no name).
  *
  * ## Radio address resolution
  *
@@ -131,13 +132,24 @@ export function buildSnapshotFromRows(rows: ProjectionRows, seq: number, at: num
       } else {
         linksByDevice.set(link.deviceId, [link]);
       }
-    } else if (link.transport === "usb" && link.state !== "stale") {
+    } else if ((link.transport === "usb" || link.transport === "mbregistry") && link.state !== "stale") {
       // A usb link with no device_id yet is an unnamed/unidentified USB
-      // board -- architecture.md §9's `unassigned` list. A non-usb link
-      // with no device_id has no device to attach to and nothing
-      // displayable of its own; it is simply dropped (see this module's
-      // own doc comment, "The owned gate"). A `stale` one (board no
-      // longer enumerated) is dropped too -- there is no board to show.
+      // board -- architecture.md §9's `unassigned` list. Ticket 018-010
+      // (bench fix) widens this to `mbregistry` too: a board whose
+      // banner classifies as unrecognized (a non-robot/non-relay
+      // firmware, e.g. a joystick) is deliberately left with no owning
+      // `devices` row by `mbregistryWatcher.ts`'s `identify()` -- the
+      // same "not yet identified" shape a `usb` board has before SWD
+      // naming succeeds -- specifically so it still surfaces here
+      // instead of being dropped outright: flashing a board with
+      // unknown/other firmware is a core use case, and `unassigned`/
+      // `UnknownDevicePage` already carries the flash controls (SUC-002,
+      // SUC-004) generically off `SnapshotLink`, no `devices` row needed.
+      // A different non-usb/non-mbregistry link with no device_id still
+      // has no device to attach to and nothing displayable of its own;
+      // it is simply dropped (see this module's own doc comment, "The
+      // owned gate"). A `stale` one (board no longer enumerated, either
+      // transport) is dropped too -- there is no board to show.
       unassignedLinks.push(link);
     }
   }
@@ -327,7 +339,8 @@ function buildLink(link: ProjectionLinkRow, ctx: LinkContext): SnapshotLink {
     capabilities: {
       open: !hasSession && !isConnecting && (!requiresOwned(link.transport) || (device?.owned ?? false)),
       close: hasSession || isConnecting,
-      // A usb link can always be flashed (DAPLink, directly attached).
+      // A usb or mbregistry link can always be flashed (DAPLink directly
+      // attached, or the mbregistry daemon dialing the device directly).
       // Anything else can be flashed exactly when its DEVICE currently
       // advertises `_mbflash._tcp` -- a robot's own mbdeploy daemon.
       //
@@ -355,6 +368,7 @@ function buildLink(link: ProjectionLinkRow, ctx: LinkContext): SnapshotLink {
       // the wrong transport.
       flash:
         link.transport === "usb" ||
+        link.transport === "mbregistry" ||
         (device !== undefined && findCurrentMbflashService(ctx.services, device) !== undefined),
       provisionWifi: hasSession,
     },
@@ -460,6 +474,15 @@ function buildLabel(link: ProjectionLinkRow): string {
       // radio address, so `channelGroup` here always produced junk
       // ("mbrelay · ch?/grp?", bench defect, team-lead walk 017-012).
       return `mbrelay · ${hostPort(link.address)}`;
+    case "mbregistry": {
+      // Sprint 018 ticket 002: `mbregistryWatcher.ts` writes
+      // `address: {endpoint, uid}` -- no `host`/`port` to reuse
+      // `hostPort` with, so this reads `uid` directly. `capabilities`
+      // (flash, open) for this transport land in later tickets in this
+      // sprint (004/008); this is only the display label.
+      const uid = addressField(link.address, "uid");
+      return `mbregistry · ${typeof uid === "string" ? uid : "unknown uid"}`;
+    }
     default: {
       const exhaustive: never = link.transport;
       return String(exhaustive);

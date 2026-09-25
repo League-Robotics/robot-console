@@ -67,7 +67,14 @@
  * else (a `mbrelay`-transport relay) a disconnect+reconnect — a break
  * cannot be sent over TCP, and opening a *fresh* stream for every
  * candidate attempt (this module's own per-candidate stream lifecycle)
- * already performs the reconnect, so that branch is a deliberate no-op.
+ * already performs the reconnect, so that branch is a deliberate no-op;
+ * else (sprint 018 ticket 007 — a relay discovered only through
+ * mbregistry, with neither direct HID access nor a raw serial port
+ * available) {@link mbregistryResetSequence} over the *same* locked
+ * `mbregistryStream` session already opened for this candidate's data
+ * plane — never a second lock (sprint.md's own Design Rationale). See
+ * that function's own doc comment for why `sendBreak()` is today's
+ * chosen primitive and what remains unverified about it.
  *
  * ## Lease lifecycle
  *
@@ -115,7 +122,11 @@ import {
 import { LineLink, type ByteStream, type LineLinkOptions } from "../link/LineLink.js";
 import { serialStream, type SerialResettableStream } from "../link/adapters/serialStream.js";
 import { tcpStream } from "../link/adapters/tcpStream.js";
-import { realScheduler, type Scheduler } from "../link/pacing.js";
+import { mbregistryStream, type MbregistryResettableStream } from "../link/adapters/mbregistryStream.js";
+import { parseHostPort, type MbregistryClient } from "../mbregistry/client.js";
+import { realScheduler, WritePacer, type Scheduler } from "../link/pacing.js";
+import { sync as syncRelayCommandPlane, type RelayLinkIO } from "../link/RelayCommandPlane.js";
+import { LineReassembler } from "../link/lineStream.js";
 import { DEFAULT_IDENTIFY_BUDGET_MS, DEFAULT_IDENTIFY_SCHEDULE_MS } from "../link/bootWindowIdentify.js";
 import { HID as HidTransport, CortexM } from "../vendor/dapjs/index.js";
 import { HID as NodeHidDevice } from "node-hid";
@@ -133,6 +144,7 @@ import {
   DEFAULT_BACKOFF_CAP_MS,
   DEFAULT_CONNECT_TIMEOUT_MS,
   NO_OP_HARVESTER,
+  RELAY_PREAMBLE_WRITE_PACE_MS,
   abortError,
   buildRelayPreamble,
   identifyWithAbort,
@@ -143,6 +155,7 @@ import {
   type ConnectedSession,
   type HarvesterAttach,
   type LinkRow,
+  type MbregistryAddress,
   type RelayAddress,
   type TcpAddress,
   type UsbAddress,
@@ -186,6 +199,31 @@ export interface RelayBridgerDeps {
    * own link (018-007) — see `connector.ts`'s `TcpAddress.ip` doc
    * comment. */
   createTcpStream?: (host: string, port: number, ip?: string) => ByteStream;
+  /** Injectable mbregistry stream adapter factory (ticket 003's {@link
+   * mbregistryStream}) for an `mbregistry`-transport relay physical
+   * (`resolveRelayPhysical`'s third branch) — mirrors `connector.ts`'s
+   * own `ConnectorDeps.createMbregistryStream` seam exactly, including
+   * its `kind` parameter (always `"relay"` here — this module only ever
+   * opens an mbregistry stream for the relay hop itself, never a direct
+   * board session). Defaults to the real adapter bound to {@link
+   * RelayBridgerDeps.mbregistryClient}; tests substitute a factory
+   * returning a fake implementing {@link MbregistryResettableStream}
+   * (or plain {@link ByteStream}, mirroring `createSerialStream`'s own
+   * convention above) — this is also the one factory a test counts calls
+   * against to prove no second lock/connection is opened for the reset
+   * step (module doc comment's own "reuse the *same* `mbregistryStream`
+   * connection" rule): exactly one call per candidate attempt, reused for
+   * both the reset and the data plane. */
+  createMbregistryStream?: (address: MbregistryAddress, kind: "relay") => ByteStream;
+  /** The already-connected {@link MbregistryClient} (ticket 001) the
+   * default `createMbregistryStream` opens a `lock`+`stream` session
+   * against — mirrors `ConnectorDeps.mbregistryClient` exactly.
+   * `runtime.ts` wires the same instance handed to `connector.ts`. */
+  mbregistryClient?: MbregistryClient;
+  /** This console's own identity, forwarded as the default
+   * `createMbregistryStream`'s `mbregistryStream` `label` option --
+   * display-only (`registry-api.md`). Mirrors `ConnectorDeps.mbregistryLabel`. */
+  mbregistryLabel?: string;
   /** Builds the `LineLink` wrapping a candidate's {@link ByteStream}.
    * Defaults to `new LineLink(stream, options)`. */
   createLineLink?: (stream: ByteStream, options: LineLinkOptions) => LineLink;
@@ -294,21 +332,161 @@ export interface RelayBridger {
 // Reset method selection — see the module doc comment's own section.
 // ---------------------------------------------------------------------
 
-export type RelayResetMethod = "hid" | "break" | "reconnect";
+export type RelayResetMethod = "hid" | "break" | "reconnect" | "mbregistry";
 
 /**
  * Choose how to reset the physical relay before a candidate's preamble:
  * `"hid"` when the relay's own `usb` link carries a `hidPath`, else
- * `"break"` for a `usb`-transport relay with none, else `"reconnect"`
- * for an `mbrelay`-transport (TCP) relay — a break cannot be sent over
- * TCP (`docs/design/specification.md` §6), and a fresh per-candidate TCP
- * connection already performs the reconnect. Pure — no I/O.
+ * `"break"` for a `usb`-transport relay with none, `"reconnect"` for an
+ * `mbrelay`-transport (TCP) relay — a break cannot be sent over TCP
+ * (`docs/design/specification.md` §6), and a fresh per-candidate TCP
+ * connection already performs the reconnect — else (sprint 018 ticket
+ * 007) `"mbregistry"` for a relay reached only through mbregistry, where
+ * neither direct HID access nor a raw serial break is available; the
+ * reset instead goes over the same locked `mbregistryStream` session via
+ * {@link mbregistryResetSequence}. Pure — no I/O.
  */
-export function chooseResetMethod(hidPath: string | null, relayTransport: "usb" | "mbrelay"): RelayResetMethod {
+export function chooseResetMethod(hidPath: string | null, relayTransport: "usb" | "mbrelay" | "mbregistry"): RelayResetMethod {
+  if (relayTransport === "mbregistry") {
+    return "mbregistry";
+  }
   if (relayTransport === "mbrelay") {
     return "reconnect";
   }
   return hidPath ? "hid" : "break";
+}
+
+/** Small, real-time-safe defaults for {@link mbregistryResetSequence}'s
+ * own pre-reset `sync()` check (ticket 018-011 finding 4) — deliberately
+ * shorter than `RelayCommandPlane.ts`'s own real 8s/4s defaults: this is
+ * "is the relay already answering right now", not a recovery loop with
+ * its own retry budget (that's what the BREAK fallback below is for). */
+export const MBREGISTRY_RESET_SYNC_ATTEMPTS = 2;
+export const MBREGISTRY_RESET_SYNC_RETRY_MS = 200;
+
+/** A minimal raw line write/subscribe pair over `stream` for {@link
+ * mbregistryResetSequence}'s own `sync()` probe — mirrors
+ * `watchers/relaySweeper.ts`'s own `buildRawLineIO` (that module's own
+ * doc comment: "Raw line write/subscribe pair over a directly-opened
+ * ByteStream"), duplicated in miniature here rather than shared/exported
+ * from there, since this call site needs no write-failure reporting hook
+ * (a write failure here surfaces via `sync()`'s own confirmation timeout,
+ * exactly like the sweeper's own primary use). */
+function buildResetProbeIO(stream: ByteStream, scheduler: Scheduler): RelayLinkIO {
+  const pacer = new WritePacer(RELAY_PREAMBLE_WRITE_PACE_MS, scheduler);
+  const reassembler = new LineReassembler();
+  const listeners = new Set<(line: string) => void>();
+
+  stream.on("data", (chunk) => {
+    for (const line of reassembler.push(chunk)) {
+      for (const listener of [...listeners]) {
+        listener(line);
+      }
+    }
+  });
+
+  const write = (line: string): void => {
+    pacer.schedule(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          stream.write(line, (err) => (err ? reject(err) : resolve()));
+        }),
+      () => {
+        // No separate reporting channel -- a real write failure surfaces
+        // via sync()'s own confirmation wait timing out.
+      },
+    );
+  };
+
+  const subscribe = (listener: (line: string) => void): (() => void) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  };
+
+  return { write, subscribe };
+}
+
+/**
+ * The mbregistry-backed relay reset primitive (sprint 018 ticket 007):
+ * a single `BREAK` frame sent over the candidate's own already-open
+ * `mbregistryStream` session — never a second lock/connection (module
+ * doc comment's "Reset method selection" and sprint.md's Design
+ * Rationale, "reuse the *same* `mbregistryStream` connection already
+ * open for the candidate being bridged").
+ *
+ * **Ticket 018-011 finding 4's own bench result — BREAK is not safe to
+ * send unconditionally.** This function's own doc comment previously
+ * flagged the choice of `sendBreak()` as "genuinely unresolved... sprint
+ * 018 ticket 009 (bench verification) must confirm this actually resets
+ * a DAPLink board... before this is treated as settled." That
+ * verification's result: against a real mbregistry-connected relay
+ * (`getez`) that a raw `lock`+`stream` client confirmed was already
+ * healthy and answering its command plane (`< PING` heartbeat lines,
+ * registry side fine), sending this unconditional `BREAK` anyway — every
+ * single bridge attempt did, every candidate, regardless of whether the
+ * relay needed resetting at all — produced a connection that appeared to
+ * bridge successfully for a few seconds and then dropped with no
+ * diagnosable reason (`harvester.ts`'s own `onClose`-with-no-`reason`
+ * `fail()` branch: "unresponsive: link closed"). The most likely
+ * mechanism (not independently confirmed against mbregistry's own
+ * server-side logs, which this ticket had no access to): a raw serial
+ * `BREAK` condition is also how several USB-CDC bridge chips signal a
+ * target MCU reset, so an *already-healthy* relay's own microcontroller
+ * physically reboots on every attempt; a directly-opened local serial
+ * port (the legacy `usb`-transport `"break"` branch, unaffected by this
+ * finding) tolerates that fine, but the *remote*, pyserial-backed port
+ * mbregistry itself owns does not survive its target disappearing and
+ * reappearing mid-connection, and mbregistry closes its end of the
+ * stream without telling this client why.
+ *
+ * **The fix**: mirror `watchers/relaySweeper.ts`'s own
+ * `ensureCommandPlaneReady` pattern — try a quick `sync()` (a `?`/status
+ * round trip, {@link MBREGISTRY_RESET_SYNC_ATTEMPTS}/{@link
+ * MBREGISTRY_RESET_SYNC_RETRY_MS}) over this same connection first; a
+ * relay that already answers needs no reset at all, so no `BREAK` is
+ * sent. Only a relay that fails to answer (genuinely parked mid a prior
+ * session — the scenario `resetBetweenCandidates` exists for in the
+ * first place, and this function's own pre-011 headline test, "candidate
+ * 2 succeeds only because the relay was reset first") still gets the
+ * `BREAK` fallback.
+ *
+ * **Which primitive actually performs that fallback reset remains the
+ * same open question this doc comment flagged before** — `sendBreak()`
+ * mirrors `performReset`'s existing `"break"` branch for a plain serial
+ * stream, but mbregistry's wire protocol also exposes
+ * `SET_DTR`/`SET_RTS` with no documented "reset" combination of them
+ * (`stream_frame.py`, mbtools `docs/design/registry-api.md`); this is
+ * still the *one* function to change if `sendBreak()` itself turns out
+ * to be the wrong fallback primitive for a given platform. What ticket
+ * 011's own bench finding resolves is narrower and more urgent: never
+ * send it to a relay that was never broken in the first place.
+ */
+export async function mbregistryResetSequence(stream: ByteStream, signal: AbortSignal, scheduler: Scheduler = realScheduler): Promise<void> {
+  const resettable = stream as Partial<MbregistryResettableStream>;
+  if (typeof resettable.sendBreak !== "function") {
+    throw new Error("relayBridger: mbregistry reset method chosen but the stream has no sendBreak()");
+  }
+
+  const io = buildResetProbeIO(stream, scheduler);
+  try {
+    await syncRelayCommandPlane({
+      ...io,
+      scheduler,
+      syncAttempts: MBREGISTRY_RESET_SYNC_ATTEMPTS,
+      syncRetryMs: MBREGISTRY_RESET_SYNC_RETRY_MS,
+      signal,
+    });
+    // Already answering -- no reset needed at all (finding 4's own fix:
+    // see this function's own doc comment for why sending BREAK anyway
+    // was actively harmful here).
+    return;
+  } catch {
+    // Not answering -- parked mid a prior session. Fall through to the
+    // one-time BREAK fallback below, exactly the pre-011 behavior.
+  }
+  await resettable.sendBreak();
 }
 
 /** Function shape used to obtain a fully-formed SWD transport/processor
@@ -372,6 +550,12 @@ export async function performReset(
   hidResetFn: (hidPath: string, signal: AbortSignal) => Promise<void>,
   breakMs: number | undefined,
   signal: AbortSignal,
+  /** Ticket 018-011 finding 4: governs the "mbregistry" method's own
+   * pre-reset `sync()` check ({@link mbregistryResetSequence}); ignored
+   * by every other method. Defaults to {@link realScheduler} -- only
+   * `relayBridger.ts`'s own tests (and `relaySweeper.ts`, which never
+   * reaches the "mbregistry" branch at all) ever override it. */
+  scheduler: Scheduler = realScheduler,
 ): Promise<void> {
   if (signal.aborted) {
     throw abortError(signal);
@@ -389,6 +573,10 @@ export async function performReset(
       throw new Error("relayBridger: break reset method chosen but the stream has no sendBreak()");
     }
     await breakable.sendBreak(breakMs);
+    return;
+  }
+  if (method === "mbregistry") {
+    await mbregistryResetSequence(stream, signal, scheduler);
     return;
   }
   // "reconnect": this candidate's own freshly-opened TCP stream already
@@ -526,7 +714,7 @@ export function toBridgeRequest(link: LinkRow): BridgeRequest {
 // createRelayBridger
 // ---------------------------------------------------------------------
 
-function relayLinkTransport(store: Store, relayLinkId: string): "usb" | "mbrelay" {
+function relayLinkTransport(store: Store, relayLinkId: string): "usb" | "mbrelay" | "mbregistry" {
   const row = store.snapshotRows().links.find((candidate) => candidate.id === relayLinkId);
   if (!row) {
     throw new Error(`relayBridger: relay link "${relayLinkId}" not found in the store`);
@@ -536,10 +724,20 @@ function relayLinkTransport(store: Store, relayLinkId: string): "usb" | "mbrelay
   // `store/index.ts`'s own doc comment) down from `unknown` to the literal
   // union: negated equality checks against an `unknown` value never narrow
   // it (there is no enumerable union to eliminate members from).
-  if (row.transport === "usb" || row.transport === "mbrelay") {
+  //
+  // A relay row of transport "mbregistry" is always accepted too (sprint
+  // 018 ticket 007), mirroring `connector.ts`'s own `resolveRelayPhysical`
+  // doc comment: once a relay board is discovered through
+  // `mbregistryWatcher` instead of the disabled `usb`/`mbrelay` discovery
+  // paths, this relay's own link row can be transport "mbregistry" no
+  // matter which of "usb"/"mbrelay" its riding candidates would otherwise
+  // imply.
+  if (row.transport === "usb" || row.transport === "mbrelay" || row.transport === "mbregistry") {
     return row.transport;
   }
-  throw new Error(`relayBridger: relay link "${relayLinkId}" is transport "${String(row.transport)}", expected "usb" or "mbrelay"`);
+  throw new Error(
+    `relayBridger: relay link "${relayLinkId}" is transport "${String(row.transport)}", expected "usb", "mbrelay", or "mbregistry"`,
+  );
 }
 
 /**
@@ -550,6 +748,29 @@ function relayLinkTransport(store: Store, relayLinkId: string): "usb" | "mbrelay
 export function createRelayBridger(store: Store, deps: RelayBridgerDeps = {}, opts: RelayBridgerOptions = {}): RelayBridger {
   const createSerialStreamFn = deps.createSerialStream ?? ((path: string) => serialStream(path));
   const createTcpStreamFn = deps.createTcpStream ?? ((host: string, port: number, ip?: string) => tcpStream(host, port, ip !== undefined ? { ip } : {}));
+  // Mirrors `connector.ts`'s own `createConnector`'s identical default --
+  // see `RelayBridgerDeps.createMbregistryStream`'s own doc comment.
+  const createMbregistryStreamFn =
+    deps.createMbregistryStream ??
+    ((address: MbregistryAddress, kind: "relay") => {
+      if (!deps.mbregistryClient) {
+        throw new Error(
+          "relayBridger: mbregistry transport requires RelayBridgerDeps.mbregistryClient (or an overriding createMbregistryStream)",
+        );
+      }
+      return mbregistryStream(
+        {
+          uid: address.uid,
+          host: address.host ?? null,
+          endpoint: parseHostPort(typeof address.endpoint === "string" ? address.endpoint : undefined),
+        },
+        {
+          client: deps.mbregistryClient,
+          kind,
+          ...(deps.mbregistryLabel !== undefined ? { label: deps.mbregistryLabel } : {}),
+        },
+      );
+    });
   const createLineLinkFn = deps.createLineLink ?? ((stream: ByteStream, options: LineLinkOptions) => new LineLink(stream, options));
   const scheduler = deps.scheduler ?? realScheduler;
   const now = deps.now ?? (() => Date.now());
@@ -582,7 +803,7 @@ export function createRelayBridger(store: Store, deps: RelayBridgerDeps = {}, op
    * contract is unchanged by this ticket. */
   async function attemptCandidate(
     relayLinkId: string,
-    relayTransport: "usb" | "mbrelay",
+    relayTransport: "usb" | "mbrelay" | "mbregistry",
     candidate: RelayBridgeCandidate,
     signal: AbortSignal,
   ): Promise<ConnectedSession> {
@@ -590,14 +811,27 @@ export function createRelayBridger(store: Store, deps: RelayBridgerDeps = {}, op
       throw abortError(signal);
     }
 
-    const physical = resolveRelayPhysical(store, relayLinkId, relayTransport);
+    // `resolveRelayPhysical`'s own `expectedTransport` param is only
+    // meaningful for a row whose transport is literally "usb"/"mbrelay"
+    // (its own equality check); a row of transport "mbregistry" bypasses
+    // that check entirely and always resolves through its own branch
+    // regardless of what's passed here (connector.ts's own doc comment on
+    // `RelayPhysical` and `resolveRelayPhysical`) -- so any "usb"/"mbrelay"
+    // placeholder is safe for the `relayTransport === "mbregistry"` case.
+    const physical = resolveRelayPhysical(store, relayLinkId, relayTransport === "mbrelay" ? "mbrelay" : "usb");
     const hidPath = physical.transport === "usb" ? ((physical.address as UsbAddress).hidPath ?? null) : null;
     const resetMethod = chooseResetMethod(hidPath, physical.transport);
 
     const stream: ByteStream =
       physical.transport === "usb"
         ? createSerialStreamFn((physical.address as UsbAddress).path)
-        : createTcpStreamFn((physical.address as TcpAddress).host, (physical.address as TcpAddress).port, (physical.address as TcpAddress).ip);
+        : physical.transport === "mbrelay"
+          ? createTcpStreamFn(
+              (physical.address as TcpAddress).host,
+              (physical.address as TcpAddress).port,
+              (physical.address as TcpAddress).ip,
+            )
+          : createMbregistryStreamFn(physical.address as MbregistryAddress, "relay");
 
     let lineLink: LineLink | undefined;
     const runPreamble = buildRelayPreamble(
@@ -610,7 +844,7 @@ export function createRelayBridger(store: Store, deps: RelayBridgerDeps = {}, op
     );
     const preamble = async (openedStream: ByteStream, abortSignal: AbortSignal): Promise<void> => {
       if (resetBetweenCandidates) {
-        await performReset(resetMethod, openedStream, hidPath, hidResetFn, breakMs, abortSignal);
+        await performReset(resetMethod, openedStream, hidPath, hidResetFn, breakMs, abortSignal, scheduler);
       }
       await runPreamble(openedStream, abortSignal);
     };
@@ -634,7 +868,27 @@ export function createRelayBridger(store: Store, deps: RelayBridgerDeps = {}, op
     const deviceId = banner.serial;
     const name = deviceIdToName(deviceId);
     const kind: DeviceKind = classification.type === "relay" ? "relay" : "robot";
-    const childTransport: Transport = relayTransport === "usb" ? "radio" : "mbrelay";
+    // "usb"/"mbrelay" relayTransport map 1:1 onto "radio"/"mbrelay" child
+    // links today (connector.ts's own address-shapes doc comment: "both
+    // ride a relay, the only difference being whether that relay's own
+    // link is reached over a local USB port ... or a remote TCP mbrelay
+    // pool"). An "mbregistry"-transport relay row replaces either of
+    // those two discovery paths (sprint.md Step 5's own "Impact"), so the
+    // same local-vs-remote distinction is recovered from the resolved
+    // `MbregistryAddress`'s own `endpoint` -- `null`/`undefined` for a
+    // device local to this console's own mbregistry instance (the
+    // `usb`-replacement case this ticket's own Description calls out) or
+    // a `{host, port}` for a remote peer (the `mbrelay`-replacement case
+    // `connector.test.ts`'s own "mbrelay: ... resolves to an
+    // mbregistry-transport row" test exercises).
+    const childTransport: Transport =
+      relayTransport === "usb"
+        ? "radio"
+        : relayTransport === "mbrelay"
+          ? "mbrelay"
+          : (physical.address as MbregistryAddress).endpoint == null
+            ? "radio"
+            : "mbrelay";
     const address: RelayAddress = { relayLinkId, channel: candidate.channel, group: candidate.group };
 
     store.upsertDevice({ id: deviceId, name, kind, role: banner.role, commonName: banner.commonName, at: now() });
@@ -697,7 +951,10 @@ export function createRelayBridger(store: Store, deps: RelayBridgerDeps = {}, op
       // bridges through one pool never contend for a board and take no
       // lease -- see `reconciler.ts`'s `isRelayPool`. Only a USB radio
       // bridge (one serial port, one robot) is exclusive.
-      const needsLease = relayTransport === "usb";
+      // Sprint 018 ticket 007: an mbregistry-transport relay needs the
+      // same lease as a usb one -- only mbrelay's own always-on TCP
+      // bridge (no exclusive OS handle to contend over) skips it.
+      const needsLease = relayTransport === "usb" || relayTransport === "mbregistry";
 
       let acquired = !needsLease || store.acquireRelayLease(request.relayLinkId, owner, now());
       if (!acquired) {

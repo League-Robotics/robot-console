@@ -66,7 +66,7 @@ describe("cli: main -- --dump-store", () => {
 describe("cli: main -- --watch-store is gone", () => {
   it("no longer short-circuits main() -- it is treated as an ordinary (ignored) argv token, falling through to production startup", async () => {
     const runtimeStopMock = vi.fn();
-    const startRuntimeMock = vi.fn().mockReturnValue({ store: { marker: "fake-store" }, reconciler: {}, telemetry: {}, stop: runtimeStopMock });
+    const startRuntimeMock = vi.fn().mockResolvedValue({ store: { marker: "fake-store" }, reconciler: {}, telemetry: {}, mbregistryClient: {} as unknown as import("./mbregistry/client.js").MbregistryClient, mbregistryLabel: "test", stop: runtimeStopMock });
     const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
     const openBrowserMock = vi.fn().mockResolvedValue(undefined);
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -103,11 +103,34 @@ describe("cli: main -- production startup composes runtime then server", () => {
     process.removeAllListeners("SIGTERM");
   });
 
-  it("calls the real startRuntime, which in turn invokes openStoreWithImports and starts both watchers -- not by re-running --watch-store", async () => {
-    const fakeStore = { close: vi.fn(), marker: "fake-store" };
+  it("calls the real startRuntime, which in turn invokes openStoreWithImports and starts the mbregistry/mDNS/firmware watchers -- not by re-running --watch-store", async () => {
+    // Sprint 018 ticket 008: `startRuntime` reads `mbregistry.shareBoards`
+    // off the store (`config.ts#getMbregistryShareBoards`) before
+    // constructing the mbregistry client -- `getSetting` must exist on
+    // this fake for that real call to succeed. Port contention (replay
+    // guide §3): `startRuntime` also ages every usb link stale right
+    // after the mbregistry connect succeeds -- `ageLinks` must exist too.
+    const fakeStore = {
+      close: vi.fn(),
+      getSetting: vi.fn().mockReturnValue(undefined),
+      ageLinks: vi.fn().mockReturnValue(0),
+      marker: "fake-store",
+    };
     const openStoreWithImportsMock = vi.fn().mockReturnValue(fakeStore);
-    const usbStopMock = vi.fn();
-    const startUsbWatcherMock = vi.fn().mockReturnValue({ stop: usbStopMock });
+    // Sprint 018 ticket 006: production startRuntime() resolves/connects
+    // a real mbregistry client before anything else -- faked here (a
+    // real client would try to spawn/connect to an actual mbregistry).
+    const mbregistryConnectMock = vi.fn().mockResolvedValue({ kind: "unix", path: "/tmp/fake.sock" });
+    const mbregistryCloseMock = vi.fn();
+    const fakeMbregistryClient = {
+      connect: mbregistryConnectMock,
+      close: mbregistryCloseMock,
+      resolvedEndpoint: undefined,
+      remotePort: undefined,
+    };
+    const createMbregistryClientMock = vi.fn(() => fakeMbregistryClient);
+    const mbregistryWatcherStopMock = vi.fn();
+    const startMbregistryWatcherMock = vi.fn().mockReturnValue({ stop: mbregistryWatcherStopMock });
     const mdnsStopMock = vi.fn();
     const startMdnsWatcherMock = vi.fn().mockReturnValue({ stop: mdnsStopMock });
     const firmwareStopMock = vi.fn();
@@ -128,7 +151,8 @@ describe("cli: main -- production startup composes runtime then server", () => {
 
     const runtimeOptions: StartRuntimeOptions = {
       openStoreWithImports: openStoreWithImportsMock as unknown as StartRuntimeOptions["openStoreWithImports"],
-      startUsbWatcher: startUsbWatcherMock as unknown as StartRuntimeOptions["startUsbWatcher"],
+      createMbregistryClient: createMbregistryClientMock as unknown as StartRuntimeOptions["createMbregistryClient"],
+      startMbregistryWatcher: startMbregistryWatcherMock as unknown as StartRuntimeOptions["startMbregistryWatcher"],
       startMdnsWatcher: startMdnsWatcherMock as unknown as StartRuntimeOptions["startMdnsWatcher"],
       createBonjourBackend: createBonjourBackendMock as unknown as StartRuntimeOptions["createBonjourBackend"],
       startFirmwareWatcher: startFirmwareWatcherMock as unknown as StartRuntimeOptions["startFirmwareWatcher"],
@@ -168,17 +192,20 @@ describe("cli: main -- production startup composes runtime then server", () => {
     await main([], env, deps);
 
     expect(openStoreWithImportsMock).toHaveBeenCalledWith({ env });
-    expect(startUsbWatcherMock).toHaveBeenCalled();
+    expect(mbregistryConnectMock).toHaveBeenCalledTimes(1);
+    expect(startMbregistryWatcherMock).toHaveBeenCalled();
     expect(startMdnsWatcherMock).toHaveBeenCalled();
     expect(startFirmwareWatcherMock).toHaveBeenCalled();
     expect(installUnhandledRejectionBackstopMock).toHaveBeenCalled();
-    expect(startServerMock).toHaveBeenCalledWith(expect.objectContaining({ store: fakeStore }));
+    expect(startServerMock).toHaveBeenCalledWith(
+      expect.objectContaining({ store: fakeStore, mbregistryClient: fakeMbregistryClient }),
+    );
 
     logSpy.mockRestore();
   });
 
   it("resolves --port/ROBOT_CONSOLE_PORT and forwards it to startServer", async () => {
-    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startRuntimeMock = vi.fn().mockResolvedValue({ store: {}, reconciler: {}, telemetry: {}, mbregistryClient: {} as unknown as import("./mbregistry/client.js").MbregistryClient, mbregistryLabel: "test", stop: vi.fn() });
     const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:9999", close: vi.fn().mockResolvedValue(undefined) });
     const openBrowserMock = vi.fn().mockResolvedValue(undefined);
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -387,8 +414,60 @@ describe("cli: main -- production startup composes runtime then server", () => {
     logSpy.mockRestore();
   });
 
-  it("logs a warning, but does not throw, when opening the browser fails", async () => {
+  // Team-lead decision, replay-guide.md §4: ROBOT_CONSOLE_MDNS_LEGACY
+  // re-enables listed legacy mDNS types by removing them from
+  // runtime.ts's own default disabled set.
+  it("ROBOT_CONSOLE_MDNS_LEGACY re-enables the listed legacy mDNS types, leaving the rest disabled", async () => {
     const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
+    };
+
+    await main([], { ROBOT_CONSOLE_MDNS_LEGACY: "mbserial, mbrelay" } as unknown as NodeJS.ProcessEnv, deps);
+
+    expect(startRuntimeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ mdnsWatcherOptions: { disabledTypes: ["mbflash"] } }),
+    );
+
+    logSpy.mockRestore();
+  });
+
+  it("omits mdnsWatcherOptions entirely when ROBOT_CONSOLE_MDNS_LEGACY is unset -- runtime.ts's own default is untouched", async () => {
+    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: vi.fn() });
+    const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      openBrowser: openBrowserMock,
+      getFirmwareConfig: vi.fn().mockReturnValue({}),
+      writeDaemonInfo: vi.fn(),
+      removeDaemonInfo: vi.fn(),
+      startConsoleAdvertiser: vi.fn().mockReturnValue({ stop: vi.fn() }),
+    };
+
+    await main([], {} as NodeJS.ProcessEnv, deps);
+
+    const call = startRuntimeMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(call).not.toHaveProperty("mdnsWatcherOptions");
+
+    logSpy.mockRestore();
+  });
+
+  it("logs a warning, but does not throw, when opening the browser fails", async () => {
+    const startRuntimeMock = vi.fn().mockResolvedValue({ store: {}, reconciler: {}, telemetry: {}, mbregistryClient: {} as unknown as import("./mbregistry/client.js").MbregistryClient, mbregistryLabel: "test", stop: vi.fn() });
     const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: vi.fn().mockResolvedValue(undefined) });
     const openBrowserMock = vi.fn().mockRejectedValue(new Error("no display"));
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -992,7 +1071,7 @@ describe("cli: main -- SIGINT/SIGTERM shutdown", () => {
   function fakeServerAndRuntime() {
     const runtimeStopMock = vi.fn();
     const serverCloseMock = vi.fn().mockResolvedValue(undefined);
-    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: runtimeStopMock });
+    const startRuntimeMock = vi.fn().mockResolvedValue({ store: {}, reconciler: {}, telemetry: {}, mbregistryClient: {} as unknown as import("./mbregistry/client.js").MbregistryClient, mbregistryLabel: "test", stop: runtimeStopMock });
     const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: serverCloseMock });
     return { runtimeStopMock, serverCloseMock, startRuntimeMock, startServerMock };
   }
@@ -1103,7 +1182,7 @@ describe("cli: main -- SIGINT/SIGTERM shutdown", () => {
     );
     const runtimeStopMock = vi.fn();
     const exitMock = vi.fn();
-    const startRuntimeMock = vi.fn().mockReturnValue({ store: {}, reconciler: {}, telemetry: {}, stop: runtimeStopMock });
+    const startRuntimeMock = vi.fn().mockResolvedValue({ store: {}, reconciler: {}, telemetry: {}, mbregistryClient: {} as unknown as import("./mbregistry/client.js").MbregistryClient, mbregistryLabel: "test", stop: runtimeStopMock });
     const startServerMock = vi.fn().mockResolvedValue({ url: "http://127.0.0.1:4795", close: serverCloseMock });
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
 

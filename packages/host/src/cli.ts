@@ -264,6 +264,38 @@ function hasDumpStoreFlag(argv: readonly string[]): boolean {
   return argv.includes("--dump-store");
 }
 
+/** The legacy mDNS types (`_mbserial`/_mbflash`/`_mbrelay`) `ROBOT_CONSOLE_MDNS_LEGACY`
+ * accepts, in the same order `runtime.ts`'s own `DEFAULT_DISABLED_MDNS_TYPES` lists
+ * them. */
+const LEGACY_MDNS_TYPES = ["mbserial", "mbflash", "mbrelay"] as const;
+
+type LegacyMdnsType = (typeof LEGACY_MDNS_TYPES)[number];
+
+/** Team-lead decision, replay-guide.md §4 (2026-09-25): `_mbserial`/
+ * `_mbflash`/`_mbrelay` mDNS browsing stays disabled by default (sprint
+ * 018 ticket 006 -- `mbregistryWatcher` is the production discovery
+ * path now), but a farm that still needs one of those legacy paths
+ * turned back on (no code change, no rebuild) sets
+ * `ROBOT_CONSOLE_MDNS_LEGACY=mbserial,mbflash,mbrelay` (any subset, any
+ * order, whitespace-tolerant) -- each listed type is re-enabled;
+ * `_robotlink.*` (WiFi) is never in this list and is unaffected either
+ * way. Returns `undefined` (meaning "use `runtime.ts`'s own default,
+ * unchanged") when the env var is unset/empty, so a caller not using
+ * this env var sees no behavior change at all. */
+function mdnsLegacyTypesFromEnv(env: NodeJS.ProcessEnv): readonly LegacyMdnsType[] | undefined {
+  const raw = env.ROBOT_CONSOLE_MDNS_LEGACY;
+  if (raw === undefined || raw.trim().length === 0) {
+    return undefined;
+  }
+  const requested = new Set(
+    raw
+      .split(",")
+      .map((token) => token.trim().toLowerCase())
+      .filter((token) => token.length > 0),
+  );
+  return LEGACY_MDNS_TYPES.filter((type) => !requested.has(type));
+}
+
 /**
  * `--dump-store`: open a short-lived read-only connection (`debug/
  * dumpStore.ts`), print the JSON snapshot, and return -- no runtime, no
@@ -416,8 +448,24 @@ export async function main(
   // 018-010: the sweeper defaults off; `--sweep`/`ROBOT_CONSOLE_ENABLE_SWEEP`
   // is the explicit opt back in (`hasSweepFlag`'s own doc comment). An
   // explicit `deps.runtimeOptions.disableSweep` (a test's own override)
-  // still wins, since it spreads last.
-  const runtime = startRuntimeFn({ storeOptions: { env }, disableSweep: !hasSweepFlag(argv, env), ...deps.runtimeOptions });
+  // still wins, since it spreads last. Sprint 018 ticket 006:
+  // `startRuntime` is now `async` (it resolves/spawns and connects the
+  // mbregistry client before returning), so this is awaited -- a
+  // resolution/spawn failure here propagates out of `main` itself,
+  // exactly like a real `startServer` failure already did.
+  // Team-lead decision, replay-guide.md §4: `ROBOT_CONSOLE_MDNS_LEGACY`
+  // re-enables listed legacy mDNS types (see `mdnsLegacyTypesFromEnv`'s
+  // own doc comment). Omitted entirely when unset, so `runtime.ts`'s own
+  // `DEFAULT_DISABLED_MDNS_TYPES` default is untouched for the common
+  // case; an explicit `deps.runtimeOptions.mdnsWatcherOptions` (a test's
+  // own override) still wins, since it spreads last.
+  const mdnsLegacyDisabledTypes = mdnsLegacyTypesFromEnv(env);
+  const runtime = await startRuntimeFn({
+    storeOptions: { env },
+    disableSweep: !hasSweepFlag(argv, env),
+    ...(mdnsLegacyDisabledTypes !== undefined ? { mdnsWatcherOptions: { disabledTypes: mdnsLegacyDisabledTypes } } : {}),
+    ...deps.runtimeOptions,
+  });
 
   // Sprint 017 ticket 001: `getFirmwareConfig` reads `settings` via the
   // store, not `env`/a `.env` file directly, so it must be called after
@@ -432,6 +480,12 @@ export async function main(
       runtime,
       ...(port !== undefined ? { port } : {}),
       firmwareConfig,
+      // Sprint 018 ticket 006: the same already-connected mbregistry
+      // client/label `startRuntime` resolved and handed to the connector
+      // -- `server.ts#runFlashTask`'s `mbregistry`-transport branch uses
+      // this, not a second, separately-resolved client.
+      mbregistryClient: runtime.mbregistryClient,
+      mbregistryLabel: runtime.mbregistryLabel,
       // Sprint 019 ticket 004 (SUC-004): mounts the MCP Streamable HTTP
       // endpoint on this same server's own Express app -- see this
       // module's own doc comment, "MCP server", and `server.ts`'s doc

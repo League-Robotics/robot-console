@@ -1,7 +1,7 @@
 ---
 status: pending
 split_from: use-mbregistry-for-boards-locks-and-flashing.md
-sprint: 025
+sprint: '025'
 tickets:
 - 024-005
 - 024-009

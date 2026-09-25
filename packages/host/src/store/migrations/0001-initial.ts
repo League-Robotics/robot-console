@@ -30,7 +30,7 @@ CREATE INDEX devices_name ON devices(name);
 CREATE TABLE links (
   id            TEXT PRIMARY KEY,      -- opaque; never parsed by the UI
   device_id     INTEGER REFERENCES devices(id),   -- NULL until identified
-  transport     TEXT NOT NULL,         -- 'usb' | 'wifi' | 'radio' | 'mbrelay' | 'mbserial'
+  transport     TEXT NOT NULL,         -- 'usb' | 'wifi' | 'radio' | 'mbrelay' | 'mbserial' | 'mbregistry'
   address       TEXT NOT NULL,         -- JSON: {path,hidPath} | {host,port} | {relayLinkId,channel,group} | …
   state         TEXT NOT NULL,         -- see §5
   state_reason  TEXT,

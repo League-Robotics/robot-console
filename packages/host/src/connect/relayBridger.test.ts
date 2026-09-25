@@ -12,6 +12,7 @@ import {
   buildDefaultFailoverCandidates,
   chooseResetMethod,
   createRelayBridger,
+  mbregistryResetSequence,
   orderDefaultFailoverCandidateNames,
   resolveDefaultFailoverAddress,
   toBridgeRequest,
@@ -134,6 +135,40 @@ describe("chooseResetMethod", () => {
   it("always chooses reconnect for an mbrelay (TCP) relay, hidPath or not", () => {
     expect(chooseResetMethod(null, "mbrelay")).toBe("reconnect");
     expect(chooseResetMethod("/dev/hidraw3", "mbrelay")).toBe("reconnect");
+  });
+
+  it("always chooses the mbregistry reset method for an mbregistry-transport relay, hidPath or not (sprint 018 ticket 007)", () => {
+    expect(chooseResetMethod(null, "mbregistry")).toBe("mbregistry");
+    expect(chooseResetMethod("/dev/hidraw3", "mbregistry")).toBe("mbregistry");
+  });
+});
+
+describe("mbregistryResetSequence", () => {
+  it("throws a descriptive error when the stream has no sendBreak()", async () => {
+    const plainStream = new FakeByteStream();
+    await expect(mbregistryResetSequence(plainStream, new AbortController().signal)).rejects.toThrow(/no sendBreak/);
+  });
+
+  // Ticket 018-011 finding 4: the headline fix -- a relay already
+  // answering its command plane gets no BREAK at all.
+  it("sends no BREAK at all when the relay already answers its command plane (finding 4's own fix)", async () => {
+    const state = new RelayPlaneState();
+    const stream = new RelayPlaneByteStream(state, true);
+
+    await mbregistryResetSequence(stream, new AbortController().signal, realScheduler);
+
+    expect(state.resetCount).toBe(0);
+  });
+
+  it("falls back to BREAK when the relay does not answer (parked mid a prior session)", async () => {
+    const state = new RelayPlaneState();
+    state.inDataPlane = true; // Simulates a relay stuck past !GO from a prior attempt.
+    const stream = new RelayPlaneByteStream(state, true);
+
+    await mbregistryResetSequence(stream, new AbortController().signal, realScheduler);
+
+    expect(state.resetCount).toBe(1);
+    expect(state.inDataPlane).toBe(false); // sendBreak() resets it back to the command plane.
   });
 });
 
@@ -567,6 +602,133 @@ describe("createRelayBridger().bridge() -- TCP (mbrelay) reset via disconnect+re
     expect(session.linkId).toBe("mbrelay-vevov-via-relay");
     // The other bridge's lease is left exactly as it was.
     expect(store.reconcilerRows().relayLeases).toEqual([{ relayLinkId, owner: "session:mbrelay-other-via-relay" }]);
+    store.close();
+  }, 10_000);
+});
+
+// ---------------------------------------------------------------------
+// mbregistry-backed relay reset -- sprint 018 ticket 007. Reuses
+// `RelayPlaneByteStream` (it already implements `sendBreak()` for the
+// legacy usb/break tests above) as the fake `mbregistryStream` session --
+// this ticket's own reset primitive is the same `sendBreak()` call, just
+// dispatched to a different physical stream, so the same fixture proves
+// both the reset-happens-before-every-candidate behavior and the
+// one-lock-for-the-whole-attempt behavior below.
+// ---------------------------------------------------------------------
+
+function seedMbregistryRelay(store: Store, relayLinkId: string, endpoint: unknown = null, uid = "RELAY-UID"): void {
+  store.upsertLink({ id: relayLinkId, transport: "mbregistry", address: { endpoint, uid }, at: 1 });
+}
+
+describe("createRelayBridger().bridge() -- mbregistry-backed relay reset (sprint 018 ticket 007)", () => {
+  // Ticket 018-011 finding 4: `mbregistryResetSequence` now tries `sync()`
+  // before ever sending BREAK -- candidate 1 opens a *fresh, healthy*
+  // relay (never used before in this test), so its own reset step sends
+  // no BREAK at all; only candidate 2, which inherits the shared `state`
+  // left stuck past `!GO` by candidate 1's own failed attempt, actually
+  // needs (and gets) the BREAK fallback. Retitled/re-asserted from the
+  // pre-011 version, which asserted an unconditional BREAK before every
+  // candidate regardless of whether one was needed.
+  it("candidate 1 answers !GO but its robot never replies; candidate 2 succeeds only because the relay was reset first, via sendBreak() over mbregistryStream -- candidate 1's own reset step sent no BREAK, since the relay was already healthy", async () => {
+    const store = freshStore();
+    const relayLinkId = "mbregistry-RELAY";
+    seedMbregistryRelay(store, relayLinkId);
+
+    const state = new RelayPlaneState();
+    const robotAnswersByAttempt = [false, true];
+    let attemptIndex = 0;
+    const createMbregistryCalls: Array<{ kind: string }> = [];
+    const createMbregistryStream = (_address: unknown, kind: "relay"): RelayPlaneByteStream => {
+      createMbregistryCalls.push({ kind });
+      const stream = new RelayPlaneByteStream(state, robotAnswersByAttempt[attemptIndex] ?? false);
+      attemptIndex++;
+      return stream;
+    };
+
+    const bridger = createRelayBridger(
+      store,
+      { createMbregistryStream, scheduler: realScheduler, now: () => NOW },
+      FAST_OPTIONS,
+    );
+
+    const request: BridgeRequest = {
+      relayLinkId,
+      candidates: [
+        { childLinkId: "radio-cand1-via-relay", channel: 47, group: 60 },
+        { childLinkId: "radio-cand2-via-relay", channel: 49, group: 61 },
+      ],
+    };
+
+    const session = await bridger.bridge(request, new AbortController().signal);
+
+    expect(session.linkId).toBe("radio-cand2-via-relay");
+    expect(session.deviceId).toBe(ROBOT_SERIAL);
+    expect(session.transport).toBe("radio"); // a local (endpoint: null) mbregistry relay replaces the usb/radio path
+    // Finding 4's own fix: a reset is only sent to a candidate whose own
+    // sync() check found the relay NOT already answering -- candidate 1's
+    // fresh, healthy relay needed none; only candidate 2 (left stuck past
+    // !GO by candidate 1's own failed attempt) did.
+    expect(state.resetCount).toBe(1);
+    // Exactly one `createMbregistryStream` call per candidate attempt --
+    // the same stream/session is reused for both the reset and the data
+    // plane, never a second one for the reset step.
+    expect(createMbregistryCalls).toHaveLength(2);
+    expect(createMbregistryCalls.every((c) => c.kind === "relay")).toBe(true);
+
+    const leaseRows = store.reconcilerRows().relayLeases;
+    expect(leaseRows.find((l) => l.relayLinkId === relayLinkId)).toBeUndefined();
+    store.close();
+  }, 10_000);
+
+  it("a single-candidate mbregistry bridge opens exactly one mbregistry stream for the whole attempt -- no second lock for the reset step, and no BREAK when the relay is already healthy (finding 4)", async () => {
+    const store = freshStore();
+    const relayLinkId = "mbregistry-RELAY-SINGLE";
+    seedMbregistryRelay(store, relayLinkId);
+
+    let createMbregistryCalls = 0;
+    let sendBreakCalls = 0;
+    const createMbregistryStream = (): RelayPlaneByteStream => {
+      createMbregistryCalls++;
+      const stream = new RelayPlaneByteStream(new RelayPlaneState(), true);
+      const original = stream.sendBreak.bind(stream);
+      stream.sendBreak = async () => {
+        sendBreakCalls++;
+        return original();
+      };
+      return stream;
+    };
+
+    const bridger = createRelayBridger(store, { createMbregistryStream, scheduler: realScheduler, now: () => NOW }, FAST_OPTIONS);
+    const request: BridgeRequest = { relayLinkId, candidates: [{ childLinkId: "radio-a-via-relay", channel: 47, group: 60 }] };
+
+    const session = await bridger.bridge(request, new AbortController().signal);
+
+    expect(session.deviceId).toBe(ROBOT_SERIAL);
+    expect(session.transport).toBe("radio");
+    // Finding 4: this candidate's own relay is fresh/healthy (never used
+    // before in this test) -- its sync() check succeeds, so no BREAK is
+    // ever sent to it.
+    expect(sendBreakCalls).toBe(0);
+    // The headline AC (unchanged by finding 4): no second mbregistry
+    // connection/lock opened for the reset step -- one call covers
+    // reset-check + data for the attempt.
+    expect(createMbregistryCalls).toBe(1);
+    store.close();
+  }, 10_000);
+
+  it("an mbregistry relay with a remote endpoint bridges its child as mbrelay-transport, mirroring the mbrelay/TCP discovery path it replaces", async () => {
+    const store = freshStore();
+    const relayLinkId = "mbregistry-RELAY-REMOTE";
+    seedMbregistryRelay(store, relayLinkId, { host: "10.0.0.9", port: 5000 }, "REMOTE-UID");
+
+    const createMbregistryStream = (): RelayPlaneByteStream => new RelayPlaneByteStream(new RelayPlaneState(), true);
+    const bridger = createRelayBridger(store, { createMbregistryStream, scheduler: realScheduler, now: () => NOW }, FAST_OPTIONS);
+    const request: BridgeRequest = { relayLinkId, candidates: [{ childLinkId: "mbrelay-a-via-relay", channel: 47, group: 60 }] };
+
+    const session = await bridger.bridge(request, new AbortController().signal);
+
+    expect(session.deviceId).toBe(ROBOT_SERIAL);
+    expect(session.transport).toBe("mbrelay");
     store.close();
   }, 10_000);
 });

@@ -130,11 +130,22 @@ const hostPort = parsePort(argv, process.env);
 // `StartRuntimeOptions.disableSweep` doc comment). Before this change
 // the default was ON, so `npm run dev` swept idle relays; the
 // stakeholder asked for that to stop.
-const runtime = startRuntime();
+// Sprint 018 ticket 006: `startRuntime` is `async` now -- it
+// resolves/spawns and connects the mbregistry client before returning,
+// and a resolution/spawn failure must fail this script outright rather
+// than silently continuing with no `runtime` at all.
+const runtime = await startRuntime();
 const host = await startServer({
   store: runtime.store,
   runtime,
   port: hostPort,
+  // Sprint 018 ticket 006: the same already-connected mbregistry
+  // client/label `startRuntime` resolved and handed to the connector --
+  // `server.ts#runFlashTask`'s `mbregistry`-transport branch uses this,
+  // not a second, separately-resolved client. Mirrors `cli.ts`'s own
+  // `main()` wiring.
+  mbregistryClient: runtime.mbregistryClient,
+  mbregistryLabel: runtime.mbregistryLabel,
   // Same wiring as `cli.ts`'s own `main()`: `mountRoutes` runs
   // synchronously inside `startServer`, before the SPA catch-all is
   // registered, so the MCP route is never shadowed by it.
@@ -185,7 +196,7 @@ async function shutdown() {
   shuttingDown = true;
   console.log("\nrobot-console: shutting down...");
   await Promise.allSettled([vite.close(), host.close()]);
-  runtime.stop();
+  await runtime.stop();
   process.exit(0);
 }
 

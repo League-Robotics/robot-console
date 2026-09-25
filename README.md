@@ -13,6 +13,35 @@ on an older Node instead of installing something that later breaks).
 storage layer depends on, first shipped there. `.nvmrc`/`.node-version`
 pin `22` for `nvm`/`fnm`/similar version managers.
 
+**mbtools (`mbregistry`) is a separately installed prerequisite** as of
+sprint 018 — robot-console talks to boards, locks, and flashing through
+a local `mbregistry` daemon rather than opening USB/HID devices itself.
+It is not bundled and robot-console does not install it: install
+`mbtools` yourself (`League-Microbit/mbtools`), at least version
+`0.20260924.7` (`packages/host/src/mbregistry/client.ts`'s
+`MIN_MBREGISTRY_VERSION`). robot-console looks for the `mbregistry` executable on
+`$MBREGISTRY_BIN`, then `$PATH`, and starts its own instance
+automatically if none is already running (see that module's own doc
+comment for the resolution order) — there is no direct-USB fallback, so
+an outdated or missing `mbregistry` fails startup with a clear error
+naming the required version.
+
+Since `mbregistryWatcher` replaced `usbWatcher` as the production
+discovery path, the legacy mDNS-based discovery for a directly-attached
+board (`_mbserial._tcp`), the farm's own flash service (`_mbflash._tcp`),
+and a radio relay found over the network (`_mbrelay._tcp`) are all
+disabled by default (`_robotlink.*`/WiFi discovery is unaffected). A
+farm that still needs one of those legacy paths turned back on — without
+a code change or rebuild — sets `ROBOT_CONSOLE_MDNS_LEGACY` to a
+comma-separated list of the types to re-enable, e.g.:
+
+```sh
+ROBOT_CONSOLE_MDNS_LEGACY=mbserial,mbflash,mbrelay
+```
+
+Any subset, in any order, is accepted; whitespace around each name is
+ignored. Unset (the default) leaves all three disabled.
+
 This repository uses **git submodules** under `vendor/` for reference
 fixtures (`pxt-nezha-diffdrive`, `radio-robot-lib`) that the protocol
 test suite checks itself against. Clone with submodules included:

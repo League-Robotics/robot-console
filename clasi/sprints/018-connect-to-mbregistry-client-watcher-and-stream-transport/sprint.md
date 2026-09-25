@@ -1,7 +1,7 @@
 ---
 id: 018
 title: 'Connect to mbregistry: client, watcher and stream transport'
-status: ticketing
+status: executing
 branch: sprint/018-connect-to-mbregistry-client-watcher-and-stream-transport
 use-cases: []
 issues:

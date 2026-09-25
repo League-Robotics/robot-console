@@ -1,6 +1,8 @@
 ---
-status: pending
+status: done
 priority: urgent
+tickets:
+- 024-012
 ---
 
 # Reconcile two divergent robot-console lineages (UI regressed to Sep 12)

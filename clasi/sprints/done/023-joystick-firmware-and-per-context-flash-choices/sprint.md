@@ -1,7 +1,7 @@
 ---
 id: '023'
 title: Joystick firmware and per-context flash choices
-status: executing
+status: done
 branch: sprint/023-joystick-firmware-and-per-context-flash-choices
 use-cases: []
 issues: []

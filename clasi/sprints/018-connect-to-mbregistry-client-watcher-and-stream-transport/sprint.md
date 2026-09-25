@@ -743,10 +743,19 @@ Before tickets can be created, all of the following must be true:
 | 006 | Reconciler link preference + runtime assembly: mbregistry in, usbWatcher/mDNS branches disabled | 002, 004, 005 |
 | 007 | relayBridger: DTR/RTS/BREAK reset via mbregistryStream | 003, 004 |
 | 008 | Lock label/since display, stale-lock unlock hint, mbregistry.shareBoards setting | 001, 003 |
-| 009 | Bench/hardware verification: spawn case, system-instance case, two contending clients, flash local + remote | 001, 002, 003, 004, 005, 006, 007, 008 |
+| 009 | Bench/hardware verification: spawn case, system-instance case, two contending clients, flash local + remote | 001, 002, 003, 004, 005, 006, 007, 008, 010 |
+| 010 | Bench fixes: skip gone boards, spawn socket-path robustness | 001, 002 |
 
 Tickets execute serially in the order listed. Ticket 005 (flashing)
 is deliberately sequenced before ticket 006 (which disables
 `usbWatcher`) — see ticket 006's own frontmatter/Description and the
 Architecture section's Step 2 item 6 for why the dependency runs that
-direction.
+direction. Ticket 010 was added after the initial bench pass (ticket
+009) surfaced two fixes needed against a real mbregistry instance
+(`mbregistryWatcher` mishandling a `disconnected`/"gone" device's link
+state and kind classification, and `spawnMbregistry`'s socket-path
+length/error-reporting robustness); ticket 009 depends on it so the
+re-run bench pass exercises the fixed build. No architecture-document
+change is needed — both fixes are bug fixes within already-described
+modules (`mbregistryWatcher`, the mbregistry client), not new
+responsibilities or structural changes.

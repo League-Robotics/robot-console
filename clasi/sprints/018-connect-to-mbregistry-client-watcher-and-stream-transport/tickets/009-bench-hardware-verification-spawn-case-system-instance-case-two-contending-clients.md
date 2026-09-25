@@ -19,6 +19,7 @@ depends-on:
 - '006'
 - '007'
 - 008
+- '010'
 github-issue: ''
 issue:
 - use-mbregistry-for-boards-locks-and-flashing.md

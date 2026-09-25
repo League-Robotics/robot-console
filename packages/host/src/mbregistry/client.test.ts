@@ -186,8 +186,26 @@ function fakeChild(): ChildProcess & { stdout: EventEmitter; stderr: EventEmitte
 
 let tmpDirs: string[] = [];
 
+/** Base directory for a fresh test temp dir. `os.tmpdir()` on macOS
+ * resolves to a long, per-user `/var/folders/<hash>/<hash>/T` path; once
+ * this is used as a fake `$HOME` (the "step 2: standard client
+ * candidates" suite, via `clientSocketCandidates`'s own `homedirFn`
+ * seam), `userSocketPath()`'s derived
+ * `<home>/Library/Application Support/mbregistry/api.sock` routinely
+ * exceeds the ~104-byte `sun_path` limit `AF_UNIX` sockets impose on
+ * macOS/BSD, and `net.createServer().listen(path)` fails with `ENAMETOOLONG`
+ * (flaky only in the sense that it depends on how deep the OS happens to
+ * nest its own tmpdir — CI and other platforms are often short enough to
+ * pass). `/tmp` itself is always short on every non-Windows platform this
+ * project supports, so every test temp dir (not just this suite's own)
+ * is created under it instead — production code is untouched; this is a
+ * test-only fixture change. */
+function tmpBaseDir(): string {
+  return process.platform === "win32" ? os.tmpdir() : "/tmp";
+}
+
 function freshTmpDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mbregistry-client-test-"));
+  const dir = fs.mkdtempSync(path.join(tmpBaseDir(), "mb-"));
   tmpDirs.push(dir);
   return dir;
 }

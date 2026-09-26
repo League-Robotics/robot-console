@@ -1,9 +1,11 @@
 ---
 id: '002'
 title: Guard the mbregistry identify path against banner-driven device re-homing
-status: open
-use-cases: [SUC-002]
-depends-on: ['001']
+status: done
+use-cases:
+- SUC-002
+depends-on:
+- '001'
 github-issue: ''
 issue: gone-mbregistry-board-link-is-reattributed-to-the-next-board-on-its-port.md
 completes_issue: false
@@ -88,23 +90,23 @@ ticket's tests reflect the real `stale`-then-revive lifecycle.
 
 ## Acceptance Criteria
 
-- [ ] `connect/connector.ts`'s deviceId-mismatch guard (~line 1280)
+- [x] `connect/connector.ts`'s deviceId-mismatch guard (~line 1280)
       covers `mbregistry` as well as `usb`.
-- [ ] A banner arriving on an mbregistry link whose store-known
+- [x] A banner arriving on an mbregistry link whose store-known
       `deviceId` disagrees with the banner's own serial does not call
       `store.upsertDevice`/`store.upsertLink` with the new identity, and
       does not set `owned`/`connected` — it throws and records a
       failure via `recordFailure`, exactly like the existing usb case.
-- [ ] A first-time identify (link has no prior `deviceId`) on an
+- [x] A first-time identify (link has no prior `deviceId`) on an
       mbregistry link is unaffected — still identifies normally.
-- [ ] A `deviceDisplay.test.ts`/`FrontPage`-level regression: with the
+- [x] A `deviceDisplay.test.ts`/`FrontPage`-level regression: with the
       guard in place, a link that would previously have been re-homed
       (a `stale` sibling under the wrong device) is not present in
       `cardLinks()` for the wrong device — confirming the "two icons on
       one card" symptom does not recur now that the write never
       happens. (`cardLinks` itself needs no code change — see
       sprint.md's Architecture, item 3.)
-- [ ] No real hardware or real mbregistry daemon in any new test —
+- [x] No real hardware or real mbregistry daemon in any new test —
       fakes only (a fake `ByteStream`/`LineLink` producing a banner
       line, or a direct unit test of the guard condition).
 

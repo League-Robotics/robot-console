@@ -1562,4 +1562,107 @@ describe("connectAndIdentify -- mbregistry transport (sprint 018 ticket 004, SUC
     expect(stream.openCallCount).toBe(0);
     store.close();
   });
+
+  // -------------------------------------------------------------------
+  // 027-002: guard the mbregistry identify path against banner-driven
+  // device re-homing -- widens the usb-only SWD-mismatch guard above to
+  // also cover mbregistry, since `link.id` is stable/UID-keyed but the
+  // bytes on the stream come from whatever board is physically attached
+  // to that UID's last-known port right now (see
+  // gone-mbregistry-board-link-is-reattributed-to-the-next-board-on-its-port.md).
+  // -------------------------------------------------------------------
+
+  it("an mbregistry link already carrying a deviceId rejects a banner reporting a different serial -- no device upsert, owned never set, link failed with the registry-mismatch reason", async () => {
+    const store = freshStore();
+    const KNOWN_DEVICE_ID = 2665; // deviceIdToName(2665) === "tovez" -- any id distinct from ROBOT_SERIAL
+    const knownName = deviceIdToName(KNOWN_DEVICE_ID);
+    const link = mbregistryLink();
+    // Seed exactly what this link's own prior successful identify would
+    // have already written -- the store-known deviceId a stale banner
+    // read (from whatever board now sits on this UID's port) disagrees
+    // with.
+    store.upsertDevice({ id: KNOWN_DEVICE_ID, name: knownName, kind: "robot", at: 0 });
+    store.upsertLink({ id: link.id, transport: link.transport, address: link.address, deviceId: KNOWN_DEVICE_ID, at: 0 });
+
+    // The banner read over the mbregistry stream reports a DIFFERENT
+    // board entirely -- ROBOT_SERIAL/"vevov", not KNOWN_DEVICE_ID -- the
+    // "tigez took zugit's port" shape from the linked issue.
+    const stream = new BannerByteStream(ROBOT_BANNER);
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const linkWithDeviceId: LinkRow = { ...link, deviceId: KNOWN_DEVICE_ID };
+
+    const upsertDeviceSpy = vi.spyOn(store, "upsertDevice");
+    const upsertLinkSpy = vi.spyOn(store, "upsertLink");
+    const setOwnedSpy = vi.spyOn(store, "setOwned");
+
+    const promise = connector.connectAndIdentify(linkWithDeviceId, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await expect(promise).rejects.toThrow(
+      /banner identity vevov disagrees with this link's own known device tovez -- registry UID\/port mismatch, not this device/i,
+    );
+
+    // Neither upsert call was ever made with the banner's (wrong) new
+    // identity, and owned was never set for it.
+    expect(upsertDeviceSpy).not.toHaveBeenCalledWith(expect.objectContaining({ id: ROBOT_SERIAL }));
+    expect(upsertLinkSpy).not.toHaveBeenCalledWith(expect.objectContaining({ deviceId: ROBOT_SERIAL }));
+    expect(setOwnedSpy).not.toHaveBeenCalledWith(ROBOT_SERIAL, true, expect.anything());
+
+    const rows = store.snapshotRows();
+    // No new device row for the banner's own (wrong-board) serial.
+    expect(rows.devices.find((d) => d.id === ROBOT_SERIAL)).toBeUndefined();
+    // The link's own known device is untouched -- never marked owned by
+    // this rejected attempt.
+    const knownDevice = rows.devices.find((d) => d.id === KNOWN_DEVICE_ID);
+    expect(knownDevice?.owned).toBe(0);
+    const linkRow = rows.links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("failed");
+    expect(linkRow?.state_reason).toMatch(/banner identity vevov disagrees with this link's own known device tovez/);
+    // The link's own deviceId is left as it was -- never overwritten by
+    // the disagreeing banner.
+    expect(linkRow?.device_id).toBe(KNOWN_DEVICE_ID);
+    store.close();
+  });
+
+  it("an mbregistry link with a matching known deviceId (the ordinary re-identify case) still connects normally -- the cross-check is not a false positive", async () => {
+    const store = freshStore();
+    const link = mbregistryLink();
+    store.upsertDevice({ id: ROBOT_SERIAL, name: deviceIdToName(ROBOT_SERIAL), kind: "robot", at: 0 });
+    store.upsertLink({ id: link.id, transport: link.transport, address: link.address, deviceId: ROBOT_SERIAL, at: 0 });
+
+    const stream = new BannerByteStream(ROBOT_BANNER);
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const linkWithDeviceId: LinkRow = { ...link, deviceId: ROBOT_SERIAL };
+
+    const promise = connector.connectAndIdentify(linkWithDeviceId, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    const session = await promise;
+
+    expect(session.deviceId).toBe(ROBOT_SERIAL);
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("connected");
+    store.close();
+  });
+
+  it("an mbregistry link with no prior deviceId (first-time identify) is unaffected by the guard -- still identifies normally", async () => {
+    const store = freshStore();
+    const stream = new BannerByteStream(ROBOT_BANNER);
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const link = mbregistryLink();
+    seedLink(store, link); // no deviceId seeded -- this is a first-time identify
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    const session = await promise;
+
+    expect(session.deviceId).toBe(ROBOT_SERIAL);
+    const rows = store.snapshotRows();
+    expect(rows.devices.find((d) => d.id === ROBOT_SERIAL)).toBeDefined();
+    const linkRow = rows.links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("connected");
+    expect(linkRow?.device_id).toBe(ROBOT_SERIAL);
+    store.close();
+  });
 });

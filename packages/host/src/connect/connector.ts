@@ -1277,11 +1277,30 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
       // `state_reason`, per `deviceDisplay.ts`'s `linkStateText`) and
       // close the line link, exactly like every other identify failure
       // above.
-      if (link.transport === "usb" && link.deviceId !== undefined && link.deviceId !== null && link.deviceId !== banner.serial) {
+      //
+      // 027-002: the exact same hazard applies to `mbregistry`, by a
+      // different mechanism -- `link.id` is stable and keyed by UID
+      // (`mbregistry-<uid>`), but the bytes on that stream come from
+      // whatever board mbtools currently has physically attached to
+      // that UID's last-known port. A `stale` link that goes idle and
+      // is later re-attempted from scratch has no prior `deviceId`
+      // (ticket 001's `markGone` clears it), so this guard's existing
+      // "only once a link already has a prior identity" condition is
+      // unaffected by that legitimate re-identify path -- it only fires
+      // when a link that should still be who it was is suddenly told
+      // it's someone else.
+      if (
+        (link.transport === "usb" || link.transport === "mbregistry") &&
+        link.deviceId !== undefined &&
+        link.deviceId !== null &&
+        link.deviceId !== banner.serial
+      ) {
         void lineLink.close();
-        const swdName = deviceIdToName(link.deviceId);
+        const knownName = deviceIdToName(link.deviceId);
         const err = new Error(
-          `banner identity ${banner.name} disagrees with SWD name ${swdName} -- serial data corrupted, check the USB cable`,
+          link.transport === "usb"
+            ? `banner identity ${banner.name} disagrees with SWD name ${knownName} -- serial data corrupted, check the USB cable`
+            : `banner identity ${banner.name} disagrees with this link's own known device ${knownName} -- registry UID/port mismatch, not this device`,
         );
         recordFailure(store, link.id, err.message, now(), backoffCapMs);
         throw err;

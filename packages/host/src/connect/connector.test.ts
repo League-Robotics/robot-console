@@ -5,6 +5,7 @@ import type { ByteStream } from "../link/LineLink.js";
 import { FakeByteStream } from "../link/__fixtures__/FakeByteStream.js";
 import { realScheduler, type Scheduler } from "../link/pacing.js";
 import { deviceIdToName } from "@robot-console/protocol";
+import { MbregistryError } from "../mbregistry/client.js";
 import {
   createConnector,
   isKnownRelayUsbLink,
@@ -1663,6 +1664,91 @@ describe("connectAndIdentify -- mbregistry transport (sprint 018 ticket 004, SUC
     const linkRow = rows.links.find((l) => l.id === link.id);
     expect(linkRow?.state).toBe("connected");
     expect(linkRow?.device_id).toBe(ROBOT_SERIAL);
+    store.close();
+  });
+});
+
+// ---------------------------------------------------------------------
+// 027-003: mbtools 0.20260925.3's own fast "not_found" response for a
+// UID that isn't currently attached -- classified as `stale`, not run
+// through `recordFailure`'s backoff-and-retry `failed` path. See
+// `isMbregistryNotFound`'s own doc comment in connector.ts, and issue
+// `gone-mbregistry-board-link-is-reattributed-to-the-next-board-on-its-port.md`.
+// ---------------------------------------------------------------------
+
+describe("connectAndIdentify -- mbregistry not_found classification (027-003)", () => {
+  it("a MbregistryError(code: not_found) rejecting client.stream()/lock() marks the link stale, not failed -- no backoff fields written", async () => {
+    const store = freshStore();
+    const link = mbregistryLink();
+    seedLink(store, link);
+    // Seed a fail_count/next_retry_at as if a prior ordinary failure had
+    // already happened, so the assertion below (unchanged) actually
+    // proves this path never calls recordFailure, rather than just
+    // observing untouched defaults.
+    store.setLinkState({ id: link.id, state: "failed", at: 0, reason: "prior failure", failCount: 3, nextRetryAt: 5000 });
+
+    const stream = new FakeByteStream();
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const notFound = new MbregistryError("XYZ is not attached (last seen on /dev/ttyUSB3)", "not_found");
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.rejectOpen(notFound);
+
+    await expect(promise).rejects.toThrow(/XYZ is not attached \(last seen on \/dev\/ttyUSB3\)/);
+
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("stale");
+    expect(linkRow?.state_reason).toBe("XYZ is not attached (last seen on /dev/ttyUSB3)");
+    // No recordFailure call accompanied this -- fail_count/next_retry_at
+    // are left exactly as they were before this attempt (setLinkState's
+    // own `COALESCE(?, existing)` -- this classification never passes
+    // failCount/nextRetryAt at all).
+    expect(linkRow?.fail_count).toBe(3);
+    expect(linkRow?.next_retry_at).toBe(5000);
+    store.close();
+  });
+
+  it("a MbregistryError(code: locked) still flows through the existing recordFailure path unchanged", async () => {
+    const store = freshStore();
+    const link = mbregistryLink();
+    seedLink(store, link);
+
+    const stream = new FakeByteStream();
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const locked = new MbregistryError("in use", "locked", { holder: undefined });
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.rejectOpen(locked);
+
+    await expect(promise).rejects.toThrow(/in use/);
+
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("failed");
+    expect(linkRow?.fail_count).toBe(1);
+    expect(linkRow?.next_retry_at).not.toBeNull();
+    store.close();
+  });
+
+  it("an unrecognized MbregistryError code also flows through the existing recordFailure path unchanged", async () => {
+    const store = freshStore();
+    const link = mbregistryLink();
+    seedLink(store, link);
+
+    const stream = new FakeByteStream();
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const unknownCode = new MbregistryError("some other registry failure", "some_future_code");
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.rejectOpen(unknownCode);
+
+    await expect(promise).rejects.toThrow(/some other registry failure/);
+
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("failed");
+    expect(linkRow?.fail_count).toBe(1);
     store.close();
   });
 });

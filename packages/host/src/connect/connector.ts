@@ -123,7 +123,7 @@ import { LineLink, type ByteStream, type LineLinkOptions } from "../link/LineLin
 import { serialStream } from "../link/adapters/serialStream.js";
 import { tcpStream } from "../link/adapters/tcpStream.js";
 import { mbregistryStream } from "../link/adapters/mbregistryStream.js";
-import { parseHostPort, type MbregistryClient } from "../mbregistry/client.js";
+import { MbregistryError, parseHostPort, type MbregistryClient } from "../mbregistry/client.js";
 import { realScheduler, WritePacer, type Scheduler } from "../link/pacing.js";
 import {
   DEFAULT_IDENTIFY_BUDGET_MS,
@@ -876,6 +876,30 @@ export function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
 }
 
+/**
+ * 027-003: mbtools 0.20260925.3 fails `lock`/`stream` fast, with
+ * `MbregistryError` code `"not_found"`, against a UID that isn't
+ * currently attached. That is an affirmative "this board is gone" fact
+ * from mbtools itself, not a transient failure -- unlike every other
+ * identify failure this module records via {@link recordFailure}
+ * (exponential backoff, capped at `backoffCapMs`), a `not_found` link
+ * should never re-enter that retry loop, since retrying is guaranteed to
+ * hit the exact same fast-fail again. Live evidence (issue
+ * `gone-mbregistry-board-link-is-reattributed-...md`): a gone UID's link
+ * was retried three times, each attempt running out mbtools' own 60s
+ * no-progress watchdog before failing, instead of being recognized as
+ * gone on the first fast `not_found` response.
+ *
+ * `translateError` in `link/adapters/mbregistryStream.ts` already passes
+ * a `not_found` `MbregistryError` through unchanged (it only rewrites
+ * `"locked"`), so `.code` survives all the way to this module's own
+ * `lineLink.connect()` catch below -- this function is the one place
+ * that recognizes it.
+ */
+function isMbregistryNotFound(error: unknown): error is MbregistryError {
+  return error instanceof MbregistryError && error.code === "not_found";
+}
+
 // ---------------------------------------------------------------------
 // 018-008: mbserial/WiFi bridge contention -- distinct from a genuine
 // no-banner failure. See sprint 018's own bench facts: the farm bridges
@@ -1185,6 +1209,14 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
         await lineLink.connect({ timeoutMs: connectTimeoutMs, signal });
       } catch (error) {
         const err = toError(error);
+        // 027-003: mbtools' own "this UID is not attached" fact -- mark
+        // the link stale (mirrors `mbregistryWatcher.ts`'s `markGone`),
+        // never `recordFailure`'s backoff-and-retry path. See
+        // `isMbregistryNotFound`'s own doc comment.
+        if (isMbregistryNotFound(err)) {
+          store.setLinkState({ id: link.id, state: "stale", at: now(), reason: err.message });
+          throw err;
+        }
         // Sprint 019 ticket 001: a port-lock failure reaching here *after*
         // the takeover attempt above already ran cannot be our own
         // sweeper -- see the "Direct relay session-open sweep takeover"

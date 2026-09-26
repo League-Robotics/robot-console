@@ -1,9 +1,11 @@
 ---
 id: '003'
 title: Classify mbtools not_found as stale, not a retrying failure
-status: open
-use-cases: [SUC-003]
-depends-on: ['002']
+status: done
+use-cases:
+- SUC-003
+depends-on:
+- '002'
 github-issue: ''
 issue: gone-mbregistry-board-link-is-reattributed-to-the-next-board-on-its-port.md
 completes_issue: true
@@ -83,20 +85,20 @@ the line, per sprint.md's Design Rationale.
 
 ## Acceptance Criteria
 
-- [ ] A `MbregistryError` with `code === "not_found"` from
+- [x] A `MbregistryError` with `code === "not_found"` from
       `client.stream()`/`client.lock()` during an mbregistry identify
       attempt results in `store.setLinkState` writing `state: "stale"`,
       not `state: "failed"`.
-- [ ] No `next_retry_at`/`fail_count` write accompanies this path — it
+- [x] No `next_retry_at`/`fail_count` write accompanies this path — it
       is not a `recordFailure` call, so `plan()`'s own `isAutoConnectEligible`
       never sees a backoff-eligible `failed` link for this UID.
-- [ ] Every other `MbregistryError` code (e.g. `"locked"`, anything
+- [x] Every other `MbregistryError` code (e.g. `"locked"`, anything
       unrecognized) continues to flow through the existing
       `recordFailure` path unchanged.
-- [ ] A card-rendering regression alongside ticket 002's: a `not_found`-
+- [x] A card-rendering regression alongside ticket 002's: a `not_found`-
       classified (now `stale`) link does not appear in `cardLinks()` for
       any device.
-- [ ] Fakes only — a fake `MbregistryClient`/`MbregistryStreamOptions.client`
+- [x] Fakes only — a fake `MbregistryClient`/`MbregistryStreamOptions.client`
       that rejects `stream()`/`lock()` with `new MbregistryError(...,
       "not_found")`. No real mbregistry daemon.
 

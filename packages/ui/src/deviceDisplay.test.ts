@@ -999,6 +999,29 @@ describe("cardLinks / hiddenLinkCount", () => {
     expect(hiddenLinkCount(zugit)).toBe(1);
   });
 
+  // 027-003: mbtools' own fast `not_found` response for a UID that isn't
+  // attached is classified by `connect/connector.ts`'s `attempt()` as
+  // `state: "stale"` (not `recordFailure`'s `"failed"`) -- see
+  // `isMbregistryNotFound`'s own doc comment there. This is the same
+  // `cardLinks()` filter as the 027-002 case above; the fix is entirely
+  // upstream in the connector's failure classification, not here.
+  it("hides an mbregistry link classified stale from a not_found identify failure -- confirms the connector's not_found-to-stale reclassification actually keeps the link off the card", () => {
+    const gone = device({
+      name: "gone",
+      links: [
+        link({
+          id: "mbregistry-GONE-UID",
+          transport: "mbregistry",
+          state: "stale",
+          reason: "GONE-UID is not attached (last seen on /dev/ttyUSB3)",
+          label: "mbregistry · GONE-UID",
+        }),
+      ],
+    });
+    expect(cardLinks(gone)).toHaveLength(0);
+    expect(hiddenLinkCount(gone)).toBe(1);
+  });
+
   it("hiddenLinkCount is 0 when nothing was hidden", () => {
     expect(hiddenLinkCount(device({ links: [link({ state: "connectable" })] }))).toBe(0);
   });

@@ -1,8 +1,9 @@
 ---
 id: '002'
 title: Document where to download the .deb in docs/linux-install.md
-status: open
-use-cases: [SUC-003]
+status: done
+use-cases:
+- SUC-003
 depends-on: []
 github-issue: ''
 issue: release-linux-deb-via-github-actions.md
@@ -23,21 +24,21 @@ step.
 
 ## Acceptance Criteria
 
-- [ ] `docs/linux-install.md` states where to get the `.deb`: the
+- [x] `docs/linux-install.md` states where to get the `.deb`: the
       Releases page for `League-Robotics/robot-console`
       (`https://github.com/League-Robotics/robot-console/releases`),
       placed before the existing `sudo apt install ./robot-console_...`
       step so the download step isn't left unstated.
-- [ ] Includes the `gh` CLI one-liner:
+- [x] Includes the `gh` CLI one-liner:
       `gh release download --repo League-Robotics/robot-console --pattern '*.deb'`.
-- [ ] Mentions the published `.sha256` file and gives a one-line
+- [x] Mentions the published `.sha256` file and gives a one-line
       verification example (e.g. `sha256sum -c robot-console_<version>_amd64.deb.sha256`),
       since the release now always publishes one alongside the `.deb`.
-- [ ] The edit is additive and minimal — no unrelated section is
+- [x] The edit is additive and minimal — no unrelated section is
       restructured or removed; the rest of the document (Prerequisites,
       First launch, Firmware sources, Troubleshooting, etc.) is
       untouched.
-- [ ] Markdown renders correctly (fenced code blocks, no broken links).
+- [x] Markdown renders correctly (fenced code blocks, no broken links).
 
 ## Implementation Plan
 

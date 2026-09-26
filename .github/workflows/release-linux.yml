@@ -1,0 +1,162 @@
+name: Release Linux .deb
+
+# Release triggers: a `v*` tag push, or a manual dispatch naming an
+# existing tag, both of which build, install-test, and publish (or
+# idempotently update) a GitHub Release for that tag.
+#
+# Build-only triggers: push to `main` or any `sprint/**` branch, and
+# pull_request into `main`. These build and install-test the .deb and
+# upload it as a workflow artifact, but never publish a release — see
+# the `publish` job's `if:` below.
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+      - 'sprint/**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and release (e.g. v0.20260925.4)'
+        required: true
+        type: string
+
+# Least-privilege default; the publish job elevates to contents:write.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and install-test the .deb
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      is_release: ${{ steps.resolve.outputs.is_release }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.version_check.outputs.version }}
+      deb_name: ${{ steps.locate.outputs.deb_name }}
+      artifact_name: robot-console-deb-${{ github.run_id }}
+    steps:
+      - name: Resolve release tag (if any)
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$DISPATCH_TAG"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag=""
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ -n "$tag" ]; then
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Empty ref falls back to actions/checkout's own default (the
+          # triggering ref/SHA), which is correct for build-only runs.
+          # For a release run this is the resolved tag, whose commit may
+          # predate this workflow file itself (workflow_dispatch always
+          # runs the workflow *definition* from the default branch).
+          ref: ${{ steps.resolve.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Cache packaging downloads
+        uses: actions/cache@v4
+        with:
+          path: build/linux/cache
+          key: linux-deb-cache-${{ hashFiles('packaging/linux/pins.env') }}
+          restore-keys: |
+            linux-deb-cache-
+
+      - name: Build and install-test the .deb
+        run: scripts/package-linux.sh --test
+
+      - name: Assert package.json version matches the resolved tag
+        if: steps.resolve.outputs.is_release == 'true'
+        id: version_check
+        env:
+          RESOLVED_TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          pkg_version=$(git show HEAD:package.json | sed -n 's/^  "version": "\([^"]*\)",*$/\1/p' | head -1)
+          expected="${RESOLVED_TAG#v}"
+          if [ "$pkg_version" != "$expected" ]; then
+            echo "package.json version ($pkg_version) at $RESOLVED_TAG does not match the tag (expected $expected)" >&2
+            exit 1
+          fi
+          echo "package.json version $pkg_version matches tag $RESOLVED_TAG"
+          echo "version=$pkg_version" >> "$GITHUB_OUTPUT"
+
+      - name: Locate built package
+        id: locate
+        run: |
+          deb=$(ls dist/*.deb)
+          echo "deb_path=$deb" >> "$GITHUB_OUTPUT"
+          echo "deb_name=$(basename "$deb")" >> "$GITHUB_OUTPUT"
+
+      - name: Generate checksum
+        working-directory: dist
+        env:
+          DEB_NAME: ${{ steps.locate.outputs.deb_name }}
+        run: |
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$DEB_NAME" > "$DEB_NAME.sha256"
+          else
+            shasum -a 256 "$DEB_NAME" > "$DEB_NAME.sha256"
+          fi
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: robot-console-deb-${{ github.run_id }}
+          path: |
+            dist/*.deb
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    if: needs.build.outputs.is_release == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: release-linux-${{ needs.build.outputs.tag }}
+      cancel-in-progress: false
+    steps:
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: dist
+
+      - name: Publish or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          DEB_NAME: ${{ needs.build.outputs.deb_name }}
+        run: |
+          assets=("dist/$DEB_NAME" "dist/$DEB_NAME.sha256")
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$TAG" "${assets[@]}" \
+              --title "robot-console $VERSION" --generate-notes --verify-tag
+          fi

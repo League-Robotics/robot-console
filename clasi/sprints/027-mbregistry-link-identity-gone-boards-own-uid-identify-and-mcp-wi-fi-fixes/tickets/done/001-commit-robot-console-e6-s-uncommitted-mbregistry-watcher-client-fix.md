@@ -1,7 +1,7 @@
 ---
 id: '001'
 title: Commit robot-console-e6's uncommitted mbregistry watcher/client fix
-status: in-progress
+status: done
 use-cases:
 - SUC-001
 depends-on: []
@@ -54,20 +54,20 @@ inventing a second one.
 
 ## Acceptance Criteria
 
-- [ ] `packages/host/src/mbregistry/client.ts` and
+- [x] `packages/host/src/mbregistry/client.ts` and
       `packages/host/src/watchers/mbregistryWatcher.ts`'s uncommitted
       changes are committed with no functional changes from their
       current working-tree state (a mechanical `git add`/`git commit`,
       not a rewrite).
-- [ ] `packages/host/src/watchers/mbregistryWatcher.test.ts` (as already
+- [x] `packages/host/src/watchers/mbregistryWatcher.test.ts` (as already
       written, uncommitted) is committed alongside them and passes.
-- [ ] `tsc` is clean across `packages/host` (and any other package the
+- [x] `tsc` is clean across `packages/host` (and any other package the
       type-only `LinkState` import change in `mbregistryWatcher.ts`
       touches).
-- [ ] The commit message credits robot-console-e6 as the fix's author
+- [x] The commit message credits robot-console-e6 as the fix's author
       (e.g. a trailer or a sentence naming the out-of-process session),
       per this sprint's Solution section.
-- [ ] No other file changes ride along in this commit — this ticket is
+- [x] No other file changes ride along in this commit — this ticket is
       scoped to exactly the three files above.
 
 ## Testing

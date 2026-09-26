@@ -1,7 +1,7 @@
 ---
 id: '001'
 title: Add --version option to console CLIs
-status: open
+status: done
 use-cases: []
 depends-on: []
 github-issue: ''
@@ -23,19 +23,19 @@ repo checkout and a global `npm link` install.
 
 ## Acceptance Criteria
 
-- [ ] `rconsole --version`, `rconsole -V`, and `rconsole version` print
+- [x] `rconsole --version`, `rconsole -V`, and `rconsole version` print
       `rconsole <version>` and exit 0. The option is listed in
       `rconsole help`.
-- [ ] `robot-console --version` / `-V` prints `robot-console <version>`
+- [x] `robot-console --version` / `-V` prints `robot-console <version>`
       and exits 0 **without** starting the host, opening a store, or
       contacting mbregistry.
-- [ ] `robot-console-supervisor --version` does the same, if it parses
+- [x] `robot-console-supervisor --version` does the same, if it parses
       arguments.
-- [ ] The version comes from the root `package.json` (the value
+- [x] The version comes from the root `package.json` (the value
       `close_sprint` bumps, e.g. `0.20260925.2`), resolved at runtime
       relative to the package, correct both from the repo and from a
       global `npm link` install.
-- [ ] Tests exist for each command, including one showing
+- [x] Tests exist for each command, including one showing
       `robot-console --version` does not start anything.
 
 ## Implementation Plan

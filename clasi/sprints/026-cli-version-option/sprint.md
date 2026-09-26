@@ -1,7 +1,7 @@
 ---
 id: '026'
 title: CLI --version option
-status: ticketing
+status: executing
 branch: sprint/026-cli-version-option
 use-cases: []
 issues: []

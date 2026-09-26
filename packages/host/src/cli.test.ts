@@ -27,8 +27,73 @@ import { main, type CliDeps } from "./cli.js";
 import { PortInUseError } from "./server.js";
 import type { StartRuntimeOptions } from "./runtime.js";
 import type { StoreSnapshot } from "./store/index.js";
+import { getCliVersion } from "./cliVersion.js";
+import * as daemonCli from "./daemon/cli.js";
 
 const EMPTY_SNAPSHOT: StoreSnapshot = { devices: [], links: [], services: [], sessions: [], tasks: [] };
+
+describe("cli: main -- --version / -V (sprint 026 ticket 001)", () => {
+  it.each(["--version", "-V"])("%s prints 'robot-console <version>' and starts nothing", async (flag) => {
+    const dumpStoreMock = vi.fn().mockReturnValue(EMPTY_SNAPSHOT);
+    const startRuntimeMock = vi.fn();
+    const startServerMock = vi.fn();
+    const startMcpServerMock = vi.fn();
+    const getFirmwareConfigMock = vi.fn();
+    const probeHostInfoMock = vi.fn();
+    const openBrowserMock = vi.fn().mockResolvedValue(undefined);
+    const writeDaemonInfoMock = vi.fn();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const deps: CliDeps = {
+      dumpStore: dumpStoreMock,
+      startRuntime: startRuntimeMock,
+      startServer: startServerMock,
+      startMcpServer: startMcpServerMock,
+      getFirmwareConfig: getFirmwareConfigMock,
+      probeHostInfo: probeHostInfoMock,
+      openBrowser: openBrowserMock,
+      writeDaemonInfo: writeDaemonInfoMock,
+    };
+
+    await main([flag], process.env, deps);
+
+    expect(logSpy).toHaveBeenCalledWith(`robot-console ${getCliVersion()}`);
+    // The whole point of this flag: it must never touch the runtime, the
+    // store (via startRuntime), mbregistry (also via startRuntime -- see
+    // this module's own doc comment), or the server/MCP wiring that
+    // depends on them -- not even --dump-store's own read-only store
+    // open.
+    expect(startRuntimeMock).not.toHaveBeenCalled();
+    expect(startServerMock).not.toHaveBeenCalled();
+    expect(startMcpServerMock).not.toHaveBeenCalled();
+    expect(getFirmwareConfigMock).not.toHaveBeenCalled();
+    expect(probeHostInfoMock).not.toHaveBeenCalled();
+    expect(openBrowserMock).not.toHaveBeenCalled();
+    expect(writeDaemonInfoMock).not.toHaveBeenCalled();
+    expect(dumpStoreMock).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+  });
+
+  it("takes priority over the daemon start/stop/status/open subcommand dispatch", async () => {
+    // Not a realistic invocation (argv[0] can only be one token), but
+    // proves the version check really is the first thing main() does --
+    // even a token that would otherwise dispatch to daemon/cli.ts is
+    // irrelevant once argv also includes --version.
+    const startRuntimeMock = vi.fn();
+    const runStartSpy = vi.spyOn(daemonCli, "runStart");
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await main(["start", "--version"], process.env, { startRuntime: startRuntimeMock });
+
+    expect(logSpy).toHaveBeenCalledWith(`robot-console ${getCliVersion()}`);
+    expect(startRuntimeMock).not.toHaveBeenCalled();
+    expect(runStartSpy).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+    runStartSpy.mockRestore();
+  });
+});
 
 describe("cli: main -- --dump-store", () => {
   it("prints the formatted snapshot and touches no other collaborator", async () => {

@@ -29,11 +29,13 @@
  */
 import { runStart, runStop, runStatus, runOpen, type DaemonCliDeps } from "../daemon/cli.js";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions.js";
+import { getCliVersion } from "../cliVersion.js";
 
 /** What {@link runRconsole} decided to do, for tests and for callers that
  * want to set an exit code without re-parsing stdout. */
 export type RconsoleOutcome =
   | { outcome: "help" }
+  | { outcome: "version"; version: string }
   | { outcome: "agent" }
   | { outcome: "started"; url: string }
   | { outcome: "already-running"; url: string }
@@ -61,6 +63,8 @@ Usage:
   rconsole ui              Open the user interface for a running host.
   rconsole agent           Print instructions for an AI agent.
   rconsole help            Print this message.
+  rconsole version         Print the version and exit; --version and
+                           -V do the same.
 
 Notes:
   There is only ever one host. Running rconsole again attaches to the
@@ -127,6 +131,13 @@ export async function runRconsole(
     case "agent": {
       out(AGENT_INSTRUCTIONS);
       return { outcome: "agent" };
+    }
+    case "version":
+    case "--version":
+    case "-V": {
+      const version = getCliVersion();
+      out(`rconsole ${version}`);
+      return { outcome: "version", version };
     }
     case "start": {
       const result = await runStart(daemonDeps(deps));

@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { runRconsole, HELP_TEXT } from "./cli.js";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions.js";
 import * as daemonCli from "../daemon/cli.js";
+import { getCliVersion } from "../cliVersion.js";
 
 // `rconsole` owns no logic beyond composition, so these tests assert
 // exactly that: which daemon function each verb calls, in what order,
@@ -180,6 +181,27 @@ describe("runRconsole", () => {
     expect(result).toEqual({ outcome: "unknown-command", command: "frobnicate" });
     expect(sink.lines.join("\n")).toContain('unknown command "frobnicate"');
     expect(sink.lines.join("\n")).toContain("Usage:");
+  });
+
+  it("`version`, `--version`, and `-V` all print `rconsole <version>` and touch no daemon function", async () => {
+    const start = vi.spyOn(daemonCli, "runStart");
+    const version = getCliVersion();
+
+    for (const arg of ["version", "--version", "-V"]) {
+      const sink = collect();
+
+      const result = await runRconsole([arg], { write: sink.write });
+
+      expect(result).toEqual({ outcome: "version", version });
+      expect(sink.lines).toEqual([`rconsole ${version}`]);
+    }
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("`rconsole help` lists the version option", () => {
+    expect(HELP_TEXT).toMatch(/version/);
+    expect(HELP_TEXT).toContain("--version");
+    expect(HELP_TEXT).toContain("-V");
   });
 });
 

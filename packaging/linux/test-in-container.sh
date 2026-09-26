@@ -212,6 +212,22 @@ firmware_ok() {
 ########################################################################
 log "Phase A: install into a minimal container (nothing running)"
 apt-get update -qq >/dev/null
+
+# mbtools (mbregistry) is a separately installed prerequisite robot-console
+# does not bundle (see README): the host has no direct-USB fallback and
+# fails startup without an `mbregistry` binary on $PATH. Install it here,
+# before the supervisor is ever started below, the same way an admin would
+# (packaging/deb/install-mbtools.sh from League-Microbit/mbtools, pinned to
+# MBTOOLS_VERSION in pins.env). Idempotent and safe to run as plain root
+# (no sudo) since this container has no systemd running yet -- its postinst
+# skips the `systemctl enable/restart mbregistry.service` step in that case
+# (guarded on `/run/systemd/system`), so this only installs the binaries.
+apt-get install -y -q --no-install-recommends curl ca-certificates >/dev/null
+log "installing mbtools $MBTOOLS_VERSION (mbregistry) -- required for the host to start"
+curl -fsSL https://raw.githubusercontent.com/League-Microbit/mbtools/main/packaging/deb/install-mbtools.sh \
+  | sh -s -- "$MBTOOLS_VERSION"
+check "A: mbregistry is on \$PATH after installing mbtools" sh -c 'command -v mbregistry'
+
 check "A: apt-get install ./deb" apt-get install -y -q "$DEB"
 check "A: package status is installed" installed
 dpkg-query -W -f='Package: ${Package}\nVersion: ${Version}\nDepends: ${Depends}\nRecommends: ${Recommends}\nInstalled-Size: ${Installed-Size} KiB\n' robot-console

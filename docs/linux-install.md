@@ -13,6 +13,38 @@ needs installing except Google Chrome.
 - An admin account to install (`sudo`). Students don't need admin rights or
   group membership to use the micro:bits.
 
+## Download
+
+Get the `.deb` from the [Releases page](https://github.com/League-Robotics/robot-console/releases)
+for `League-Robotics/robot-console`. Each tagged release publishes one `.deb`,
+named with the package version and a Debian revision, for example
+`robot-console_0.20260925.4-1_amd64.deb`, plus a matching `.sha256` file.
+
+- **Browser.** Open the Releases page, pick the latest release, and download
+  the `.deb` asset (and its `.sha256` file, to verify below).
+- **Command line.** The asset name is versioned, so there's no fixed "latest"
+  download URL; read the current version and revision off the Releases page
+  and substitute them below (`wget` is preinstalled on a default Ubuntu
+  desktop; `curl` isn't — see "Files, logs and state" below):
+
+  ```sh
+  wget https://github.com/League-Robotics/robot-console/releases/download/v<version>/robot-console_<version>-<release>_amd64.deb
+  wget https://github.com/League-Robotics/robot-console/releases/download/v<version>/robot-console_<version>-<release>_amd64.deb.sha256
+  ```
+
+- **`gh` CLI.** Downloads the latest release's assets without needing to look
+  up the version:
+
+  ```sh
+  gh release download --repo League-Robotics/robot-console --pattern '*.deb' --pattern '*.sha256'
+  ```
+
+Verify the download before installing:
+
+```sh
+sha256sum -c robot-console_*.sha256
+```
+
 ## Install
 
 ```sh

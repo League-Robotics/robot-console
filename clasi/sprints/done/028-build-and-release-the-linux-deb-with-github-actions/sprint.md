@@ -1,7 +1,7 @@
 ---
 id: 028
 title: Build and release the Linux .deb with GitHub Actions
-status: executing
+status: done
 branch: sprint/028-build-and-release-the-linux-deb-with-github-actions
 use-cases: []
 issues:

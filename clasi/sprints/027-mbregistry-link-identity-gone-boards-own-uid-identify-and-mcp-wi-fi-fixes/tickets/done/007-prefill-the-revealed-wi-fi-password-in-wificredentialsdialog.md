@@ -1,8 +1,9 @@
 ---
 id: '007'
 title: Prefill the revealed Wi-Fi password in WifiCredentialsDialog
-status: open
-use-cases: [SUC-007]
+status: done
+use-cases:
+- SUC-007
 depends-on: []
 github-issue: ''
 issue: wifi-dialog-show-hide-has-nothing-to-show.md
@@ -81,17 +82,17 @@ left unchanged.
 
 ## Acceptance Criteria
 
-- [ ] Opening `WifiCredentialsDialog` sends `get-wifi-credentials` with
+- [x] Opening `WifiCredentialsDialog` sends `get-wifi-credentials` with
       `reveal: true`.
-- [ ] When the host has a saved password for the current network, the
+- [x] When the host has a saved password for the current network, the
       dialog's password field is prefilled with it on open (once,
       without clobbering user input already typed into the field).
-- [ ] The Show/Hide toggle, applied to the prefilled value, reveals the
+- [x] The Show/Hide toggle, applied to the prefilled value, reveals the
       real saved password — not an empty string.
-- [ ] `WifiCredentialsFormStored` gains a `password?: string` field;
+- [x] `WifiCredentialsFormStored` gains a `password?: string` field;
       `WifiCredentialsForm.tsx`'s own rendering is otherwise unchanged.
-- [ ] `ConfigurationPage.tsx` is untouched by this ticket.
-- [ ] `server.ts`'s `get-wifi-credentials` handler is untouched (it
+- [x] `ConfigurationPage.tsx` is untouched by this ticket.
+- [x] `server.ts`'s `get-wifi-credentials` handler is untouched (it
       already supports `reveal` correctly) — this ticket is UI-only.
 
 ## Testing

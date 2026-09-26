@@ -74,7 +74,7 @@ describe("WifiCredentialsDialog", () => {
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="wifi-credentials-trigger"]')!.click();
     });
-    expect(sent(socket)).toEqual([{ type: "get-wifi-credentials" }]);
+    expect(sent(socket)).toEqual([{ type: "get-wifi-credentials", reveal: true }]);
     act(() => {
       socket.emitMessage({ type: "wifi-credentials", ssid: "Busboom_Garage", hasPassword: true, source: "env", seq: 1 });
     });
@@ -145,8 +145,60 @@ describe("WifiCredentialsDialog", () => {
       el.querySelector<HTMLButtonElement>('[data-testid="wifi-write"]')!.click();
     });
     expect(el.querySelector('[data-testid="wifi-error"]')?.textContent).toContain("spaces");
-    expect(sent(socket)).toEqual([{ type: "get-wifi-credentials" }]);
+    expect(sent(socket)).toEqual([{ type: "get-wifi-credentials", reveal: true }]);
     expect(el.textContent).not.toContain("topsecret");
+  });
+
+  it("prefills the revealed password on open, and Show/Hide toggles its type without changing the value", () => {
+    const { el, socket } = mountWifi();
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="wifi-credentials-trigger"]')!.click();
+    });
+    expect(sent(socket)).toEqual([{ type: "get-wifi-credentials", reveal: true }]);
+    act(() => {
+      socket.emitMessage({
+        type: "wifi-credentials",
+        ssid: "Busboom_Garage",
+        hasPassword: true,
+        source: "stored",
+        password: "secret",
+        seq: 1,
+      });
+    });
+    const passwordInput = el.querySelector<HTMLInputElement>('[data-testid="wifi-password"]')!;
+    expect(passwordInput.value).toBe("secret");
+    expect(passwordInput.type).toBe("text");
+
+    act(() => {
+      el.querySelector<HTMLButtonElement>(".credentials-show")!.click();
+    });
+    expect(passwordInput.type).toBe("password");
+    expect(passwordInput.value).toBe("secret");
+
+    act(() => {
+      el.querySelector<HTMLButtonElement>(".credentials-show")!.click();
+    });
+    expect(passwordInput.type).toBe("text");
+    expect(passwordInput.value).toBe("secret");
+  });
+
+  it("does not clobber a password the user already started typing when the reveal reply arrives", () => {
+    const { el, socket } = mountWifi();
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="wifi-credentials-trigger"]')!.click();
+    });
+    type(el, '[data-testid="wifi-password"]', "typed-already");
+    act(() => {
+      socket.emitMessage({
+        type: "wifi-credentials",
+        ssid: "Busboom_Garage",
+        hasPassword: true,
+        source: "stored",
+        password: "secret",
+        seq: 1,
+      });
+    });
+    expect(el.querySelector<HTMLInputElement>('[data-testid="wifi-password"]')!.value).toBe("typed-already");
   });
 
   it("disables the write button without an open link", () => {

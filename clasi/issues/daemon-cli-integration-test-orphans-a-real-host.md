@@ -20,3 +20,14 @@ the locks on the local robot and joystick, so every other client saw
 - Run the test host against an isolated state dir and with no registry
   access (for example `ROBOT_CONSOLE_MBREGISTRY` pointed at a dead socket),
   so it can never lock real boards.
+
+## Also: the unit tests see a real running console
+
+Seen 2026-09-25 while closing sprint 026. With a real console running
+(`rconsole start`, port 4795), `daemon/cli.test.ts` "runStart … throws a
+clear, log-pointing error if the spawned child never becomes ready" failed.
+The test read the real daemon-info file from the user's state dir and
+reported "…4795/api/host-info did not respond — not starting a second
+instance". It passes with the console stopped. The daemon tests must use an
+isolated state dir (`ROBOT_CONSOLE_STATE_DIR`) and never read the user's
+daemon-info file.

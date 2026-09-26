@@ -50,10 +50,22 @@ const DRIVE_LINK_ID = "mbserial-e2e-robot";
 const DRIVE_DEVICE_ID = 42424242;
 const DRIVE_DEVICE_NAME = deviceIdToName(DRIVE_DEVICE_ID);
 
+/** `onInboundLine`/`onAckNack` default to a no-op subscription (never
+ * fires, returns a plain unsubscribe) -- 027-006's `send_command` now
+ * calls `sendCommandWithReply`, which subscribes both unconditionally
+ * before every send (`connect/sessionOps.ts`'s own doc comment); a real
+ * `ConnectedSession.link` is always a `LineLink` instance (see
+ * `connect/connector.ts`/`connect/relayBridger.ts`'s own construction
+ * sites), which always exposes them for every transport, so this fake
+ * mirrors that shape rather than a narrower one that would make this
+ * end-to-end suite the odd one out among `connect/sessionOps.test.ts`/
+ * `mcp/tools/connect.test.ts`'s own `fakeSession` helpers. */
 function fakeSession(overrides: { sendCommand?: ReturnType<typeof vi.fn>; sendUnsequencedQuery?: ReturnType<typeof vi.fn> } = {}): ConnectedSession {
   const link = {
     sendCommand: overrides.sendCommand ?? vi.fn(() => "OK\n"),
     sendUnsequencedQuery: overrides.sendUnsequencedQuery ?? vi.fn(() => "OK\n"),
+    onInboundLine: vi.fn(() => () => {}),
+    onAckNack: vi.fn(() => () => {}),
   };
   return { linkId: DRIVE_LINK_ID, deviceId: DRIVE_DEVICE_ID, transport: "mbserial", link, classification: { type: "robot" } } as unknown as ConnectedSession;
 }

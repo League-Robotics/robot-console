@@ -5,6 +5,7 @@ import type { ByteStream } from "../link/LineLink.js";
 import { FakeByteStream } from "../link/__fixtures__/FakeByteStream.js";
 import { realScheduler, type Scheduler } from "../link/pacing.js";
 import { deviceIdToName } from "@robot-console/protocol";
+import { MbregistryError } from "../mbregistry/client.js";
 import {
   createConnector,
   isKnownRelayUsbLink,
@@ -1560,6 +1561,263 @@ describe("connectAndIdentify -- mbregistry transport (sprint 018 ticket 004, SUC
       /mbregistry\) address missing/,
     );
     expect(stream.openCallCount).toBe(0);
+    store.close();
+  });
+
+  // -------------------------------------------------------------------
+  // 027-002: guard the mbregistry identify path against banner-driven
+  // device re-homing -- widens the usb-only SWD-mismatch guard above to
+  // also cover mbregistry, since `link.id` is stable/UID-keyed but the
+  // bytes on the stream come from whatever board is physically attached
+  // to that UID's last-known port right now (see
+  // gone-mbregistry-board-link-is-reattributed-to-the-next-board-on-its-port.md).
+  // -------------------------------------------------------------------
+
+  it("an mbregistry link already carrying a deviceId rejects a banner reporting a different serial -- no device upsert, owned never set, link failed with the registry-mismatch reason", async () => {
+    const store = freshStore();
+    const KNOWN_DEVICE_ID = 2665; // deviceIdToName(2665) === "tovez" -- any id distinct from ROBOT_SERIAL
+    const knownName = deviceIdToName(KNOWN_DEVICE_ID);
+    const link = mbregistryLink();
+    // Seed exactly what this link's own prior successful identify would
+    // have already written -- the store-known deviceId a stale banner
+    // read (from whatever board now sits on this UID's port) disagrees
+    // with.
+    store.upsertDevice({ id: KNOWN_DEVICE_ID, name: knownName, kind: "robot", at: 0 });
+    store.upsertLink({ id: link.id, transport: link.transport, address: link.address, deviceId: KNOWN_DEVICE_ID, at: 0 });
+
+    // The banner read over the mbregistry stream reports a DIFFERENT
+    // board entirely -- ROBOT_SERIAL/"vevov", not KNOWN_DEVICE_ID -- the
+    // "tigez took zugit's port" shape from the linked issue.
+    const stream = new BannerByteStream(ROBOT_BANNER);
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const linkWithDeviceId: LinkRow = { ...link, deviceId: KNOWN_DEVICE_ID };
+
+    const upsertDeviceSpy = vi.spyOn(store, "upsertDevice");
+    const upsertLinkSpy = vi.spyOn(store, "upsertLink");
+    const setOwnedSpy = vi.spyOn(store, "setOwned");
+
+    const promise = connector.connectAndIdentify(linkWithDeviceId, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await expect(promise).rejects.toThrow(
+      /banner identity vevov disagrees with this link's own known device tovez -- registry UID\/port mismatch, not this device/i,
+    );
+
+    // Neither upsert call was ever made with the banner's (wrong) new
+    // identity, and owned was never set for it.
+    expect(upsertDeviceSpy).not.toHaveBeenCalledWith(expect.objectContaining({ id: ROBOT_SERIAL }));
+    expect(upsertLinkSpy).not.toHaveBeenCalledWith(expect.objectContaining({ deviceId: ROBOT_SERIAL }));
+    expect(setOwnedSpy).not.toHaveBeenCalledWith(ROBOT_SERIAL, true, expect.anything());
+
+    const rows = store.snapshotRows();
+    // No new device row for the banner's own (wrong-board) serial.
+    expect(rows.devices.find((d) => d.id === ROBOT_SERIAL)).toBeUndefined();
+    // The link's own known device is untouched -- never marked owned by
+    // this rejected attempt.
+    const knownDevice = rows.devices.find((d) => d.id === KNOWN_DEVICE_ID);
+    expect(knownDevice?.owned).toBe(0);
+    const linkRow = rows.links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("failed");
+    expect(linkRow?.state_reason).toMatch(/banner identity vevov disagrees with this link's own known device tovez/);
+    // The link's own deviceId is left as it was -- never overwritten by
+    // the disagreeing banner.
+    expect(linkRow?.device_id).toBe(KNOWN_DEVICE_ID);
+    store.close();
+  });
+
+  it("an mbregistry link with a matching known deviceId (the ordinary re-identify case) still connects normally -- the cross-check is not a false positive", async () => {
+    const store = freshStore();
+    const link = mbregistryLink();
+    store.upsertDevice({ id: ROBOT_SERIAL, name: deviceIdToName(ROBOT_SERIAL), kind: "robot", at: 0 });
+    store.upsertLink({ id: link.id, transport: link.transport, address: link.address, deviceId: ROBOT_SERIAL, at: 0 });
+
+    const stream = new BannerByteStream(ROBOT_BANNER);
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const linkWithDeviceId: LinkRow = { ...link, deviceId: ROBOT_SERIAL };
+
+    const promise = connector.connectAndIdentify(linkWithDeviceId, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    const session = await promise;
+
+    expect(session.deviceId).toBe(ROBOT_SERIAL);
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("connected");
+    store.close();
+  });
+
+  it("an mbregistry link with no prior deviceId (first-time identify) is unaffected by the guard -- still identifies normally", async () => {
+    const store = freshStore();
+    const stream = new BannerByteStream(ROBOT_BANNER);
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const link = mbregistryLink();
+    seedLink(store, link); // no deviceId seeded -- this is a first-time identify
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    const session = await promise;
+
+    expect(session.deviceId).toBe(ROBOT_SERIAL);
+    const rows = store.snapshotRows();
+    expect(rows.devices.find((d) => d.id === ROBOT_SERIAL)).toBeDefined();
+    const linkRow = rows.links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("connected");
+    expect(linkRow?.device_id).toBe(ROBOT_SERIAL);
+    store.close();
+  });
+});
+
+// ---------------------------------------------------------------------
+// 027-003: mbtools 0.20260925.3's own fast "not_found" response for a
+// UID that isn't currently attached -- classified as `stale`, not run
+// through `recordFailure`'s backoff-and-retry `failed` path. See
+// `isMbregistryNotFound`'s own doc comment in connector.ts, and issue
+// `gone-mbregistry-board-link-is-reattributed-to-the-next-board-on-its-port.md`.
+// ---------------------------------------------------------------------
+
+describe("connectAndIdentify -- mbregistry not_found classification (027-003)", () => {
+  it("a MbregistryError(code: not_found) rejecting client.stream()/lock() marks the link stale, not failed -- no backoff fields written", async () => {
+    const store = freshStore();
+    const link = mbregistryLink();
+    seedLink(store, link);
+    // Seed a fail_count/next_retry_at as if a prior ordinary failure had
+    // already happened, so the assertion below (unchanged) actually
+    // proves this path never calls recordFailure, rather than just
+    // observing untouched defaults.
+    store.setLinkState({ id: link.id, state: "failed", at: 0, reason: "prior failure", failCount: 3, nextRetryAt: 5000 });
+
+    const stream = new FakeByteStream();
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const notFound = new MbregistryError("XYZ is not attached (last seen on /dev/ttyUSB3)", "not_found");
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.rejectOpen(notFound);
+
+    await expect(promise).rejects.toThrow(/XYZ is not attached \(last seen on \/dev\/ttyUSB3\)/);
+
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("stale");
+    expect(linkRow?.state_reason).toBe("XYZ is not attached (last seen on /dev/ttyUSB3)");
+    // No recordFailure call accompanied this -- fail_count/next_retry_at
+    // are left exactly as they were before this attempt (setLinkState's
+    // own `COALESCE(?, existing)` -- this classification never passes
+    // failCount/nextRetryAt at all).
+    expect(linkRow?.fail_count).toBe(3);
+    expect(linkRow?.next_retry_at).toBe(5000);
+    store.close();
+  });
+
+  it("a MbregistryError(code: locked) still flows through the existing recordFailure path unchanged", async () => {
+    const store = freshStore();
+    const link = mbregistryLink();
+    seedLink(store, link);
+
+    const stream = new FakeByteStream();
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const locked = new MbregistryError("in use", "locked", { holder: undefined });
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.rejectOpen(locked);
+
+    await expect(promise).rejects.toThrow(/in use/);
+
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("failed");
+    expect(linkRow?.fail_count).toBe(1);
+    expect(linkRow?.next_retry_at).not.toBeNull();
+    store.close();
+  });
+
+  it("an unrecognized MbregistryError code also flows through the existing recordFailure path unchanged", async () => {
+    const store = freshStore();
+    const link = mbregistryLink();
+    seedLink(store, link);
+
+    const stream = new FakeByteStream();
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const unknownCode = new MbregistryError("some other registry failure", "some_future_code");
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.rejectOpen(unknownCode);
+
+    await expect(promise).rejects.toThrow(/some other registry failure/);
+
+    const linkRow = store.snapshotRows().links.find((l) => l.id === link.id);
+    expect(linkRow?.state).toBe("failed");
+    expect(linkRow?.fail_count).toBe(1);
+    store.close();
+  });
+});
+
+// ---------------------------------------------------------------------
+// 027-005: byte-level identify-write logging for an mbregistry own-uid
+// link (`ConnectorDeps.mbregistryWriteLog`) -- proves both that the
+// boot-window resend schedule really does reach the wire for this
+// transport (the issue's own open question: "confirm the connector
+// actually sends HELLO ... on an mbregistry stream and not only on
+// direct serial") and that the diagnostic hook reports exactly those
+// same bytes, not an approximation.
+// ---------------------------------------------------------------------
+
+describe("connectAndIdentify -- mbregistry identify write logging (027-005)", () => {
+  it("reports the initial HELLO and every scheduled resend, verbatim, scoped to this link's own id", async () => {
+    const store = freshStore();
+    const stream = new FakeByteStream(); // never answers HELLO -- exhausts the whole boot-window schedule
+    const writeLog: Array<{ linkId: string; bytes: string }> = [];
+    const connector = createConnector(
+      store,
+      { ...mbregistryDeps(stream), mbregistryWriteLog: (linkId, bytes) => writeLog.push({ linkId, bytes }) },
+      { identifyBudgetMs: 50 },
+    );
+    const link = mbregistryLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    // The immediate scheduler resolves every `scheduler.delay()` in the
+    // boot-window resend loop on its own microtask -- one more flush
+    // (a macrotask boundary) is enough for every offset in
+    // `DEFAULT_IDENTIFY_SCHEDULE_MS` to have been walked and resent,
+    // well before the real `identifyBudgetMs` timer ever fires.
+    await flush();
+    // Nothing will ever answer -- end the identify wait deterministically
+    // rather than waiting out the real 50ms timeout.
+    stream.emitClose();
+
+    await expect(promise).rejects.toThrow(/no banner/i);
+
+    expect(writeLog.length).toBeGreaterThanOrEqual(2); // initial HELLO plus at least one resend
+    expect(writeLog.every((entry) => entry.linkId === link.id)).toBe(true);
+    expect(writeLog.every((entry) => entry.bytes === "HELLO\n")).toBe(true);
+    // The log mirrors the fake stream's own write capture exactly --
+    // proving this reports precisely what write() received, not a
+    // summary or approximation of it.
+    expect(writeLog.map((entry) => entry.bytes)).toEqual(stream.writes.map((w) => w.bytes));
+    store.close();
+  });
+
+  it("never fires for a usb link -- scoped to mbregistry only", async () => {
+    const store = freshStore();
+    const stream = new BannerByteStream(ROBOT_BANNER);
+    const writeLog: Array<{ linkId: string; bytes: string }> = [];
+    const connector = createConnector(store, {
+      ...baseDeps(stream),
+      mbregistryWriteLog: (linkId, bytes) => writeLog.push({ linkId, bytes }),
+    });
+    const link = usbLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await promise;
+
+    expect(writeLog).toEqual([]);
     store.close();
   });
 });

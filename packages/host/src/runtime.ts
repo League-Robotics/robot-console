@@ -493,13 +493,38 @@ export async function startRuntime(options: StartRuntimeOptions = {}): Promise<R
   // of the three modules importing another (`connect/relayLeaseRevocation.ts`'s
   // own doc comment).
   const relayLeaseRevocation = createRelayLeaseRevocationFn();
+  // 027-005: byte-level identify-write diagnostics for an `mbregistry`
+  // own-uid link (`connect/connector.ts`'s own `ConnectorDeps.mbregistryWriteLog`
+  // doc comment) -- opt-in via `ROBOT_CONSOLE_MBREGISTRY_WIRE_LOG`
+  // (unset/`"0"`/`"false"` = off), matching this codebase's own
+  // `ROBOT_CONSOLE_*` env-var convention (`supervisor/cli.ts`'s own
+  // table) rather than inventing a new one -- there is no pre-existing
+  // wire-level tracing convention in this codebase to match instead (see
+  // that doc comment for what was checked). `options.connectorDeps`
+  // still wins if a caller supplies its own `mbregistryWriteLog` --
+  // this default is spread first, before it.
+  const mbregistryWireLogEnabled = !["", "0", "false"].includes(
+    (process.env.ROBOT_CONSOLE_MBREGISTRY_WIRE_LOG ?? "").toLowerCase(),
+  );
+  const defaultMbregistryWriteLog = mbregistryWireLogEnabled
+    ? (linkId: string, bytes: string): void => {
+        console.error(`mbregistry-wire-log: ${linkId} wrote ${JSON.stringify(bytes)}`);
+      }
+    : undefined;
   // Sprint 018 ticket 006: the same already-connected `mbregistryClient`/
   // `mbregistryLabel` resolved in step 1a above, so an `mbregistry`-
   // transport connect/relay-physical opens over that one connection, not
   // a second, separately-resolved client.
   const connector = createConnectorFn(
     store,
-    { ...options.connectorDeps, harvester, revocation: relayLeaseRevocation, mbregistryClient, mbregistryLabel },
+    {
+      ...(defaultMbregistryWriteLog !== undefined ? { mbregistryWriteLog: defaultMbregistryWriteLog } : {}),
+      ...options.connectorDeps,
+      harvester,
+      revocation: relayLeaseRevocation,
+      mbregistryClient,
+      mbregistryLabel,
+    },
     options.connectorOptions,
   );
 

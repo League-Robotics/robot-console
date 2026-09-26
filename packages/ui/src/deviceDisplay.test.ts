@@ -971,6 +971,57 @@ describe("cardLinks / hiddenLinkCount", () => {
     expect(hiddenLinkCount(tovez)).toBe(1);
   });
 
+  // 027-002: the mbregistry analog of the `tovez` USB path-collision
+  // defect above -- `gone-mbregistry-board-link-is-reattributed-to-the-
+  // next-board-on-its-port.md`. Before the connector-side identify guard
+  // (connect/connector.ts) was widened to cover `mbregistry`, a UID-keyed
+  // link whose board had gone away and stayed `stale` could be re-homed
+  // onto whatever board a fresh banner reported, making it look like a
+  // second, live link on the WRONG device's card. With the guard now
+  // refusing that banner outright (a link failure, not a write), the
+  // link never comes back off `stale`, so it is still filtered out of
+  // `cardLinks()` here for the wrong device -- confirming the "two icons
+  // on one card" symptom does not recur. `cardLinks` itself needed no
+  // code change for this; the fix is upstream in the connector.
+  it("hides a gone board's own mbregistry link once its UID's port has been taken over by a different board (state: stale) -- confirms no re-homed row survives onto the wrong device's card", () => {
+    const zugit = device({
+      name: "zugit",
+      links: [
+        link({
+          id: "mbregistry-ZUGIT-UID",
+          transport: "mbregistry",
+          state: "stale",
+          label: "mbregistry · ZUGIT-UID",
+        }),
+      ],
+    });
+    expect(cardLinks(zugit)).toHaveLength(0);
+    expect(hiddenLinkCount(zugit)).toBe(1);
+  });
+
+  // 027-003: mbtools' own fast `not_found` response for a UID that isn't
+  // attached is classified by `connect/connector.ts`'s `attempt()` as
+  // `state: "stale"` (not `recordFailure`'s `"failed"`) -- see
+  // `isMbregistryNotFound`'s own doc comment there. This is the same
+  // `cardLinks()` filter as the 027-002 case above; the fix is entirely
+  // upstream in the connector's failure classification, not here.
+  it("hides an mbregistry link classified stale from a not_found identify failure -- confirms the connector's not_found-to-stale reclassification actually keeps the link off the card", () => {
+    const gone = device({
+      name: "gone",
+      links: [
+        link({
+          id: "mbregistry-GONE-UID",
+          transport: "mbregistry",
+          state: "stale",
+          reason: "GONE-UID is not attached (last seen on /dev/ttyUSB3)",
+          label: "mbregistry · GONE-UID",
+        }),
+      ],
+    });
+    expect(cardLinks(gone)).toHaveLength(0);
+    expect(hiddenLinkCount(gone)).toBe(1);
+  });
+
   it("hiddenLinkCount is 0 when nothing was hidden", () => {
     expect(hiddenLinkCount(device({ links: [link({ state: "connectable" })] }))).toBe(0);
   });

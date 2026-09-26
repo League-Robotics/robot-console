@@ -274,10 +274,23 @@ describe("close_session", () => {
 // send_command
 // ---------------------------------------------------------------------
 
-function fakeSession(overrides: { sendCommand?: ReturnType<typeof vi.fn>; sendUnsequencedQuery?: ReturnType<typeof vi.fn> } = {}): ConnectedSession {
+/** `onInboundLine`/`onAckNack` default to a no-op subscription (never
+ * fires, returns a plain unsubscribe) -- see `sessionOps.test.ts`'s own
+ * copy of this convention. Tests below that exercise `reply` override
+ * one or both. */
+function fakeSession(
+  overrides: {
+    sendCommand?: ReturnType<typeof vi.fn>;
+    sendUnsequencedQuery?: ReturnType<typeof vi.fn>;
+    onInboundLine?: ReturnType<typeof vi.fn>;
+    onAckNack?: ReturnType<typeof vi.fn>;
+  } = {},
+): ConnectedSession {
   const link = {
     sendCommand: overrides.sendCommand ?? vi.fn(() => "OK\n"),
     sendUnsequencedQuery: overrides.sendUnsequencedQuery ?? vi.fn(() => "OK\n"),
+    onInboundLine: overrides.onInboundLine ?? vi.fn(() => () => {}),
+    onAckNack: overrides.onAckNack ?? vi.fn(() => () => {}),
   };
   return { linkId: "link-1", deviceId: 1, transport: "usb", link, classification: { type: "robot" } } as unknown as ConnectedSession;
 }
@@ -294,8 +307,74 @@ describe("send_command", () => {
 
       expect(result.isError).toBeFalsy();
       expect(sendUnsequencedQuery).toHaveBeenCalledWith("STATUS", []);
-      const payload = parseToolText(result as { content: Array<{ type: string; text?: string }> }) as { ok: boolean; sent: string };
-      expect(payload).toEqual({ ok: true, sent: "STATUS" });
+      const payload = parseToolText(result as { content: Array<{ type: string; text?: string }> }) as { ok: boolean; sent: string; reply: string[] };
+      expect(payload).toEqual({ ok: true, sent: "STATUS", reply: [] });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("collects an unsequenced query's own reply, and any unsolicited line, seen via onInboundLine within the window", async () => {
+    const store = openStore({ filePath: ":memory:" });
+    try {
+      let inboundListener: ((line: string) => void) | undefined;
+      const onInboundLine = vi.fn((listener: (line: string) => void) => {
+        inboundListener = listener;
+        return () => {};
+      });
+      const sendUnsequencedQuery = vi.fn(() => "ID\n");
+      const session = fakeSession({ sendUnsequencedQuery, onInboundLine });
+      const h = await makeHarness(store, { reconciler: fakeReconciler({ sessionsGet: vi.fn(() => session) }) });
+
+      const callPromise = h.client.callTool({ name: "send_command", arguments: { linkId: "link-1", verb: "ID" } });
+      // Fires shortly after the send -- well inside the fixed window --
+      // both the query's own answer and an unsolicited DBG line.
+      setTimeout(() => {
+        inboundListener?.("id ABCDE\n");
+        inboundListener?.("DBG:wifi state=1 ip=- ssid=-");
+      }, 5);
+      const result = await callPromise;
+
+      expect(result.isError).toBeFalsy();
+      const payload = parseToolText(result as { content: Array<{ type: string; text?: string }> }) as { ok: boolean; sent: string; reply: string[] };
+      expect(payload).toEqual({ ok: true, sent: "ID", reply: ["id ABCDE", "DBG:wifi state=1 ip=- ssid=-"] });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a sequenced verb's own correlated ack/nack (e.g. WIFICRED) comes back in reply via onAckNack", async () => {
+    const store = openStore({ filePath: ":memory:" });
+    try {
+      let inboundListener: ((line: string) => void) | undefined;
+      let ackNackListener: ((event: unknown) => void) | undefined;
+      const onInboundLine = vi.fn((listener: (line: string) => void) => {
+        inboundListener = listener;
+        return () => {};
+      });
+      const onAckNack = vi.fn((listener: (event: unknown) => void) => {
+        ackNackListener = listener;
+        return () => {};
+      });
+      const sendCommandSpy = vi.fn(() => "WIFICRED #1\n");
+      const session = fakeSession({ sendCommand: sendCommandSpy, onInboundLine, onAckNack });
+      const h = await makeHarness(store, { reconciler: fakeReconciler({ sessionsGet: vi.fn(() => session) }) });
+
+      const startedAt = Date.now();
+      const callPromise = h.client.callTool({ name: "send_command", arguments: { linkId: "link-1", verb: "WIFICRED" } });
+      // Real wire example from the issue: WIFICRED replies "nack 1 0 none".
+      setTimeout(() => {
+        inboundListener?.("nack 1 0 none");
+        ackNackListener?.({ kind: "nack", n: 1, seq: 1, lastDone: 0, lastDoneReason: "none", resend: [], desynced: false });
+      }, 5);
+      const result = await callPromise;
+      const elapsedMs = Date.now() - startedAt;
+
+      expect(result.isError).toBeFalsy();
+      const payload = parseToolText(result as { content: Array<{ type: string; text?: string }> }) as { ok: boolean; sent: string; reply: string[] };
+      expect(payload).toEqual({ ok: true, sent: "WIFICRED #1", reply: ["nack 1 0 none"] });
+      // Correlated via onAckNack, so this closed well before the fixed window.
+      expect(elapsedMs).toBeLessThan(300);
     } finally {
       store.close();
     }

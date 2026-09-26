@@ -123,7 +123,7 @@ import { LineLink, type ByteStream, type LineLinkOptions } from "../link/LineLin
 import { serialStream } from "../link/adapters/serialStream.js";
 import { tcpStream } from "../link/adapters/tcpStream.js";
 import { mbregistryStream } from "../link/adapters/mbregistryStream.js";
-import { parseHostPort, type MbregistryClient } from "../mbregistry/client.js";
+import { MbregistryError, parseHostPort, type MbregistryClient } from "../mbregistry/client.js";
 import { realScheduler, WritePacer, type Scheduler } from "../link/pacing.js";
 import {
   DEFAULT_IDENTIFY_BUDGET_MS,
@@ -270,6 +270,54 @@ export interface ConnectorDeps {
    * `runtime.ts` always wires the same instance handed to
    * `watchers/relaySweeper.ts` and `connect/relayBridger.ts`. */
   revocation?: RelayLeaseRevocation;
+  /**
+   * 027-005: byte-level diagnostic hook for an `mbregistry`-transport
+   * own-uid link's identify path -- called with `(link.id, bytes)` for
+   * every `write()` this module's `LineLink` makes onto that link's
+   * stream, exactly as sent (the initial `HELLO` from `identify()`, and
+   * every scheduled resend from `bootWindowIdentify.ts`'s
+   * `resendHello`). Scoped to `buildStreamPlan`'s plain `"mbregistry"`
+   * case only (an own-uid link's direct identify stream) -- never the
+   * `radio`/`mbrelay` relay-physical case, which is a different link's
+   * own concern.
+   *
+   * Deliberately optional, off by default -- there is no pre-existing
+   * "wire-level tracing" convention anywhere in this codebase to match
+   * (checked: no `DEBUG`/`NODE_DEBUG`/logger-package usage in
+   * `packages/host/src/link`, `connect/`, or `mbregistry/`), so this
+   * follows the closest existing pattern instead: an optional injected
+   * callback a caller supplies to turn diagnostics on, the same shape
+   * `connect/unhandled.ts`'s and `supervisor/supervisor.ts`'s own
+   * `log?:` fields already use elsewhere in this codebase. `runtime.ts`
+   * wires a real sink gated by `ROBOT_CONSOLE_MBREGISTRY_WIRE_LOG`
+   * (unset/`"0"` = off, matching this codebase's `ROBOT_CONSOLE_*`
+   * opt-in env var convention), so a bench operator re-running the
+   * `mbregistry-own-uid-link-never-identifies.md` issue against real
+   * hardware gets the exact bytes sent, without any code change needed
+   * to turn it on. Every existing test that constructs `ConnectorDeps`
+   * without this field is unaffected (`buildStreamPlan` never wraps the
+   * stream when it is `undefined`).
+   */
+  mbregistryWriteLog?: (linkId: string, bytes: string) => void;
+}
+
+/**
+ * Wraps `stream` so every `write()` call also reports the exact bytes to
+ * `log`, before delegating to the real write -- 027-005's byte-level
+ * identify-write diagnostic (see {@link ConnectorDeps.mbregistryWriteLog}'s
+ * own doc comment). `open`/`on`/`close` pass straight through unchanged;
+ * only `write()` is intercepted.
+ */
+export function withWriteLog(stream: ByteStream, log: (bytes: string) => void): ByteStream {
+  return {
+    open: (signal: AbortSignal) => stream.open(signal),
+    write: (bytes: string, callback: (err?: Error | null) => void) => {
+      log(bytes);
+      stream.write(bytes, callback);
+    },
+    on: stream.on.bind(stream),
+    close: () => stream.close(),
+  };
 }
 
 export interface ConnectorOptions {
@@ -763,6 +811,7 @@ function buildStreamPlan(
   getLink: () => LineLink,
   scheduler: Scheduler,
   relayHandshakeTimeoutMs: number | undefined,
+  mbregistryWriteLog: ((linkId: string, bytes: string) => void) | undefined,
 ): StreamPlan {
   switch (link.transport) {
     case "usb": {
@@ -794,7 +843,9 @@ function buildStreamPlan(
     }
     case "mbregistry": {
       const mb = address as MbregistryAddress;
-      return { stream: createMbregistryStream(mb, "serial") };
+      const raw = createMbregistryStream(mb, "serial");
+      const stream = mbregistryWriteLog ? withWriteLog(raw, (bytes) => mbregistryWriteLog(link.id, bytes)) : raw;
+      return { stream };
     }
     default: {
       const exhaustive: never = link.transport;
@@ -874,6 +925,30 @@ export function recordFailure(store: Store, linkId: string, reason: string, at: 
 
 export function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
+}
+
+/**
+ * 027-003: mbtools 0.20260925.3 fails `lock`/`stream` fast, with
+ * `MbregistryError` code `"not_found"`, against a UID that isn't
+ * currently attached. That is an affirmative "this board is gone" fact
+ * from mbtools itself, not a transient failure -- unlike every other
+ * identify failure this module records via {@link recordFailure}
+ * (exponential backoff, capped at `backoffCapMs`), a `not_found` link
+ * should never re-enter that retry loop, since retrying is guaranteed to
+ * hit the exact same fast-fail again. Live evidence (issue
+ * `gone-mbregistry-board-link-is-reattributed-...md`): a gone UID's link
+ * was retried three times, each attempt running out mbtools' own 60s
+ * no-progress watchdog before failing, instead of being recognized as
+ * gone on the first fast `not_found` response.
+ *
+ * `translateError` in `link/adapters/mbregistryStream.ts` already passes
+ * a `not_found` `MbregistryError` through unchanged (it only rewrites
+ * `"locked"`), so `.code` survives all the way to this module's own
+ * `lineLink.connect()` catch below -- this function is the one place
+ * that recognizes it.
+ */
+function isMbregistryNotFound(error: unknown): error is MbregistryError {
+  return error instanceof MbregistryError && error.code === "not_found";
 }
 
 // ---------------------------------------------------------------------
@@ -1089,6 +1164,7 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
   const now = deps.now ?? (() => Date.now());
   const harvester = deps.harvester ?? NO_OP_HARVESTER;
   const revocation = deps.revocation;
+  const mbregistryWriteLog = deps.mbregistryWriteLog;
 
   const connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
   const identifySchedule = opts.identifySchedule ?? DEFAULT_IDENTIFY_SCHEDULE_MS;
@@ -1173,6 +1249,7 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
         () => lineLink as LineLink,
         scheduler,
         relayHandshakeTimeoutMs,
+        mbregistryWriteLog,
       );
       lineLink = createLineLink(plan.stream, {
         identifyTimeoutMs: identifyBudgetMs,
@@ -1185,6 +1262,14 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
         await lineLink.connect({ timeoutMs: connectTimeoutMs, signal });
       } catch (error) {
         const err = toError(error);
+        // 027-003: mbtools' own "this UID is not attached" fact -- mark
+        // the link stale (mirrors `mbregistryWatcher.ts`'s `markGone`),
+        // never `recordFailure`'s backoff-and-retry path. See
+        // `isMbregistryNotFound`'s own doc comment.
+        if (isMbregistryNotFound(err)) {
+          store.setLinkState({ id: link.id, state: "stale", at: now(), reason: err.message });
+          throw err;
+        }
         // Sprint 019 ticket 001: a port-lock failure reaching here *after*
         // the takeover attempt above already ran cannot be our own
         // sweeper -- see the "Direct relay session-open sweep takeover"
@@ -1277,11 +1362,30 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
       // `state_reason`, per `deviceDisplay.ts`'s `linkStateText`) and
       // close the line link, exactly like every other identify failure
       // above.
-      if (link.transport === "usb" && link.deviceId !== undefined && link.deviceId !== null && link.deviceId !== banner.serial) {
+      //
+      // 027-002: the exact same hazard applies to `mbregistry`, by a
+      // different mechanism -- `link.id` is stable and keyed by UID
+      // (`mbregistry-<uid>`), but the bytes on that stream come from
+      // whatever board mbtools currently has physically attached to
+      // that UID's last-known port. A `stale` link that goes idle and
+      // is later re-attempted from scratch has no prior `deviceId`
+      // (ticket 001's `markGone` clears it), so this guard's existing
+      // "only once a link already has a prior identity" condition is
+      // unaffected by that legitimate re-identify path -- it only fires
+      // when a link that should still be who it was is suddenly told
+      // it's someone else.
+      if (
+        (link.transport === "usb" || link.transport === "mbregistry") &&
+        link.deviceId !== undefined &&
+        link.deviceId !== null &&
+        link.deviceId !== banner.serial
+      ) {
         void lineLink.close();
-        const swdName = deviceIdToName(link.deviceId);
+        const knownName = deviceIdToName(link.deviceId);
         const err = new Error(
-          `banner identity ${banner.name} disagrees with SWD name ${swdName} -- serial data corrupted, check the USB cable`,
+          link.transport === "usb"
+            ? `banner identity ${banner.name} disagrees with SWD name ${knownName} -- serial data corrupted, check the USB cable`
+            : `banner identity ${banner.name} disagrees with this link's own known device ${knownName} -- registry UID/port mismatch, not this device`,
         );
         recordFailure(store, link.id, err.message, now(), backoffCapMs);
         throw err;

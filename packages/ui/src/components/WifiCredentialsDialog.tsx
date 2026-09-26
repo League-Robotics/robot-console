@@ -74,17 +74,32 @@ export function WifiCredentialsDialog({ linkId, linkOpen, name, triggerClassName
 
   useEffect(() => {
     if (open) {
-      send({ type: "get-wifi-credentials" });
+      // `reveal: true` -- matches `ConfigurationPage.tsx`'s own request
+      // (ticket 027-007). Everyone in the room already knows the
+      // password (stakeholder direction); without this the Show/Hide
+      // toggle has nothing to act on, because the host only includes
+      // the saved password in its reply when asked to reveal it.
+      send({ type: "get-wifi-credentials", reveal: true });
     }
   }, [open, send]);
 
-  // Prefill the name from the host's stored network once known.
+  // Prefill the name and password from the host's stored network once
+  // known -- once, on open, and only into a field the user has not
+  // already started typing into (so a value in flight is never
+  // clobbered by a reply that arrives after keystrokes).
   useEffect(() => {
     if (open && stored?.ssid && ssid === "") {
       setSsid(stored.ssid);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, stored?.ssid]);
+
+  useEffect(() => {
+    if (open && stored?.password && password === "") {
+      setPassword(stored.password);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, stored?.password]);
 
   useEffect(() => {
     if (result) {

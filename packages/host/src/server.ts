@@ -630,6 +630,42 @@ export async function resolveFlashLinkTarget(
     // it must fall back to a live `find()` for this one link.
     const address = parseLinkAddress("mbregistry", linkRow.address) as MbregistryAddress;
     const uid = address.uid;
+    // 027-004: a `stale` mbregistry link is the gone board's own link
+    // (the observed tigez/zugit bug) -- ticket 003 now classifies
+    // mbtools' `not_found` to `stale` promptly, which is what makes this
+    // check reliable rather than racy. Built straight from its own
+    // stored address with no state check at all, this row would resolve
+    // `ok: true` just as readily as a live one, and `runFlashTask` would
+    // hang against a UID mbtools itself says is gone until pyocd's own
+    // 60s no-progress watchdog kills it. Same recursive-redirect shape
+    // as the `usb` branch above: if this device has a different,
+    // current (non-stale) mbregistry link, flash that one instead;
+    // otherwise refuse fast, naming the uid, rather than ever building a
+    // target from this row.
+    if (linkRow.state === "stale") {
+      const currentLink =
+        linkRow.deviceId !== null
+          ? rows.links.find(
+              (candidate) =>
+                candidate.id !== linkRow.id &&
+                candidate.deviceId === linkRow.deviceId &&
+                candidate.transport === "mbregistry" &&
+                candidate.state !== "stale",
+            )
+          : undefined;
+      if (currentLink !== undefined) {
+        return resolveFlashLinkTarget(rows, currentLink.id, deps);
+      }
+      // `stateReason` -- when present -- is ticket 003's own promoted
+      // mbtools message ("<uid> is not attached (last seen on <port>)"),
+      // already plain-language and already naming the uid; the fallback
+      // below only fires for a `stale` row that reached that state some
+      // other way (no `stateReason` recorded).
+      return {
+        ok: false,
+        reason: linkRow.stateReason ?? `mbregistry device "${uid}" is not currently attached -- is it still connected?`,
+      };
+    }
     const device: MbregistryStreamDevice = {
       uid,
       host: address.host,

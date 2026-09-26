@@ -1055,7 +1055,9 @@ export interface MbregistryClient {
   unlock(uid: string): Promise<boolean>;
   /** `{"op": "watch"}` — an async iterable of every event from here on
    * (change-only, no snapshot on connect — call {@link list} first for
-   * that). Ends when the connection closes. */
+   * that), on its own dedicated connection so the control connection
+   * stays usable for `list`/`find`/`lock`. Ends when that connection
+   * closes. */
   watch(): AsyncIterable<WatchEvent>;
   /**
    * Performs `lock` then `stream` on one dedicated connection —
@@ -1254,6 +1256,7 @@ export function createMbregistryClient(deps: MbregistryClientDeps = {}): Mbregis
   const spawnFn = deps.spawnFn ?? nodeSpawn;
 
   let controlConnection: JsonLinesConnection | undefined;
+  const watchConnections = new Set<JsonLinesConnection>();
   let resolvedEndpoint: ResolvedEndpoint | undefined;
   let remotePort: number | undefined;
   let spawnedChild: ChildProcess | undefined;
@@ -1287,6 +1290,9 @@ export function createMbregistryClient(deps: MbregistryClientDeps = {}): Mbregis
     connect: connectClient,
     close(): void {
       controlConnection?.close();
+      for (const conn of watchConnections) {
+        conn.close();
+      }
       // A spawned instance is otherwise only tied to this process's own
       // exit (`--exit-with-parent`, watching this process's stdin-pipe
       // EOF) -- a graceful `close()` with the process still running
@@ -1318,7 +1324,23 @@ export function createMbregistryClient(deps: MbregistryClientDeps = {}): Mbregis
       return response.released as boolean;
     },
     watch(): AsyncIterable<WatchEvent> {
-      return requireConnection().watch();
+      // `watch` permanently switches its connection into event delivery,
+      // so it gets a dedicated connection of its own: running it on
+      // `controlConnection` would leave every later `list`/`find`/`lock`
+      // on that connection waiting forever for a response line the
+      // watch-mode parser swallows as an event.
+      requireConnection();
+      const endpoint = resolvedEndpoint as ResolvedEndpoint;
+      return (async function* (): AsyncGenerator<WatchEvent> {
+        const conn = new JsonLinesConnection(await openSocket(endpoint, connect));
+        watchConnections.add(conn);
+        try {
+          yield* conn.watch();
+        } finally {
+          watchConnections.delete(conn);
+          conn.close();
+        }
+      })();
     },
     async stream(
       uid: string,

@@ -49,6 +49,11 @@ export interface WifiCredentialsFormStored {
   ssid?: string | null;
   hasPassword?: boolean;
   source?: string;
+  /** The saved password, present only when the caller asked the host to
+   * reveal it (ticket 027-007). Read by the dialog's own prefill effect
+   * -- this component never reads it itself, only renders whatever
+   * `password` prop it is given. */
+  password?: string;
 }
 
 export type WifiCredentialsFormVariant = "dialog" | "tab";

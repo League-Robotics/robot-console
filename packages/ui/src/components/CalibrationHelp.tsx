@@ -52,9 +52,10 @@ export function CalibrationHelp({ open, onClose }: CalibrationHelpProps) {
 
         <h4>Before you start</h4>
         <p>
-          Calibration is two measurements, taken in order. The turn measurement is made by driving the wheels, so it
-          only means anything against the wheel that was on the robot at the time — which is why re-running the wheel
-          calibration makes you run the turn again.
+          Calibration is two measurements, and you can run either one on its own. The turn measurement is made by
+          driving the wheels, so it needs a wheel diameter first: calibrate the wheels, or type the diameter into the
+          table if you already know it. Re-running the wheel calibration makes you run the turn again, because the old
+          turn was measured against the old wheel.
         </p>
 
         <h4>1 · Calibrate wheels</h4>
@@ -78,13 +79,16 @@ export function CalibrationHelp({ open, onClose }: CalibrationHelpProps) {
         <p>
           Lay out the alternating iron cross — eight 45° radial wedges — and stand the robot centred on it. Press
           Calibrate turns. It spins in place and counts the wedges going past, which tells it the effective track
-          width: the wheel spacing that makes its own turn arithmetic come out right.
+          width: the wheel spacing that makes its own turn arithmetic come out right. If you did not calibrate the
+          wheels this time, the console first sets the diameter shown in the table on the robot, so the spin is
+          measured against that number.
         </p>
 
         <h4>3 · Done</h4>
         <p>
           Done averages what you collected, writes it to the robot, and stores it there so it survives being switched
-          off. Paste the code on the right into your program too, so a future reflash does not lose it.
+          off. If you only calibrated the wheels, it writes the wheel diameter and the robot keeps its current turn
+          calibration. Paste the code on the right into your program too, so a future reflash does not lose it.
         </p>
 
         <h4>Measured track width, and why it is optional</h4>

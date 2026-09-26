@@ -2,18 +2,26 @@
  * NewCalibrationPanel.tsx — the guided calibration run (stakeholder
  * direction, 2026-09-19), replacing the two standalone wizard panels.
  *
- * ## The flow, and why it is a gate and not three buttons
+ * ## The flow: two independent runs, one prerequisite
  *
- *   Start  ->  Calibrate Wheels  ->  Calibrate Turns  ->  Done
+ *   Start  ->  Calibrate Wheels  and/or  Calibrate Turns  ->  Done
  *
- * A turn result is only meaningful against the wheel that was on the
- * robot when the spin happened: `calturn` measures `b` by driving the
- * wheels, so every b is denominated in the current wheel. Re-running
- * the wheel calibration therefore invalidates the turn, and this panel
- * enforces that literally -- a new wheel run discards the turn records
- * and takes the Done button away until a turn has been run again.
- * Nothing else in this console was stopping somebody from pairing a
- * fresh diameter with yesterday's slip.
+ * Stakeholder, 2026-09-26: "remove the requirement that you always go
+ * through the whole process." Either run may be done on its own. The
+ * one real dependency is kept: a turn result is only meaningful against
+ * a known wheel, because `calturn` measures `b` by driving the wheels,
+ * so every b is denominated in the wheel the robot is running. So
+ * Calibrate Turns needs *a wheel diameter* -- from a wheel run in this
+ * session, typed into the table, or read back from the robot's stored
+ * calibration -- not a wheel run. With no wheel run this session, the
+ * panel `SET`s that diameter on the robot before the spin, so the spin
+ * is made against exactly the number the table shows.
+ *
+ * A new wheel run still invalidates the turn records made against the
+ * previous wheel. Done is available once anything new has been
+ * measured; after a wheel-only session it writes the wheel diameter and
+ * the robot keeps its stored track width and slip (`calsave`'s zero
+ * fields mean "keep").
  *
  * Wheels may be run as many times as you like before moving on; the
  * records accumulate and the mean is what gets written. Turns likewise.
@@ -140,6 +148,9 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
   const [tapeText, setTapeText] = useState(DEFAULT_TAPE_CM);
   const [writtenNote, setWrittenNote] = useState<string | undefined>(undefined);
   const [failure, setFailure] = useState<string | undefined>(undefined);
+  /** The wheel diameter the robot was running when the turn records were
+   * spun -- what their `b` is denominated in. */
+  const [turnRanWithMm, setTurnRanWithMm] = useState<number | undefined>(undefined);
   const tapeCm = parsePositiveNumber(tapeText);
 
   // The run's window is anchored on the log entry *id* minted at the
@@ -277,38 +288,44 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
     if (bMean === undefined) return;
     // `b` is denominated in the wheel the robot was RUNNING for the
     // spin -- the last wheel run's own result, which `calwheels` stored
-    // on the robot as it finished -- not in the mean this console is
-    // about to write. Getting this wrong rescales the track width by
-    // the difference between the two.
-    const lastRan = wheelRecords.length > 0 ? wheelRecords[wheelRecords.length - 1]!.diameterMm : undefined;
+    // on the robot as it finished, or the diameter `begin("turns")` SET
+    // on the robot when there was no wheel run -- not in the mean this
+    // console is about to write. Getting this wrong rescales the track
+    // width by the difference between the two.
     patchRef.current({
       reportedTrackWidthCm: round(bMean, 3),
-      reportedWithDiameterMm: lastRan ?? state.reportedWithDiameterMm ?? CALIBRATION_IMAGE_BASELINE_DIAMETER_MM,
+      reportedWithDiameterMm: turnRanWithMm ?? state.reportedWithDiameterMm ?? CALIBRATION_IMAGE_BASELINE_DIAMETER_MM,
       firmwareSlip: mean(turnRecords.map((record) => record.firmwareSlip)),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- driven by the records, not by `state`
-  }, [bMean, wheelRecords]);
+  }, [bMean, turnRanWithMm]);
 
   const hasWheels = wheelRecords.length > 0;
   const hasTurns = turnRecords.length > 0;
+  /** The turn run's one prerequisite: some wheel diameter to measure
+   * against -- measured, typed, or read back from the robot. */
+  const diameterMm = state.wheelDiameterMm;
+  const hasDiameter = diameterMm !== undefined && diameterMm > 0;
 
   // EXACTLY ONE BUTTON IS BLUE: the one to press next (stakeholder,
   // 2026-09-19). The flow already decides which buttons exist; this
   // decides which of them is the call to action, so the accent moves
   // down the panel as the run progresses rather than sitting on Start
-  // forever. Re-running wheels sends it back to "turns", which is the
-  // same invalidation the Done button's disappearance shows.
+  // forever. With no wheel diameter the wheels come first; with one,
+  // the turn is next. Re-running wheels discards the turn records, so
+  // it sends the accent back to "turns".
   const nextStep: "start" | "wheels" | "turns" | "done" = !started
     ? "start"
-    : !hasWheels
-      ? "wheels"
-      : !hasTurns
+    : hasTurns
+      ? "done"
+      : hasDiameter
         ? "turns"
-        : "done";
+        : "wheels";
   const accent = (step: typeof nextStep): string => (step === nextStep ? "new-calibration-next" : "");
 
   function begin(kind: "wheels" | "turns"): void {
     if (!linkOpen || running) return;
+    if (kind === "turns" && !hasDiameter) return;
     const last = log[log.length - 1];
     setWrittenNote(undefined);
     // Clear any abandonment message from a previous attempt -- leaving
@@ -323,6 +340,15 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
       // wheel is in question.
       sendCommand(linkId, "RUN", ["calwheels", String(tapeCm), "0"]);
     } else {
+      if (hasWheels) {
+        // `calwheels` stored its own result on the robot as it finished.
+        setTurnRanWithMm(wheelRecords[wheelRecords.length - 1]!.diameterMm);
+      } else {
+        // No wheel run this session: put the table's diameter on the
+        // robot first, so the spin is made against the number shown.
+        sendCommand(linkId, "SET", ["wheel_diameter", String(diameterMm)]);
+        setTurnRanWithMm(diameterMm);
+      }
       sendCommand(linkId, "RUN", ["calturn", TURN_EDGES]);
     }
   }
@@ -331,6 +357,7 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
     setStarted(true);
     setWheelRecords([]);
     setTurnRecords([]);
+    setTurnRanWithMm(undefined);
     setPending(undefined);
     setFailure(undefined);
     setWrittenNote(undefined);
@@ -401,27 +428,30 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
             )}
           </div>
 
-          {hasWheels && (
-            <div className="new-calibration-step">
-              <button
-                type="button"
-                className={accent("turns")}
-                data-testid="new-calibration-turns"
-                disabled={!linkOpen || running}
-                onClick={() => begin("turns")}
-              >
-                Calibrate turns
-              </button>
-              {hasTurns && (
-                <span className="new-calibration-stat" data-testid="new-calibration-turn-stat">
-                  {turnRecords.length} {turnRecords.length === 1 ? "run" : "runs"} · mean b {round(bMean!, 2)} cm
-                  {slipSd !== undefined ? ` · slip sd ${round(slipSd, 4)}` : ""}
-                </span>
-              )}
-            </div>
-          )}
+          <div className="new-calibration-step">
+            <button
+              type="button"
+              className={accent("turns")}
+              data-testid="new-calibration-turns"
+              disabled={!linkOpen || running || !hasDiameter}
+              onClick={() => begin("turns")}
+            >
+              Calibrate turns
+            </button>
+            {!hasDiameter && (
+              <span className="new-calibration-stat" data-testid="new-calibration-turns-needs-diameter">
+                needs a wheel diameter — calibrate the wheels, or type the diameter into the table
+              </span>
+            )}
+            {hasTurns && (
+              <span className="new-calibration-stat" data-testid="new-calibration-turn-stat">
+                {turnRecords.length} {turnRecords.length === 1 ? "run" : "runs"} · mean b {round(bMean!, 2)} cm
+                {slipSd !== undefined ? ` · slip sd ${round(slipSd, 4)}` : ""}
+              </span>
+            )}
+          </div>
 
-          {hasWheels && hasTurns && (
+          {(hasWheels || hasTurns) && (
             <div className="new-calibration-step">
               <button
                 type="button"
@@ -432,7 +462,11 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
               >
                 Done
               </button>
-              <span className="new-calibration-stat">writes the averages to the robot</span>
+              <span className="new-calibration-stat">
+                {hasTurns
+                  ? "writes the averages to the robot"
+                  : "writes the wheel diameter; the robot keeps its current turn calibration"}
+              </span>
             </div>
           )}
 

@@ -193,19 +193,23 @@ describe("CalibrationPage", () => {
     expect(el.querySelector('[data-testid="new-calibration-done"]')).toBeNull();
   });
 
-  it("Start -> wheels -> turns -> Done, each step appearing only once the one before it has run", () => {
+  it("Start -> wheels -> turns -> Done: turns waits only for a wheel diameter, Done for anything measured", () => {
     const { el, socket } = mountPage();
     click(el, '[data-testid="new-calibration-start"]');
-    // Wheels is offered; turns and Done are not, because a turn
-    // measured against no wheel means nothing.
+    // Turns is shown but disabled: a turn measured against no wheel
+    // means nothing, and there is no diameter yet. Nothing to write.
     expect(el.querySelector('[data-testid="new-calibration-wheels"]')).not.toBeNull();
-    expect(el.querySelector('[data-testid="new-calibration-turns"]')).toBeNull();
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="new-calibration-turns"]')!.disabled).toBe(true);
+    expect(el.querySelector('[data-testid="new-calibration-turns-needs-diameter"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="new-calibration-done"]')).toBeNull();
 
     click(el, '[data-testid="new-calibration-wheels"]');
     rx(socket, WHEELS);
     expect(el.querySelector<HTMLInputElement>("#calibration-wheel-diameter")!.value).toBe("90.68");
-    expect(el.querySelector('[data-testid="new-calibration-turns"]')).not.toBeNull();
-    expect(el.querySelector('[data-testid="new-calibration-done"]')).toBeNull();
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="new-calibration-turns"]')!.disabled).toBe(false);
+    expect(el.querySelector('[data-testid="new-calibration-turns-needs-diameter"]')).toBeNull();
+    // A wheel run alone is worth writing.
+    expect(el.querySelector('[data-testid="new-calibration-done"]')).not.toBeNull();
 
     click(el, '[data-testid="new-calibration-turns"]');
     rx(socket, '{"ev":"calturn.result","b":8.84,"tw":11.5,"slip":1.301}');
@@ -213,7 +217,7 @@ describe("CalibrationPage", () => {
     expect(el.querySelector('[data-testid="new-calibration-done"]')).not.toBeNull();
   });
 
-  it("re-running wheels invalidates the turn: Done disappears until turns is run again", () => {
+  it("re-running wheels invalidates the turn records, leaving a wheel-only Done", () => {
     // A turn is denominated in the wheel that was on the robot when it
     // spun. Pairing a fresh diameter with the previous slip is the
     // silent wrong answer this gate exists to prevent.
@@ -227,8 +231,11 @@ describe("CalibrationPage", () => {
 
     click(el, '[data-testid="new-calibration-wheels"]');
     rx(socket, '{"ev":"calwheels.result","calib":0.7101,"diameter":81.37,"measured":100.3,"true":90.5,"error":9.8,"was":0.7878}');
-    expect(el.querySelector('[data-testid="new-calibration-done"]')).toBeNull();
+    expect(el.querySelector('[data-testid="new-calibration-turn-stat"]')).toBeNull();
     expect(el.querySelector('[data-testid="calibration-effective-track"]')?.textContent).toContain("not measured yet");
+    expect(el.querySelector('[data-testid="new-calibration-done"]')?.parentElement?.textContent).toContain(
+      "keeps its current turn calibration",
+    );
 
     click(el, '[data-testid="new-calibration-turns"]');
     rx(socket, '{"ev":"calturn.result","b":12.9,"tw":11.36,"slip":0.88}');
@@ -312,7 +319,54 @@ describe("CalibrationPage", () => {
     rx(socket, '{"ev":"calwheels.fail","why":"not on clear white","implied":778}');
     expect(el.querySelector('[data-testid="new-calibration-failure"]')?.textContent).toContain("not on clear white");
     expect(el.querySelector('[data-testid="new-calibration-failure"]')?.textContent).toContain("Nothing was recorded");
-    expect(el.querySelector('[data-testid="new-calibration-turns"]')).toBeNull();
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="new-calibration-turns"]')!.disabled).toBe(true);
+    expect(el.querySelector('[data-testid="new-calibration-done"]')).toBeNull();
+  });
+
+  it("a typed wheel diameter is enough to run turns: the diameter is SET on the robot first, then calturn", () => {
+    const { el, socket } = mountPage();
+    type(el, "calibration-wheel-diameter", "88.5");
+    click(el, '[data-testid="new-calibration-start"]');
+    // With a diameter, the turn is the next thing to press.
+    expect(el.querySelector('[data-testid="new-calibration-turns"]')?.classList.contains("new-calibration-next")).toBe(
+      true,
+    );
+
+    const before = socket.sent.length;
+    click(el, '[data-testid="new-calibration-turns"]');
+    const sent = socket.sent.slice(before).map((raw) => JSON.parse(raw));
+    const setAt = sent.findIndex((msg) => msg.verb === "SET" && msg.fields?.[0] === "wheel_diameter");
+    const runAt = sent.findIndex((msg) => msg.verb === "RUN" && msg.fields?.[0] === "calturn");
+    expect(sent[setAt]?.fields).toEqual(["wheel_diameter", "88.5"]);
+    expect(runAt).toBeGreaterThan(setAt);
+
+    rx(socket, '{"ev":"calturn.result","b":8.84,"tw":11.5,"slip":1.301}');
+    // Spun against the diameter it was given, so no rescale.
+    expect(el.querySelector('[data-testid="calibration-effective-track"]')?.textContent).toContain("8.84 cm");
+
+    const beforeDone = socket.sent.length;
+    click(el, '[data-testid="new-calibration-done"]');
+    const written = socket.sent.slice(beforeDone).map((raw) => JSON.parse(raw));
+    expect(written).toContainEqual(
+      expect.objectContaining({ verb: "SET", fields: ["wheel_diameter", "88.5"] }),
+    );
+    expect(written.some((msg) => msg.verb === "SET" && msg.fields?.[0] === "rotational_slip")).toBe(true);
+  });
+
+  it("a wheel-only Done writes the wheel diameter and leaves the robot's turn calibration alone", () => {
+    const { el, socket } = mountPage();
+    click(el, '[data-testid="new-calibration-start"]');
+    click(el, '[data-testid="new-calibration-wheels"]');
+    rx(socket, WHEELS);
+
+    const before = socket.sent.length;
+    click(el, '[data-testid="new-calibration-done"]');
+    const written = socket.sent.slice(before).map((raw) => JSON.parse(raw));
+    expect(written).toContainEqual(expect.objectContaining({ verb: "SET", fields: ["wheel_diameter", "90.68"] }));
+    expect(written.some((msg) => msg.verb === "SET" && msg.fields?.[0] === "rotational_slip")).toBe(false);
+    // calsave's zero fields mean "keep" in the firmware.
+    const save = written.find((msg) => msg.verb === "RUN" && msg.fields?.[0] === "calsave");
+    expect(save?.fields).toEqual(["calsave", "90.68", "0", "0"]);
   });
 
   it("persists per robot name and Start over clears it", () => {

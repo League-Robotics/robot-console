@@ -1,7 +1,7 @@
 ---
 id: '027'
 title: 'mbregistry link identity: gone boards, own-UID identify, and MCP/Wi-Fi fixes'
-status: executing
+status: done
 branch: sprint/027-mbregistry-link-identity-gone-boards-own-uid-identify-and-mcp-wi-fi-fixes
 use-cases:
 - SUC-001

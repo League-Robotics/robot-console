@@ -66,6 +66,7 @@ import { startConsoleAdvertiser, type ConsoleAdvertiser } from "./discovery/cons
 import { openInChrome } from "./browserOpen.js";
 import { runStart, runStop, runStatus, runOpen } from "./daemon/cli.js";
 import { writeDaemonInfo, removeDaemonInfo } from "./daemon/daemonInfo.js";
+import { getCliVersion } from "./cliVersion.js";
 
 /** The shape `GET /api/host-info` (`server.ts`) answers with. Only `ok`
  * is required to treat a response as parseable at all -- `service`/
@@ -264,6 +265,13 @@ function hasDumpStoreFlag(argv: readonly string[]): boolean {
   return argv.includes("--dump-store");
 }
 
+/** `--version`/`-V` from argv (sprint 026 ticket 001): print the
+ * version and exit, never starting the runtime/server, opening the
+ * store, or contacting mbregistry. */
+function hasVersionFlag(argv: readonly string[]): boolean {
+  return argv.includes("--version") || argv.includes("-V");
+}
+
 /** The legacy mDNS types (`_mbserial`/_mbflash`/`_mbrelay`) `ROBOT_CONSOLE_MDNS_LEGACY`
  * accepts, in the same order `runtime.ts`'s own `DEFAULT_DISABLED_MDNS_TYPES` lists
  * them. */
@@ -395,6 +403,17 @@ export async function main(
   env: NodeJS.ProcessEnv = process.env,
   deps: CliDeps = {},
 ): Promise<void> {
+  // Sprint 026 ticket 001: `--version`/`-V` is checked before anything
+  // else in this function -- before even the daemon-subcommand switch
+  // below -- so it can never reach `startRuntimeFn` (which opens the
+  // store and contacts mbregistry, per this module's own doc comment)
+  // or `startServerFn`. This is the only branch in `main()` that is
+  // guaranteed side-effect-free.
+  if (hasVersionFlag(argv)) {
+    console.log(`robot-console ${getCliVersion()}`);
+    return;
+  }
+
   // Sprint 021 ticket 003: `start`/`stop`/`status`/`open` dispatch to
   // `daemon/cli.ts` *before* any of today's flag parsing (including
   // `hasDumpStoreFlag` below) ever runs -- these are argv[0] literal

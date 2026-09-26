@@ -29,6 +29,7 @@
  */
 
 import { startSupervisor, defaultHostBin, defaultUiDir, type RunningSupervisor, type SupervisorOptions } from "./supervisor.js";
+import { getCliVersion } from "../cliVersion.js";
 
 export interface SupervisorCliDeps {
   startSupervisor?: (options: SupervisorOptions) => Promise<RunningSupervisor>;
@@ -108,6 +109,21 @@ export function parseSupervisorConfig(argv: readonly string[], env: NodeJS.Proce
   return { port, hostPort, uiDir, idleMs, startTimeoutMs, killTimeoutMs, hostCommand, hostEnv };
 }
 
+/** `--version`/`-V` from argv (sprint 026 ticket 001): print the
+ * version and exit, never starting the supervisor or its host child. */
+function hasVersionFlag(argv: readonly string[]): boolean {
+  return argv.includes("--version") || argv.includes("-V");
+}
+
+/** What {@link main} did, for `bin/robot-console-supervisor.js` and for
+ * tests. `bin/robot-console-supervisor.js` itself ignores this (it only
+ * awaits {@link main} for its rejection, printing a message and exiting
+ * non-zero on failure) -- the discriminant exists so a `--version` call
+ * can return without ever constructing a {@link RunningSupervisor}. */
+export type SupervisorCliOutcome =
+  | { readonly outcome: "version"; readonly version: string }
+  | { readonly outcome: "started"; readonly supervisor: RunningSupervisor; readonly uninstall: () => void };
+
 /**
  * Start the supervisor and install SIGINT/SIGTERM handlers that stop it
  * (and therefore the host) before exiting 0. Resolves once listening;
@@ -115,12 +131,23 @@ export function parseSupervisorConfig(argv: readonly string[], env: NodeJS.Proce
  * `bin/robot-console-supervisor.js` prints before exiting non-zero.
  * Returns the running supervisor and an unregister function for the
  * signal handlers (tests).
+ *
+ * `--version`/`-V` (sprint 026 ticket 001) is checked before
+ * `parseSupervisorConfig` -- and therefore before {@link startSupervisor}
+ * and its host child -- ever runs, so it is unaffected by, and cannot
+ * trigger, any of that parsing's own validation errors.
  */
 export async function main(
   argv: readonly string[] = [],
   env: NodeJS.ProcessEnv = process.env,
   deps: SupervisorCliDeps = {},
-): Promise<{ supervisor: RunningSupervisor; uninstall: () => void }> {
+): Promise<SupervisorCliOutcome> {
+  if (hasVersionFlag(argv)) {
+    const version = getCliVersion();
+    console.log(`robot-console-supervisor ${version}`);
+    return { outcome: "version", version };
+  }
+
   const config = parseSupervisorConfig(argv, env);
   const start = deps.startSupervisor ?? startSupervisor;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
@@ -147,6 +174,7 @@ export async function main(
   process.on("SIGTERM", onSigterm);
 
   return {
+    outcome: "started",
     supervisor,
     uninstall: () => {
       process.off("SIGINT", onSigint);

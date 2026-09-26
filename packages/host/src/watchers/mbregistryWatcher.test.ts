@@ -556,4 +556,108 @@ describe("startMbregistryWatcher", () => {
 
     handle.stop();
   });
+
+  // 2026-09-25 bench: vevov plugged into peer host `loki` after the
+  // console started never appeared -- `watch()` carries only this
+  // instance's own local events, and `list()` ran once at startup. And
+  // even after a restart its link stayed `stale` (left over from an
+  // earlier unplug), because nothing ever revived a peer-owned link.
+  describe("list() polling", () => {
+    const POLL_MS = 10;
+    const linkState = (store: Store, id: string) => store.snapshotRows().links.find((l) => l.id === id)?.state;
+
+    it("picks up a peer device that appears in list() after startup", async () => {
+      const store = freshStore();
+      const devices: RegistryDevice[] = [];
+      const { client } = fakeClient(devices);
+      const handle = startWatcher(store, client, { pollIntervalMs: POLL_MS });
+
+      await waitFor(() => store.snapshotRows().tasks.length > 0);
+      devices.push(vevovDevice({ uid: "usb:loki-vevov", host: "loki", endpoint: "192.168.2.149:7440" }));
+
+      await waitFor(() => linkState(store, "mbregistry-usb:loki-vevov") === "discovered");
+      expect(store.snapshotRows().devices.find((d) => d.id === VEVOV_ID)?.name).toBe(VEVOV_NAME);
+
+      handle.stop();
+    });
+
+    it("revives a stale peer link to discovered once list() reports it present again", async () => {
+      const store = freshStore();
+      const devices = [vevovDevice({ uid: "usb:loki-vevov", host: "loki", state: "disconnected" })];
+      const { client } = fakeClient(devices);
+      const handle = startWatcher(store, client, { pollIntervalMs: POLL_MS });
+
+      await waitFor(() => linkState(store, "mbregistry-usb:loki-vevov") === "stale");
+      devices[0] = vevovDevice({ uid: "usb:loki-vevov", host: "loki" });
+
+      await waitFor(() => linkState(store, "mbregistry-usb:loki-vevov") === "discovered");
+
+      handle.stop();
+    });
+
+    it("revives a stale peer link on the very first list() (the restart case)", async () => {
+      const store = freshStore();
+      store.upsertLink({
+        id: "mbregistry-usb:loki-vevov",
+        transport: "mbregistry",
+        address: { endpoint: null, host: null, uid: "usb:loki-vevov" },
+        deviceId: null,
+        at: 1,
+      });
+      store.setLinkState({ id: "mbregistry-usb:loki-vevov", state: "stale", at: 1 });
+      const { client } = fakeClient([vevovDevice({ uid: "usb:loki-vevov", host: "loki" })]);
+      const handle = startWatcher(store, client, { pollIntervalMs: POLL_MS });
+
+      await waitFor(() => linkState(store, "mbregistry-usb:loki-vevov") === "discovered");
+
+      handle.stop();
+    });
+
+    it("ages a link stale once its uid drops out of list()", async () => {
+      const store = freshStore();
+      const devices = [vevovDevice({ uid: "usb:loki-vevov", host: "loki" })];
+      const { client } = fakeClient(devices);
+      const handle = startWatcher(store, client, { pollIntervalMs: POLL_MS });
+
+      await waitFor(() => linkState(store, "mbregistry-usb:loki-vevov") === "discovered");
+      devices.length = 0;
+
+      await waitFor(() => linkState(store, "mbregistry-usb:loki-vevov") === "stale");
+
+      handle.stop();
+    });
+
+    it("never clobbers a connected link, and writes nothing for an unchanged fleet", async () => {
+      const store = freshStore();
+      const { client } = fakeClient([vevovDevice()]);
+      const handle = startWatcher(store, client, { pollIntervalMs: POLL_MS });
+
+      await waitFor(() => linkState(store, "mbregistry-usb:vevov") === "connectable");
+      store.setLinkState({ id: "mbregistry-usb:vevov", state: "connected", at: Date.now() });
+      const lastSeen = store.snapshotRows().links.find((l) => l.id === "mbregistry-usb:vevov")?.last_seen;
+
+      await new Promise((resolve) => setTimeout(resolve, POLL_MS * 5));
+
+      const link = store.snapshotRows().links.find((l) => l.id === "mbregistry-usb:vevov");
+      expect(link?.state).toBe("connected");
+      expect(link?.last_seen).toBe(lastSeen);
+
+      handle.stop();
+    });
+
+    it("a peer_up event re-polls immediately rather than waiting for the next tick", async () => {
+      const store = freshStore();
+      const devices: RegistryDevice[] = [];
+      const { client, emit } = fakeClient(devices);
+      const handle = startWatcher(store, client, { pollIntervalMs: 60_000 });
+
+      await waitFor(() => store.snapshotRows().tasks.length > 0);
+      devices.push(vevovDevice({ uid: "usb:loki-vevov", host: "loki" }));
+      emit({ type: "peer_up", host: "loki" });
+
+      await waitFor(() => linkState(store, "mbregistry-usb:loki-vevov") === "discovered");
+
+      handle.stop();
+    });
+  });
 });

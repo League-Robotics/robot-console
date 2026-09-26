@@ -10,8 +10,17 @@
  *
  * ## Per-observation flow
  *
- * - **On start**: `client.list()` once, upserting a `devices` row and a
- *   `links(mbregistry)` row per entry (`address: {endpoint, uid}`).
+ * - **`client.list()` on start and then every `pollIntervalMs`** (default
+ *   1s), reconciled against the store: each entry upserts a `devices`
+ *   row and a `links(mbregistry)` row (`address: {endpoint, uid}`); an
+ *   mbregistry link whose uid no longer appears in the list goes
+ *   `stale`. `watch()` only carries this instance's *own* local probe
+ *   events -- a board plugged into a peer host (another machine's
+ *   mbregistry) reaches this console through `list` alone, so without
+ *   the poll a peer board plugged in after startup would never appear.
+ *   Unchanged entries are skipped (see `reconcile`), so a steady fleet
+ *   costs no store writes. A `peer_up`/`peer_down` event triggers an
+ *   immediate poll rather than waiting for the next tick.
  *   `devices.id` is decoded from the entry's `serial_payload` using the
  *   same per-role radix `banner.ts`'s `buildBanner` uses for a live
  *   banner identify (`role`-keyed table, duplicated here rather than
@@ -90,7 +99,7 @@
  * sprint.md's Test Strategy.
  */
 import { classifyBanner, type BannerDialect } from "@robot-console/protocol";
-import { Store, type DeviceKind, type Transport } from "../store/index.js";
+import { Store, type DeviceKind, type LinkState, type Transport } from "../store/index.js";
 import { mergeNamePlaceholderIfAny } from "../store/placeholderMerge.js";
 import type { MbregistryClient, RegistryDevice, WatchEvent } from "../mbregistry/client.js";
 
@@ -100,6 +109,14 @@ const MBREGISTRY_TRANSPORT: Transport = "mbregistry";
 /** `tasks.name` this watcher heartbeats every `list`/event cycle
  * (architecture.md §3 rule 5). */
 const TASK_NAME = "mbregistryWatcher";
+
+/** Default period between `client.list()` polls. */
+const DEFAULT_POLL_INTERVAL_MS = 1000;
+
+/** Link states the list poll may move a link out of. Anything else
+ * (`connecting`/`connected`/`unresponsive`/`failed`/`closed_by_user`)
+ * belongs to the connector/reconciler and is never clobbered by a poll. */
+const IDLE_LINK_STATES: ReadonlySet<LinkState> = new Set(["discovered", "stale"]);
 
 /** Serial radix, keyed by role token — mirrors `@robot-console/protocol`
  * `banner.ts`'s own (private) `SERIAL_RADIX_BY_ROLE`/`DEFAULT_SERIAL_RADIX`
@@ -197,6 +214,9 @@ export interface MbregistryWatcherDeps {
   /** Wall-clock reader for every store timestamp. Defaults to
    * `Date.now`. */
   now?: () => number;
+  /** Period between `client.list()` polls (module doc comment).
+   * Defaults to {@link DEFAULT_POLL_INTERVAL_MS}. */
+  pollIntervalMs?: number;
 }
 
 export interface MbregistryWatcherHandle {
@@ -217,7 +237,14 @@ export interface MbregistryWatcherHandle {
 export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps): MbregistryWatcherHandle {
   const client = deps.client;
   const now = deps.now ?? (() => Date.now());
+  const pollIntervalMs = deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   let stopped = false;
+  let pollTimer: ReturnType<typeof setTimeout> | undefined;
+  let polling = false;
+  let pollAgain = false;
+  /** Last-applied fingerprint per uid (see `fingerprint`), so an
+   * unchanged list entry is not re-written every poll. */
+  const applied = new Map<string, string>();
 
   /** Sprint 018 ticket 006: the link row's own `address` carries the
    * *peer device's* own routing info -- `RegistryDevice.endpoint`
@@ -263,6 +290,7 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
     owned: boolean,
     host: string | null = null,
     endpoint: string | null = null,
+    promote: (state: LinkState | undefined) => boolean = () => true,
   ): number | undefined {
     const chipId = decodeChipId(fields.serialPayload, fields.role);
     if (chipId === undefined || fields.deviceName === null || fields.deviceName.length === 0) {
@@ -293,11 +321,28 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
     }
     mergeNamePlaceholderIfAny(store, fields.deviceName, chipId, now());
 
+    const priorState = linkState(uid);
     upsertLinkRow(uid, chipId, host, endpoint);
-    if (owned) {
+    if (owned && promote(priorState)) {
       store.setLinkState({ id: mbregistryLinkId(uid), state: "connectable", at: now() });
     }
     return chipId;
+  }
+
+  /** Current state of every mbregistry link, keyed by uid. */
+  function mbregistryLinkStates(): Map<string, LinkState> {
+    const states = new Map<string, LinkState>();
+    const prefix = mbregistryLinkId("");
+    for (const link of store.reconcilerRows().links) {
+      if (link.transport === MBREGISTRY_TRANSPORT && link.id.startsWith(prefix)) {
+        states.set(link.id.slice(prefix.length), link.state);
+      }
+    }
+    return states;
+  }
+
+  function linkState(uid: string): LinkState | undefined {
+    return mbregistryLinkStates().get(uid);
   }
 
   function fieldsFromListEntry(device: RegistryDevice): IdentityFields {
@@ -344,7 +389,89 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
       return;
     }
     const owned = device.host === null || device.host === undefined;
-    identify(device.uid, fieldsFromListEntry(device), owned, host, endpoint);
+    // A poll only ever moves a link that is idle (`IDLE_LINK_STATES`): an
+    // owned one to `connectable`, a peer-owned one that had gone `stale`
+    // (unplugged earlier, now back on some peer host) to `discovered`.
+    identify(device.uid, fieldsFromListEntry(device), owned, host, endpoint, (state) =>
+      state === undefined || IDLE_LINK_STATES.has(state),
+    );
+    if (!owned && linkState(device.uid) === "stale") {
+      store.setLinkState({ id: mbregistryLinkId(device.uid), state: "discovered", at: now() });
+    }
+  }
+
+  /** A list entry minus its per-probe timestamps -- equal fingerprints
+   * mean nothing this watcher writes would change. */
+  function fingerprint(device: RegistryDevice): string {
+    const { last_seen: _lastSeen, last_probe: _lastProbe, first_seen: _firstSeen, ...rest } = device;
+    return JSON.stringify(rest);
+  }
+
+  /** Applies one `list()` result: upserts every entry that changed (or
+   * whose link was aged `stale` since, e.g. by a `detach`), and ages
+   * `stale` every non-stale mbregistry link whose uid is gone from the
+   * list. */
+  function reconcile(devices: readonly RegistryDevice[]): void {
+    const states = mbregistryLinkStates();
+    const present = new Set<string>();
+    for (const device of devices) {
+      present.add(device.uid);
+      const print = fingerprint(device);
+      const state = states.get(device.uid);
+      const revivable = state === "stale" && device.state !== DISCONNECTED_STATE;
+      if (applied.get(device.uid) === print && state !== undefined && !revivable) {
+        continue;
+      }
+      upsertFromListEntry(device);
+      applied.set(device.uid, print);
+    }
+    for (const [uid, state] of states) {
+      if (present.has(uid)) {
+        continue;
+      }
+      applied.delete(uid);
+      if (state !== "stale") {
+        markGone(uid);
+      }
+    }
+  }
+
+  /** One `list()` + {@link reconcile}. Concurrent calls coalesce: a
+   * request arriving mid-poll (a `peer_up` event, say) runs one more
+   * poll right after, never two at once. */
+  async function poll(): Promise<void> {
+    if (polling) {
+      pollAgain = true;
+      return;
+    }
+    polling = true;
+    try {
+      do {
+        pollAgain = false;
+        const devices = await client.list();
+        if (stopped) {
+          return;
+        }
+        reconcile(devices);
+        store.heartbeat(TASK_NAME, now());
+      } while (pollAgain && !stopped);
+    } finally {
+      polling = false;
+    }
+  }
+
+  function schedulePoll(): void {
+    if (stopped) {
+      return;
+    }
+    pollTimer = setTimeout(() => {
+      poll()
+        .catch(() => {
+          // A failed poll (mbregistry restarting, say) just waits for the
+          // next tick -- see `run`'s own doc comment.
+        })
+        .finally(schedulePoll);
+    }, pollIntervalMs);
   }
 
   function handleAttach(event: WatchEvent): void {
@@ -353,7 +480,11 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
   }
 
   function handleDetach(event: WatchEvent): void {
-    const uid = event.uid as string;
+    markGone(event.uid as string);
+  }
+
+  /** Ages `uid`'s link `stale` and closes any open session on it. */
+  function markGone(uid: string): void {
     const linkId = mbregistryLinkId(uid);
     store.setLinkState({ id: linkId, state: "stale", at: now() });
     // mbregistry owns exclusivity for this transport (Description) —
@@ -392,27 +523,36 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
       case "lock_state":
         handleLockState(event);
         break;
+      case "peer_up":
+      case "peer_down":
+        // A peer's boards arrive/leave via `list` only -- re-poll now
+        // rather than waiting for the next tick.
+        void poll().catch(() => {});
+        break;
       default:
-        // name_set/name_clear/peer_up/peer_down: not this watcher's
-        // concern (radio name registry / peering UI) — out of scope for
-        // this ticket.
+        // name_set/name_clear: not this watcher's concern (radio name
+        // registry).
         break;
     }
   }
 
   async function run(): Promise<void> {
+    // A `list`/`watch` failure (connection closed, transport error) must
+    // not take down the caller -- mirrors `usbWatcher.ts`'s own "a failed
+    // attach must not take down the poll loop" discipline. A failed first
+    // poll still starts the periodic one, and a `watch` failure leaves it
+    // running, so rows keep refreshing, just without the instant local
+    // attach/detach events.
     try {
-      const devices = await client.list();
-      for (const device of devices) {
-        if (stopped) {
-          return;
-        }
-        upsertFromListEntry(device);
-      }
-      store.heartbeat(TASK_NAME, now());
-      if (stopped) {
-        return;
-      }
+      await poll();
+    } catch {
+      // Retried on the next tick.
+    }
+    if (stopped) {
+      return;
+    }
+    schedulePoll();
+    try {
       for await (const event of client.watch()) {
         if (stopped) {
           return;
@@ -421,10 +561,7 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
         store.heartbeat(TASK_NAME, now());
       }
     } catch {
-      // A `list`/`watch` failure (connection closed, transport error)
-      // must not take down the caller — rows simply stop refreshing
-      // until this watcher is restarted. Mirrors `usbWatcher.ts`'s own
-      // "a failed attach must not take down the poll loop" discipline.
+      // See above.
     }
   }
 
@@ -433,6 +570,9 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
   return {
     stop(): void {
       stopped = true;
+      if (pollTimer !== undefined) {
+        clearTimeout(pollTimer);
+      }
     },
   };
 }

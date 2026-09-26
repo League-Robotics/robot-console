@@ -1,7 +1,7 @@
 ---
 id: '004'
 title: Refuse or redirect a stale mbregistry link in the flash path
-status: in-progress
+status: done
 use-cases:
 - SUC-004
 depends-on:

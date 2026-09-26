@@ -27,6 +27,7 @@ docker run --rm --platform linux/amd64 \
   -v "$DEB:/deb/$(basename "$DEB"):ro" \
   -v "$HERE:/packaging:ro" \
   -e NODE_VERSION \
+  -e MBTOOLS_VERSION \
   "$BASE_IMAGE" bash /packaging/test-in-container.sh "/deb/$(basename "$DEB")" || status=$?
 echo "test run: $(($(date +%s) - start)) s"
 exit "$status"

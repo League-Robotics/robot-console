@@ -32,6 +32,11 @@ interface FakeFlashServerOptions {
    * for it gets `{"ok": false, "code": "locked", "holder": ...}`. */
   lockedUid?: string;
   lockedHolder?: Record<string, unknown>;
+  /** 027-004: simulates mbtools' own "this UID isn't attached" fast-fail
+   * -- every `lock` request for this uid gets `{"ok": false, "code":
+   * "not_found", "error": ...}`, mirroring the wire shape ticket 003's
+   * `isMbregistryNotFound` recognizes on the identify path. */
+  notFoundUid?: string;
   /** Overrides the default `{ok: true, hex_path: ...}` `send_hex`
    * response. */
   sendHexResponse?: Record<string, unknown>;
@@ -100,6 +105,10 @@ class FakeFlashServer {
         const uid = String(op.uid);
         if (this.opts.lockedUid === uid) {
           this.write(socket, { ok: false, code: "locked", error: "already locked", holder: this.opts.lockedHolder ?? {} });
+          return;
+        }
+        if (this.opts.notFoundUid === uid) {
+          this.write(socket, { ok: false, code: "not_found", error: `"${uid}" is not attached (last seen on /dev/ttyACM0)` });
           return;
         }
         this.write(socket, { ok: true });
@@ -228,6 +237,24 @@ describe("flashViaMbregistry", () => {
     expect(outcome).toEqual({ status: "error", method: "mbregistry", reason: "owner-unavailable", error: "in use" });
   });
 
+  // 027-004: mbtools' own "gone" fast-fail on the `lock` step -- e.g. the
+  // board went stale after `server.ts#resolveFlashLinkTarget`'s own
+  // stale-link check ran but before this connection's `lock` landed --
+  // must map to the same plain-language, uid-naming message that check
+  // gives, never mbtools' raw wire text passed straight through.
+  it("classifies a not_found lock response as flash-failed with a plain-language message naming the uid, not mbtools' raw wire text", async () => {
+    const target = await startServer({ notFoundUid: "uid-1" });
+
+    const outcome = await flashViaMbregistry(target, "uid-1", undefined, "hex", () => {});
+
+    expect(outcome).toEqual({
+      status: "error",
+      method: "mbregistry",
+      reason: "flash-failed",
+      error: 'mbregistry device "uid-1" is not currently attached -- is it still connected?',
+    });
+  });
+
   it("classifies a send_hex failure as flash-failed", async () => {
     const target = await startServer({ sendHexResponse: { ok: false, code: "invalid_request", error: "payload too large" } });
 
@@ -349,6 +376,28 @@ describe("flashViaLocalSocket", () => {
 
     expect(outcome).toEqual({ status: "error", method: "mbregistry", reason: "owner-unavailable", error: "in use" });
     expect((outcome as { error: string }).error).not.toContain("undefined");
+  });
+
+  // 027-004: same not_found mapping as flashViaMbregistry's own test
+  // above, applied to the local-socket leaf -- never stages a hex file
+  // for a lock that never succeeded.
+  it("classifies a not_found lock response as flash-failed with a plain-language message naming the uid, without ever staging a hex file", async () => {
+    const target = await startUnixServer({ notFoundUid: "uid-1" });
+    let staged = false;
+    const outcome = await flashViaLocalSocket(target, "uid-1", undefined, "hex", () => {}, {
+      writeHexFile: async () => {
+        staged = true;
+        return { path: "/should/never/be/used", cleanup: async () => {} };
+      },
+    });
+
+    expect(outcome).toEqual({
+      status: "error",
+      method: "mbregistry",
+      reason: "flash-failed",
+      error: 'mbregistry device "uid-1" is not currently attached -- is it still connected?',
+    });
+    expect(staged).toBe(false);
   });
 
   it("classifies a failed terminal flash result (pyocd failure) as flash-failed with its own error text, and still cleans up the temp file", async () => {

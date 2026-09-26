@@ -1,9 +1,11 @@
 ---
 id: '004'
 title: Refuse or redirect a stale mbregistry link in the flash path
-status: open
-use-cases: [SUC-004]
-depends-on: ['003']
+status: in-progress
+use-cases:
+- SUC-004
+depends-on:
+- '003'
 github-issue: ''
 issue: gone-mbregistry-board-link-is-reattributed-to-the-next-board-on-its-port.md
 completes_issue: true
@@ -77,24 +79,24 @@ separate change needed there; it gets the same refusal for free.
 
 ## Acceptance Criteria
 
-- [ ] A flash request against a device's `stale` mbregistry linkId,
+- [x] A flash request against a device's `stale` mbregistry linkId,
       when that device has a current non-stale mbregistry link, resolves
       (and flashes) against the current link instead — mirroring the
       existing `usb`-branch redirect pattern exactly.
-- [ ] A flash request against a device's `stale` mbregistry linkId, when
+- [x] A flash request against a device's `stale` mbregistry linkId, when
       no current link exists for that device, returns `{ok: false,
       reason: ...}` — `runFlashTask` never proceeds to `flasher
       .flashMbregistry`, never starts the download/verify steps, and
       never reaches mbtools' own watchdog.
-- [ ] The refusal message is plain-language (names the uid, says it is
+- [x] The refusal message is plain-language (names the uid, says it is
       not currently attached) — matches this function's own existing
       style (e.g. the `usb` branch's "no USB device is currently
       enumerated ... is it still plugged in?").
-- [ ] `mcp/tools/flash.ts`'s precondition check (which calls
+- [x] `mcp/tools/flash.ts`'s precondition check (which calls
       `resolveFlashLinkTarget` directly) is exercised by the same or an
       equivalent test — confirm `request_flash` gets the same refusal,
       not a second, divergently-worded one.
-- [ ] A non-`stale` mbregistry link's existing resolution behavior is
+- [x] A non-`stale` mbregistry link's existing resolution behavior is
       byte-for-byte unchanged (regression, not just new coverage).
 
 ## Testing

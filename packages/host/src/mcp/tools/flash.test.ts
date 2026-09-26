@@ -345,6 +345,44 @@ describe("request_flash: an invalid or unavailable target is rejected before any
       store.close();
     }
   });
+
+  // 027-004: `request_flash`'s own precondition check calls the exact
+  // same `resolveFlashLinkTarget` `server.ts`'s `flash-start` handler
+  // does (this module's own doc comment: "one precondition set, not
+  // two") -- a device whose only mbregistry link is `stale` must get the
+  // same refusal that path gets, never a second, divergently-worded one.
+  it("a stale mbregistry link with no current sibling is rejected with the same plain-language reason resolveFlashLinkTarget gives runFlashTask, calls startFlash never, and writes no row", async () => {
+    const store = openStore({ filePath: ":memory:" });
+    try {
+      store.upsertDevice({ id: DEVICE_ID, name: DEVICE_NAME, kind: "robot", at: 1 });
+      store.upsertLink({
+        id: "mbregistry-uid-mcp1",
+        transport: "mbregistry",
+        address: { endpoint: "10.0.0.9:7440", host: "peer-host", uid: "uid-mcp1" },
+        deviceId: DEVICE_ID,
+        at: 1,
+      });
+      store.setLinkState({
+        id: "mbregistry-uid-mcp1",
+        state: "stale",
+        at: 2,
+        reason: '"uid-mcp1" is not attached (last seen on /dev/ttyACM0)',
+      });
+      const startFlash = fakeStartFlash();
+      const h = await makeHarness(store, { startFlash });
+
+      const result = await h.client.callTool({ name: "request_flash", arguments: { deviceId: DEVICE_ID, firmwareRef: "robot" } });
+
+      expect(result.isError).toBe(true);
+      const text = ((result.content as Array<{ type: string; text?: string }>)[0]?.text) ?? "";
+      expect(text).toContain("uid-mcp1");
+      expect(text).toContain("is not attached (last seen on /dev/ttyACM0)");
+      expect(startFlash).not.toHaveBeenCalled();
+      expect(store.recentAgentActions({ deviceId: DEVICE_ID }, 10)).toHaveLength(0);
+    } finally {
+      store.close();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------

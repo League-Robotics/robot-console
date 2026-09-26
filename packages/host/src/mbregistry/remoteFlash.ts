@@ -34,7 +34,12 @@
  *    for a registry predating mbtools 008-002 (no staleness hint here,
  *    unlike that module: this is a one-shot flash attempt, not a
  *    long-lived session a stale-lock `unlock --force` hint would help
- *    with). Any other lock failure maps to `reason: "flash-failed"`.
+ *    with). 027-004: `{"code": "not_found"}` — mbtools' own "this UID
+ *    isn't attached" fast-fail (mirrors `connector.ts`'s
+ *    `isMbregistryNotFound`) — maps to `reason: "flash-failed"` with a
+ *    plain-language message naming the uid, not mbtools' raw wire text.
+ *    Any other lock failure also maps to `reason: "flash-failed"`, with
+ *    mbtools' own error text passed through.
  * 2. `{"op": "send_hex", "data": "<base64 hexText>"}` → `hex_path`.
  * 3. `{"op": "flash", "uid": ..., "hex_path": ...}`: zero or more
  *    streamed `{"type": "log", "line": ...}` lines, each mapped to a
@@ -275,6 +280,18 @@ async function runFlashLock(wire: FlashWire, uid: string, label: string | undefi
   if (lockResponse.ok !== true) {
     if (lockResponse.code === "locked") {
       return ownerUnavailable(formatLockedMessage(lockResponse.holder as { label?: unknown } | undefined));
+    }
+    // 027-004: the same "gone board" fact `connector.ts`'s
+    // `isMbregistryNotFound` recognizes on the identify path (ticket
+    // 003) -- mbtools' `lock` op fast-fails `not_found` against a UID
+    // that isn't currently attached, most commonly by winning the race
+    // `server.ts#resolveFlashLinkTarget`'s own `stale`-link redirect/
+    // refusal (ticket 004) is meant to close off before ever reaching
+    // here (e.g. the link went stale between that check and this call).
+    // Mapped to the same plain-language wording that refusal uses,
+    // naming the uid, rather than mbtools' own raw wire text.
+    if (lockResponse.code === "not_found") {
+      return flashFailure(`mbregistry device "${uid}" is not currently attached -- is it still connected?`);
     }
     return flashFailure(String(lockResponse.error ?? `mbregistry refused to lock "${uid}" for flashing`));
   }

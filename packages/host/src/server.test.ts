@@ -1786,6 +1786,125 @@ describe("server.ts: flash-start (mbregistry transport)", () => {
     expect(result).toMatchObject({ type: "flash-result", status: "ok" });
   });
 
+  // 027-004: the observed tigez/zugit bug -- a `stale` mbregistry link
+  // (the gone board's own link) must never be flashed straight from its
+  // own stored address. When the same device also has a current, live
+  // sibling mbregistry link, `resolveFlashLinkTarget` must redirect to
+  // that one instead, mirroring the `usb` branch's own redirect pattern
+  // exactly.
+  it("redirects a flash-start on a stale mbregistry link to this device's own current mbregistry link", async () => {
+    const device = fakeRegistryDevice({ uid: "uid-6b", host: "peer-host", endpoint: "10.0.0.9:7440" });
+    const mbregistryClient = fakeMbregistryClient(device, 5555);
+    const flashViaMbregistryMock = vi.fn(async () => ({ status: "ok", method: "mbregistry" }) satisfies FlashOutcome);
+    const h = await harness({
+      mbregistryClient,
+      flashViaMbregistry: flashViaMbregistryMock as unknown as StartServerOptions["flashViaMbregistry"],
+    });
+    h.store.upsertDevice({ id: 6, name: deviceIdToName(6), kind: "robot", at: 1 });
+    // The gone board's own now-stale link -- same deviceId, same
+    // transport, a different linkId than the current one below.
+    h.store.upsertLink({
+      id: "mbregistry-uid-6a",
+      transport: "mbregistry",
+      address: { endpoint: "10.0.0.5:7440", host: "old-host", uid: "uid-6a" },
+      deviceId: 6,
+      at: 1,
+    });
+    h.store.setLinkState({ id: "mbregistry-uid-6a", state: "stale", at: 2, reason: 'mbregistry: "uid-6a" is not attached (last seen on /dev/ttyACM0)' });
+    h.store.upsertLink({
+      id: "mbregistry-uid-6b",
+      transport: "mbregistry",
+      address: { endpoint: "10.0.0.9:7440", host: "peer-host", uid: "uid-6b" },
+      deviceId: 6,
+      at: 3,
+    });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    // Flash the STALE linkId -- it must redirect, not flash uid-6a.
+    const result = await driveLocalHexFlash(ws, "mbregistry-uid-6a");
+
+    expect(flashViaMbregistryMock).toHaveBeenCalledTimes(1);
+    const call = flashViaMbregistryMock.mock.calls[0]!;
+    expect(call[0]).toEqual({ host: "10.0.0.9", port: 7440 });
+    expect(call[1]).toBe("uid-6b");
+    expect(result).toMatchObject({ type: "flash-result", status: "ok" });
+  });
+
+  // 027-004: when a `stale` mbregistry link's device has no current
+  // mbregistry link at all, the flash must refuse fast -- never build a
+  // target from the stale row's own address, which is exactly what let
+  // `runFlashTask` hang against pyocd's 60s watchdog in the observed bug.
+  it("refuses a flash-start on a stale mbregistry link with no current sibling link, naming the uid and never calling flashMbregistry", async () => {
+    const device = fakeRegistryDevice({ uid: "uid-7", host: "peer-host", endpoint: "10.0.0.9:7440" });
+    const mbregistryClient = fakeMbregistryClient(device, 5555);
+    const flashViaMbregistryMock = vi.fn(async () => ({ status: "ok", method: "mbregistry" }) satisfies FlashOutcome);
+    const h = await harness({
+      mbregistryClient,
+      flashViaMbregistry: flashViaMbregistryMock as unknown as StartServerOptions["flashViaMbregistry"],
+    });
+    h.store.upsertDevice({ id: 7, name: deviceIdToName(7), kind: "robot", at: 1 });
+    h.store.upsertLink({
+      id: "mbregistry-uid-7",
+      transport: "mbregistry",
+      address: { endpoint: "10.0.0.9:7440", host: "peer-host", uid: "uid-7" },
+      deviceId: 7,
+      at: 1,
+    });
+    h.store.setLinkState({
+      id: "mbregistry-uid-7",
+      state: "stale",
+      at: 2,
+      reason: '"uid-7" is not attached (last seen on /dev/ttyACM3)',
+    });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const result = await driveLocalHexFlash(ws, "mbregistry-uid-7");
+
+    expect(flashViaMbregistryMock).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ type: "flash-result", status: "error" });
+    expect((result as { message?: string }).message).toBe('"uid-7" is not attached (last seen on /dev/ttyACM3)');
+  });
+
+  // 027-004: a stale mbregistry link with no recorded `stateReason` (a
+  // row that went stale some other way) still gets a plain-language
+  // refusal naming the uid -- the fallback wording, not an empty/`null`
+  // message.
+  it("refuses a stale mbregistry link with no stateReason using the fallback plain-language message naming the uid", async () => {
+    const device = fakeRegistryDevice({ uid: "uid-8", host: "peer-host", endpoint: "10.0.0.9:7440" });
+    const mbregistryClient = fakeMbregistryClient(device, 5555);
+    const h = await harness({ mbregistryClient });
+    h.store.upsertDevice({ id: 8, name: deviceIdToName(8), kind: "robot", at: 1 });
+    h.store.upsertLink({
+      id: "mbregistry-uid-8",
+      transport: "mbregistry",
+      address: { endpoint: "10.0.0.9:7440", host: "peer-host", uid: "uid-8" },
+      deviceId: 8,
+      at: 1,
+    });
+    h.store.setLinkState({ id: "mbregistry-uid-8", state: "stale", at: 2 });
+    await flush();
+
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    const result = await driveLocalHexFlash(ws, "mbregistry-uid-8");
+
+    expect(result).toMatchObject({ type: "flash-result", status: "error" });
+    expect((result as { message?: string }).message).toMatch(/uid-8.*not currently attached/);
+  });
+
   // Port contention (replay guide §3): `startRuntime` ages every `usb`
   // link stale once mbregistryWatcher is running, but a `usb-<serial>`
   // linkId still resolves to a real, physically-enumerable board

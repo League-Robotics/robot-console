@@ -1,8 +1,9 @@
 ---
 id: '006'
 title: MCP send_command returns correlated robot reply lines
-status: open
-use-cases: [SUC-006]
+status: done
+use-cases:
+- SUC-006
 depends-on: []
 github-issue: ''
 issue: mcp-send-command-does-not-return-robot-replies.md
@@ -67,22 +68,22 @@ before calling a tool, so this is not optional polish.
 
 ## Acceptance Criteria
 
-- [ ] `send_command`'s result includes a `reply` field carrying the
+- [x] `send_command`'s result includes a `reply` field carrying the
       line(s) received within the collection window after sending.
-- [ ] A sequenced verb's reply is correlated via the existing
+- [x] A sequenced verb's reply is correlated via the existing
       `onAckNack` seq-matching (already implemented in `LineLink`) — not
       a second, hand-rolled seq comparison.
-- [ ] An unsequenced query's reply (and any unsolicited `DBG:` lines
+- [x] An unsequenced query's reply (and any unsolicited `DBG:` lines
       seen in the same window) come through `onInboundLine`.
-- [ ] No reply within the window returns `reply: []` (or equivalent),
+- [x] No reply within the window returns `reply: []` (or equivalent),
       still `ok: true` — never an error for an unanswered query.
-- [ ] The subscription is torn down after the window closes in every
+- [x] The subscription is torn down after the window closes in every
       case (success, no-reply, and an error thrown by `sendCommand`
       itself) — no listener leak across repeated `send_command` calls.
-- [ ] The gated motion-verb rejection and the `HELLO`-is-rejected
+- [x] The gated motion-verb rejection and the `HELLO`-is-rejected
       behavior (both already in this handler/`sendCommand`) are
       unchanged.
-- [ ] The tool's own description text documents the new `reply` field.
+- [x] The tool's own description text documents the new `reply` field.
 
 ## Testing
 

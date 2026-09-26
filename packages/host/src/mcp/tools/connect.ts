@@ -100,7 +100,7 @@ import {
   openSession,
   closeSession,
   requireSession,
-  sendCommand,
+  sendCommandWithReply,
   findLinkStateReason,
   type OpenSessionParams,
   type SessionOpsReconciler,
@@ -270,7 +270,11 @@ export function registerConnectTools(server: McpServer, deps: ConnectToolsDeps):
         "arguments properly before executing immediately (this is a routing message, not an approval step -- there is " +
         "no human-approval gate in this system). STOP and ESTOP always go through this tool, unconditionally, since " +
         "they reduce risk rather than increase it. Requires an already-open session on `linkId` (call open_session " +
-        "first).",
+        "first). Returns `{ok, sent, reply}` -- `reply` is whatever line(s) the robot sends back within a short, " +
+        "fixed window after sending: a sequenced verb's own correlated ack/nack (e.g. WIFICRED's `\"nack 1 0 none\"`), " +
+        "an unsequenced query's own answer (ID, STATUS, ...), and any unsolicited line seen in that same window (e.g. " +
+        "a DBG:wifi chatter line). `reply` is `[]` when nothing arrives in time -- an unanswered query is still " +
+        "`ok: true`, never a tool error.",
       inputSchema: {
         linkId: z.string().min(1).describe("The link id an open_session call already opened."),
         verb: z
@@ -305,8 +309,8 @@ export function registerConnectTools(server: McpServer, deps: ConnectToolsDeps):
         return jsonResult({ error: errorMessage(error) }, true);
       }
       try {
-        const sent = sendCommand(session, verb, fields as readonly WireField[]);
-        return jsonResult({ ok: true, sent: sent.replace(/\n$/, "") });
+        const { sent, reply } = await sendCommandWithReply(session, verb, fields as readonly WireField[]);
+        return jsonResult({ ok: true, sent: sent.replace(/\n$/, ""), reply });
       } catch (error) {
         return jsonResult({ error: errorMessage(error) }, true);
       }

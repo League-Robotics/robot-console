@@ -288,3 +288,104 @@ export function sendCommand(session: ConnectedSession, verb: string, fields: rea
   }
   return isSequencedVerb(verb) ? session.link.sendCommand(verb, fields) : session.link.sendUnsequencedQuery(verb, fields);
 }
+
+/** Bound on {@link sendCommandWithReply}'s reply-collection window --
+ * mirrors `watchers/relaySweeper.ts`'s own `SWEEP_PROBE_TIMEOUT_MS`
+ * (`sprint.md`'s SUC-003: "wait <= 500 ms"), this codebase's existing
+ * convention for bounding a wait on a robot reply over the same radio
+ * hop, rather than a made-up number with no rationale. */
+export const SEND_COMMAND_REPLY_WINDOW_MS = 500;
+
+/** Bound on how many lines {@link sendCommandWithReply} collects in one
+ * window -- an unsolicited `DBG:` stream (or a nack/resend storm) must
+ * never make one `send_command` call block on an unbounded buffer. */
+export const SEND_COMMAND_MAX_REPLY_LINES = 20;
+
+export interface SendCommandWithReplyResult {
+  /** The exact wire line transmitted -- byte-for-byte {@link sendCommand}'s
+   * own return value. */
+  readonly sent: string;
+  /** Every line collected during the window, in arrival order -- the
+   * correlated ack/nack for a sequenced verb, an unsequenced query's own
+   * reply, and any unsolicited lines (e.g. `DBG:...`) seen in the same
+   * window. `[]` when nothing arrived -- not an error; an unanswered
+   * query is not a `send_command` failure. */
+  readonly reply: readonly string[];
+}
+
+/**
+ * Sends `verb`/`fields` exactly like {@link sendCommand}, additionally
+ * collecting whatever the robot sends back within a short, fixed window
+ * -- `mcp/tools/connect.ts`'s `send_command` tool needs this so an agent
+ * can read a query's own answer (`WIFICRED`, `ID`, `DBG:wifi`, ...)
+ * without bypassing the console to read serial directly (the issue this
+ * ticket closes).
+ *
+ * Every reply line is read off `session.link.onInboundLine` -- it fires
+ * for every inbound line regardless of how `receive()` classified it
+ * (`server.ts`'s student console broadcast, item G, subscribes the same
+ * way), so it alone already carries everything this call needs: a
+ * sequenced verb's own correlated ack/nack line (e.g. `"nack 1 0 none"`),
+ * an unsequenced query's own reply, and any unsolicited line (a `DBG:`
+ * chatter line) seen in the same window.
+ *
+ * `session.link.onAckNack` is subscribed only for a sequenced verb
+ * ({@link isSequencedVerb}), and used purely as a completion signal, never
+ * as a second source of reply text: `LineLink`'s own `Session` has
+ * already seq-matched the inbound ack/nack to the command this call just
+ * sent before dispatching it, so once it fires, this call knows -- from
+ * that existing correlation, not a hand-rolled comparison against raw
+ * line text -- that the robot's answer to *this* send has arrived, and
+ * closes the window immediately rather than waiting out the rest of the
+ * fixed budget. An unsequenced query has no such signal, so its call
+ * always waits the full window.
+ *
+ * Never rejects for "no reply" -- returns `reply: []` (still a
+ * successful send). Rethrows whatever {@link sendCommand} itself throws
+ * (e.g. `HELLO`), after unsubscribing both listeners first -- no
+ * listener leak on that path, or any other.
+ */
+export function sendCommandWithReply(
+  session: ConnectedSession,
+  verb: string,
+  fields: readonly WireField[] = [],
+  windowMs: number = SEND_COMMAND_REPLY_WINDOW_MS,
+): Promise<SendCommandWithReplyResult> {
+  return new Promise<SendCommandWithReplyResult>((resolve, reject) => {
+    const reply: string[] = [];
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let sent = "";
+
+    const unsubscribeInbound = session.link.onInboundLine((line: string) => {
+      if (reply.length < SEND_COMMAND_MAX_REPLY_LINES) {
+        reply.push(line.replace(/\n$/, ""));
+      }
+    });
+    const unsubscribeAckNack = isSequencedVerb(verb) ? session.link.onAckNack(() => finish()) : undefined;
+
+    function finish(): void {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+      unsubscribeInbound();
+      unsubscribeAckNack?.();
+      resolve({ sent, reply });
+    }
+
+    try {
+      sent = sendCommand(session, verb, fields);
+    } catch (error) {
+      unsubscribeInbound();
+      unsubscribeAckNack?.();
+      reject(error);
+      return;
+    }
+
+    timer = setTimeout(finish, windowMs);
+  });
+}

@@ -152,6 +152,47 @@ describe("plan() -- pure per-device connect decisions", () => {
   });
 
   // -------------------------------------------------------------------
+  // 027-005 Part B: the issue's own second symptom -- a failed own-uid
+  // mbregistry link (`hodr`/`/dev/ttyACM1`, tigez) whose `next_retry_at`
+  // passed with no retry attempted for 10+ minutes. `plan()`'s own
+  // backoff rule (rule 4, `isAutoConnectEligible`) is transport-agnostic
+  // -- this is the same "fake clock" case as the `usb` one directly
+  // above, just walking a fixed sequence of `now` values through `plan`
+  // rather than a real timer, exercised here for `mbregistry`
+  // specifically since that is the transport the live issue was filed
+  // against. See connector.ts's own `ConnectorDeps.mbregistryWriteLog`
+  // doc comment and this ticket's own recorded finding for why the
+  // *handshake* itself needed no code fix -- this pure `plan()` case is
+  // what proves the *retry* half independently of that finding, with no
+  // real hardware or daemon involved (fakes/pure-function input only).
+  // -------------------------------------------------------------------
+
+  it("027-005: a failed mbregistry link with no other link for the device retries once next_retry_at elapses, exactly like usb/mbserial", () => {
+    const failed = linkRow({ id: "mbregistry-1", transport: "mbregistry", deviceId: 1, state: "failed", nextRetryAt: NOW + 1000 });
+    const input = rows({ devices: [deviceRow(1, true)], links: [failed] });
+    expect(plan(input, NOW)).toEqual([]);
+    expect(plan(input, NOW + 999)).toEqual([]);
+    expect(plan(input, NOW + 1000)).toEqual([{ kind: "connect", linkId: "mbregistry-1" }]);
+  });
+
+  it("027-005: a failed mbregistry link's backoff-elapsed retry is correctly withheld once another link for the same device is already connected (deviceHasActiveLink, not a bug -- matches live bench state: tigez's mbregistry link stopped retrying the moment wifi-tigez connected)", () => {
+    const wifiConnected = linkRow({ id: "wifi-1", transport: "wifi", deviceId: 1, state: "connected" });
+    const mbregistryFailed = linkRow({
+      id: "mbregistry-1",
+      transport: "mbregistry",
+      deviceId: 1,
+      state: "failed",
+      nextRetryAt: NOW - 1,
+    });
+    const input = rows({
+      devices: [deviceRow(1, true)],
+      links: [wifiConnected, mbregistryFailed],
+      sessions: [{ linkId: "wifi-1" }],
+    });
+    expect(plan(input, NOW)).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------
   // 018-008: mbserial retries on backoff, and the rule this module's own
   // doc comment writes down ("018-008: falling through past an
   // ineligible higher-priority link") -- a device with no connected

@@ -270,6 +270,54 @@ export interface ConnectorDeps {
    * `runtime.ts` always wires the same instance handed to
    * `watchers/relaySweeper.ts` and `connect/relayBridger.ts`. */
   revocation?: RelayLeaseRevocation;
+  /**
+   * 027-005: byte-level diagnostic hook for an `mbregistry`-transport
+   * own-uid link's identify path -- called with `(link.id, bytes)` for
+   * every `write()` this module's `LineLink` makes onto that link's
+   * stream, exactly as sent (the initial `HELLO` from `identify()`, and
+   * every scheduled resend from `bootWindowIdentify.ts`'s
+   * `resendHello`). Scoped to `buildStreamPlan`'s plain `"mbregistry"`
+   * case only (an own-uid link's direct identify stream) -- never the
+   * `radio`/`mbrelay` relay-physical case, which is a different link's
+   * own concern.
+   *
+   * Deliberately optional, off by default -- there is no pre-existing
+   * "wire-level tracing" convention anywhere in this codebase to match
+   * (checked: no `DEBUG`/`NODE_DEBUG`/logger-package usage in
+   * `packages/host/src/link`, `connect/`, or `mbregistry/`), so this
+   * follows the closest existing pattern instead: an optional injected
+   * callback a caller supplies to turn diagnostics on, the same shape
+   * `connect/unhandled.ts`'s and `supervisor/supervisor.ts`'s own
+   * `log?:` fields already use elsewhere in this codebase. `runtime.ts`
+   * wires a real sink gated by `ROBOT_CONSOLE_MBREGISTRY_WIRE_LOG`
+   * (unset/`"0"` = off, matching this codebase's `ROBOT_CONSOLE_*`
+   * opt-in env var convention), so a bench operator re-running the
+   * `mbregistry-own-uid-link-never-identifies.md` issue against real
+   * hardware gets the exact bytes sent, without any code change needed
+   * to turn it on. Every existing test that constructs `ConnectorDeps`
+   * without this field is unaffected (`buildStreamPlan` never wraps the
+   * stream when it is `undefined`).
+   */
+  mbregistryWriteLog?: (linkId: string, bytes: string) => void;
+}
+
+/**
+ * Wraps `stream` so every `write()` call also reports the exact bytes to
+ * `log`, before delegating to the real write -- 027-005's byte-level
+ * identify-write diagnostic (see {@link ConnectorDeps.mbregistryWriteLog}'s
+ * own doc comment). `open`/`on`/`close` pass straight through unchanged;
+ * only `write()` is intercepted.
+ */
+export function withWriteLog(stream: ByteStream, log: (bytes: string) => void): ByteStream {
+  return {
+    open: (signal: AbortSignal) => stream.open(signal),
+    write: (bytes: string, callback: (err?: Error | null) => void) => {
+      log(bytes);
+      stream.write(bytes, callback);
+    },
+    on: stream.on.bind(stream),
+    close: () => stream.close(),
+  };
 }
 
 export interface ConnectorOptions {
@@ -763,6 +811,7 @@ function buildStreamPlan(
   getLink: () => LineLink,
   scheduler: Scheduler,
   relayHandshakeTimeoutMs: number | undefined,
+  mbregistryWriteLog: ((linkId: string, bytes: string) => void) | undefined,
 ): StreamPlan {
   switch (link.transport) {
     case "usb": {
@@ -794,7 +843,9 @@ function buildStreamPlan(
     }
     case "mbregistry": {
       const mb = address as MbregistryAddress;
-      return { stream: createMbregistryStream(mb, "serial") };
+      const raw = createMbregistryStream(mb, "serial");
+      const stream = mbregistryWriteLog ? withWriteLog(raw, (bytes) => mbregistryWriteLog(link.id, bytes)) : raw;
+      return { stream };
     }
     default: {
       const exhaustive: never = link.transport;
@@ -1113,6 +1164,7 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
   const now = deps.now ?? (() => Date.now());
   const harvester = deps.harvester ?? NO_OP_HARVESTER;
   const revocation = deps.revocation;
+  const mbregistryWriteLog = deps.mbregistryWriteLog;
 
   const connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
   const identifySchedule = opts.identifySchedule ?? DEFAULT_IDENTIFY_SCHEDULE_MS;
@@ -1197,6 +1249,7 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
         () => lineLink as LineLink,
         scheduler,
         relayHandshakeTimeoutMs,
+        mbregistryWriteLog,
       );
       lineLink = createLineLink(plan.stream, {
         identifyTimeoutMs: identifyBudgetMs,

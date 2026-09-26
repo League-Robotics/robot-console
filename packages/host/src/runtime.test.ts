@@ -12,7 +12,7 @@
  * `startUsbWatcher` (which production wiring no longer calls -- see
  * `runtime.ts`'s own module doc comment).
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { startRuntime, type StartRuntimeOptions } from "./runtime.js";
 import type { HarvesterDeps, HarvesterTelemetryEvent } from "./connect/harvester.js";
 import type { ConnectorDeps } from "./connect/connector.js";
@@ -448,6 +448,70 @@ describe("startRuntime -- composition", () => {
     await startRuntime(f.options);
 
     expect(f.ageLinksMock).toHaveBeenCalledWith("usb", 0, expect.any(Number));
+  });
+
+  // 027-005 Part A: byte-level mbregistry identify-write diagnostics
+  // (`connect/connector.ts`'s own `ConnectorDeps.mbregistryWriteLog` doc
+  // comment) -- opt-in via `ROBOT_CONSOLE_MBREGISTRY_WIRE_LOG`, matching
+  // this codebase's own `ROBOT_CONSOLE_*` env-var convention rather than
+  // a pre-existing wire-tracing one (there is none to match -- see that
+  // doc comment for what was checked).
+  describe("mbregistryWriteLog (027-005)", () => {
+    const ENV_KEY = "ROBOT_CONSOLE_MBREGISTRY_WIRE_LOG";
+    const original = process.env[ENV_KEY];
+
+    afterEach(() => {
+      if (original === undefined) {
+        delete process.env[ENV_KEY];
+      } else {
+        process.env[ENV_KEY] = original;
+      }
+    });
+
+    it("does not wire a default mbregistryWriteLog when the env var is unset", async () => {
+      delete process.env[ENV_KEY];
+      const f = fakeDeps();
+
+      await startRuntime(f.options);
+
+      expect(f.getCapturedConnectorDeps()?.mbregistryWriteLog).toBeUndefined();
+    });
+
+    it.each(["0", "false", "False"])("does not wire a default mbregistryWriteLog when the env var is %j", async (value) => {
+      process.env[ENV_KEY] = value;
+      const f = fakeDeps();
+
+      await startRuntime(f.options);
+
+      expect(f.getCapturedConnectorDeps()?.mbregistryWriteLog).toBeUndefined();
+    });
+
+    it("wires a default mbregistryWriteLog logging to console.error when the env var is set to a truthy value", async () => {
+      process.env[ENV_KEY] = "1";
+      const f = fakeDeps();
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      try {
+        await startRuntime(f.options);
+        const log = f.getCapturedConnectorDeps()?.mbregistryWriteLog;
+        expect(typeof log).toBe("function");
+        log?.("mbregistry-XYZ", "HELLO\n");
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("mbregistry-XYZ"));
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(JSON.stringify("HELLO\n")));
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    it("a caller-supplied connectorDeps.mbregistryWriteLog overrides the env-gated default", async () => {
+      process.env[ENV_KEY] = "1";
+      const f = fakeDeps();
+      const suppliedLog = vi.fn();
+
+      await startRuntime({ ...f.options, connectorDeps: { mbregistryWriteLog: suppliedLog } });
+
+      expect(f.getCapturedConnectorDeps()?.mbregistryWriteLog).toBe(suppliedLog);
+    });
   });
 });
 

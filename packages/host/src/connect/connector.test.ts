@@ -1752,3 +1752,72 @@ describe("connectAndIdentify -- mbregistry not_found classification (027-003)", 
     store.close();
   });
 });
+
+// ---------------------------------------------------------------------
+// 027-005: byte-level identify-write logging for an mbregistry own-uid
+// link (`ConnectorDeps.mbregistryWriteLog`) -- proves both that the
+// boot-window resend schedule really does reach the wire for this
+// transport (the issue's own open question: "confirm the connector
+// actually sends HELLO ... on an mbregistry stream and not only on
+// direct serial") and that the diagnostic hook reports exactly those
+// same bytes, not an approximation.
+// ---------------------------------------------------------------------
+
+describe("connectAndIdentify -- mbregistry identify write logging (027-005)", () => {
+  it("reports the initial HELLO and every scheduled resend, verbatim, scoped to this link's own id", async () => {
+    const store = freshStore();
+    const stream = new FakeByteStream(); // never answers HELLO -- exhausts the whole boot-window schedule
+    const writeLog: Array<{ linkId: string; bytes: string }> = [];
+    const connector = createConnector(
+      store,
+      { ...mbregistryDeps(stream), mbregistryWriteLog: (linkId, bytes) => writeLog.push({ linkId, bytes }) },
+      { identifyBudgetMs: 50 },
+    );
+    const link = mbregistryLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    // The immediate scheduler resolves every `scheduler.delay()` in the
+    // boot-window resend loop on its own microtask -- one more flush
+    // (a macrotask boundary) is enough for every offset in
+    // `DEFAULT_IDENTIFY_SCHEDULE_MS` to have been walked and resent,
+    // well before the real `identifyBudgetMs` timer ever fires.
+    await flush();
+    // Nothing will ever answer -- end the identify wait deterministically
+    // rather than waiting out the real 50ms timeout.
+    stream.emitClose();
+
+    await expect(promise).rejects.toThrow(/no banner/i);
+
+    expect(writeLog.length).toBeGreaterThanOrEqual(2); // initial HELLO plus at least one resend
+    expect(writeLog.every((entry) => entry.linkId === link.id)).toBe(true);
+    expect(writeLog.every((entry) => entry.bytes === "HELLO\n")).toBe(true);
+    // The log mirrors the fake stream's own write capture exactly --
+    // proving this reports precisely what write() received, not a
+    // summary or approximation of it.
+    expect(writeLog.map((entry) => entry.bytes)).toEqual(stream.writes.map((w) => w.bytes));
+    store.close();
+  });
+
+  it("never fires for a usb link -- scoped to mbregistry only", async () => {
+    const store = freshStore();
+    const stream = new BannerByteStream(ROBOT_BANNER);
+    const writeLog: Array<{ linkId: string; bytes: string }> = [];
+    const connector = createConnector(store, {
+      ...baseDeps(stream),
+      mbregistryWriteLog: (linkId, bytes) => writeLog.push({ linkId, bytes }),
+    });
+    const link = usbLink();
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await promise;
+
+    expect(writeLog).toEqual([]);
+    store.close();
+  });
+});

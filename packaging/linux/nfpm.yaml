@@ -18,9 +18,10 @@ description: |-
   Robot Console: manage, flash and drive micro:bit robots
   Browser-based console for micro:bit robots on the Elecfreaks Nezha
   differential-drive board. Bundles its own Node.js runtime under
-  /opt/robot-console, runs as a per-user systemd service on
-  127.0.0.1:4795 and opens as a Google Chrome app window. A udev rule
-  grants the logged-in user access to micro:bit (DAPLink) USB devices.
+  /opt/robot-console, starts on demand as a per-user systemd service on
+  a private, per-user localhost port and opens as a Google Chrome app
+  window. A udev rule grants the logged-in user access to micro:bit
+  (DAPLink) USB devices.
 umask: 0o022
 
 # libudev1 + libusb-1.0-0: both node-hid prebuilds (hidraw and libusb
@@ -40,6 +41,21 @@ contents:
 
   - src: /packaging/robot-console.sh
     dst: /usr/bin/robot-console
+    file_info:
+      mode: 0755
+
+  # Per-user port default (see docs/linux-install.md, "How it works" --
+  # design "start on demand, port per user"). Sourced by both
+  # robot-console-serve (below) and /usr/bin/robot-console.
+  - src: /packaging/port.sh
+    dst: /opt/robot-console/lib/port.sh
+    file_info:
+      mode: 0644
+
+  # Start wrapper the unit's ExecStart runs instead of node+supervisor
+  # directly, so it can apply the per-user port default before exec'ing.
+  - src: /packaging/robot-console-serve
+    dst: /opt/robot-console/bin/robot-console-serve
     file_info:
       mode: 0755
 

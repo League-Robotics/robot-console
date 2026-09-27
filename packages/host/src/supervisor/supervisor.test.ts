@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { parseSupervisorConfig } from "./cli.js";
-import { startSupervisor, type RunningSupervisor, type SupervisorOptions, type SupervisorStatus } from "./supervisor.js";
+import { PORT_IN_USE_EXIT_CODE, startSupervisor, type RunningSupervisor, type SupervisorOptions, type SupervisorStatus } from "./supervisor.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(HERE, "fakeHost.fixture.mjs");
@@ -201,9 +201,15 @@ describe("supervisor: HTTP", () => {
     expect(await response.text()).toContain("UI has not been built");
   });
 
-  it("fails with a clear message when the public port is taken", async () => {
+  it("fails with a clear message and PORT_IN_USE_EXIT_CODE when the public port is taken", async () => {
     const { supervisor } = await start();
-    await expect(start({ port: supervisor.port })).rejects.toThrow(/already in use/);
+    let caught: unknown;
+    await start({ port: supervisor.port }).catch((error: unknown) => {
+      caught = error;
+    });
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/already in use/);
+    expect((caught as { exitCode?: number }).exitCode).toBe(PORT_IN_USE_EXIT_CODE);
   });
 
   // Merge note (linux-packaging x sprint 021): `/api/host-info` must be
@@ -370,13 +376,19 @@ describe("supervisor: cli", () => {
   });
 
   /** Run cli.ts's main() in a real Node process (via tsx), the way
-   * bin/robot-console-supervisor.js does, so real signals are used. */
+   * bin/robot-console-supervisor.js does, so real signals are used. This
+   * inline script mirrors that file's own catch block (including its
+   * `.exitCode` pass-through for PORT_IN_USE_EXIT_CODE) exactly, since
+   * these tests spawn cli.ts directly rather than through the bin shim. */
   function spawnSupervisor(env: Record<string, string>): { child: ChildProcess; output: () => string } {
     const cliUrl = pathToFileURL(path.join(HERE, "cli.ts")).href;
     const script =
       `const { main } = await import(${JSON.stringify(cliUrl)});` +
       `try { await main(process.argv.slice(1)); }` +
-      `catch (error) { console.error("robot-console-supervisor: " + error.message); process.exitCode = 1; }`;
+      `catch (error) {` +
+      `  console.error("robot-console-supervisor: " + error.message);` +
+      `  process.exitCode = (error && typeof error === "object" && typeof error.exitCode === "number") ? error.exitCode : 1;` +
+      `}`;
     const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
       cwd: REPO_ROOT,
       env: { ...process.env, ...env },
@@ -412,7 +424,7 @@ describe("supervisor: cli", () => {
     expect(output()).toContain("received SIGTERM");
   }, 15_000);
 
-  it("exits non-zero with a one-line error when the public port is taken", async () => {
+  it("exits with PORT_IN_USE_EXIT_CODE and a one-line error when the public port is taken (no crash loop)", async () => {
     const blocker = net.createServer();
     await new Promise<void>((resolve) => blocker.listen(0, "127.0.0.1", resolve));
     const address = blocker.address();
@@ -425,7 +437,7 @@ describe("supervisor: cli", () => {
         ROBOT_CONSOLE_HOST_COMMAND: JSON.stringify([process.execPath, FIXTURE]),
       });
       const code = await new Promise<number | null>((resolve) => child.once("exit", (c) => resolve(c)));
-      expect(code).toBe(1);
+      expect(code).toBe(PORT_IN_USE_EXIT_CODE);
       expect(output().trim()).toBe(
         `robot-console-supervisor: port ${takenPort} is already in use on 127.0.0.1 -- is another robot-console already running?`,
       );

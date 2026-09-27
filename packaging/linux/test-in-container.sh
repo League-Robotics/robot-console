@@ -14,14 +14,17 @@
 set -uo pipefail
 
 DEB="$1"
-PORT=4795
-HOST_PORT=4796
+# PORT/HOST_PORT are per-user now (uid-derived, see lib/port.sh) -- computed
+# below once the "student" test user exists (Phase A, after `useradd`), not
+# hardcoded here. Nothing before that point in this script needs them.
 ROOT=/opt/robot-console
 NODE="$ROOT/node/bin/node"
 APP="$ROOT/app"
 SUP_JS="$APP/bin/robot-console-supervisor.js"
 HOST_JS="$APP/bin/robot-console.js"
 UI_DIST="$APP/packages/ui/dist"
+PORT_HELPER="$ROOT/lib/port.sh"
+SERVE="$ROOT/bin/robot-console-serve"
 UNIT=/usr/lib/systemd/user/robot-console.service
 RULES=/usr/lib/udev/rules.d/70-robot-console-microbit.rules
 DESKTOP=/usr/share/applications/robot-console.desktop
@@ -240,7 +243,8 @@ echo "... plus $(dpkg -L robot-console | grep -c "^$APP/node_modules/.") node_mo
 for f in "$NODE" "$ROOT/node/LICENSE" "$ROOT/BUILD_INFO" "$APP/package.json" "$SUP_JS" "$HOST_JS" \
   "$APP/packages/host/dist/cli.js" "$APP/packages/host/dist/supervisor/cli.js" \
   "$APP/packages/protocol/dist/index.js" "$UI_DIST/index.html" "$UI_DIST/manifest.webmanifest" \
-  "$LAUNCHER" "$UNIT" "$RULES" "$DESKTOP" "$ICON_SVG" "$ICON_192" "$ICON_512"; do
+  "$LAUNCHER" "$UNIT" "$RULES" "$DESKTOP" "$ICON_SVG" "$ICON_192" "$ICON_512" \
+  "$PORT_HELPER" "$SERVE"; do
   check "A: ships $f" test -e "$f"
 done
 check "A: BUILD_INFO entry is the supervisor" grep -qx 'entry=bin/robot-console-supervisor.js' "$ROOT/BUILD_INFO"
@@ -259,8 +263,9 @@ check "A: every packaged path is owned by root:root" \
   test -z "$(dpkg -L robot-console | xargs -d '\n' stat -c '%U:%G %n' | grep -v '^root:root ')"
 check "A: nothing under /opt/robot-console is group/world-writable" \
   test -z "$(find "$ROOT" ! -type l -perm /022)"
-check "A: launcher and node are 0755" sh -c "[ \$(stat -c %a $LAUNCHER) = 755 ] && [ \$(stat -c %a $NODE) = 755 ]"
-for f in "$UNIT" "$RULES" "$DESKTOP" "$ICON_SVG" "$ICON_192" "$ICON_512"; do
+check "A: launcher, node and the serve wrapper are 0755" \
+  sh -c "[ \$(stat -c %a $LAUNCHER) = 755 ] && [ \$(stat -c %a $NODE) = 755 ] && [ \$(stat -c %a $SERVE) = 755 ]"
+for f in "$UNIT" "$RULES" "$DESKTOP" "$ICON_SVG" "$ICON_192" "$ICON_512" "$PORT_HELPER"; do
   check "A: $f is 0644" mode_is 644 "$f"
 done
 check "A: hicolor icons are the UI's own icon.svg / icon-192.png / icon-512.png" sh -c "
@@ -270,29 +275,40 @@ find "$ROOT" -name '*.node' | sort
 check "A: only linux-x64 glibc native prebuilds are shipped" \
   test -z "$(find "$ROOT" -name '*.node' | grep -Ei 'darwin|win32|android|arm|ia32|musl')"
 check "A: workspace symlinks resolve (@robot-console/protocol)" test -f "$APP/node_modules/@robot-console/protocol/dist/index.js"
-if command -v systemctl >/dev/null 2>&1; then
-  check "A: postinst enabled the user unit globally (systemctl pulled in by deps)" test -L "$WANTS"
-else
-  check "A: no enable symlink without systemctl (postinst guard)" test ! -e "$WANTS"
-fi
+# Static unit, started on demand (design: "start on demand, port per user")
+# -- postinst must never enable it, with or without systemctl present.
+check "A: no global enable symlink after install (unit is static, started on demand)" test ! -e "$WANTS"
 echo "udevadm: $(command -v udevadm || echo absent); systemctl: $(command -v systemctl || echo absent); udevd running: $([ -d /run/udev ] && echo yes || echo no)"
 
 log "unit file and launcher entry"
 cat "$UNIT"
 exec_start=$(sed -n 's/^ExecStart=//p' "$UNIT")
-check "A: unit ExecStart runs the supervisor with the bundled node" test "$exec_start" = "$NODE $SUP_JS"
+check "A: unit ExecStart runs the serve wrapper" test "$exec_start" = "$SERVE"
 check "A: unit has Restart=on-failure" grep -qx 'Restart=on-failure' "$UNIT"
+check "A: unit has RestartPreventExitStatus=3 (no crash loop on port-in-use)" grep -qx 'RestartPreventExitStatus=3' "$UNIT"
 check "A: unit has TimeoutStopSec=150" grep -qx 'TimeoutStopSec=150' "$UNIT"
 check "A: unit leaves KillMode at the default (control-group)" sh -c "! grep -q '^KillMode=' $UNIT"
+check "A: unit has no [Install] section (static, cannot be enabled)" sh -c "! grep -q '^\[Install\]' $UNIT"
 check "A: unit EnvironmentFile= lines: -$CONF, then the per-user -%E/robot-console/robot-console.env" \
   test "$(sed -n 's/^EnvironmentFile=//p' "$UNIT" | tr '\n' ' ')" = "-$CONF -%E/robot-console/robot-console.env "
 check "A: launcher ENTRY is the supervisor" grep -qxF 'ENTRY="$ROOT/app/bin/robot-console-supervisor.js"' "$LAUNCHER"
 
 useradd -m -s /bin/bash student
+# Per-user default port formula (lib/port.sh): 20000 + (uid % 6000) * 2;
+# host port is that + 1. Computed the same way the test computes it, once
+# the student user (whose uid drives everything below) actually exists.
+student_uid=$(id -u student)
+PORT=$((20000 + (student_uid % 6000) * 2))
+HOST_PORT=$((PORT + 1))
+echo "student uid=$student_uid -> PORT=$PORT HOST_PORT=$HOST_PORT"
+port_helper_yields_default() { [ "$(as_student sh -c ". $PORT_HELPER; robot_console_default_port")" = "$PORT" ]; }
+launcher_prints_port() { [ "$(as_student "$LAUNCHER" --port)" = "$PORT" ]; }
+check "A: port.sh yields the formula's port for the student user (uid $student_uid)" port_helper_yields_default
 log "runtime checks as non-root user 'student'"
 node_version=$(as_student "$NODE" --version)
 echo "node --version: $node_version"
 check "A: bundled node runs as student (v$NODE_VERSION)" test "$node_version" = "v$NODE_VERSION"
+check "A: launcher --port prints the student user's port" launcher_prints_port
 check "A: native node-hid + @serialport/bindings-cpp load and enumerate; node:sqlite loads" \
   as_student sh -c "cd $APP && $NODE -e '
     const { createRequire } = require(\"node:module\");
@@ -322,6 +338,18 @@ as_student sh -c "$env_load ROBOT_CONSOLE_STATE_DIR=$state ROBOT_CONSOLE_IDLE_MS
 sup_wrapper=$!
 check "A: supervisor answers on 127.0.0.1:$PORT within 90 s" wait_http 90
 check "A: exactly one supervisor process" count_is 1 sup_pids
+
+log "no crash loop: a second supervisor on the same (occupied) public port"
+second_supervisor_exits_port_in_use() {
+  local rc out second_state
+  second_state=$(as_student mktemp -d)
+  out=$(as_student sh -c "ROBOT_CONSOLE_PORT=$PORT ROBOT_CONSOLE_HOST_PORT=$((HOST_PORT + 1000)) ROBOT_CONSOLE_STATE_DIR=$second_state $NODE $SUP_JS" 2>&1)
+  rc=$?
+  echo "    second supervisor (state=$second_state): exit $rc"
+  echo "$out" | sed 's/^/    /'
+  [ "$rc" = 3 ]
+}
+check "A: a second supervisor on the occupied port exits 3, not a crash loop" second_supervisor_exits_port_in_use
 
 log "(a) UI served while the host is stopped"
 check "A(a): GET / returns the UI HTML and its JS asset returns 200" as_student "$NODE" -e '
@@ -418,12 +446,13 @@ check "A: launcher, unit, rule, desktop file, icons removed" \
 log "Phase B: systemd + udev + desktop-file-utils present (not running)"
 apt-get install -y -q --no-install-recommends systemd udev desktop-file-utils >/dev/null 2>&1
 check "B: apt-get install ./deb with systemctl/udevadm present" apt-get install -y -q "$DEB"
-check "B: postinst enabled the user unit globally" test -L "$WANTS"
-ls -l "$WANTS"
+check "B: still no global enable symlink with systemctl present (static unit)" test ! -e "$WANTS"
 check "B: dpkg lists $CONF in Conffiles" conffile_listed
 echo '# local edit: lab admin' >>"$CONF"
 check "B: apt-get install ./deb again (same version) succeeds" apt-get install -y -q "$DEB"
+check "B: no enable symlink after upgrade (same version)" test ! -e "$WANTS"
 check "B: apt-get install --reinstall ./deb (unpacks the package again) succeeds" apt-get install --reinstall -y -q "$DEB"
+check "B: no enable symlink after --reinstall" test ! -e "$WANTS"
 check "B: the locally edited conffile survives the reinstall (noreplace)" grep -qxF '# local edit: lab admin' "$CONF"
 check "B: no .dpkg-new/.dpkg-dist/.dpkg-old copies next to the conffile" \
   test -z "$(ls /etc/robot-console | grep -F .dpkg-)"

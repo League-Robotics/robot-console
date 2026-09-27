@@ -73,27 +73,53 @@ build (version, git commit, Node version).
 
 ## How it works
 
+- **Per-user port.** Each user's console is private: the public port is
+  derived from that user's uid (`20000 + (uid % 6000) * 2`, from
+  `/opt/robot-console/lib/port.sh`), and the host (child process) port is
+  always one above it. There is no shared, fixed port — `robot-console
+  --port` prints the port this user's console uses. `ROBOT_CONSOLE_PORT` /
+  `ROBOT_CONSOLE_HOST_PORT` still override it for one invocation.
 - **Launcher.** `/usr/bin/robot-console` checks whether anything answers on
-  `http://127.0.0.1:4795/`. If nothing does, it starts the per-user service
-  (`systemctl --user start robot-console`) and waits up to 15 s for the port.
-  Then it opens `http://localhost:4795/` as a Chrome app window. Without a
-  systemd user session, it starts the supervisor as a background process
-  instead.
+  `http://127.0.0.1:<port>/` (your own port; see `robot-console --port`). If
+  nothing does, it starts the per-user service
+  (`systemctl --user start robot-console`) and waits up to 15 s for the
+  port. Then it opens `http://localhost:<port>/` as a Chrome app window.
+  Without a systemd user session, it starts the supervisor as a background
+  process instead.
 - **Supervisor.** `robot-console.service` runs the supervisor
-  (`/opt/robot-console/app/bin/robot-console-supervisor.js`). It is small and
-  holds no USB devices. It listens on 127.0.0.1:4795 (local only, not
-  reachable from the network) and serves the UI.
+  (`/opt/robot-console/app/bin/robot-console-supervisor.js`, via the
+  `robot-console-serve` start wrapper that applies your default port). It
+  is small and holds no USB devices. It listens on your own
+  127.0.0.1:\<port\> (local only, not reachable from the network) and
+  serves the UI.
 - **Host.** When a window connects, the supervisor starts the robot host
-  (USB, flashing, radio) on 127.0.0.1:4796 and passes the window's
-  connection through to it. The host stops **30 s after the last window
-  closes**, which releases the micro:bits for other programs such as MakeCode.
-  Reopening a window within those 30 s keeps the same host running.
-- **Login.** The service is enabled for every user
-  (`systemctl --global enable`), so the supervisor starts at login. Each
-  logged-in user gets their own instance.
-- **Stopping.** Stopping the service (logout, `systemctl --user stop`,
-  uninstall) stops the host first. If a flash is in progress, the host
-  finishes it, so a stop can take up to about two minutes.
+  (USB, flashing, radio) on your own host port (public port + 1) and passes
+  the window's connection through to it. The host stops **30 s after the
+  last window closes**, which releases the micro:bits for other programs
+  such as MakeCode. Reopening a window within those 30 s keeps the same
+  host running.
+- **Started on demand, not at login.** The unit ships with no `[Install]`
+  section — it is static and cannot be `systemctl --global enable`d. It
+  never starts at login; the launcher starts it (`systemctl --user start
+  robot-console`) the moment someone actually opens Robot Console, and only
+  for that user. This is also why every user's console needs its own port:
+  nothing coordinates who starts first.
+- **Stopping.** Stopping the service (`systemctl --user stop`, uninstall)
+  stops the host first. If a flash is in progress, the host finishes it, so
+  a stop can take up to about two minutes. If the public port is somehow
+  already taken when the service starts (it shouldn't be, since it's your
+  own private port), the supervisor exits immediately with a distinct exit
+  code instead of crash-looping; `systemctl --user status robot-console`
+  then shows it stopped, not restarting.
+
+**Upgrading from a version that enabled the service globally.** Older
+packages ran the supervisor for every logged-in user at login, all sharing
+one fixed port (127.0.0.1:4795) — the first login won it, and every other
+session (a stale autologin session, an admin's session, an SSH session)
+crash-looped against it. This version removes that global enable and gives
+each user their own port instead. After upgrading, the installer stops any
+old instances it finds; **re-open Robot Console** (from the app grid, or
+`robot-console` in a terminal) to start your own, on your own port.
 
 ## Files, logs and state
 
@@ -115,7 +141,7 @@ Service and host status for the current user:
 
 ```sh
 systemctl --user status robot-console
-curl -s localhost:4795/__supervisor/status; echo
+curl -s "localhost:$(robot-console --port)/__supervisor/status"; echo
 ```
 
 The status endpoint returns JSON:
@@ -128,7 +154,7 @@ The status endpoint returns JSON:
 - `lastExit`: how the host last stopped; `expected: true` means a normal idle stop
 
 (`curl` is not installed on a default Ubuntu desktop: `sudo apt install curl`,
-or use `wget -qO- localhost:4795/__supervisor/status`.)
+or use `wget -qO- "localhost:$(robot-console --port)/__supervisor/status"`.)
 
 ## Firmware sources
 
@@ -202,21 +228,25 @@ it.
 
 ## Troubleshooting
 
-**The window never opens / "server did not answer on 127.0.0.1:4795".**
+**The window never opens / "server did not answer on 127.0.0.1:\<port\>".**
 Look at `journalctl --user -u robot-console -n 50`. The most common cause is
-that port 4795 is already in use, for example by another copy of
-robot-console started from a checkout (`npm run dev`). The supervisor then
-logs one line saying the port is taken and exits. Find the other process with
-`ss -ltnp 'sport = :4795'` and stop it. Then run
-`systemctl --user restart robot-console` and launch again.
+that your port (`robot-console --port`) is already in use, for example by
+another copy of robot-console started from a checkout (`npm run dev`, which
+defaults to 4795 and won't normally collide with your own per-user port,
+but an explicit `ROBOT_CONSOLE_PORT` might). The supervisor then logs one
+line saying the port is taken and exits with a distinct exit code (3) —
+`systemctl --user status robot-console` shows it stopped, not restarting,
+since retrying the same port would just repeat the failure. Find the other
+process with `ss -ltnp "sport = :$(robot-console --port)"` and stop it. Then
+run `systemctl --user restart robot-console` and launch again.
 
 **The window opens but shows no robots or keeps reconnecting.** Check
-`curl -s localhost:4795/__supervisor/status`:
+`curl -s "localhost:$(robot-console --port)/__supervisor/status"`:
 
 - **`hostState` stuck at `starting`, or growing `restarts`:** the host is
   failing to start. The reason is in `journalctl --user -u robot-console`.
-- **Something else holds 127.0.0.1:4796:** the host can't bind its port.
-  Check with `ss -ltnp 'sport = :4796'`.
+- **Something else holds your host port (your port + 1):** the host can't
+  bind its port. Check with `ss -ltnp "sport = :$(($(robot-console --port) + 1))"`.
 
 **"Google Chrome not found".** Install Chrome
 (`sudo apt install ./google-chrome-stable_current_amd64.deb` from

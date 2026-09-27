@@ -13,8 +13,14 @@ NODE="$ROOT/node/bin/node"
 # The supervisor: serves the UI and starts the host only while a window is
 # connected. Keep in sync with ExecStart in robot-console.service.
 ENTRY="$ROOT/app/bin/robot-console-supervisor.js"
-DEFAULT_PORT=4795
+# shellcheck source=./port.sh
+. "$ROOT/lib/port.sh"
+# Each user gets their own default port, derived from their uid (see
+# lib/port.sh) -- no fixed port shared across everyone on the machine.
+DEFAULT_PORT="$(robot_console_default_port)"
+DEFAULT_HOST_PORT=$((DEFAULT_PORT + 1))
 PORT="${ROBOT_CONSOLE_PORT:-$DEFAULT_PORT}"
+HOST_PORT="${ROBOT_CONSOLE_HOST_PORT:-$DEFAULT_HOST_PORT}"
 URL="http://localhost:$PORT/"
 STATE_DIR="${ROBOT_CONSOLE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/robot-console}"
 SYSTEM_ENV_FILE=/etc/robot-console/robot-console.env
@@ -24,18 +30,23 @@ WAIT_SECONDS="${ROBOT_CONSOLE_WAIT_SECONDS:-15}"
 
 usage() {
   cat <<EOF
-Usage: robot-console [--no-browser] [--version] [--help]
+Usage: robot-console [--no-browser] [--port] [--version] [--help]
 
 Starts the Robot Console server if it is not already running on
 127.0.0.1:$PORT, then opens it as a Google Chrome app window.
 
+Each user gets their own private port, derived from their uid, so a
+shared machine never collides everyone onto one fixed port.
+
   --no-browser  only make sure the server is running; do not open a window
+  --port        print this user's port ($PORT) and exit
   --version     print the installed package build information
   --help        show this help
 
 Environment:
-  ROBOT_CONSOLE_PORT          port to use (default $DEFAULT_PORT; a non-default
-                              port bypasses the systemd user service)
+  ROBOT_CONSOLE_PORT          port to use (default: this user's own port,
+                              $DEFAULT_PORT; a non-default port bypasses the
+                              systemd user service)
   ROBOT_CONSOLE_WAIT_SECONDS  how long to wait for the server (default 15)
 
 Server logs: journalctl --user -u robot-console
@@ -49,6 +60,7 @@ open_browser=1
 for arg in "$@"; do
   case "$arg" in
     -h|--help) usage; exit 0 ;;
+    --port) echo "$PORT"; exit 0 ;;
     --version) cat "$ROOT/BUILD_INFO"; exit 0 ;;
     --no-browser) open_browser=0 ;;
     *) echo "robot-console: unknown option: $arg" >&2; usage >&2; exit 2 ;;
@@ -90,6 +102,13 @@ load_env_file() {
 }
 
 start_server() {
+  # systemd's own robot-console-serve wrapper computes this same per-user
+  # default port when neither ROBOT_CONSOLE_PORT nor
+  # ROBOT_CONSOLE_HOST_PORT is set -- so the unit only applies while $PORT
+  # is still that default. An explicit ROBOT_CONSOLE_PORT override (a
+  # different port than this user's own) bypasses the unit and falls
+  # through to the background process below, which passes the override on
+  # directly.
   if [ "$PORT" = "$DEFAULT_PORT" ] && command -v systemctl >/dev/null 2>&1 &&
     systemctl --user start robot-console.service >/dev/null 2>&1; then
     how="systemd user service (journalctl --user -u robot-console)"
@@ -103,9 +122,9 @@ start_server() {
   how="background process (log: $log)"
   printf '\n--- %s robot-console launcher starting %s\n' "$(date -Is)" "$ENTRY" >>"$log"
   if command -v setsid >/dev/null 2>&1; then
-    ROBOT_CONSOLE_PORT="$PORT" setsid nohup "$NODE" "$ENTRY" </dev/null >>"$log" 2>&1 &
+    ROBOT_CONSOLE_PORT="$PORT" ROBOT_CONSOLE_HOST_PORT="$HOST_PORT" setsid nohup "$NODE" "$ENTRY" </dev/null >>"$log" 2>&1 &
   else
-    ROBOT_CONSOLE_PORT="$PORT" nohup "$NODE" "$ENTRY" </dev/null >>"$log" 2>&1 &
+    ROBOT_CONSOLE_PORT="$PORT" ROBOT_CONSOLE_HOST_PORT="$HOST_PORT" nohup "$NODE" "$ENTRY" </dev/null >>"$log" 2>&1 &
   fi
 }
 

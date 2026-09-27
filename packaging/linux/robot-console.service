@@ -1,5 +1,5 @@
 [Unit]
-Description=Robot Console supervisor (micro:bit robot manager, 127.0.0.1:4795)
+Description=Robot Console supervisor (micro:bit robot manager; started on demand, one private port per user)
 
 [Service]
 Type=simple
@@ -8,17 +8,30 @@ Type=simple
 # the supervisor passes its environment on to every host it starts.
 EnvironmentFile=-/etc/robot-console/robot-console.env
 EnvironmentFile=-%E/robot-console/robot-console.env
-# The supervisor serves the UI on 127.0.0.1:4795 and runs the robot host on
-# 127.0.0.1:4796 only while a window is connected. Keep in sync with ENTRY in
+# robot-console-serve computes this user's default public port from their
+# uid (/opt/robot-console/lib/port.sh) unless ROBOT_CONSOLE_PORT/
+# ROBOT_CONSOLE_HOST_PORT are already set, then execs the bundled node on
+# the supervisor -- so every user's instance gets its own pair of ports
+# with no shared, fixed port to collide on. Keep in sync with ENTRY in
 # /usr/bin/robot-console (packaging/linux/robot-console.sh).
-ExecStart=/opt/robot-console/node/bin/node /opt/robot-console/app/bin/robot-console-supervisor.js
+ExecStart=/opt/robot-console/bin/robot-console-serve
 Restart=on-failure
 RestartSec=2
+# Exit code 3 (packages/host/src/supervisor/supervisor.ts,
+# PORT_IN_USE_EXIT_CODE) means this user's own public port is already
+# bound by another instance of this same unit -- retrying would only
+# crash-loop against it, so systemd leaves it stopped instead of
+# restarting.
+RestartPreventExitStatus=3
 # On stop the supervisor SIGTERMs the host and waits up to 120 s before
 # SIGKILL (the host finishes an in-flight flash first), so leave room.
 TimeoutStopSec=150
 # KillMode stays at the default (control-group): whatever is still in the
 # unit's cgroup when the stop completes, an orphaned host included, is killed.
 
-[Install]
-WantedBy=default.target
+# No [Install] section: this unit is static and cannot be `enable`d (a
+# global enable is exactly the multi-user bug this design fixes -- every
+# logged-in user's instance would start at login and race for the same
+# fixed port). The launcher (`robot-console`, packaging/linux/
+# robot-console.sh) starts it on demand with `systemctl --user start
+# robot-console` when someone opens the app.

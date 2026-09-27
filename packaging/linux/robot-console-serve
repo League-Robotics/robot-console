@@ -1,0 +1,31 @@
+#!/bin/sh
+# robot-console-serve -- start wrapper for robot-console.service.
+#
+# Installed as /opt/robot-console/bin/robot-console-serve. The unit's
+# ExecStart points here instead of straight at node+supervisor, so the
+# per-user port default lives in exactly one place
+# (/opt/robot-console/lib/port.sh) shared with the interactive launcher
+# (packaging/linux/robot-console.sh) -- neither the unit file nor systemd
+# itself can compute a uid-derived default on its own.
+#
+# ROBOT_CONSOLE_PORT / ROBOT_CONSOLE_HOST_PORT, if already set (e.g. a
+# per-user systemd drop-in, or an admin's environment), are left alone;
+# this only fills in the per-user default when neither is set. Keep in
+# sync with ExecStart in robot-console.service and with ENTRY in
+# /usr/bin/robot-console (robot-console.sh).
+set -eu
+
+ROOT=/opt/robot-console
+# shellcheck source=./port.sh
+. "$ROOT/lib/port.sh"
+
+if [ -z "${ROBOT_CONSOLE_PORT:-}" ]; then
+  ROBOT_CONSOLE_PORT="$(robot_console_default_port)"
+  export ROBOT_CONSOLE_PORT
+fi
+if [ -z "${ROBOT_CONSOLE_HOST_PORT:-}" ]; then
+  ROBOT_CONSOLE_HOST_PORT=$((ROBOT_CONSOLE_PORT + 1))
+  export ROBOT_CONSOLE_HOST_PORT
+fi
+
+exec "$ROOT/node/bin/node" "$ROOT/app/bin/robot-console-supervisor.js"

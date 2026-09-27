@@ -79,6 +79,22 @@ export function defaultHostBin(): string {
  * SPA-fallback). */
 export const SUPERVISOR_PATH_PREFIX = "/__supervisor/";
 
+/**
+ * Process exit code `bin/robot-console-supervisor.js` uses when
+ * {@link startSupervisor}'s rejection carries this value as `.exitCode`
+ * (set below, in {@link listen}, exactly when the *public* port bind
+ * fails with `EADDRINUSE`). Distinct from a generic startup failure (1)
+ * so the packaged systemd unit's `RestartPreventExitStatus=3`
+ * (robot-console.service) can single out "another instance already
+ * owns this port" and leave the unit stopped instead of restarting it
+ * into the same conflict forever -- the multi-user crash loop this
+ * module's own doc comment and the linux-packaging fix exist to
+ * prevent. Never used for a *host child* port conflict (that is the
+ * host's own concern, reported through {@link HostExitInfo}, not a
+ * supervisor process exit).
+ */
+export const PORT_IN_USE_EXIT_CODE = 3;
+
 export interface SupervisorStatus {
   hostState: HostState;
   hostPid: number | null;
@@ -142,11 +158,21 @@ function listen(server: Server, port: number, address: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const onError = (error: NodeJS.ErrnoException) => {
       server.off("listening", onListening);
-      reject(
-        error.code === "EADDRINUSE"
-          ? new Error(`port ${port} is already in use on ${address} -- is another robot-console already running?`)
-          : error,
-      );
+      if (error.code === "EADDRINUSE") {
+        // `.exitCode` is a plain-object marker, not a custom Error
+        // subclass -- it survives unchanged through cli.ts's `main`
+        // (which never catches/rewraps a `startSupervisor` rejection)
+        // to `bin/robot-console-supervisor.js`'s own catch, the one
+        // place that turns it into a real process exit code. See
+        // `PORT_IN_USE_EXIT_CODE`'s own doc comment.
+        reject(
+          Object.assign(new Error(`port ${port} is already in use on ${address} -- is another robot-console already running?`), {
+            exitCode: PORT_IN_USE_EXIT_CODE,
+          }),
+        );
+        return;
+      }
+      reject(error);
     };
     const onListening = () => {
       server.off("error", onError);

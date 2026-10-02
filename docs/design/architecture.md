@@ -417,6 +417,13 @@ Changed: `session-open` takes `{linkId}` or `{relayLinkId, name}`; the
 `set-radio-override {deviceId, channel, group} | {deviceId, clear: true}`.
 `error` becomes `notice`. Every server message carries `seq`.
 
+Added 2026-10-02: `set-status-polling {linkId, enabled}` turns the
+harvester's 2 s `STATUS` poll off or on for one link (the Diagnostics
+tab's checkbox). The setting lives in host memory
+(`connect/statusPollControl.ts`), keyed by link id, and is overlaid
+onto the snapshot as `session.statusPolling: false` while off. Off also
+suspends the missed-poll watchdog.
+
 Link ids are opaque. The UI never parses them.
 
 ## 10. UI

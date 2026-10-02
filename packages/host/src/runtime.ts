@@ -141,6 +141,7 @@ import {
   type RelayBridgerOptions,
 } from "./connect/relayBridger.js";
 import { createRelayLeaseRevocation as defaultCreateRelayLeaseRevocation } from "./connect/relayLeaseRevocation.js";
+import { createStatusPollControl, type StatusPollControl } from "./connect/statusPollControl.js";
 import {
   startRelaySweeper as defaultStartRelaySweeper,
   type RelaySweeperDeps,
@@ -173,6 +174,9 @@ export interface Runtime {
   readonly store: Store;
   readonly reconciler: Reconciler;
   readonly telemetry: RuntimeTelemetry;
+  /** The per-link `STATUS` poll switch the harvester consults —
+   * `server.ts` flips it on `set-status-polling`. */
+  readonly statusPolling: StatusPollControl;
   /** Sprint 018 ticket 006: the same already-`connect()`ed
    * {@link MbregistryClient} this module resolved and handed to
    * `createConnector`/`startMbregistryWatcher` — `cli.ts`'s `main()`
@@ -291,7 +295,7 @@ export interface StartRuntimeOptions {
    * {@link Runtime.telemetry}) — a caller that wants to observe every
    * event a test harvester itself produces subscribes to `telemetry`
    * instead of overriding these sinks directly. */
-  harvesterDeps?: Omit<HarvesterDeps, "onTelemetry" | "onNotice">;
+  harvesterDeps?: Omit<HarvesterDeps, "onTelemetry" | "onNotice" | "statusPolling">;
 
   createRelayBridger?: typeof defaultCreateRelayBridger;
   /** Every {@link RelayBridgerDeps} field. Ticket 016-002's relay bridger
@@ -469,8 +473,10 @@ export async function startRuntime(options: StartRuntimeOptions = {}): Promise<R
     options.firmwareWatcherOptions,
   );
 
+  const statusPolling = createStatusPollControl();
   const harvester = createHarvesterFn(store, {
     ...options.harvesterDeps,
+    statusPolling,
     onTelemetry: (linkId, event) => {
       for (const listener of telemetryListeners) {
         listener(linkId, event);
@@ -579,6 +585,7 @@ export async function startRuntime(options: StartRuntimeOptions = {}): Promise<R
     store,
     reconciler,
     telemetry,
+    statusPolling,
     mbregistryClient,
     mbregistryLabel,
     async stop(): Promise<void> {

@@ -8,10 +8,39 @@
  */
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { connectionLabel, linkStateText } from "../deviceDisplay";
+import { useSendable, useWsActions } from "../ws/WsProvider";
 import "./DiagnosticsPanel.css";
 
 function when(value: number | null | undefined): string {
   return value === null || value === undefined ? "—" : new Date(value).toLocaleString();
+}
+
+/** The host's 2 s `STATUS` poll for this page's link, on or off. Its
+ * own component, mounted only while a session is open, so the panel
+ * itself stays renderable outside a `WsProvider`. */
+function StatusPollingControl({ link }: { link: SnapshotLink }) {
+  const sendable = useSendable();
+  const { send } = useWsActions();
+  const polling = link.session?.statusPolling !== false;
+  return (
+    <div className="diagnostics-status-polling">
+      <label>
+        <input
+          type="checkbox"
+          data-testid="diagnostics-status-polling"
+          checked={polling}
+          disabled={!sendable}
+          onChange={(event) => send({ type: "set-status-polling", linkId: link.id, enabled: event.target.checked })}
+        />
+        {" "}Poll robot status every 2 seconds
+      </label>
+      <p className="diagnostics-status-polling-hint">
+        Off: the console stops sending STATUS on this connection, so the status shown goes stale and a dead link is
+        only noticed when the connection closes. Stays off for this connection until turned back on or the console
+        restarts.
+      </p>
+    </div>
+  );
 }
 
 export function DiagnosticsPanel({ device, current }: { device: SnapshotDevice; current: SnapshotLink }) {
@@ -50,6 +79,8 @@ export function DiagnosticsPanel({ device, current }: { device: SnapshotDevice; 
           <dd>{when(device.lastChecked)}</dd>
         </div>
       </dl>
+
+      {current.session !== undefined && <StatusPollingControl link={current} />}
 
       <h3>Connections</h3>
       <div className="diagnostics-table-wrap">

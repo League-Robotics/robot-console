@@ -179,6 +179,27 @@ describe("parseClientMessage", () => {
     });
   });
 
+  describe("set-status-polling", () => {
+    it("accepts a well-formed message, on or off", () => {
+      expect(parseClientMessage({ type: "set-status-polling", linkId: "wifi-vevov", enabled: false })).toEqual({
+        type: "set-status-polling",
+        linkId: "wifi-vevov",
+        enabled: false,
+      });
+      expect(parseClientMessage({ type: "set-status-polling", linkId: "wifi-vevov", enabled: true })).toEqual({
+        type: "set-status-polling",
+        linkId: "wifi-vevov",
+        enabled: true,
+      });
+    });
+
+    it("rejects a missing link id or a non-boolean enabled", () => {
+      expect(parseClientMessage({ type: "set-status-polling", enabled: false })).toBeUndefined();
+      expect(parseClientMessage({ type: "set-status-polling", linkId: "wifi-vevov" })).toBeUndefined();
+      expect(parseClientMessage({ type: "set-status-polling", linkId: "wifi-vevov", enabled: "no" })).toBeUndefined();
+    });
+  });
+
   describe("set-radio-override", () => {
     it("accepts a well-formed {channel, group} message", () => {
       expect(parseClientMessage({ type: "set-radio-override", deviceId: 1198504156, channel: 41, group: 3 })).toEqual({

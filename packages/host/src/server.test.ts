@@ -10,6 +10,7 @@
  * connection. The HTTP layer underneath is real (bound to loopback,
  * closed in `afterEach`), which is what the port-busy test needs.
  */
+import { createStatusPollControl } from "./connect/statusPollControl.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -553,6 +554,58 @@ describe("server.ts: bufferedAmount backpressure", () => {
     const types = ws.sent.map((m) => m.type);
     expect(types).not.toContain("telemetry");
     expect(types).toContain("snapshot");
+  });
+});
+
+// ---------------------------------------------------------------------
+// set-status-polling -- the Diagnostics tab's STATUS poll checkbox
+// ---------------------------------------------------------------------
+
+describe("server.ts: set-status-polling", () => {
+  function seedOpenSession(h: Harness): void {
+    h.store.upsertDevice({ id: 1198504156, name: "vevov", kind: "robot", at: 1 });
+    h.store.setOwned(1198504156, true, 1);
+    h.store.upsertLink({ id: "wifi-vevov", transport: "wifi", address: { host: "vevov.local", port: 7654 }, deviceId: 1198504156, at: 1 });
+    h.store.openSession("wifi-vevov", 1);
+  }
+
+  function lastSnapshotSession(ws: ReturnType<typeof fakeWebSocket>): NonNullable<Snapshot["devices"][number]["links"][number]["session"]> | undefined {
+    const snapshots = ws.sent.filter((m) => m.type === "snapshot") as Snapshot[];
+    return snapshots[snapshots.length - 1]?.devices[0]?.links.find((l) => l.id === "wifi-vevov")?.session;
+  }
+
+  it("pauses the runtime's poll switch for that link and reports it on the link's session in the next snapshot", async () => {
+    const statusPolling = createStatusPollControl();
+    const h = await harness({ runtime: { ...fakeRuntime(), statusPolling } });
+    seedOpenSession(h);
+    await flush();
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    expect(lastSnapshotSession(ws)).toBeDefined();
+    expect(lastSnapshotSession(ws)?.statusPolling).toBeUndefined();
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "set-status-polling", linkId: "wifi-vevov", enabled: false })), false);
+    await flush();
+
+    expect(statusPolling.isPaused("wifi-vevov")).toBe(true);
+    expect(lastSnapshotSession(ws)?.statusPolling).toBe(false);
+  });
+
+  it("turning it back on resumes the switch and drops the field from the snapshot", async () => {
+    const statusPolling = createStatusPollControl();
+    statusPolling.setPaused("wifi-vevov", true);
+    const h = await harness({ runtime: { ...fakeRuntime(), statusPolling } });
+    seedOpenSession(h);
+    await flush();
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    expect(lastSnapshotSession(ws)?.statusPolling).toBe(false);
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "set-status-polling", linkId: "wifi-vevov", enabled: true })), false);
+    await flush();
+
+    expect(statusPolling.isPaused("wifi-vevov")).toBe(false);
+    expect(lastSnapshotSession(ws)?.statusPolling).toBeUndefined();
   });
 });
 

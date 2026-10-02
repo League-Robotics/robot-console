@@ -27,6 +27,17 @@
   font-size: 0.92rem;
 }
 
+.diagnostics-status-polling {
+  margin: 0 0 1rem;
+  font-size: 0.92rem;
+}
+
+.diagnostics-status-polling-hint {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  color: var(--rc-text-muted);
+}
+
 .diagnostics-table-wrap {
   overflow-x: auto;
 }

@@ -3,6 +3,7 @@ import { openStoreDb } from "../store/db.js";
 import { Store } from "../store/index.js";
 import { LineLink } from "../link/LineLink.js";
 import { FakeByteStream } from "../link/__fixtures__/FakeByteStream.js";
+import { createStatusPollControl } from "./statusPollControl.js";
 import type { ConnectedSession } from "./connector.js";
 import { createHarvester, type HarvesterTelemetryEvent } from "./harvester.js";
 
@@ -734,5 +735,56 @@ describe("createHarvester -- stop() (sprint 019 ticket 003)", () => {
     const harvester = createHarvester(store);
 
     expect(() => harvester.stop()).not.toThrow();
+  });
+});
+
+describe("createHarvester -- STATUS poll switched off per link (statusPollControl)", () => {
+  it("sends no STATUS and never trips the watchdog while paused, then polls again once resumed", async () => {
+    const store = seededStore();
+    const { link, stream } = await connectedLink();
+    const statusPolling = createStatusPollControl();
+    statusPolling.setPaused("link-1", true);
+    const harvester = createHarvester(store, { statusPollIntervalMs: POLL_INTERVAL_MS, missedPollLimit: 1, statusPolling });
+    harvester.attach(session(link));
+
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS * 3));
+
+    expect(statusWriteCount(stream)).toBe(0);
+    expect(store.snapshotRows().links.find((l) => l.id === "link-1")?.state).not.toBe("unresponsive");
+
+    statusPolling.setPaused("link-1", false);
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS + 20));
+
+    expect(statusWriteCount(stream)).toBeGreaterThan(0);
+  });
+
+  it("forgets a poll left unanswered before the pause, so resuming does not count it as a miss", async () => {
+    const store = seededStore();
+    const { link } = await connectedLink();
+    const statusPolling = createStatusPollControl();
+    const harvester = createHarvester(store, { statusPollIntervalMs: POLL_INTERVAL_MS, missedPollLimit: 2, statusPolling });
+    harvester.attach(session(link));
+    // attach() has sent one STATUS that nothing answers; one more
+    // unanswered tick would reach the limit.
+    statusPolling.setPaused("link-1", true);
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS * 2));
+
+    statusPolling.setPaused("link-1", false);
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS + 20));
+
+    expect(store.snapshotRows().links.find((l) => l.id === "link-1")?.state).not.toBe("unresponsive");
+  });
+
+  it("leaves other links polling", async () => {
+    const store = seededStore();
+    const { link, stream } = await connectedLink();
+    const statusPolling = createStatusPollControl();
+    statusPolling.setPaused("some-other-link", true);
+    const harvester = createHarvester(store, { statusPollIntervalMs: POLL_INTERVAL_MS, missedPollLimit: 1000, statusPolling });
+    harvester.attach(session(link));
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(statusWriteCount(stream)).toBeGreaterThan(0);
   });
 });

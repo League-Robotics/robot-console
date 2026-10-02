@@ -443,6 +443,12 @@ export interface SnapshotLink {
      * shows alongside the existing "who holds this board" text (ticket
      * 005's own acceptance criterion). */
     caller?: string | null;
+    /** `false` while the host's periodic `STATUS` poll is turned off for
+     * this link (the Diagnostics tab's checkbox, {@link
+     * SetStatusPollingMessage}); absent while it is polling. Held in
+     * server memory and overlaid by `server.ts`, like {@link
+     * SnapshotLink.flash}. */
+    statusPolling?: boolean;
   };
   /** Present only while a flash is in flight for this link. Flash
    * progress is held in server-side memory, not in the store
@@ -753,6 +759,16 @@ export type SetRadioOverrideMessage =
   | { type: "set-radio-override"; deviceId: number; channel: number; group: number }
   | { type: "set-radio-override"; deviceId: number; clear: true };
 
+/** Client -> server: turn the host's periodic `STATUS` poll on or off
+ * for one link. Off also suspends the missed-poll watchdog, so a dead
+ * link is then only noticed when its transport closes. Remembered per
+ * link until the host restarts. */
+export interface SetStatusPollingMessage {
+  type: "set-status-polling";
+  linkId: string;
+  enabled: boolean;
+}
+
 /** Every message shape a client may send. */
 export type ClientMessage =
   | SessionOpenMessage
@@ -763,6 +779,7 @@ export type ClientMessage =
   | FlashLocalBeginMessage
   | ForgetDeviceMessage
   | SetRadioOverrideMessage
+  | SetStatusPollingMessage
   | GetWifiCredentialsMessage
   | SetWifiCredentialsMessage
   | ProvisionWifiMessage;
@@ -904,6 +921,10 @@ export function parseClientMessage(value: unknown): ClientMessage | undefined {
     }
     case "session-close":
       return isNonEmptyString(value.linkId) ? { type: "session-close", linkId: value.linkId } : undefined;
+    case "set-status-polling":
+      return isNonEmptyString(value.linkId) && typeof value.enabled === "boolean"
+        ? { type: "set-status-polling", linkId: value.linkId, enabled: value.enabled }
+        : undefined;
     case "get-wifi-credentials":
       return value.reveal === true ? { type: "get-wifi-credentials", reveal: true } : { type: "get-wifi-credentials" };
     case "set-wifi-credentials":

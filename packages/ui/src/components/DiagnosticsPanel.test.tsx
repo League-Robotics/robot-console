@@ -12,6 +12,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
+import { WsProvider } from "../ws/WsProvider";
+import { FakeSocket } from "../testing/FakeSocket";
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -149,5 +151,54 @@ describe("DiagnosticsPanel: Recent agent activity", () => {
     // Purely informational -- this ticket's own acceptance criterion: no
     // Approve/Deny, no acknowledge, nothing clickable anywhere in here.
     expect(list?.querySelectorAll("button, input, a[href]")).toHaveLength(0);
+  });
+});
+
+describe("DiagnosticsPanel: status polling checkbox", () => {
+  const OPEN_SESSION = { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null };
+
+  function mountOpen(theLink: SnapshotLink): { el: HTMLDivElement; socket: FakeSocket } {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+        <DiagnosticsPanel device={device(theLink)} current={theLink} />
+      </WsProvider>,
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    return { el, socket: socket! };
+  }
+
+  function checkbox(el: HTMLDivElement): HTMLInputElement | null {
+    return el.querySelector('[data-testid="diagnostics-status-polling"]');
+  }
+
+  it("is not shown for a link with no open session", () => {
+    const theLink = link();
+    const el = mount(<DiagnosticsPanel device={device(theLink)} current={theLink} />);
+    expect(checkbox(el)).toBeNull();
+  });
+
+  it("is checked while the host is polling, and unchecking it asks the host to stop for this link", () => {
+    const { el, socket } = mountOpen(link({ session: OPEN_SESSION }));
+    expect(checkbox(el)?.checked).toBe(true);
+
+    act(() => {
+      checkbox(el)!.click();
+    });
+
+    expect(socket.sent.map((text) => JSON.parse(text))).toContainEqual({ type: "set-status-polling", linkId: "usb-A", enabled: false });
+  });
+
+  it("is unchecked when the snapshot says polling is off, and checking it asks the host to resume", () => {
+    const { el, socket } = mountOpen(link({ session: { ...OPEN_SESSION, statusPolling: false } }));
+    expect(checkbox(el)?.checked).toBe(false);
+
+    act(() => {
+      checkbox(el)!.click();
+    });
+
+    expect(socket.sent.map((text) => JSON.parse(text))).toContainEqual({ type: "set-status-polling", linkId: "usb-A", enabled: true });
   });
 });

@@ -98,6 +98,7 @@ import { findCurrentMbflashService, type ProjectionDeviceRow, type ProjectionRow
 import type { Reconciler } from "./connect/reconciler.js";
 import { parseLinkAddress, type ConnectedSession, type MbregistryAddress } from "./connect/connector.js";
 import type { HarvesterTelemetryEvent } from "./connect/harvester.js";
+import { createStatusPollControl, type StatusPollControl } from "./connect/statusPollControl.js";
 import { buildSnapshotFromRows } from "./projection.js";
 import { isValidRadioOverride } from "./radioOverride.js";
 import {
@@ -217,6 +218,9 @@ export interface ServerTelemetry {
 export interface ServerRuntime {
   readonly reconciler: Reconciler;
   readonly telemetry: ServerTelemetry;
+  /** The switch the harvester's `STATUS` poll consults. Optional so a
+   * composition with no harvester (most tests) need not supply one. */
+  readonly statusPolling?: StatusPollControl;
 }
 
 export interface StartServerOptions {
@@ -843,13 +847,18 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   // build its own identity value without reaching into this closure.
   const flashStateByLink = new Map<string, { source: FirmwareSourceRef; phase: FlashPhase; origin?: SessionOriginWire; caller?: string }>();
 
+  const statusPolling = runtime.statusPolling ?? createStatusPollControl();
+
   function overlayLink(link: SnapshotLink): SnapshotLink {
     const flash = flashStateByLink.get(link.id);
-    return flash ? { ...link, flash } : link;
+    const overlaid = flash ? { ...link, flash } : link;
+    return overlaid.session !== undefined && statusPolling.isPaused(link.id)
+      ? { ...overlaid, session: { ...overlaid.session, statusPolling: false } }
+      : overlaid;
   }
 
   function overlaySnapshot(snapshot: Snapshot): Snapshot {
-    if (flashStateByLink.size === 0) {
+    if (flashStateByLink.size === 0 && !statusPolling.anyPaused()) {
       return snapshot;
     }
     return {
@@ -1282,6 +1291,14 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       return;
     }
     await closeSession({ reconciler: runtime.reconciler }, message.linkId);
+  });
+
+  handlers.set("set-status-polling", async (_ws, message) => {
+    if (message.type !== "set-status-polling") {
+      return;
+    }
+    statusPolling.setPaused(message.linkId, !message.enabled);
+    broadcastSnapshot();
   });
 
   handlers.set("line", async (_ws, message) => {

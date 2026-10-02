@@ -74,6 +74,7 @@ import {
 import type { RobotFunction, RobotStatus } from "../wsMessages.js";
 import type { Store } from "../store/index.js";
 import type { ConnectedSession, HarvesterAttach } from "./connector.js";
+import { createStatusPollControl, type StatusPollControl } from "./statusPollControl.js";
 
 /** `STATUS` poll cadence — matches `deviceRegistry.ts`'s own
  * `DeviceRegistryOptions.statusPollIntervalMs` default. */
@@ -113,6 +114,9 @@ export interface HarvesterDeps {
   statusPollIntervalMs?: number;
   /** Missed-poll ceiling. Defaults to {@link DEFAULT_MISSED_POLL_LIMIT}. */
   missedPollLimit?: number;
+  /** Per-link poll on/off switch — see `statusPollControl.ts`. Defaults
+   * to one with nothing paused. */
+  statusPolling?: StatusPollControl;
   /** `thdr`/`t` sink — see the module doc comment. Defaults to a no-op. */
   onTelemetry?: (linkId: string, event: HarvesterTelemetryEvent) => void;
   /** Resync-notice sink — see the module doc comment. Defaults to a
@@ -160,6 +164,7 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
   const now = deps.now ?? (() => Date.now());
   const statusPollIntervalMs = deps.statusPollIntervalMs ?? DEFAULT_STATUS_POLL_INTERVAL_MS;
   const missedPollLimit = deps.missedPollLimit ?? DEFAULT_MISSED_POLL_LIMIT;
+  const statusPolling = deps.statusPolling ?? createStatusPollControl();
   const onTelemetry = deps.onTelemetry ?? (() => {});
   const onNotice = deps.onNotice ?? (() => {});
 
@@ -288,6 +293,15 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
 
       function pollStatus(): void {
         if (failed || !link.isOpen) {
+          return;
+        }
+        // Turned off from the Diagnostics tab. Nothing is sent, so the
+        // missed-poll watchdog has nothing to count either: a poll left
+        // unanswered before the switch must not be held against the link
+        // when polling resumes.
+        if (statusPolling.isPaused(linkId)) {
+          pollAwaitingStatus = false;
+          pollMisses = 0;
           return;
         }
         // 018-009: never send our own STATUS poll while a foreign

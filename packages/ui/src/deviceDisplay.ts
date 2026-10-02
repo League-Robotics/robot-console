@@ -602,6 +602,11 @@ export function isLinkAnswering(link: SnapshotLink, now: number = Date.now()): b
   if (answeredAt === undefined || answeredAt === null) {
     return false;
   }
+  // With the STATUS poll turned off (Diagnostics tab) nothing is being
+  // asked, so silence says nothing about the robot.
+  if (link.session?.statusPolling === false) {
+    return true;
+  }
   return now - answeredAt <= LINK_ANSWERED_FRESH_MS;
 }
 

@@ -129,6 +129,15 @@ describe("isLinkAnswering", () => {
     expect(isLinkAnswering(link({ state: "connected", session: { ...OPEN_SESSION, answeredAt: null } }), now)).toBe(false);
   });
 
+  it("true past the fresh window while the STATUS poll is switched off -- nothing is being asked", () => {
+    const session = { ...answeredSession(now - LINK_ANSWERED_FRESH_MS - 1), statusPolling: false };
+    expect(isLinkAnswering(link({ state: "connected", session }), now)).toBe(true);
+  });
+
+  it("still false with the poll switched off if the session never answered at all", () => {
+    expect(isLinkAnswering(link({ state: "connected", session: { ...OPEN_SESSION, statusPolling: false } }), now)).toBe(false);
+  });
+
   it("false once answeredAt has gone stale (beyond LINK_ANSWERED_FRESH_MS)", () => {
     expect(isLinkAnswering(link({ state: "connected", session: answeredSession(now - LINK_ANSWERED_FRESH_MS - 1) }), now)).toBe(false);
   });

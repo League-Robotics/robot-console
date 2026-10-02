@@ -91,7 +91,7 @@ describe("buildCalibrationWrites", () => {
 });
 
 describe("writeCalibration", () => {
-  it("sends one sequenced SET per write, then persists with RUN calsave", () => {
+  it("sends one sequenced SET per write, then persists with RUN _calsave", () => {
     const sendCommand = vi.fn();
     const writes = buildCalibrationWrites(FULL);
     const sent = writeCalibration(sendCommand, "link-1", writes);
@@ -102,7 +102,7 @@ describe("writeCalibration", () => {
       ["link-1", "SET", ["rotational_slip", "1.101"]],
       // calsave takes CENTIMETRES -- it is a program on the robot
       // calling setTrackWidth() -- while the SET above takes mm.
-      ["link-1", "RUN", ["calsave", "81.45", "12.85", "1.101"]],
+      ["link-1", "RUN", ["_calsave", "81.45", "12.85", "1.101"]],
     ]);
     expect(sent).toEqual(writes);
   });
@@ -116,7 +116,7 @@ describe("writeCalibration", () => {
     expect(sendCommand.mock.calls.at(-1)).toEqual([
       "link-1",
       "RUN",
-      ["calsave", "81.45", "12.85", "0"],
+      ["_calsave", "81.45", "12.85", "0"],
     ]);
   });
 
@@ -125,7 +125,7 @@ describe("writeCalibration", () => {
     writeCalibration(sendCommand, "link-1", buildCalibrationWrites({ wheelDiameterMm: 81.45 }));
     expect(sendCommand.mock.calls).toEqual([
       ["link-1", "SET", ["wheel_diameter", "81.45"]],
-      ["link-1", "RUN", ["calsave", "81.45", "0", "0"]],
+      ["link-1", "RUN", ["_calsave", "81.45", "0", "0"]],
     ]);
   });
 

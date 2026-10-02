@@ -184,7 +184,7 @@ describe("NetworkSettingsPanel", () => {
     click(el, "configuration-write");
     expect(sent(socket).slice(-2)).toEqual([
       { type: "send-command", linkId: "usb-ROBOT-A", verb: "SET", fields: ["wheel_diameter", "81.45"] },
-      { type: "send-command", linkId: "usb-ROBOT-A", verb: "RUN", fields: ["calsave", "81.45", "0", "0"] },
+      { type: "send-command", linkId: "usb-ROBOT-A", verb: "RUN", fields: ["_calsave", "81.45", "0", "0"] },
     ]);
     expect(el.querySelector('[data-testid="configuration-calibration-written"]')?.textContent).toContain("wheel_diameter 81.45 mm");
   });
@@ -204,7 +204,7 @@ describe("NetworkSettingsPanel", () => {
   it("shows the address the robot's name derives, and asks the robot for its own once the link is open", () => {
     const { el, socket } = mountPanel();
     expect(el.querySelector<HTMLInputElement>('[data-testid="configuration-wifi-address"]')!.value).toBe("10.55.179.52");
-    expect(sent(socket)).toContainEqual({ type: "send-command", linkId: "usb-ROBOT-A", verb: "RUN", fields: ["netshow"] });
+    expect(sent(socket)).toContainEqual({ type: "send-command", linkId: "usb-ROBOT-A", verb: "RUN", fields: ["_netshow"] });
 
     act(() => {
       socket.emitMessage({
@@ -226,12 +226,12 @@ describe("NetworkSettingsPanel", () => {
       type: "send-command",
       linkId: "usb-ROBOT-A",
       verb: "RUN",
-      fields: ["netset", "10", "55", "1", "77"],
+      fields: ["_netset", "10", "55", "1", "77"],
     });
 
     type(el, '[data-testid="configuration-wifi-address"]', "10.55.179.52");
     click(el, "configuration-write");
-    expect(sent(socket).at(-1)).toEqual({ type: "send-command", linkId: "usb-ROBOT-A", verb: "RUN", fields: ["netclear"] });
+    expect(sent(socket).at(-1)).toEqual({ type: "send-command", linkId: "usb-ROBOT-A", verb: "RUN", fields: ["_netclear"] });
   });
 
   it("refuses to write an address that is not one, and says why", () => {
@@ -239,12 +239,12 @@ describe("NetworkSettingsPanel", () => {
     type(el, '[data-testid="configuration-wifi-address"]', "10.55.300.1");
     expect(el.querySelector('[data-testid="configuration-wifi-address-error"]')).not.toBeNull();
     expect(el.querySelector<HTMLButtonElement>('[data-testid="configuration-write"]')!.disabled).toBe(true);
-    expect(sent(socket).some((message) => JSON.stringify(message).includes("netset"))).toBe(false);
+    expect(sent(socket).some((message) => JSON.stringify(message).includes("_netset"))).toBe(false);
   });
 
   it("Restart robot sends the reboot command", () => {
     const { el, socket } = mountPanel();
     click(el, "configuration-restart");
-    expect(sent(socket).at(-1)).toEqual({ type: "send-command", linkId: "usb-ROBOT-A", verb: "RUN", fields: ["reboot"] });
+    expect(sent(socket).at(-1)).toEqual({ type: "send-command", linkId: "usb-ROBOT-A", verb: "RUN", fields: ["_reboot"] });
   });
 });

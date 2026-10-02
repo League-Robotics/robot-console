@@ -54,9 +54,9 @@ export function StoredDataPanel({ link }: { link: SnapshotLink }) {
 
   function readStoredData(): void {
     setRead({ afterId: log.length > 0 ? (log[log.length - 1]?.id ?? -1) : -1 });
-    sendCommand(link.id, "RUN", ["calshow"]);
+    sendCommand(link.id, "RUN", ["_calshow"]);
     sendCommand(link.id, "WIFICRED");
-    sendCommand(link.id, "RUN", ["netshow"]);
+    sendCommand(link.id, "RUN", ["_netshow"]);
   }
 
   const values = data?.calibration.values;

@@ -62,7 +62,7 @@ function replyTo(entries: readonly Entry[], id: string | undefined): "ack" | "re
 
 export function deriveStoredData(entries: readonly Entry[]): StoredData {
   const calibration = deriveCalStoreState(entries);
-  const calshowReply = replyTo(entries, sentId(entries, /^RUN calshow #(\d+)$/));
+  const calshowReply = replyTo(entries, sentId(entries, /^RUN _calshow #(\d+)$/));
   const calibrationAnswer: StoredDataAnswer =
     calibration.values !== undefined ? "answered" : calshowReply === "refused" ? "refused" : "waiting";
 

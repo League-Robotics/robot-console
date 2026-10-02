@@ -234,6 +234,28 @@ describe("createHarvester -- status/funcs/thdr+t", () => {
     expect(functions).toEqual([{ name: "square" }, { name: "circle" }]);
   });
 
+  it("two FUNCS requests in flight at once still list each function once", async () => {
+    // Seen live 2026-10-02: several tabs ask FUNCS on open, the robot acks
+    // each at once and sends the listings afterwards, so every listing
+    // after the last request was being appended whole.
+    const store = seededStore();
+    const { link, stream } = await connectedLink();
+    const harvester = createHarvester(store, { statusPollIntervalMs: 0 });
+    harvester.attach(session(link));
+
+    link.sendCommand("FUNCS");
+    link.sendCommand("FUNCS");
+    stream.emitData("funcs square\n");
+    stream.emitData("funcs calsave (wheel:number=0)\n");
+    stream.emitData("funcs square\n");
+    stream.emitData("funcs calsave (wheel:number=0)\n");
+    await flush();
+
+    const row = store.snapshotRows().sessions.find((s) => s.link_id === "link-1");
+    const functions = JSON.parse(row?.functions as string) as Array<{ name: string; signature?: string }>;
+    expect(functions).toEqual([{ name: "square" }, { name: "calsave", signature: "(wheel:number=0)" }]);
+  });
+
   it("a FUNCS request drops verbs the robot no longer has", async () => {
     // The dangerous half of the same bug, and the reason it is worth
     // fixing rather than living with: `packages/ui`'s calibration

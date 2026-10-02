@@ -117,7 +117,7 @@ export function buildCalibrationWrites(
 }
 
 /** The store verb `writeCalibration` follows its `SET`s with. */
-export const PERSIST_VERB = "calsave";
+export const PERSIST_VERB = "_calsave";
 
 /**
  * Send the writes, in list order, as sequenced `SET`s, and then persist

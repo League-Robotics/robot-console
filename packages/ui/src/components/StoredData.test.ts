@@ -11,7 +11,7 @@ const RUNS = '{"ev":"calstore.runs","wheel_runs":1,"turn_runs":1}';
 
 describe("deriveStoredData", () => {
   it("is waiting on both until the robot answers", () => {
-    const data = deriveStoredData([tx("RUN calshow #4"), tx("WIFICRED #5")]);
+    const data = deriveStoredData([tx("RUN _calshow #4"), tx("WIFICRED #5")]);
     expect(data.calibrationAnswer).toBe("waiting");
     expect(data.wifiAnswer).toBe("waiting");
     expect(data.wifi).toEqual([]);
@@ -19,7 +19,7 @@ describe("deriveStoredData", () => {
 
   it("reads the calibration store and every stored network, keeping spaces in a network name", () => {
     const data = deriveStoredData([
-      tx("RUN calshow #4"),
+      tx("RUN _calshow #4"),
       tx("WIFICRED #5"),
       rx("ack 4 0 none"),
       rx(VALUES),
@@ -46,7 +46,7 @@ describe("deriveStoredData", () => {
   });
 
   it("a nack or an err for the command's own id is a refusal; another id's is not", () => {
-    expect(deriveStoredData([tx("RUN calshow #4"), rx("ack 4 0 none"), rx("err 3 #4")]).calibrationAnswer).toBe("refused");
+    expect(deriveStoredData([tx("RUN _calshow #4"), rx("ack 4 0 none"), rx("err 3 #4")]).calibrationAnswer).toBe("refused");
     expect(deriveStoredData([tx("WIFICRED #5"), rx("nack 5 0 none")]).wifiAnswer).toBe("refused");
     expect(deriveStoredData([tx("WIFICRED #5"), rx("nack 9 0 none"), rx("err 3 #9")]).wifiAnswer).toBe("waiting");
   });

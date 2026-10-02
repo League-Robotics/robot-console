@@ -56,7 +56,7 @@
  * device's friendly `name`, so the memory also survives a remount of
  * this component for the same device. It is loaded once, on mount.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { RobotFunction, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useSendable, useWsActions } from "../ws/WsProvider";
 import { isLinkUsable } from "../deviceDisplay";
@@ -199,7 +199,9 @@ export function FunctionsPanel({ link, name }: FunctionsPanelProps) {
   const { sendCommand } = useWsActions();
   const sendable = useSendable();
   const linkOpen = isLinkUsable(link) && sendable;
-  const functions = link.session?.functions ?? undefined;
+  // A name starting with `_` is one the console drives itself (its
+  // calibration and network buttons); a student never picks it here.
+  const functions = useMemo(() => link.session?.functions?.filter((fn) => !fn.name.startsWith("_")), [link.session?.functions]);
 
   const [argsMap, setArgsMap] = useState<Map<string, string[]>>(() => loadStoredArgs(storageKeyFor(name)));
   const [selectedName, setSelectedName] = useState<string>("");

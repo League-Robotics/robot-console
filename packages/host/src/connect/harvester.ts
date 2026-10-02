@@ -460,7 +460,12 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
             if (signature.length > 0) {
               fn.signature = signature;
             }
-            functions = [...functions, fn];
+            // Several `FUNCS` can be in flight at once (each tab asks on
+            // open); the robot acks each at once and lists later, so a
+            // listing may land after the last reset. One entry per function.
+            if (!functions.some((known) => known.name === fn.name && known.signature === fn.signature)) {
+              functions = [...functions, fn];
+            }
           }
           syncSession({ functions });
           return;

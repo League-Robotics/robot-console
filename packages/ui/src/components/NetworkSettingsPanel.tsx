@@ -111,7 +111,7 @@ export function NetworkSettingsPanel({
   }, [addressKey]);
   useEffect(() => {
     if (linkOpen && sendable) {
-      sendCommand(link.id, "RUN", ["netshow"]);
+      sendCommand(link.id, "RUN", ["_netshow"]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- asks once per opened link
   }, [linkOpen, sendable, link.id]);
@@ -138,9 +138,9 @@ export function NetworkSettingsPanel({
     }
     if (addressToWrite && address !== null) {
       if (addressIsDefault) {
-        sendCommand(link.id, "RUN", ["netclear"]);
+        sendCommand(link.id, "RUN", ["_netclear"]);
       } else {
-        sendCommand(link.id, "RUN", ["netset", ...address.map(String)]);
+        sendCommand(link.id, "RUN", ["_netset", ...address.map(String)]);
       }
     }
     if (calibrationWrites.length > 0) {
@@ -279,7 +279,7 @@ export function NetworkSettingsPanel({
           data-testid="configuration-restart"
           disabled={!linkOpen || !sendable}
           title="Restart the robot so it uses its stored Wi-Fi network and address"
-          onClick={() => sendCommand(link.id, "RUN", ["reboot"])}
+          onClick={() => sendCommand(link.id, "RUN", ["_reboot"])}
         >
           Restart robot
         </button>

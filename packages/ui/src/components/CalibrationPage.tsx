@@ -319,7 +319,7 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
   // (26c5d57), but a host running an older build still accumulates, and
   // a doubled row here is both ugly and a colliding React key.
   const calFunctionNames = useMemo(
-    () => [...new Set((functions ?? []).map((fn) => fn.name).filter((n) => n.startsWith("cal")))],
+    () => [...new Set((functions ?? []).map((fn) => fn.name).filter((n) => n.startsWith("cal") && !n.startsWith("_")))],
     [functions],
   );
   // `calwheels`/`calturn` have dedicated wizards. `calshow`/`calclear`
@@ -336,15 +336,9 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
   // nothing to anybody and writes the robot's stored calibration on a
   // stray click. The New Calibration panel's Done button is the only
   // thing that should ever send it.
-  const HANDLED_CAL_FUNCTIONS = new Set([
-    "calwheels",
-    "calturn",
-    "calshow",
-    "calclear",
-    "calsave",
-    "calscale",
-    "calports",
-  ]);
+  // The unprefixed names are what firmware before calibration-0.20261002
+  // reports for the same console-driven commands.
+  const HANDLED_CAL_FUNCTIONS = new Set(["calwheels", "calturn", "calshow", "calclear", "calsave", "calscale", "calports"]);
   const extraCalFunctionNames = calFunctionNames.filter((n) => !HANDLED_CAL_FUNCTIONS.has(n));
 
   function update(patch: CalibrationPatch): void {
@@ -358,7 +352,7 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
   // waiting on its own manual Refresh button.
   function refreshCalStore(): void {
     if (isLinkUsable(link) && sendable) {
-      sendCommand(link.id, "RUN", ["calshow"]);
+      sendCommand(link.id, "RUN", ["_calshow"]);
     }
   }
 
@@ -382,8 +376,8 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
 
   // Both commands apply the values and save them to the robot's flash.
   function writeWheelSetup(setup: WheelSetup): void {
-    sendCommand(link.id, "RUN", ["calports", String(setup.portLeft), String(setup.portRight)]);
-    sendCommand(link.id, "RUN", ["calscale", String(setup.scaleLeft), String(setup.scaleRight)]);
+    sendCommand(link.id, "RUN", ["_calports", String(setup.portLeft), String(setup.portRight)]);
+    sendCommand(link.id, "RUN", ["_calscale", String(setup.scaleLeft), String(setup.scaleRight)]);
   }
 
   const [helpOpen, setHelpOpen] = useState(false);
@@ -402,7 +396,7 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
     }
     if (askedOnRef.current === link.id) return;
     askedOnRef.current = link.id;
-    sendCommand(link.id, "RUN", ["calshow"]);
+    sendCommand(link.id, "RUN", ["_calshow"]);
   }, [link, sendable, sendCommand]);
 
   // SEED THE TABLE FROM THE ROBOT'S OWN STORE, once, and only into

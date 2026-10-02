@@ -276,7 +276,7 @@ describe("CalibrationPage", () => {
       expect.objectContaining({ type: "send-command", verb: "SET", fields: ["wheel_diameter", "90.68"] }),
     );
     // ...and the store verb, so it survives the power cycle.
-    expect(after.some((msg) => msg.verb === "RUN" && msg.fields?.[0] === "calsave")).toBe(true);
+    expect(after.some((msg) => msg.verb === "RUN" && msg.fields?.[0] === "_calsave")).toBe(true);
     expect(el.querySelector('[data-testid="new-calibration-written"]')?.textContent).toContain("Written to the robot");
     // Back to Start: the records were only ever there to be averaged.
     expect(el.querySelector('[data-testid="new-calibration-start"]')).not.toBeNull();
@@ -365,8 +365,8 @@ describe("CalibrationPage", () => {
     expect(written).toContainEqual(expect.objectContaining({ verb: "SET", fields: ["wheel_diameter", "90.68"] }));
     expect(written.some((msg) => msg.verb === "SET" && msg.fields?.[0] === "rotational_slip")).toBe(false);
     // calsave's zero fields mean "keep" in the firmware.
-    const save = written.find((msg) => msg.verb === "RUN" && msg.fields?.[0] === "calsave");
-    expect(save?.fields).toEqual(["calsave", "90.68", "0", "0"]);
+    const save = written.find((msg) => msg.verb === "RUN" && msg.fields?.[0] === "_calsave");
+    expect(save?.fields).toEqual(["_calsave", "90.68", "0", "0"]);
   });
 
   it("persists per robot name and Start over clears it", () => {
@@ -417,7 +417,7 @@ describe("CalibrationPage", () => {
     });
 
     it("never renders a generic Run button for calsave -- 'Calibrate save' means nothing and writes the store", () => {
-      const { el } = mountPage({ functions: [{ name: "calwheels" }, { name: "calturn" }, { name: "calsave" }] });
+      const { el } = mountPage({ functions: [{ name: "calwheels" }, { name: "calturn" }, { name: "_calsave" }] });
       expect(el.querySelector('[data-testid="calibration-run-calsave"]')).toBeNull();
       expect(el.textContent).not.toMatch(/Calibrate save/);
     });
@@ -699,7 +699,7 @@ describe("CalibrationPage", () => {
       expect(el.querySelector('[data-testid="calibration-store-panel"]')).toBeNull();
       // calshow is still asked for on connect: it is where the current
       // calibration comes from for a robot this browser never measured.
-      expect(socket.sent.some((line) => line.includes('"fields":["calshow"]'))).toBe(true);
+      expect(socket.sent.some((line) => line.includes('"fields":["_calshow"]'))).toBe(true);
     });
 
     it("names the still-missing calibration on the page itself, once calshow has answered, and drops it once both are known", () => {
@@ -744,10 +744,10 @@ describe("CalibrationPage", () => {
     it("a succeeded wheel run re-asks calshow, so the current calibration doesn't go stale", () => {
       const { el, socket } = mountPage();
       click(el, '[data-testid="new-calibration-start"]');
-      const before = socket.sent.filter((line) => line.includes('"fields":["calshow"]')).length;
+      const before = socket.sent.filter((line) => line.includes('"fields":["_calshow"]')).length;
       click(el, '[data-testid="new-calibration-wheels"]');
       rx(socket, WHEELS);
-      const after = socket.sent.filter((line) => line.includes('"fields":["calshow"]')).length;
+      const after = socket.sent.filter((line) => line.includes('"fields":["_calshow"]')).length;
       expect(after).toBeGreaterThan(before);
     });
   });
@@ -946,7 +946,7 @@ describe("generic cal* controls stay out of the way", () => {
   // page already drives for itself, appeared as a second, unguarded way
   // to do the same thing.
   it("never renders a generic Run control for calshow or calclear", () => {
-    const { el } = mountPage({ functions: [{ name: "calwheels" }, { name: "calturn" }, { name: "calshow" }, { name: "calclear" }] });
+    const { el } = mountPage({ functions: [{ name: "calwheels" }, { name: "calturn" }, { name: "_calshow" }, { name: "_calclear" }] });
     expect(el.querySelector('[data-testid="calibration-run-calshow"]')).toBeNull();
     expect(el.querySelector('[data-testid="calibration-run-calclear"]')).toBeNull();
   });

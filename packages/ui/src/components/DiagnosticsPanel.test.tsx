@@ -241,12 +241,12 @@ describe("DiagnosticsPanel: read stored data", () => {
       (el.querySelector('[data-testid="diagnostics-read-stored"]') as HTMLButtonElement).click();
     });
     const sent = socket.sent.map((text) => JSON.parse(text));
-    expect(sent).toContainEqual({ type: "send-command", linkId: "usb-A", verb: "RUN", fields: ["calshow"] });
+    expect(sent).toContainEqual({ type: "send-command", linkId: "usb-A", verb: "RUN", fields: ["_calshow"] });
     expect(sent).toContainEqual({ type: "send-command", linkId: "usb-A", verb: "WIFICRED" });
     expect(el.querySelector('[data-testid="diagnostics-stored-wifi-note"]')?.textContent).toContain("Waiting");
 
     lines(socket, [
-      ["tx", "RUN calshow #1"],
+      ["tx", "RUN _calshow #1"],
       ["tx", "WIFICRED #2"],
       ["rx", "ack 1 0 none"],
       [

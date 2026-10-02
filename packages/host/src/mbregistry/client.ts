@@ -452,6 +452,10 @@ function openSocket(endpoint: ResolvedEndpoint, connect: ConnectFn): Promise<net
   });
 }
 
+/** A `list` response is one line holding every device (~700 bytes
+ * each), far past `LineReassembler`'s serial-line-sized default. */
+const MAX_RESPONSE_LINE_CHARS = 16 * 1024 * 1024;
+
 /**
  * One JSON-lines connection: a strict request/response driver (this
  * protocol never pipelines — `registry-api.md`'s "Framing": "Every
@@ -461,7 +465,7 @@ function openSocket(endpoint: ResolvedEndpoint, connect: ConnectFn): Promise<net
  * dispatch for the rest of the connection's life" contract.
  */
 class JsonLinesConnection {
-  private readonly reassembler = new LineReassembler();
+  private readonly reassembler = new LineReassembler({ maxBufferChars: MAX_RESPONSE_LINE_CHARS });
   private readonly pending: Array<{ resolve: (v: WireResponse) => void; reject: (e: Error) => void }> = [];
   private watching = false;
   private readonly watchQueue: WatchEvent[] = [];

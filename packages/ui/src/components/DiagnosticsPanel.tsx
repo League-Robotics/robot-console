@@ -9,6 +9,7 @@
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { connectionLabel, linkStateText } from "../deviceDisplay";
 import { useSendable, useWsActions } from "../ws/WsProvider";
+import { StoredDataPanel } from "./StoredDataPanel";
 import "./DiagnosticsPanel.css";
 
 function when(value: number | null | undefined): string {
@@ -81,6 +82,7 @@ export function DiagnosticsPanel({ device, current }: { device: SnapshotDevice; 
       </dl>
 
       {current.session !== undefined && <StatusPollingControl link={current} />}
+      {current.session !== undefined && <StoredDataPanel link={current} />}
 
       <h3>Connections</h3>
       <div className="diagnostics-table-wrap">

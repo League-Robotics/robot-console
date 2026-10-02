@@ -1,0 +1,14 @@
+.wheel-setup-field {
+  display: inline-block;
+  margin-right: 1.2rem;
+  white-space: nowrap;
+}
+
+.wheel-setup-field select {
+  font: inherit;
+  padding: 0.2rem 0.4rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 0.3rem;
+  background: var(--rc-surface);
+  color: var(--rc-text);
+}

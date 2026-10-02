@@ -84,6 +84,15 @@ export function nameToRadioAddress(name: string): RadioAddress {
   return { channel: CHANNEL_MIN + (n % CHANNEL_COUNT), group: GROUP_MIN + (n % GROUP_COUNT) };
 }
 
+/**
+ * Five-letter name -> the fixed WiFi address a robot defaults to,
+ * `10.55.<group>.<channel>`. Throws for anything that is not a name.
+ */
+export function nameToWifiAddress(name: string): string {
+  const { channel, group } = nameToRadioAddress(name);
+  return `10.55.${group}.${channel}`;
+}
+
 /** The spec's reverse map, or `null` when the pair belongs to no name. */
 function reverseToValue(channel: number, group: number): number | null {
   if (!Number.isInteger(channel) || channel < CHANNEL_MIN || channel > CHANNEL_MAX) {

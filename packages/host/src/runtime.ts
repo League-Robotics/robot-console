@@ -353,6 +353,16 @@ export interface StartRuntimeOptions {
  * this default entirely (see {@link startRuntime}'s own merge). */
 const DEFAULT_DISABLED_MDNS_TYPES: readonly ("mbserial" | "mbrelay" | "mbflash")[] = ["mbserial", "mbrelay", "mbflash"];
 
+/** DNS domains WiFi robots are also looked up under, from the
+ * comma-separated `ROBOT_CONSOLE_WIFI_DNS_DOMAINS` (default `home`; an
+ * empty value turns the lookup off). */
+export function wifiDnsDomainsFromEnv(raw: string | undefined): string[] {
+  return (raw ?? "home")
+    .split(",")
+    .map((domain) => domain.trim().replace(/^\.+|\.+$/g, ""))
+    .filter((domain) => domain !== "" && domain !== "local");
+}
+
 /** `ConnectorDeps.mbregistryLabel`/`StartServerOptions.mbregistryLabel`'s
  * own default — purely cosmetic (`registry-api.md`: "display-only"),
  * naming this machine so a lock/flash contention message can say who
@@ -464,6 +474,8 @@ export async function startRuntime(options: StartRuntimeOptions = {}): Promise<R
   const mdnsBackend = options.mdnsBackend ?? createBonjourBackendFn();
   const mdnsWatcherOptions: MdnsWatcherOptions = {
     disabledTypes: DEFAULT_DISABLED_MDNS_TYPES,
+    wifiDnsDomains: wifiDnsDomainsFromEnv(process.env.ROBOT_CONSOLE_WIFI_DNS_DOMAINS),
+    wifiDerivedAddress: true,
     ...options.mdnsWatcherOptions,
   };
   const mdnsHandle = startMdnsWatcherFn(store, { backend: mdnsBackend }, mdnsWatcherOptions);

@@ -1,0 +1,39 @@
+.network-settings-field {
+  display: inline-block;
+  margin-right: 1.2rem;
+  white-space: nowrap;
+}
+
+.network-settings .calibration-table input {
+  width: 11rem;
+}
+
+.network-settings .calibration-table input.network-settings-number {
+  width: 4.5rem;
+}
+
+.network-settings-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.network-settings-actions button {
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.3rem 0.8rem;
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.network-settings-actions button:disabled {
+  color: var(--rc-text-muted);
+  cursor: default;
+}
+
+.network-settings-address {
+  width: 9rem;
+}

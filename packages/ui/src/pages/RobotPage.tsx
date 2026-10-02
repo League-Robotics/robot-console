@@ -186,7 +186,6 @@ import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMes
 import type { ActiveConsoleTarget } from "./DevicePage";
 import { nameDisplay } from "../deviceDisplay";
 import { CalibrationPage } from "../components/CalibrationPage";
-import { ConfigurationPage } from "../components/ConfigurationPage";
 import { DiagnosticsPanel } from "../components/DiagnosticsPanel";
 import { DriveControls } from "../components/DriveControls";
 import { DriveTab } from "../components/DriveTab";
@@ -230,7 +229,7 @@ export interface RobotPageProps {
  * their own any more -- `ConsoleDock` (`DevicePage.tsx`) is the one
  * console for the whole device page, regardless of which tab is
  * showing, so tabbing here never touches it. */
-export type RobotTab = "main" | "drive" | "calibration" | "configuration" | "diagnostics";
+export type RobotTab = "main" | "drive" | "calibration" | "diagnostics";
 
 export function RobotPage({ device, link, onActiveTargetChange }: RobotPageProps) {
   const [tab, setSelectedTab] = useState<RobotTab>("main");
@@ -261,7 +260,7 @@ export function RobotPage({ device, link, onActiveTargetChange }: RobotPageProps
   const { send } = useWsActions();
   const [wifiTabVisited, setWifiTabVisited] = useState(false);
   useEffect(() => {
-    if (tab === "calibration" || tab === "configuration") {
+    if (tab === "calibration") {
       setWifiTabVisited(true);
     }
   }, [tab]);
@@ -275,7 +274,6 @@ export function RobotPage({ device, link, onActiveTargetChange }: RobotPageProps
     { id: "main", label: "Main" },
     { id: "drive", label: "Drive" },
     { id: "calibration", label: "Calibration" },
-    { id: "configuration", label: "Configuration" },
     { id: "diagnostics", label: "Diagnostics" },
   ];
 
@@ -330,11 +328,6 @@ export function RobotPage({ device, link, onActiveTargetChange }: RobotPageProps
       {tab === "drive" && <DriveTab link={link} name={device.name} />}
 
       {tab === "calibration" && <CalibrationPage link={link} name={device.name} device={device} />}
-
-      {/* Sprint 022 ticket 007: `link` dropped from this call -- see
-          `ConfigurationPage.tsx`'s own doc comment. It only ever fed
-          that page's now-deleted `ConsolePane` mount. */}
-      {tab === "configuration" && <ConfigurationPage device={device} />}
 
       {tab === "diagnostics" && <DiagnosticsPanel device={device} current={link} />}
     </section>

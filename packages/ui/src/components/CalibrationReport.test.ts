@@ -257,6 +257,16 @@ describe("parseCalstoreValues", () => {
     });
   });
 
+  it("carries the wheel multipliers and motor ports when the firmware reports them", () => {
+    expect(parseCalstoreValues({ ...FULL, scale_l: -1, scale_r: 0.97, port_l: 2, port_r: 1 })).toMatchObject({
+      wheelScaleLeft: -1,
+      wheelScaleRight: 0.97,
+      motorPortLeft: 2,
+      motorPortRight: 1,
+    });
+    expect(parseCalstoreValues(FULL)?.wheelScaleLeft).toBeUndefined();
+  });
+
   it("has_wheel/has_turn are read as the 0/1 authority, never from wheel/tw > 0", () => {
     // wheel/tw are non-zero here but has_wheel/has_turn both say false --
     // the flags must still win.

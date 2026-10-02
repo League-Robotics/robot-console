@@ -151,6 +151,21 @@ describe("calibrationCode -- fed by the robot's own calshow store, for a session
     liveSlip: 1,
   };
 
+  it("emits the motor ports and wheel multipliers the robot reports", () => {
+    const code = calibrationCode({}, "tovez", {
+      calStore: { ...BOTH_STORED, wheelScaleLeft: -1, wheelScaleRight: 0.97, motorPortLeft: 2, motorPortRight: 1 },
+    });
+    expect(code).toContain("diffDrive.setMotorPorts(MotorPort.M2, MotorPort.M1)");
+    expect(code).toContain("diffDrive.setWheelMultiplier(MotorSide.Left, -1)");
+    expect(code).toContain("diffDrive.setWheelMultiplier(MotorSide.Right, 0.97)");
+  });
+
+  it("leaves the motor lines out for a robot that does not report them", () => {
+    const code = calibrationCode({}, "gopiv", { calStore: BOTH_STORED });
+    expect(code).not.toContain("setMotorPorts");
+    expect(code).not.toContain("setWheelMultiplier");
+  });
+
   it("with no calStore option at all (calshow never answered), behaves exactly as before -- no invented defaults", () => {
     expect(calibrationCode({}, "gopiv")).toBe("");
   });

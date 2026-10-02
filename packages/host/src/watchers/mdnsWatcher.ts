@@ -227,10 +227,11 @@
  * multicast socket and no real wall-clock wait anywhere in this
  * module's own suite.
  */
-import { nameToValue } from "@robot-console/protocol";
+import { nameToValue, nameToWifiAddress } from "@robot-console/protocol";
 import { isLocalMdnsService } from "../localHost.js";
 import { Store, type Transport } from "../store/index.js";
 import type { MdnsBackend, MdnsBrowser, MdnsFindOptions, MdnsService } from "../discovery/mdnsDiscovery.js";
+import { probeWifiOnDemand } from "../discovery/wifiOnDemand.js";
 
 /** How often every browsed type's `browser.update()` re-issues its PTR
  * query, so a missed boot announcement is recovered within one
@@ -351,9 +352,18 @@ export interface MdnsWatcherDeps {
   /** Wall-clock reader for every store timestamp and TTL comparison.
    * Defaults to `Date.now`. */
   now?: () => number;
+  /** The unicast-DNS robot probe. Defaults to {@link probeWifiOnDemand}. */
+  probeWifi?: typeof probeWifiOnDemand;
 }
 
 export interface MdnsWatcherOptions {
+  /** DNS domains (e.g. `home`) under which an owned robot with no live
+   * `wifi` link is also looked up as `<name>.<domain>`, for networks
+   * where mDNS does not reach this host. Defaults to none. */
+  wifiDnsDomains?: readonly string[];
+  /** Also try each such robot at the fixed address its name derives,
+   * `10.55.<group>.<channel>`, before any DNS domain. Defaults to off. */
+  wifiDerivedAddress?: boolean;
   /** How often `browser.update()` is called on every browsed type, and
    * how often the aging pass runs. Defaults to
    * {@link DEFAULT_REQUERY_INTERVAL_MS}. */
@@ -431,6 +441,9 @@ export function startMdnsWatcher(
   const wifiFastRequeryIntervalMs = opts.wifiFastRequeryIntervalMs ?? DEFAULT_WIFI_FAST_REQUERY_INTERVAL_MS;
   const wifiFastRequeryMaxAttempts = opts.wifiFastRequeryMaxAttempts ?? DEFAULT_WIFI_FAST_REQUERY_MAX_ATTEMPTS;
   const disabledTypes = new Set(opts.disabledTypes ?? []);
+  const wifiDnsDomains = opts.wifiDnsDomains ?? [];
+  const wifiDerivedAddress = opts.wifiDerivedAddress ?? false;
+  const probeWifi = deps.probeWifi ?? probeWifiOnDemand;
 
   /** Bench defect 1 (2026-09-12): fqdn -> replay closure that redoes the
    * last-known `services`/`links` touch for that instance. Populated by
@@ -623,6 +636,39 @@ export function startMdnsWatcher(
    * throws, never blocks, safe to call from both the immediate at-start
    * kick and every `browseCycle` tick.
    */
+  const dnsProbesInFlight = new Set<string>();
+
+  /** Looks `name` up under each configured DNS domain in turn and, on
+   * the first one that answers `HELLO` as `name`, records its `wifi`
+   * link exactly as {@link handleWifi} would. */
+  async function probeWifiByDns(name: string): Promise<void> {
+    if (dnsProbesInFlight.has(name)) {
+      return;
+    }
+    dnsProbesInFlight.add(name);
+    try {
+      const attempts: { domain?: string; address?: string }[] = wifiDnsDomains.map((domain) => ({ domain }));
+      if (wifiDerivedAddress && FRIENDLY_NAME_PATTERN.test(name)) {
+        attempts.unshift({ address: nameToWifiAddress(name) });
+      }
+      for (const attempt of attempts) {
+        const result = await probeWifi(name, attempt);
+        if (stopped || hasLiveWifiLink(name)) {
+          return;
+        }
+        if (result.status === "found") {
+          const linkId = `wifi-${name}`;
+          const deviceId = uniqueOwnedDeviceIdByName(name);
+          upsertLinkAndDetectChange(linkId, "wifi", { host: result.host, port: result.port, ip: result.ip }, deviceId);
+          promoteOwnedLinkIfDiscovered(linkId, deviceId);
+          return;
+        }
+      }
+    } finally {
+      dnsProbesInFlight.delete(name);
+    }
+  }
+
   function triggerWifiOnDemandProbes(): void {
     if (stopped) {
       return;
@@ -630,6 +676,11 @@ export function startMdnsWatcher(
     const pending = namesNeedingWifiLink();
     if (pending.length === 0) {
       return;
+    }
+    if (wifiDnsDomains.length > 0 || wifiDerivedAddress) {
+      for (const name of pending) {
+        void probeWifiByDns(name);
+      }
     }
     requeryWifiBrowsersNow();
     if (fastRequeryTimer !== undefined) {
@@ -659,11 +710,28 @@ export function startMdnsWatcher(
     return { host: service.host, port: service.port, ...(ip !== undefined ? { ip } : {}) };
   }
 
+  /** A link first found by DNS keeps its stored address when an mDNS
+   * announcement names the same ip and port, so the differing hostname
+   * alone never reads as an address change on an open session. */
+  function wifiAddress(linkId: string, service: MdnsService): { host: string; port: number; ip?: string } {
+    const observed = tcpAddress(service);
+    const previous = storedAddress(linkId) as { host?: unknown; port?: unknown; ip?: unknown } | undefined;
+    if (
+      observed.ip !== undefined &&
+      typeof previous?.host === "string" &&
+      previous.ip === observed.ip &&
+      previous.port === observed.port
+    ) {
+      return { host: previous.host, port: observed.port, ip: observed.ip };
+    }
+    return observed;
+  }
+
   function handleWifi(service: MdnsService): void {
     const name = service.txt?.name ?? service.name;
     const linkId = `wifi-${name}`;
     const deviceId = uniqueOwnedDeviceIdByName(name);
-    upsertLinkAndDetectChange(linkId, "wifi", tcpAddress(service), deviceId);
+    upsertLinkAndDetectChange(linkId, "wifi", wifiAddress(linkId, service), deviceId);
     promoteOwnedLinkIfDiscovered(linkId, deviceId);
   }
 

@@ -245,6 +245,11 @@ export interface CalStoreDefaults {
   slip: number;
   liveTrackWidthCm: number;
   liveSlip: number;
+  /** Per-wheel speed multipliers and motor ports (1-4), when the robot reports them. */
+  wheelScaleLeft?: number | undefined;
+  wheelScaleRight?: number | undefined;
+  motorPortLeft?: number | undefined;
+  motorPortRight?: number | undefined;
 }
 
 export interface CalibrationCodeOptions {
@@ -372,6 +377,18 @@ export function calibrationCode(state: CalibrationState, robotName: string, opti
   } else if (calStore !== undefined) {
     lines.push(
       `diffDrive.setConfigValue(ConfigField.RotationalSlip, ${calStore.liveSlip})  // NOT measured -- ${profileLabel} compiled default, currently running`,
+    );
+  }
+
+  if (calStore?.motorPortLeft !== undefined && calStore.motorPortRight !== undefined) {
+    lines.push(
+      `diffDrive.setMotorPorts(MotorPort.M${calStore.motorPortLeft}, MotorPort.M${calStore.motorPortRight})  // left wheel motor port, right wheel motor port`,
+    );
+  }
+  if (calStore?.wheelScaleLeft !== undefined && calStore.wheelScaleRight !== undefined) {
+    lines.push(
+      `diffDrive.setWheelMultiplier(MotorSide.Left, ${calStore.wheelScaleLeft})  // left wheel speed multiplier`,
+      `diffDrive.setWheelMultiplier(MotorSide.Right, ${calStore.wheelScaleRight})  // right wheel speed multiplier`,
     );
   }
 

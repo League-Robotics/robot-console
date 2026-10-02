@@ -144,6 +144,44 @@ describe("probeWifiOnDemand -- dns.lookup handling", () => {
   });
 });
 
+describe("probeWifiOnDemand -- domain", () => {
+  it("looks the robot up under the given domain and reports that hostname", async () => {
+    const socket = new FakeSocket();
+    const lookedUp: string[] = [];
+    const pending = probeWifiOnDemand("vevov", {
+      domain: "home",
+      lookup: (hostname) => {
+        lookedUp.push(hostname);
+        return Promise.resolve({ address: "192.168.4.15", family: 4 });
+      },
+      dial: () => Promise.resolve(socket),
+    });
+    await flush();
+    socket.emit("data", Buffer.from("device NEZHA2 robot vevov 1198504156\n"));
+    expect(await pending).toEqual({ status: "found", host: "vevov.home", port: WIFI_ROBOTLINK_PORT, ip: "192.168.4.15" });
+    expect(lookedUp).toEqual(["vevov.home"]);
+  });
+});
+
+describe("probeWifiOnDemand -- address", () => {
+  it("dials a given address without looking anything up", async () => {
+    const socket = new FakeSocket();
+    const dialed: string[] = [];
+    const pending = probeWifiOnDemand("tovez", {
+      address: "10.55.29.48",
+      lookup: () => Promise.reject(new Error("must not be called")),
+      dial: (host) => {
+        dialed.push(host);
+        return Promise.resolve(socket);
+      },
+    });
+    await flush();
+    socket.emit("data", Buffer.from("device NEZHA2 robot tovez 2314287040\n"));
+    expect(await pending).toEqual({ status: "found", host: "10.55.29.48", port: WIFI_ROBOTLINK_PORT, ip: "10.55.29.48" });
+    expect(dialed).toEqual(["10.55.29.48"]);
+  });
+});
+
 describe("probeWifiOnDemand -- connect failure", () => {
   it("resolves 'not-found' when the TCP dial itself fails (e.g. connection refused)", async () => {
     const result = await probeWifiOnDemand("tigez", {

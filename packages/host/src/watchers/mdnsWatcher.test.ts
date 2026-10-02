@@ -1285,6 +1285,132 @@ describe("startMdnsWatcher -- 020-002 accelerated WiFi re-query", () => {
   });
 });
 
+describe("startMdnsWatcher -- wifiDnsDomains lookup", () => {
+  function ownedRobot(store: Store, id: number): string {
+    const device = namedDevice(id);
+    store.upsertDevice({ id: device.id, name: device.name, kind: "robot", at: 1 });
+    store.setOwned(device.id, true, 1);
+    return device.name;
+  }
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  it("records a connectable wifi link for an owned robot found under a configured domain", async () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const name = ownedRobot(store, 1);
+    const probeWifi = vi.fn(async (probed: string, options?: { domain?: string }) => ({
+      status: "found" as const,
+      host: `${probed}.${options?.domain ?? "local"}`,
+      port: 7654,
+      ip: "192.168.4.15",
+    }));
+    const handle = start(store, backend, { wifiDnsDomains: ["home"] }, { probeWifi });
+    try {
+      await settle();
+      expect(probeWifi).toHaveBeenCalledWith(name, { domain: "home" });
+      const link = store.snapshotRows().links.find((l) => l.id === `wifi-${name}`);
+      expect(link?.state).toBe("connectable");
+      expect(JSON.parse(String(link?.address))).toEqual({ host: `${name}.home`, port: 7654, ip: "192.168.4.15" });
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it("tries the address the robot's name derives before any domain, and records that address", async () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const name = "tovez";
+    store.upsertDevice({ id: nameToValue(name), name, kind: "robot", at: 1 });
+    store.setOwned(nameToValue(name), true, 1);
+    const probeWifi = vi.fn(async (_probed: string, options?: { domain?: string; address?: string }) =>
+      options?.address !== undefined
+        ? { status: "found" as const, host: options.address, port: 7654, ip: options.address }
+        : { status: "not-found" as const, reason: "unused" },
+    );
+    const handle = start(store, backend, { wifiDnsDomains: ["home"], wifiDerivedAddress: true }, { probeWifi });
+    try {
+      await settle();
+      expect(probeWifi.mock.calls).toEqual([[name, { address: "10.55.29.48" }]]);
+      const link = store.snapshotRows().links.find((l) => l.id === `wifi-${name}`);
+      expect(JSON.parse(String(link?.address))).toEqual({ host: "10.55.29.48", port: 7654, ip: "10.55.29.48" });
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it("tries each domain in order and records nothing when none answers", async () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const name = ownedRobot(store, 2);
+    const probeWifi = vi.fn(async () => ({ status: "not-found" as const, reason: "no such name" }));
+    const handle = start(store, backend, { wifiDnsDomains: ["home", "lan"] }, { probeWifi });
+    try {
+      await settle();
+      expect(probeWifi.mock.calls).toEqual([
+        [name, { domain: "home" }],
+        [name, { domain: "lan" }],
+      ]);
+      expect(store.snapshotRows().links.map((l) => l.id)).not.toContain(`wifi-${name}`);
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+
+  it("never probes when no domain is configured, or when the robot already has a live wifi link", async () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const unlinked = ownedRobot(store, 3);
+    const linked = ownedRobot(store, 4);
+    store.upsertLink({ id: `wifi-${linked}`, transport: "wifi", address: { host: `${linked}.local`, port: 7654 }, deviceId: 4, at: 1 });
+    const probeWifi = vi.fn(async () => ({ status: "not-found" as const, reason: "unused" }));
+    const none = start(store, backend, {}, { probeWifi });
+    await settle();
+    none.stop();
+    expect(probeWifi).not.toHaveBeenCalled();
+
+    const some = start(store, fakeBackend(), { wifiDnsDomains: ["home"] }, { probeWifi });
+    try {
+      await settle();
+      expect(probeWifi.mock.calls.map(([probed]) => probed)).toEqual([unlinked]);
+    } finally {
+      some.stop();
+      store.close();
+    }
+  });
+
+  it("an mDNS announcement for the same ip and port keeps the DNS-found address", async () => {
+    const store = freshStore();
+    const backend = fakeBackend();
+    const name = ownedRobot(store, 5);
+    const probeWifi = vi.fn(async (probed: string) => ({
+      status: "found" as const,
+      host: `${probed}.home`,
+      port: 7654,
+      ip: "192.168.4.15",
+    }));
+    const handle = start(store, backend, { wifiDnsDomains: ["home"] }, { probeWifi });
+    try {
+      await settle();
+      backend.robotlinkTcp.emitUp(wifiService(name, `${name}.local`, 7654, ["192.168.4.15"]));
+      const link = store.snapshotRows().links.find((l) => l.id === `wifi-${name}`);
+      expect(JSON.parse(String(link?.address))).toEqual({ host: `${name}.home`, port: 7654, ip: "192.168.4.15" });
+
+      backend.robotlinkTcp.emitServiceChange(wifiService(name, `${name}.local`, 7654, ["192.168.4.99"]));
+      const moved = store.snapshotRows().links.find((l) => l.id === `wifi-${name}`);
+      expect(JSON.parse(String(moved?.address))).toEqual({ host: `${name}.local`, port: 7654, ip: "192.168.4.99" });
+    } finally {
+      handle.stop();
+      store.close();
+    }
+  });
+});
+
 describe("mdnsWatcher TTL/interval constants block", () => {
   it("every default is a positive number, and the re-query interval is smaller than every TTL", () => {
     for (const value of [

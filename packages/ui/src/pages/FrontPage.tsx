@@ -80,6 +80,7 @@
  * `<name>`)" label (`connectionLabel`, unchanged) -- architecture.md
  * §7.3's "Radio via `<relay>`" row.
  */
+import { CollapsibleGroup } from "../components/CollapsibleGroup";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
@@ -400,10 +401,9 @@ export function DevicesList({
             </section>
           )}
           {bridges.length > 0 && (
-            <section className="devices-group" aria-label="Radio bridges" data-testid="devices-group-bridges">
-              <h2 className="devices-group-heading">Radio bridges</h2>
+            <CollapsibleGroup id="bridges" title="Radio bridges" count={bridges.length}>
               <ul className="devices-list">{bridges.map(renderCard)}</ul>
-            </section>
+            </CollapsibleGroup>
           )}
           {/* Stakeholder, 2026-09-21: "There should be a joystick
               section. It should go into joysticks." Below the robots and
@@ -412,10 +412,9 @@ export function DevicesList({
               else -- a joystick is a device on this bench like any
               other, not a special case. */}
           {joysticks.length > 0 && (
-            <section className="devices-group" aria-label="Joysticks" data-testid="devices-group-joysticks">
-              <h2 className="devices-group-heading">Joysticks</h2>
+            <CollapsibleGroup id="joysticks" title="Joysticks" count={joysticks.length}>
               <ul className="devices-list">{joysticks.map(renderCard)}</ul>
-            </section>
+            </CollapsibleGroup>
           )}
         </>
       )}
@@ -1273,11 +1272,18 @@ function NotSeenRecentlySection({
   onAttempt: (deviceId: number, attempt: { state: "trying" | "failed"; message?: string } | null) => void;
 }) {
   return (
-    <section className="remembered-robots" aria-label="Devices not seen recently">
-      <h2 className="remembered-robots-heading">Not seen recently</h2>
-      <p className="remembered-robots-hint">
-        These devices are known to this host but aren&apos;t reachable right now.
-      </p>
+    <CollapsibleGroup
+      id="not-seen"
+      title="Not seen recently"
+      count={devices.length}
+      className="remembered-robots"
+      ariaLabel="Devices not seen recently"
+      hint={
+        <p className="remembered-robots-hint">
+          These devices are known to this host but aren&apos;t reachable right now.
+        </p>
+      }
+    >
       <ul className="remembered-robots-list">
         {devices.map((device) => (
           <li key={device.id}>
@@ -1314,6 +1320,6 @@ function NotSeenRecentlySection({
           </li>
         ))}
       </ul>
-    </section>
+    </CollapsibleGroup>
   );
 }

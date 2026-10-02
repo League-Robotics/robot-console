@@ -317,6 +317,12 @@ export interface CalstoreValues {
   /** What the robot's rotational slip actually is right now, whatever
    * its origin. */
   liveSlip: number;
+  /** Per-wheel speed multipliers and motor ports (1-4) in force. Absent
+   * on firmware that does not report them. */
+  wheelScaleLeft: number | undefined;
+  wheelScaleRight: number | undefined;
+  motorPortLeft: number | undefined;
+  motorPortRight: number | undefined;
 }
 
 /** Validate and extract a `calstore.values` line's fields (the
@@ -336,6 +342,10 @@ export function parseCalstoreValues(fields: Record<string, unknown>): CalstoreVa
     hasTurn: core.has_turn !== 0,
     liveTrackWidthCm: core.live_tw,
     liveSlip: core.live_slip,
+    wheelScaleLeft: numberField(fields, "scale_l"),
+    wheelScaleRight: numberField(fields, "scale_r"),
+    motorPortLeft: numberField(fields, "port_l"),
+    motorPortRight: numberField(fields, "port_r"),
   };
 }
 

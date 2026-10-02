@@ -215,9 +215,15 @@ function freshTmpDir(): string {
   return dir;
 }
 
+const hostSystemSocket = clientSocketCandidates({}, () => "/nonexistent").at(-1);
+
+/** Never reaches a real mbregistry system service running on the dev machine. */
 const connect: ConnectFn = (endpoint: ResolvedEndpoint) => {
   if (endpoint.kind === "tcp") {
     return net.connect({ host: endpoint.host, port: endpoint.port });
+  }
+  if (hostSystemSocket?.kind === "unix" && endpoint.path === hostSystemSocket.path) {
+    return net.connect({ path: path.join(tmpBaseDir(), "mb-no-system-registry.sock") });
   }
   return net.connect({ path: endpoint.path });
 };
@@ -317,6 +323,31 @@ describe("resolveMbregistryConnection — step 2: standard client candidates", (
     resolved.socket.destroy();
     await server.close();
     void dir;
+  });
+
+  it("still recognizes a live candidate whose `list` response is far larger than one socket chunk", async () => {
+    const fakeHome = freshTmpDir();
+    const homedirFn = () => fakeHome;
+    const userCandidate = clientSocketCandidates({}, homedirFn)[0];
+    if (userCandidate.kind !== "unix") throw new Error("expected a unix candidate on this platform");
+
+    const devices = Array.from({ length: 200 }, (_, i) => ({ uid: `uid-${i}`, padding: "x".repeat(700) }));
+    const server = new FakeRegistryServer(devices);
+    await server.listen(userCandidate.path);
+    const spawnFn = vi.fn() as unknown as SpawnFn;
+
+    const resolved = await resolveMbregistryConnection({
+      env: {},
+      connect,
+      spawnFn,
+      homedirFn,
+      livenessTimeoutMs: 1000,
+    });
+
+    expect(resolved.endpoint).toEqual(userCandidate);
+    expect(spawnFn).not.toHaveBeenCalled();
+    resolved.socket.destroy();
+    await server.close();
   });
 });
 

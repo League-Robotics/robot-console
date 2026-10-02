@@ -1,0 +1,35 @@
+.devices-group-toggle {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font: inherit;
+  color: inherit;
+}
+
+.devices-group-toggle:focus-visible {
+  outline: 2px solid var(--rc-accent, currentColor);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.devices-group-arrow {
+  display: inline-block;
+  width: 0.9em;
+  font-size: 0.9em;
+}
+
+.devices-group-count {
+  font-weight: 400;
+}
+
+.devices-group-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.devices-group-content[hidden] {
+  display: none;
+}

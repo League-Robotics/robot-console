@@ -80,32 +80,29 @@ export function WifiCredentialsForm({ variant, ssid, password, onSsidChange, onP
         <table className="calibration-table" data-testid="configuration-wifi">
           <tbody>
             <tr>
-              <th scope="row">
-                <label htmlFor="configuration-wifi-ssid">Network name</label>
-              </th>
+              <th scope="row">Wi-Fi</th>
               <td>
-                <input
-                  id="configuration-wifi-ssid"
-                  data-testid="configuration-wifi-ssid"
-                  value={ssid}
-                  autoComplete="off"
-                  onChange={(event) => onSsidChange(event.target.value)}
-                />
-              </td>
-            </tr>
-            <tr>
-              <th scope="row">
-                <label htmlFor="configuration-wifi-password">Password</label>
-              </th>
-              <td>
-                <input
-                  id="configuration-wifi-password"
-                  data-testid="configuration-wifi-password"
-                  type="text"
-                  value={password}
-                  autoComplete="off"
-                  onChange={(event) => onPasswordChange(event.target.value)}
-                />
+                <label className="network-settings-field" htmlFor="configuration-wifi-ssid">
+                  Network name{" "}
+                  <input
+                    id="configuration-wifi-ssid"
+                    data-testid="configuration-wifi-ssid"
+                    value={ssid}
+                    autoComplete="off"
+                    onChange={(event) => onSsidChange(event.target.value)}
+                  />
+                </label>
+                <label className="network-settings-field" htmlFor="configuration-wifi-password">
+                  Password{" "}
+                  <input
+                    id="configuration-wifi-password"
+                    data-testid="configuration-wifi-password"
+                    type="text"
+                    value={password}
+                    autoComplete="off"
+                    onChange={(event) => onPasswordChange(event.target.value)}
+                  />
+                </label>
               </td>
             </tr>
           </tbody>

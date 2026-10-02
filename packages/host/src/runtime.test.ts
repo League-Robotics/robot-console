@@ -13,7 +13,7 @@
  * `runtime.ts`'s own module doc comment).
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { startRuntime, type StartRuntimeOptions } from "./runtime.js";
+import { startRuntime, wifiDnsDomainsFromEnv, type StartRuntimeOptions } from "./runtime.js";
 import type { HarvesterDeps, HarvesterTelemetryEvent } from "./connect/harvester.js";
 import type { ConnectorDeps } from "./connect/connector.js";
 import { DEFAULT_WIFI_DISCOVERY_GRACE_MS, type ReconcilerDeps } from "./connect/reconciler.js";
@@ -247,6 +247,8 @@ describe("startRuntime -- composition", () => {
     // default (see `runtime.ts`'s own `DEFAULT_DISABLED_MDNS_TYPES`).
     expect(f.startMdnsWatcherMock).toHaveBeenCalledWith(f.fakeStore, { backend: f.fakeBackend }, {
       disabledTypes: ["mbserial", "mbrelay", "mbflash"],
+      wifiDnsDomains: wifiDnsDomainsFromEnv(process.env.ROBOT_CONSOLE_WIFI_DNS_DOMAINS),
+      wifiDerivedAddress: true,
     });
     // Sprint 017 ticket 002: the firmware watcher is composed here too,
     // exactly like the other two -- replacing the retired
@@ -682,5 +684,14 @@ describe("startRuntime -- two consoles on one machine (sprint 018 success criter
     expect(f2.fakeStore.close).not.toHaveBeenCalled();
 
     await runtime2.stop();
+  });
+});
+
+describe("wifiDnsDomainsFromEnv", () => {
+  it("defaults to home, splits a comma list, and treats an empty value as off", () => {
+    expect(wifiDnsDomainsFromEnv(undefined)).toEqual(["home"]);
+    expect(wifiDnsDomainsFromEnv(" home , .lan. ")).toEqual(["home", "lan"]);
+    expect(wifiDnsDomainsFromEnv("")).toEqual([]);
+    expect(wifiDnsDomainsFromEnv("local")).toEqual([]);
   });
 });

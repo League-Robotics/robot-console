@@ -174,7 +174,7 @@ describe("RobotPage", () => {
     expect(el.querySelector('[data-testid="console-log"]')).toBeNull();
   });
 
-  it("ticket 018-013: tabs sit beside the name; every robot (including a plain, non-calibration one) gets Main, Drive, Calibration, Configuration and Diagnostics", () => {
+  it("ticket 018-013: tabs sit beside the name; every robot (including a plain, non-calibration one) gets Main, Drive, Calibration and Diagnostics", () => {
     const { el } = mountRobotPage();
     const row = el.querySelector(".robot-page-title-row")!;
     expect(row.querySelector("h2")?.textContent).toBe("vevav");
@@ -182,7 +182,6 @@ describe("RobotPage", () => {
       "Main",
       "Drive",
       "Calibration",
-      "Configuration",
       "Diagnostics",
     ]);
     expect(el.querySelector('[data-testid="robot-tab-main"]')?.getAttribute("aria-selected")).toBe("true");
@@ -218,7 +217,7 @@ describe("RobotPage", () => {
 
   it("the Calibration tab (offered for any robot) shows the flow on the left, the values right -- no console on either side (sprint 022 ticket 007)", () => {
     const { el } = mountRobotPage(robotDevice({ program: "calibration-1", version: "1" }));
-    expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Calibration", "Configuration", "Diagnostics"]);
+    expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Calibration", "Diagnostics"]);
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
     });
@@ -231,6 +230,7 @@ describe("RobotPage", () => {
     expect(el.querySelector('.robot-page-column-left [aria-label="New calibration"]')).not.toBeNull();
     expect(el.querySelector('.robot-page-column-right [aria-label="Current calibration"]')).not.toBeNull();
     expect(el.querySelector('.robot-page-column-right [aria-label="Calibration code"]')).not.toBeNull();
+    expect(el.querySelector('.robot-page-column-right [aria-label="Wi-Fi and radio"]')).not.toBeNull();
     expect(el.querySelector('[aria-label="Console"]')).toBeNull();
     expect(el.querySelector('[aria-label="Distance calibration"]')).toBeNull();
     expect(el.querySelector('[aria-label="Rotation calibration"]')).toBeNull();
@@ -245,16 +245,6 @@ describe("RobotPage", () => {
     expect(el.querySelector('[data-testid="calibration-firmware-not-running"]')?.textContent).toBe("Program: unknown");
     const flashButton = Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash calibration firmware");
     expect(flashButton).not.toBeUndefined();
-  });
-
-  it("stakeholder correction 2026-09-13: the Configuration tab no longer shows the Calibration firmware block", () => {
-    const { el } = mountRobotPage(robotDevice({ program: null, version: null }));
-    act(() => {
-      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-configuration"]')!.click();
-    });
-    expect(el.querySelector('[data-testid="robot-tab-panel-configuration"]')).not.toBeNull();
-    expect(el.querySelector('[data-testid="calibration-firmware-not-running"]')).toBeNull();
-    expect(Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Flash calibration firmware")).toBeUndefined();
   });
 
   it("renders STOP/E-STOP inside DriveControls' pad in the left column, not as a page-level sibling (out-of-process, 2026-09-10)", () => {
@@ -306,7 +296,7 @@ describe("RobotPage", () => {
     expect(el.querySelector(".status-panel")).toBeNull();
   });
 
-  it("ticket 022-001 (regression fix): does not request get-wifi-credentials for a session that never opens Calibration or Configuration", () => {
+  it("ticket 022-001 (regression fix): does not request get-wifi-credentials for a session that never opens Calibration", () => {
     // See RobotPage.tsx's own "Regression fix, same day" doc comment:
     // the first cut of this effect fired unconditionally as soon as the
     // session opened, regardless of `tab` -- which broke `App.test.tsx`'s
@@ -320,17 +310,14 @@ describe("RobotPage", () => {
     expect(socket.sent.filter((raw) => raw.includes('"get-wifi-credentials"'))).toHaveLength(0);
   });
 
-  it("ticket 022-001: requests get-wifi-credentials once the Calibration tab is opened, so it sees WiFi without ever opening Configuration first", () => {
+  it("ticket 022-001: requests get-wifi-credentials once the Calibration tab is opened, so it sees WiFi", () => {
     const { el, socket } = mountRobotPage();
     const sent = () => socket.sent.map((raw) => JSON.parse(raw));
     // Nothing sent yet -- Main is the default tab and Calibration has
     // not been opened.
     expect(sent()).not.toContainEqual({ type: "get-wifi-credentials", reveal: true });
 
-    // Calibration tab opened directly -- Configuration was never
-    // visited this session -- and it still ends up showing the real
-    // password, because the request now fires from this page, latched
-    // on to `tab` becoming "calibration", not from ConfigurationPage.tsx.
+    // The request fires from this page, when the Calibration tab opens.
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
     });
@@ -428,12 +415,12 @@ describe("RobotPage reports the active console target (sprint 022 ticket 006)", 
     expect(onActiveTargetChange).toHaveBeenCalledWith({ link: robot.links[0], name: "kivon" });
   });
 
-  it("switching tabs (Main -> Drive -> Calibration -> Configuration) never reports again -- SUC-004's own acceptance criterion", () => {
+  it("switching tabs (Main -> Drive -> Calibration -> Diagnostics) never reports again -- SUC-004's own acceptance criterion", () => {
     const onActiveTargetChange = vi.fn();
     const { el } = mountRobotPage(robotDevice(), onActiveTargetChange);
     expect(onActiveTargetChange).toHaveBeenCalledTimes(1);
 
-    for (const tabId of ["drive", "calibration", "configuration", "diagnostics", "main"]) {
+    for (const tabId of ["drive", "calibration", "diagnostics", "main"]) {
       act(() => {
         el.querySelector<HTMLButtonElement>(`[data-testid="robot-tab-${tabId}"]`)!.click();
       });

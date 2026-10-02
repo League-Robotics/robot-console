@@ -64,6 +64,9 @@ export interface ProgramCodeInput {
    * its own doc comment) takes no dependency on a page component. */
   radio: { channel: number; group: number } | undefined;
   wifi: { ssid: string; password: string | undefined } | undefined;
+  /** A fixed Wi-Fi address to use instead of the one the robot's name
+   * derives, as four numbers. Leave `undefined` for the default. */
+  wifiAddress?: readonly [number, number, number, number] | undefined;
   calibration: CalibrationState;
   /** Forwarded verbatim to `calibrationCode()` -- see that function's
    * own `CalibrationCodeOptions` doc comment for what `calStore`/
@@ -90,6 +93,9 @@ export function programCode(input: ProgramCodeInput): string {
   const lines: string[] = [`// ${input.robotName} configuration`];
   if (input.radio) {
     lines.push(`diffDrive.setupRadio(${input.radio.channel}, ${input.radio.group})  // radio channel, group`);
+  }
+  if (input.wifiAddress) {
+    lines.push(`diffDrive.setWifiAddress(${input.wifiAddress.join(", ")})  // fixed Wi-Fi address`);
   }
   if (input.wifi) {
     const password = input.wifi.password === undefined ? MASKED_PASSWORD : input.wifi.password;

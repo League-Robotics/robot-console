@@ -202,3 +202,79 @@ describe("DiagnosticsPanel: status polling checkbox", () => {
     expect(socket.sent.map((text) => JSON.parse(text))).toContainEqual({ type: "set-status-polling", linkId: "usb-A", enabled: true });
   });
 });
+
+describe("DiagnosticsPanel: read stored data", () => {
+  const OPEN_SESSION = { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null };
+
+  function mountOpen(theLink: SnapshotLink): { el: HTMLDivElement; socket: FakeSocket } {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+        <DiagnosticsPanel device={device(theLink)} current={theLink} />
+      </WsProvider>,
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    return { el, socket: socket! };
+  }
+
+  function lines(socket: FakeSocket, entries: [direction: "tx" | "rx", line: string][]): void {
+    act(() => {
+      for (const [direction, line] of entries) {
+        socket.emitMessage({ type: "line", linkId: "usb-A", direction, line });
+      }
+    });
+  }
+
+  it("is not shown for a link with no open session", () => {
+    const theLink = link();
+    const el = mount(<DiagnosticsPanel device={device(theLink)} current={theLink} />);
+    expect(el.querySelector('[data-testid="diagnostics-read-stored"]')).toBeNull();
+  });
+
+  it("asks the robot for its calibration store and its Wi-Fi networks, and shows only what was answered after the press", () => {
+    const { el, socket } = mountOpen(link({ session: OPEN_SESSION }));
+    lines(socket, [["rx", "wificred 7 1 StaleNetwork"]]);
+
+    act(() => {
+      (el.querySelector('[data-testid="diagnostics-read-stored"]') as HTMLButtonElement).click();
+    });
+    const sent = socket.sent.map((text) => JSON.parse(text));
+    expect(sent).toContainEqual({ type: "send-command", linkId: "usb-A", verb: "RUN", fields: ["calshow"] });
+    expect(sent).toContainEqual({ type: "send-command", linkId: "usb-A", verb: "WIFICRED" });
+    expect(el.querySelector('[data-testid="diagnostics-stored-wifi-note"]')?.textContent).toContain("Waiting");
+
+    lines(socket, [
+      ["tx", "RUN calshow #1"],
+      ["tx", "WIFICRED #2"],
+      ["rx", "ack 1 0 none"],
+      [
+        "rx",
+        '{"ev":"calstore.values","wheel":0.7853,"tw":11.3,"slip":1.177,"has_wheel":1,"has_turn":0,"live_tw":11.3,"live_slip":1.177}',
+      ],
+      ["rx", "wificred 0 1 Robot_Garage"],
+      ["rx", "ack 2 0 none"],
+    ]);
+
+    const calibration = el.querySelector('[data-testid="diagnostics-stored-calibration"]')?.textContent ?? "";
+    expect(calibration).toContain("0.7853");
+    expect(calibration).toContain("not stored");
+    const wifi = el.querySelector('[data-testid="diagnostics-stored-wifi"]')?.textContent ?? "";
+    expect(wifi).toContain("Robot_Garage");
+    expect(wifi).not.toContain("StaleNetwork");
+    expect(el.querySelector('[data-testid="diagnostics-stored-wifi-note"]')).toBeNull();
+  });
+
+  it("says so when the robot stores no Wi-Fi network", () => {
+    const { el, socket } = mountOpen(link({ session: OPEN_SESSION }));
+    act(() => {
+      (el.querySelector('[data-testid="diagnostics-read-stored"]') as HTMLButtonElement).click();
+    });
+    lines(socket, [
+      ["tx", "WIFICRED #2"],
+      ["rx", "ack 2 0 none"],
+    ]);
+    expect(el.querySelector('[data-testid="diagnostics-stored-wifi-empty"]')).not.toBeNull();
+  });
+});

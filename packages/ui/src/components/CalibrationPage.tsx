@@ -124,6 +124,10 @@ import { useLinkLog, useSendable, useWifiCredentials, useWsActions } from "../ws
 import { CalibrationFirmwarePanel } from "./CalibrationFirmwarePanel";
 import { CalibrationHelp } from "./CalibrationHelp";
 import { NewCalibrationPanel } from "./NewCalibrationPanel";
+import { NetworkSettingsPanel } from "./NetworkSettingsPanel";
+import { buildCalibrationWrites } from "../lib/calibrationWrite";
+import type { RadioAddress } from "../pages/RelayPage";
+import { WheelSetupPanel, type WheelSetup } from "./WheelSetupPanel";
 import { deriveCalStoreState } from "./CalibrationStore";
 import { CalibrationTable } from "./CalibrationTable";
 import "./CalibrationPage.css";
@@ -219,17 +223,52 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
   // file's own doc comment), so this page only ever reads what's
   // already there, exactly like `ConfigurationPage.tsx` does.
   const stored = useWifiCredentials();
+  const [wifiDraft, setWifiDraft] = useState<{ ssid: string; password: string } | undefined>(undefined);
+  const [wheelEdit, setWheelEdit] = useState<WheelSetup | undefined>(undefined);
+  const [wifiAddress, setWifiAddress] = useState<[number, number, number, number] | undefined>(undefined);
+
+  // The code block follows the boxes as they are edited, before anything
+  // is saved or written to the robot.
+  const draftSsid = wifiDraft?.ssid.trim() ?? "";
+  const codeWifi = useMemo(() => {
+    if (draftSsid !== "") {
+      const typed = wifiDraft?.password ?? "";
+      const password = typed !== "" ? typed : stored?.ssid === draftSsid ? stored.password : undefined;
+      return { ssid: draftSsid, password };
+    }
+    if (wifiDraft === undefined && stored?.ssid) {
+      return { ssid: stored.ssid, password: stored.password };
+    }
+    return undefined;
+  }, [draftSsid, wifiDraft, stored]);
+  const codeCalStore = useMemo(
+    () =>
+      calStoreValues && wheelEdit
+        ? {
+            ...calStoreValues,
+            wheelScaleLeft: wheelEdit.scaleLeft,
+            wheelScaleRight: wheelEdit.scaleRight,
+            motorPortLeft: wheelEdit.portLeft,
+            motorPortRight: wheelEdit.portRight,
+          }
+        : calStoreValues,
+    [calStoreValues, wheelEdit],
+  );
+
+  const [radio, setRadio] = useState<RadioAddress>(() => ({ channel: device.radio.channel, group: device.radio.group }));
+  const calibrationWrites = useMemo(() => buildCalibrationWrites(state, derived), [state, derived]);
 
   const code = useMemo(
     () =>
       programCode({
         robotName,
-        radio: device.radio,
-        wifi: stored?.ssid ? { ssid: stored.ssid, password: stored.password } : undefined,
+        radio,
+        wifi: codeWifi,
+        wifiAddress,
         calibration: state,
-        calibrationOptions: { calStore: calStoreValues, firmwareProfile: device.program },
+        calibrationOptions: { calStore: codeCalStore, firmwareProfile: device.program },
       }),
-    [robotName, device.radio, stored, state, calStoreValues, device.program],
+    [robotName, radio, codeWifi, wifiAddress, state, codeCalStore, device.program],
   );
   const { copied, copy } = useCopied();
 
@@ -297,7 +336,15 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
   // nothing to anybody and writes the robot's stored calibration on a
   // stray click. The New Calibration panel's Done button is the only
   // thing that should ever send it.
-  const HANDLED_CAL_FUNCTIONS = new Set(["calwheels", "calturn", "calshow", "calclear", "calsave"]);
+  const HANDLED_CAL_FUNCTIONS = new Set([
+    "calwheels",
+    "calturn",
+    "calshow",
+    "calclear",
+    "calsave",
+    "calscale",
+    "calports",
+  ]);
   const extraCalFunctionNames = calFunctionNames.filter((n) => !HANDLED_CAL_FUNCTIONS.has(n));
 
   function update(patch: CalibrationPatch): void {
@@ -313,6 +360,30 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
     if (isLinkUsable(link) && sendable) {
       sendCommand(link.id, "RUN", ["calshow"]);
     }
+  }
+
+  const wheelSetup: WheelSetup | undefined =
+    calStoreValues?.wheelScaleLeft !== undefined &&
+    calStoreValues.wheelScaleRight !== undefined &&
+    calStoreValues.motorPortLeft !== undefined &&
+    calStoreValues.motorPortRight !== undefined
+      ? {
+          scaleLeft: calStoreValues.wheelScaleLeft,
+          scaleRight: calStoreValues.wheelScaleRight,
+          portLeft: calStoreValues.motorPortLeft,
+          portRight: calStoreValues.motorPortRight,
+        }
+      : undefined;
+
+  // A fresh report from the robot replaces whatever was being edited.
+  useEffect(() => {
+    setWheelEdit(undefined);
+  }, [wheelSetup?.scaleLeft, wheelSetup?.scaleRight, wheelSetup?.portLeft, wheelSetup?.portRight]);
+
+  // Both commands apply the values and save them to the robot's flash.
+  function writeWheelSetup(setup: WheelSetup): void {
+    sendCommand(link.id, "RUN", ["calports", String(setup.portLeft), String(setup.portRight)]);
+    sendCommand(link.id, "RUN", ["calscale", String(setup.scaleLeft), String(setup.scaleRight)]);
   }
 
   const [helpOpen, setHelpOpen] = useState(false);
@@ -416,6 +487,18 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
             Start over
           </button>
         </div>
+
+        <WheelSetupPanel current={wheelSetup} canWrite={linkOpen} onWrite={writeWheelSetup} onEdit={setWheelEdit} />
+
+        <NetworkSettingsPanel
+          device={device}
+          link={link}
+          radio={radio}
+          onRadioChange={setRadio}
+          onWifiChange={setWifiDraft}
+          onAddressChange={setWifiAddress}
+          calibrationWrites={calibrationWrites}
+        />
 
         <div className="robot-page-panel calibration-code-panel" aria-label="Calibration code">
           <h3>Code for your program</h3>

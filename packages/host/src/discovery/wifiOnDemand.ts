@@ -49,7 +49,7 @@
  * is no benefit to a longer wait here.
  */
 import { connect as netConnect, type Socket } from "node:net";
-import { lookup as dnsLookup } from "node:dns/promises";
+import { lookup as dnsLookup, resolve4 } from "node:dns/promises";
 import { parseBanner, type ParsedBanner } from "@robot-console/protocol";
 import { withTimeout } from "../lib/withTimeout.js";
 
@@ -92,7 +92,21 @@ export interface WifiOnDemandSocketLike {
   destroy(error?: Error): void;
 }
 
+/** Unicast-only lookup for a non-`.local` name: c-ares never does mDNS
+ * and never occupies a threadpool worker. */
+const unicastLookup: WifiOnDemandIpv4Lookup = async (hostname) => {
+  const [address] = await resolve4(hostname);
+  if (address === undefined) {
+    throw new Error(`no A record for ${hostname}`);
+  }
+  return { address, family: 4 };
+};
+
 export interface WifiOnDemandOptions {
+  /** DNS domain the robot's name is looked up under. Defaults to `local`. */
+  domain?: string;
+  /** A known IPv4 address to dial instead of looking the name up. */
+  address?: string;
   /** Defaults to {@link DEFAULT_WIFI_DNS_LOOKUP_TIMEOUT_MS}. */
   dnsLookupTimeoutMs?: number;
   /** Defaults to {@link DEFAULT_WIFI_CONNECT_TIMEOUT_MS}. */
@@ -106,7 +120,8 @@ export interface WifiOnDemandOptions {
    * `mbflashClient.test.ts`'s "a real loopback server, not a mock"
    * precedent. Production code never has a reason to override this. */
   port?: number;
-  /** Injectable `dns.lookup`. Defaults to `node:dns/promises`'s own. */
+  /** Injectable lookup. Defaults to `dns.lookup` for `local`, and to a
+   * unicast `dns.resolve4` for any other domain. */
   lookup?: WifiOnDemandIpv4Lookup;
   /** Injectable dial. Defaults to a real `net.connect`, bounded by
    * `connectTimeoutMs`. Tests substitute a fake, or a real loopback
@@ -219,16 +234,21 @@ export async function probeWifiOnDemand(name: string, options: WifiOnDemandOptio
   const connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_WIFI_CONNECT_TIMEOUT_MS;
   const helloTimeoutMs = options.helloTimeoutMs ?? DEFAULT_WIFI_HELLO_TIMEOUT_MS;
   const port = options.port ?? WIFI_ROBOTLINK_PORT;
-  const lookup = options.lookup ?? dnsLookup;
+  const domain = options.domain ?? "local";
+  const lookup = options.lookup ?? (domain === "local" ? dnsLookup : unicastLookup);
   const dial = options.dial ?? ((host, dialPort) => defaultDial(host, dialPort, connectTimeoutMs));
-  const host = `${name}.local`;
+  const host = options.address ?? `${name}.${domain}`;
 
   let ip: string;
-  try {
-    const resolved = await withTimeout(lookup(host, { family: 4 }), dnsLookupTimeoutMs, `wifiOnDemand dns.lookup(${host})`);
-    ip = resolved.address;
-  } catch (error) {
-    return { status: "not-found", reason: `dns.lookup(${host}) failed: ${errorMessage(error)}` };
+  if (options.address !== undefined) {
+    ip = options.address;
+  } else {
+    try {
+      const resolved = await withTimeout(lookup(host, { family: 4 }), dnsLookupTimeoutMs, `wifiOnDemand dns.lookup(${host})`);
+      ip = resolved.address;
+    } catch (error) {
+      return { status: "not-found", reason: `dns.lookup(${host}) failed: ${errorMessage(error)}` };
+    }
   }
 
   let socket: WifiOnDemandSocketLike | undefined;

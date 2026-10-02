@@ -124,3 +124,17 @@
   margin-left: auto;
   color: var(--rc-text-muted);
 }
+
+.diagnostics-stored-data {
+  margin: 0 0 1rem;
+  font-size: 0.92rem;
+}
+
+.diagnostics-stored-data h4 {
+  margin: 0.75rem 0 0.25rem;
+  font-size: 0.85rem;
+}
+
+.diagnostics-stored-data .diagnostics-table {
+  min-width: 0;
+}

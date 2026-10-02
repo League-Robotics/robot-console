@@ -12,6 +12,7 @@ import {
   radioAddressCanonicalForm,
   radioAddressToName,
   validateRadioAddress,
+  nameToWifiAddress,
 } from "./radioAddress.js";
 
 // ---------------------------------------------------------------------
@@ -299,5 +300,12 @@ describe("isHardwareRadioPair", () => {
     expect(isHardwareRadioPair(0, -1)).toBe(false);
     expect(isHardwareRadioPair(1.5, 0)).toBe(false);
     expect(isHardwareRadioPair(0, NaN)).toBe(false);
+  });
+});
+
+describe("nameToWifiAddress", () => {
+  it("is 10.55.<group>.<channel> for the name's radio address", () => {
+    expect(nameToWifiAddress("vevov")).toBe("10.55.82.20");
+    expect(nameToWifiAddress("tovez")).toBe("10.55.29.48");
   });
 });

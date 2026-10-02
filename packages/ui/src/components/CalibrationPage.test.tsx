@@ -716,6 +716,26 @@ describe("CalibrationPage", () => {
       expect(el.querySelector('[data-testid="calibration-code-missing"]')).toBeNull();
     });
 
+    it("the code follows the wheel, radio and Wi-Fi boxes as they are edited, before anything is saved", () => {
+      const { el, socket } = mountPage();
+      rx(
+        socket,
+        '{"ev":"calstore.values","wheel":0.7856,"tw":11.42,"slip":1.008,"has_wheel":1,"has_turn":1,"live_tw":11.42,"live_slip":1.008,"scale_l":1,"scale_r":1,"port_l":1,"port_r":2}',
+      );
+      const code = () => el.querySelector('[data-testid="calibration-code"]')?.textContent ?? "";
+      expect(code()).toContain("diffDrive.setWheelMultiplier(MotorSide.Left, 1)");
+
+      type(el, "wheel-setup-scaleLeft", "-1");
+      expect(code()).toContain("diffDrive.setWheelMultiplier(MotorSide.Left, -1)");
+
+      type(el, "configuration-radio-channel", "55");
+      expect(code()).toContain("diffDrive.setupRadio(55, ");
+
+      type(el, "configuration-wifi-ssid", "Garage");
+      type(el, "configuration-wifi-password", "pw");
+      expect(code()).toContain('diffDrive.setupWifi("Garage", "pw")');
+    });
+
     it("does not claim anything is missing before calshow has answered -- only that this session's own state is incomplete", () => {
       const { el } = mountPage();
       expect(el.querySelector('[data-testid="calibration-code-missing"]')).toBeNull();

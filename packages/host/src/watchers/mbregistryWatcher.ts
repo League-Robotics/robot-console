@@ -113,6 +113,10 @@ const TASK_NAME = "mbregistryWatcher";
 /** Default period between `client.list()` polls. */
 const DEFAULT_POLL_INTERVAL_MS = 1000;
 
+/** Backoff between attempts to reconnect to a restarted mbregistry. */
+const RECONNECT_MIN_MS = 1000;
+const RECONNECT_MAX_MS = 30_000;
+
 /** Link states the list poll may move a link out of. Anything else
  * (`connecting`/`connected`/`unresponsive`/`failed`/`closed_by_user`)
  * belongs to the connector/reconciler and is never clobbered by a poll. */
@@ -536,6 +540,13 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
     }
   }
 
+  function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      timer.unref?.();
+    });
+  }
+
   async function run(): Promise<void> {
     // A `list`/`watch` failure (connection closed, transport error) must
     // not take down the caller -- mirrors `usbWatcher.ts`'s own "a failed
@@ -543,25 +554,48 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
     // poll still starts the periodic one, and a `watch` failure leaves it
     // running, so rows keep refreshing, just without the instant local
     // attach/detach events.
-    try {
-      await poll();
-    } catch {
-      // Retried on the next tick.
-    }
-    if (stopped) {
-      return;
-    }
-    schedulePoll();
-    try {
-      for await (const event of client.watch()) {
-        if (stopped) {
-          return;
-        }
-        handleEvent(event);
-        store.heartbeat(TASK_NAME, now());
+    //
+    // When the watch ends, mbregistry has gone away (restarted for an
+    // upgrade, say). A client that can reconnect is reconnected with
+    // backoff and the whole cycle starts over, so the console never
+    // stays blind to the registry until its own restart.
+    let delayMs = RECONNECT_MIN_MS;
+    for (;;) {
+      try {
+        await poll();
+      } catch {
+        // Retried on the next tick.
       }
-    } catch {
-      // See above.
+      if (stopped) {
+        return;
+      }
+      if (pollTimer === undefined) {
+        schedulePoll();
+      }
+      try {
+        for await (const event of client.watch()) {
+          if (stopped) {
+            return;
+          }
+          handleEvent(event);
+          store.heartbeat(TASK_NAME, now());
+        }
+      } catch {
+        // See above.
+      }
+      if (stopped || client.reconnect === undefined) {
+        return;
+      }
+      await sleep(delayMs);
+      if (stopped) {
+        return;
+      }
+      try {
+        await client.reconnect();
+        delayMs = RECONNECT_MIN_MS;
+      } catch {
+        delayMs = Math.min(delayMs * 2, RECONNECT_MAX_MS);
+      }
     }
   }
 

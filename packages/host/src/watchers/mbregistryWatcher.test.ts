@@ -286,6 +286,33 @@ describe("startMbregistryWatcher", () => {
     handle.stop();
   });
 
+  it("reconnects after the registry restarts, and a board plugged in afterwards still appears", async () => {
+    // Seen on ferranti 2026-10-03: mbregistry was upgraded (restarted)
+    // under a running console, and a robot plugged in later never got a
+    // card -- the watch had ended for good and list() rejected forever.
+    const store = freshStore();
+    const devices: RegistryDevice[] = [];
+    const first = fakeClient(devices);
+    let reconnects = 0;
+    const client: MbregistryClient = {
+      ...first.client,
+      async reconnect(): Promise<ResolvedEndpoint> {
+        reconnects++;
+        devices.push(registryDevice({ uid: "usb:vevov" }));
+        return ENDPOINT;
+      },
+    };
+    const handle = startWatcher(store, client, { pollIntervalMs: 60_000 });
+
+    await waitFor(() => store.snapshotRows().tasks.some((t) => t.name === "mbregistryWatcher"));
+    first.endWatch();
+
+    await waitFor(() => reconnects === 1, 5000);
+    await waitFor(() => store.snapshotRows().links.some((l) => l.id === "mbregistry-usb:vevov"), 5000);
+
+    handle.stop();
+  });
+
   it("watch() attach event creates a discovered link with no device yet", async () => {
     const store = freshStore();
     const { client, emit } = fakeClient([]);

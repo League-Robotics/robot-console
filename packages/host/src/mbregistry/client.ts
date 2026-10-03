@@ -1053,6 +1053,9 @@ export interface MbregistryClient {
   connect(): Promise<ResolvedEndpoint>;
   /** Closes the control connection. Idempotent. */
   close(): void;
+  /** Drops every connection and runs {@link connect} again, for when
+   * the daemon has restarted under this client. */
+  reconnect?(): Promise<ResolvedEndpoint>;
   list(): Promise<RegistryDevice[]>;
   find(uid: string): Promise<RegistryDevice>;
   lock(uid: string, kind: LockKind, label?: string): Promise<void>;
@@ -1292,6 +1295,15 @@ export function createMbregistryClient(deps: MbregistryClientDeps = {}): Mbregis
 
   return {
     connect: connectClient,
+    async reconnect(): Promise<ResolvedEndpoint> {
+      controlConnection?.close();
+      controlConnection = undefined;
+      for (const conn of watchConnections) {
+        conn.close();
+      }
+      watchConnections.clear();
+      return connectClient();
+    },
     close(): void {
       controlConnection?.close();
       for (const conn of watchConnections) {

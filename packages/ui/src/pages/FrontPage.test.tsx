@@ -915,8 +915,11 @@ describe("unassigned USB boards (acceptance: un-owned WiFi absent, unassigned pr
     );
     const card = el.querySelector('[data-testid="unassigned-card-usb-unknown-1"]');
     expect(card).not.toBeNull();
-    expect(card!.textContent).toContain("Unidentified board");
+    expect(card!.textContent).toContain("Unknown board");
     expect(card!.textContent).toContain("USB · /dev/tty.usbmodem-unknown");
+    // Its own section, not under Robots, and the card carries the Flash trigger.
+    expect(el.querySelector('[data-testid="devices-group-unknown"] [data-testid="unassigned-card-usb-unknown-1"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="devices-group-robots"]')).toBeNull();
     expect(el.querySelector('[data-testid="unassigned-open-usb-unknown-1"]')?.getAttribute("href")).toBe("/d/usb-unknown-1");
   });
 

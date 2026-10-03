@@ -208,6 +208,9 @@ export interface UpsertLinkInput {
    * | …). */
   address: unknown;
   deviceId?: number | null;
+  /** Clear the link's device instead of keeping it: the board that was
+   * once identified no longer says what it is. */
+  detach?: boolean;
   /** Used as `state_since`/`last_seen` on insert; refreshes `last_seen`
    * (never `state_since` — that belongs to {@link Store.setLinkState})
    * on every subsequent call. */
@@ -1098,11 +1101,11 @@ export class Store {
             `INSERT INTO links (id, device_id, transport, address, state, state_since, last_seen, fail_count, user_closed)
              VALUES (?, ?, ?, ?, 'discovered', ?, ?, 0, 0)
              ON CONFLICT(id) DO UPDATE SET
-               device_id = COALESCE(excluded.device_id, links.device_id),
+               device_id = CASE WHEN ? THEN NULL ELSE COALESCE(excluded.device_id, links.device_id) END,
                address = excluded.address,
                last_seen = excluded.last_seen`,
           )
-          .run(input.id, deviceId ?? null, input.transport, addressJson, input.at, input.at);
+          .run(input.id, deviceId ?? null, input.transport, addressJson, input.at, input.at, input.detach === true ? 1 : 0);
       },
     );
   }

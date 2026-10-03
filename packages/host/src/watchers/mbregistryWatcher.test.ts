@@ -313,6 +313,25 @@ describe("startMbregistryWatcher", () => {
     handle.stop();
   });
 
+  it("a known robot that comes back without firmware is detached from its device and shown again", async () => {
+    // Seen 2026-10-03: zapig, wiped, was plugged in and never appeared --
+    // its link was still stale from the last unplug and still tied to
+    // the old device, so nothing listed it and it could not be flashed.
+    const store = freshStore();
+    store.upsertDevice({ id: VEVOV_ID, name: VEVOV_NAME, kind: "robot", at: 1 });
+    store.upsertLink({ id: "mbregistry-usb:vevov", transport: "mbregistry", address: { uid: "usb:vevov", host: null, endpoint: null }, deviceId: VEVOV_ID, at: 1 });
+    store.setLinkState({ id: "mbregistry-usb:vevov", state: "stale", at: 1 });
+
+    const { client } = fakeClient([registryDevice({ uid: "usb:vevov", state: "attached_no_announce" })]);
+    const handle = startWatcher(store, client);
+
+    await waitFor(() => store.snapshotRows().links.some((l) => l.id === "mbregistry-usb:vevov" && l.state === "discovered"));
+    const link = store.snapshotRows().links.find((l) => l.id === "mbregistry-usb:vevov");
+    expect(link?.device_id).toBeNull();
+
+    handle.stop();
+  });
+
   it("watch() attach event creates a discovered link with no device yet", async () => {
     const store = freshStore();
     const { client, emit } = fakeClient([]);

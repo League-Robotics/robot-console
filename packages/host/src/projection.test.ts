@@ -559,6 +559,17 @@ describe("buildSnapshotFromRows: capabilities", () => {
     expect(link?.capabilities).toEqual({ open: true, close: false, flash: true, provisionWifi: false });
   });
 
+  it("lists an unidentified mbregistry board plugged into this machine, and not one on another host", () => {
+    const rows = emptyRows();
+    const base = { deviceId: null, transport: "mbregistry" as const, state: "discovered" as const, stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false };
+    rows.links = [
+      { ...base, id: "mbregistry-local", address: { uid: "local", host: null, endpoint: null } },
+      { ...base, id: "mbregistry-remote", address: { uid: "remote", host: "loki", endpoint: "192.168.4.149:7440" } },
+    ];
+    const snapshot = buildSnapshotFromRows(rows, 1, 1);
+    expect(snapshot.unassigned.map((link) => link.id)).toEqual(["mbregistry-local"]);
+  });
+
   it("an unassigned usb link (no device yet) is still open-able and flashable", () => {
     const rows = emptyRows();
     rows.links = [

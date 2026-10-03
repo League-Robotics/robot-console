@@ -387,11 +387,22 @@ export function DevicesList({
               groups -- robots of any sort (however connected, plus
               unidentified boards), then radio bridges, then not seen
               recently. */}
-          {(robots.length > 0 || unassigned.length > 0) && (
+          {robots.length > 0 && (
             <section className="devices-group" aria-label="Robots" data-testid="devices-group-robots">
               <h2 className="devices-group-heading">Robots</h2>
+              <ul className="devices-list">{robots.map(renderCard)}</ul>
+            </section>
+          )}
+          {/* Boards plugged into this computer that are not a robot, a
+              radio bridge or a joystick -- blank, or running something
+              else. Listed so they can be flashed. */}
+          {unassigned.length > 0 && (
+            <section className="devices-group" aria-label="Unknown" data-testid="devices-group-unknown">
+              <h2 className="devices-group-heading">Unknown</h2>
+              <p className="remembered-robots-hint">
+                Plugged into this computer, but not a robot, radio bridge or joystick. Flash one to make it one.
+              </p>
               <ul className="devices-list">
-                {robots.map(renderCard)}
                 {unassigned.map((link) => (
                   <li key={link.id}>
                     <UnassignedCard link={link} />
@@ -1114,7 +1125,7 @@ function UnassignedCard({ link }: { link: SnapshotLink }) {
       <div className="device-card-main">
         <div className="device-card-body">
           <div className="device-card-header">
-            <h3 className="device-name">Unidentified board</h3>
+            <h3 className="device-name">Unknown board</h3>
           </div>
           <dl className="device-fields">
             <div>

@@ -132,7 +132,10 @@ export function buildSnapshotFromRows(rows: ProjectionRows, seq: number, at: num
       } else {
         linksByDevice.set(link.deviceId, [link]);
       }
-    } else if ((link.transport === "usb" || link.transport === "mbregistry") && link.state !== "stale") {
+    } else if (
+      (link.transport === "usb" || (link.transport === "mbregistry" && addressField(link.address, "host") == null)) &&
+      link.state !== "stale"
+    ) {
       // A usb link with no device_id yet is an unnamed/unidentified USB
       // board -- architecture.md §9's `unassigned` list. Ticket 018-010
       // (bench fix) widens this to `mbregistry` too: a board whose
@@ -149,7 +152,9 @@ export function buildSnapshotFromRows(rows: ProjectionRows, seq: number, at: num
       // has no device to attach to and nothing displayable of its own;
       // it is simply dropped (see this module's own doc comment, "The
       // owned gate"). A `stale` one (board no longer enumerated, either
-      // transport) is dropped too -- there is no board to show.
+      // transport) is dropped too -- there is no board to show. So is an
+      // unidentified board on another registry host: only boards plugged
+      // into this machine are listed.
       unassignedLinks.push(link);
     }
   }

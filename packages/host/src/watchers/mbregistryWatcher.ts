@@ -269,14 +269,31 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
     return { endpoint, host, uid };
   }
 
-  function upsertLinkRow(uid: string, deviceId: number | null, host: string | null = null, endpoint: string | null = null): void {
+  function upsertLinkRow(
+    uid: string,
+    deviceId: number | null,
+    host: string | null = null,
+    endpoint: string | null = null,
+    detach = false,
+  ): void {
     store.upsertLink({
       id: mbregistryLinkId(uid),
       transport: MBREGISTRY_TRANSPORT,
       address: linkAddress(uid, host, endpoint),
       deviceId,
+      detach,
       at: now(),
     });
+  }
+
+  /** A board that is plugged in but does not say what it is: its link
+   * belongs to no device and is shown, so it can be flashed. A link that
+   * went `stale` when the board was last unplugged comes back. */
+  function showUnidentified(uid: string, host: string | null, endpoint: string | null): void {
+    upsertLinkRow(uid, null, host, endpoint, true);
+    if (linkState(uid) === "stale") {
+      store.setLinkState({ id: mbregistryLinkId(uid), state: "discovered", at: now(), reason: "unidentified board" });
+    }
   }
 
   /**
@@ -304,10 +321,10 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
 
     const kind = classifyDeviceKind(fields);
     if (kind === null) {
-      // Unrecognized banner (bench fix 010) -- same treatment as an
-      // incomplete identification above: see classifyDeviceKind's own
-      // doc comment for why.
-      upsertLinkRow(uid, null, host, endpoint);
+      // Unrecognized banner (bench fix 010): a board running something
+      // that is not a robot, relay or joystick. See classifyDeviceKind's
+      // own doc comment for why it gets no device row.
+      showUnidentified(uid, host, endpoint);
       return undefined;
     }
 
@@ -373,6 +390,9 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
    * as `gone` (bench fix 010): a locally-known but currently-unplugged
    * device (the joystick observed on the bench). */
   const DISCONNECTED_STATE = "disconnected";
+  /** mbtools' state for a board that was probed and sent no banner --
+   * `no-answer` in its CLI: blank, or running something else. */
+  const NO_ANNOUNCE_STATE = "attached_no_announce";
 
   function upsertFromListEntry(device: RegistryDevice): void {
     const host = device.host ?? null;
@@ -393,6 +413,10 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
       return;
     }
     const owned = device.host === null || device.host === undefined;
+    if (device.state === NO_ANNOUNCE_STATE) {
+      showUnidentified(device.uid, host, endpoint);
+      return;
+    }
     // A poll only ever moves a link that is idle (`IDLE_LINK_STATES`): an
     // owned one to `connectable`, a peer-owned one that had gone `stale`
     // (unplugged earlier, now back on some peer host) to `discovered`.

@@ -117,3 +117,8 @@
 .app-header-switch-link {
   color: var(--rc-accent);
 }
+
+.app-header-icon-toggle {
+  display: inline-flex;
+  align-items: center;
+}

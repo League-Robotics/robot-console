@@ -1059,6 +1059,39 @@ describe("robots this console has had attached", () => {
     expect(el.querySelector('[data-testid="not-seen-device-7"]')).toBeNull();
     expect(el.querySelector('[data-testid="not-seen-device-8"]')).not.toBeNull();
   });
+
+  it("a card with no arrow and no Flash control offers Forget as a trash can in the arrow's place", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+      socket!.emitMessage({
+        type: "snapshot",
+        seq: 1,
+        devices: [device(7, { name: "gopiv", owned: true, links: [] }), device(9, { name: "tovez", owned: true })],
+        unassigned: [],
+        relays: [],
+        firmware: {},
+      });
+    });
+    const unreachable = el.querySelector('[data-testid="device-card-7"]')!;
+    const trigger = unreachable.querySelector<HTMLButtonElement>('.device-card-side [data-testid="forget-device-trigger"]');
+    expect(trigger).not.toBeNull();
+    expect(trigger!.querySelector("svg")).not.toBeNull();
+    expect(unreachable.querySelector('[data-testid="device-open-7"]')).toBeNull();
+    // A card that can be opened keeps its arrow and gets no trash can.
+    expect(el.querySelector('[data-testid="device-card-9"] [data-testid="forget-device-trigger"]')).toBeNull();
+
+    act(() => trigger!.click());
+    act(() => el.querySelector<HTMLButtonElement>('[data-testid="forget-device-confirm"]')!.click());
+    expect(socket!.sent.map((text) => JSON.parse(text))).toContainEqual({ type: "forget-device", deviceId: 7 });
+  });
 });
 
 describe("not seen recently (devices the host still knows about with zero current links)", () => {

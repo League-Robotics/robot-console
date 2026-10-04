@@ -81,6 +81,7 @@
  * §7.3's "Radio via `<relay>`" row.
  */
 import { CollapsibleGroup } from "../components/CollapsibleGroup";
+import { ForgetDeviceDialog, TrashIcon } from "../components/ForgetDeviceDialog";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
@@ -706,6 +707,19 @@ function DeviceCard({
             )}
           </div>
         )}
+        {/* A card with neither an arrow nor a Flash control offers Forget
+            in the arrow's place, so a robot nothing can reach right now
+            can still be removed. */}
+        {!primary && !usbLink && hasWsStore && (
+          <div className="device-card-side">
+            <ForgetDeviceDialog
+              deviceId={device.id}
+              name={device.name}
+              triggerIcon={<TrashIcon />}
+              triggerClassName="device-open-button"
+            />
+          </div>
+        )}
       </div>
 
       {isRelay && <RelayBridgeStatus relay={device} devices={devices} />}
@@ -1326,9 +1340,11 @@ function NotSeenRecentlySection({
                   type="button"
                   className="remembered-robot-forget"
                   data-testid={`not-seen-forget-${device.id}`}
+                  aria-label={`Forget ${device.name}`}
+                  title={`Forget ${device.name}`}
                   onClick={() => onForget(device.id)}
                 >
-                  Forget
+                  <TrashIcon />
                 </button>
               </div>
             </div>

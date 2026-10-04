@@ -920,7 +920,15 @@ describe("unassigned USB boards (acceptance: un-owned WiFi absent, unassigned pr
     // Its own section, not under Robots, and the card carries the Flash trigger.
     expect(el.querySelector('[data-testid="devices-group-unknown"] [data-testid="unassigned-card-usb-unknown-1"]')).not.toBeNull();
     expect(el.querySelector('[data-testid="devices-group-robots"]')).toBeNull();
-    expect(el.querySelector('[data-testid="unassigned-open-usb-unknown-1"]')?.getAttribute("href")).toBe("/d/usb-unknown-1");
+    // Laid out like every other card: the connection as the role line, one
+    // green chip that is not a button, no "not linked" text, no open arrow.
+    expect(el.querySelector('[data-testid="unassigned-role-usb-unknown-1"]')?.textContent).toBe("USB · /dev/tty.usbmodem-unknown");
+    const chip = el.querySelector('[data-testid="unassigned-chip-usb-unknown-1"]');
+    expect(chip?.getAttribute("data-state")).toBe("linked");
+    expect(chip?.querySelector("button")).toBeNull();
+    expect(card!.textContent).not.toMatch(/not linked|Connection/i);
+    expect(el.querySelector('[data-testid="unassigned-open-usb-unknown-1"]')).toBeNull();
+    expect(card!.querySelector(".device-card-side .device-flash-button")).not.toBeNull();
   });
 
   it("restores the Flash trigger on an unassigned board's card (sprint 015 ticket 008), now a lightning icon (ticket 018-015)", () => {

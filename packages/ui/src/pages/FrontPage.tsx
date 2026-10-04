@@ -1127,18 +1127,26 @@ function UnassignedCard({ link }: { link: SnapshotLink }) {
           <div className="device-card-header">
             <h3 className="device-name">Unknown board</h3>
           </div>
-          <dl className="device-fields">
-            <div>
-              <dt>Connection</dt>
-              <dd>{link.label}</dd>
-            </div>
-          </dl>
-          <p className="device-connection-state" data-testid={`unassigned-status-${link.id}`}>
-            {linkStateText(link)}
+
+          <p className="device-role" data-testid={`unassigned-role-${link.id}`}>
+            {link.label}
           </p>
-          {/* Sprint 023 ticket 005: same permissive set as the
-           * identified-device card above -- an unassigned board has no
-           * "own kind" yet, so it stays permissive. */}
+
+          {/* The board is only listed because it is plugged in, so its one
+              connection is always live: a green chip that cannot be
+              switched off, unlike a robot's. */}
+          <ul className="device-connections" aria-label="Connection">
+            <li className="device-chip" data-state="linked" data-testid={`unassigned-chip-${link.id}`}>
+              <span className="device-chip-face" role="img" aria-label={`Plugged into this computer: ${link.label}`}>
+                <TransportIcon transport={link.transport} size={20} />
+              </span>
+            </li>
+          </ul>
+        </div>
+
+        {/* Nothing to open on a board with no firmware, so the Flash
+            control takes the open arrow's place at the top. */}
+        <div className="device-card-side">
           <FlashDialog
             link={link}
             name={link.label}
@@ -1148,15 +1156,6 @@ function UnassignedCard({ link }: { link: SnapshotLink }) {
             allowLocalHex={true}
           />
         </div>
-        <Link
-          to={`/d/${link.id}`}
-          className="device-open-button"
-          aria-label="Open unidentified board"
-          title="Open unidentified board"
-          data-testid={`unassigned-open-${link.id}`}
-        >
-          <ArrowIcon direction="forward" />
-        </Link>
       </div>
     </div>
   );

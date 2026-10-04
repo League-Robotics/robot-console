@@ -151,40 +151,35 @@ describe("RobotPage", () => {
     expect(el.textContent).toContain("vevav");
   });
 
-  it("OOP 2026-09-10: the Main tab shows status and drive in a single column", () => {
-    const { el } = mountRobotPage();
-    const left = el.querySelector(".robot-page-column-left");
-    expect(left).not.toBeNull();
-    expect(left!.querySelector('[aria-label="Robot status"]')).not.toBeNull();
-    expect(left!.querySelector('[aria-label="Drive controls"]')).not.toBeNull();
-    expect(Array.from(left!.querySelectorAll("h3")).map((h) => h.textContent)).toEqual(["Status", "Drive"]);
-    // Nothing from the other tabs is mounted.
-    expect(el.querySelector('[aria-label="Functions"]')).toBeNull();
-    expect(el.querySelector('[aria-label="Charts"]')).toBeNull();
-    expect(el.querySelector('[aria-label="Distance calibration"]')).toBeNull();
-    expect(el.textContent).not.toContain("Showing up to");
-    expect(el.textContent).not.toContain("Hold a direction");
+  it("has no Main tab: the page opens on Drive, and status sits at the top of Diagnostics with the robot's identity", () => {
+    const { el } = mountRobotPage(robotDevice({ program: "calibration-0.20260907.2", version: "1.20260907.5" }));
+    expect(el.querySelector('[data-testid="robot-tab-main"]')).toBeNull();
+    expect(el.querySelector('[aria-label="Drive controls"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Robot status"]')).toBeNull();
+
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-diagnostics"]')!.click();
+    });
+    const panel = el.querySelector('[data-testid="robot-tab-panel-diagnostics"]')!;
+    expect(panel.firstElementChild?.getAttribute("aria-label")).toBe("Robot status");
+    const robot = panel.querySelector('[data-testid="status-panel-robot"]')!.textContent ?? "";
+    expect(robot).toContain("calibration-0.20260907.2");
+    expect(robot).toContain("1.20260907.5");
   });
 
-  it("sprint 022 ticket 007: the Main tab has no right column any more -- the console/CommandStrip it used to hold moved to ConsoleDock, which this page doesn't mount", () => {
+  it("sprint 022 ticket 007: no console or CommandStrip renders on this page -- they moved to ConsoleDock, which this page doesn't mount", () => {
     const { el } = mountRobotPage();
-    expect(el.querySelector(".robot-page-column-right")).toBeNull();
     expect(el.querySelector('[aria-label="Console"]')).toBeNull();
     expect(el.querySelector('[aria-label="Command strip"]')).toBeNull();
     expect(el.querySelector('[data-testid="console-log"]')).toBeNull();
   });
 
-  it("ticket 018-013: tabs sit beside the name; every robot (including a plain, non-calibration one) gets Main, Drive, Calibration and Diagnostics", () => {
+  it("ticket 018-013: tabs sit beside the name; every robot (including a plain, non-calibration one) gets Drive, Calibration and Diagnostics", () => {
     const { el } = mountRobotPage();
     const row = el.querySelector(".robot-page-title-row")!;
     expect(row.querySelector("h2")?.textContent).toBe("vevav");
-    expect(Array.from(row.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual([
-      "Main",
-      "Drive",
-      "Calibration",
-      "Diagnostics",
-    ]);
-    expect(el.querySelector('[data-testid="robot-tab-main"]')?.getAttribute("aria-selected")).toBe("true");
+    expect(Array.from(row.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Drive", "Calibration", "Diagnostics"]);
+    expect(el.querySelector('[data-testid="robot-tab-drive"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
   it("OOP 2026-09-14: the Drive tab (Functions & charts folded in) has the pad, keyboard/gamepad aids and Functions on the left, and a viewport-bound Charts/path-trace column on the right", () => {
@@ -217,7 +212,7 @@ describe("RobotPage", () => {
 
   it("the Calibration tab (offered for any robot) shows the flow on the left, the values right -- no console on either side (sprint 022 ticket 007)", () => {
     const { el } = mountRobotPage(robotDevice({ program: "calibration-1", version: "1" }));
-    expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Main", "Drive", "Calibration", "Diagnostics"]);
+    expect(Array.from(el.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Drive", "Calibration", "Diagnostics"]);
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
     });
@@ -260,12 +255,9 @@ describe("RobotPage", () => {
     expect(driveControls!.contains(stop)).toBe(true);
     expect(driveControls!.contains(estop)).toBe(true);
 
-    // No separate top-level e-stop control sitting outside the left
-    // column either -- sprint 022 ticket 007 removed the Main tab's
-    // right column outright (`.robot-page`'s only children are the
-    // heading and the single left column), so there is no longer a
-    // second column to check for a stray copy at all.
-    expect(el.querySelector(".robot-page-column-right")).toBeNull();
+    // And exactly one of each: no stray copy outside the pad.
+    expect(el.querySelectorAll('[data-testid="stop-button"]')).toHaveLength(1);
+    expect(el.querySelectorAll('[aria-label="Emergency stop"]')).toHaveLength(1);
   });
 
   it("removes the old single-column max-width from RobotPage.css", () => {
@@ -313,7 +305,7 @@ describe("RobotPage", () => {
   it("ticket 022-001: requests get-wifi-credentials once the Calibration tab is opened, so it sees WiFi", () => {
     const { el, socket } = mountRobotPage();
     const sent = () => socket.sent.map((raw) => JSON.parse(raw));
-    // Nothing sent yet -- Main is the default tab and Calibration has
+    // Nothing sent yet -- Drive is the default tab and Calibration has
     // not been opened.
     expect(sent()).not.toContainEqual({ type: "get-wifi-credentials", reveal: true });
 
@@ -330,10 +322,10 @@ describe("RobotPage", () => {
     const code = el.querySelector('[data-testid="calibration-code"]')?.textContent ?? "";
     expect(code).toContain('diffDrive.setupWifi("Busboom_Garage", "hunter2")');
 
-    // Switching back to Main and re-opening Calibration must not
+    // Switching back to Drive and re-opening Calibration must not
     // re-send -- the latch is sticky for the life of this mount.
     act(() => {
-      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-main"]')!.click();
+      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-drive"]')!.click();
     });
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-calibration"]')!.click();
@@ -379,29 +371,29 @@ describe("RobotPage", () => {
   });
 });
 
-describe("RobotPage program/version diagnostics (sprint 011 ticket 002)", () => {
-  it("renders no diagnostics line when program/version are both null (a robot that never answered ID) -- regression", () => {
-    const { el } = mountRobotPage(robotDevice());
+describe("RobotPage program and version", () => {
+  function robotColumn(el: HTMLDivElement): string {
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-diagnostics"]')!.click();
+    });
+    return el.querySelector('[data-testid="status-panel-robot"]')?.textContent ?? "";
+  }
 
+  it("no longer prints a program line under the title on every tab", () => {
+    const { el } = mountRobotPage(robotDevice({ program: "tovez", version: "0.20260901.1" }));
     expect(el.querySelector('[data-testid="robot-page-diagnostics"]')).toBeNull();
   });
 
-  it("shows the raw program/version strings for a robot device that answered ID", () => {
+  it("shows the raw program and library version in the Diagnostics status panel", () => {
     const { el } = mountRobotPage(robotDevice({ program: "tovez", version: "0.20260901.1" }));
-
-    const diagnostics = el.querySelector('[data-testid="robot-page-diagnostics"]');
-    expect(diagnostics).not.toBeNull();
-    expect(diagnostics!.textContent).toContain("tovez");
-    expect(diagnostics!.textContent).toContain("0.20260901.1");
+    const robot = robotColumn(el);
+    expect(robot).toContain("tovez");
+    expect(robot).toContain("0.20260901.1");
   });
 
-  it("shows the raw program/version strings for a calibration-program device", () => {
-    const { el } = mountRobotPage(robotDevice({ program: "calibration-0.20260907.2", version: "0.20260907.2" }));
-
-    const diagnostics = el.querySelector('[data-testid="robot-page-diagnostics"]');
-    expect(diagnostics).not.toBeNull();
-    expect(diagnostics!.textContent).toContain("calibration-0.20260907.2");
-    expect(diagnostics!.textContent).toContain("0.20260907.2");
+  it("shows a dash for a robot that never answered ID", () => {
+    const { el } = mountRobotPage(robotDevice());
+    expect(robotColumn(el)).toContain("Program—");
   });
 });
 
@@ -415,12 +407,12 @@ describe("RobotPage reports the active console target (sprint 022 ticket 006)", 
     expect(onActiveTargetChange).toHaveBeenCalledWith({ link: robot.links[0], name: "kivon" });
   });
 
-  it("switching tabs (Main -> Drive -> Calibration -> Diagnostics) never reports again -- SUC-004's own acceptance criterion", () => {
+  it("switching tabs (Drive -> Calibration -> Diagnostics) never reports again -- SUC-004's own acceptance criterion", () => {
     const onActiveTargetChange = vi.fn();
     const { el } = mountRobotPage(robotDevice(), onActiveTargetChange);
     expect(onActiveTargetChange).toHaveBeenCalledTimes(1);
 
-    for (const tabId of ["drive", "calibration", "diagnostics", "main"]) {
+    for (const tabId of ["calibration", "diagnostics", "drive"]) {
       act(() => {
         el.querySelector<HTMLButtonElement>(`[data-testid="robot-tab-${tabId}"]`)!.click();
       });

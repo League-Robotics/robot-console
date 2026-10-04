@@ -75,8 +75,8 @@ function device(theLink: SnapshotLink, overrides: Partial<Omit<SnapshotDevice, "
 }
 
 function fact(el: HTMLDivElement, label: string): string | undefined {
-  const dt = Array.from(el.querySelectorAll(".diagnostics-facts dt")).find((node) => node.textContent === label);
-  return (dt?.nextElementSibling as HTMLElement | null)?.textContent ?? undefined;
+  const th = Array.from(el.querySelectorAll('[data-testid="status-panel-robot"] th')).find((node) => node.textContent === label);
+  return (th?.nextElementSibling as HTMLElement | null)?.textContent ?? undefined;
 }
 
 describe("DiagnosticsPanel facts", () => {
@@ -95,7 +95,7 @@ describe("DiagnosticsPanel facts", () => {
   it("no longer labels this fact plain 'Version' (018-017: renamed so it reads distinctly from the release version on the card)", () => {
     const theLink = link();
     const el = mount(<DiagnosticsPanel device={device(theLink)} current={theLink} />);
-    const labels = Array.from(el.querySelectorAll(".diagnostics-facts dt")).map((node) => node.textContent);
+    const labels = Array.from(el.querySelectorAll('[data-testid="status-panel-robot"] th')).map((node) => node.textContent);
     expect(labels).not.toContain("Version");
     expect(labels).toContain("Library version");
   });

@@ -164,20 +164,23 @@ describe("StatusPanel fields (OOP 2026-09-10: a named table, no refresh, no coun
         }),
       ),
     );
-    const table = el.querySelector('[data-testid="status-panel-fields"]')!;
-    expect(table.tagName).toBe("TABLE");
-    const rows = Array.from(table.querySelectorAll("tr")).map((tr) => [tr.querySelector("th")?.textContent, tr.querySelector("td")?.textContent]);
-    expect(rows).toEqual([
+    const rowsOf = (testId: string) =>
+      Array.from(el.querySelectorAll(`[data-testid="${testId}"] tr`)).map((tr) => [tr.querySelector("th")?.textContent, tr.querySelector("td")?.textContent]);
+    // Grouped into columns: what the robot is doing, then what is attached to it.
+    expect(rowsOf("status-panel-state-rows")).toEqual([
       ["Ready", "Yes"],
-      ["Left motor", "Connected"],
-      ["Right motor", "Not seen moving yet"],
-      ["Odometry sensor", "Detected"],
       ["Flags", "Ready, Stall halted (0x5)"],
       ["Control cycles", "1234"],
       ["Telemetry", "OFF"],
       ["Last completion", "stop"],
+    ]);
+    expect(rowsOf("status-panel-hardware")).toEqual([
+      ["Left motor", "Connected"],
+      ["Right motor", "Not seen moving yet"],
+      ["Odometry sensor", "Detected"],
       ["zzz", "7"],
     ]);
+    expect(el.querySelector('[data-testid="status-panel-robot"]')).toBeNull();
   });
 
   it("statusRows/describeStatusValue: e-stop flag bit and a no-flags word", () => {

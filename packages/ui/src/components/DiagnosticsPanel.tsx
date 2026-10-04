@@ -9,6 +9,7 @@
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { connectionLabel, linkStateText } from "../deviceDisplay";
 import { useSendable, useWsActions } from "../ws/WsProvider";
+import { StatusPanel } from "./StatusPanel";
 import { StoredDataPanel } from "./StoredDataPanel";
 import "./DiagnosticsPanel.css";
 
@@ -54,32 +55,7 @@ export function DiagnosticsPanel({ device, current }: { device: SnapshotDevice; 
   const recentAgentActions = device.recentAgentActions ?? [];
   return (
     <section className="diagnostics-panel" data-testid="robot-tab-panel-diagnostics" aria-label="Diagnostics">
-      <dl className="diagnostics-facts">
-        <div>
-          <dt>Role</dt>
-          <dd>{device.role ?? "unknown"}</dd>
-        </div>
-        <div>
-          <dt>Kind</dt>
-          <dd>{device.kind}</dd>
-        </div>
-        <div>
-          <dt>Program</dt>
-          <dd>{device.program ?? "—"}</dd>
-        </div>
-        <div>
-          <dt>Library version</dt>
-          <dd>{device.version ?? "—"}</dd>
-        </div>
-        <div>
-          <dt>Last seen</dt>
-          <dd>{when(device.lastSeen)}</dd>
-        </div>
-        <div>
-          <dt>Last checked</dt>
-          <dd>{when(device.lastChecked)}</dd>
-        </div>
-      </dl>
+      <StatusPanel link={current} device={device} />
 
       {current.session !== undefined && <StatusPollingControl link={current} />}
       {current.session !== undefined && <StoredDataPanel link={current} />}

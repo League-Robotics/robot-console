@@ -44,7 +44,7 @@
  * identical button -- both exist because a student may reach for either
  * panel first; neither supersedes the other.
  */
-import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useSendable, useWsActions } from "../ws/WsProvider";
 import { isLinkUsable } from "../deviceDisplay";
 import { clearEstop } from "../lib/estop";
@@ -70,7 +70,16 @@ const STATUS_FIELDS: ReadonlyArray<{ key: string; label: string }> = [
   { key: "next", label: "Next command id" },
   { key: "done", label: "Last completed id" },
   { key: "reason", label: "Last completion" },
+  { key: "wifi", label: "Wi-Fi" },
+  { key: "radio", label: "Radio" },
+  { key: "channel", label: "Radio channel" },
+  { key: "group", label: "Radio group" },
 ];
+
+/** Which status keys sit under which column of the panel; anything the
+ * firmware reports beyond these lands in the last one. */
+const STATE_KEYS: readonly string[] = ["ready", "active", "tlm", "reason", "next", "done", "cyc", "flags"];
+const HARDWARE_KEYS: readonly string[] = ["connL", "connR", "otos", "wedge", "i2cf", "wifi", "radio", "channel", "group"];
 
 /** Bit names from `wire_adapter.cpp`'s `kFlag*` constants. */
 const FLAG_NAMES = [
@@ -121,6 +130,10 @@ export function describeStatusValue(key: string, raw: string): string {
       return describeFlags(raw);
     case "tlm":
       return raw.toUpperCase();
+    case "wifi":
+      return raw === "1" ? "Connected" : raw === "0" ? "Not connected" : raw;
+    case "radio":
+      return raw === "1" ? "On" : raw === "0" ? "Off" : raw;
     default:
       return raw;
   }
@@ -148,32 +161,79 @@ export function statusRows(fields: Record<string, string>): Array<{ key: string;
 
 export interface StatusPanelProps {
   link: SnapshotLink;
+  /** Adds the "Robot" column: what the device is and what it runs. */
+  device?: SnapshotDevice;
 }
 
-export function StatusPanel({ link }: StatusPanelProps) {
-  const linkId = link.id;
+type Row = { key: string; label: string; value: string };
+
+function when(value: number | null | undefined): string {
+  return value === null || value === undefined ? "—" : new Date(value).toLocaleString();
+}
+
+function robotRows(device: SnapshotDevice): Row[] {
+  return [
+    { key: "role", label: "Role", value: device.role ?? "unknown" },
+    { key: "kind", label: "Kind", value: device.kind },
+    { key: "program", label: "Program", value: device.program ?? "—" },
+    { key: "version", label: "Library version", value: device.version ?? "—" },
+    { key: "lastSeen", label: "Last seen", value: when(device.lastSeen) },
+    { key: "lastChecked", label: "Last checked", value: when(device.lastChecked) },
+  ];
+}
+
+function Group({ title, rows, testId }: { title: string; rows: Row[]; testId: string }) {
+  return (
+    <section className="status-panel-group" aria-label={title}>
+      <h4>{title}</h4>
+      <table className="status-panel-table" data-testid={testId}>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.key}>
+              <th scope="row">{row.label}</th>
+              <td>{row.value}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+/** Its own component, mounted only while e-stopped, so the panel itself
+ * needs no `WsProvider` to render. */
+function ClearEstopButton({ link }: { link: SnapshotLink }) {
   const sendable = useSendable();
-  const linkOpen = isLinkUsable(link) && sendable;
   const { sendCommand } = useWsActions();
+  return (
+    <button
+      type="button"
+      className="status-panel-button status-panel-button-danger"
+      data-testid="status-panel-clear-estop"
+      disabled={!(isLinkUsable(link) && sendable)}
+      onClick={() => clearEstop(sendCommand, link.id)}
+    >
+      Clear E-STOP
+    </button>
+  );
+}
+
+export function StatusPanel({ link, device }: StatusPanelProps) {
+  const linkOpen = isLinkUsable(link);
   const status = link.session?.robotStatus ?? undefined;
 
   const isEstopped = status?.estopped === true;
-  // Extended scope (team-lead, 2026-09-13), item A: `status` is a pure
-  // display read of the link's own session -- it survives the link going
-  // unresponsive/failed/stale exactly like `session` itself does (see
-  // `isLinkUsable`'s own doc comment), so a table full of numbers is
-  // still shown, but labeled "last known" rather than presented as live
-  // once the link is no longer actually usable.
-  const isStale = status !== undefined && !isLinkUsable(link);
+  const isStale = status !== undefined && !linkOpen;
 
-  function handleClearEstop(): void {
-    clearEstop(sendCommand, linkId);
-  }
+  const rows = status ? statusRows(status.fields) : [];
+  const stateRows = rows.filter((row) => STATE_KEYS.includes(row.key));
+  const hardwareRows = rows.filter((row) => !STATE_KEYS.includes(row.key));
+  hardwareRows.sort((a, b) => {
+    const [ia, ib] = [HARDWARE_KEYS.indexOf(a.key), HARDWARE_KEYS.indexOf(b.key)];
+    return (ia === -1 ? HARDWARE_KEYS.length : ia) - (ib === -1 ? HARDWARE_KEYS.length : ib);
+  });
 
   return (
-    // Deliberately not classed "status-panel" -- that class name belongs
-    // to sprint 006's retired status-request panel, and
-    // `RobotPage.test.tsx` guards against its reappearance.
     <section className="robot-status-panel" aria-label="Robot status">
       <div className="status-panel-heading">
         <h3>Status</h3>
@@ -182,9 +242,6 @@ export function StatusPanel({ link }: StatusPanelProps) {
             last known
           </span>
         )}
-        {/* OOP 2026-09-10 (stakeholder): no Ready/Moving word up here --
-            the table already says both. Only two things are worth a
-            word on this line: an e-stop, and "no status yet". */}
         {isEstopped && (
           <span className="status-panel-state status-panel-state-danger" data-testid="status-panel-state">
             E-STOPPED
@@ -195,30 +252,15 @@ export function StatusPanel({ link }: StatusPanelProps) {
             {linkOpen ? "Waiting for the robot's status…" : "No link open"}
           </span>
         )}
-        {isEstopped && (
-          <button
-            type="button"
-            className="status-panel-button status-panel-button-danger"
-            data-testid="status-panel-clear-estop"
-            disabled={!linkOpen}
-            onClick={handleClearEstop}
-          >
-            Clear E-STOP
-          </button>
-        )}
+        {isEstopped && <ClearEstopButton link={link} />}
       </div>
 
-      {status && (
-        <table className="status-panel-table" data-testid="status-panel-fields">
-          <tbody>
-            {statusRows(status.fields).map((row) => (
-              <tr key={row.key}>
-                <th scope="row">{row.label}</th>
-                <td>{row.value}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {(device || status) && (
+        <div className="status-panel-columns" data-testid="status-panel-fields">
+          {device && <Group title="Robot" rows={robotRows(device)} testId="status-panel-robot" />}
+          {status && <Group title="State" rows={stateRows} testId="status-panel-state-rows" />}
+          {status && <Group title="Hardware and links" rows={hardwareRows} testId="status-panel-hardware" />}
+        </div>
       )}
     </section>
   );

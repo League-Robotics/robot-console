@@ -187,9 +187,7 @@ import type { ActiveConsoleTarget } from "./DevicePage";
 import { nameDisplay } from "../deviceDisplay";
 import { CalibrationPage } from "../components/CalibrationPage";
 import { DiagnosticsPanel } from "../components/DiagnosticsPanel";
-import { DriveControls } from "../components/DriveControls";
 import { DriveTab } from "../components/DriveTab";
-import { StatusPanel } from "../components/StatusPanel";
 import { useSendable, useWsActions } from "../ws/WsProvider";
 import "./RobotPage.css";
 
@@ -229,10 +227,10 @@ export interface RobotPageProps {
  * their own any more -- `ConsoleDock` (`DevicePage.tsx`) is the one
  * console for the whole device page, regardless of which tab is
  * showing, so tabbing here never touches it. */
-export type RobotTab = "main" | "drive" | "calibration" | "diagnostics";
+export type RobotTab = "drive" | "calibration" | "diagnostics";
 
 export function RobotPage({ device, link, onActiveTargetChange }: RobotPageProps) {
-  const [tab, setSelectedTab] = useState<RobotTab>("main");
+  const [tab, setSelectedTab] = useState<RobotTab>("drive");
 
   // Sprint 022 ticket 006: report the active console target. Deps are
   // `link`/`device.name`, not `tab` -- tabbing within this page must
@@ -271,7 +269,6 @@ export function RobotPage({ device, link, onActiveTargetChange }: RobotPageProps
   }, [wifiTabVisited, sendable, send]);
 
   const tabs: Array<{ id: RobotTab; label: string }> = [
-    { id: "main", label: "Main" },
     { id: "drive", label: "Drive" },
     { id: "calibration", label: "Calibration" },
     { id: "diagnostics", label: "Diagnostics" },
@@ -297,33 +294,6 @@ export function RobotPage({ device, link, onActiveTargetChange }: RobotPageProps
           ))}
         </div>
       </div>
-
-      {device.program !== null && (
-        <p className="robot-page-diagnostics" data-testid="robot-page-diagnostics">
-          Program: {device.program}
-          {" · "}
-          Version: {device.version}
-        </p>
-      )}
-
-      {/* Sprint 022 ticket 007: single column now -- the console+
-          CommandStrip right column this tab used to render beside this
-          content is deleted outright (see this file's own doc comment).
-          `data-testid="robot-tab-panel-main"` stays on this element so
-          it keeps identifying "the Main tab's content" for tests/AppHeader
-          regardless of how many columns that content happens to need. */}
-      {tab === "main" && (
-        <div className="robot-page-column robot-page-column-left" data-testid="robot-tab-panel-main">
-          <div className="robot-page-panel">
-            <StatusPanel link={link} />
-          </div>
-
-          <div className="robot-page-panel">
-            <h3>Drive</h3>
-            <DriveControls link={link} />
-          </div>
-        </div>
-      )}
 
       {tab === "drive" && <DriveTab link={link} name={device.name} />}
 

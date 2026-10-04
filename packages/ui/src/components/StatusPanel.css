@@ -49,7 +49,6 @@
 .status-panel-table {
   border-collapse: collapse;
   width: 100%;
-  max-width: 28rem;
   font-size: 0.85rem;
   border: 1px solid var(--rc-border);
   border-radius: 0.4rem;
@@ -115,5 +114,20 @@
 
 .status-panel-button-danger:disabled {
   border-color: var(--rc-border);
+  color: var(--rc-text-muted);
+}
+
+.status-panel-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.status-panel-group h4 {
+  margin: 0 0 0.35rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--rc-text-muted);
 }

@@ -650,24 +650,24 @@ describe("firmwareDiagnosticDetail", () => {
 
 describe("018-017: repoShortName / releaseDisplayName / relativeTimeText / firmwareSourceText", () => {
   it("repoShortName returns a GitHub repo URL's final path segment", () => {
-    expect(repoShortName("https://github.com/League-Robotics/nezha-robot-template")).toBe("nezha-robot-template");
+    expect(repoShortName("https://github.com/League-Robotics/pxt-nezbot")).toBe("pxt-nezbot");
     expect(repoShortName("https://github.com/League-Robotics/microbit-radio-relay")).toBe("microbit-radio-relay");
   });
 
   it("repoShortName tolerates a trailing slash", () => {
-    expect(repoShortName("https://github.com/League-Robotics/nezha-robot-template/")).toBe("nezha-robot-template");
+    expect(repoShortName("https://github.com/League-Robotics/pxt-nezbot/")).toBe("pxt-nezbot");
   });
 
   it("releaseDisplayName joins the repo's short name and tag", () => {
     expect(
       releaseDisplayName({
         configured: true,
-        repoUrl: "https://github.com/League-Robotics/nezha-robot-template",
+        repoUrl: "https://github.com/League-Robotics/pxt-nezbot",
         tag: "v0.20260913.1",
         available: true,
         checkedAt: 1000,
       }),
-    ).toBe("nezha-robot-template v0.20260913.1");
+    ).toBe("pxt-nezbot v0.20260913.1");
   });
 
   it("releaseDisplayName is null when nothing is configured, or the status is undefined", () => {
@@ -692,7 +692,7 @@ describe("018-017: repoShortName / releaseDisplayName / relativeTimeText / firmw
     const info = firmwareSourceText(
       {
         configured: true,
-        repoUrl: "https://github.com/League-Robotics/nezha-robot-template",
+        repoUrl: "https://github.com/League-Robotics/pxt-nezbot",
         tag: "v0.20260913.1",
         available: true,
         checkedAt: now - 5 * 60_000,
@@ -700,8 +700,8 @@ describe("018-017: repoShortName / releaseDisplayName / relativeTimeText / firmw
       now,
     );
     expect(info).toEqual({
-      href: "https://github.com/League-Robotics/nezha-robot-template/releases/tag/v0.20260913.1",
-      repoName: "nezha-robot-template",
+      href: "https://github.com/League-Robotics/pxt-nezbot/releases/tag/v0.20260913.1",
+      repoName: "pxt-nezbot",
       tag: "v0.20260913.1",
       checkedText: "checked 5 minutes ago",
     });
@@ -716,15 +716,15 @@ describe("018-017: repoShortName / releaseDisplayName / relativeTimeText / firmw
     expect(
       firmwareSourceText({
         configured: true,
-        repoUrl: "https://github.com/League-Robotics/nezha-robot-template",
+        repoUrl: "https://github.com/League-Robotics/pxt-nezbot",
         tag: "latest",
         available: false,
         checkedAt: null,
         reason: "not-yet-checked",
       }),
     ).toEqual({
-      href: "https://github.com/League-Robotics/nezha-robot-template/releases/tag/latest",
-      repoName: "nezha-robot-template",
+      href: "https://github.com/League-Robotics/pxt-nezbot/releases/tag/latest",
+      repoName: "pxt-nezbot",
       tag: "latest",
       checkedText: "checked: never",
     });

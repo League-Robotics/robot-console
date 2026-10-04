@@ -190,7 +190,7 @@ function buildUploadFrame(uploadId: string, bytes: ArrayBuffer): Uint8Array {
 }
 
 /** What a flash's `source` should be called in progress/result copy
- * (ticket 018-017: "Flashing nezha-robot-template v0.20260913.1:
+ * (ticket 018-017: "Flashing pxt-nezbot v0.20260913.1:
  * writing…" rather than the old generic "Flashing relay: …") -- the
  * configured release's own repo+tag name when one is known, falling
  * back to {@link FIRMWARE_LABEL}'s generic word only in the edge case

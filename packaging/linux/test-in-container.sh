@@ -35,7 +35,7 @@ LAUNCHER=/usr/bin/robot-console
 WANTS=/etc/systemd/user/default.target.wants/robot-console.service
 CONF=/etc/robot-console/robot-console.env
 RELAY_SRC=https://github.com/League-Robotics/microbit-radio-relay:latest
-ROBOT_SRC=https://github.com/League-Robotics/nezha-robot-template:latest
+ROBOT_SRC=https://github.com/League-Robotics/pxt-nezbot:latest
 IDLE_MS=3000
 RESULTS=/tmp/results
 export DEBIAN_FRONTEND=noninteractive
@@ -390,7 +390,7 @@ check "A(b): no native-module load errors (ERR_DLOPEN) in the supervisor/host lo
 check "A(b): host snapshot reaches firmware.relay.configured === true and firmware.robot.configured === true (30 s)" \
   firmware_ok c1 'fw.relay.configured === true && fw.robot.configured === true'
 check "A(b): snapshot firmware sources are the conffile's repositories (env passed supervisor -> host)" firmware_ok c1 \
-  'fw.relay.repoUrl === "https://github.com/League-Robotics/microbit-radio-relay" && fw.robot.repoUrl === "https://github.com/League-Robotics/nezha-robot-template"'
+  'fw.relay.repoUrl === "https://github.com/League-Robotics/microbit-radio-relay" && fw.robot.repoUrl === "https://github.com/League-Robotics/pxt-nezbot"'
 
 log "(d) reconnect inside the ${IDLE_MS} ms grace keeps the host"
 check "A(d): client c1 disconnects" ws_close c1

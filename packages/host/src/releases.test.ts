@@ -290,7 +290,7 @@ describe("resolveRelease", () => {
 
   it("names the actual release-asset filename in the 'no-asset' message when the published asset is a real robot-firmware-shaped mismatch", async () => {
     // Pins the reported real-world scenario: the configured repo
-    // publishes an asset like `nezha-robot-template-v0.20260909.1.hex`
+    // publishes an asset like `pxt-nezbot-v0.20260909.1.hex`
     // instead of `MICROBIT.hex` -- resolveRelease still reports which
     // *required* asset is missing (it never guesses that the wrongly-
     // named asset was "close enough"), and this specific text is what
@@ -302,8 +302,8 @@ describe("resolveRelease", () => {
         githubReleaseBody("v0.20260909.1", {
           assets: [
             {
-              name: "nezha-robot-template-v0.20260909.1.hex",
-              browser_download_url: "https://example.invalid/nezha-robot-template-v0.20260909.1.hex",
+              name: "pxt-nezbot-v0.20260909.1.hex",
+              browser_download_url: "https://example.invalid/pxt-nezbot-v0.20260909.1.hex",
             },
           ],
         }),
@@ -315,7 +315,7 @@ describe("resolveRelease", () => {
     expect(result).toEqual({
       reason: "no-asset",
       message:
-        'release v0.20260909.1 has "nezha-robot-template-v0.20260909.1.hex"; expected "MICROBIT.hex" or "pxt-nezha-diffdrive.hex"',
+        'release v0.20260909.1 has "pxt-nezbot-v0.20260909.1.hex"; expected "MICROBIT.hex" or "pxt-nezha-diffdrive.hex"',
     });
   });
 

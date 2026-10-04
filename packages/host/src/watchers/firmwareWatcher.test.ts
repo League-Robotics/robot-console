@@ -278,7 +278,7 @@ describe("startFirmwareWatcher -- no-asset message", () => {
   it("names the asset(s) actually found", async () => {
     const store = freshStore();
     const fetchFn: FirmwareFetchFn = vi.fn(async () =>
-      releaseResponse("v0.20260909.1", [{ name: "nezha-robot-template-v0.20260909.1.hex" }]),
+      releaseResponse("v0.20260909.1", [{ name: "pxt-nezbot-v0.20260909.1.hex" }]),
     );
 
     const handle = startFirmwareWatcher(store, { fetch: fetchFn, config: robotOnlyConfig() });
@@ -287,7 +287,7 @@ describe("startFirmwareWatcher -- no-asset message", () => {
 
     const row = store.projectionRows().firmware.find((f) => f.kind === "robot");
     expect(row?.reason).toBe("no-asset");
-    expect(row?.message).toContain("nezha-robot-template-v0.20260909.1.hex");
+    expect(row?.message).toContain("pxt-nezbot-v0.20260909.1.hex");
     expect(row?.message).toContain("MICROBIT.hex");
   });
 });

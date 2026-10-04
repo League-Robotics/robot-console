@@ -108,7 +108,7 @@ function markRobotFirmwareAvailable(socket: FakeSocket): void {
         relay: { configured: false },
         robot: {
           configured: true,
-          repoUrl: "https://github.com/League-Robotics/nezha-robot-template",
+          repoUrl: "https://github.com/League-Robotics/pxt-nezbot",
           tag: "v0.20260913.1",
           available: true,
           checkedAt: 1000,
@@ -193,7 +193,7 @@ describe("CalibrationFirmwarePanel", () => {
       socket.emitMessage({ type: "flash-result", linkId: LINK_ID, source: { kind: "release", firmware: "robot" }, status: "ok", seq: 1 });
     });
     expect(el.querySelector('[data-testid="calibration-flash-result"]')?.textContent).toBe(
-      "Calibration firmware 0.20260913.1 confirmed (nezha-robot-template v0.20260913.1).",
+      "Calibration firmware 0.20260913.1 confirmed (pxt-nezbot v0.20260913.1).",
     );
   });
 
@@ -245,8 +245,8 @@ describe("CalibrationFirmwarePanel", () => {
     const source = el.querySelector('[data-testid="calibration-flash-source"]')!;
     expect(source).not.toBeNull();
     const link = source.querySelector("a")!;
-    expect(link.getAttribute("href")).toBe("https://github.com/League-Robotics/nezha-robot-template/releases/tag/v0.20260913.1");
-    expect(link.textContent).toBe("nezha-robot-template");
+    expect(link.getAttribute("href")).toBe("https://github.com/League-Robotics/pxt-nezbot/releases/tag/v0.20260913.1");
+    expect(link.textContent).toBe("pxt-nezbot");
     expect(source.textContent).toContain("v0.20260913.1");
     expect(source.textContent).toContain("checked");
   });
@@ -263,7 +263,7 @@ describe("CalibrationFirmwarePanel", () => {
       socket.emitMessage({ type: "flash-progress", linkId: LINK_ID, source: { kind: "release", firmware: "robot" }, phase: "writing", seq: 1 });
     });
     expect(el.querySelector('[data-testid="calibration-flash-progress"]')?.textContent).toBe(
-      "Flashing nezha-robot-template v0.20260913.1: writing…",
+      "Flashing pxt-nezbot v0.20260913.1: writing…",
     );
   });
 
@@ -281,7 +281,7 @@ describe("CalibrationFirmwarePanel", () => {
       });
     });
     expect(el.querySelector('[data-testid="calibration-flash-result"]')?.textContent).toBe(
-      "Flashed nezha-robot-template v0.20260913.1. Waiting for the board to come back…",
+      "Flashed pxt-nezbot v0.20260913.1. Waiting for the board to come back…",
     );
   });
 });

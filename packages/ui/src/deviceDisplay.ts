@@ -217,8 +217,8 @@ export function firmwareDiagnosticDetail(availability: FirmwareAvailability | un
 }
 
 /** A GitHub repo URL's own short display name -- its final path segment
- * (e.g. `https://github.com/League-Robotics/nezha-robot-template` ->
- * `nezha-robot-template`). Ticket 018-017: this is the name flash
+ * (e.g. `https://github.com/League-Robotics/pxt-nezbot` ->
+ * `pxt-nezbot`). Ticket 018-017: this is the name flash
  * progress/result copy and the modal/Calibration-panel source line both
  * use in place of the generic `FIRMWARE_LABEL` word ("relay"/"robot"),
  * so a student sees exactly what release is being flashed. Falls back
@@ -230,9 +230,9 @@ export function repoShortName(repoUrl: string): string {
 }
 
 /** "`<repo short name>` `<tag>`" for a configured release, e.g.
- * `nezha-robot-template v0.20260913.1` -- the name flash progress/result
- * copy names (ticket 018-017 acceptance: "Flashing nezha-robot-template
- * v0.20260913.1: writing…", "Flashed nezha-robot-template
+ * `pxt-nezbot v0.20260913.1` -- the name flash progress/result
+ * copy names (ticket 018-017 acceptance: "Flashing pxt-nezbot
+ * v0.20260913.1: writing…", "Flashed pxt-nezbot
  * v0.20260913.1"). `null` when nothing is configured for this firmware
  * kind at all -- callers fall back to {@link FIRMWARE_LABEL}'s generic
  * word in that case (there is nothing more specific to name). */

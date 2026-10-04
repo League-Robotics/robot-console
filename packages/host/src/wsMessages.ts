@@ -192,7 +192,7 @@ export type SessionOriginWire = "ui" | "mcp";
  * `AgentActionRow`, but display-shaped: `summary` is already-rendered
  * text (`projection.ts`'s own presentation choice from `kind`/`params`/
  * `result`/`resultReason`, e.g. `"WHEELS_V 40 40 -- sent"` or `"flash
- * nezha-robot-template -- failed: <reason>"`), never parsed by a client
+ * pxt-nezbot -- failed: <reason>"`), never parsed by a client
  * (mirrors {@link SnapshotLink.label}'s own convention), so the UI never
  * has to know `params`'s per-`kind` shape. Purely informational -- no
  * interactive element renders from this, ever (this ticket's own

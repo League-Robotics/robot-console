@@ -163,7 +163,7 @@ The Flash buttons offer release builds from the GitHub repositories named in
 
 ```sh
 ROBOT_CONSOLE_RELAY_FIRMWARE=https://github.com/League-Robotics/microbit-radio-relay:latest
-ROBOT_CONSOLE_ROBOT_FIRMWARE=https://github.com/League-Robotics/nezha-robot-template:latest
+ROBOT_CONSOLE_ROBOT_FIRMWARE=https://github.com/League-Robotics/pxt-nezbot:latest
 ```
 
 The format is `https://github.com/<owner>/<repo>:<release tag>`, or `:latest`

@@ -1031,11 +1031,41 @@ describe("unassigned USB boards (acceptance: un-owned WiFi absent, unassigned pr
   });
 });
 
+describe("robots this console has had attached", () => {
+  it("stay in the Robots list with no live link, and out of not-seen-recently", () => {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      withRouter(
+        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+          <FrontPage />
+        </WsProvider>,
+      ),
+    );
+    act(() => {
+      socket!.emitOpen();
+      socket!.emitMessage({
+        type: "snapshot",
+        seq: 1,
+        devices: [
+          device(7, { name: "zapig", owned: true, links: [] }),
+          device(8, { name: "tigez", owned: false, links: [] }),
+        ],
+        unassigned: [],
+        relays: [],
+        firmware: {},
+      });
+    });
+    expect(el.querySelector('[data-testid="devices-group-robots"] [data-testid="device-card-7"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="not-seen-device-7"]')).toBeNull();
+    expect(el.querySelector('[data-testid="not-seen-device-8"]')).not.toBeNull();
+  });
+});
+
 describe("not seen recently (devices the host still knows about with zero current links)", () => {
   it("renders a not-seen-recently card with name, last-seen, and no Link for that card", () => {
     const lastSeen = Date.UTC(2026, 0, 1, 12, 34);
     const el = mount(
-      withRouter(<DevicesList status="open" devices={[]} unassigned={[]} notSeenRecently={[device(2, { name: "wobin", links: [], lastSeen })]} />),
+      withRouter(<DevicesList status="open" devices={[]} unassigned={[]} notSeenRecently={[device(2, { name: "wobin", owned: false, links: [], lastSeen })]} />),
     );
     const text = el.textContent ?? "";
     expect(text).toContain("wobin");
@@ -1098,7 +1128,7 @@ describe("not seen recently (devices the host still knows about with zero curren
       socket!.emitOpen();
     });
     act(() => {
-      socket!.emitMessage(snapshot({ devices: [device(9, { name: "nuvek", links: [] })] }));
+      socket!.emitMessage(snapshot({ devices: [device(9, { name: "nuvek", owned: false, links: [] })] }));
     });
     expect(el.querySelector('[data-testid="not-seen-device-9"]')).not.toBeNull();
 
@@ -1130,7 +1160,7 @@ describe("not seen recently (devices the host still knows about with zero curren
       links: [link("usb-vitut", { state: "connectable", transport: "usb" })],
     });
     act(() => {
-      socket!.emitMessage(snapshot({ devices: [relay, device(9, { name: "nuvek", links: [] })] }));
+      socket!.emitMessage(snapshot({ devices: [relay, device(9, { name: "nuvek", owned: false, links: [] })] }));
     });
 
     const radio = el.querySelector<HTMLButtonElement>('[data-testid="not-seen-radio-9"]');
@@ -1178,7 +1208,7 @@ describe("not seen recently (devices the host still knows about with zero curren
       links: [link("usb-vitut", { state: "connectable", transport: "usb" })],
     });
     act(() => {
-      socket!.emitMessage(snapshot({ devices: [relay, device(9, { name: "nuvek", links: [] })] }));
+      socket!.emitMessage(snapshot({ devices: [relay, device(9, { name: "nuvek", owned: false, links: [] })] }));
     });
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="not-seen-radio-9"]')!.click();
@@ -1236,7 +1266,7 @@ describe("not seen recently (devices the host still knows about with zero curren
         links: [link("usb-vitut", { state: "connectable", transport: "usb" })],
       });
       act(() => {
-        socket!.emitMessage(snapshot({ devices: [relay, device(9, { name: "nuvek", links: [] })] }));
+        socket!.emitMessage(snapshot({ devices: [relay, device(9, { name: "nuvek", owned: false, links: [] })] }));
       });
       act(() => {
         el.querySelector<HTMLButtonElement>('[data-testid="not-seen-radio-9"]')!.click();
@@ -1272,7 +1302,7 @@ describe("not seen recently (devices the host still knows about with zero curren
     });
     // No relay in the snapshot at all -- nothing to allocate.
     act(() => {
-      socket!.emitMessage(snapshot({ devices: [device(9, { name: "nuvek", links: [] })] }));
+      socket!.emitMessage(snapshot({ devices: [device(9, { name: "nuvek", owned: false, links: [] })] }));
     });
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="not-seen-radio-9"]')!.click();
@@ -1305,7 +1335,7 @@ describe("not seen recently (devices the host still knows about with zero curren
         links: [link("usb-vitut", { state: "connectable", transport: "usb" })],
       });
       act(() => {
-        socket!.emitMessage(snapshot({ devices: [relay, device(9, { name: "nuvek", links: [] })] }));
+        socket!.emitMessage(snapshot({ devices: [relay, device(9, { name: "nuvek", owned: false, links: [] })] }));
       });
       act(() => {
         el.querySelector<HTMLButtonElement>('[data-testid="not-seen-radio-9"]')!.click();
@@ -1338,7 +1368,7 @@ describe("not seen recently (devices the host still knows about with zero curren
       socket!.emitMessage(
         snapshot({
           devices: [
-            device(9, { name: "zapig", links: [link("usb-z", { state: "stale", transport: "usb" })] }),
+            device(9, { name: "zapig", owned: false, links: [link("usb-z", { state: "stale", transport: "usb" })] }),
             device(10, { name: "gopiv", links: [link("wifi-g", { state: "connectable", transport: "wifi" })] }),
           ],
         }),
@@ -1362,7 +1392,7 @@ describe("not seen recently (devices the host still knows about with zero curren
       socket!.emitOpen();
     });
     act(() => {
-      socket!.emitMessage(snapshot({ devices: [device(9, { name: "nuvek", links: [] })] }));
+      socket!.emitMessage(snapshot({ devices: [device(9, { name: "nuvek", owned: false, links: [] })] }));
     });
     expect(el.querySelector('[data-testid="not-seen-device-9"]')).not.toBeNull();
 
@@ -1402,7 +1432,7 @@ describe("not seen recently (devices the host still knows about with zero curren
             // The unmerged known-robots.json placeholder -- zero links,
             // would normally fall into "Not seen recently" under its own
             // name.
-            device(2665, { name: "tovez", links: [] }),
+            device(2665, { name: "tovez", owned: false, links: [] }),
           ],
         }),
       );

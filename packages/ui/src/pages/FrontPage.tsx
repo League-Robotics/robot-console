@@ -174,7 +174,12 @@ export function FrontPage() {
   // that is not `stale` (`cardLinks`); a device whose every link has
   // aged out (unplugged, powered off, no longer advertised) goes to
   // "Not seen recently" instead of a card full of hidden connections.
-  const presentBeforeHold = devices.filter((device) => cardLinks(device).length > 0);
+  // A robot this console has had plugged in stays in the Robots list
+  // with no live link at all: it can still be reached by radio, and only
+  // Forget takes it away.
+  const presentBeforeHold = devices.filter(
+    (device) => cardLinks(device).length > 0 || (device.kind === "robot" && device.owned),
+  );
   // Ticket 017-010 fix (team-lead bench evidence, 2026-09-13): a
   // known-robots.json placeholder that hasn't merged with its real,
   // currently-linked row yet (e.g. `mergeNamePlaceholderIfAny` hasn't

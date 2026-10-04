@@ -153,6 +153,7 @@
  * (`ALL_FLASHABLE_FIRMWARE`) -- with local-hex upload offered only in
  * that last, no-device-yet case.
  */
+import { ForgetDeviceDialog } from "./ForgetDeviceDialog";
 import { Link, useMatch } from "react-router";
 import type { FirmwareKind, SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
 import { ALL_FLASHABLE_FIRMWARE, connectionLabel, currentRelayChild, isLinkUsable, linkStateText, plainFailureReason } from "../deviceDisplay";
@@ -393,6 +394,7 @@ export function AppHeader() {
               allowedFirmware={allowedFirmware}
               allowLocalHex={allowLocalHex}
             />
+            {device && <ForgetDeviceDialog deviceId={device.id} name={device.name} triggerClassName="app-header-flash-toggle" />}
           </div>
         )}
       </div>

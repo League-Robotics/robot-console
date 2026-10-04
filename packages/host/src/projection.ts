@@ -485,8 +485,15 @@ function buildLabel(link: ProjectionLinkRow): string {
       // `hostPort` with, so this reads `uid` directly. `capabilities`
       // (flash, open) for this transport land in later tickets in this
       // sprint (004/008); this is only the display label.
+      // The short uid mbregistry itself shows: of a 48-character DAPLink
+      // uid only the middle field differs between boards, and
+      // `uid[16:24]` is its first eight characters (mbtools'
+      // `identity.short_uid`, including its fallback for a short uid).
       const uid = addressField(link.address, "uid");
-      return `mbregistry · ${typeof uid === "string" ? uid : "unknown uid"}`;
+      if (typeof uid !== "string") {
+        return "mbregistry · unknown uid";
+      }
+      return `mbregistry · ${uid.length >= 32 ? uid.slice(16, 24) : uid.slice(-8)}`;
     }
     default: {
       const exhaustive: never = link.transport;

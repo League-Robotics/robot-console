@@ -570,6 +570,17 @@ describe("buildSnapshotFromRows: capabilities", () => {
     expect(snapshot.unassigned.map((link) => link.id)).toEqual(["mbregistry-local"]);
   });
 
+  it("labels an mbregistry link with the registry's short uid, not the whole 48 characters", () => {
+    const rows = emptyRows();
+    const base = { deviceId: null, transport: "mbregistry" as const, state: "discovered" as const, stateReason: null, stateSince: 1, lastSeen: 1, nextRetryAt: null, failCount: 0, userClosed: false };
+    rows.links = [
+      { ...base, id: "mbregistry-a", address: { uid: "990636020005282007d057b7d6d99f53000000006e052820", host: null, endpoint: null } },
+      { ...base, id: "mbregistry-b", address: { uid: "usb:0001", host: null, endpoint: null } },
+    ];
+    const snapshot = buildSnapshotFromRows(rows, 1, 1);
+    expect(snapshot.unassigned.map((link) => link.label)).toEqual(["mbregistry · 07d057b7", "mbregistry · usb:0001"]);
+  });
+
   it("an unassigned usb link (no device yet) is still open-able and flashable", () => {
     const rows = emptyRows();
     rows.links = [

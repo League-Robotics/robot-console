@@ -41,6 +41,9 @@ import "./PathTracePanel.css";
 
 export interface PathTracePanelProps {
   linkId: string;
+  /** Enables Reset pose, which sends `SET rebase 1` (the firmware zeroes
+   * x, y and heading) and clears the trail. */
+  linkOpen?: boolean;
   waypoints?: readonly Waypoint[];
   selectedWaypointId?: number | null;
   onSelectWaypoint?: (id: number) => void;
@@ -144,10 +147,16 @@ function formatPose(pose: LatestPose | undefined): string {
 
 const NO_WAYPOINTS: readonly Waypoint[] = [];
 
-export function PathTracePanel({ linkId, waypoints = NO_WAYPOINTS, selectedWaypointId = null, onSelectWaypoint }: PathTracePanelProps) {
+export function PathTracePanel({
+  linkId,
+  linkOpen = false,
+  waypoints = NO_WAYPOINTS,
+  selectedWaypointId = null,
+  onSelectWaypoint,
+}: PathTracePanelProps) {
   const header = useTelemetryHeader(linkId);
   const telemetry = useTelemetry(linkId);
-  const { clearTelemetry } = useWsActions();
+  const { clearTelemetry, sendCommand } = useWsActions();
 
   const hasHeader = header !== undefined;
   const poseColumns = useMemo(() => findPoseColumns(header), [header]);
@@ -281,6 +290,11 @@ export function PathTracePanel({ linkId, waypoints = NO_WAYPOINTS, selectedWaypo
     draw();
   }
 
+  function handleResetPose(): void {
+    sendCommand(linkId, "SET", ["rebase", "1"]);
+    handleClear();
+  }
+
   const markerRadius = viewRangeRef.current * MARKER_RADIUS_FRACTION;
   const labelSize = viewRangeRef.current * WAYPOINT_LABEL_FRACTION;
 
@@ -304,9 +318,21 @@ export function PathTracePanel({ linkId, waypoints = NO_WAYPOINTS, selectedWaypo
             <p className="path-trace-panel-readout" data-testid="path-trace-pose-readout" ref={readoutRef}>
               {formatPose(undefined)}
             </p>
-            <button type="button" className="path-trace-panel-clear" data-testid="trace-clear" onClick={handleClear}>
-              Clear
-            </button>
+            <div className="path-trace-panel-buttons">
+              <button
+                type="button"
+                className="path-trace-panel-clear"
+                data-testid="trace-reset-pose"
+                disabled={!linkOpen}
+                title="Set the robot's position to (0, 0) and heading to 0"
+                onClick={handleResetPose}
+              >
+                Reset pose
+              </button>
+              <button type="button" className="path-trace-panel-clear" data-testid="trace-clear" onClick={handleClear}>
+                Clear
+              </button>
+            </div>
           </div>
           <div className="path-trace-panel-plot" data-testid="path-trace-plot">
             <svg

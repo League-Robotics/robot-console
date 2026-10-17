@@ -264,6 +264,44 @@ describe("PathTracePanel — Clear", () => {
   });
 });
 
+describe("PathTracePanel — Reset pose", () => {
+  function mountWithLink(linkOpen: boolean): { el: HTMLDivElement; socket: FakeSocket } {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+        <PathTracePanel linkId={LINK_ID} linkOpen={linkOpen} />
+      </WsProvider>,
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    return { el, socket: socket! };
+  }
+
+  it("sends SET rebase 1 and empties the trail; disabled without an open link", () => {
+    const closed = mountWithLink(false);
+    emitHeader(closed.socket, ["seq", "x", "y", "h"]);
+    expect(closed.el.querySelector<HTMLButtonElement>('[data-testid="trace-reset-pose"]')!.disabled).toBe(true);
+    unmount();
+
+    const { el, socket } = mountWithLink(true);
+    emitHeader(socket, ["seq", "x", "y", "h"]);
+    emitFrame(socket, { seq: "1", x: "10", y: "20", h: "100" });
+    flushRaf();
+    const trail = el.querySelector('[data-testid="path-trace-trail"]')!;
+    expect(parsePoints(trail.getAttribute("points") ?? "").length).toBe(1);
+
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="trace-reset-pose"]')!.click();
+    });
+    expect(socket.sent.map((raw) => JSON.parse(raw))).toEqual([
+      { type: "send-command", linkId: LINK_ID, verb: "SET", fields: ["rebase", "1"] },
+    ]);
+    expect(trail.getAttribute("points")).toBe("");
+    expect(el.querySelector('[data-testid="path-trace-pose-readout"]')!.textContent).toBe("x — · y — · heading —");
+  });
+});
+
 describe("PathTracePanel — unmount cancels the rAF loop", () => {
   it("cancels a pending rAF callback on unmount instead of leaking it", () => {
     const { socket } = mountPanel();

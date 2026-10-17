@@ -66,6 +66,16 @@
   font-variant-numeric: tabular-nums;
 }
 
+.path-trace-panel-buttons {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.path-trace-panel-clear:disabled {
+  color: var(--rc-text-muted);
+  cursor: not-allowed;
+}
+
 .path-trace-panel-clear {
   border: 1px solid var(--rc-border);
   background: var(--rc-surface);

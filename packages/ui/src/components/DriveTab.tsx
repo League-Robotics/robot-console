@@ -317,7 +317,13 @@ export function DriveTab({ link, name }: DriveTabProps) {
         </div>
         <div className="robot-page-panel drive-tab-trace" aria-label="Path trace">
           <h3>Path trace</h3>
-          <PathTracePanel linkId={linkId} waypoints={waypoints} selectedWaypointId={selectedId} onSelectWaypoint={setSelectedId} />
+          <PathTracePanel
+            linkId={linkId}
+            linkOpen={linkOpen}
+            waypoints={waypoints}
+            selectedWaypointId={selectedId}
+            onSelectWaypoint={setSelectedId}
+          />
         </div>
         <div className="robot-page-panel">
           <h3>Functions</h3>

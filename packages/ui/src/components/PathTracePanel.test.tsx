@@ -281,3 +281,61 @@ describe("PathTracePanel — unmount cancels the rAF loop", () => {
     expect(() => flushRaf()).not.toThrow();
   });
 });
+
+describe("PathTracePanel — waypoints and the pose readout", () => {
+  function mountWithWaypoints(
+    waypoints: Array<{ id: number; n: number; xMm: number; yMm: number; headingCentideg: number | undefined }>,
+    selectedWaypointId: number | null,
+    onSelectWaypoint: (id: number) => void,
+  ): { el: HTMLDivElement; socket: FakeSocket } {
+    let socket: FakeSocket | null = null;
+    const el = mount(
+      <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
+        <PathTracePanel linkId={LINK_ID} waypoints={waypoints} selectedWaypointId={selectedWaypointId} onSelectWaypoint={onSelectWaypoint} />
+      </WsProvider>,
+    );
+    act(() => {
+      socket!.emitOpen();
+    });
+    return { el, socket: socket! };
+  }
+
+  it("draws each waypoint at its exact mm coordinates with a numbered cm label, marks the selected one, and clicking selects", () => {
+    const onSelect = vi.fn();
+    const { el, socket } = mountWithWaypoints(
+      [
+        { id: 1, n: 1, xMm: 300, yMm: -45, headingCentideg: 9000 },
+        { id: 3, n: 3, xMm: -1234, yMm: 0, headingCentideg: undefined },
+      ],
+      3,
+      onSelect,
+    );
+    emitHeader(socket, ["seq", "x", "y", "h"]);
+
+    const first = el.querySelector('[data-testid="path-trace-waypoint-1"]')!;
+    expect(first.querySelector("circle")!.getAttribute("cx")).toBe("300");
+    expect(first.querySelector("circle")!.getAttribute("cy")).toBe("-45");
+    expect(first.querySelector("text")!.textContent).toBe("1 (30.0, -4.5)");
+    expect(first.getAttribute("data-selected")).toBe("false");
+
+    const third = el.querySelector('[data-testid="path-trace-waypoint-3"]')!;
+    expect(third.querySelector("text")!.textContent).toBe("3 (-123.4, 0.0)");
+    expect(third.getAttribute("data-selected")).toBe("true");
+
+    act(() => {
+      (first as unknown as HTMLElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onSelect).toHaveBeenCalledWith(1);
+  });
+
+  it("reads out the current pose in cm and degrees after an rAF tick, and a dash before any frame", () => {
+    const { el, socket } = mountWithWaypoints([], null, () => {});
+    emitHeader(socket, ["seq", "x", "y", "h"]);
+    const readout = el.querySelector('[data-testid="path-trace-pose-readout"]')!;
+    expect(readout.textContent).toBe("x — · y — · heading —");
+
+    emitFrame(socket, { seq: "1", x: "123", y: "-4", h: "8950" });
+    flushRaf();
+    expect(readout.textContent).toBe("x 12.3 cm · y -0.4 cm · heading 90°");
+  });
+});

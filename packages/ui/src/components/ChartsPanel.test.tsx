@@ -4,12 +4,11 @@
  *
  * Covers: the mode buttons send the exact `TLM` wire command; a
  * header-less mount renders the explicit "waiting for header" state; a
- * header carrying this repo's own `vl`/`vr` wheel-speed columns plus a
- * burst of frames drives a visible bar/chart update after an rAF tick
- * (`requestAnimationFrame` stubbed, per the ticket's Testing section);
- * a header missing any known wheel-speed pair renders the explicit
- * fallback text instead of guessing; and unmounting mid-flight cancels
- * the pending rAF callback rather than leaking it.
+ * header plus a burst of frames drives a visible chart update after an
+ * rAF tick (`requestAnimationFrame` stubbed); the default selection is
+ * the `vl`/`vr` pair when the header has it, else the first column; and
+ * unmounting mid-flight cancels the pending rAF callback rather than
+ * leaking it. The wheel-speed bars were dropped 2026-10-17.
  */
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -154,13 +153,16 @@ describe("ChartsPanel — waiting for header", () => {
   });
 });
 
-describe("ChartsPanel — wheel-speed bars and chart with a known header", () => {
-  it("shows the wheel-speed bars and reflects the latest frame's values after an rAF tick", () => {
+describe("ChartsPanel — chart with a known header", () => {
+  it("defaults to the vl/vr pair and draws the series only after an rAF tick", () => {
     const { el, socket } = mountPanel();
     emitHeader(socket, ["seq", "now", "flags", "x", "y", "h", "ox", "oy", "oh", "vl", "vr", "i2cf"]);
 
     expect(el.querySelector('[data-testid="charts-panel-waiting"]')).toBeNull();
-    expect(el.querySelector('[data-testid="wheel-speed-bars"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="wheel-speed-bars"]')).toBeNull();
+    expect(el.querySelector<HTMLInputElement>('[data-testid="chart-column-vl"]')!.checked).toBe(true);
+    expect(el.querySelector<HTMLInputElement>('[data-testid="chart-column-vr"]')!.checked).toBe(true);
+    expect(el.querySelector<HTMLInputElement>('[data-testid="chart-column-x"]')!.checked).toBe(false);
 
     emitFrame(socket, {
       seq: "1",
@@ -177,26 +179,19 @@ describe("ChartsPanel — wheel-speed bars and chart with a known header", () =>
       i2cf: "0",
     });
 
-    // Before the queued rAF callback runs, the DOM must not yet reflect
-    // the new frame (no per-frame React state, no synchronous DOM
-    // write outside the draw loop).
-    expect(el.querySelector('[data-testid="wheel-speed-left-value"]')!.textContent).toBe("—");
+    const chart = el.querySelector('[data-testid="telemetry-chart"]')!;
+    const linePaths = chart.querySelectorAll("path.charts-panel-chart-line");
+    expect(linePaths.length).toBe(2);
+    expect(Array.from(linePaths).every((path) => (path.getAttribute("d") ?? "") === "")).toBe(true);
 
     flushRaf();
 
-    expect(el.querySelector('[data-testid="wheel-speed-left-value"]')!.textContent).toBe("250 mm/s");
-    expect(el.querySelector('[data-testid="wheel-speed-right-value"]')!.textContent).toBe("-120 mm/s");
-
-    const chart = el.querySelector('[data-testid="telemetry-chart"]');
-    expect(chart).not.toBeNull();
-    const linePaths = chart!.querySelectorAll("path.charts-panel-chart-line");
-    expect(linePaths.length).toBeGreaterThan(0);
-    // At least one plotted series must have produced a non-empty path.
-    const anyDrawn = Array.from(linePaths).some((path) => (path.getAttribute("d") ?? "").length > 0);
-    expect(anyDrawn).toBe(true);
+    expect(Array.from(linePaths).some((path) => (path.getAttribute("d") ?? "").length > 0)).toBe(true);
+    expect(el.querySelector('[data-testid="chart-series-label-vl"]')!.textContent).toBe("vl: 250");
+    expect(el.querySelector('[data-testid="chart-series-label-vr"]')!.textContent).toBe("vr: -120");
   });
 
-  it("a burst of several frames still leaves the bars reflecting only the latest one after a single rAF tick", () => {
+  it("a burst of several frames still leaves the labels reflecting only the latest one after a single rAF tick", () => {
     const { el, socket } = mountPanel();
     emitHeader(socket, ["seq", "vl", "vr"]);
 
@@ -206,8 +201,8 @@ describe("ChartsPanel — wheel-speed bars and chart with a known header", () =>
 
     flushRaf();
 
-    expect(el.querySelector('[data-testid="wheel-speed-left-value"]')!.textContent).toBe("99 mm/s");
-    expect(el.querySelector('[data-testid="wheel-speed-right-value"]')!.textContent).toBe("-42 mm/s");
+    expect(el.querySelector('[data-testid="chart-series-label-vl"]')!.textContent).toBe("vl: 99");
+    expect(el.querySelector('[data-testid="chart-series-label-vr"]')!.textContent).toBe("vr: -42");
   });
 });
 
@@ -254,20 +249,13 @@ describe("ChartsPanel — column selection", () => {
   });
 });
 
-describe("ChartsPanel — header missing wheel-speed columns", () => {
-  it("renders the explicit fallback text instead of guessing a column", () => {
-    const { el, socket } = mountPanel();
-    emitHeader(socket, ["seq", "now", "flags", "x", "y", "h"]);
-
-    expect(el.querySelector('[data-testid="wheel-speed-unavailable"]')).not.toBeNull();
-    expect(el.textContent).toMatch(/no wheel-speed columns/i);
-    expect(el.querySelector('[data-testid="wheel-speed-bars"]')).toBeNull();
-  });
-
-  it("still charts the time series from the header's own columns even without a wheel-speed pair", () => {
+describe("ChartsPanel — header without wheel-speed columns", () => {
+  it("charts the header's first column by default", () => {
     const { el, socket } = mountPanel();
     emitHeader(socket, ["seq", "now", "flags", "x", "y", "h"]);
     expect(el.querySelector('[data-testid="telemetry-chart"]')).not.toBeNull();
+    expect(el.querySelector<HTMLInputElement>('[data-testid="chart-column-seq"]')!.checked).toBe(true);
+    expect(el.querySelector<HTMLInputElement>('[data-testid="chart-column-x"]')!.checked).toBe(false);
   });
 });
 

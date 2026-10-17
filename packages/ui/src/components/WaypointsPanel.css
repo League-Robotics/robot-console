@@ -1,0 +1,126 @@
+.waypoints-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-height: 0;
+}
+
+.waypoints-panel-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.waypoints-panel-record,
+.waypoints-panel-copy,
+.waypoints-panel-format {
+  border: 1px solid var(--rc-border);
+  background: var(--rc-surface);
+  color: var(--rc-text);
+  padding: 0.35rem 0.8rem;
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.waypoints-panel-record {
+  font-weight: 600;
+  border-color: var(--rc-accent);
+  color: var(--rc-accent);
+}
+
+.waypoints-panel-record:disabled,
+.waypoints-panel-copy:disabled {
+  border-color: var(--rc-border);
+  color: var(--rc-text-muted);
+  cursor: not-allowed;
+}
+
+.waypoints-panel-formats {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.waypoints-panel-format[aria-pressed="true"] {
+  background: var(--rc-accent);
+  border-color: var(--rc-accent);
+  color: var(--rc-accent-contrast);
+}
+
+.waypoints-panel-copy {
+  margin-left: auto;
+}
+
+.waypoints-panel-empty {
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px dashed var(--rc-border);
+  border-radius: 0.4rem;
+  color: var(--rc-text-muted);
+  font-size: 0.85rem;
+}
+
+.waypoints-panel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--rc-border);
+  border-radius: 0.4rem;
+  background: var(--rc-surface);
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+}
+
+.waypoints-panel-item {
+  display: grid;
+  grid-template-columns: 2rem 1fr auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--rc-border);
+  cursor: pointer;
+}
+
+.waypoints-panel-item:last-child {
+  border-bottom: none;
+}
+
+.waypoints-panel-item:hover {
+  background: var(--rc-bg);
+}
+
+.waypoints-panel-item-selected {
+  background: var(--rc-warn-bg);
+  box-shadow: inset 3px 0 0 var(--rc-accent);
+}
+
+.waypoints-panel-number {
+  font-weight: 600;
+  color: var(--rc-text-muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.waypoints-panel-text {
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.waypoints-panel-delete {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--rc-text-muted);
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0.15rem 0.4rem;
+  border-radius: 0.3rem;
+  cursor: pointer;
+}
+
+.waypoints-panel-delete:hover {
+  border-color: var(--rc-danger-border);
+  color: var(--rc-danger-text);
+}

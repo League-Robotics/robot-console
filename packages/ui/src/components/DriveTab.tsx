@@ -1,60 +1,46 @@
 /**
  * DriveTab.tsx — the robot page's Drive tab (OOP 2026-09-10,
- * stakeholder direction). OOP 2026-09-14 folded the retired "Functions &
- * charts" tab in: the left column was an enlarged drive pad, the
- * keyboard/gamepad aids, and a console that filled the rest of the
- * screen with its send line pinned at the bottom (the same
- * viewport-bound column pattern as the Main tab); the right column is
- * functions, charts, and the path trace.
+ * stakeholder direction; "Functions & charts" folded in 2026-09-14;
+ * console moved to `ConsoleDock` in sprint 022 ticket 007).
  *
- * **Sprint 022 ticket 007: the left column's console is gone.** The
- * same `ConsoleDock`/`CommandStrip` pair `RobotPage.tsx`'s own doc
- * comment describes has been the one place a student watches this
- * robot's log since ticket 002 -- this tab's own `ConsolePane` mount was
- * kept alongside it only so the dock could be proven live first
- * (sprint.md's Migration Concerns). With that proof done, the left
- * column drops back to its pad/aids/Functions content at its own
- * natural height: it no longer needs the viewport-bound
- * `robot-page-column-console` sizing (nothing left in this column has
- * to fill, or leave room below it for, a console that isn't there any
- * more) or the `robot-page-column-top` shrink-before-the-console cap
- * around that content. The right column (Charts, path trace) keeps
- * `robot-page-column-console` unchanged -- that class was always doing
- * two unrelated jobs under one name: bounding a column that hosts a
- * console, AND giving ANY column a viewport-tall, sticky box a `flex: 1`
- * child can fill to the bottom of the screen. The right column only
- * ever needed the second job (`PathTracePanel` filling to the bottom),
- * so it is unaffected by the console's removal on the left. Besides the
- * pad, two more ways to hold a direction while this tab is showing:
+ * **Layout (2026-10-17).** Left column: the drive pad with the chart's
+ * controls and time series beside it, the keyboard/gamepad aids, the
+ * path trace with a current-pose readout, then Functions. Right column
+ * (viewport-bound, `.robot-page-column-console`): Record and the
+ * waypoint list. Waypoints are owned here and handed to both the trace
+ * and the list so their numbering and selection agree; numbers are
+ * never reused after a delete.
+ *
+ * Besides the pad, two more ways to hold a direction while this tab is
+ * showing:
  *
  *  - **Cursor keys** (and WASD): up/down drive, left/right turn in
- *    place, a diagonal arcs. Space or Escape stops. Keys are ignored
- *    while a text field has focus.
+ *    place, a diagonal arcs. Space or Escape stops. Delete/Backspace
+ *    removes the selected waypoint. Keys are ignored while a text field
+ *    has focus.
  *  - **A gamepad**, if one is plugged in: the left stick gives
  *    proportional speed and turn. Read through the Gamepad API on a
  *    short poll (there is no event for stick movement).
  *
  * Both feed one {@link useDriveEngine}, layered over the shared
- * {@link useHeldDrive} engine (ticket 017-007, `../hooks/useHeldDrive.ts`
- * -- the same held-direction resend/`STOP` discipline `DriveControls`
- * uses for a held button): `WHEELS_V left right lease` re-sent every
- * {@link HELD_DRIVE_RESEND_INTERVAL_MS} inside a {@link
- * HELD_DRIVE_LEASE_MS} lease, then one `STOP` on release -- so the
- * robot's own lease still stops it if this tab dies mid-hold. This
- * module's own `useDriveEngine` adds exactly one thing `useHeldDrive`
- * itself does not know about: merging two named sources (keyboard,
- * gamepad -- gamepad wins while off-centre) into the one target it hands
- * the shared engine.
+ * {@link useHeldDrive} engine (`../hooks/useHeldDrive.ts` -- the same
+ * held-direction resend/`STOP` discipline `DriveControls` uses for a
+ * held button). This module's own `useDriveEngine` adds exactly one
+ * thing: merging two named sources (keyboard, gamepad -- gamepad wins
+ * while off-centre) into the one target it hands the shared engine.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { useSendable, useWsActions } from "../ws/WsProvider";
+import { useSendable, useTelemetry, useTelemetryHeader, useWsActions } from "../ws/WsProvider";
 import { isLinkUsable } from "../deviceDisplay";
 import { useHeldDrive, type WheelTarget as HeldDriveTarget } from "../hooks/useHeldDrive";
+import { findPoseColumns, poseFromValues } from "../lib/pose";
+import type { Waypoint, WaypointFormat } from "../lib/waypointCode";
 import { ChartsPanel } from "./ChartsPanel";
 import { DriveControls } from "./DriveControls";
 import { FunctionsPanel } from "./FunctionsPanel";
 import { PathTracePanel } from "./PathTracePanel";
+import { WaypointsPanel } from "./WaypointsPanel";
 import "./DriveTab.css";
 
 /** Same number `DriveControls` drives at -- one dialect for every held
@@ -65,9 +51,6 @@ export const GAMEPAD_POLL_MS = 50;
 /** Stick travel below this is treated as centred. */
 export const GAMEPAD_DEADZONE = 0.12;
 
-/** Re-exported from `useHeldDrive` (ticket 017-007) rather than
- * redefined here -- one `[left, right]` wheel-target shape for every
- * held-drive consumer. */
 export type WheelTarget = HeldDriveTarget;
 
 /** Speeds are quantised to 5 mm/s so stick jitter does not read as a
@@ -113,6 +96,7 @@ export function gamepadTarget(x: number, y: number): WheelTarget | null {
 
 const DRIVE_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyW", "KeyA", "KeyS", "KeyD"]);
 const STOP_KEYS = new Set(["Space", "Escape"]);
+const DELETE_KEYS = new Set(["Delete", "Backspace"]);
 
 function isTextTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -121,12 +105,10 @@ function isTextTarget(target: EventTarget | null): boolean {
   return target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable;
 }
 
-/** The one place a held drive turns into wire traffic -- see this
- * module's doc comment. Two named sources (`keyboard`, `gamepad`); the
- * gamepad wins while it is off-centre. The resend timer and release/
- * unmount `STOP` discipline itself is `useHeldDrive`'s job (ticket
- * 017-007); this function's own contribution is exactly the two-source
- * merge, applied every time either source changes. */
+/** The one place a held drive turns into wire traffic. Two named
+ * sources (`keyboard`, `gamepad`); the gamepad wins while it is
+ * off-centre. The resend timer and release/unmount `STOP` discipline is
+ * `useHeldDrive`'s job. */
 function useDriveEngine(linkId: string, linkOpen: boolean) {
   const { sendCommand } = useWsActions();
   const held = useHeldDrive(sendCommand, linkId, linkOpen);
@@ -144,10 +126,6 @@ function useDriveEngine(linkId: string, linkOpen: boolean) {
     apply();
   }
 
-  // Link closed mid-hold: drop the locally-tracked sources (`useHeldDrive`
-  // itself already drops the timer/sends STOP for this transition; the
-  // `apply()` call here just keeps `active`/`sources` in sync so a later
-  // reconnect doesn't resume a stale held direction).
   useEffect(() => {
     if (!linkOpen) {
       sources.current = { keyboard: null, gamepad: null };
@@ -169,8 +147,8 @@ function useDriveEngine(linkId: string, linkOpen: boolean) {
 
 export interface DriveTabProps {
   link: SnapshotLink;
-  /** The owning device's already-resolved name, for the console's hint
-   * and the functions panel's remembered-arguments key. */
+  /** The owning device's already-resolved name, for the functions
+   * panel's remembered-arguments key. */
   name: string;
 }
 
@@ -183,6 +161,36 @@ export function DriveTab({ link, name }: DriveTabProps) {
   const [heldKeys, setHeldKeys] = useState<string[]>([]);
   const [gamepadId, setGamepadId] = useState<string | null>(null);
   const [stick, setStick] = useState<WheelTarget | null>(null);
+
+  const header = useTelemetryHeader(linkId);
+  const telemetry = useTelemetry(linkId);
+  const poseColumns = useMemo(() => findPoseColumns(header), [header]);
+  const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [format, setFormat] = useState<WaypointFormat>("positions");
+  const nextNumber = useRef(1);
+
+  function recordWaypoint(): void {
+    const latest = telemetry.latest;
+    if (!poseColumns || !latest) {
+      return;
+    }
+    const pose = poseFromValues(latest.values, poseColumns);
+    if (!pose) {
+      return;
+    }
+    const n = nextNumber.current++;
+    setWaypoints((previous) => [...previous, { id: n, n, ...pose }]);
+    setSelectedId(n);
+  }
+
+  function deleteWaypoint(id: number): void {
+    setWaypoints((previous) => previous.filter((w) => w.id !== id));
+    setSelectedId((current) => (current === id ? null : current));
+  }
+
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
 
   // Keyboard.
   useEffect(() => {
@@ -200,6 +208,13 @@ export function DriveTab({ link, name }: DriveTabProps) {
         held.clear();
         sync();
         sendCommand(linkId, "STOP", ["now"]);
+        return;
+      }
+      if (DELETE_KEYS.has(event.code)) {
+        if (selectedIdRef.current !== null) {
+          event.preventDefault();
+          deleteWaypoint(selectedIdRef.current);
+        }
         return;
       }
       if (!DRIVE_KEYS.has(event.code)) {
@@ -278,44 +293,48 @@ export function DriveTab({ link, name }: DriveTabProps) {
 
   return (
     <div className="robot-page-columns drive-tab" data-testid="robot-tab-panel-drive">
-      {/* Sprint 022 ticket 007: no more `robot-page-column-console`/
-          `robot-page-column-top` here -- this column used to end in a
-          `ConsolePane`, which reserved the viewport-bound sizing and the
-          shrink-before-the-console cap around everything above it (see
-          this file's own doc comment). Plain flow now: the pad, aids and
-          Functions panel just take their natural height. */}
       <div className="robot-page-column robot-page-column-left drive-tab-left">
-        <div className="drive-tab-controls">
+        <div className="drive-tab-top">
           <div className="drive-tab-pad">
             <DriveControls link={link} />
           </div>
-          <div className="drive-tab-aids">
-            <p className="drive-tab-aid" data-testid="drive-tab-keyboard">
-              <strong>Keyboard:</strong> arrow keys (or WASD) drive and turn; space stops.
-              {keyLabel ? ` Holding ${keyLabel}.` : ""}
-            </p>
-            <p className="drive-tab-aid" data-testid="drive-tab-gamepad">
-              <strong>Gamepad:</strong>{" "}
-              {gamepadId
-                ? `${gamepadId} — left stick drives with proportional speed.${stick ? ` Wheels ${stick[0]} / ${stick[1]} mm/s.` : ""}`
-                : "none detected — plug in a controller and move its stick."}
-            </p>
-          </div>
-          <div className="robot-page-panel">
-            <h3>Functions</h3>
-            <FunctionsPanel link={link} name={name} />
+          <div className="robot-page-panel drive-tab-charts" aria-label="Charts">
+            <h3>Charts</h3>
+            <ChartsPanel linkId={linkId} />
           </div>
         </div>
-      </div>
-      <div className="robot-page-column robot-page-column-right robot-page-column-console drive-tab-right">
-        <div className="robot-page-panel" aria-label="Charts">
-          <h3>Charts</h3>
-          <ChartsPanel linkId={linkId} />
+        <div className="drive-tab-aids">
+          <p className="drive-tab-aid" data-testid="drive-tab-keyboard">
+            <strong>Keyboard:</strong> arrow keys (or WASD) drive and turn; space stops.
+            {keyLabel ? ` Holding ${keyLabel}.` : ""}
+          </p>
+          <p className="drive-tab-aid" data-testid="drive-tab-gamepad">
+            <strong>Gamepad:</strong>{" "}
+            {gamepadId
+              ? `${gamepadId} — left stick drives with proportional speed.${stick ? ` Wheels ${stick[0]} / ${stick[1]} mm/s.` : ""}`
+              : "none detected — plug in a controller and move its stick."}
+          </p>
         </div>
         <div className="robot-page-panel drive-tab-trace" aria-label="Path trace">
           <h3>Path trace</h3>
-          <PathTracePanel linkId={linkId} />
+          <PathTracePanel linkId={linkId} waypoints={waypoints} selectedWaypointId={selectedId} onSelectWaypoint={setSelectedId} />
         </div>
+        <div className="robot-page-panel">
+          <h3>Functions</h3>
+          <FunctionsPanel link={link} name={name} />
+        </div>
+      </div>
+      <div className="robot-page-column robot-page-column-right robot-page-column-console drive-tab-right">
+        <WaypointsPanel
+          waypoints={waypoints}
+          selectedId={selectedId}
+          format={format}
+          canRecord={poseColumns !== undefined}
+          onRecord={recordWaypoint}
+          onSelect={setSelectedId}
+          onDelete={deleteWaypoint}
+          onFormatChange={setFormat}
+        />
       </div>
     </div>
   );

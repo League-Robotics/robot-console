@@ -266,3 +266,132 @@ describe("DriveTab has no console of its own (sprint 022 ticket 007)", () => {
     expect(el.querySelector('[data-testid="console-log"]')).toBeNull();
   });
 });
+
+describe("DriveTab waypoints (2026-10-17)", () => {
+  const POSE_HEADER = ["seq", "now", "x", "y", "h"];
+
+  function emitHeader(socket: FakeSocket, header: string[]): void {
+    act(() => {
+      socket.emitMessage({ type: "telemetry", linkId: LINK_ID, header });
+    });
+  }
+
+  function emitPose(socket: FakeSocket, x: number, y: number, h: number): void {
+    act(() => {
+      socket.emitMessage({ type: "telemetry", linkId: LINK_ID, frame: { seq: "1", now: "1000", x: String(x), y: String(y), h: String(h) } });
+    });
+  }
+
+  function click(el: Element): void {
+    act(() => {
+      (el as HTMLElement).click();
+    });
+  }
+
+  function itemTexts(el: HTMLDivElement): string[] {
+    return Array.from(el.querySelectorAll('[data-testid="waypoint-list"] code')).map((code) => code.textContent ?? "");
+  }
+
+  afterEach(() => {
+    delete (navigator as unknown as { clipboard?: unknown }).clipboard;
+  });
+
+  it("Record is disabled until the header carries a pose, then records the latest pose as a numbered, selected waypoint on both the list and the trace", () => {
+    const { el, socket } = mountTab();
+    const record = el.querySelector<HTMLButtonElement>('[data-testid="waypoint-record"]')!;
+    expect(record.disabled).toBe(true);
+    expect(el.querySelector('[data-testid="waypoint-empty"]')).not.toBeNull();
+
+    emitHeader(socket, POSE_HEADER);
+    expect(record.disabled).toBe(false);
+    click(record);
+    expect(el.querySelector('[data-testid="waypoint-list"]')).toBeNull();
+
+    emitPose(socket, 300, 400, 9000);
+    click(record);
+    expect(itemTexts(el)).toEqual(["[30.0, 40.0, 90],  // 1"]);
+    expect(el.querySelector('[data-testid="waypoint-item-1"]')!.getAttribute("aria-selected")).toBe("true");
+    const marker = el.querySelector('[data-testid="path-trace-waypoint-1"]')!;
+    expect(marker.querySelector("circle")!.getAttribute("cx")).toBe("300");
+    expect(marker.querySelector("circle")!.getAttribute("cy")).toBe("400");
+    expect(marker.querySelector("text")!.textContent).toBe("1 (30.0, 40.0)");
+    expect(marker.getAttribute("data-selected")).toBe("true");
+    expect(socket.sent).toEqual([]);
+  });
+
+  it("the format toggle rewrites the list as go-to calls or drive legs, and Copy puts the whole block on the clipboard", () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const { el, socket } = mountTab();
+    emitHeader(socket, POSE_HEADER);
+    const record = el.querySelector<HTMLButtonElement>('[data-testid="waypoint-record"]')!;
+    emitPose(socket, 300, 400, 9000);
+    click(record);
+    emitPose(socket, 0, 400, 18000);
+    click(record);
+
+    click(el.querySelector('[data-testid="waypoint-format-goto"]')!);
+    expect(itemTexts(el)).toEqual(["diffDrive.goToWorld(30.0, 40.0)  // 1", "diffDrive.goToWorld(0.0, 40.0)  // 2"]);
+
+    click(el.querySelector('[data-testid="waypoint-format-drive"]')!);
+    expect(itemTexts(el)).toEqual([
+      "diffDrive.move(0, 53)  // 1: turn to face\ndiffDrive.move(50.0, 0)  // 1",
+      "diffDrive.move(0, 127)  // 2: turn to face\ndiffDrive.move(30.0, 0)  // 2",
+    ]);
+
+    const copy = el.querySelector<HTMLButtonElement>('[data-testid="waypoint-copy"]')!;
+    click(copy);
+    expect(writeText).toHaveBeenCalledWith(
+      [
+        "diffDrive.move(0, 53)  // 1: turn to face",
+        "diffDrive.move(50.0, 0)  // 1",
+        "diffDrive.move(0, 127)  // 2: turn to face",
+        "diffDrive.move(30.0, 0)  // 2",
+      ].join("\n"),
+    );
+    expect(copy.textContent).toBe("Copied");
+
+    click(el.querySelector('[data-testid="waypoint-format-positions"]')!);
+    click(copy);
+    expect(writeText).toHaveBeenLastCalledWith(
+      ["// [x cm, y cm, heading deg]", "let waypoints = [", "    [30.0, 40.0, 90],  // 1", "    [0.0, 40.0, 180],  // 2", "]"].join("\n"),
+    );
+  });
+
+  it("selecting on the trace highlights the list row; Delete removes the selection, the × button removes a row, and numbers are never reused", () => {
+    const { el, socket } = mountTab();
+    emitHeader(socket, POSE_HEADER);
+    const record = el.querySelector<HTMLButtonElement>('[data-testid="waypoint-record"]')!;
+    emitPose(socket, 100, 0, 0);
+    click(record);
+    emitPose(socket, 200, 0, 0);
+    click(record);
+    emitPose(socket, 300, 0, 0);
+    click(record);
+    expect(el.querySelector('[data-testid="waypoint-item-3"]')!.getAttribute("aria-selected")).toBe("true");
+
+    act(() => {
+      el.querySelector('[data-testid="path-trace-waypoint-1"]')!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(el.querySelector('[data-testid="waypoint-item-1"]')!.getAttribute("aria-selected")).toBe("true");
+    expect(el.querySelector('[data-testid="waypoint-item-3"]')!.getAttribute("aria-selected")).toBe("false");
+
+    const input = document.createElement("input");
+    el.appendChild(input);
+    key("keydown", "Delete", input);
+    expect(el.querySelector('[data-testid="waypoint-item-1"]')).not.toBeNull();
+    input.remove();
+
+    key("keydown", "Delete");
+    expect(el.querySelector('[data-testid="waypoint-item-1"]')).toBeNull();
+    expect(el.querySelector('[data-testid="path-trace-waypoint-1"]')).toBeNull();
+    expect(itemTexts(el)).toEqual(["[20.0, 0.0, 0],  // 2", "[30.0, 0.0, 0],  // 3"]);
+
+    click(el.querySelector('[data-testid="waypoint-delete-2"]')!);
+    expect(itemTexts(el)).toEqual(["[30.0, 0.0, 0],  // 3"]);
+
+    click(record);
+    expect(itemTexts(el)).toEqual(["[30.0, 0.0, 0],  // 3", "[30.0, 0.0, 0],  // 4"]);
+    expect(socket.sent).toEqual([]);
+  });
+});

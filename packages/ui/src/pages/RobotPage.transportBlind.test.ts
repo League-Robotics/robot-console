@@ -79,6 +79,8 @@ import statusPanelSource from "../components/StatusPanel.tsx?raw";
 import functionsPanelSource from "../components/FunctionsPanel.tsx?raw";
 import chartsPanelSource from "../components/ChartsPanel.tsx?raw";
 import pathTracePanelSource from "../components/PathTracePanel.tsx?raw";
+import waypointsPanelSource from "../components/WaypointsPanel.tsx?raw";
+import waypointCodeSource from "../lib/waypointCode.ts?raw";
 import newCalibrationPanelSource from "../components/NewCalibrationPanel.tsx?raw";
 import calibrationHelpSource from "../components/CalibrationHelp.tsx?raw";
 import calibrationRunSource from "../lib/calibrationRun.ts?raw";
@@ -113,6 +115,9 @@ const FILES_UNDER_TEST: Record<string, string> = {
   // it reads only `useTelemetry`/`useTelemetryHeader`/`useWsActions`,
   // never a transport/link type.
   "components/PathTracePanel.tsx": pathTracePanelSource,
+  // 2026-10-17: the waypoint list and its export text see only poses.
+  "components/WaypointsPanel.tsx": waypointsPanelSource,
+  "lib/waypointCode.ts": waypointCodeSource,
   // 2026-09-19: the two calibration wizards this list used to name were
   // replaced by one guided panel (`NewCalibrationPanel`), its help
   // dialog, and the run derivation they both used, now in `lib`. The

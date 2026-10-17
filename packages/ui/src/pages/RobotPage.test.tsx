@@ -182,7 +182,7 @@ describe("RobotPage", () => {
     expect(el.querySelector('[data-testid="robot-tab-drive"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("OOP 2026-09-14: the Drive tab (Functions & charts folded in) has the pad, keyboard/gamepad aids and Functions on the left, and a viewport-bound Charts/path-trace column on the right", () => {
+  it("2026-10-17: the Drive tab has the pad, Charts, aids, path trace and Functions on the left, and a viewport-bound Waypoints column on the right", () => {
     const { el } = mountRobotPage();
     act(() => {
       el.querySelector<HTMLButtonElement>('[data-testid="robot-tab-drive"]')!.click();
@@ -191,11 +191,13 @@ describe("RobotPage", () => {
     const left = el.querySelector(".robot-page-column-left")!;
     const right = el.querySelector(".robot-page-column-right")!;
     expect(left.querySelector('[aria-label="Drive controls"]')).not.toBeNull();
+    expect(left.querySelector('[aria-label="Charts"]')).not.toBeNull();
     expect(left.querySelector('[data-testid="drive-tab-keyboard"]')).not.toBeNull();
+    expect(left.querySelector('[aria-label="Path trace"]')).not.toBeNull();
     expect(left.querySelector('[aria-label="Functions"]')).not.toBeNull();
     expect(right.classList.contains("robot-page-column-console")).toBe(true);
-    expect(right.querySelector('[aria-label="Charts"]')).not.toBeNull();
-    expect(right.querySelector('[aria-label="Path trace"]')).not.toBeNull();
+    expect(right.querySelector('[aria-label="Waypoints"]')).not.toBeNull();
+    expect(right.querySelector('[aria-label="Charts"]')).toBeNull();
     expect(el.querySelector('[data-testid="robot-tab-drive"]')?.getAttribute("aria-selected")).toBe("true");
   });
 

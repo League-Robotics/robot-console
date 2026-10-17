@@ -15,6 +15,7 @@
   --rc-chart-grid: #e1e0d9;
   --rc-chart-baseline: #c3c2b7;
   --rc-chart-series-1: #2a78d6;
+  --rc-chart-series-2: #eb6834;
   --rc-chart-positive: #2a78d6;
 
   display: flex;
@@ -27,6 +28,7 @@
     --rc-chart-grid: #2c2c2a;
     --rc-chart-baseline: #383835;
     --rc-chart-series-1: #3987e5;
+    --rc-chart-series-2: #d95926;
     --rc-chart-positive: #3987e5;
   }
 }
@@ -52,7 +54,16 @@
 
 .path-trace-panel-toolbar {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.path-trace-panel-readout {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--rc-text);
+  font-variant-numeric: tabular-nums;
 }
 
 .path-trace-panel-clear {
@@ -109,4 +120,34 @@
   stroke: var(--rc-surface);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
+}
+
+.path-trace-panel-waypoint {
+  cursor: pointer;
+}
+
+.path-trace-panel-waypoint-marker {
+  fill: var(--rc-chart-series-2);
+  stroke: var(--rc-surface);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.path-trace-panel-waypoint-label {
+  fill: var(--rc-text);
+  font-family: inherit;
+  paint-order: stroke;
+  stroke: var(--rc-surface);
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.path-trace-panel-waypoint-selected .path-trace-panel-waypoint-marker {
+  stroke: var(--rc-accent);
+  stroke-width: 3;
+}
+
+.path-trace-panel-waypoint-selected .path-trace-panel-waypoint-label {
+  fill: var(--rc-accent);
+  font-weight: 600;
 }

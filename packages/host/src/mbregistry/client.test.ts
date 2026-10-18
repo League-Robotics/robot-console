@@ -314,6 +314,7 @@ describe("resolveMbregistryConnection — step 2: standard client candidates", (
       connect,
       spawnFn,
       homedirFn,
+      systemRegistryInstalledFn: () => false,
       livenessTimeoutMs: 1000,
     });
 
@@ -341,6 +342,7 @@ describe("resolveMbregistryConnection — step 2: standard client candidates", (
       connect,
       spawnFn,
       homedirFn,
+      systemRegistryInstalledFn: () => false,
       livenessTimeoutMs: 1000,
     });
 
@@ -373,6 +375,7 @@ describe("resolveMbregistryConnection — step 3: console-owned socket", () => {
       connect,
       spawnFn,
       homedirFn,
+      systemRegistryInstalledFn: () => false,
       livenessTimeoutMs: 300,
     });
 
@@ -461,22 +464,22 @@ describe("resolveMbregistryConnection — step 4: version check gates spawning",
     }) as unknown as SpawnFn;
   }
 
-  async function unresolvableEnv(): Promise<{ env: NodeJS.ProcessEnv; homedirFn: () => string }> {
+  async function unresolvableEnv(): Promise<{ env: NodeJS.ProcessEnv; homedirFn: () => string; systemRegistryInstalledFn: () => boolean }> {
     const stateDir = freshTmpDir();
     const fakeHome = freshTmpDir();
-    return { env: { ROBOT_CONSOLE_STATE_DIR: stateDir }, homedirFn: () => fakeHome };
+    return { env: { ROBOT_CONSOLE_STATE_DIR: stateDir }, homedirFn: () => fakeHome, systemRegistryInstalledFn: () => false };
   }
 
   it("fails with a message naming MIN_MBREGISTRY_VERSION when mbregistry is missing", async () => {
-    const { env, homedirFn } = await unresolvableEnv();
+    const { env, homedirFn, systemRegistryInstalledFn } = await unresolvableEnv();
     const notFound = Object.assign(new Error("spawn mbregistry ENOENT"), { code: "ENOENT" });
     const spawnFn = spawnFnFor(notFound);
 
     await expect(
-      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, livenessTimeoutMs: 200 }),
+      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, systemRegistryInstalledFn, livenessTimeoutMs: 200 }),
     ).rejects.toMatchObject({ code: "binary_not_found" });
     await expect(
-      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, livenessTimeoutMs: 200 }),
+      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, systemRegistryInstalledFn, livenessTimeoutMs: 200 }),
     ).rejects.toThrow(new RegExp(MIN_MBREGISTRY_VERSION.replace(/\./g, "\\.")));
     // Never got as far as `mbregistry run ...`.
     for (const call of (spawnFn as unknown as { mock: { calls: unknown[][] } }).mock.calls) {
@@ -485,11 +488,11 @@ describe("resolveMbregistryConnection — step 4: version check gates spawning",
   });
 
   it("fails the same way, with no spawn attempted, when the installed version is too old", async () => {
-    const { env, homedirFn } = await unresolvableEnv();
+    const { env, homedirFn, systemRegistryInstalledFn } = await unresolvableEnv();
     const spawnFn = spawnFnFor("mbregistry 0.1.0\n");
 
     await expect(
-      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, livenessTimeoutMs: 200 }),
+      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, systemRegistryInstalledFn, livenessTimeoutMs: 200 }),
     ).rejects.toMatchObject({ code: "version_too_old", details: { required: MIN_MBREGISTRY_VERSION } });
     for (const call of (spawnFn as unknown as { mock: { calls: unknown[][] } }).mock.calls) {
       expect(call[1]).not.toContain("run");
@@ -529,6 +532,73 @@ describe("resolveMbregistryConnection — step 4: version check gates spawning",
 });
 
 // ---------------------------------------------------------------------------
+// System-registry guard (resolution step 3a — gates step 4/5)
+// ---------------------------------------------------------------------------
+
+describe("resolveMbregistryConnection — step 3a: never spawn beside a system registry", () => {
+  async function unresolvableEnv(): Promise<{ env: NodeJS.ProcessEnv; homedirFn: () => string }> {
+    const stateDir = freshTmpDir();
+    const fakeHome = freshTmpDir();
+    return { env: { ROBOT_CONSOLE_STATE_DIR: stateDir }, homedirFn: () => fakeHome };
+  }
+
+  it("throws system_registry_present and never spawns or version-checks when a system registry is installed but unreachable", async () => {
+    const { env, homedirFn } = await unresolvableEnv();
+    const spawnFn = vi.fn() as unknown as SpawnFn;
+
+    await expect(
+      resolveMbregistryConnection({
+        env,
+        connect,
+        spawnFn,
+        homedirFn,
+        systemRegistryInstalledFn: () => true,
+        livenessTimeoutMs: 200,
+      }),
+    ).rejects.toMatchObject({ code: "system_registry_present" });
+    // No version check and no `run` — the binary is never even shelled out to.
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it("falls through to spawn when no system registry is installed", async () => {
+    const { env, homedirFn } = await unresolvableEnv();
+    const server = new FakeRegistryServer();
+    const spawnFn = vi.fn((command: string, args: readonly string[]) => {
+      const child = fakeChild();
+      if (args[0] === "--version") {
+        queueMicrotask(() => {
+          child.stdout.emit("data", Buffer.from(`mbregistry ${MIN_MBREGISTRY_VERSION}\n`));
+          child.emit("exit", 0);
+        });
+        return child;
+      }
+      const socketPath = args[args.indexOf("--socket") + 1] as string;
+      void server.listen(socketPath).then(() => {
+        child.stdout.emit(
+          "data",
+          Buffer.from(JSON.stringify({ ready: true, instance: "x-console", socket: socketPath, ports: { remote: 17440 } }) + "\n"),
+        );
+      });
+      return child;
+    }) as unknown as SpawnFn;
+
+    const resolved = await resolveMbregistryConnection({
+      env,
+      connect,
+      spawnFn,
+      homedirFn,
+      systemRegistryInstalledFn: () => false,
+      livenessTimeoutMs: 200,
+      spawnReadyTimeoutMs: 2000,
+    });
+
+    expect(resolved.spawned).toBe(true);
+    resolved.socket.destroy();
+    await server.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Spawn-on-demand (resolution step 5) + wire ops against the spawned instance
 // ---------------------------------------------------------------------------
 
@@ -561,14 +631,14 @@ describe("resolveMbregistryConnection — step 5: spawn on demand", () => {
     }) as unknown as SpawnFn;
   }
 
-  async function unresolvableEnv(): Promise<{ env: NodeJS.ProcessEnv; homedirFn: () => string }> {
+  async function unresolvableEnv(): Promise<{ env: NodeJS.ProcessEnv; homedirFn: () => string; systemRegistryInstalledFn: () => boolean }> {
     const stateDir = freshTmpDir();
     const fakeHome = freshTmpDir();
-    return { env: { ROBOT_CONSOLE_STATE_DIR: stateDir }, homedirFn: () => fakeHome };
+    return { env: { ROBOT_CONSOLE_STATE_DIR: stateDir }, homedirFn: () => fakeHome, systemRegistryInstalledFn: () => false };
   }
 
   it("spawns with --exit-with-parent, connects to the reported socket, and does not spawn a second time when a candidate already ran", async () => {
-    const { env, homedirFn } = await unresolvableEnv();
+    const { env, homedirFn, systemRegistryInstalledFn } = await unresolvableEnv();
     const server = new FakeRegistryServer([{ uid: "u1", short_uid: "u1" }]);
     const spawnFn = spawnFnStartingServer(server);
 
@@ -577,6 +647,7 @@ describe("resolveMbregistryConnection — step 5: spawn on demand", () => {
       connect,
       spawnFn,
       homedirFn,
+      systemRegistryInstalledFn,
       livenessTimeoutMs: 200,
       spawnReadyTimeoutMs: 2000,
     });
@@ -590,7 +661,7 @@ describe("resolveMbregistryConnection — step 5: spawn on demand", () => {
   });
 
   it("flips --no-peering off when shareBoards is true", async () => {
-    const { env, homedirFn } = await unresolvableEnv();
+    const { env, homedirFn, systemRegistryInstalledFn } = await unresolvableEnv();
     const server = new FakeRegistryServer();
     const spawnFn = spawnFnStartingServer(server);
 
@@ -599,6 +670,7 @@ describe("resolveMbregistryConnection — step 5: spawn on demand", () => {
       connect,
       spawnFn,
       homedirFn,
+      systemRegistryInstalledFn,
       shareBoards: true,
       livenessTimeoutMs: 200,
       spawnReadyTimeoutMs: 2000,
@@ -616,7 +688,7 @@ describe("resolveMbregistryConnection — step 5: spawn on demand", () => {
   // against -- belt-and-braces against a `$PATH`/`$MBREGISTRY_BIN` race
   // between that check and this spawn.
   it("verifies the --ready-json line's own top-level \"version\" key too, and rejects (killing the child) if it is older than MIN_MBREGISTRY_VERSION", async () => {
-    const { env, homedirFn } = await unresolvableEnv();
+    const { env, homedirFn, systemRegistryInstalledFn } = await unresolvableEnv();
     let spawnedChild: ReturnType<typeof fakeChild> | undefined;
     const spawnFn = vi.fn((command: string, args: readonly string[]) => {
       const child = fakeChild();
@@ -640,13 +712,13 @@ describe("resolveMbregistryConnection — step 5: spawn on demand", () => {
     }) as unknown as SpawnFn;
 
     await expect(
-      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, livenessTimeoutMs: 200, spawnReadyTimeoutMs: 2000 }),
+      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, systemRegistryInstalledFn, livenessTimeoutMs: 200, spawnReadyTimeoutMs: 2000 }),
     ).rejects.toMatchObject({ code: "version_too_old", details: { found: "0.1.0", required: MIN_MBREGISTRY_VERSION } });
     expect(spawnedChild?.kill).toHaveBeenCalled();
   });
 
   it("a --ready-json line with no \"version\" key at all (an older mbregistry) is not itself treated as a failure", async () => {
-    const { env, homedirFn } = await unresolvableEnv();
+    const { env, homedirFn, systemRegistryInstalledFn } = await unresolvableEnv();
     const server = new FakeRegistryServer([{ uid: "u2", short_uid: "u2" }]);
     const spawnFn = spawnFnStartingServer(server);
 
@@ -655,6 +727,7 @@ describe("resolveMbregistryConnection — step 5: spawn on demand", () => {
       connect,
       spawnFn,
       homedirFn,
+      systemRegistryInstalledFn,
       livenessTimeoutMs: 200,
       spawnReadyTimeoutMs: 2000,
     });
@@ -681,6 +754,7 @@ describe("resolveMbregistryConnection — step 5: spawn on demand", () => {
       connect,
       spawnFn,
       homedirFn: () => fakeHome,
+      systemRegistryInstalledFn: () => false,
       livenessTimeoutMs: 200,
       spawnReadyTimeoutMs: 2000,
     });
@@ -701,7 +775,7 @@ describe("resolveMbregistryConnection — step 5: spawn on demand", () => {
   // the too-long-socket-path failure (and any other exit-before-ready
   // failure) must now surface the child's own captured stderr.
   it("includes the tail of captured stderr when the spawned process exits before reporting ready", async () => {
-    const { env, homedirFn } = await unresolvableEnv();
+    const { env, homedirFn, systemRegistryInstalledFn } = await unresolvableEnv();
     const spawnFn = vi.fn((command: string, args: readonly string[]) => {
       const child = fakeChild();
       if (args[0] === "--version") {
@@ -719,15 +793,15 @@ describe("resolveMbregistryConnection — step 5: spawn on demand", () => {
     }) as unknown as SpawnFn;
 
     await expect(
-      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, livenessTimeoutMs: 200, spawnReadyTimeoutMs: 2000 }),
+      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, systemRegistryInstalledFn, livenessTimeoutMs: 200, spawnReadyTimeoutMs: 2000 }),
     ).rejects.toMatchObject({ code: "spawn_exited" });
     await expect(
-      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, livenessTimeoutMs: 200, spawnReadyTimeoutMs: 2000 }),
+      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, systemRegistryInstalledFn, livenessTimeoutMs: 200, spawnReadyTimeoutMs: 2000 }),
     ).rejects.toThrow(/AF_UNIX path too long/);
   });
 
   it("an exit-before-ready failure with no stderr output at all still reports the plain exit-code message", async () => {
-    const { env, homedirFn } = await unresolvableEnv();
+    const { env, homedirFn, systemRegistryInstalledFn } = await unresolvableEnv();
     const spawnFn = vi.fn((command: string, args: readonly string[]) => {
       const child = fakeChild();
       if (args[0] === "--version") {
@@ -742,10 +816,10 @@ describe("resolveMbregistryConnection — step 5: spawn on demand", () => {
     }) as unknown as SpawnFn;
 
     await expect(
-      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, livenessTimeoutMs: 200, spawnReadyTimeoutMs: 2000 }),
+      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, systemRegistryInstalledFn, livenessTimeoutMs: 200, spawnReadyTimeoutMs: 2000 }),
     ).rejects.toMatchObject({ code: "spawn_exited" });
     await expect(
-      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, livenessTimeoutMs: 200, spawnReadyTimeoutMs: 2000 }),
+      resolveMbregistryConnection({ env, connect, spawnFn, homedirFn, systemRegistryInstalledFn, livenessTimeoutMs: 200, spawnReadyTimeoutMs: 2000 }),
     ).rejects.toThrow(/mbregistry exited before reporting ready \(code 1\)$/);
   });
 });
@@ -812,6 +886,7 @@ describe("createMbregistryClient — typed ops (list/lock/unlock/watch)", () => 
       connect,
       spawnFn,
       homedirFn: () => fakeHome,
+      systemRegistryInstalledFn: () => false,
       livenessTimeoutMs: 200,
       spawnReadyTimeoutMs: 2000,
     });
@@ -920,6 +995,7 @@ describe("createMbregistryClient().stream() -- local-socket-first, remote-TCP fa
       connect,
       spawnFn,
       homedirFn: () => fakeHome,
+      systemRegistryInstalledFn: () => false,
       livenessTimeoutMs: 200,
       spawnReadyTimeoutMs: 2000,
     });

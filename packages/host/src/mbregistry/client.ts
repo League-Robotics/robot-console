@@ -106,7 +106,8 @@ export type MbregistryErrorCode =
   | "version_too_old"
   | "spawn_timeout"
   | "spawn_exited"
-  | "connection_closed";
+  | "connection_closed"
+  | "system_registry_present";
 
 /** Thrown by every {@link MbregistryClient} method on any failure — a
  * transport failure, a spawn/resolution failure, or an `{"ok": false,
@@ -239,6 +240,9 @@ function endpointDescription(endpoint: ResolvedEndpoint): string {
 }
 
 const APP = "mbregistry";
+/** launchd label mbtools' `mbregistry service install --system` uses for
+ * its LaunchDaemon plist (`registry.service`'s own `Label`). */
+const APP_LABEL = "org.jointheleague.mbregistry";
 
 /** Fixed named-pipe path in the Windows `\\.\pipe\` namespace — mirrors
  * mbtools `registry.paths._WINDOWS_PIPE_NAME` exactly (do not re-derive;
@@ -259,6 +263,31 @@ function systemSocketPath(): string {
     return path.join("/var/run", APP, "api.sock");
   }
   return path.join("/run", APP, "api.sock");
+}
+
+/** The system-level service definition mbtools' `mbregistry service
+ * install --system` writes: a launchd LaunchDaemon on macOS, a systemd
+ * unit on Linux. Its mere presence means this host is meant to run ONE
+ * registry, owned by that system service — the console must defer to it
+ * and must never spawn a competing user-level instance (even while the
+ * system daemon is momentarily down), because two registries on one USB
+ * bus fight over every probe. */
+function systemServiceUnitPaths(): string[] {
+  if (process.platform === "darwin") {
+    return [`/Library/LaunchDaemons/${APP_LABEL}.plist`];
+  }
+  if (process.platform === "win32") {
+    return [];
+  }
+  return [`/etc/systemd/system/${APP}.service`, `/usr/lib/systemd/system/${APP}.service`];
+}
+
+/** True when a system-level mbregistry service is installed on this host
+ * (see {@link systemServiceUnitPaths}). The default for {@link
+ * ResolveDeps.systemRegistryInstalledFn}; a test seam overrides it so
+ * tests never depend on the dev machine's own install state. */
+export function systemRegistryInstalled(): boolean {
+  return systemServiceUnitPaths().some((p) => existsSync(p));
 }
 
 /** Mirrors mbtools `registry.paths.user_socket_path()`. `homedirFn`
@@ -903,6 +932,10 @@ export interface ResolveDeps {
   versionCheckTimeoutMs?: number | undefined;
   /** Test seam only — see {@link userSocketPath}'s own doc comment. */
   homedirFn?: (() => string) | undefined;
+  /** Test seam only — whether a system-level registry is installed on
+   * this host. Defaults to {@link systemRegistryInstalled}; tests inject
+   * a constant so they never depend on the dev machine's install state. */
+  systemRegistryInstalledFn?: (() => boolean) | undefined;
 }
 
 export interface ResolvedConnection {
@@ -969,6 +1002,12 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  *    each confirmed live with a `list` call.
  * 3. This console's own previously-spawned socket ({@link
  *    consoleOwnedEndpoint}), same liveness confirmation.
+ * 3a. If a system-level registry is installed on this host ({@link
+ *    systemRegistryInstalled}) but none of the above was reachable, stop
+ *    and throw (`system_registry_present`) — never spawn a competing
+ *    user-level instance. The system daemon owns the hardware; two
+ *    registries on one USB bus fight over every probe. Start or repair
+ *    the system service instead.
  * 4. Locate the binary and check its version ({@link
  *    checkMbregistryVersion}) — throws (no spawn attempted) if missing
  *    or too old.
@@ -984,6 +1023,7 @@ export async function resolveMbregistryConnection(deps: ResolveDeps): Promise<Re
     spawnReadyTimeoutMs,
     versionCheckTimeoutMs,
     homedirFn = homedir,
+    systemRegistryInstalledFn = systemRegistryInstalled,
   } = deps;
 
   // Step 1: explicit override — never spawn, never fall through.
@@ -1007,6 +1047,21 @@ export async function resolveMbregistryConnection(deps: ResolveDeps): Promise<Re
   const consoleSocket = await tryLiveEndpoint(consoleEndpoint, connect, livenessTimeoutMs);
   if (consoleSocket !== undefined) {
     return { endpoint: consoleEndpoint, socket: consoleSocket, spawned: false };
+  }
+
+  // Step 3a: never spawn a user-level registry on a host whose
+  // system-level service owns the hardware. If that service is installed
+  // but unreachable above, that is an operational problem to fix (start
+  // or repair the system daemon), not a reason to stand up a second,
+  // competing registry that would fight it for every USB probe.
+  if (systemRegistryInstalledFn()) {
+    throw new MbregistryError(
+      "a system-level mbregistry is installed on this host but was not reachable; " +
+        "refusing to spawn a competing user-level registry. Start or repair the system " +
+        "service (e.g. 'sudo launchctl kickstart -k system/org.jointheleague.mbregistry') " +
+        "and retry.",
+      "system_registry_present",
+    );
   }
 
   // Step 4: binary + version check — no spawn attempted if this throws.
@@ -1044,6 +1099,8 @@ export interface MbregistryClientDeps {
   versionCheckTimeoutMs?: number | undefined;
   /** Test seam only — see {@link userSocketPath}'s own doc comment. */
   homedirFn?: (() => string) | undefined;
+  /** Test seam only — see {@link ResolveDeps.systemRegistryInstalledFn}. */
+  systemRegistryInstalledFn?: (() => boolean) | undefined;
 }
 
 export interface MbregistryClient {
@@ -1278,6 +1335,7 @@ export function createMbregistryClient(deps: MbregistryClientDeps = {}): Mbregis
       spawnReadyTimeoutMs: deps.spawnReadyTimeoutMs,
       versionCheckTimeoutMs: deps.versionCheckTimeoutMs,
       homedirFn: deps.homedirFn,
+      systemRegistryInstalledFn: deps.systemRegistryInstalledFn,
     });
     controlConnection = new JsonLinesConnection(resolved.socket);
     resolvedEndpoint = resolved.endpoint;

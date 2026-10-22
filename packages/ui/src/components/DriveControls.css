@@ -201,3 +201,11 @@
   color: var(--rc-text-muted);
   font-size: 0.8rem;
 }
+
+.drive-controls-speed {
+  margin-top: 0.5rem;
+}
+
+.drive-controls-speed input {
+  width: 5rem;
+}

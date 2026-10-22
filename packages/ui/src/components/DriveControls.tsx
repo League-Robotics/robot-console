@@ -252,17 +252,29 @@ const DIRECTION_LABELS: Record<DriveDirection, string> = {
 
 /** `[left, right]` wheel velocities, `[mm/s]`, for one held direction.
  * See this module's doc comment for the sign convention. */
-function wheelVelocities(direction: DriveDirection): [number, number] {
+function wheelVelocities(direction: DriveDirection, speed: number): [number, number] {
   switch (direction) {
     case "forward":
-      return [DRIVE_VELOCITY_MM_S, DRIVE_VELOCITY_MM_S];
+      return [speed, speed];
     case "backward":
-      return [-DRIVE_VELOCITY_MM_S, -DRIVE_VELOCITY_MM_S];
+      return [-speed, -speed];
     case "left":
-      return [-DRIVE_VELOCITY_MM_S, DRIVE_VELOCITY_MM_S];
+      return [-speed, speed];
     case "right":
-      return [DRIVE_VELOCITY_MM_S, -DRIVE_VELOCITY_MM_S];
+      return [speed, -speed];
   }
+}
+
+/** The speed box's bounds, `[mm/s]`; anything else drives at the default. */
+export const DRIVE_SPEED_MIN_MM_S = 10;
+export const DRIVE_SPEED_MAX_MM_S = 500;
+
+/** The held-drive speed the box's text stands for. */
+export function driveSpeedFrom(text: string): number {
+  const value = Number(text);
+  return Number.isFinite(value) && value >= DRIVE_SPEED_MIN_MM_S && value <= DRIVE_SPEED_MAX_MM_S
+    ? value
+    : DRIVE_VELOCITY_MM_S;
 }
 
 /** The `MOVE_X` displacement one nudge of each direction commands, plus
@@ -434,9 +446,13 @@ function StopSignIcon({ letter, latched }: { letter: boolean; latched: boolean }
 
 export interface DriveControlsProps {
   link: SnapshotLink;
+  /** The speed box's text, when a parent owns it (the Drive tab's own
+   * keyboard and gamepad drive at it too). */
+  speedText?: string;
+  onSpeedText?: (text: string) => void;
 }
 
-export function DriveControls({ link }: DriveControlsProps) {
+export function DriveControls({ link, speedText: ownedSpeedText, onSpeedText }: DriveControlsProps) {
   const linkId = link.id;
   const sendable = useSendable();
   const linkOpen = isLinkUsable(link) && sendable;
@@ -444,6 +460,9 @@ export function DriveControls({ link }: DriveControlsProps) {
   const held = useHeldDrive(sendCommand, linkId, linkOpen);
   const [activeDirection, setActiveDirection] = useState<DriveDirection | null>(null);
   const activeRef = useRef<DriveDirection | null>(null);
+  const [localSpeedText, setLocalSpeedText] = useState(String(DRIVE_VELOCITY_MM_S));
+  const speedText = ownedSpeedText ?? localSpeedText;
+  const setSpeedText = onSpeedText ?? setLocalSpeedText;
 
   function release(): void {
     held.setTarget(null);
@@ -457,7 +476,7 @@ export function DriveControls({ link }: DriveControlsProps) {
     }
     activeRef.current = direction;
     setActiveDirection(direction);
-    held.setTarget(wheelVelocities(direction));
+    held.setTarget(wheelVelocities(direction, driveSpeedFrom(speedText)));
   }
 
   /** One-shot fixed turn -- a click, not a hold. See this module's doc
@@ -623,6 +642,21 @@ export function DriveControls({ link }: DriveControlsProps) {
         {turnButton(TURN_180_LEFT)}
         {directionButton("backward")}
         {turnButton(TURN_180_RIGHT)}
+      </div>
+      <div className="drive-controls-speed">
+        <label htmlFor="drive-controls-speed-input">Speed</label>{" "}
+        <input
+          id="drive-controls-speed-input"
+          data-testid="drive-speed"
+          type="number"
+          inputMode="numeric"
+          min={DRIVE_SPEED_MIN_MM_S}
+          max={DRIVE_SPEED_MAX_MM_S}
+          step={10}
+          value={speedText}
+          onChange={(event) => setSpeedText(event.target.value)}
+        />{" "}
+        mm/s
       </div>
       {estopped && (
         <button

@@ -354,6 +354,9 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
   }
 
   function handleStart(): void {
+    // No diameter yet: ask the robot again, so a wheel it stored since
+    // the page first asked unlocks Calibrate turns without a wheel run.
+    if (!hasDiameter) onStoreChanged?.();
     setStarted(true);
     setWheelRecords([]);
     setTurnRecords([]);

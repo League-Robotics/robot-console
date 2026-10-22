@@ -410,15 +410,24 @@ export function CalibrationPage({ link, name, device }: CalibrationPageProps) {
   // caliper measurement (that is what a slip of 1 IS -- see
   // `deriveCalibration`), so the track width is left blank rather than
   // filled with a number the robot only ever derived.
+  //
+  // A blank wheel diameter is filled from ANY later reply, not just the
+  // first: a robot that was busy or not yet calibrated when the page
+  // first asked otherwise left Calibrate turns disabled until a wheel
+  // run, even after it stored a wheel (stakeholder, 2026-10-20).
   const seededRef = useRef(false);
   useEffect(() => {
-    if (calStoreValues === undefined || seededRef.current) return;
-    seededRef.current = true;
+    if (calStoreValues === undefined) return;
     const patch: CalibrationPatch = {};
     if (calStoreValues.hasWheel && state.wheelDiameterMm === undefined) {
       patch.wheelDiameterMm = calibToDiameterMm(calStoreValues.wheelCalib);
       patch.wheelDiameterSource = "distance-calibration";
     }
+    if (seededRef.current) {
+      if (Object.keys(patch).length > 0) update(patch);
+      return;
+    }
+    seededRef.current = true;
     if (calStoreValues.hasTurn && state.reportedTrackWidthCm === undefined && calStoreValues.slip > 0) {
       const effectiveCm = round(calStoreValues.trackWidthCm / calStoreValues.slip, 3);
       patch.reportedTrackWidthCm = effectiveCm;

@@ -37,7 +37,7 @@ import { useHeldDrive, type WheelTarget as HeldDriveTarget } from "../hooks/useH
 import { findPoseColumns, poseFromValues } from "../lib/pose";
 import type { Waypoint, WaypointFormat } from "../lib/waypointCode";
 import { ChartsPanel } from "./ChartsPanel";
-import { DriveControls } from "./DriveControls";
+import { DriveControls, driveSpeedFrom } from "./DriveControls";
 import { FunctionsPanel } from "./FunctionsPanel";
 import { PathTracePanel } from "./PathTracePanel";
 import { WaypointsPanel } from "./WaypointsPanel";
@@ -57,20 +57,20 @@ export type WheelTarget = HeldDriveTarget;
  * new target every sample. */
 const SPEED_STEP_MM_S = 5;
 
-function clamp(value: number): number {
+function clamp(value: number, limit: number): number {
   const stepped = Math.round(value / SPEED_STEP_MM_S) * SPEED_STEP_MM_S;
-  return Math.max(-DRIVE_VELOCITY_MM_S, Math.min(DRIVE_VELOCITY_MM_S, stepped));
+  return Math.max(-limit, Math.min(limit, stepped));
 }
 
 /** `[left, right]` mm/s for a forward demand `v` and a turn demand `w`
  * (both in mm/s, positive = forward / turn right), clamped to the pad's
  * speed. Turning right means the left wheel runs faster. */
-export function mixWheels(v: number, w: number): WheelTarget {
-  return [clamp(v + w), clamp(v - w)];
+export function mixWheels(v: number, w: number, speed: number = DRIVE_VELOCITY_MM_S): WheelTarget {
+  return [clamp(v + w, speed), clamp(v - w, speed)];
 }
 
 /** Keyboard state -> wheel target, or `null` when nothing is held. */
-export function keyboardTarget(held: ReadonlySet<string>): WheelTarget | null {
+export function keyboardTarget(held: ReadonlySet<string>, speed: number = DRIVE_VELOCITY_MM_S): WheelTarget | null {
   const up = held.has("ArrowUp") || held.has("KeyW");
   const down = held.has("ArrowDown") || held.has("KeyS");
   const left = held.has("ArrowLeft") || held.has("KeyA");
@@ -80,18 +80,18 @@ export function keyboardTarget(held: ReadonlySet<string>): WheelTarget | null {
   if (v === 0 && w === 0) {
     return null;
   }
-  return mixWheels(v * DRIVE_VELOCITY_MM_S, w * DRIVE_VELOCITY_MM_S);
+  return mixWheels(v * speed, w * speed, speed);
 }
 
 /** Left stick -> wheel target, or `null` inside the dead zone. `y` is
  * the browser's convention (up is negative). */
-export function gamepadTarget(x: number, y: number): WheelTarget | null {
+export function gamepadTarget(x: number, y: number, speed: number = DRIVE_VELOCITY_MM_S): WheelTarget | null {
   const fx = Math.abs(x) < GAMEPAD_DEADZONE ? 0 : x;
   const fy = Math.abs(y) < GAMEPAD_DEADZONE ? 0 : y;
   if (fx === 0 && fy === 0) {
     return null;
   }
-  return mixWheels(-fy * DRIVE_VELOCITY_MM_S, fx * DRIVE_VELOCITY_MM_S);
+  return mixWheels(-fy * speed, fx * speed, speed);
 }
 
 const DRIVE_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyW", "KeyA", "KeyS", "KeyD"]);
@@ -158,6 +158,9 @@ export function DriveTab({ link, name }: DriveTabProps) {
   const linkOpen = isLinkUsable(link) && sendable;
   const { sendCommand } = useWsActions();
   const engine = useDriveEngine(linkId, linkOpen);
+  const [speedText, setSpeedText] = useState(String(DRIVE_VELOCITY_MM_S));
+  const speedRef = useRef(DRIVE_VELOCITY_MM_S);
+  speedRef.current = driveSpeedFrom(speedText);
   const [heldKeys, setHeldKeys] = useState<string[]>([]);
   const [gamepadId, setGamepadId] = useState<string | null>(null);
   const [stick, setStick] = useState<WheelTarget | null>(null);
@@ -196,7 +199,7 @@ export function DriveTab({ link, name }: DriveTabProps) {
   useEffect(() => {
     const held = new Set<string>();
     const sync = () => {
-      engine.setSource("keyboard", keyboardTarget(held));
+      engine.setSource("keyboard", keyboardTarget(held, speedRef.current));
       setHeldKeys([...held]);
     };
     const onKeyDown = (event: KeyboardEvent) => {
@@ -273,7 +276,7 @@ export function DriveTab({ link, name }: DriveTabProps) {
         lastId = id;
         setGamepadId(id);
       }
-      const target = pad ? gamepadTarget(pad.axes[0] ?? 0, pad.axes[1] ?? 0) : null;
+      const target = pad ? gamepadTarget(pad.axes[0] ?? 0, pad.axes[1] ?? 0, speedRef.current) : null;
       const changed =
         (target === null) !== (lastTarget === null) ||
         (target !== null && lastTarget !== null && (target[0] !== lastTarget[0] || target[1] !== lastTarget[1]));
@@ -296,7 +299,7 @@ export function DriveTab({ link, name }: DriveTabProps) {
       <div className="robot-page-column robot-page-column-left drive-tab-left">
         <div className="drive-tab-top">
           <div className="drive-tab-pad">
-            <DriveControls link={link} />
+            <DriveControls link={link} speedText={speedText} onSpeedText={setSpeedText} />
           </div>
           <div className="robot-page-panel drive-tab-charts" aria-label="Charts">
             <h3>Charts</h3>

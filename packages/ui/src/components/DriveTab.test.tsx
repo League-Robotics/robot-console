@@ -395,3 +395,11 @@ describe("DriveTab waypoints (2026-10-17)", () => {
     expect(socket.sent).toEqual([]);
   });
 });
+
+describe("drive speed", () => {
+  it("keyboard and gamepad drive at the speed given, not the default", () => {
+    expect(keyboardTarget(new Set(["ArrowUp"]), 400)).toEqual([400, 400]);
+    expect(keyboardTarget(new Set(["ArrowLeft"]), 400)).toEqual([-400, 400]);
+    expect(gamepadTarget(0, -1, 300)).toEqual([300, 300]);
+  });
+});

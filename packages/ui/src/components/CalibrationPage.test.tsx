@@ -193,6 +193,31 @@ describe("CalibrationPage", () => {
     expect(el.querySelector('[data-testid="new-calibration-done"]')).toBeNull();
   });
 
+  it("turns can run on its own when the robot already stores a wheel", () => {
+    const { el, socket } = mountPage();
+    rx(socket, '{"ev":"calstore.values","wheel":0.446,"tw":9.1,"slip":0.9757,"has_wheel":1,"has_turn":1,"live_tw":9.1,"live_slip":0.976,"scale_l":1,"scale_r":1,"port_l":1,"port_r":2}');
+    click(el, '[data-testid="new-calibration-start"]');
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="new-calibration-turns"]')!.disabled).toBe(false);
+    expect(el.querySelector('[data-testid="new-calibration-turns-needs-diameter"]')).toBeNull();
+  });
+
+  it("turns unlocks when a later calshow reply reports a stored wheel", () => {
+    const { el, socket } = mountPage();
+    rx(socket, '{"ev":"calstore.values","wheel":0.7878,"tw":11.42,"slip":0.952,"has_wheel":0,"has_turn":0,"live_tw":11.42,"live_slip":0.952}');
+    click(el, '[data-testid="new-calibration-start"]');
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="new-calibration-turns"]')!.disabled).toBe(true);
+    rx(socket, '{"ev":"calstore.values","wheel":0.446,"tw":9.1,"slip":0.9757,"has_wheel":1,"has_turn":1,"live_tw":9.1,"live_slip":0.976}');
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="new-calibration-turns"]')!.disabled).toBe(false);
+  });
+
+  it("Start asks the robot again when there is no wheel diameter", () => {
+    const { el, socket } = mountPage();
+    const before = socket.sent.filter((m) => JSON.stringify(m).includes("_calshow")).length;
+    click(el, '[data-testid="new-calibration-start"]');
+    const after = socket.sent.filter((m) => JSON.stringify(m).includes("_calshow")).length;
+    expect(after).toBe(before + 1);
+  });
+
   it("Start -> wheels -> turns -> Done: turns waits only for a wheel diameter, Done for anything measured", () => {
     const { el, socket } = mountPage();
     click(el, '[data-testid="new-calibration-start"]');

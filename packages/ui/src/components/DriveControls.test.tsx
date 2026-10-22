@@ -144,6 +144,46 @@ function sentMessages(socket: FakeSocket): unknown[] {
   return socket.sent.map((s) => JSON.parse(s));
 }
 
+function setSpeed(el: HTMLDivElement, text: string): void {
+  const input = el.querySelector<HTMLInputElement>('[data-testid="drive-speed"]')!;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  act(() => {
+    setter.call(input, text);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+describe("DriveControls speed box", () => {
+  it("defaults to the drive speed", () => {
+    const { el } = mountControls(openLink());
+    expect(el.querySelector<HTMLInputElement>('[data-testid="drive-speed"]')!.value).toBe("150");
+  });
+
+  it("drives at the speed typed in", () => {
+    const { el, socket } = mountControls(openLink());
+    setSpeed(el, "250");
+    const left = el.querySelector<HTMLButtonElement>('[data-testid="drive-left"]')!;
+    act(() => {
+      left.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+    expect(sentMessages(socket)).toEqual([
+      { type: "send-command", linkId: LINK_ID, verb: "WHEELS_V", fields: [-250, 250, 400] },
+    ]);
+  });
+
+  it("falls back to the default for an empty or out-of-range speed", () => {
+    const { el, socket } = mountControls(openLink());
+    setSpeed(el, "5000");
+    const forward = el.querySelector<HTMLButtonElement>('[data-testid="drive-forward"]')!;
+    act(() => {
+      forward.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+    expect(sentMessages(socket)).toEqual([
+      { type: "send-command", linkId: LINK_ID, verb: "WHEELS_V", fields: [150, 150, 400] },
+    ]);
+  });
+});
+
 describe("DriveControls", () => {
   it("sends WHEELS_V immediately on press", () => {
     const { el, socket } = mountControls(openLink());

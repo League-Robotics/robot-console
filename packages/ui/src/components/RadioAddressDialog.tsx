@@ -77,18 +77,24 @@ export function RadioAddressDialog({ deviceId, name, radio, triggerClassName = "
   const [reverted, setReverted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const hasRadio = radio !== undefined;
+  const radioChannel = radio?.channel;
+  const radioGroup = radio?.group;
+  const radioSource = radio?.source;
 
   useEffect(() => {
     if (!open) {
       return;
     }
-    const current = radio ?? { ...nameToRadioAddress(name), source: "derived" as const };
+    const current = hasRadio
+      ? { channel: radioChannel, group: radioGroup }
+      : nameToRadioAddress(name);
     setChannel(String(current.channel));
     setGroup(String(current.group));
     setSaved(false);
     setReverted(false);
     setError(null);
-  }, [open, name, radio]);
+  }, [open, name, hasRadio, radioChannel, radioGroup, radioSource]);
 
   function handleSubmit(event: FormEvent): void {
     event.preventDefault();

@@ -94,6 +94,30 @@ describe("RadioAddressDialog", () => {
     expect(el.querySelector<HTMLInputElement>('[data-testid="radio-group"]')!.value).toBe("3");
   });
 
+  it("keeps typed input when a snapshot re-broadcasts an equal radio object", () => {
+    let socket: FakeSocket | null = null;
+    const factory = () => (socket = new FakeSocket());
+    const render = (radio: { channel: number; group: number; source: "derived" }) => (
+      <WsProvider url="ws://test/" socketFactory={factory}>
+        <RadioAddressDialog deviceId={1198504156} name="tigez" radio={radio} />
+      </WsProvider>
+    );
+    const el = mount(render({ channel: 12, group: 3, source: "derived" }));
+    act(() => {
+      socket!.emitOpen();
+    });
+    open(el);
+    type(el, '[data-testid="radio-channel"]', "76");
+    act(() => {
+      root!.render(render({ channel: 12, group: 3, source: "derived" }));
+    });
+    expect(el.querySelector<HTMLInputElement>('[data-testid="radio-channel"]')!.value).toBe("76");
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="radio-save"]')!.click();
+    });
+    expect(sent(socket!)).toEqual([{ type: "set-radio-override", deviceId: 1198504156, channel: 76, group: 3 }]);
+  });
+
   it("submitting sends set-radio-override with the numeric deviceId, not localStorage", () => {
     const { el, socket } = mountDialog();
     open(el);

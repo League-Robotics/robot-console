@@ -704,3 +704,23 @@ describe("buildSnapshotFromRows: recentAgentActions", () => {
     expect(snapshot?.devices[0]?.recentAgentActions?.[0]?.summary).toBe("drive — sent");
   });
 });
+
+describe("buildSnapshot: simulated free-form device name (nezsim sprint 015, ticket 002)", () => {
+  it("projects a device whose name is outside the five-letter grammar without throwing, with no radio identity", () => {
+    const store = openStore({ filePath: ":memory:" });
+    store.upsertDevice({ id: 1198504156, name: "tinybot", kind: "robot", simulated: true, at: 1 });
+    store.setOwned(1198504156, true, 1);
+    store.upsertLink({
+      id: "mbregistry-sim-tinybot",
+      transport: "mbregistry",
+      address: { endpoint: null, host: null, uid: "sim-tinybot", simulated: true },
+      deviceId: 1198504156,
+      at: 1,
+    });
+    const snapshot = buildSnapshot(store, 1, 2);
+    const device = snapshot.devices.find((d) => d.id === 1198504156);
+    expect(device?.name).toBe("tinybot");
+    expect(device?.radio.group).toBe(0);
+    store.close();
+  });
+});

@@ -67,7 +67,7 @@
  * radio-addressed in the UI -- `AppHeader.tsx` gates
  * `RadioAddressDialog`/`WifiCredentialsDialog` on `kind !== "relay"`).
  */
-import { nameToRadioAddress } from "@robot-console/protocol";
+import { isFriendlyName, nameToRadioAddress } from "@robot-console/protocol";
 import {
   findCurrentMbflashService,
   type AgentActionKind,
@@ -307,6 +307,11 @@ function resolveRadio(device: ProjectionDeviceRow): { channel: number; group: nu
     // guaranteed to be a well-formed five-letter name, so
     // `nameToRadioAddress` cannot be called at all (see module doc
     // comment).
+    return { ...NO_RADIO_IDENTITY, source: "derived" };
+  }
+  if (!isFriendlyName(device.name)) {
+    // nezsim sprint 015: a simulated device's free-form name has no
+    // derived radio address (every real robot's name is in the grammar).
     return { ...NO_RADIO_IDENTITY, source: "derived" };
   }
   const derived = nameToRadioAddress(device.name);

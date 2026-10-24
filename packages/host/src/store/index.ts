@@ -72,7 +72,7 @@
  */
 import type { DatabaseSync } from "node:sqlite";
 import { EventEmitter } from "node:events";
-import { deviceIdToName, nameToValue } from "@robot-console/protocol";
+import { deviceIdToName, isFriendlyName, nameToValue } from "@robot-console/protocol";
 import type { FirmwareKind } from "../wsMessages.js";
 import { openStoreDb, type StoreDbOptions } from "./db.js";
 import { clearDeadProcessState } from "./repair/clearDeadProcessState.js";
@@ -179,6 +179,12 @@ export interface UpsertDeviceInput {
    * an explicit `kind` — see {@link Store.upsertDevice}'s own doc
    * comment for the exact conflict-resolution rule this drives. */
   kind?: DeviceKind;
+  /** nezsim sprint 015: the device is a simulated board registered with
+   * mbregistry (`simulated: true`). Only such a device may carry a
+   * free-form `name` that `deviceIdToName(id)` does not produce, and
+   * even then only a name outside the real-robot five-letter grammar --
+   * a simulator can never take a real robot's name with the wrong id. */
+  simulated?: boolean;
   role?: string | null;
   /** Banner `commonName` (`packages/protocol/src/banner.ts`'s
    * `ParsedBanner.commonName`, e.g. `"robot"`/`"relay"`) -- written
@@ -760,7 +766,12 @@ export class Store {
     // `kind='relay'` row (positive/`nameToValue`-range id) -- still
     // enforces the check exactly as before; this narrows, not removes,
     // the protection the 014-003 invariant put in place.
-    const skipNameCheck = input.id < 0 && input.kind === "relay";
+    // Sprint 015 (nezsim): a simulated device skips it too, but only for
+    // a name that is NOT in the real-robot grammar (see
+    // `UpsertDeviceInput.simulated`).
+    const skipNameCheck =
+      (input.id < 0 && input.kind === "relay") ||
+      (input.simulated === true && input.name.length > 0 && !isFriendlyName(input.name));
     if (!skipNameCheck) {
       const expectedName = deviceIdToName(input.id);
       if (expectedName !== input.name) {

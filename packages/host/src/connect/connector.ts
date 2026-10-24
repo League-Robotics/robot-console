@@ -114,6 +114,7 @@
  */
 import {
   bannerNameMatchesSerial,
+  isFriendlyName,
   classifyBanner,
   deviceIdToName,
   type DeviceClassification,
@@ -170,6 +171,10 @@ export interface ConnectedSession {
   readonly transport: Transport;
   readonly link: LineLink;
   readonly classification: DeviceClassification;
+  /** nezsim sprint 015: set (to the banner's free-form name) only for a
+   * simulated mbregistry board whose name is outside the real-robot
+   * grammar; undefined for every real robot. */
+  readonly simulatedName?: string;
 }
 
 /** The harvester-attach seam (ticket 003 supplies the real
@@ -414,6 +419,10 @@ export interface MbregistryAddress {
   readonly endpoint: unknown;
   readonly host?: string | null;
   readonly uid: string;
+  /** nezsim sprint 015: `true` when the registry marked this board
+   * `simulated` (written by `watchers/mbregistryWatcher.ts`; absent for
+   * every real board). Relaxes only the free-form-name checks. */
+  readonly simulated?: boolean;
 }
 export type ParsedAddress = UsbAddress | TcpAddress | RelayAddress | MbregistryAddress;
 
@@ -463,6 +472,7 @@ export function parseLinkAddress(transport: Transport, raw: unknown): ParsedAddr
         endpoint: rec.endpoint,
         uid: rec.uid,
         ...("host" in rec ? { host: rec.host as string | null } : {}),
+        ...(rec.simulated === true ? { simulated: true } : {}),
       };
     }
     default: {
@@ -1340,7 +1350,16 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
       // here means the bytes themselves are corrupted (the same failure
       // mode this ticket's other identity check targets), not a naming
       // policy question -- there is no device identity to safely act on.
-      if (!bannerNameMatchesSerial(banner)) {
+      // Sprint 015 (nezsim): a simulated registry board is exempt, but
+      // only with a free-form name outside the real-robot grammar -- a
+      // simulated board announcing a grammar name must still match its
+      // serial. Keyed on the registry's `simulated` flag, never on name
+      // shape alone.
+      const simulatedFreeForm =
+        link.transport === "mbregistry" &&
+        (address as MbregistryAddress).simulated === true &&
+        !isFriendlyName(banner.name);
+      if (!simulatedFreeForm && !bannerNameMatchesSerial(banner)) {
         void lineLink.close();
         const err = new Error(
           `connector: link "${link.id}" produced a banner whose name "${banner.name}" does not match its own serial ${banner.serial} -- serial data corrupted, check the USB cable`,
@@ -1393,7 +1412,7 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
 
       const classification = classifyBanner(banner);
       const deviceId = banner.serial;
-      const name = deviceIdToName(deviceId);
+      const name = simulatedFreeForm ? banner.name : deviceIdToName(deviceId);
       // `classification.type` also carries "calibration" and "unknown",
       // neither of which is a device KIND -- a calibration build is a
       // robot running a particular program, and an unknown banner is
@@ -1411,10 +1430,11 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
         role: banner.role,
         commonName: banner.commonName,
         ...(usbSerial !== undefined ? { usbSerial } : {}),
+        ...(simulatedFreeForm ? { simulated: true } : {}),
         at: now(),
       });
       mergeUsbPlaceholderIfAny(store, usbSerial, deviceId, now());
-      if (kind === "robot") {
+      if (kind === "robot" && !simulatedFreeForm) {
         mergeNamePlaceholderIfAny(store, name, deviceId, now());
       }
       if (link.transport === "usb" && classification.type === "robot") {
@@ -1430,6 +1450,7 @@ export function createConnector(store: Store, deps: ConnectorDeps = {}, opts: Co
         transport: link.transport,
         link: lineLink,
         classification,
+        ...(simulatedFreeForm ? { simulatedName: name } : {}),
       };
       harvester.attach(session);
       return session;

@@ -34,6 +34,14 @@ export const NAME_SPACE = 5 ** NAME_LENGTH;
 /** `^[zvgpt][uoiea][zvgpt][uoiea][zvgpt]$` — a well-formed friendly name. */
 const NAME_PATTERN = /^[zvgpt][uoiea][zvgpt][uoiea][zvgpt]$/;
 
+/** True when `name` has the well-formed five-letter friendly-name shape
+ * (a real micro:bit's name). Sprint 015 (nezsim): a *simulated* device
+ * may carry a free-form name instead; callers use this to relax name
+ * checks only for a name that is NOT in the real-robot grammar. */
+export function isFriendlyName(name: string): boolean {
+  return NAME_PATTERN.test(name);
+}
+
 /**
  * Numeric chip id (`FICR.DEVICEID[1]`, an unsigned 32-bit value) -> the
  * five-letter friendly name.

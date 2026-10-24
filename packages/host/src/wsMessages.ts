@@ -93,8 +93,8 @@
  *   each field's own doc comment).
  */
 
+import { isHardwareRadioPair } from "@robot-console/protocol";
 import type { WireField } from "@robot-console/protocol";
-import { isValidRadioOverride } from "./radioOverride.js";
 
 /** Which firmware a flash operation targets, when the source is a
  * configured release build. `"relay"` is the radio-relay board's
@@ -925,7 +925,7 @@ export function parseClientMessage(value: unknown): ClientMessage | undefined {
         return isNonEmptyString(value.relayLinkId) &&
           typeof value.channel === "number" &&
           typeof value.group === "number" &&
-          isValidRadioOverride(value.channel, value.group)
+          isHardwareRadioPair(value.channel, value.group)
           ? { type: "session-open", relayLinkId: value.relayLinkId, channel: value.channel, group: value.group }
           : undefined;
       }

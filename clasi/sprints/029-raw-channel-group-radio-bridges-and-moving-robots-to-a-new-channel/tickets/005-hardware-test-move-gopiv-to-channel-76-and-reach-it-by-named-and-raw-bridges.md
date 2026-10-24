@@ -1,9 +1,18 @@
 ---
 id: '005'
 title: 'Hardware test: move gopiv to channel 76 and reach it by named and raw bridges'
-status: open
-use-cases: [SUC-001, SUC-002, SUC-003, SUC-004, SUC-005]
-depends-on: ["001", "002", "003", "004"]
+status: in-progress
+use-cases:
+- SUC-001
+- SUC-002
+- SUC-003
+- SUC-004
+- SUC-005
+depends-on:
+- '001'
+- '002'
+- '003'
+- '004'
 github-issue: ''
 issue:
 - connect-a-radio-bridge-to-a-raw-channel-and-group.md

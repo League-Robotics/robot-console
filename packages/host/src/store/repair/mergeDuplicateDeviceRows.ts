@@ -53,7 +53,7 @@
  * `id === nameToValue(name)`") -- `forget-device` remains the manual
  * escape hatch for that case, never this automatic repair.
  */
-import { nameToValue } from "@robot-console/protocol";
+import { isFriendlyName, nameToValue } from "@robot-console/protocol";
 import type { Store } from "../index.js";
 
 /** One `devices` row shape, as read off {@link Store.snapshotRows}'s
@@ -85,7 +85,7 @@ function toDeviceRowForRepair(row: Record<string, unknown>): DeviceRowForRepair 
 export function mergeDuplicateDeviceRows(store: Store, at: number): void {
   const devices = store.snapshotRows().devices.map(toDeviceRowForRepair);
 
-  const isPlaceholder = (row: DeviceRowForRepair): boolean => row.kind === "robot" && row.id === nameToValue(row.name);
+  const isPlaceholder = (row: DeviceRowForRepair): boolean => row.kind === "robot" && isFriendlyName(row.name) && row.id === nameToValue(row.name);
 
   const realRobotIdsByName = new Map<string, number[]>();
   for (const row of devices) {

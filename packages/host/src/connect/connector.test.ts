@@ -1821,3 +1821,79 @@ describe("connectAndIdentify -- mbregistry identify write logging (027-005)", ()
     store.close();
   });
 });
+
+describe("connectAndIdentify -- simulated mbregistry boards (nezsim sprint 015, ticket 002)", () => {
+  const SIM_BANNER = "device NEZHA2 robot tinybot 1198504156"; // deviceIdToName(1198504156) === "vevov"
+
+  function simLink(simulated: boolean): LinkRow {
+    return {
+      id: "mbregistry-sim-tinybot",
+      transport: "mbregistry",
+      address: { endpoint: null, host: null, uid: "sim-tinybot", ...(simulated ? { simulated: true } : {}) },
+    };
+  }
+
+  it("a simulated link accepts a free-form banner name: device row carries it and the session reports it", async () => {
+    const store = freshStore();
+    const stream = new BannerByteStream(SIM_BANNER);
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const link = simLink(true);
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    const session = await promise;
+
+    expect(session.deviceId).toBe(1198504156);
+    expect(session.simulatedName).toBe("tinybot");
+    const device = store.snapshotRows().devices.find((d) => d.id === 1198504156);
+    expect(device?.name).toBe("tinybot");
+    expect(store.snapshotRows().links.find((l) => l.id === link.id)?.state).toBe("connected");
+    store.close();
+  });
+
+  it("the same free-form banner on a non-simulated mbregistry link is still rejected", async () => {
+    const store = freshStore();
+    const stream = new BannerByteStream(SIM_BANNER);
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const link = simLink(false);
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await expect(promise).rejects.toThrow(/does not match its own serial/i);
+    expect(store.snapshotRows().devices.find((d) => d.id === 1198504156)).toBeUndefined();
+    store.close();
+  });
+
+  it("a corrupted real banner (grammar name, wrong serial) is rejected even on a simulated link", async () => {
+    const store = freshStore();
+    const stream = new BannerByteStream("device NEZHA2 robot notre 1198504156".replace("notre", "getez"));
+    const connector = createConnector(store, mbregistryDeps(stream));
+    const link = simLink(true);
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await expect(promise).rejects.toThrow(/does not match its own serial/i);
+    expect(store.snapshotRows().devices.find((d) => d.id === 1198504156)).toBeUndefined();
+    store.close();
+  });
+
+  it("a usb link never gets the exemption, whatever its address says", async () => {
+    const store = freshStore();
+    const stream = new BannerByteStream(SIM_BANNER);
+    const connector = createConnector(store, baseDeps(stream));
+    const link: LinkRow = { ...usbLink(), address: { ...(usbLink().address as object), simulated: true } };
+    seedLink(store, link);
+
+    const promise = connector.connectAndIdentify(link, new AbortController().signal);
+    await flush();
+    stream.resolveOpen();
+    await expect(promise).rejects.toThrow(/does not match its own serial/i);
+    store.close();
+  });
+});

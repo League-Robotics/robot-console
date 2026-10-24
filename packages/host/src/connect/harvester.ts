@@ -488,10 +488,15 @@ export function createHarvester(store: Store, deps: HarvesterDeps = {}): Harvest
         // counters still need to reflect that a reply arrived at all.
         if (decoded.verb === "id") {
           const idReply = parseIdReply(decoded.fields);
-          if (idReply !== null && idReply.name === deviceIdToName(session.deviceId)) {
+          // nezsim sprint 015: a simulated free-form session compares
+          // against its own banner name; every real session keeps the
+          // derived-name check.
+          const expectedName = session.simulatedName ?? deviceIdToName(session.deviceId);
+          if (idReply !== null && idReply.name === expectedName) {
             store.upsertDevice({
               id: session.deviceId,
               name: idReply.name,
+              ...(session.simulatedName !== undefined ? { simulated: true } : {}),
               program: idReply.program,
               version: idReply.version,
               at: now(),

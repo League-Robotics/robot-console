@@ -707,3 +707,83 @@ describe("startMbregistryWatcher", () => {
     });
   });
 });
+
+describe("startMbregistryWatcher: simulated boards (nezsim sprint 015, ticket 002)", () => {
+  const SIM_ID = 1198504156;
+  function simDevice(overrides: Partial<RegistryDevice> = {}): RegistryDevice {
+    return registryDevice({
+      uid: "sim-tinybot",
+      short_uid: "sim-tinybot",
+      port: "virtual:tinybot",
+      vid_pid: "virtual",
+      role: "NEZHA2",
+      common_name: "robot",
+      device_name: "tinybot",
+      serial_payload: String(SIM_ID),
+      raw_announcement: `device NEZHA2 robot tinybot ${SIM_ID}`,
+      state: "connected",
+      simulated: true,
+      ...overrides,
+    });
+  }
+
+  it("a simulated list entry becomes an owned robot with the free-form name and a simulated link address", async () => {
+    const store = freshStore();
+    const { client } = fakeClient([simDevice()]);
+    const handle = startWatcher(store, client);
+    await waitFor(() => store.snapshotRows().devices.length > 0);
+
+    const device = store.snapshotRows().devices.find((d) => d.id === SIM_ID);
+    expect(device?.name).toBe("tinybot");
+    expect(Number(device?.owned)).toBe(1);
+    expect(device?.kind).toBe("robot");
+    const link = store.snapshotRows().links.find((l) => l.id === "mbregistry-sim-tinybot");
+    expect(link?.state).toBe("connectable");
+    expect(JSON.parse(link?.address as string)).toEqual({ endpoint: null, host: null, uid: "sim-tinybot", simulated: true });
+    handle.stop();
+  });
+
+  it("a simulated identity event is accepted and the flag survives a later lock_state event", async () => {
+    const store = freshStore();
+    const { client, emit } = fakeClient([]);
+    const handle = startWatcher(store, client);
+    emit({
+      type: "identity",
+      host: "",
+      uid: "sim-tinybot",
+      role: "NEZHA2",
+      common_name: "robot",
+      device_name: "tinybot",
+      serial_payload: String(SIM_ID),
+      raw_announcement: `device NEZHA2 robot tinybot ${SIM_ID}`,
+      simulated: true,
+    });
+    await waitFor(() => store.snapshotRows().devices.some((d) => d.id === SIM_ID));
+    expect(Number(store.snapshotRows().devices.find((d) => d.id === SIM_ID)?.owned)).toBe(1);
+
+    emit({ type: "lock_state", host: "", uid: "sim-tinybot" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const link = store.snapshotRows().links.find((l) => l.id === "mbregistry-sim-tinybot");
+    expect(JSON.parse(link?.address as string).simulated).toBe(true);
+    handle.stop();
+  });
+
+  it("a hardware entry (or an old registry with no simulated field) keeps the strict path and no simulated address key", async () => {
+    const store = freshStore();
+    const { client } = fakeClient([vevovDevice()]);
+    const handle = startWatcher(store, client);
+    await waitFor(() => store.snapshotRows().devices.length > 0);
+    const link = store.snapshotRows().links.find((l) => l.id === "mbregistry-usb:vevov");
+    expect(JSON.parse(link?.address as string)).not.toHaveProperty("simulated");
+    handle.stop();
+  });
+
+  it("a non-simulated entry with a mismatched free-form name is not stored as a device", async () => {
+    const store = freshStore();
+    const { client } = fakeClient([vevovDevice({ device_name: "tinybot" })]);
+    const handle = startWatcher(store, client);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(store.snapshotRows().devices.find((d) => d.id === VEVOV_ID)).toBeUndefined();
+    handle.stop();
+  });
+});

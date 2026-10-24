@@ -1836,3 +1836,49 @@ describe("Store: change feed", () => {
     }
   });
 });
+
+describe("Store: upsertDevice simulated free-form names (nezsim sprint 015, ticket 002)", () => {
+  const SIM_ID = 1198504156; // deviceIdToName === "vevov"; the sim's name is not that
+
+  it("accepts a free-form name for a simulated device and stores it", () => {
+    const { store } = freshStore();
+    expect(() => store.upsertDevice({ id: SIM_ID, name: "tinybot", kind: "robot", simulated: true, at: 1 })).not.toThrow();
+    expect(store.snapshotRows().devices.find((r) => r.id === SIM_ID)?.name).toBe("tinybot");
+  });
+
+  it("still throws for the same mismatched name when not simulated (real robots stay strict)", () => {
+    const { store } = freshStore();
+    expect(() => store.upsertDevice({ id: SIM_ID, name: "tinybot", kind: "robot", at: 1 })).toThrow(DeviceNameMismatchError);
+    expect(() => store.upsertDevice({ id: SIM_ID, name: "tinybot", kind: "robot", simulated: false, at: 1 })).toThrow(
+      DeviceNameMismatchError,
+    );
+    expect(store.snapshotRows().devices).toHaveLength(0);
+  });
+
+  it("a simulated device cannot take a real-grammar name with the wrong id", () => {
+    const { store } = freshStore();
+    expect(() => store.upsertDevice({ id: 5, name: "vevov", kind: "robot", simulated: true, at: 1 })).toThrow(
+      DeviceNameMismatchError,
+    );
+  });
+
+  it("a simulated device with a grammar name that matches its id is accepted", () => {
+    const { store } = freshStore();
+    expect(() => store.upsertDevice({ id: SIM_ID, name: "vevov", kind: "robot", simulated: true, at: 1 })).not.toThrow();
+  });
+
+  it("opening a store holding a simulated free-form row runs the repairs without throwing", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "rc-sim-"));
+    const filePath = path.join(dir, "store.db");
+    try {
+      const first = openStore({ filePath });
+      first.upsertDevice({ id: SIM_ID, name: "tinybot", kind: "robot", simulated: true, at: 1 });
+      first.close();
+      const second = openStore({ filePath });
+      expect(second.snapshotRows().devices.find((r) => r.id === SIM_ID)?.name).toBe("tinybot");
+      second.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

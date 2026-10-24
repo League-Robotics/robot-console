@@ -170,6 +170,11 @@ export interface RegistryDevice {
   lock_label: string | null;
   lock_since: number | null;
   host?: string | null;
+  /** nezsim sprint 015: `true` for a board registered by a simulator
+   * (`register_board`) -- it carries a free-form `device_name` and no
+   * physical USB identity. Absent/false for every real board and for
+   * any registry that predates the field. */
+  simulated?: boolean;
   /** `host:port` of the *owning* registry's own remote TCP listener —
    * `null`/absent for a locally-owned row (`host` also `null`/absent),
    * `"<host>:<port>"` for a peer-owned row (mbtools

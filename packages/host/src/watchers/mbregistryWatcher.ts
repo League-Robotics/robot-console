@@ -158,6 +158,8 @@ interface IdentityFields {
   deviceName: string | null;
   serialPayload: string | null;
   rawAnnouncement: string | null;
+  /** nezsim sprint 015: the registry marked this board `simulated`. */
+  simulated: boolean;
 }
 
 /** Robot vs. relay, reusing `@robot-console/protocol`'s own
@@ -249,6 +251,17 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
   /** Last-applied fingerprint per uid (see `fingerprint`), so an
    * unchanged list entry is not re-written every poll. */
   const applied = new Map<string, string>();
+  /** uids the registry has marked `simulated` (nezsim sprint 015). Sticky
+   * across events that do not carry the flag (`lock_state`, a bare
+   * `attach`), because every link-row upsert rewrites `links.address`. */
+  const simulatedUids = new Set<string>();
+  function noteSimulated(uid: string, simulated: boolean): void {
+    if (simulated) {
+      simulatedUids.add(uid);
+    } else {
+      simulatedUids.delete(uid);
+    }
+  }
 
   /** Sprint 018 ticket 006: the link row's own `address` carries the
    * *peer device's* own routing info -- `RegistryDevice.endpoint`
@@ -265,8 +278,15 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
    * result (module doc comment's "Per-observation flow"), so there is no
    * peer endpoint to record -- only a `list` entry for a peer-owned
    * device ever carries a non-null value here. */
-  function linkAddress(uid: string, host: string | null, endpoint: string | null): { endpoint: string | null; host: string | null; uid: string } {
-    return { endpoint, host, uid };
+  function linkAddress(
+    uid: string,
+    host: string | null,
+    endpoint: string | null,
+  ): { endpoint: string | null; host: string | null; uid: string; simulated?: true } {
+    // nezsim sprint 015: `simulated` is written only for a registry-marked
+    // simulated board (key absent otherwise, so real rows are unchanged);
+    // `connect/connector.ts` reads it to relax the free-form-name checks.
+    return simulatedUids.has(uid) ? { endpoint, host, uid, simulated: true } : { endpoint, host, uid };
   }
 
   function upsertLinkRow(
@@ -313,6 +333,8 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
     endpoint: string | null = null,
     promote: (state: LinkState | undefined) => boolean = () => true,
   ): number | undefined {
+    // Set before any link-row write below so the address carries it.
+    noteSimulated(uid, fields.simulated);
     const chipId = decodeChipId(fields.serialPayload, fields.role);
     if (chipId === undefined || fields.deviceName === null || fields.deviceName.length === 0) {
       upsertLinkRow(uid, null, host, endpoint);
@@ -335,12 +357,17 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
       role: fields.role,
       commonName: fields.commonName,
       usbSerial: uid,
+      ...(fields.simulated ? { simulated: true } : {}),
       at: now(),
     });
     if (owned) {
       store.setOwned(chipId, true, now());
     }
-    mergeNamePlaceholderIfAny(store, fields.deviceName, chipId, now());
+    if (!fields.simulated) {
+      // A simulated board's free-form name has no known-robots placeholder
+      // (and `nameToValue` rejects a non-grammar name).
+      mergeNamePlaceholderIfAny(store, fields.deviceName, chipId, now());
+    }
 
     const priorState = linkState(uid);
     upsertLinkRow(uid, chipId, host, endpoint);
@@ -373,6 +400,7 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
       deviceName: device.device_name,
       serialPayload: device.serial_payload,
       rawAnnouncement: device.raw_announcement,
+      simulated: device.simulated === true,
     };
   }
 
@@ -383,6 +411,7 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
       deviceName: (event.device_name as string | null | undefined) ?? null,
       serialPayload: (event.serial_payload as string | null | undefined) ?? null,
       rawAnnouncement: (event.raw_announcement as string | null | undefined) ?? null,
+      simulated: event.simulated === true,
     };
   }
 
@@ -504,6 +533,9 @@ export function startMbregistryWatcher(store: Store, deps: MbregistryWatcherDeps
 
   function handleAttach(event: WatchEvent): void {
     const uid = event.uid as string;
+    if (event.simulated === true) {
+      simulatedUids.add(uid);
+    }
     upsertLinkRow(uid, null);
   }
 

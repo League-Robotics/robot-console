@@ -359,7 +359,10 @@ export function AppHeader() {
                 actual identified device (a numeric deviceId, a name),
                 so they stay gated on `device` existing -- unlike Flash
                 below, which is offered for any resolvable link. */}
-            {device && device.kind !== "relay" && (
+            {/* `radio.group === 0` is projection's "no radio identity"
+                placeholder: a simulated device with a free-form name
+                (nezsim sprint 015) has no radio address to set. */}
+            {device && device.kind !== "relay" && device.radio.group !== 0 && (
               <RadioAddressDialog deviceId={device.id} name={device.name} radio={device.radio} triggerClassName="app-header-flash-toggle" />
             )}
             {device && device.kind !== "relay" && (

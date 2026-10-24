@@ -129,4 +129,24 @@ describe("RadioAddressDialog", () => {
     expect(el.querySelector('[data-testid="radio-error"]')?.textContent).toContain("0 to 255");
     expect(socket.sent).toEqual([]);
   });
+
+  it("offers Revert to derived only while the address is an override, and it sends a clear", () => {
+    const derived = mountDialog({ radio: { channel: 41, group: 3, source: "derived" } });
+    open(derived.el);
+    expect(derived.el.querySelector('[data-testid="radio-revert"]')).toBeNull();
+    act(() => {
+      root!.unmount();
+    });
+    root = null;
+    container!.remove();
+    container = null;
+
+    const { el, socket } = mountDialog({ radio: { channel: 41, group: 3, source: "override" } });
+    open(el);
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="radio-revert"]')!.click();
+    });
+    expect(sent(socket)).toEqual([{ type: "set-radio-override", deviceId: 1198504156, clear: true }]);
+    expect(el.querySelector('[data-testid="radio-reverted"]')).not.toBeNull();
+  });
 });

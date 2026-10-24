@@ -928,6 +928,36 @@ describe("server.ts: session-open/session-close dispatch", () => {
       expect(JSON.parse(link!.address as string)).toEqual({ relayLinkId: "usb-RELAY", channel: derived.channel, group: derived.group });
     });
 
+    it("set-radio-override then clear round-trips through a bridged open: override pair, then the derived pair", async () => {
+      const h = await harness();
+      const deviceId = 778;
+      const name = deviceIdToName(deviceId);
+      h.store.upsertDevice({ id: deviceId, name, kind: "robot", at: 1 });
+      h.store.upsertLink({ id: "usb-RELAY-A", transport: "usb", address: { path: "/dev/cu.relayA" }, at: 1 });
+      h.store.upsertLink({ id: "usb-RELAY-B", transport: "usb", address: { path: "/dev/cu.relayB" }, at: 1 });
+      const ws = fakeWebSocket();
+      h.wss.triggerConnection(ws);
+      await flush();
+      const send = (msg: object) => ws.emit("message", Buffer.from(JSON.stringify(msg)), false);
+      const bridgedAddress = (relay: string) => {
+        const link = h.store.snapshotRows().links.find((l) => l.id === `radio-${name}-via-${relay}`);
+        return JSON.parse(link!.address as string);
+      };
+
+      send({ type: "set-radio-override", deviceId, channel: 41, group: 3 });
+      await flush();
+      send({ type: "session-open", relayLinkId: "usb-RELAY-A", name });
+      await flush();
+      expect(bridgedAddress("usb-RELAY-A")).toEqual({ relayLinkId: "usb-RELAY-A", channel: 41, group: 3 });
+
+      send({ type: "set-radio-override", deviceId, clear: true });
+      await flush();
+      send({ type: "session-open", relayLinkId: "usb-RELAY-B", name });
+      await flush();
+      const derived = nameToRadioAddress(name);
+      expect(bridgedAddress("usb-RELAY-B")).toEqual({ relayLinkId: "usb-RELAY-B", channel: derived.channel, group: derived.group });
+    });
+
     // Stakeholder bench defect (2026-09-14): vevov moved to the 73-channel
     // map (registry 20/82), but its old row through the USB bridge vitut
     // still carried the old map's 37/43 -- and that row used to win, with

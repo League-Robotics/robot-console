@@ -25,22 +25,15 @@
  *
  * ## The `radio` prop
  *
- * Prefilling now reads the device's already-resolved address
- * (`radio`, the snapshot's `SnapshotDevice.radio` -- `{ channel, group,
- * source }`) rather than a locally-cached guess, so the dialog opens
- * showing whatever `override -> registry -> derived` resolution
- * (`radioOverride.ts`) the host already settled on. `radio` is optional
- * only because no snapshot naming this device may have arrived yet at
- * the instant this dialog is first rendered; the dialog still opens and
- * falls back to the name-derived default (`nameToRadioAddress`) in that
- * case. **Deferred to ticket 007/008**: no caller in this codebase can
- * actually supply a real `radio` yet -- `WsProvider` still speaks the
- * retired `endpoints` wire contract (`EndpointListEntry` has no `radio`
- * field at all) until those tickets migrate it to the `Snapshot`
- * contract this prop is shaped after. `AppHeader.tsx`'s call site is
- * unchanged pending that migration and does not yet pass `radio` (or a
- * numeric `deviceId` -- see that file's own TODO-shaped gap, tracked
- * outside this ticket).
+ * Prefilling reads the device's already-resolved address (`radio`, the
+ * snapshot's `SnapshotDevice.radio` -- `{ channel, group, source }`), so
+ * the dialog opens showing whatever `override -> registry -> derived`
+ * resolution (`radioOverride.ts`) the host settled on. `AppHeader.tsx`
+ * passes both `deviceId` and `radio`. `radio` stays optional only for the
+ * instant before a snapshot naming this device arrives; the dialog then
+ * falls back to the name-derived default (`nameToRadioAddress`). While
+ * `radio.source` is `"override"` the dialog offers "Revert to derived",
+ * which sends `set-radio-override` with `clear: true`.
  *
  * ## Ticket 017-008: validation shared with `ConfigurationPage` via
  * `lib/radioAddress.ts`
@@ -81,6 +74,7 @@ export function RadioAddressDialog({ deviceId, name, radio, triggerClassName = "
   const [channel, setChannel] = useState("");
   const [group, setGroup] = useState("");
   const [saved, setSaved] = useState(false);
+  const [reverted, setReverted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
 
@@ -92,6 +86,7 @@ export function RadioAddressDialog({ deviceId, name, radio, triggerClassName = "
     setChannel(String(current.channel));
     setGroup(String(current.group));
     setSaved(false);
+    setReverted(false);
     setError(null);
   }, [open, name, radio]);
 
@@ -106,7 +101,15 @@ export function RadioAddressDialog({ deviceId, name, radio, triggerClassName = "
     }
     send({ type: "set-radio-override", deviceId, channel: ch, group: gr });
     setError(null);
+    setReverted(false);
     setSaved(true);
+  }
+
+  function handleRevert(): void {
+    send({ type: "set-radio-override", deviceId, clear: true });
+    setError(null);
+    setSaved(false);
+    setReverted(true);
   }
 
   const derived = nameToRadioAddress(name);
@@ -166,10 +169,20 @@ export function RadioAddressDialog({ deviceId, name, radio, triggerClassName = "
                 Saved. The next relay connection to {name} will use channel {channel}, group {group}.
               </p>
             )}
+            {reverted && (
+              <p className="credentials-result credentials-result-ok" role="status" data-testid="radio-reverted">
+                Reverted. The next relay connection to {name} will use its derived address.
+              </p>
+            )}
             <div className="credentials-actions">
               <button type="submit" className="credentials-primary" data-testid="radio-save">
                 Save
               </button>
+              {radio?.source === "override" && (
+                <button type="button" data-testid="radio-revert" onClick={handleRevert}>
+                  Revert to derived
+                </button>
+              )}
               <button type="button" onClick={() => setOpen(false)}>
                 Close
               </button>

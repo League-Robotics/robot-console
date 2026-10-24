@@ -3,12 +3,14 @@
  * address and its radio address on the Calibration tab, one row each,
  * with Save, Write to robot and Restart robot.
  *
- * Save keeps the Wi-Fi network on this computer and the radio address in
- * the code block. Write to robot stores the saved Wi-Fi network and the
+ * Save keeps the Wi-Fi network on this computer and persists the radio
+ * address as the robot's override on the host (`set-radio-override`),
+ * which the code block then shows. "Revert to derived" appears while the
+ * address is an override and clears it. Write to robot stores the saved Wi-Fi network and the
  * Wi-Fi address on the robot and sends the calibration values. The robot
  * uses a stored network or address from its next restart.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { useLinkLog, useSendable, useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
 import type { RadioAddress } from "../pages/RelayPage";
@@ -61,9 +63,26 @@ export function NetworkSettingsPanel({
       onRadioChange({ channel, group });
     }
   }
+  const lastDeviceRadio = useRef({ channel: device.radio.channel, group: device.radio.group });
+  useEffect(() => {
+    const { channel, group } = device.radio;
+    if (lastDeviceRadio.current.channel === channel && lastDeviceRadio.current.group === group) {
+      return;
+    }
+    lastDeviceRadio.current = { channel, group };
+    setRadioDraftState({ channel: String(channel), group: String(group) });
+    setRadioError(null);
+    onRadioChange({ channel, group });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- follows the device's address, not the callback's identity
+  }, [device.radio.channel, device.radio.group]);
   function saveRadio(): boolean {
-    const problem = validateRadioOverrideInput(Number(radioDraft.channel), Number(radioDraft.group));
+    const channel = Number(radioDraft.channel);
+    const group = Number(radioDraft.group);
+    const problem = validateRadioOverrideInput(channel, group);
     setRadioError(problem);
+    if (problem === null && (channel !== device.radio.channel || group !== device.radio.group)) {
+      send({ type: "set-radio-override", deviceId: device.id, channel, group });
+    }
     return problem === null;
   }
 
@@ -219,6 +238,19 @@ export function NetworkSettingsPanel({
                 />
               </label>
               <AddressSourceChip radio={device.radio} />
+              {device.radio.source === "override" && (
+                <>
+                  {" "}
+                  <button
+                    type="button"
+                    data-testid="configuration-radio-revert"
+                    disabled={!sendable}
+                    onClick={() => send({ type: "set-radio-override", deviceId: device.id, clear: true })}
+                  >
+                    Revert to derived
+                  </button>
+                </>
+              )}
             </td>
           </tr>
         </tbody>

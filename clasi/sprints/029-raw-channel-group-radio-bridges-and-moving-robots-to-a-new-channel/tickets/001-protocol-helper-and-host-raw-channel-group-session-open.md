@@ -1,8 +1,10 @@
 ---
 id: '001'
 title: Protocol helper and host raw channel/group session-open
-status: open
-use-cases: [SUC-001, SUC-002]
+status: in-progress
+use-cases:
+- SUC-001
+- SUC-002
 depends-on: []
 github-issue: ''
 issue: connect-a-radio-bridge-to-a-raw-channel-and-group.md

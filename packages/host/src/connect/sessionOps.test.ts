@@ -166,6 +166,40 @@ describe("openSession: {relayLinkId, name} form", () => {
   });
 });
 
+describe("openSession: {relayLinkId, channel, group} form", () => {
+  it("upserts a radio link at exactly that address, opens it, and returns the synthetic id", async () => {
+    const store = freshStore();
+    try {
+      const reconciler = fakeReconciler();
+      const projectionRows = vi.spyOn(store, "projectionRows");
+
+      const result = await openSession({ store, reconciler }, { relayLinkId: "guvov", channel: 76, group: 30 });
+
+      expect(result).toEqual({ linkId: "radio-ch76-g30-via-guvov" });
+      expect(reconciler.requestOpen).toHaveBeenCalledWith("radio-ch76-g30-via-guvov");
+      expect(projectionRows).not.toHaveBeenCalled();
+      const link = store.projectionRows().links.find((l) => l.id === "radio-ch76-g30-via-guvov");
+      expect(link?.transport).toBe("radio");
+      expect(link?.address).toEqual({ relayLinkId: "guvov", channel: 76, group: 30 });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("passes a refusal through with the synthetic id", async () => {
+    const store = freshStore();
+    try {
+      const reconciler = fakeReconciler({ requestOpen: vi.fn(async () => ({ refusedReason: "relay busy" })) });
+
+      const result = await openSession({ store, reconciler }, { relayLinkId: "guvov", channel: 76, group: 30 });
+
+      expect(result).toEqual({ linkId: "radio-ch76-g30-via-guvov", refusedReason: "relay busy" });
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe("closeSession", () => {
   it("forwards to reconciler.requestClose", async () => {
     const reconciler = fakeReconciler();

@@ -690,6 +690,26 @@ describe("server.ts: session-open/session-close dispatch", () => {
     });
   });
 
+  it("opens a raw {relayLinkId, channel, group} bridge at that address and refuses with a connect refused notice", async () => {
+    const h = await harness();
+    h.runtime.requestOpen.mockResolvedValueOnce({ refusedReason: "relay busy" });
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", relayLinkId: "usb-RELAY", channel: 76, group: 30 })), false);
+    await flush();
+
+    const childLinkId = "radio-ch76-g30-via-usb-RELAY";
+    expect(h.runtime.requestOpen).toHaveBeenCalledWith(childLinkId);
+    const link = h.store.snapshotRows().links.find((l) => l.id === childLinkId);
+    expect(JSON.parse(link!.address as string)).toEqual({ relayLinkId: "usb-RELAY", channel: 76, group: 30 });
+    const notice = ws.sent.find((m) => m.type === "notice");
+    expect(notice).toMatchObject({ type: "notice", level: "warn", linkId: childLinkId });
+    expect((notice as { text: string }).text).toMatch(/^connect refused: relay busy/);
+  });
+
   it(
     "bench defect 4: broadcasts a link-scoped notice, addressed to the new radio child, when the reconciler refuses a {relayLinkId, name} bridge",
     async () => {

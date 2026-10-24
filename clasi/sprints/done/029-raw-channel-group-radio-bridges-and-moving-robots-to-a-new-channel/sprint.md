@@ -1,7 +1,7 @@
 ---
 id: 029
 title: Raw channel/group radio bridges and moving robots to a new channel
-status: executing
+status: done
 branch: sprint/029-raw-channel-group-radio-bridges-and-moving-robots-to-a-new-channel
 use-cases:
 - SUC-001

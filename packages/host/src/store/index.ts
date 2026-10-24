@@ -639,6 +639,10 @@ export interface ProjectionRows {
    * `wsMessages.ts`'s own `AddressSource` doc comment, which duplicates
    * a value across a module boundary for the same reason. */
   readonly wifiCredentials: { ssid: string; password: string } | null;
+  /** The `calibration.wheelsTapeCm` setting as a number, or `null` if
+   * none is stored (key literal duplicated for the same reason as
+   * {@link wifiCredentials}'s). */
+  readonly wheelsTapeCm: number | null;
   /** `true`/`false` per relay link id that has ever completed a
    * lease-acquisition capability check (`watchers/relaySweeper.ts`'s own
    * `runOnePass`, ticket 016-007) -- `true` when that relay's most
@@ -1910,6 +1914,7 @@ export class Store {
    * see {@link ProjectionRows.wifiCredentials}'s own doc comment for why
    * this is a duplicated literal, not an import. */
   private static readonly WIFI_CREDENTIALS_SETTING_KEY = "wifiCredentials";
+  private static readonly WHEELS_TAPE_CM_SETTING_KEY = "calibration.wheelsTapeCm";
 
   /** The `settings.key` prefix `watchers/relaySweeper.ts`'s own
    * `fastSweepSettingKey(relayLinkId)` stores each relay's fast-sweep
@@ -2025,6 +2030,9 @@ export class Store {
       }
     }
 
+    const wheelsTapeCmSetting = Number(this.getSetting(Store.WHEELS_TAPE_CM_SETTING_KEY));
+    const wheelsTapeCm = Number.isFinite(wheelsTapeCmSetting) && wheelsTapeCmSetting > 0 ? wheelsTapeCmSetting : null;
+
     const fastSweepSettingRows = this.db
       .prepare("SELECT key, value FROM settings WHERE key LIKE ?")
       .all(`${Store.FAST_SWEEP_SETTING_PREFIX}%`) as Array<{ key: string; value: string }>;
@@ -2107,6 +2115,7 @@ export class Store {
       tasks: taskRows.map((t) => ({ name: t.name, state: t.state, heartbeatAt: t.heartbeat_at })),
       lastChecked: lastCheckedRows.map((r) => ({ deviceId: r.device_id, at: r.at })),
       wifiCredentials,
+      wheelsTapeCm,
       fastSweepByRelayLinkId,
       services: serviceRows.map((s) => ({
         instance: s.instance,

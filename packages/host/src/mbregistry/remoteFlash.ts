@@ -110,6 +110,8 @@ export interface RemoteFlashDeps {
    * "the connection never completes" case doesn't have to wait out even
    * the real default. */
   connectTimeoutMs?: number;
+  /** Defaults to {@link SELF_HELD_RETRY_MS}. */
+  selfHeldRetryMs?: number;
 }
 
 /** Ticket 018-011 finding 3's own connect-timeout bound — see {@link
@@ -121,6 +123,11 @@ export interface RemoteFlashDeps {
  * stale/unresponsive local registry deserves the same bound, even though
  * this finding's own bench repro was against a remote host. */
 export const FLASH_CONNECT_TIMEOUT_MS = 10_000;
+
+/** How long a `lock`(`flash`) refused because this console's own label
+ * holds the board keeps retrying before giving up. */
+export const SELF_HELD_RETRY_MS = 3_000;
+const SELF_HELD_RETRY_POLL_MS = 200;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -141,6 +148,10 @@ function ownerUnavailable(error: string): FlashOutcome {
 function formatLockedMessage(holder: { label?: unknown } | undefined): string {
   const label = holder?.label;
   return label === null || label === undefined || label === "" ? "in use" : `in use by ${String(label)}`;
+}
+
+function isHeldBy(holder: unknown, label: string | undefined): boolean {
+  return label !== undefined && (holder as { label?: unknown } | undefined)?.label === label;
 }
 
 /** Classifies one `flash` op's streamed log line into a {@link
@@ -270,13 +281,31 @@ class FlashWire {
  * (`send_hex` vs. a directly-staged `hex_path`) differs. Returns a
  * classified {@link FlashOutcome} on a `locked`/other lock failure,
  * `undefined` on success (caller proceeds to `flash`). */
-async function runFlashLock(wire: FlashWire, uid: string, label: string | undefined): Promise<FlashOutcome | undefined> {
+async function runFlashLock(
+  wire: FlashWire,
+  uid: string,
+  label: string | undefined,
+  selfHeldRetryMs: number,
+): Promise<FlashOutcome | undefined> {
   const lockOp: Record<string, unknown> = { op: "lock", uid, kind: "flash" };
   if (label !== undefined) {
     lockOp.label = label;
   }
-  wire.write(lockOp);
-  const lockResponse = JSON.parse(await wire.nextLine()) as Record<string, unknown>;
+  const deadline = Date.now() + selfHeldRetryMs;
+  let lockResponse: Record<string, unknown>;
+  for (;;) {
+    wire.write(lockOp);
+    lockResponse = JSON.parse(await wire.nextLine()) as Record<string, unknown>;
+    if (lockResponse.ok === true || lockResponse.code !== "locked" || !isHeldBy(lockResponse.holder, label)) {
+      break;
+    }
+    // Held by this console's own just-closed serial session: mbregistry
+    // has not finished releasing it yet. Give it a moment.
+    if (Date.now() >= deadline) {
+      return ownerUnavailable("this console still has the board open -- try flashing again");
+    }
+    await new Promise((resolve) => setTimeout(resolve, SELF_HELD_RETRY_POLL_MS));
+  }
   if (lockResponse.ok !== true) {
     if (lockResponse.code === "locked") {
       return ownerUnavailable(formatLockedMessage(lockResponse.holder as { label?: unknown } | undefined));
@@ -361,7 +390,7 @@ export async function flashViaMbregistry(
 
   const wire = new FlashWire(socket);
   try {
-    const lockFailure = await runFlashLock(wire, uid, label);
+    const lockFailure = await runFlashLock(wire, uid, label, deps.selfHeldRetryMs ?? SELF_HELD_RETRY_MS);
     if (lockFailure) {
       return lockFailure;
     }
@@ -454,6 +483,8 @@ export interface LocalFlashDeps {
    * bound, applied to the local Unix socket/pipe connect. Defaults to
    * {@link FLASH_CONNECT_TIMEOUT_MS}. */
   connectTimeoutMs?: number;
+  /** Defaults to {@link SELF_HELD_RETRY_MS}. */
+  selfHeldRetryMs?: number;
 }
 
 /** Opens `target` (a Unix socket or named pipe), resolving once
@@ -523,7 +554,7 @@ export async function flashViaLocalSocket(
   const wire = new FlashWire(socket);
   let staged: StagedHexFile | undefined;
   try {
-    const lockFailure = await runFlashLock(wire, uid, label);
+    const lockFailure = await runFlashLock(wire, uid, label, deps.selfHeldRetryMs ?? SELF_HELD_RETRY_MS);
     if (lockFailure) {
       return lockFailure;
     }

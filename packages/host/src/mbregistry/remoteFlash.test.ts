@@ -32,6 +32,9 @@ interface FakeFlashServerOptions {
    * for it gets `{"ok": false, "code": "locked", "holder": ...}`. */
   lockedUid?: string;
   lockedHolder?: Record<string, unknown>;
+  /** When set, `lockedUid` is only locked for this many `lock` requests,
+   * then frees up -- a lock mbregistry is still in the middle of releasing. */
+  lockedForRequests?: number;
   /** 027-004: simulates mbtools' own "this UID isn't attached" fast-fail
    * -- every `lock` request for this uid gets `{"ok": false, "code":
    * "not_found", "error": ...}`, mirroring the wire shape ticket 003's
@@ -103,7 +106,9 @@ class FakeFlashServer {
     switch (op.op) {
       case "lock": {
         const uid = String(op.uid);
-        if (this.opts.lockedUid === uid) {
+        const lockRequests = this.requests.filter((r) => r.op === "lock").length;
+        const stillLocked = this.opts.lockedForRequests === undefined || lockRequests <= this.opts.lockedForRequests;
+        if (this.opts.lockedUid === uid && stillLocked) {
           this.write(socket, { ok: false, code: "locked", error: "already locked", holder: this.opts.lockedHolder ?? {} });
           return;
         }
@@ -217,6 +222,28 @@ describe("flashViaMbregistry", () => {
       method: "mbregistry",
       reason: "owner-unavailable",
       error: "in use by bob-desktop",
+    });
+  });
+
+  it("retries a lock held by its own label until mbregistry releases it, then flashes", async () => {
+    const target = await startServer({ lockedUid: "uid-1", lockedHolder: { label: "alice-laptop" }, lockedForRequests: 2 });
+
+    const outcome = await flashViaMbregistry(target, "uid-1", "alice-laptop", "hex", () => {});
+
+    expect(outcome).toEqual({ status: "ok", method: "mbregistry" });
+    expect(currentServer!.requests.filter((r) => r.op === "lock")).toHaveLength(3);
+  });
+
+  it("gives up on a lock its own label never releases, saying this console still has the board open", async () => {
+    const target = await startServer({ lockedUid: "uid-1", lockedHolder: { label: "alice-laptop" } });
+
+    const outcome = await flashViaMbregistry(target, "uid-1", "alice-laptop", "hex", () => {}, { selfHeldRetryMs: 300 });
+
+    expect(outcome).toEqual({
+      status: "error",
+      method: "mbregistry",
+      reason: "owner-unavailable",
+      error: "this console still has the board open -- try flashing again",
     });
   });
 

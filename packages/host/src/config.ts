@@ -369,3 +369,8 @@ export function getMbregistryShareBoards(store: Store): boolean {
   const raw = store.getSetting(MBREGISTRY_SHAREBOARDS_SETTINGS_KEY);
   return raw !== undefined && TRUTHY_SETTING_VALUES.has(raw.trim().toLowerCase());
 }
+
+/** The `calwheels` tape distance (cm) the calibration page pre-fills,
+ * written by `store/importers/calibrationConfig.ts` from
+ * `ROBOT_CONSOLE_CALWHEELS_CM`. */
+export const WHEELS_TAPE_CM_SETTINGS_KEY = "calibration.wheelsTapeCm";

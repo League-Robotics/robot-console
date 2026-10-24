@@ -59,13 +59,17 @@ class FakeStreamServer {
     let lineBuffer = "";
     let frameBuffer = Buffer.alloc(0);
 
-    socket.on("close", () => {
+    // Like mbtools, release this connection's locks before its side of
+    // the socket finishes closing.
+    const releaseLocks = () => {
       for (const [uid, record] of [...this.locks.entries()]) {
         if (record.socket === socket) {
           this.locks.delete(uid);
         }
       }
-    });
+    };
+    socket.on("end", releaseLocks);
+    socket.on("close", releaseLocks);
 
     socket.on("data", (chunk: Buffer) => {
       if (mode === "stream") {
@@ -82,6 +86,7 @@ class FakeStreamServer {
           if (type === FRAME_DATA) {
             socket.write(encodeFrame(FRAME_DATA, payload)); // loopback echo
           } else if (type === FRAME_CLOSE) {
+            releaseLocks();
             socket.end();
           } else {
             this.controlFrames.push({ type, payload });
@@ -278,6 +283,16 @@ describe("mbregistryStream", () => {
     await stream.close();
     await closed;
     await vi.waitFor(() => expect(server.isLocked("board-6")).toBe(false));
+  });
+
+  it("close() resolves only once mbregistry has released the lock, so a flash right after it is not refused", async () => {
+    const stream = mbregistryStream({ uid: "board-7" }, { client });
+    stream.on("error", () => {});
+    await stream.open(new AbortController().signal);
+
+    await stream.close();
+
+    expect(server.isLocked("board-7")).toBe(false);
   });
 
   it("a malformed/oversized frame from the server is handled without crashing -- surfaces as onError/onClose", async () => {

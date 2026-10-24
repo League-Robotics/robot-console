@@ -67,6 +67,10 @@ import {
  * `DEFAULT_WIFI_STALE_AFTER_MS`). */
 export const DEFAULT_STALE_LOCK_AFTER_S = 5 * 60;
 
+/** How long `close()` waits for mbregistry to close its side of the
+ * stream before destroying the socket and resolving anyway. */
+const CLOSE_WAIT_MS = 2_000;
+
 /** The minimal slice of an mbregistry device this module needs to open a
  * stream and, on a stale lock, name the right host — deliberately not
  * `RegistryDevice` itself (ticket 004's connector wiring owns mapping
@@ -403,12 +407,27 @@ class MbregistryByteStream implements MbregistryResettableStream {
     if (!socket || this.closed) {
       return Promise.resolve();
     }
+    // Resolves only once the server has closed its side: mbregistry drops
+    // the lock before closing, so a flash that follows this close (the
+    // flasher closes the session, then locks) no longer races it and finds
+    // its own console still holding the board.
+    const socketClosed = new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        socket.destroy();
+        resolve();
+      }, CLOSE_WAIT_MS);
+      timer.unref?.();
+      socket.once("close", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
     // Best-effort -- a server that has already gone away never gets this
     // CLOSE frame, but unlockAndClose() below still tears the connection
     // down and releases the lock either way.
     socket.write(encodeFrame(FRAME_CLOSE), () => {});
     this.unlockAndCloseFn?.();
-    return Promise.resolve();
+    return socketClosed;
   }
 
   private sendControlFrame(type: number, payload?: Buffer): Promise<void> {

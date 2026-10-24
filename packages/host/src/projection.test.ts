@@ -325,6 +325,7 @@ function emptyRows(): ProjectionRows {
     tasks: [],
     lastChecked: [],
     wifiCredentials: null,
+    wheelsTapeCm: null,
     fastSweepByRelayLinkId: new Map(),
     services: [],
     recentAgentActionsByDevice: new Map(),

@@ -195,6 +195,7 @@ export function buildSnapshotFromRows(rows: ProjectionRows, seq: number, at: num
     seq,
     at,
     ...(hostVersion !== undefined ? { hostVersion } : {}),
+    ...(rows.wheelsTapeCm !== null ? { wheelsTapeCm: rows.wheelsTapeCm } : {}),
     devices,
     unassigned,
     relays,

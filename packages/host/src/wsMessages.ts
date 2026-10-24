@@ -597,6 +597,10 @@ export interface Snapshot {
    * WebSocket is not subject to that, and is already open and
    * authenticated by the time any page renders. */
   hostVersion?: string;
+  /** The configured `calwheels` tape distance in cm
+   * (`ROBOT_CONSOLE_CALWHEELS_CM`); absent when none is configured and
+   * the calibration page falls back to the firmware's own default. */
+  wheelsTapeCm?: number;
   devices: SnapshotDevice[];
   /** USB boards seen but not yet identified to a `devices` row (no
    * `link.device_id` yet) -- architecture.md §9. */

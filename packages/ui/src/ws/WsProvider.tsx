@@ -408,6 +408,7 @@ interface Store {
   wifiSetting: Snapshot["wifi"];
   /** The running host's version, from the snapshot. */
   hostVersion: Snapshot["hostVersion"];
+  wheelsTapeCm: Snapshot["wheelsTapeCm"];
   tasks: Snapshot["tasks"];
   logsByLink: Map<string, LogEntry[]>;
   /** LRU order for `logsByLink`, oldest-touched first. */
@@ -716,6 +717,9 @@ function applySnapshot(store: Store, snapshot: Snapshot): void {
   if (store.hostVersion !== snapshot.hostVersion) {
     store.hostVersion = snapshot.hostVersion;
   }
+  if (store.wheelsTapeCm !== snapshot.wheelsTapeCm) {
+    store.wheelsTapeCm = snapshot.wheelsTapeCm;
+  }
   if (!deepEqual(store.tasks, snapshot.tasks)) {
     store.tasks = snapshot.tasks;
   }
@@ -750,6 +754,7 @@ function createStore(): Store {
     firmware: DEFAULT_FIRMWARE_STATUS,
     wifiSetting: DEFAULT_WIFI_SETTING,
     hostVersion: undefined,
+    wheelsTapeCm: undefined,
     tasks: [],
     logsByLink: new Map(),
     logOrder: [],
@@ -1170,6 +1175,13 @@ export const useFirmwareStatus = useFirmware;
 export function useHostVersion(): Snapshot["hostVersion"] {
   const store = useStore();
   return useSyncExternalStore(store.subscribe, () => store.hostVersion);
+}
+
+/** The configured `calwheels` tape distance (cm), or `undefined` when
+ * the host has none configured. */
+export function useWheelsTapeCm(): Snapshot["wheelsTapeCm"] {
+  const store = useStore();
+  return useSyncExternalStore(store.subscribe, () => store.wheelsTapeCm);
 }
 
 export function useWifiSetting(): Snapshot["wifi"] {

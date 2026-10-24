@@ -1160,10 +1160,21 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
         // console's own connection has no remote TCP port but does have
         // a local socket/pipe -- see that function's own doc comment.
         const plan = resolveFlashPlan(streamDevice, mbregistryClient);
+        // The flasher closes the session to free the board; put it back
+        // afterward, as `runNetworkFlashTask` does, rather than leaving
+        // the link `closed_by_user` for a close nobody asked for.
+        const wasOpen = runtime.reconciler.sessions.get(linkId) !== undefined;
         const outcome = await flasher.flashMbregistry(linkId, target.uid, plan, mbregistryLabel, hexText, (phase) =>
           setFlashPhase(linkId, source, phase, identity),
         );
         finishFlash(linkId, source, outcome);
+        if (wasOpen) {
+          try {
+            await runtime.reconciler.requestOpen(linkId);
+          } catch (error) {
+            sendNotice(linkId, "info", `reopening this board's session after the flash failed: ${errorMessage(error)}`);
+          }
+        }
         return outcome;
       }
 

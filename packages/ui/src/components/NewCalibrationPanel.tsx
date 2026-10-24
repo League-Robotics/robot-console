@@ -42,7 +42,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
-import { useLinkLog, useSendable, useWsActions } from "../ws/WsProvider";
+import { useLinkLog, useSendable, useWheelsTapeCm, useWsActions } from "../ws/WsProvider";
 import { isLinkUsable } from "../deviceDisplay";
 import {
   CALIBRATION_IMAGE_BASELINE_DIAMETER_MM,
@@ -63,7 +63,8 @@ import {
   type WheelsCalibrationRun,
 } from "../lib/calibrationRun";
 
-/** The firmware's own declared default for `calwheels (cm:number=90.5)`. */
+/** The firmware's own declared default for `calwheels (cm:number=90.5)`,
+ * used when the host has no `ROBOT_CONSOLE_CALWHEELS_CM` configured. */
 const DEFAULT_TAPE_CM = "90.5";
 
 /** `calturn (edges:number=10)`. Fixed: the firmware rounds whatever it
@@ -95,8 +96,8 @@ const TURN_EDGES = "10";
  * It has to clear the slowest honest run by a wide margin, because
  * cutting off a calibration that was about to succeed is a worse
  * failure than waiting too long: the student loses the drive AND the
- * result. `calwheels` drives the tape-measured course (90.5 cm by
- * default) at calibration speed, `calturn` does ten edges; both are
+ * result. `calwheels` drives the tape-measured course (about 90 cm,
+ * configured by `ROBOT_CONSOLE_CALWHEELS_CM`) at calibration speed, `calturn` does ten edges; both are
  * tens of seconds, not minutes. Two minutes is comfortably past either
  * and still short enough that nobody stares at a dead panel for long.
  *
@@ -145,7 +146,9 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
   const [wheelRecords, setWheelRecords] = useState<WheelRecord[]>([]);
   const [turnRecords, setTurnRecords] = useState<TurnRecord[]>([]);
   const [pending, setPending] = useState<Pending | undefined>(undefined);
-  const [tapeText, setTapeText] = useState(DEFAULT_TAPE_CM);
+  const configuredTapeCm = useWheelsTapeCm();
+  const [editedTapeText, setTapeText] = useState<string | undefined>(undefined);
+  const tapeText = editedTapeText ?? (configuredTapeCm !== undefined ? String(configuredTapeCm) : DEFAULT_TAPE_CM);
   const [writtenNote, setWrittenNote] = useState<string | undefined>(undefined);
   const [failure, setFailure] = useState<string | undefined>(undefined);
   /** The wheel diameter the robot was running when the turn records were

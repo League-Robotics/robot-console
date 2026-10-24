@@ -170,6 +170,17 @@ function resolveFileVars(stateDir: string, findRepoRootEnvPathFn: () => string |
   return {};
 }
 
+/** The `.env` vars this host falls back on when an env var is absent --
+ * shared with the other `ROBOT_CONSOLE_*` importers that read `.env`. */
+export function resolveDotenvVars(
+  options: ImportFirmwareConfigOptions = {},
+  deps: ImportFirmwareConfigDeps = {},
+): Record<string, string> {
+  const env = options.env ?? process.env;
+  const stateDir = resolveStateDir(options.stateDir !== undefined ? { stateDir: options.stateDir } : {}, env);
+  return resolveFileVars(stateDir, deps.findRepoRootEnvPath ?? defaultFindRepoRootEnvPath);
+}
+
 /**
  * Resolves both firmware kinds (`process.env` first, then a `.env`
  * file -- see this module's own doc comment) and writes each resolved
@@ -186,10 +197,7 @@ export function importFirmwareConfig(
   deps: ImportFirmwareConfigDeps = {},
 ): ImportFirmwareConfigResult {
   const env = options.env ?? process.env;
-  const findRepoRootEnvPathFn = deps.findRepoRootEnvPath ?? defaultFindRepoRootEnvPath;
-
-  const stateDir = resolveStateDir(options.stateDir !== undefined ? { stateDir: options.stateDir } : {}, env);
-  const fileVars = resolveFileVars(stateDir, findRepoRootEnvPathFn);
+  const fileVars = resolveDotenvVars(options, deps);
 
   const result = {} as ImportFirmwareConfigResult;
   for (const kind of FIRMWARE_KINDS) {

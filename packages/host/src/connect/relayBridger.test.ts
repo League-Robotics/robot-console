@@ -805,6 +805,47 @@ describe("createRelayBridger().bridge() -- named bridge regression (AC: still wo
   }, 10_000);
 });
 
+describe("createRelayBridger().bridge() -- raw channel/group link row", () => {
+  const rawId = "radio-ch76-g30-via-usb-RELAY-SERIAL";
+
+  it("bridges a raw radio link row as a single candidate and attaches the robot that answers", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY-SERIAL";
+    seedRelay(store, relayLinkId, null);
+    const state = new RelayPlaneState();
+    const createSerialStream = (): RelayPlaneByteStream => new RelayPlaneByteStream(state, true);
+    const bridger = createRelayBridger(store, { createSerialStream, scheduler: realScheduler, now: () => NOW }, FAST_OPTIONS);
+
+    const link: LinkRow = { id: rawId, transport: "radio", address: { relayLinkId, channel: 76, group: 30 } };
+    store.upsertLink({ id: link.id, transport: "radio", address: link.address, at: 1 });
+    const request = toBridgeRequest(link);
+    expect(request.candidates).toEqual([{ childLinkId: rawId, channel: 76, group: 30 }]);
+
+    const session = await bridger.bridge(request, new AbortController().signal);
+
+    expect(session.linkId).toBe(rawId);
+    expect(session.deviceId).toBe(ROBOT_SERIAL);
+    expect(store.snapshotRows().links.find((l) => l.id === rawId)?.state).toBe("connected");
+    store.close();
+  }, 10_000);
+
+  it("fails the link when nothing answers", async () => {
+    const store = freshStore();
+    const relayLinkId = "usb-RELAY-SERIAL";
+    seedRelay(store, relayLinkId, null);
+    const state = new RelayPlaneState();
+    const createSerialStream = (): RelayPlaneByteStream => new RelayPlaneByteStream(state, false);
+    const bridger = createRelayBridger(store, { createSerialStream, scheduler: realScheduler, now: () => NOW }, FAST_OPTIONS);
+
+    const link: LinkRow = { id: rawId, transport: "radio", address: { relayLinkId, channel: 76, group: 30 } };
+    store.upsertLink({ id: link.id, transport: "radio", address: link.address, at: 1 });
+
+    await expect(bridger.bridge(toBridgeRequest(link), new AbortController().signal)).rejects.toThrow(/no candidate identified/);
+    expect(store.snapshotRows().links.find((l) => l.id === rawId)?.state).toBe("failed");
+    store.close();
+  }, 10_000);
+});
+
 describe("createRelayBridger().bridge() -- relay_leases acquire/release", () => {
   it("rejects immediately, recording a link failure, when a different owner already holds the relay's lease (also: ticket 016-004's own 'no revocation seam configured' regression guard -- this bridger is never given one, so a sweep-owned lease fails exactly as before that ticket)", async () => {
     const store = freshStore();

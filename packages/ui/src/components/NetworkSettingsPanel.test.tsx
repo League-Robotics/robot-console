@@ -62,13 +62,13 @@ const DEVICE: SnapshotDevice = {
   links: [LINK],
 };
 
-function mountPanel(calibrationWrites: CalibrationWrite[] = []) {
+function mountPanel(calibrationWrites: CalibrationWrite[] = [], device: SnapshotDevice = DEVICE) {
   let socket: FakeSocket | null = null;
   const onRadioChange = vi.fn();
   const el = mount(
     <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
       <NetworkSettingsPanel
-        device={DEVICE}
+        device={device}
         link={LINK}
         radio={{ channel: 41, group: 3 }}
         onRadioChange={onRadioChange}
@@ -246,5 +246,52 @@ describe("NetworkSettingsPanel", () => {
     const { el, socket } = mountPanel();
     click(el, "configuration-restart");
     expect(sent(socket).at(-1)).toEqual({ type: "send-command", linkId: "usb-ROBOT-A", verb: "RUN", fields: ["_reboot"] });
+  });
+
+  it("Save sends set-radio-override when the draft differs from the device's address, and not when it is unchanged", () => {
+    const { el, socket } = mountPanel();
+    click(el, "configuration-save");
+    expect(sent(socket).some((m) => (m as { type: string }).type === "set-radio-override")).toBe(false);
+    type(el, '[data-testid="configuration-radio-channel"]', "55");
+    click(el, "configuration-save");
+    expect(sent(socket).at(-1)).toEqual({ type: "set-radio-override", deviceId: 1198504156, channel: 55, group: 3 });
+  });
+
+  it("Save does not send an invalid radio address", () => {
+    const { el, socket } = mountPanel();
+    type(el, '[data-testid="configuration-radio-channel"]', "200");
+    click(el, "configuration-save");
+    expect(sent(socket).some((m) => (m as { type: string }).type === "set-radio-override")).toBe(false);
+  });
+
+  it("re-syncs the draft and reports the address when the device's radio changes", () => {
+    let socket: FakeSocket | null = null;
+    const onRadioChange = vi.fn();
+    const render = (device: SnapshotDevice) => (
+      <WsProvider url="ws://test/" socketFactory={() => socket ?? (socket = new FakeSocket())}>
+        <NetworkSettingsPanel device={device} link={LINK} radio={{ channel: 41, group: 3 }} onRadioChange={onRadioChange} calibrationWrites={[]} />
+      </WsProvider>
+    );
+    const el = mount(render(DEVICE));
+    act(() => {
+      root!.render(render({ ...DEVICE, radio: { channel: 12, group: 9, source: "override" } }));
+    });
+    expect(el.querySelector<HTMLInputElement>('[data-testid="configuration-radio-channel"]')!.value).toBe("12");
+    expect(el.querySelector<HTMLInputElement>('[data-testid="configuration-radio-group"]')!.value).toBe("9");
+    expect(onRadioChange).toHaveBeenLastCalledWith({ channel: 12, group: 9 });
+  });
+
+  it("offers Revert to derived only for an override, and it sends a clear", () => {
+    const derived = mountPanel();
+    expect(derived.el.querySelector('[data-testid="configuration-radio-revert"]')).toBeNull();
+    act(() => {
+      root!.unmount();
+    });
+    root = null;
+    container!.remove();
+    container = null;
+    const { el, socket } = mountPanel([], { ...DEVICE, radio: { channel: 41, group: 3, source: "override" } });
+    click(el, "configuration-radio-revert");
+    expect(sent(socket).at(-1)).toEqual({ type: "set-radio-override", deviceId: 1198504156, clear: true });
   });
 });

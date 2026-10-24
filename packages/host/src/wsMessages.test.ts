@@ -17,6 +17,34 @@ describe("parseClientMessage", () => {
       ).toEqual({ type: "session-open", relayLinkId: "relay-1", name: "zeguz" });
     });
 
+    it("accepts the {relayLinkId, channel, group} shape", () => {
+      expect(parseClientMessage({ type: "session-open", relayLinkId: "relay-1", channel: 76, group: 30 })).toEqual({
+        type: "session-open",
+        relayLinkId: "relay-1",
+        channel: 76,
+        group: 30,
+      });
+      expect(parseClientMessage({ type: "session-open", relayLinkId: "relay-1", channel: 0, group: 0 })).toBeDefined();
+      expect(parseClientMessage({ type: "session-open", relayLinkId: "relay-1", channel: 83, group: 255 })).toBeDefined();
+    });
+
+    it.each([
+      ["mixed with name", { relayLinkId: "r", name: "zeguz", channel: 76, group: 30 }],
+      ["mixed with linkId", { linkId: "usb-abc", relayLinkId: "r", channel: 76, group: 30 }],
+      ["channel without group", { relayLinkId: "r", channel: 76 }],
+      ["group without channel", { relayLinkId: "r", group: 30 }],
+      ["channel and group without relayLinkId", { channel: 76, group: 30 }],
+      ["empty relayLinkId", { relayLinkId: "", channel: 76, group: 30 }],
+      ["non-integer channel", { relayLinkId: "r", channel: 76.5, group: 30 }],
+      ["non-integer group", { relayLinkId: "r", channel: 76, group: 1.5 }],
+      ["string channel", { relayLinkId: "r", channel: "76", group: 30 }],
+      ["channel above 83", { relayLinkId: "r", channel: 84, group: 30 }],
+      ["negative channel", { relayLinkId: "r", channel: -1, group: 30 }],
+      ["group above 255", { relayLinkId: "r", channel: 76, group: 256 }],
+    ])("rejects a raw channel/group message: %s", (_label, fields) => {
+      expect(parseClientMessage({ type: "session-open", ...fields })).toBeUndefined();
+    });
+
     it("rejects a message carrying both linkId and relayLinkId (mutually exclusive shapes)", () => {
       expect(
         parseClientMessage({ type: "session-open", linkId: "usb-abc", relayLinkId: "relay-1", name: "zeguz" }),

@@ -94,6 +94,30 @@ describe("RadioAddressDialog", () => {
     expect(el.querySelector<HTMLInputElement>('[data-testid="radio-group"]')!.value).toBe("3");
   });
 
+  it("keeps typed input when a snapshot re-broadcasts an equal radio object", () => {
+    let socket: FakeSocket | null = null;
+    const factory = () => (socket = new FakeSocket());
+    const render = (radio: { channel: number; group: number; source: "derived" }) => (
+      <WsProvider url="ws://test/" socketFactory={factory}>
+        <RadioAddressDialog deviceId={1198504156} name="tigez" radio={radio} />
+      </WsProvider>
+    );
+    const el = mount(render({ channel: 12, group: 3, source: "derived" }));
+    act(() => {
+      socket!.emitOpen();
+    });
+    open(el);
+    type(el, '[data-testid="radio-channel"]', "76");
+    act(() => {
+      root!.render(render({ channel: 12, group: 3, source: "derived" }));
+    });
+    expect(el.querySelector<HTMLInputElement>('[data-testid="radio-channel"]')!.value).toBe("76");
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="radio-save"]')!.click();
+    });
+    expect(sent(socket!)).toEqual([{ type: "set-radio-override", deviceId: 1198504156, channel: 76, group: 3 }]);
+  });
+
   it("submitting sends set-radio-override with the numeric deviceId, not localStorage", () => {
     const { el, socket } = mountDialog();
     open(el);
@@ -128,5 +152,25 @@ describe("RadioAddressDialog", () => {
     });
     expect(el.querySelector('[data-testid="radio-error"]')?.textContent).toContain("0 to 255");
     expect(socket.sent).toEqual([]);
+  });
+
+  it("offers Revert to derived only while the address is an override, and it sends a clear", () => {
+    const derived = mountDialog({ radio: { channel: 41, group: 3, source: "derived" } });
+    open(derived.el);
+    expect(derived.el.querySelector('[data-testid="radio-revert"]')).toBeNull();
+    act(() => {
+      root!.unmount();
+    });
+    root = null;
+    container!.remove();
+    container = null;
+
+    const { el, socket } = mountDialog({ radio: { channel: 41, group: 3, source: "override" } });
+    open(el);
+    act(() => {
+      el.querySelector<HTMLButtonElement>('[data-testid="radio-revert"]')!.click();
+    });
+    expect(sent(socket)).toEqual([{ type: "set-radio-override", deviceId: 1198504156, clear: true }]);
+    expect(el.querySelector('[data-testid="radio-reverted"]')).not.toBeNull();
   });
 });

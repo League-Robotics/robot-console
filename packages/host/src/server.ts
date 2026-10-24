@@ -1279,7 +1279,12 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     // This wrapper's only remaining job is the WS-specific "never
     // silent" notice (bench defect 4, 2026-09-12): a refused open must
     // surface on the console rather than nothing happening.
-    const params: OpenSessionParams = "linkId" in message ? { linkId: message.linkId } : { relayLinkId: message.relayLinkId, name: message.name };
+    const params: OpenSessionParams =
+      "linkId" in message
+        ? { linkId: message.linkId }
+        : "name" in message
+          ? { relayLinkId: message.relayLinkId, name: message.name }
+          : { relayLinkId: message.relayLinkId, channel: message.channel, group: message.group };
     const { linkId, refusedReason } = await openSession({ store, reconciler: runtime.reconciler }, params);
     if (refusedReason !== undefined) {
       sendNotice(linkId, "warn", `connect refused: ${refusedReason}`);

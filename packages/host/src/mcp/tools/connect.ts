@@ -79,8 +79,8 @@
  * reaching the handler, never a two-shape ambiguity to resolve at
  * runtime the way `open_session` (below) needs to.
  *
- * `open_session` genuinely accepts two mutually-exclusive shapes
- * (`{linkId}` or `{relayLinkId, name}`) that cannot both be expressed as
+ * `open_session` genuinely accepts three mutually-exclusive shapes
+ * (`{linkId}`, `{relayLinkId, name}` or `{relayLinkId, channel, group}`) that cannot both be expressed as
  * "required" in one flat Zod shape (`registerTool`'s `inputSchema` is a
  * shape, not a discriminated union, matching `mcp/server.ts`'s SDK
  * version). All three fields are declared `.optional()` so a
@@ -159,21 +159,33 @@ function parseOpenSessionParams(input: {
   linkId?: string | undefined;
   relayLinkId?: string | undefined;
   name?: string | undefined;
+  channel?: number | undefined;
+  group?: number | undefined;
 }): { ok: true; params: OpenSessionParams } | { ok: false; message: string } {
   const linkId = input.linkId !== undefined && input.linkId.length > 0 ? input.linkId : undefined;
   const relayLinkId = input.relayLinkId !== undefined && input.relayLinkId.length > 0 ? input.relayLinkId : undefined;
   const name = input.name !== undefined && input.name.length > 0 ? input.name : undefined;
+  const { channel, group } = input;
 
-  if (linkId !== undefined && relayLinkId === undefined && name === undefined) {
+  if (linkId !== undefined && relayLinkId === undefined && name === undefined && channel === undefined && group === undefined) {
     return { ok: true, params: { linkId } };
   }
-  if (linkId === undefined && relayLinkId !== undefined && name !== undefined) {
+  if (linkId === undefined && relayLinkId !== undefined && name !== undefined && channel === undefined && group === undefined) {
     return { ok: true, params: { relayLinkId, name } };
+  }
+  if (linkId === undefined && relayLinkId !== undefined && name === undefined && channel !== undefined && group !== undefined) {
+    if (!Number.isInteger(channel) || channel < 0 || channel > 83 || !Number.isInteger(group) || group < 0 || group > 255) {
+      return {
+        ok: false,
+        message: `channel must be an integer 0-83 and group an integer 0-255 (got channel=${channel}, group=${group}).`,
+      };
+    }
+    return { ok: true, params: { relayLinkId, channel, group } };
   }
   return {
     ok: false,
     message:
-      `open_session needs either {linkId} or {relayLinkId, name}, never a mix and never neither -- got ${JSON.stringify(input)}. ` +
+      `open_session needs exactly one of {linkId}, {relayLinkId, name} or {relayLinkId, channel, group}, never a mix and never neither -- got ${JSON.stringify(input)}. ` +
       "Note: this MCP client's own tool-calling harness silently drops every argument in a call if any one of them arrives empty or " +
       "omitted, so a call meant to send {relayLinkId, name} with one of those two fields blank can arrive here missing that field " +
       "entirely (or as {} with nothing at all). Resend with concrete, non-empty values for every field the shape you want needs.",
@@ -190,9 +202,9 @@ export function registerConnectTools(server: McpServer, deps: ConnectToolsDeps):
       description:
         "Opens a session on a link -- the same open a browser's own Connect button performs, through the same " +
         "reconciler/connector path, visible on the console exactly like a browser-opened session (with this call's " +
-        "own name shown as its caller). Two mutually exclusive input shapes: {linkId} opens a direct usb/wifi/mbserial/" +
+        "own name shown as its caller). Three mutually exclusive input shapes: {linkId} opens a direct usb/wifi/mbserial/" +
         "radio link by id (from list_devices/get_device_status); {relayLinkId, name} bridges to a named robot over a " +
-        "relay's own link id, deriving (and returning) that robot's own radio child link id. A board a human already " +
+        "relay's own link id, deriving (and returning) that robot's own radio child link id; {relayLinkId, channel, group} bridges that relay to a raw radio channel (0-83) and group (0-255) with no robot name, returning the synthetic link id radio-ch<channel>-g<group>-via-<relay>. A board a human already " +
         "holds, or a farm robot's single TCP slot already taken by someone else, is reported back as a plain-language " +
         "error, not a crash or silence.",
       inputSchema: {
@@ -205,16 +217,30 @@ export function registerConnectTools(server: McpServer, deps: ConnectToolsDeps):
           .string()
           .min(1)
           .optional()
-          .describe("Bridge to a robot over this relay's own link id. Must be paired with `name` below; never combined with `linkId`."),
+          .describe("Bridge to a robot over this relay's own link id. Must be paired with `name` below; never combined with `linkId`. Pair with either `name` or `channel`+`group`."),
         name: z
           .string()
           .min(1)
           .optional()
-          .describe("The five-letter robot name to bridge to over `relayLinkId`. Must be paired with `relayLinkId` above."),
+          .describe("The five-letter robot name to bridge to over `relayLinkId`. Must be paired with `relayLinkId` above; never combined with `channel`/`group`."),
+        channel: z
+          .number()
+          .int()
+          .min(0)
+          .max(83)
+          .optional()
+          .describe("Raw radio channel (0-83) to bridge `relayLinkId` to. Must be paired with `group` and `relayLinkId`; never combined with `name`."),
+        group: z
+          .number()
+          .int()
+          .min(0)
+          .max(255)
+          .optional()
+          .describe("Raw radio group (0-255) to bridge `relayLinkId` to. Must be paired with `channel` and `relayLinkId`; never combined with `name`."),
       },
     },
-    async ({ linkId, relayLinkId, name }) => {
-      const parsed = parseOpenSessionParams({ linkId, relayLinkId, name });
+    async ({ linkId, relayLinkId, name, channel, group }) => {
+      const parsed = parseOpenSessionParams({ linkId, relayLinkId, name, channel, group });
       if (!parsed.ok) {
         return jsonResult({ error: parsed.message }, true);
       }

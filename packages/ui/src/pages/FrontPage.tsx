@@ -85,6 +85,7 @@ import { ForgetDeviceDialog, TrashIcon } from "../components/ForgetDeviceDialog"
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
+import { RADIO_CONNECT_GIVE_UP_MS, RADIO_NO_ANSWER_TEXT } from "../lib/radioConnect";
 import type { ConnectionStatus, LinkNotice, PendingRadioMigration } from "../ws/WsProvider";
 import {
   useConnectionStatus,
@@ -870,11 +871,6 @@ function LinkChip({
  * happen, before settling back to yellow. */
 const RADIO_FLASH_MS = 1200;
 
-/** A radio connect neither connected nor failed after this long is given
- * up on (flashes red) -- well past a bridge's own reset, sync, and
- * identify budget. */
-const RADIO_CONNECT_GIVE_UP_MS = 60_000;
-
 /** The radio connect a {@link RadioChip} press started and is waiting on. */
 interface PendingRadioConnect {
   childLinkId: string;
@@ -957,7 +953,7 @@ function RadioChip({
     if (!pending) {
       return undefined;
     }
-    const timer = setTimeout(() => fail("Couldn't connect: no answer through the radio bridge"), RADIO_CONNECT_GIVE_UP_MS);
+    const timer = setTimeout(() => fail(RADIO_NO_ANSWER_TEXT), RADIO_CONNECT_GIVE_UP_MS);
     return () => clearTimeout(timer);
   }, [pending]);
 

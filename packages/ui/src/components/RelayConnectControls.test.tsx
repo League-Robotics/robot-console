@@ -313,6 +313,49 @@ describe("RelayConnectControls variant=page", () => {
     expect(onConnect).toHaveBeenCalledWith(RELAY_LINK_ID, "gopiv");
   });
 
+  it("Connect with Channel/group picked calls onConnect with a {channel, group} address, disabled until valid", () => {
+    const { el, onConnect } = renderPage();
+    const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-robot-select"]')!;
+    const button = el.querySelector<HTMLButtonElement>('[data-testid="relay-connect"]')!;
+    act(() => {
+      select.value = "@channel-group";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(button.disabled).toBe(true);
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    const type = (testid: string, value: string) => {
+      const input = el.querySelector<HTMLInputElement>(`[data-testid="${testid}"]`)!;
+      act(() => {
+        setter.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    type("relay-raw-channel", "90");
+    type("relay-raw-group", "7");
+    expect(button.disabled).toBe(true);
+    type("relay-raw-channel", "42");
+    expect(button.disabled).toBe(false);
+    act(() => {
+      button.click();
+    });
+    expect(onConnect).toHaveBeenCalledWith(RELAY_LINK_ID, { channel: 42, group: 7 });
+  });
+
+  it("shows a pending raw attempt as connecting and a failed one as the failed alert", () => {
+    const pending = renderPage({ rawAttempt: { state: "pending" } });
+    expect(pending.el.querySelector('[data-testid="relay-autoconnecting"]')).not.toBeNull();
+    act(() => {
+      root!.unmount();
+    });
+    root = null;
+    container!.remove();
+    container = null;
+    const failed = renderPage({ rawAttempt: { state: "failed", text: "Couldn't connect: no answer through the radio bridge" } });
+    expect(failed.el.querySelector('[data-testid="relay-bridge-failed"]')?.textContent).toBe(
+      "Couldn't connect: no answer through the radio bridge",
+    );
+  });
+
   it("disables Connect when sendable is false", () => {
     const { el } = renderPage({ sendable: false, devices: [relayDevice(), device(6, { name: "gopiv" })], robotOptions: ["gopiv"] });
     const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-robot-select"]')!;

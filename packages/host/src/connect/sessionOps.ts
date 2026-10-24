@@ -62,7 +62,7 @@
  * `store.reconcilerRows().sessions`/`store.projectionRows().links` after
  * calling this function), not here; see that module's own doc comment.
  */
-import { isSequencedVerb, type WireField } from "@robot-console/protocol";
+import { isSequencedVerb, rawRadioChildLinkId, type WireField } from "@robot-console/protocol";
 import type { ConnectedSession } from "./connector.js";
 import type { Reconciler, ReconcilerSessions } from "./reconciler.js";
 import { resolveDeviceRadio, type DeviceRadioOverride } from "../radioOverride.js";
@@ -94,7 +94,10 @@ export interface SessionOpsDeps {
  * robot bridged over a relay. Mirrors the WS `session-open` message's
  * own two variants (`wsMessages.ts`) exactly, since both this function
  * and that message ultimately mean the same request. */
-export type OpenSessionParams = { readonly linkId: string } | { readonly relayLinkId: string; readonly name: string };
+export type OpenSessionParams =
+  | { readonly linkId: string }
+  | { readonly relayLinkId: string; readonly name: string }
+  | { readonly relayLinkId: string; readonly channel: number; readonly group: number };
 
 export interface OpenSessionResult {
   /** The link a session was (or would have been) opened on -- for
@@ -222,6 +225,19 @@ async function resolveRelayChildLinkId(store: SessionOpsStore, relayLinkId: stri
   return childLinkId;
 }
 
+/** Upserts the `links(radio)` row for a raw `{relayLinkId, channel,
+ * group}` bridge at exactly that address and returns its synthetic id. */
+function upsertRawRadioChildLink(store: SessionOpsStore, relayLinkId: string, channel: number, group: number): string {
+  const childLinkId = rawRadioChildLinkId(relayLinkId, channel, group);
+  store.upsertLink({
+    id: childLinkId,
+    transport: "radio",
+    address: { relayLinkId, channel, group },
+    at: Date.now(),
+  });
+  return childLinkId;
+}
+
 /**
  * Opens a session for `params` through the same reconciler/connector
  * path a browser's `session-open` has always used -- see the module doc
@@ -229,7 +245,12 @@ async function resolveRelayChildLinkId(store: SessionOpsStore, relayLinkId: stri
  * caller passes `{origin: "mcp", caller: <name>}`.
  */
 export async function openSession(deps: SessionOpsDeps, params: OpenSessionParams, identity: SessionIdentity = UI_SESSION_IDENTITY): Promise<OpenSessionResult> {
-  const linkId = "linkId" in params ? params.linkId : await resolveRelayChildLinkId(deps.store, params.relayLinkId, params.name);
+  const linkId =
+    "linkId" in params
+      ? params.linkId
+      : "name" in params
+        ? await resolveRelayChildLinkId(deps.store, params.relayLinkId, params.name)
+        : upsertRawRadioChildLink(deps.store, params.relayLinkId, params.channel, params.group);
   const { refusedReason } = await deps.reconciler.requestOpen(linkId);
   if (refusedReason === undefined) {
     // Only when this call itself actually dispatched a job -- never

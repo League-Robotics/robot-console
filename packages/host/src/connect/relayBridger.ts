@@ -54,9 +54,10 @@
  *     each candidate's address via {@link resolveDefaultFailoverAddress}
  *     (override → derived, **no registry GET**, rearch-09's own explicit
  *     acceptance criterion). Not yet wired to a live wire-protocol entry
- *     point as of this ticket (`wsMessages.ts`'s `SessionOpenMessage` has
- *     no "relayLinkId with no name" shape yet) — exported here, fully
- *     testable, for whichever future ticket adds that UI/wire path.
+ *     point as of this ticket — exported here, fully testable, for whichever
+ *     future ticket adds that UI/wire path. (A raw `{relayLinkId, channel,
+ *     group}` session-open is not this shape: it is a single-candidate
+ *     request built by {@link toBridgeRequest} from its own link row.)
  *
  * ## Reset method selection
  *

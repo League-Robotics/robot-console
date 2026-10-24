@@ -10,6 +10,7 @@ import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RobotSelect } from "./RobotSelect";
+import { RAW_RADIO_OPTION_VALUE } from "../lib/radioConnect";
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -78,5 +79,55 @@ describe("RobotSelect", () => {
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(onChange).toHaveBeenCalledWith("gopiv");
+  });
+
+  describe("Channel/group option", () => {
+    const raw = { channel: "", group: "" };
+
+    it("is the first option after the placeholder and reveals no inputs until chosen", () => {
+      const el = mount(<RobotSelect options={["gopiv"]} value="" onChange={() => {}} rawAddress={raw} onRawAddressChange={() => {}} />);
+      const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-robot-select"]')!;
+      expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["Choose a robot…", "Channel/group", "gopiv"]);
+      expect(select.options[1]!.value).toBe(RAW_RADIO_OPTION_VALUE);
+      expect(el.querySelector('[data-testid="relay-raw-address"]')).toBeNull();
+    });
+
+    it("is still offered (and the select enabled) with no known robots", () => {
+      const el = mount(<RobotSelect options={[]} value="" onChange={() => {}} rawAddress={raw} onRawAddressChange={() => {}} />);
+      const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-robot-select"]')!;
+      expect(select.disabled).toBe(false);
+      expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["Choose a robot…", "Channel/group"]);
+    });
+
+    it("shows channel and group inputs with range limits once chosen, and reports edits", () => {
+      const onRaw = vi.fn();
+      const el = mount(
+        <RobotSelect options={[]} value={RAW_RADIO_OPTION_VALUE} onChange={() => {}} rawAddress={raw} onRawAddressChange={onRaw} />,
+      );
+      const channel = el.querySelector<HTMLInputElement>('[data-testid="relay-raw-channel"]')!;
+      const group = el.querySelector<HTMLInputElement>('[data-testid="relay-raw-group"]')!;
+      expect(channel.max).toBe("83");
+      expect(group.max).toBe("255");
+      expect(el.querySelector('[data-testid="relay-raw-invalid"]')).not.toBeNull();
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      act(() => {
+        setter.call(channel, "12");
+        channel.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect(onRaw).toHaveBeenCalledWith({ channel: "12", group: "" });
+    });
+
+    it("flags out-of-range values and clears the hint when valid", () => {
+      const bad = mount(
+        <RobotSelect options={[]} value={RAW_RADIO_OPTION_VALUE} onChange={() => {}} rawAddress={{ channel: "84", group: "1" }} onRawAddressChange={() => {}} />,
+      );
+      expect(bad.querySelector('[data-testid="relay-raw-invalid"]')).not.toBeNull();
+      act(() => {
+        root!.render(
+          <RobotSelect options={[]} value={RAW_RADIO_OPTION_VALUE} onChange={() => {}} rawAddress={{ channel: "83", group: "255" }} onRawAddressChange={() => {}} />,
+        );
+      });
+      expect(bad.querySelector('[data-testid="relay-raw-invalid"]')).toBeNull();
+    });
   });
 });

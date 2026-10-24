@@ -93,6 +93,7 @@
  *   each field's own doc comment).
  */
 
+import { isHardwareRadioPair } from "@robot-console/protocol";
 import type { WireField } from "@robot-console/protocol";
 
 /** Which firmware a flash operation targets, when the source is a
@@ -646,7 +647,10 @@ export interface Notice {
  * default-failover request has no replacement in this shape (not carried
  * forward by this ticket's scope; a future ticket may reintroduce a
  * "no preference" request if wanted). */
-export type SessionOpenMessage = { type: "session-open"; linkId: string } | { type: "session-open"; relayLinkId: string; name: string };
+export type SessionOpenMessage =
+  | { type: "session-open"; linkId: string }
+  | { type: "session-open"; relayLinkId: string; name: string }
+  | { type: "session-open"; relayLinkId: string; channel: number; group: number };
 
 /** Client -> server: close an open session on a link. */
 export interface SessionCloseMessage {
@@ -907,13 +911,23 @@ export function parseClientMessage(value: unknown): ClientMessage | undefined {
   switch (value.type) {
     case "session-open": {
       const hasLinkId = value.linkId !== undefined;
-      const hasRelayShape = value.relayLinkId !== undefined || value.name !== undefined;
-      if (hasLinkId === hasRelayShape) {
-        // Neither shape present, or both at once -- exactly one is legal.
+      const hasName = value.name !== undefined;
+      const hasAddress = value.channel !== undefined || value.group !== undefined;
+      const hasRelayShape = value.relayLinkId !== undefined || hasName || hasAddress;
+      if (hasLinkId === hasRelayShape || (hasName && hasAddress)) {
+        // Neither shape present, or several at once -- exactly one is legal.
         return undefined;
       }
       if (hasLinkId) {
         return isNonEmptyString(value.linkId) ? { type: "session-open", linkId: value.linkId } : undefined;
+      }
+      if (hasAddress) {
+        return isNonEmptyString(value.relayLinkId) &&
+          typeof value.channel === "number" &&
+          typeof value.group === "number" &&
+          isHardwareRadioPair(value.channel, value.group)
+          ? { type: "session-open", relayLinkId: value.relayLinkId, channel: value.channel, group: value.group }
+          : undefined;
       }
       return isNonEmptyString(value.relayLinkId) && isNonEmptyString(value.name)
         ? { type: "session-open", relayLinkId: value.relayLinkId, name: value.name }

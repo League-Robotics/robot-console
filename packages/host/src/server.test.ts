@@ -690,6 +690,26 @@ describe("server.ts: session-open/session-close dispatch", () => {
     });
   });
 
+  it("opens a raw {relayLinkId, channel, group} bridge at that address and refuses with a connect refused notice", async () => {
+    const h = await harness();
+    h.runtime.requestOpen.mockResolvedValueOnce({ refusedReason: "relay busy" });
+    const ws = fakeWebSocket();
+    h.wss.triggerConnection(ws);
+    await flush();
+    ws.sent.length = 0;
+
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "session-open", relayLinkId: "usb-RELAY", channel: 76, group: 30 })), false);
+    await flush();
+
+    const childLinkId = "radio-ch76-g30-via-usb-RELAY";
+    expect(h.runtime.requestOpen).toHaveBeenCalledWith(childLinkId);
+    const link = h.store.snapshotRows().links.find((l) => l.id === childLinkId);
+    expect(JSON.parse(link!.address as string)).toEqual({ relayLinkId: "usb-RELAY", channel: 76, group: 30 });
+    const notice = ws.sent.find((m) => m.type === "notice");
+    expect(notice).toMatchObject({ type: "notice", level: "warn", linkId: childLinkId });
+    expect((notice as { text: string }).text).toMatch(/^connect refused: relay busy/);
+  });
+
   it(
     "bench defect 4: broadcasts a link-scoped notice, addressed to the new radio child, when the reconciler refuses a {relayLinkId, name} bridge",
     async () => {
@@ -906,6 +926,36 @@ describe("server.ts: session-open/session-close dispatch", () => {
       const childLinkId = "radio-tigez-via-usb-RELAY";
       const link = h.store.snapshotRows().links.find((l) => l.id === childLinkId);
       expect(JSON.parse(link!.address as string)).toEqual({ relayLinkId: "usb-RELAY", channel: derived.channel, group: derived.group });
+    });
+
+    it("set-radio-override then clear round-trips through a bridged open: override pair, then the derived pair", async () => {
+      const h = await harness();
+      const deviceId = 778;
+      const name = deviceIdToName(deviceId);
+      h.store.upsertDevice({ id: deviceId, name, kind: "robot", at: 1 });
+      h.store.upsertLink({ id: "usb-RELAY-A", transport: "usb", address: { path: "/dev/cu.relayA" }, at: 1 });
+      h.store.upsertLink({ id: "usb-RELAY-B", transport: "usb", address: { path: "/dev/cu.relayB" }, at: 1 });
+      const ws = fakeWebSocket();
+      h.wss.triggerConnection(ws);
+      await flush();
+      const send = (msg: object) => ws.emit("message", Buffer.from(JSON.stringify(msg)), false);
+      const bridgedAddress = (relay: string) => {
+        const link = h.store.snapshotRows().links.find((l) => l.id === `radio-${name}-via-${relay}`);
+        return JSON.parse(link!.address as string);
+      };
+
+      send({ type: "set-radio-override", deviceId, channel: 41, group: 3 });
+      await flush();
+      send({ type: "session-open", relayLinkId: "usb-RELAY-A", name });
+      await flush();
+      expect(bridgedAddress("usb-RELAY-A")).toEqual({ relayLinkId: "usb-RELAY-A", channel: 41, group: 3 });
+
+      send({ type: "set-radio-override", deviceId, clear: true });
+      await flush();
+      send({ type: "session-open", relayLinkId: "usb-RELAY-B", name });
+      await flush();
+      const derived = nameToRadioAddress(name);
+      expect(bridgedAddress("usb-RELAY-B")).toEqual({ relayLinkId: "usb-RELAY-B", channel: derived.channel, group: derived.group });
     });
 
     // Stakeholder bench defect (2026-09-14): vevov moved to the 73-channel

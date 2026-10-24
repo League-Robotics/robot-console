@@ -1163,6 +1163,20 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
         const outcome = await flasher.flashMbregistry(linkId, target.uid, plan, mbregistryLabel, hexText, (phase) =>
           setFlashPhase(linkId, source, phase, identity),
         );
+        // `flashMbregistry` closed this link's session first (an ordinary close, which records `closed_by_user`), and
+        // an mbregistry link row survives the flash (unlike a USB board, which re-enumerates as a new link) -- so
+        // nothing else would ever reopen it, and the robot would sit silent in the console after every flash,
+        // whether the flash succeeded or failed (a nezsim simulated robot has no other way back). Reopen it
+        // best-effort, as the network-flash path does; the flash outcome does not depend on it.
+        if (outcome.status === "ok") {
+          setFlashPhase(linkId, source, "resetting", identity);
+          setFlashPhase(linkId, source, "reidentifying", identity);
+        }
+        try {
+          await runtime.reconciler.requestOpen(linkId);
+        } catch (error) {
+          sendNotice(linkId, "info", `flashed "${target.uid}", but reopening its session afterward failed: ${errorMessage(error)}`);
+        }
         finishFlash(linkId, source, outcome);
         return outcome;
       }

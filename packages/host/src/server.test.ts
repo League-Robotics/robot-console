@@ -1725,6 +1725,29 @@ describe("server.ts: flash-start (mbregistry transport)", () => {
     expect(result).toMatchObject({ type: "flash-result", status: "ok" });
   });
 
+  it("reopens the link's session after an mbregistry flash, on success and on failure (the closed link would otherwise stay silent)", async () => {
+    for (const status of ["ok", "error"] as const) {
+      const device = fakeRegistryDevice({ uid: "uid-r", host: null, endpoint: null });
+      const mbregistryClient = fakeMbregistryClient(device, 7440);
+      const flashViaMbregistryMock = vi.fn(async () => (status === "ok" ? ({ status: "ok", method: "mbregistry" } as FlashOutcome) : ({ status: "error", method: "mbregistry", reason: "x", error: "boom" } as unknown as FlashOutcome)));
+      const h = await harness({
+        mbregistryClient,
+        mbregistryLabel: "console-label",
+        flashViaMbregistry: flashViaMbregistryMock as unknown as StartServerOptions["flashViaMbregistry"],
+      });
+      h.store.upsertLink({ id: "mbregistry-uid-r", transport: "mbregistry", address: { endpoint: null, uid: "uid-r" }, at: 1 });
+      await flush();
+      const ws = fakeWebSocket();
+      h.wss.triggerConnection(ws);
+      await flush();
+      ws.sent.length = 0;
+      const result = await driveLocalHexFlash(ws, "mbregistry-uid-r");
+      expect(result).toMatchObject({ type: "flash-result", status });
+      expect(h.runtime.requestClose).toHaveBeenCalledWith("mbregistry-uid-r");
+      expect(h.runtime.requestOpen).toHaveBeenCalledWith("mbregistry-uid-r");
+    }
+  });
+
   // Ticket 018-011 finding 2: the common real-bench case -- this
   // console's own mbregistry connection IS a local Unix socket (it
   // resolved via the standard client-socket-candidates path, not a

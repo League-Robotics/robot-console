@@ -1,7 +1,7 @@
 ---
 id: '001'
 title: Protocol helper and host raw channel/group session-open
-status: in-progress
+status: done
 use-cases:
 - SUC-001
 - SUC-002
@@ -20,13 +20,13 @@ Add the raw channel/group form of `session-open` on the host. A shared protocol 
 
 ## Acceptance Criteria
 
-- [ ] `packages/protocol` exports `rawRadioChildLinkId(relayLinkId, channel, group)` returning `radio-ch<channel>-g<group>-via-<relayLinkId>` (e.g. `radio-ch76-g30-via-guvov`), re-exported from `index.ts`.
-- [ ] `SessionOpenMessage` has a third variant `{relayLinkId, channel, group}`; `parseClientMessage` accepts exactly one of the three shapes and rejects mixes, non-integers, channel outside 0-83, group outside 0-255, empty `relayLinkId`.
-- [ ] `OpenSessionParams` has the same variant; `openSession` upserts the radio link with address `{relayLinkId, channel, group}` and no override/registry/derived lookup, calls `requestOpen` with the synthetic id, and returns it as `linkId`.
-- [ ] `server.ts` `session-open` handler passes the third shape through; a refusal still produces the `connect refused:` notice.
-- [ ] If the robot answers `ID`, the link attaches to the robot's device (existing behaviour); the link id is not re-keyed.
-- [ ] If nothing answers, the link ends `failed` via the existing `recordFailure` path, same as a named bridge.
-- [ ] `relayBridger.ts` doc comment no longer says the shape is missing.
+- [x] `packages/protocol` exports `rawRadioChildLinkId(relayLinkId, channel, group)` returning `radio-ch<channel>-g<group>-via-<relayLinkId>` (e.g. `radio-ch76-g30-via-guvov`), re-exported from `index.ts`.
+- [x] `SessionOpenMessage` has a third variant `{relayLinkId, channel, group}`; `parseClientMessage` accepts exactly one of the three shapes and rejects mixes, non-integers, channel outside 0-83, group outside 0-255, empty `relayLinkId`.
+- [x] `OpenSessionParams` has the same variant; `openSession` upserts the radio link with address `{relayLinkId, channel, group}` and no override/registry/derived lookup, calls `requestOpen` with the synthetic id, and returns it as `linkId`.
+- [x] `server.ts` `session-open` handler passes the third shape through; a refusal still produces the `connect refused:` notice.
+- [x] If the robot answers `ID`, the link attaches to the robot's device (existing behaviour); the link id is not re-keyed.
+- [x] If nothing answers, the link ends `failed` via the existing `recordFailure` path, same as a named bridge.
+- [x] `relayBridger.ts` doc comment no longer says the shape is missing.
 
 ## Testing
 

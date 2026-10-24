@@ -46,6 +46,7 @@ import { useLinkLog, useSendable, useWheelsTapeCm, useWsActions } from "../ws/Ws
 import { isLinkUsable } from "../deviceDisplay";
 import {
   CALIBRATION_IMAGE_BASELINE_DIAMETER_MM,
+  calibToDiameterMm,
   deriveCalibration,
   mean,
   parsePositiveNumber,
@@ -56,6 +57,7 @@ import {
 } from "../lib/calibration";
 import { buildCalibrationWrites, describeCalibrationWrites, writeCalibration } from "../lib/calibrationWrite";
 import "./NewCalibrationPanel.css";
+import { deriveCalStoreState } from "./CalibrationStore";
 import {
   deriveTurnCalibrationRun,
   deriveWheelsCalibrationRun,
@@ -105,6 +107,12 @@ const TURN_EDGES = "10";
  * caught immediately and precisely by the effect below, which does not
  * wait for this at all. */
 const RUN_DEADLINE_MS = 120_000;
+
+/** How often the queued `_calshow` is sent again while a run waits for
+ * its result, and how many times -- its reply can be dropped too, and
+ * the robot's run queue holds eight. */
+const STORE_PROBE_EVERY_MS = 20_000;
+const STORE_PROBE_REPEATS = 3;
 
 /** A finished wheel run worth keeping: the diameter it measured. */
 interface WheelRecord {
@@ -163,7 +171,8 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
   const run = useMemo<WheelsCalibrationRun | TurnCalibrationRun | undefined>(() => {
     if (!pending) return undefined;
     const slice = log.filter((entry) => entry.id >= pending.startId);
-    return pending.kind === "wheels" ? deriveWheelsCalibrationRun(slice) : deriveTurnCalibrationRun(slice);
+    const before = deriveCalStoreState(log.filter((entry) => entry.id < pending.startId));
+    return pending.kind === "turns" ? deriveTurnCalibrationRun(slice, before) : deriveWheelsCalibrationRun(slice, before);
   }, [log, pending]);
 
   const running = run?.kind === "running";
@@ -223,6 +232,17 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
     return () => clearTimeout(timer);
   }, [pending, abandonRun]);
 
+  useEffect(() => {
+    if (!pending) return undefined;
+    let sent = 0;
+    const timer = setInterval(() => {
+      sendCommand(linkId, "RUN", ["_calshow"]);
+      if (++sent >= STORE_PROBE_REPEATS) clearInterval(timer);
+    }, STORE_PROBE_EVERY_MS);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one probe schedule per run
+  }, [pending]);
+
   // A terminal run is folded into the records exactly once. Keyed on
   // the pending window's own startId so a re-render cannot double-count
   // a run, which would quietly bias the mean.
@@ -236,9 +256,9 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
 
     if (pending.kind === "wheels") {
       const wheels = run as WheelsCalibrationRun;
-      if (wheels.kind === "succeeded") {
-        const diameterMm = round(wheels.result.diameterMm, 2);
-        const ranWithMm = round((wheels.result.wasCalib * 360) / Math.PI, 2);
+      if (wheels.kind === "succeeded" || wheels.kind === "recovered") {
+        const diameterMm = wheels.kind === "succeeded" ? round(wheels.result.diameterMm, 2) : calibToDiameterMm(wheels.calib);
+        const ranWithMm = calibToDiameterMm(wheels.kind === "succeeded" ? wheels.result.wasCalib : wheels.wasCalib);
         setWheelRecords((previous) => [...previous, { diameterMm, ranWithMm }]);
         // A new wheel invalidates every turn measured against the old
         // one -- the whole reason this panel gates the flow. Clearing
@@ -259,7 +279,7 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
       }
     } else {
       const turn = run as TurnCalibrationRun;
-      if (turn.kind === "succeeded") {
+      if (turn.kind === "succeeded" || turn.kind === "recovered") {
         setTurnRecords((previous) => [...previous, { bCm: turn.result.b, firmwareSlip: turn.result.slip }]);
         setFailure(undefined);
       } else {
@@ -342,6 +362,7 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
       // the honest answer: a robot being calibrated is a robot whose
       // wheel is in question.
       sendCommand(linkId, "RUN", ["calwheels", String(tapeCm), "0"]);
+      sendCommand(linkId, "RUN", ["_calshow"]);
     } else {
       if (hasWheels) {
         // `calwheels` stored its own result on the robot as it finished.
@@ -353,6 +374,7 @@ export function NewCalibrationPanel({ link, state, onPatch, onStoreChanged }: Ne
         setTurnRanWithMm(diameterMm);
       }
       sendCommand(linkId, "RUN", ["calturn", TURN_EDGES]);
+      sendCommand(linkId, "RUN", ["_calshow"]);
     }
   }
 
@@ -538,6 +560,12 @@ function describeFailure(which: "wheel" | "turn", run: WheelsCalibrationRun | Tu
   }
   if (run.kind === "unreadable") {
     return `The ${label} answered, but the reply could not be read. Nothing was recorded.`;
+  }
+  if (run.kind === "lost") {
+    return (
+      `The ${label} finished, but its result never reached the console (the robot's link dropped it). ` +
+      "Nothing was recorded here — run it again."
+    );
   }
   return `The ${label} did not finish. Nothing was recorded.`;
 }

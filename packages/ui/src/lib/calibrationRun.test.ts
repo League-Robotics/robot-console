@@ -105,3 +105,90 @@ describe("deriveTurnCalibrationRun", () => {
     expect(deriveTurnCalibrationRun([rx(WHEELS_RESULT), rx(TURN_RESULT)]).kind).toBe("succeeded");
   });
 });
+
+describe("a terminal line lost on the way back", () => {
+  const BEFORE_VALUES =
+    '{"ev":"calstore.values","wheel":0.783,"tw":11.42,"slip":1.0212,"has_wheel":1,"has_turn":1,"live_tw":11.42,"live_slip":1.021}';
+  const runsLine = (wheelRuns: number) =>
+    `{"ev":"calstore.runs","wheel_runs":${wheelRuns},"wheel_mean":0.7851,"turn_runs":1,"turn_mean":1.0212}`;
+  const before = { values: { wheelCalib: 0.783, hasWheel: true } as never, runs: { wheelRuns: 3, turnRuns: 1 } };
+
+  // tigez over Wi-Fi, 2026-10-24: the whole forward leg, result included,
+  // never arrived; only the drive home did.
+  const tigez = [
+    tx("RUN calwheels 90 0 #11"),
+    rx("ack 11 0 none"),
+    rx("CALWHEELS:begin true=90cm scale=0.7878mm/deg wheel=unknown"),
+    rx("CALWHEELS:hometrk x=28.5cm bar=..#. err=0 h=0.7 steer=-0.16"),
+  ];
+
+  it("recovers a wheel run the robot stored from the queued calshow reply", () => {
+    const stored = BEFORE_VALUES.replace('"wheel":0.783', '"wheel":0.7912');
+    const run = deriveWheelsCalibrationRun([...tigez, rx(stored), rx(runsLine(4))], before);
+    expect(run).toMatchObject({ kind: "recovered", calib: 0.7912, wasCalib: 0.783 });
+  });
+
+  it("calls it lost when the robot stored nothing", () => {
+    expect(deriveWheelsCalibrationRun([...tigez, rx(BEFORE_VALUES), rx(runsLine(3))], before).kind).toBe("lost");
+  });
+
+  it("calls it lost when there is nothing to compare against", () => {
+    expect(deriveWheelsCalibrationRun([...tigez, rx(BEFORE_VALUES), rx(runsLine(4))]).kind).toBe("lost");
+  });
+
+  it("keeps running when a calshow reply from before the run lands after the click", () => {
+    const run = deriveWheelsCalibrationRun(
+      [tx("RUN calwheels 90 0 #11"), rx(BEFORE_VALUES), rx(runsLine(3)), rx("ack 11 0 none")],
+      before,
+    );
+    expect(run.kind).toBe("running");
+  });
+
+  it("prefers a result that did arrive", () => {
+    const run = deriveWheelsCalibrationRun([...tigez, rx(WHEELS_RESULT), rx(BEFORE_VALUES), rx(runsLine(4))], before);
+    expect(run.kind).toBe("succeeded");
+  });
+
+  it("reports a turn run whose result was lost", () => {
+    const run = deriveTurnCalibrationRun([tx("RUN calturn 10 #12"), rx("ack 12 0 none"), rx(runsLine(3))]);
+    expect(run.kind).toBe("lost");
+  });
+});
+
+describe("a turn result lost on the way back", () => {
+  // tigez over radio, 2026-10-24: calturn.result and calturn.stored
+  // never arrived; everything around them did.
+  const VALUES =
+    '{"ev":"calstore.values","wheel":0.7843,"tw":11.42,"slip":0.9855,"has_wheel":1,"has_turn":1,"live_tw":11.42,"live_slip":0.986}';
+  const runs = (turnRuns: number) => `{"ev":"calstore.runs","wheel_runs":6,"wheel_mean":0.7844,"turn_runs":${turnRuns},"turn_mean":1.0034}`;
+  const before = { runs: { wheelRuns: 6, turnRuns: 1 } };
+  const spin = [
+    tx("SET wheel_diameter 89.88 #8"),
+    tx("RUN calturn 10 #9"),
+    tx("RUN _calshow #10"),
+    rx("ack 8 0 none"),
+    rx("ack 9 0 none"),
+    rx("ack 10 0 none"),
+    rx("CALTURN:begin edges=10 sector=45deg anchor b=11.996cm (track 11.42 slip 0.952) spin=70deg/s turn=left"),
+    rx('{"ev":"calturn.quality","sd":4.851,"spread":0.614,"ch":4,"gap":43.469,"sector":45,"spin":70,"wheel":7.33}'),
+    rx('{"ev":"calturn.restored","tw":11.42,"slip":0.986,"stored":1}'),
+  ];
+
+  it("rebuilds b from the anchor and the measured gap", () => {
+    const run = deriveTurnCalibrationRun([...spin, rx(VALUES), rx(runs(2))], before);
+    expect(run.kind).toBe("recovered");
+    if (run.kind !== "recovered") return;
+    expect(run.result.b).toBeCloseTo(11.588, 3);
+    expect(run.result.slip).toBeCloseTo(0.9855, 4);
+  });
+
+  it("prefers calturn.stored's own run slip when it arrived", () => {
+    const stored = rx('{"ev":"calturn.stored","run":0.9855,"slip":0.9855,"pair":"no"}');
+    const run = deriveTurnCalibrationRun([...spin, stored, rx(VALUES), rx(runs(2))], before);
+    expect(run.kind === "recovered" && run.result.b).toBeCloseTo(11.588, 2);
+  });
+
+  it("is lost when the robot stored nothing", () => {
+    expect(deriveTurnCalibrationRun([...spin, rx(VALUES), rx(runs(1))], before).kind).toBe("lost");
+  });
+});

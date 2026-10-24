@@ -19,10 +19,28 @@
  * A `.result` line whose fields do not validate is `unreadable`, never
  * a confident wrong number -- the distinction that keeps a garbled
  * reply from being written to a robot as a calibration.
+ *
+ * ## A lost terminal line
+ *
+ * Over Wi-Fi the robot can drop several seconds of output at once,
+ * `.result` included. The panel queues a `RUN _calshow` behind every
+ * calibration RUN; the robot runs one job at a time, so its `calstore`
+ * reply only comes once the calibration has finished. A `calstore.runs`
+ * line that arrives after the run started, with no terminal line before
+ * it, means the result was lost. A run whose stored count went up is
+ * `recovered` -- a wheel from the stored value, a turn's `b` from
+ * `calturn.stored`'s `run` or from the begin line's anchor `b` times
+ * `calturn.quality`'s gap/sector, which is how the robot computes it.
+ * Anything else is `lost`.
  */
 import {
   formatCalibrationEvent,
   parseCalibrationLine,
+  parseCalstoreRuns,
+  parseCalstoreValues,
+  type CalibrationEvent,
+  type CalstoreRuns,
+  type CalstoreValues,
   parseTurnRestored,
   parseTurnResult,
   parseWheelsResult,
@@ -41,6 +59,48 @@ const TURN_VERB = "calturn";
 /** The slice of a link log either derivation consumes. */
 export type RunLogEntry = { direction: "tx" | "rx"; line: string };
 
+/** What the robot's `calshow` said before the run was sent. */
+export interface StoreBefore {
+  values?: CalstoreValues | undefined;
+  runs?: CalstoreRuns | undefined;
+}
+
+/** Tracks whether `verb`'s run has visibly started, so a `calstore` reply
+ * to a `_calshow` sent BEFORE the run is never read as the end of it:
+ * the robot answers in order, so anything after the RUN's ack or the
+ * run's own output is from after the run. */
+function startTracker(verb: string): (entry: RunLogEntry, parsed: CalibrationEvent | undefined) => boolean {
+  let runId: string | undefined;
+  let started = false;
+  const textPrefix = `${verb.toUpperCase()}:`;
+  return (entry, parsed) => {
+    if (started) return true;
+    const line = entry.line.trim();
+    if (entry.direction === "tx") {
+      const match = new RegExp(`^RUN ${verb}\\b.*#(\\d+)$`).exec(line);
+      if (match) runId = match[1];
+      return false;
+    }
+    started =
+      parsed?.verb === verb || line.startsWith(textPrefix) || (runId !== undefined && line.startsWith(`ack ${runId} `));
+    return started;
+  };
+}
+
+/** A `calstore.values`/`.runs` line, read; `undefined` for anything else. */
+function readCalstore(parsed: CalibrationEvent | undefined): { values?: CalstoreValues; runs?: CalstoreRuns } | undefined {
+  if (parsed?.verb !== "calstore" || parsed.kind !== "other") return undefined;
+  if (parsed.suffix === "values") {
+    const values = parseCalstoreValues(parsed.fields);
+    return values ? { values } : {};
+  }
+  if (parsed.suffix === "runs") {
+    const runs = parseCalstoreRuns(parsed.fields);
+    return runs ? { runs } : {};
+  }
+  return undefined;
+}
+
 /** One calibration run's current phase, derived from the endpoint's log
  * -- see this module's doc comment. */
 export type WheelsCalibrationRun =
@@ -48,7 +108,9 @@ export type WheelsCalibrationRun =
   | { kind: "run-error"; events: string[] }
   | { kind: "unreadable"; events: string[] }
   | { kind: "failed"; events: string[]; why: string; implied?: number; lo?: number; hi?: number }
-  | { kind: "succeeded"; events: string[]; result: WheelsResult };
+  | { kind: "succeeded"; events: string[]; result: WheelsResult }
+  | { kind: "recovered"; events: string[]; calib: number; wasCalib: number }
+  | { kind: "lost"; events: string[] };
 
 /** Pure derivation of a run's phase from the slice of `log` recorded
  * since Go was pressed -- exported so `calibrationRun.test.ts`
@@ -64,13 +126,27 @@ export type WheelsCalibrationRun =
  */
 export function deriveWheelsCalibrationRun(
   entries: readonly RunLogEntry[],
+  before: StoreBefore = {},
 ): WheelsCalibrationRun {
   let events: string[] = [];
+  const hasStarted = startTracker(WHEELS_VERB);
+  let storedValues: CalstoreValues | undefined;
   for (const entry of entries) {
+    const parsed = entry.direction === "rx" ? parseCalibrationLine(entry.line) : undefined;
+    const started = hasStarted(entry, parsed);
     if (entry.direction !== "rx") {
       continue;
     }
-    const parsed = parseCalibrationLine(entry.line);
+    const store = started ? readCalstore(parsed) : undefined;
+    if (store?.values) storedValues = store.values;
+    if (store?.runs) {
+      const ranBefore = before.runs?.wheelRuns;
+      if (ranBefore === undefined || store.runs.wheelRuns <= ranBefore || !storedValues) {
+        return { kind: "lost", events };
+      }
+      const wasCalib = before.values?.hasWheel ? before.values.wheelCalib : storedValues.wheelCalib;
+      return { kind: "recovered", events, calib: storedValues.wheelCalib, wasCalib };
+    }
     if (parsed) {
       if (parsed.verb !== WHEELS_VERB) {
         // Noise from a different routine's own JSON lines -- tolerated
@@ -124,7 +200,16 @@ export type TurnCalibrationRun =
   | { kind: "run-error"; events: string[]; restored?: RestoredGeometry | undefined }
   | { kind: "unreadable"; events: string[]; restored?: RestoredGeometry | undefined }
   | { kind: "failed"; events: string[]; why: string; restored?: RestoredGeometry | undefined }
-  | { kind: "succeeded"; events: string[]; result: TurnResult; restored?: RestoredGeometry | undefined };
+  | { kind: "succeeded"; events: string[]; result: TurnResult; restored?: RestoredGeometry | undefined }
+  | { kind: "recovered"; events: string[]; result: TurnResult; restored?: RestoredGeometry | undefined }
+  | { kind: "lost"; events: string[]; restored?: RestoredGeometry | undefined };
+
+const TURN_ANCHOR_B_PATTERN = /^CALTURN:begin\b.*\banchor b=([\d.]+)cm/;
+
+/** Positive and finite, or `undefined`. */
+function positive(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
 
 /** Pure derivation of a run's phase from the slice of `log` recorded
  * since Go was pressed -- exported so `calibrationRun.test.ts`
@@ -140,6 +225,7 @@ export type TurnCalibrationRun =
  */
 export function deriveTurnCalibrationRun(
   entries: readonly RunLogEntry[],
+  before: StoreBefore = {},
 ): TurnCalibrationRun {
   let events: string[] = [];
   let terminal:
@@ -149,12 +235,45 @@ export function deriveTurnCalibrationRun(
     | { kind: "succeeded"; result: TurnResult }
     | undefined;
   let restored: RestoredGeometry | undefined;
+  const hasStarted = startTracker(TURN_VERB);
+  let anchorB: number | undefined;
+  let gapPerSector: number | undefined;
+  let runSlip: number | undefined;
+  let storedTrackWidth: number | undefined;
 
   for (const entry of entries) {
+    const parsed = entry.direction === "rx" ? parseCalibrationLine(entry.line) : undefined;
+    const started = hasStarted(entry, parsed);
     if (entry.direction !== "rx") {
       continue;
     }
-    const parsed = parseCalibrationLine(entry.line);
+    const anchorMatch = TURN_ANCHOR_B_PATTERN.exec(entry.line.trim());
+    if (anchorMatch) anchorB = positive(Number(anchorMatch[1]));
+    const store = terminal === undefined && started ? readCalstore(parsed) : undefined;
+    if (store?.values) storedTrackWidth = positive(store.values.trackWidthCm);
+    if (store?.runs) {
+      const ranBefore = before.runs?.turnRuns;
+      const trackWidthCm = restored?.trackWidthCm ?? storedTrackWidth;
+      const b =
+        runSlip !== undefined && trackWidthCm !== undefined
+          ? trackWidthCm / runSlip
+          : anchorB !== undefined && gapPerSector !== undefined
+            ? anchorB * gapPerSector
+            : undefined;
+      if (ranBefore === undefined || store.runs.turnRuns <= ranBefore || b === undefined || trackWidthCm === undefined) {
+        return { kind: "lost", events, restored };
+      }
+      const result = { b: round3(b), trackWidthCm, slip: round4(trackWidthCm / b) };
+      return { kind: "recovered", events, result, restored };
+    }
+    if (parsed?.verb === TURN_VERB && parsed.kind === "other") {
+      if (parsed.suffix === "stored") runSlip = positive(parsed.fields.run) ?? runSlip;
+      if (parsed.suffix === "quality") {
+        const gap = positive(parsed.fields.gap);
+        const sector = positive(parsed.fields.sector);
+        if (gap !== undefined && sector !== undefined) gapPerSector = gap / sector;
+      }
+    }
     if (parsed) {
       if (parsed.verb !== TURN_VERB) {
         // Noise from a different routine's own JSON lines (e.g.
@@ -203,3 +322,6 @@ export function deriveTurnCalibrationRun(
   }
   return { kind: "succeeded", events, result: terminal.result, restored };
 }
+
+const round3 = (value: number): number => Math.round(value * 1000) / 1000;
+const round4 = (value: number): number => Math.round(value * 10000) / 10000;

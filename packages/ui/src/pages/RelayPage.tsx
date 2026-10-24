@@ -179,7 +179,9 @@ import type { ActiveConsoleTarget } from "./DevicePage";
 import { AddressSourceChip } from "../components/AddressSourceChip";
 import { RelayConnectControls } from "../components/RelayConnectControls";
 import { RobotPage } from "./RobotPage";
-import { useDevices, useRelays, useSendable, useWsActions } from "../ws/WsProvider";
+import { useRawRadioConnect } from "../hooks/useRawRadioConnect";
+import { useDevices, useLinkNotices, useRelays, useSendable, useWsActions } from "../ws/WsProvider";
+import { rawRadioChildLinkId } from "@robot-console/protocol";
 import { currentRelayChild, nameDisplay, roleDisplay } from "../deviceDisplay";
 import "./RelayPage.css";
 
@@ -214,6 +216,7 @@ export function RelayPage({ device, onActiveTargetChange }: RelayPageProps) {
   const relays = useRelays();
   const sendable = useSendable();
   const { send } = useWsActions();
+  const rawConnect = useRawRadioConnect(devices, useLinkNotices());
 
   const relayLink = device.links[0];
   const relayLinkId = relayLink?.id;
@@ -291,7 +294,16 @@ export function RelayPage({ device, onActiveTargetChange }: RelayPageProps) {
         // close-old-child + open-new-child job when a child already
         // exists, never a client-sequenced session-close then
         // session-open.
-        onConnect={(linkId, name) => send({ type: "session-open", relayLinkId: linkId, name })}
+        onConnect={(linkId, target) => {
+          if (typeof target === "string") {
+            rawConnect.clear();
+            send({ type: "session-open", relayLinkId: linkId, name: target });
+            return;
+          }
+          rawConnect.start(rawRadioChildLinkId(linkId, target.channel, target.group));
+          send({ type: "session-open", relayLinkId: linkId, channel: target.channel, group: target.group });
+        }}
+        rawAttempt={rawConnect.attempt}
         onDisconnect={(linkId) => send({ type: "session-close", linkId })}
         // Ticket 011 (carried from 009's send-gating sweep): gates
         // Connect/Switch the same way every other send-capable control

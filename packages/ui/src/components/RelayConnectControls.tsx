@@ -29,7 +29,9 @@
 import { useEffect, useState } from "react";
 import type { SnapshotDevice, SnapshotLink, SnapshotRelay } from "@robot-console/host/src/wsMessages.js";
 import { currentRelayChild, findSweepingCandidateName, isLinkAnswering, isLinkUsable, plainFailureReason, sweepRateSuffix } from "../deviceDisplay";
-import { RobotSelect } from "./RobotSelect";
+import { RobotSelect, type RawAddressText } from "./RobotSelect";
+import { RAW_RADIO_OPTION_VALUE, parseRawRadioAddress, type RawRadioAddress } from "../lib/radioConnect";
+import type { RawRadioAttempt } from "../hooks/useRawRadioConnect";
 import "./RelayConnectControls.css";
 
 /** Only `"page"` remains: the front page's `"card"` variant (robot picker
@@ -148,7 +150,9 @@ export interface RelayConnectControlsProps {
   devices: SnapshotDevice[];
   relays: SnapshotRelay[];
   robotOptions: string[];
-  onConnect: (relayLinkId: string, name: string) => void;
+  onConnect: (relayLinkId: string, target: string | RawRadioAddress) => void;
+  /** The page-tracked raw channel/group attempt, if one is in flight or failed. */
+  rawAttempt?: RawRadioAttempt | null;
   onDisconnect: (linkId: string) => void;
   /** Ticket 011 (carried from 009's send-gating sweep): gates the
    * Connect/Switch button -- taken as a plain prop rather than calling
@@ -165,6 +169,7 @@ export function RelayConnectControls({
   relays,
   robotOptions,
   onConnect,
+  rawAttempt = null,
   onDisconnect,
   sendable,
 }: RelayConnectControlsProps) {
@@ -174,7 +179,13 @@ export function RelayConnectControls({
   // see that function's own doc comment (never resurrect an old,
   // long-dropped bridge as "the" child).
   const child = relayLinkId ? currentRelayChild(devices, relayLinkId) : undefined;
-  const status = relayStatusText({ relayInfo, devices, relayLinkId, ...(variant === "page" ? { relayName: relay.name } : {}) }, child);
+  const baseStatus = relayStatusText({ relayInfo, devices, relayLinkId, ...(variant === "page" ? { relayName: relay.name } : {}) }, child);
+  const status: RelayStatus =
+    !child && rawAttempt?.state === "pending"
+      ? { kind: "connecting", text: "Connecting…" }
+      : !child && rawAttempt?.state === "failed"
+        ? { kind: "failed", text: rawAttempt.text }
+        : baseStatus;
   // Ticket 018-010: Switch/Disconnect show only while a bridge session
   // genuinely exists -- see `hasBridgeSession`'s own doc comment. Not
   // simply `child !== undefined`, which is what let the `torture`/
@@ -189,17 +200,28 @@ export function RelayConnectControls({
     }
   }, [child?.device.name]);
 
-  const connectDisabled = selectedName === "" || relayLinkId === undefined || !sendable;
+  const [rawText, setRawText] = useState<RawAddressText>({ channel: "", group: "" });
+  const rawSelected = selectedName === RAW_RADIO_OPTION_VALUE;
+  const rawAddress = rawSelected ? parseRawRadioAddress(rawText.channel, rawText.group) : undefined;
+
+  const connectDisabled =
+    selectedName === "" || (rawSelected && rawAddress === undefined) || relayLinkId === undefined || !sendable;
   function handleConnect(): void {
     if (connectDisabled || !relayLinkId) {
       return;
     }
-    onConnect(relayLinkId, selectedName);
+    onConnect(relayLinkId, rawSelected && rawAddress ? rawAddress : selectedName);
   }
 
   const connectRow = (
     <div className="relay-connect-bar">
-      <RobotSelect options={robotOptions} value={selectedName} onChange={setSelectedName} />
+      <RobotSelect
+        options={robotOptions}
+        value={selectedName}
+        onChange={setSelectedName}
+        rawAddress={rawText}
+        onRawAddressChange={setRawText}
+      />
       <button type="button" data-testid="relay-connect" disabled={connectDisabled} onClick={handleConnect}>
         {bridged ? "Switch" : "Connect"}
       </button>

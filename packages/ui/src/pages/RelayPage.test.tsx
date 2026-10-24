@@ -33,6 +33,7 @@ import type { Snapshot, SnapshotDevice, SnapshotLink, SnapshotRelay } from "@rob
 import { RelayPage } from "./RelayPage";
 import { WsProvider } from "../ws/WsProvider";
 import { FakeSocket } from "../testing/FakeSocket";
+import { RADIO_CONNECT_GIVE_UP_MS } from "../lib/radioConnect";
 import { withRouter } from "../testing/renderWithRouter";
 
 vi.mock("./RobotPage", () => ({
@@ -57,6 +58,7 @@ function mount(node: ReactElement): HTMLDivElement {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   if (root) {
     act(() => {
       root!.unmount();
@@ -321,7 +323,7 @@ describe("RelayPage: not connected", () => {
     pushSnapshot(socket, { devices: [relayDevice(), device(5, { name: "vevav" }), device(6, { name: "gopiv" })] });
     const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-robot-select"]');
     const optionValues = Array.from(select!.querySelectorAll("option")).map((o) => o.value);
-    expect(optionValues).toEqual(["", "gopiv", "vevav"]);
+    expect(optionValues).toEqual(["", "@channel-group", "gopiv", "vevav"]);
   });
 
   it("Connect is disabled until a robot is picked", () => {
@@ -344,6 +346,84 @@ describe("RelayPage: not connected", () => {
     });
 
     expect(socket().sent).toEqual([JSON.stringify({ type: "session-open", relayLinkId: RELAY_LINK_ID, name: "vevav" })]);
+  });
+
+  describe("Channel/group raw connect", () => {
+    const RAW_ID = `radio-ch42-g7-via-${RELAY_LINK_ID}`;
+
+    function chooseRaw(el: HTMLDivElement): void {
+      const select = el.querySelector<HTMLSelectElement>('[data-testid="relay-robot-select"]')!;
+      act(() => {
+        select.value = "@channel-group";
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      for (const [id, value] of [["relay-raw-channel", "42"], ["relay-raw-group", "7"]] as const) {
+        const input = el.querySelector<HTMLInputElement>(`[data-testid="${id}"]`)!;
+        act(() => {
+          setter.call(input, value);
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+      }
+      act(() => {
+        el.querySelector<HTMLButtonElement>('[data-testid="relay-connect"]')!.click();
+      });
+    }
+
+    it("sends one raw session-open and shows connecting", () => {
+      const { el, socket } = mountRelayPage(relayDevice());
+      pushSnapshot(socket, { devices: [relayDevice()] });
+      chooseRaw(el);
+      expect(socket().sent).toEqual([
+        JSON.stringify({ type: "session-open", relayLinkId: RELAY_LINK_ID, channel: 42, group: 7 }),
+      ]);
+      expect(el.querySelector('[data-testid="relay-autoconnecting"]')).not.toBeNull();
+    });
+
+    it("a host notice for the synthetic link id shows the notice text as a failure and returns to idle", () => {
+      const { el, socket } = mountRelayPage(relayDevice());
+      pushSnapshot(socket, { devices: [relayDevice()] });
+      chooseRaw(el);
+      act(() => {
+        socket().emitMessage({ type: "notice", level: "error", linkId: RAW_ID, text: "Radio bridge refused", at: 1, seq: 2 });
+      });
+      expect(el.querySelector('[data-testid="relay-bridge-failed"]')?.textContent).toBe("Radio bridge refused");
+      expect(el.querySelector('[data-testid="relay-autoconnecting"]')).toBeNull();
+      expect(el.querySelector<HTMLButtonElement>('[data-testid="relay-connect"]')!.disabled).toBe(false);
+    });
+
+    it("gives up with the no-answer message after RADIO_CONNECT_GIVE_UP_MS", () => {
+      vi.useFakeTimers();
+      const { el, socket } = mountRelayPage(relayDevice());
+      pushSnapshot(socket, { devices: [relayDevice()] });
+      chooseRaw(el);
+      act(() => {
+        vi.advanceTimersByTime(RADIO_CONNECT_GIVE_UP_MS - 1);
+      });
+      expect(el.querySelector('[data-testid="relay-autoconnecting"]')).not.toBeNull();
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(el.querySelector('[data-testid="relay-bridge-failed"]')?.textContent).toBe(
+        "Couldn't connect: no answer through the radio bridge",
+      );
+    });
+
+    it("clears the pending state when the synthetic link becomes usable", () => {
+      vi.useFakeTimers();
+      const { el, socket } = mountRelayPage(relayDevice());
+      pushSnapshot(socket, { devices: [relayDevice()] });
+      chooseRaw(el);
+      const child = device(9, {
+        name: "vevav",
+        links: [link(RAW_ID, { state: "connected", session: { seq: 0, pending: 0, lastDone: null, lastDoneReason: null, robotStatus: null, functions: null } })],
+      });
+      pushSnapshot(socket, { devices: [relayDevice(), child] });
+      act(() => {
+        vi.advanceTimersByTime(RADIO_CONNECT_GIVE_UP_MS + 1);
+      });
+      expect(el.querySelector('[data-testid="relay-bridge-failed"]')).toBeNull();
+    });
   });
 
   // Ticket 011 (carried from 009's send-gating sweep): Connect disables

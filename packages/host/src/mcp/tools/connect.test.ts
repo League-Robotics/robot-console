@@ -148,6 +148,63 @@ describe("open_session", () => {
     }
   });
 
+  it("{relayLinkId, channel, group}: opens the synthetic raw child link and returns it", async () => {
+    const store = openStore({ filePath: ":memory:" });
+    try {
+      const requestOpen = vi.fn(async (linkId: string) => {
+        store.openSession(linkId, Date.now());
+        return {};
+      });
+      const h = await makeHarness(store, { reconciler: fakeReconciler({ requestOpen }) });
+
+      const result = await h.client.callTool({ name: "open_session", arguments: { relayLinkId: "usb-relay1", channel: 7, group: 42 } });
+
+      expect(result.isError).toBeFalsy();
+      expect(requestOpen).toHaveBeenCalledWith("radio-ch7-g42-via-usb-relay1");
+      const payload = parseToolText(result as { content: Array<{ type: string; text?: string }> }) as { ok: boolean; linkId: string; caller: string };
+      expect(payload).toEqual({ ok: true, linkId: "radio-ch7-g42-via-usb-relay1", caller: "agent-smith" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("{relayLinkId, channel, group}: a raw open that never connects is the same plain-language error as a named failure", async () => {
+    const store = openStore({ filePath: ":memory:" });
+    try {
+      const h = await makeHarness(store);
+
+      const result = await h.client.callTool({ name: "open_session", arguments: { relayLinkId: "usb-relay1", channel: 7, group: 42 } });
+
+      expect(result.isError).toBe(true);
+      const text = ((result.content as Array<{ type: string; text?: string }>)[0]?.text) ?? "";
+      expect(text).toContain('could not open a session on \\"radio-ch7-g42-via-usb-relay1\\"');
+    } finally {
+      store.close();
+    }
+  });
+
+  it.each([
+    ["channel above 83", { relayLinkId: "usb-relay1", channel: 84, group: 1 }],
+    ["negative channel", { relayLinkId: "usb-relay1", channel: -1, group: 1 }],
+    ["group above 255", { relayLinkId: "usb-relay1", channel: 1, group: 256 }],
+    ["non-integer channel", { relayLinkId: "usb-relay1", channel: 1.5, group: 1 }],
+    ["name mixed with channel/group", { relayLinkId: "usb-relay1", name: "vevov", channel: 1, group: 1 }],
+    ["channel without group", { relayLinkId: "usb-relay1", channel: 1 }],
+    ["group without channel", { relayLinkId: "usb-relay1", group: 1 }],
+    ["channel/group without relayLinkId", { channel: 1, group: 1 }],
+    ["linkId mixed with channel/group", { linkId: "link-1", relayLinkId: "usb-relay1", channel: 1, group: 1 }],
+  ])("rejects %s without opening anything", async (_label, args) => {
+    const store = openStore({ filePath: ":memory:" });
+    try {
+      const h = await makeHarness(store);
+      const result = await h.client.callTool({ name: "open_session", arguments: args });
+      expect(result.isError).toBe(true);
+      expect(h.reconciler.requestOpen).not.toHaveBeenCalled();
+    } finally {
+      store.close();
+    }
+  });
+
   it("a refused open (e.g. already held) is a plain-language tool error, not a crash -- and never overwrites the existing session's identity", async () => {
     const store = openStore({ filePath: ":memory:" });
     try {

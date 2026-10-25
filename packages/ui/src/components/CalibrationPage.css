@@ -1,136 +1,142 @@
-/* `.calibration-table`/`.calibration-source` moved to
- * `CalibrationTable.css` (ticket 017-008) -- the shared table component
- * and `ConfigurationPage.tsx`'s own Wi-Fi/Radio tables (which reuse the
- * same class for an unrelated two-column layout) both import it
- * directly now instead of through this page's stylesheet. */
+/* Calibration tab buttons share the lg-btn look; NewCalibrationPanel's
+   .new-calibration-next is the tab's one orange primary. */
+.calibration-reset,
+.calibration-code-copy,
+.calibration-generic-run-go,
+.calibration-help-button,
+.calibration-help-close,
+.new-calibration button,
+.network-settings-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  color: var(--text);
+  font: 600 14px/1 var(--font-sans);
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.calibration-reset:hover:not(:disabled),
+.calibration-code-copy:hover:not(:disabled),
+.calibration-generic-run-go:hover:not(:disabled),
+.calibration-help-button:hover,
+.calibration-help-close:hover,
+.new-calibration button:hover:not(:disabled),
+.network-settings-actions button:hover:not(:disabled) {
+  border-color: var(--text-heading);
+}
+
+.calibration-reset:disabled,
+.calibration-code-copy:disabled,
+.calibration-generic-run-go:disabled,
+.new-calibration button:disabled,
+.network-settings-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 
 .calibration-reset,
 .calibration-code-copy {
   align-self: flex-start;
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.3rem 0.8rem;
-  border-radius: 0.4rem;
-  font-size: 0.85rem;
-  cursor: pointer;
 }
 
-.calibration-reset:disabled {
-  color: var(--rc-text-muted);
-  cursor: default;
+.calibration-help-button {
+  height: 30px;
+  margin-left: auto;
+  padding: 0 10px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-heading);
+  font-size: 13px;
 }
 
-/* Ticket 022-001 (stakeholder screenshot: the Calibration tab's code
- * block clipped mid-comment, behind a horizontal scrollbar): wrap
- * instead of scrolling sideways. `white-space: pre` preserved line
- * breaks but never wrapped a long line; `pre-wrap` keeps the breaks
- * *and* wraps. `overflow-wrap: anywhere` (not `word-break: break-all`,
- * which would break readable words for no reason) is for the long
- * single-line provenance comments `calibrationCode` emits (e.g. "NOT
- * measured -- <profile>'s compiled default. Running the wheel
- * calibration replaces this; flashing different firmware whose default
- * differs will silently override this hardcoded line.") -- those
- * comments have no natural break point near the column's edge without
- * it. `overflow-x: auto` is gone outright: there is nothing left for it
- * to scroll once every line wraps instead. */
 .calibration-code {
   margin: 0;
-  padding: 0.6rem 0.8rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 0.4rem;
-  background: var(--rc-surface);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.82rem;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  font: 12px/18px var(--font-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-/* Sprint 022 ticket 007: the `.calibration-code-panel.robot-page-column-top`
- * override that used to live here is deleted. It removed
- * `.robot-page-column-top`'s height cap for this one panel only (on
- * `ConfigurationPage`, which carried both classes) so a very long code
- * block could always show every line -- unconditionally, per the
- * stakeholder's own requirement -- while `ConsolePane` was still mounted
- * below it reserving room. `.robot-page-column-top` itself is deleted
- * now that `ConsolePane` is gone everywhere (`RobotPage.css`'s own doc
- * comment has the full account), which is exactly the outcome this
- * comment predicted when it was written: "nothing is left below the
- * code panel to reserve room for and this override stops mattering."
- * `ConfigurationPage.tsx`'s code panel no longer carries either class --
- * it just renders at its own natural height, same as this page's
- * "Current calibration"/"Code for your program" panels always did. */
-
 .calibration-code-empty {
   margin: 0;
-  color: var(--rc-text-muted);
-  font-size: 0.85rem;
+  padding: 14px;
+  border: 1px dashed var(--border-control);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
 .calibration-code-missing {
-  margin: 0 0 0.5rem;
-  padding: 0.4rem 0.6rem;
-  border: 1px solid var(--rc-warn-border);
-  background: var(--rc-warn-bg);
-  color: var(--rc-warn-text);
-  border-radius: 0.4rem;
-  font-size: 0.85rem;
+  margin: 0 0 var(--space-2);
+  padding: 8px 12px;
+  border: 1px solid var(--status-warn-border);
+  border-radius: var(--radius-md);
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  font-size: 13px;
 }
 
-/* Sprint 022 ticket 007: `.calibration-page .device-console { max-width:
- * none; }` is deleted -- this page no longer renders a `.device-console`
- * anywhere (its own `ConsolePane` mount is gone; the log lives in
- * `ConsoleDock` now, which is not a descendant of `.calibration-page`). */
+.calibration-firmware-panel {
+  padding: var(--space-4);
+  background: var(--surface-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.calibration-firmware-panel h4 {
+  margin: 0 0 12px;
+  font: 700 12px/16px var(--font-sans);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
 
 .calibration-firmware-panel p {
-  margin: 0 0 0.5rem;
+  margin: 0 0 var(--space-2);
 }
 
-.calibration-firmware-usb-hint {
-  color: var(--rc-text-muted);
-  font-size: 0.85rem;
-}
-
+.calibration-firmware-usb-hint,
 .calibration-functions-hint {
   margin: 0;
-  color: var(--rc-text-muted);
-  font-size: 0.85rem;
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
-/* One line: label on the left, a small Run on the right. These are
-   rarely-used escape hatches for a `cal*` verb this page has no wizard
-   for -- they should not look like features. Before this they were
-   full-width panels with an h3 and a full-width button each, which made
-   two minor verbs dominate the page. */
+/* Escape hatches for cal* verbs without a wizard: deliberately small. */
 .calibration-generic-run {
   display: flex;
   align-items: baseline;
-  gap: 0.6rem;
-  padding: 0.2rem 0;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: 2px 0;
 }
 
 .calibration-generic-run-label {
-  color: var(--rc-text-muted);
-  font-size: 0.85rem;
+  color: var(--text-muted);
+  font: 12px/16px var(--font-mono);
 }
 
 .calibration-generic-run-go {
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.15rem 0.6rem;
-  border-radius: 0.3rem;
-  font-size: 0.8rem;
-  cursor: pointer;
-}
-
-.calibration-generic-run-go:disabled {
-  color: var(--rc-text-muted);
-  cursor: default;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 13px;
 }
 
 .calibration-generic-run-hint {
-  margin: 0.4rem 0 0;
-  color: var(--rc-text-muted);
-  font-size: 0.85rem;
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
 }

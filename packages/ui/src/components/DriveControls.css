@@ -1,59 +1,72 @@
+/* The chunky Drive pad: 2px navy keys on a hard shadow that presses,
+   yellow N nudges, red octagon stops. */
 .drive-controls {
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: 10px;
 }
 
 .drive-controls-hint {
   margin: 0;
-  padding: 0.5rem 0.75rem;
-  border-radius: 0.4rem;
-  background: var(--rc-warn-bg);
-  border: 1px solid var(--rc-warn-border);
-  color: var(--rc-warn-text);
-  font-size: 0.85rem;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--warn-bg);
+  border: 1px solid var(--status-warn-border);
+  color: var(--warn-text);
+  font-size: 13px;
 }
 
-/* 3x3 pad (out-of-process, 2026-09-10): the four directional buttons at
- * the cardinal cells, a fixed 90/180 degree turn button in each corner,
- * and STOP/E-STOP sharing the center cell -- see DriveControls.tsx's
- * doc comment for the wire semantics behind each cell. */
 .drive-controls-pad {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 5.5rem));
+  grid-template-columns: repeat(3, minmax(0, 7.5rem));
+  grid-auto-rows: 60px;
   grid-template-areas:
-    "turn90left  forward     turn90right"
-    "left        stopcell    right"
-    "turn180left backward    turn180right";
-  gap: 0.5rem;
+    "turn90left  forward  turn90right"
+    "left        stopcell right"
+    "turn180left backward turn180right";
+  gap: 10px;
 }
 
 .drive-controls-button {
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.6rem 0.5rem;
-  border-radius: 0.4rem;
-  font-size: 0.85rem;
+  border: 2px solid var(--text-heading);
+  border-radius: 9px;
+  background: var(--surface-page);
+  color: var(--text-heading);
+  box-shadow: 0 3px 0 var(--text-heading);
+  font: 600 13px/1.1 var(--font-sans);
   cursor: pointer;
   user-select: none;
 }
 
+.drive-controls-button:active:not(:disabled) {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 var(--text-heading);
+}
+
 .drive-controls-button:disabled {
-  color: var(--rc-text-muted);
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
-/* Cardinal cells are split 75/25 (out-of-process, 2026-09-16): the held
- * drive button and a one-shot nudge strip, as two sibling buttons in a
- * flex row -- a <button> cannot nest inside another, so a single control
- * with a clickable sub-region is not expressible. See DriveControls.tsx's
- * doc comment. The grid-area now lives on the cell rather than on the
- * drive button itself. */
+.lg-drive__key {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 4px;
+}
+
+.lg-drive__key small {
+  font: 600 11px var(--font-mono);
+  color: var(--text-muted);
+}
+
 .drive-controls-dir-cell {
   display: flex;
   align-items: stretch;
-  gap: 0.25rem;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -73,26 +86,20 @@
   grid-area: right;
 }
 
-/* The 75/25 split itself. `min-width: 0` on both so a long direction
- * label ("Backward") shrinks with the cell instead of forcing it wider
- * than its grid column. */
 .drive-controls-drive-button {
-  flex: 3 1 0;
-  min-width: 0;
-}
-
-.drive-controls-nudge-button {
   flex: 1 1 0;
-  min-width: 0;
-  padding: 0.6rem 0.2rem;
-  font-size: 0.7rem;
-  font-weight: 600;
-  color: var(--rc-text-muted);
 }
 
-/* Corner fixed-turn buttons -- square-ish, icon above the degree
- * number, both centered, so "90"/"180" plus a small circular-arrow
- * glyph fit inside the same footprint as a cardinal direction button. */
+.lg-drive__nudge {
+  flex: 0 0 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: var(--league-yellow);
+  color: var(--league-navy);
+  font: 700 12px var(--font-mono);
+}
+
 .drive-controls-button-turn90left {
   grid-area: turn90left;
 }
@@ -109,103 +116,66 @@
   grid-area: turn180right;
 }
 
-.drive-controls-turn-button {
+.drive-controls-stop-cell {
+  grid-area: stopcell;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.lg-drive__stop {
+  flex: 1 1 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0.15rem;
-  padding: 0.4rem 0.3rem;
-}
-
-.drive-controls-turn-icon {
-  color: var(--rc-text-muted);
-}
-
-.drive-controls-turn-degrees {
-  font-size: 0.75rem;
-  font-weight: 600;
-  line-height: 1;
-}
-
-/* Center cell: STOP and E-STOP side by side, sized to fit together in
- * one grid cell (see .drive-controls-pad's grid-template-areas above). */
-.drive-controls-stop-cell {
-  grid-area: stopcell;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.3rem;
-}
-
-.drive-controls-stop-button,
-.drive-controls-estop-button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 2.6rem;
-  height: 2.6rem;
+  gap: 3px;
   padding: 0;
+  font: 700 10.5px/1 var(--font-sans);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }
 
-/* Plain stop sign: red fill, white border, no letter. */
-.drive-controls-stop-icon-body {
-  fill: var(--rc-danger-bg);
-  stroke: var(--rc-danger-contrast);
-  stroke-width: 1.5;
+.lg-drive__legend {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
 }
 
-/* E-STOP's white "E" on the same red octagon, unless latched. */
-.drive-controls-stop-icon-letter {
-  fill: var(--rc-danger-contrast);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-/* Latched (device.robotStatus?.estopped === true): dimmed, outlined
- * variant so the E-STOP icon visibly reads "already tripped" rather
- * than "press me" while the latch is engaged. */
-.drive-controls-stop-icon-body-latched {
-  fill: var(--rc-border);
-  stroke: var(--rc-danger-border);
-}
-
-.drive-controls-stop-icon-letter-latched {
-  fill: var(--rc-danger-text);
-}
-
-.drive-controls-clear-estop-button {
-  align-self: flex-start;
-  border: 1px solid var(--rc-danger-border);
-  background: var(--rc-surface);
-  color: var(--rc-danger-text);
-  padding: 0.35rem 0.85rem;
-  border-radius: 0.3rem;
-  font-size: 0.85rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.drive-controls-clear-estop-button:hover:not(:disabled) {
-  background: var(--rc-warn-bg);
-}
-
-.drive-controls-clear-estop-button:disabled {
-  border-color: var(--rc-border);
-  color: var(--rc-text-muted);
-  cursor: not-allowed;
+.lg-drive__legend b {
+  color: var(--text);
 }
 
 .drive-controls-note {
   margin: 0;
-  color: var(--rc-text-muted);
-  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .drive-controls-speed {
-  margin-top: 0.5rem;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.drive-controls-speed label {
+  font-weight: 600;
+  color: var(--text);
 }
 
 .drive-controls-speed input {
-  width: 5rem;
+  width: 90px;
+  height: 34px;
+  padding: 0 10px;
+  font-size: 14px;
+}
+
+.drive-controls-clear-estop-button {
+  margin-left: auto;
 }

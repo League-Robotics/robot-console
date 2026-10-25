@@ -1,19 +1,10 @@
 .device-console {
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: var(--space-2);
   max-width: 60rem;
 }
 
-/* Ticket 018-018: everything except the log itself keeps its natural
- * height inside the flex column (`.device-console`) -- `flex: none` on
- * the toolbar/hint/sequencing-indicator/send-form means only the log
- * (`flex: 1` below) grows or shrinks when this component is mounted in
- * a viewport-bound column (`RobotPage.css`'s `.robot-page-column-console`),
- * so the send line at the bottom never gets squeezed. Harmless where
- * `.device-console` is in plain document flow (`RelayPage`/
- * `UnknownDevicePage`) -- `flex: none` is already every flex item's
- * effective growth behavior there, just made explicit. */
 .console-toolbar,
 .console-hint,
 .sequencing-indicator,
@@ -25,54 +16,55 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.6rem;
+  gap: var(--space-2);
 }
 
 .console-button {
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.35rem 0.9rem;
-  border-radius: 0.4rem;
-  font-size: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  color: var(--text);
+  font: 600 13px/1 var(--font-sans);
   cursor: pointer;
 }
 
+.console-button:hover:not(:disabled) {
+  border-color: var(--text-heading);
+}
+
 .console-button:disabled {
-  color: var(--rc-text-muted);
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
 .console-button-primary {
-  background: var(--rc-accent);
-  border-color: var(--rc-accent);
-  color: var(--rc-accent-contrast);
-}
-
-.console-button-primary:disabled {
-  background: var(--rc-border);
-  border-color: var(--rc-border);
-  color: var(--rc-text-muted);
+  border-color: var(--league-navy);
+  background: var(--league-navy);
+  color: #ffffff;
 }
 
 .console-toggle {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
-  color: var(--rc-text-muted);
-  font-size: 0.8rem;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
   cursor: pointer;
   user-select: none;
 }
 
 .console-hint {
   margin: 0;
-  padding: 0.5rem 0.75rem;
-  border-radius: 0.4rem;
-  background: var(--rc-warn-bg);
-  border: 1px solid var(--rc-warn-border);
-  color: var(--rc-warn-text);
-  font-size: 0.85rem;
+  padding: 8px 12px;
+  border: 1px solid var(--status-warn-border);
+  border-radius: var(--radius-md);
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  font-size: 13px;
 }
 
 .console-link-button {
@@ -86,141 +78,98 @@
   cursor: pointer;
 }
 
+/* The dock and the popup bound the console's height; this is a backstop. */
 .console-log {
   flex: 1;
-  /* Stakeholder (2026-09-13): the console never grows past the screen.
-   * Floor brought down from `12rem` to `8rem` (ticket 018-018).
-   *
-   * **Sprint 022 ticket 008 correction**: the paragraph this comment
-   * used to carry claimed `RelayPage`/`UnknownDevicePage` mounted
-   * `DeviceConsole` directly, in plain document flow, with this
-   * `max-height` as the only thing capping it there, and that a
-   * `RobotPage.css` `.robot-page-column-right .console-log` override
-   * with `max-height: none` took precedence on the three robot-page
-   * tabs. Both halves of that went stale as of sprint 022 ticket 007,
-   * which this comment was never updated to reflect: every page-level
-   * `DeviceConsole` mount was deleted in favor of the one `ConsoleDock`
-   * mount (`console-dock/ConsoleDock.tsx`), and the
-   * `.robot-page-column-right .console-log` override was deleted
-   * alongside it (`RobotPage.css`'s own doc comment has the account).
-   * The only two places `DeviceConsole` mounts today are
-   * `.console-dock-pane` (the docked case -- `ConsoleDock.css`, an
-   * explicit pixel `height` set by `ConsoleDock.tsx`'s own inline
-   * style) and `.popup-console-window` (the popped-out case --
-   * `PopupConsoleWindow.css`, `height: 100vh` of the popup's *own*,
-   * separate browser window). Both already give `.device-console` a
-   * hard, flex-bounded height from their own container
-   * (`flex: 1 1 auto; min-height: 0` in each stylesheet), so this
-   * `max-height` is no longer the operative constraint in either case
-   * -- it is a generous backstop that in practice sits well above
-   * whatever room either container actually has left to give it.
-   *
-   * Left deliberately as a viewport-relative literal, **not** rewritten
-   * to `var(--console-dock-height)` (ticket 008's own new custom
-   * property -- see `console-dock/ConsoleDock.tsx`'s "Ticket 008" doc
-   * comment section for the full contract): this rule does not reserve
-   * room *for* the dock the way `RobotPage.css`'s
-   * `.robot-page-column-console` or `DevicePage.css`'s
-   * `.device-page-shell` do. It lives *inside* the console itself, in
-   * both of its current mount sites, so the dock's own footprint on the
-   * page around it is simply not a concern here. */
   min-height: 8rem;
   max-height: calc(100vh - 22rem);
   overflow-y: auto;
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  border-radius: 0.6rem;
-  padding: 0.6rem 0.8rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.85rem;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  font: 12.5px/18px var(--font-mono);
 }
 
 .console-log-empty {
   margin: 0;
-  color: var(--rc-text-muted);
-  font-family:
-    system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
 }
 
 .console-line {
   display: flex;
-  gap: 0.5rem;
-  padding: 0.05rem 0;
+  gap: var(--space-2);
+  padding: 1px 0;
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.4;
 }
 
 .console-line-direction {
   flex: none;
   width: 1rem;
   text-align: center;
-  color: var(--rc-text-muted);
+  color: var(--text-muted);
 }
 
 .console-line-tx .console-line-direction {
-  color: var(--rc-accent);
+  color: var(--link);
 }
 
 .console-line-rx .console-line-direction {
-  color: var(--rc-ok-text);
+  color: var(--ok-text);
 }
 
 .console-line-kind-data {
-  color: var(--rc-text);
+  color: var(--text);
 }
 
 .console-line-kind-comment {
-  color: var(--rc-text-muted);
+  color: var(--text-muted);
   font-style: italic;
 }
 
 .console-line-kind-debug {
-  color: var(--rc-text-muted);
+  color: var(--text-muted);
 }
 
 .console-line-kind-ack {
-  color: var(--rc-text-muted);
+  color: var(--text-muted);
   font-size: 0.9em;
 }
 
 .console-line-kind-error {
-  color: var(--rc-danger-text);
+  color: var(--danger);
   font-weight: 600;
 }
 
-/* Status-poll traffic (LogEntry.origin === "poll"), shown only when the
- * "Show status polls" toggle is checked -- muted relative to every kind
- * above so it reads as background/secondary next to ordinary traffic
- * once revealed. Layered on top of a `console-line-kind-*` class, never
- * replacing it. */
 .console-line-origin-poll {
-  color: var(--rc-text-muted);
+  color: var(--text-muted);
   opacity: 0.7;
 }
 
 .console-log-note {
   margin: 0;
-  font-size: 0.78rem;
-  color: var(--rc-text-muted);
+  font: 500 12px/16px var(--font-sans);
+  color: var(--text-muted);
 }
 
 .console-send {
   display: flex;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .console-send-input {
   flex: 1;
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.45rem 0.7rem;
-  border-radius: 0.4rem;
-  font-size: 0.9rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  height: 34px;
+  padding: 0 10px;
+  font: 13px var(--font-mono);
 }
 
 .console-send-input:disabled {
-  color: var(--rc-text-muted);
+  color: var(--text-muted);
+}
+
+.console-send .console-button {
+  height: 34px;
 }

@@ -60,35 +60,37 @@ export function DiagnosticsPanel({ device, current }: { device: SnapshotDevice; 
       {current.session !== undefined && <StatusPollingControl link={current} />}
       {current.session !== undefined && <StoredDataPanel link={current} />}
 
-      <h3>Connections</h3>
-      <div className="diagnostics-table-wrap">
-        <table className="diagnostics-table">
-          <thead>
-            <tr>
-              <th>Connection</th>
-              <th>State</th>
-              <th>Reason</th>
-              <th>Since</th>
-              <th>Last seen</th>
-              <th>Next retry</th>
-              <th>Link id</th>
-            </tr>
-          </thead>
-          <tbody>
-            {device.links.map((link) => (
-              <tr key={link.id} className={link.id === current.id ? "diagnostics-current" : undefined} data-testid={`diagnostics-link-${link.id}`}>
-                <td>{connectionLabel(link)}{link.id === current.id ? " (this page)" : ""}</td>
-                <td>{link.state}{" · "}{linkStateText(link, now, device.kind)}</td>
-                <td>{link.reason ?? "—"}</td>
-                <td>{when(link.since)}</td>
-                <td>{when(link.lastSeen)}</td>
-                <td>{when(link.nextRetryAt)}</td>
-                <td className="diagnostics-mono">{link.id}</td>
+      <section className="diagnostics-connections" aria-label="Connections">
+        <h3>Connections</h3>
+        <div className="diagnostics-table-wrap">
+          <table className="diagnostics-table">
+            <thead>
+              <tr>
+                <th>Connection</th>
+                <th>State</th>
+                <th>Reason</th>
+                <th>Since</th>
+                <th>Last seen</th>
+                <th>Next retry</th>
+                <th>Link id</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {device.links.map((link) => (
+                <tr key={link.id} className={link.id === current.id ? "diagnostics-current" : undefined} data-testid={`diagnostics-link-${link.id}`}>
+                  <td>{connectionLabel(link)}{link.id === current.id ? " (this page)" : ""}</td>
+                  <td>{link.state}{" · "}{linkStateText(link, now, device.kind)}</td>
+                  <td>{link.reason ?? "—"}</td>
+                  <td>{when(link.since)}</td>
+                  <td>{when(link.lastSeen)}</td>
+                  <td>{when(link.nextRetryAt)}</td>
+                  <td className="diagnostics-mono">{link.id}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       {/* Sprint 019 ticket 006 (SUC-006/SUC-007): a small, read-only list
           of the last few MCP-executed drive/flash actions touching this

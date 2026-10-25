@@ -1,65 +1,73 @@
-/* Deliberately not ".status-panel" -- see StatusPanel.tsx's doc comment
- * on why that class name is reserved (a regression guard in
- * RobotPage.test.tsx checks it stays absent from the page). */
+/* Deliberately not ".status-panel": RobotPage.test.tsx guards that class stays absent. */
 .robot-status-panel {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--surface-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
 }
 
 .status-panel-heading {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.6rem;
+  gap: var(--space-2) var(--space-3);
 }
 
 .status-panel-heading h3 {
   margin: 0;
-  font-size: 1rem;
+  font: 700 12px/16px var(--font-sans);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.status-panel-note {
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
 .status-panel-state {
   margin: 0;
-  padding: 0.25rem 0.7rem;
-  border-radius: 0.4rem;
-  background: var(--rc-surface);
-  border: 1px solid var(--rc-border);
-  color: var(--rc-text);
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  font-size: 0.95rem;
-}
-
-/* E-STOPPED gets the same strong danger treatment EstopControl.css uses
- * for its own button, so this headline reads as urgent no matter which
- * panel a student happens to be looking at. */
-.status-panel-note {
-  color: var(--rc-text-muted);
-  font-size: 0.85rem;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font: 700 12px/16px var(--font-sans);
+  letter-spacing: 0.06em;
 }
 
 .status-panel-state-danger {
-  background: var(--rc-danger-bg);
-  border-color: var(--rc-danger-border);
-  color: var(--rc-danger-contrast);
+  background: var(--stop-red);
+  color: var(--on-stop);
 }
 
-/* OOP 2026-09-10: a real two-column table with named rows. */
+.status-panel-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.status-panel-group h4 {
+  margin: 0 0 6px;
+  font: 700 12px/16px var(--font-sans);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
 .status-panel-table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 0.85rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 0.4rem;
-  overflow: hidden;
-  background: var(--rc-surface);
+  font-size: 13px;
 }
 
 .status-panel-table th,
 .status-panel-table td {
-  padding: 0.28rem 0.7rem;
-  border-top: 1px solid var(--rc-border);
+  padding: 5px 0;
+  border-top: 1px solid var(--border);
   text-align: left;
   vertical-align: baseline;
 }
@@ -70,64 +78,46 @@
 }
 
 .status-panel-table th {
+  padding-right: var(--space-3);
   font-weight: 500;
-  color: var(--rc-text-muted);
+  color: var(--text-muted);
   width: 11rem;
   white-space: nowrap;
 }
 
 .status-panel-table td {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: var(--rc-text);
+  font: 600 13px/19px var(--font-mono);
+  color: var(--text);
 }
 
 .status-panel-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .status-panel-button {
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.35rem 0.9rem;
-  border-radius: 0.4rem;
-  font-size: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  color: var(--text);
+  font: 600 13px/1 var(--font-sans);
   cursor: pointer;
 }
 
+.status-panel-button:hover:not(:disabled) {
+  border-color: var(--text-heading);
+}
+
 .status-panel-button:disabled {
-  color: var(--rc-text-muted);
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
 .status-panel-button-danger {
-  border-color: var(--rc-danger-border);
-  color: var(--rc-danger-text);
-  font-weight: 600;
-}
-
-.status-panel-button-danger:hover:not(:disabled) {
-  background: var(--rc-warn-bg);
-}
-
-.status-panel-button-danger:disabled {
-  border-color: var(--rc-border);
-  color: var(--rc-text-muted);
-}
-
-.status-panel-columns {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-  gap: 1rem;
-  align-items: start;
-}
-
-.status-panel-group h4 {
-  margin: 0 0 0.35rem;
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--rc-text-muted);
+  color: var(--danger);
 }

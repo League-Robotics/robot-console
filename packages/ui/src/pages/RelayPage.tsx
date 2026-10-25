@@ -273,92 +273,68 @@ export function RelayPage({ device, onActiveTargetChange }: RelayPageProps) {
 
   return (
     <section className={`relay-page${child ? " relay-page-connected" : ""}`} aria-label="Relay device">
-      <h2>{relayName}</h2>
-      {/* 018-010 item 3: a relay device is a host, not "No role
-          announced" -- `roleDisplay` names what it is by its links'
-          own transport (mbrelay/mbserial host) when no banner role has
-          been announced, or keeps a USB relay's own announced role
-          (RADIOBRIDGE/RADIORELAY) unchanged. */}
-      <p className="relay-page-role" data-testid="relay-page-role">
-        {roleDisplay(device)}
-      </p>
+      <div className="lg-panel relay-page-panel">
+        <h2 className="lg-panel__h">{relayName}</h2>
+        {/* 018-010 item 3: a relay device is a host, not "No role
+            announced" -- `roleDisplay` names what it is by its links'
+            own transport (mbrelay/mbserial host) when no banner role has
+            been announced, or keeps a USB relay's own announced role
+            (RADIOBRIDGE/RADIORELAY) unchanged. */}
+        <p className="lg-meta relay-page-role" data-testid="relay-page-role">
+          {roleDisplay(device)}
+        </p>
 
-      <RelayConnectControls
-        variant="page"
-        relay={device}
-        devices={devices}
-        relays={relays}
-        robotOptions={robotOptions}
-        // Exactly one message -- see this module's own doc comment. The
-        // reconciler (ticket 002's `planUserOpen`) treats this as a
-        // close-old-child + open-new-child job when a child already
-        // exists, never a client-sequenced session-close then
-        // session-open.
-        onConnect={(linkId, target) => {
-          if (typeof target === "string") {
-            rawConnect.clear();
-            send({ type: "session-open", relayLinkId: linkId, name: target });
-            return;
-          }
-          rawConnect.start(rawRadioChildLinkId(linkId, target.channel, target.group));
-          send({ type: "session-open", relayLinkId: linkId, channel: target.channel, group: target.group });
-        }}
-        rawAttempt={rawConnect.attempt}
-        onDisconnect={(linkId) => send({ type: "session-close", linkId })}
-        // Ticket 011 (carried from 009's send-gating sweep): gates
-        // Connect/Switch the same way every other send-capable control
-        // in the app now does -- the relay link's own `session`-
-        // independent state (it never has a `session` itself) meant
-        // this button was the one place send-gating had not yet
-        // reached.
-        sendable={sendable}
-      />
+        <RelayConnectControls
+          variant="page"
+          relay={device}
+          devices={devices}
+          relays={relays}
+          robotOptions={robotOptions}
+          // Exactly one message -- see this module's own doc comment. The
+          // reconciler (ticket 002's `planUserOpen`) treats this as a
+          // close-old-child + open-new-child job when a child already
+          // exists, never a client-sequenced session-close then
+          // session-open.
+          onConnect={(linkId, target) => {
+            if (typeof target === "string") {
+              rawConnect.clear();
+              send({ type: "session-open", relayLinkId: linkId, name: target });
+              return;
+            }
+            rawConnect.start(rawRadioChildLinkId(linkId, target.channel, target.group));
+            send({ type: "session-open", relayLinkId: linkId, channel: target.channel, group: target.group });
+          }}
+          rawAttempt={rawConnect.attempt}
+          onDisconnect={(linkId) => send({ type: "session-close", linkId })}
+          // Ticket 011 (carried from 009's send-gating sweep): gates
+          // Connect/Switch the same way every other send-capable control
+          // in the app now does -- the relay link's own `session`-
+          // independent state (it never has a `session` itself) meant
+          // this button was the one place send-gating had not yet
+          // reached.
+          sendable={sendable}
+        />
 
-      {child ? (
-        <>
-          <p className="relay-page-hint">The relay's own console returns after Disconnect.</p>
+        {child ? (
+          <>
+            <p className="relay-page-hint">The relay's own console returns after Disconnect.</p>
 
-          {/* Mounted above RobotPage, never inside it -- RobotPage's own
-           * transport-blindness contract forbids a relay-aware prop
-           * reaching it. Reads the child device's own already-resolved
-           * radio field directly -- see this module's own doc comment. */}
-          <AddressSourceChip radio={child.device.radio} />
-
-          {/* `onActiveTargetChange` is deliberately NOT threaded through
-              here: `RelayPage` itself already reports this exact same
-              `{ link: child.link, name: child.device.name }` target via
-              its own effect above, before this render happens. Handing
-              this nested `RobotPage` the live callback too would just
-              double-report the identical value on every one of its own
-              re-renders for no benefit, and would make this page's own
-              bridging behavior depend on `RobotPage`'s internals rather
-              than being fully owned (and testable) here. A stable
-              module-level no-op satisfies `RobotPageProps`' required
-              prop without any of that. */}
-          <RobotPage device={child.device} link={child.link} onActiveTargetChange={NOOP_ACTIVE_TARGET_CHANGE} />
-        </>
-      ) : (
-        <>
+            {/* Mounted above RobotPage, never inside it -- RobotPage's own
+             * transport-blindness contract forbids a relay-aware prop
+             * reaching it. */}
+            <AddressSourceChip radio={child.device.radio} />
+          </>
+        ) : (
           <p className="relay-page-hint">
             Uses the picked robot's radio address as configured on its device page (Set Radio), or the name-derived
             default if none is set.
           </p>
+        )}
+      </div>
 
-          {/* Extended scope (team-lead, 2026-09-13), item D: an idle
-              relay's own console/sequencing-state banner was meaningless
-              noise ("No link open to torture — open a link before
-              sending." / "No session — sequencing state…") -- this
-              relay's own state (idle / sweeping / bridging), already
-              rendered by RelayConnectControls above, is the only thing
-              worth showing while there is no session on this link.
-              Sprint 022 ticket 007: this branch used to also mount a
-              `ConsolePane` once the relay's own connectivity link became
-              usable (a student opened a raw console on the relay
-              itself); that mount is deleted -- `ConsoleDock` already
-              shows this same link's log via this page's own "active
-              console target" report, above, so nothing is lost. */}
-        </>
-      )}
+      {/* `onActiveTargetChange` is deliberately not threaded through: this
+          page already reports the same child target via its own effect. */}
+      {child && <RobotPage device={child.device} link={child.link} onActiveTargetChange={NOOP_ACTIVE_TARGET_CHANGE} showIdentity />}
     </section>
   );
 }

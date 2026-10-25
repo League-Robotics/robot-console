@@ -178,6 +178,7 @@ import { useSendable, useWsActions } from "../ws/WsProvider";
 import { isLinkUsable } from "../deviceDisplay";
 import { useHeldDrive } from "../hooks/useHeldDrive";
 import { clearEstop } from "../lib/estop";
+import { Icon, StopOctagon, type IconName } from "./Icon";
 import "./DriveControls.css";
 
 /** [mm/s] -- see this module's doc comment for why 150. */
@@ -371,78 +372,12 @@ const TURN_180_RIGHT: FixedTurn = {
   gridArea: "turn180right",
 };
 
-/** A small circular-arrow glyph (Feather-style `rotate-ccw`/`rotate-cw`
- * paths) -- deliberately icon-only with no visible text, so the button
- * itself carries the degree number and `aria-label` carries the words
- * ("Turn 90 degrees left") that a screen reader or a test asserts on.
- * `aria-hidden` here because the enclosing button's own `aria-label`
- * already gives the accessible name -- this SVG must never be read as a
- * second, redundant description. */
-function TurnArrowIcon({ direction }: { direction: "ccw" | "cw" }) {
-  const commonProps = {
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: 2,
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-  };
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="16"
-      height="16"
-      aria-hidden="true"
-      focusable="false"
-      className="drive-controls-turn-icon"
-    >
-      {direction === "ccw" ? (
-        <>
-          <polyline points="1 4 1 10 7 10" {...commonProps} />
-          <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" {...commonProps} />
-        </>
-      ) : (
-        <>
-          <polyline points="23 4 23 10 17 10" {...commonProps} />
-          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" {...commonProps} />
-        </>
-      )}
-    </svg>
-  );
-}
-
-/** A plain octagonal stop sign, optionally carrying a white "E" (the
- * E-STOP variant) and an optional "latched" visual state (dimmed body,
- * outlined rather than filled) for while `robotStatus.estopped` is
- * `true`. `aria-hidden` for the same reason as {@link TurnArrowIcon} --
- * the enclosing button's own `aria-label`/text is the accessible name. */
-function StopSignIcon({ letter, latched }: { letter: boolean; latched: boolean }) {
-  return (
-    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
-      <polygon
-        points="8,2 16,2 22,8 22,16 16,22 8,22 2,16 2,8"
-        className={
-          latched
-            ? "drive-controls-stop-icon-body drive-controls-stop-icon-body-latched"
-            : "drive-controls-stop-icon-body"
-        }
-      />
-      {letter && (
-        <text
-          x="12"
-          y="16.5"
-          textAnchor="middle"
-          className={
-            latched
-              ? "drive-controls-stop-icon-letter drive-controls-stop-icon-letter-latched"
-              : "drive-controls-stop-icon-letter"
-          }
-        >
-          E
-        </text>
-      )}
-    </svg>
-  );
-}
+const DIRECTION_ICONS: Record<DriveDirection, IconName> = {
+  forward: "up",
+  backward: "down",
+  left: "left",
+  right: "right",
+};
 
 export interface DriveControlsProps {
   link: SnapshotLink;
@@ -551,7 +486,7 @@ export function DriveControls({ link, speedText: ownedSpeedText, onSpeedText }: 
       <div key={direction} className={`drive-controls-dir-cell drive-controls-dir-cell-${direction}`}>
         <button
           type="button"
-          className="drive-controls-button drive-controls-drive-button"
+          className="drive-controls-button drive-controls-drive-button lg-drive__key"
           data-testid={`drive-${direction}`}
           disabled={!linkOpen}
           onMouseDown={() => press(direction)}
@@ -563,11 +498,12 @@ export function DriveControls({ link, speedText: ownedSpeedText, onSpeedText }: 
           }}
           onTouchEnd={release}
         >
+          <Icon name={DIRECTION_ICONS[direction]} />
           {DIRECTION_LABELS[direction]}
         </button>
         <button
           type="button"
-          className="drive-controls-button drive-controls-nudge-button"
+          className="drive-controls-button drive-controls-nudge-button lg-drive__nudge"
           data-testid={`drive-nudge-${direction}`}
           aria-label={spec.ariaLabel}
           title={spec.ariaLabel}
@@ -585,17 +521,17 @@ export function DriveControls({ link, speedText: ownedSpeedText, onSpeedText }: 
       <button
         key={fixedTurn.testId}
         type="button"
-        className={`drive-controls-button drive-controls-turn-button drive-controls-button-${fixedTurn.gridArea}`}
+        className={`drive-controls-button drive-controls-turn-button drive-controls-button-${fixedTurn.gridArea} lg-drive__key`}
         data-testid={fixedTurn.testId}
         aria-label={fixedTurn.ariaLabel}
         title={fixedTurn.ariaLabel}
         disabled={!linkOpen}
         onClick={() => turn(fixedTurn.rotation, fixedTurn.timeoutMs)}
       >
-        <TurnArrowIcon direction={fixedTurn.icon} />
-        <span className="drive-controls-turn-degrees" aria-hidden="true">
-          {fixedTurn.degreesLabel}
-        </span>
+        <Icon name={fixedTurn.icon === "ccw" ? "rot-l" : "rot-r"} />
+        <small className="drive-controls-turn-degrees" aria-hidden="true">
+          {fixedTurn.degreesLabel}°
+        </small>
       </button>
     );
   }
@@ -616,25 +552,28 @@ export function DriveControls({ link, speedText: ownedSpeedText, onSpeedText }: 
         <div className="drive-controls-stop-cell">
           <button
             type="button"
-            className="drive-controls-button drive-controls-stop-button"
+            className="drive-controls-button drive-controls-stop-button lg-drive__stop"
             data-testid="stop-button"
             aria-label="Stop"
             title="Stop the current motion (does not latch)"
             disabled={!linkOpen}
             onClick={handleStop}
           >
-            <StopSignIcon letter={false} latched={false} />
+            <StopOctagon size={26} />
+            <span aria-hidden="true">Stop</span>
           </button>
           <button
             type="button"
-            className="drive-controls-button drive-controls-estop-button"
+            className="drive-controls-button drive-controls-estop-button lg-drive__stop"
+            data-latched={estopped}
             data-testid="estop-button"
             aria-label="Emergency stop"
             title={estopped ? "Emergency stop (latched)" : "Emergency stop"}
             disabled={!linkOpen}
             onClick={() => sendCommand(linkId, "ESTOP")}
           >
-            <StopSignIcon letter={true} latched={estopped} />
+            <StopOctagon size={26} letter="E" />
+            <span aria-hidden="true">E-stop</span>
           </button>
         </div>
         {directionButton("right")}
@@ -643,6 +582,10 @@ export function DriveControls({ link, speedText: ownedSpeedText, onSpeedText }: 
         {directionButton("backward")}
         {turnButton(TURN_180_RIGHT)}
       </div>
+      <p className="lg-drive__legend drive-controls-legend">
+        <b>Hold</b> an arrow to drive, release to stop · <b>N</b> nudges {NUDGE_DISTANCE_MM} mm / {NUDGE_ROTATION_DEG}° ·{" "}
+        <b>Stop</b> doesn&apos;t latch, <b>E-stop</b> does
+      </p>
       <div className="drive-controls-speed">
         <label htmlFor="drive-controls-speed-input">Speed</label>{" "}
         <input
@@ -657,18 +600,18 @@ export function DriveControls({ link, speedText: ownedSpeedText, onSpeedText }: 
           onChange={(event) => setSpeedText(event.target.value)}
         />{" "}
         mm/s
+        {estopped && (
+          <button
+            type="button"
+            className="lg-btn lg-btn--sm lg-btn--danger drive-controls-clear-estop-button"
+            data-testid="estop-clear-button"
+            disabled={!linkOpen}
+            onClick={() => clearEstop(sendCommand, linkId)}
+          >
+            Clear E-STOP
+          </button>
+        )}
       </div>
-      {estopped && (
-        <button
-          type="button"
-          className="drive-controls-clear-estop-button"
-          data-testid="estop-clear-button"
-          disabled={!linkOpen}
-          onClick={() => clearEstop(sendCommand, linkId)}
-        >
-          Clear E-STOP
-        </button>
-      )}
     </section>
   );
 }

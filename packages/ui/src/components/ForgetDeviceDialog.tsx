@@ -6,6 +6,7 @@
 import { useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { useSendable, useWsActions } from "../ws/WsProvider";
+import { Icon } from "./Icon";
 import { Modal } from "./Modal";
 
 export interface ForgetDeviceDialogProps {
@@ -16,19 +17,8 @@ export interface ForgetDeviceDialogProps {
   triggerIcon?: ReactNode;
 }
 
-/** A trash can in the same stroke style as the cards' arrow and lightning icons. */
 export function TrashIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">
-      <g fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <polyline points="4 7 20 7" />
-        <path d="M9 7V4h6v3" />
-        <path d="M6 7l1 13h10l1-13" />
-        <line x1="10" y1="11" x2="10" y2="17" />
-        <line x1="14" y1="11" x2="14" y2="17" />
-      </g>
-    </svg>
-  );
+  return <Icon name="trash" size={20} />;
 }
 
 export function ForgetDeviceDialog({ deviceId, name, triggerClassName, triggerIcon }: ForgetDeviceDialogProps) {

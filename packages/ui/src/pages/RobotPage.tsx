@@ -184,7 +184,9 @@
 import { useEffect, useState } from "react";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import type { ActiveConsoleTarget } from "./DevicePage";
-import { nameDisplay } from "../deviceDisplay";
+import { deviceMetaText, nameDisplay } from "../deviceDisplay";
+import { deviceStatus } from "../status";
+import { Icon, type IconName } from "../components/Icon";
 import { CalibrationPage } from "../components/CalibrationPage";
 import { DiagnosticsPanel } from "../components/DiagnosticsPanel";
 import { DriveTab } from "../components/DriveTab";
@@ -210,6 +212,8 @@ export interface RobotPageProps {
    * `RelayPage`'s one divergent case (its bridged-child substitution)
    * can share a single mechanism with every other dispatch arm. */
   onActiveTargetChange: (target: ActiveConsoleTarget) => void;
+  /** Name and meta above the tabs, for a robot shown inside another device's page. */
+  showIdentity?: boolean;
 }
 
 /** OOP 2026-09-10: the robot page is split into tabs next to the
@@ -229,7 +233,7 @@ export interface RobotPageProps {
  * showing, so tabbing here never touches it. */
 export type RobotTab = "drive" | "calibration" | "diagnostics";
 
-export function RobotPage({ device, link, onActiveTargetChange }: RobotPageProps) {
+export function RobotPage({ device, link, onActiveTargetChange, showIdentity = false }: RobotPageProps) {
   const [tab, setSelectedTab] = useState<RobotTab>("drive");
 
   // Sprint 022 ticket 006: report the active console target. Deps are
@@ -268,31 +272,37 @@ export function RobotPage({ device, link, onActiveTargetChange }: RobotPageProps
     }
   }, [wifiTabVisited, sendable, send]);
 
-  const tabs: Array<{ id: RobotTab; label: string }> = [
-    { id: "drive", label: "Drive" },
-    { id: "calibration", label: "Calibration" },
-    { id: "diagnostics", label: "Diagnostics" },
+  const tabs: Array<{ id: RobotTab; label: string; icon: IconName }> = [
+    { id: "drive", label: "Drive", icon: "drive" },
+    { id: "calibration", label: "Calibration", icon: "gauge" },
+    { id: "diagnostics", label: "Diagnostics", icon: "pulse" },
   ];
 
   return (
     <section className="robot-page" aria-label="Robot device">
-      <div className="robot-page-title-row">
-        <h2>{nameDisplay(device).text}</h2>
-        <div className="robot-page-tabs" role="tablist" aria-label="Robot pages">
-          {tabs.map((entry) => (
-            <button
-              key={entry.id}
-              type="button"
-              role="tab"
-              aria-selected={tab === entry.id}
-              className={tab === entry.id ? "robot-page-tab robot-page-tab-active" : "robot-page-tab"}
-              data-testid={`robot-tab-${entry.id}`}
-              onClick={() => setSelectedTab(entry.id)}
-            >
-              {entry.label}
-            </button>
-          ))}
+      {showIdentity && (
+        <div className="robot-page-identity">
+          <h2 className="lg-name" data-status={deviceStatus(device)}>
+            {nameDisplay(device).text}
+          </h2>
+          <p className="lg-meta">{deviceMetaText(device)}</p>
         </div>
+      )}
+      <div className="lg-tabs robot-page-tabs" role="tablist" aria-label="Robot pages">
+        {tabs.map((entry) => (
+          <button
+            key={entry.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === entry.id}
+            className="lg-tab"
+            data-testid={`robot-tab-${entry.id}`}
+            onClick={() => setSelectedTab(entry.id)}
+          >
+            <Icon name={entry.icon} size={16} />
+            {entry.label}
+          </button>
+        ))}
       </div>
 
       {tab === "drive" && <DriveTab link={link} name={device.name} />}

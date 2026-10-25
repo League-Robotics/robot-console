@@ -36,7 +36,7 @@
  * and the write-result display -- see that module's own doc comment for
  * why the save flow itself did not move.
  */
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useSendable, useWifiCredentials, useWifiProvisionResult, useWsActions } from "../ws/WsProvider";
 import { Modal } from "./Modal";
 import { WifiCredentialsForm, validateWifiInput } from "./WifiCredentialsForm";
@@ -52,9 +52,10 @@ export interface WifiCredentialsDialogProps {
    * a link has none of its own. */
   name: string;
   triggerClassName?: string;
+  triggerContent?: ReactNode;
 }
 
-export function WifiCredentialsDialog({ linkId, linkOpen, name, triggerClassName = "device-button" }: WifiCredentialsDialogProps) {
+export function WifiCredentialsDialog({ linkId, linkOpen, name, triggerClassName = "device-button", triggerContent }: WifiCredentialsDialogProps) {
   const { send } = useWsActions();
   // Ticket 011 (carried from 009's send-gating sweep): both the trigger
   // (opening the dialog at all) and the submit button gate on
@@ -141,10 +142,10 @@ export function WifiCredentialsDialog({ linkId, linkOpen, name, triggerClassName
         aria-haspopup="dialog"
         data-testid="wifi-credentials-trigger"
         disabled={!sendable}
-        title={sendable ? undefined : "Disconnected from the host"}
+        title={sendable ? "Set Wi-Fi" : "Disconnected from the host"}
         onClick={() => sendable && setOpen(true)}
       >
-        Set Wi-Fi
+        {triggerContent ?? "Set Wi-Fi"}
       </button>
       <Modal
         open={open}

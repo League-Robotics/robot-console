@@ -909,51 +909,25 @@ describe("AppHeader Set Wi-Fi (sprint 015 ticket 008 restore)", () => {
   });
 });
 
-describe("AppHeader host version display (stakeholder: version on the main page)", () => {
-  // The version rides the snapshot over the WebSocket, not an HTTP
-  // fetch. An earlier version of this feature fetched
-  // `/api/host-info` relative to the page, which works only when the
-  // page and host share an origin -- and under `npm run dev` they do
-  // not: Vite serves the UI on 5173 while the host listens on 4795.
-  // Chrome blocked it outright ("Access to fetch at
-  // 'http://0.0.0.0:4795/api/host-info' from origin
-  // 'http://localhost:5173' has been blocked by CORS policy"), so the
-  // version silently never appeared and these tests still passed,
-  // because they stubbed `fetch` and never exercised a real origin.
-  function mountWithVersion(hostVersion?: string): HTMLDivElement {
-    let socket: FakeSocket | null = null;
-    const el = mount(
-      withRouter(
-        <WsProvider url="ws://test/" socketFactory={() => (socket = new FakeSocket())}>
-          <AppHeader />
-        </WsProvider>,
-        { initialEntries: ["/"] },
-      ),
-    );
-    act(() => {
-      socket!.emitOpen();
-    });
-    act(() => {
-      socket!.emitMessage(snapshot([], hostVersion));
-    });
-    return el;
-  }
-
-  it("shows the running host's version right after the name", () => {
-    const el = mountWithVersion("0.20260919.12");
-    expect(el.querySelector('[data-testid="host-version"]')?.textContent?.trim()).toBe("0.20260919.12");
-    expect(el.querySelector("h1")?.textContent).toContain("robot-console");
-  });
-
-  it("renders just the name, never a placeholder, when the host reports no version", () => {
-    const el = mountWithVersion(undefined);
-    expect(el.querySelector('[data-testid="host-version"]')).toBeNull();
-    expect(el.querySelector("h1")?.textContent?.trim()).toBe("robot-console");
-  });
-
-  it("renders just the name before any snapshot has arrived", () => {
+describe("AppHeader top bar identity (League Apps)", () => {
+  it("names the list page and offers no back button there", () => {
     const { el } = mountAt("/");
-    expect(el.querySelector('[data-testid="host-version"]')).toBeNull();
-    expect(el.querySelector("h1")?.textContent?.trim()).toBe("robot-console");
+    expect(el.querySelector(".lg-top__title")?.textContent).toBe("Devices");
+    expect(el.querySelector('[data-testid="app-header-name"]')).toBeNull();
+  });
+
+  it("shows the device's name as a pill coloured by link state, with no 'Linked' word in it, and the meta line", () => {
+    const { el } = mountAt("/d/usb-SERIAL-A", {
+      devices: [device({ commonName: "robot", role: "NEZHA2", program: "vevov" })],
+    });
+    const name = el.querySelector('[data-testid="app-header-name"]');
+    expect(name?.textContent).toBe("zeguz");
+    expect(name?.getAttribute("data-status")).toBe("idle");
+    expect(el.querySelector('[data-testid="app-header-meta"]')?.textContent).toBe("robot · NEZHA2 · program vevov");
+  });
+
+  it("gives the menu button an accessible name only when the shell supplies a drawer", () => {
+    const { el } = mountAt("/");
+    expect(el.querySelector('[aria-label="Show navigation"]')).toBeNull();
   });
 });

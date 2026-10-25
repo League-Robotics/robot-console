@@ -7,6 +7,7 @@
  * agree between them.
  */
 import { useCopied } from "../lib/clipboard";
+import { Icon } from "./Icon";
 import { WAYPOINT_FORMATS, waypointCode, waypointLines, type Waypoint, type WaypointFormat } from "../lib/waypointCode";
 import "./WaypointsPanel.css";
 
@@ -27,17 +28,8 @@ export function WaypointsPanel({ waypoints, selectedId, format, canRecord, onRec
 
   return (
     <section className="waypoints-panel" aria-label="Waypoints">
-      <div className="waypoints-panel-bar">
-        <button
-          type="button"
-          className="waypoints-panel-record"
-          data-testid="waypoint-record"
-          disabled={!canRecord}
-          title={canRecord ? "Record the robot's current position" : "No position yet — start POSE or FULL telemetry"}
-          onClick={onRecord}
-        >
-          Record
-        </button>
+      <div className="waypoints-panel-head">
+        <h3 className="waypoints-panel-title">Waypoints</h3>
         <div className="waypoints-panel-formats" role="group" aria-label="Waypoint format" data-testid="waypoint-format">
           {WAYPOINT_FORMATS.map((option) => (
             <button
@@ -52,6 +44,19 @@ export function WaypointsPanel({ waypoints, selectedId, format, canRecord, onRec
             </button>
           ))}
         </div>
+      </div>
+      <div className="waypoints-panel-bar">
+        <button
+          type="button"
+          className="waypoints-panel-record"
+          data-testid="waypoint-record"
+          disabled={!canRecord}
+          title={canRecord ? "Record the robot's current position" : "No position yet — start POSE or FULL telemetry"}
+          onClick={onRecord}
+        >
+          <Icon name="record" size={16} />
+          Record
+        </button>
         <button
           type="button"
           className="waypoints-panel-copy"
@@ -59,6 +64,7 @@ export function WaypointsPanel({ waypoints, selectedId, format, canRecord, onRec
           disabled={waypoints.length === 0}
           onClick={() => copy(waypointCode(waypoints, format))}
         >
+          <Icon name="copy" size={16} />
           {copied ? "Copied" : "Copy"}
         </button>
       </div>

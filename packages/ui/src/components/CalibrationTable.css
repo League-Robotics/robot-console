@@ -1,17 +1,14 @@
 .calibration-table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 0.9rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 0.4rem;
-  overflow: hidden;
-  background: var(--rc-surface);
+  margin-bottom: var(--space-3);
+  font-size: 14px;
 }
 
 .calibration-table th,
 .calibration-table td {
-  padding: 0.4rem 0.7rem;
-  border-top: 1px solid var(--rc-border);
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
   text-align: left;
   vertical-align: baseline;
 }
@@ -22,23 +19,21 @@
 }
 
 .calibration-table th {
+  padding-right: var(--space-3);
   font-weight: 500;
-  color: var(--rc-text-muted);
+  color: var(--text-muted);
   width: 12rem;
   white-space: nowrap;
 }
 
 .calibration-table input {
   width: 7rem;
-  font: inherit;
-  padding: 0.2rem 0.4rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 0.3rem;
-  background: var(--rc-surface);
-  color: var(--rc-text);
+  height: 34px;
+  padding: 0 10px;
+  font: 14px var(--font-mono);
 }
 
 .calibration-source {
-  color: var(--rc-text-muted);
-  font-size: 0.8rem;
+  color: var(--text-muted);
+  font: 500 12px/16px var(--font-sans);
 }

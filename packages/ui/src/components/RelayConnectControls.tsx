@@ -222,11 +222,11 @@ export function RelayConnectControls({
         rawAddress={rawText}
         onRawAddressChange={setRawText}
       />
-      <button type="button" data-testid="relay-connect" disabled={connectDisabled} onClick={handleConnect}>
+      <button type="button" className="lg-btn" data-testid="relay-connect" disabled={connectDisabled} onClick={handleConnect}>
         {bridged ? "Switch" : "Connect"}
       </button>
       {bridged && child && (
-        <button type="button" data-testid="relay-disconnect" onClick={() => onDisconnect(child.link.id)}>
+        <button type="button" className="lg-btn" data-testid="relay-disconnect" onClick={() => onDisconnect(child.link.id)}>
           Disconnect
         </button>
       )}

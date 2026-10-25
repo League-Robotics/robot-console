@@ -1,86 +1,61 @@
-/* PopupConsoleWindow.css — sprint 022 ticket 005.
-   This file ships as an ordinary part of the main app bundle (imported
-   by PopupConsoleWindow.tsx like any other component stylesheet) --
-   it does NOT need any special handling to reach the popup window. By
-   the time a student can click the pop-out button, this file is
-   already present in the *parent* document's own <head> (Vite dev
-   injects it as a <style> tag; a production build folds it into the
-   app's bundled stylesheet), so ConsoleDock.tsx's whole-<head> copy
-   (see PopupConsoleWindow.tsx's own doc comment) picks it up along
-   with every other rule already in the page, with no separate copy
-   step of its own. */
-
-/* Fills the popup's own <body> -- the popup has no other page chrome
-   competing for space, unlike ConsoleDock's docked pane, which shares
-   .console-dock with the always-present collapsed bar. */
 .popup-console-window {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--space-2);
   height: 100vh;
   min-height: 0;
-  padding: 0.75rem 0.9rem;
+  padding: 0 0 var(--space-3);
   box-sizing: border-box;
-  background: var(--rc-surface);
-  color: var(--rc-text);
+  background: var(--surface-card);
+  color: var(--text);
+  font-family: var(--font-sans);
 }
 
 .popup-console-window-bar {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  gap: 10px;
+  min-height: 43px;
+  padding: 0 var(--space-4);
+  background: var(--league-navy);
+  color: var(--navy-soft);
+  --focus-ring: var(--league-yellow);
 }
 
 .popup-console-window-title {
-  font-size: 0.8rem;
-  font-weight: 600;
-  letter-spacing: 0.03em;
+  font: 600 12px/1 var(--font-sans);
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--rc-text-muted);
+  color: var(--navy-soft);
 }
 
-/* The one control inside the popup itself (per this ticket's
-   Acceptance Criteria: "the popup has a 'put it back' control") --
-   styled to match .console-dock-toggle in ConsoleDock.css so the same
-   affordance reads consistently whether the student is looking at the
-   docked bar or the popup. */
-.popup-console-window-restore {
-  margin-left: auto;
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.3rem 0.85rem;
-  border-radius: 0.4rem;
-  font-size: 0.8rem;
-  cursor: pointer;
-}
-
-/* The commands toggle sits to the LEFT of "Put it back", which keeps
-   `margin-left: auto` on the restore button alone and lets the two
-   cluster at the bar's right edge in that order -- the same
-   arrangement, and the same reading order, as the docked bar's own
-   Commands/Pop out/Show trio. */
+.popup-console-window-restore,
 .popup-console-window-commands-toggle {
   margin-left: auto;
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.3rem 0.7rem;
-  border-radius: 0.4rem;
-  font-size: 0.8rem;
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--navy-line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--navy-soft);
+  font: 600 12px/1 var(--font-sans);
   cursor: pointer;
 }
 
-/* With both buttons present the restore button no longer needs to push
-   itself right -- the toggle before it already did. */
-.popup-console-window-commands-toggle + .popup-console-window-restore {
-  margin-left: 0.4rem;
+.popup-console-window-restore:hover,
+.popup-console-window-commands-toggle:hover {
+  background: var(--navy-hover);
+  color: #ffffff;
 }
 
-/* `.console-body` (ConsoleBody.css) now owns how the log and the
-   command rail divide this window; all that is left here is letting
-   that row take the height the bar does not. */
+.popup-console-window-commands-toggle + .popup-console-window-restore {
+  margin-left: 6px;
+}
+
 .popup-console-window .console-body {
   flex: 1 1 auto;
   min-height: 0;
+  padding: 0 var(--space-4);
 }

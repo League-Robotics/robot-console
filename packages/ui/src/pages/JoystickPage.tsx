@@ -54,17 +54,19 @@ export function JoystickPage({ device, link, onActiveTargetChange }: JoystickPag
 
   return (
     <section className="joystick-page" aria-label="Joystick">
-      <h2 className="joystick-page-name">{name}</h2>
-      <p className="joystick-page-role">{roleDisplay(device)}</p>
+      <div className="lg-panel joystick-page-panel">
+        <h3 className="lg-panel__h">Joystick</h3>
+        <p className="lg-meta joystick-page-role">{roleDisplay(device)}</p>
 
-      <p className="joystick-page-note">
-        This is a joystick — it drives a robot over radio. It announces itself here, then talks only to the robot, so
-        the debug console below stays quiet while it is running. That is normal.
-      </p>
+        <p className="joystick-page-note">
+          This is a joystick — it drives a robot over radio. It announces itself here, then talks only to the robot, so
+          the debug console below stays quiet while it is running. That is normal.
+        </p>
 
-      {/* Its own kind only, exactly as a robot's page offers robot
-          firmware and a relay's offers relay firmware. */}
-      <FlashDialog link={link} name={name} allowedFirmware={["joystick"]} allowLocalHex={false} />
+        {/* Its own kind only, exactly as a robot's page offers robot
+            firmware and a relay's offers relay firmware. */}
+        <FlashDialog link={link} name={name} allowedFirmware={["joystick"]} allowLocalHex={false} />
+      </div>
     </section>
   );
 }

@@ -17,6 +17,7 @@ import {
   DEFAULT_WIFI_FAST_REQUERY_MAX_ATTEMPTS,
   type MdnsWatcherDeps,
   type MdnsWatcherOptions,
+  onLocalSubnet,
 } from "./mdnsWatcher.js";
 
 // Ticket 014-008: `mdnsWatcher.ts`'s own suite. No real multicast
@@ -1430,5 +1431,15 @@ describe("mdnsWatcher TTL/interval constants block", () => {
     expect(DEFAULT_REQUERY_INTERVAL_MS).toBeLessThan(DEFAULT_MBRELAY_TTL_MS);
     expect(DEFAULT_REQUERY_INTERVAL_MS).toBeLessThan(DEFAULT_MBFLASH_TTL_MS);
     expect(DEFAULT_REQUERY_INTERVAL_MS).toBeLessThan(DEFAULT_RADIO_TTL_MS);
+  });
+});
+
+describe("onLocalSubnet", () => {
+  const ferranti = { wlo1: [{ address: "192.168.5.219", netmask: "255.255.254.0", family: "IPv4", internal: false }] } as never;
+
+  it("tells a reachable address of a two-network host from its other one", () => {
+    expect(onLocalSubnet("192.168.5.172", ferranti)).toBe(true);
+    expect(onLocalSubnet("192.168.4.147", ferranti)).toBe(true);
+    expect(onLocalSubnet("192.168.1.40", ferranti)).toBe(false);
   });
 });

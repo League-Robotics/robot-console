@@ -107,6 +107,8 @@ import {
   isLinkActive,
   isLinkAnswering,
   isLinkUsable,
+  isLocalDevice,
+  isLocalLink,
   isRadioLink,
   lastCheckedText,
   linkStateText,
@@ -605,7 +607,10 @@ function DeviceCard({
   const hasWsStore = useHasWsStore();
 
   return (
-    <div className="device-card" data-testid={`device-card-${device.id}`}>
+    <div
+      className={isLocalDevice(device) ? "device-card device-card-local" : "device-card"}
+      data-testid={`device-card-${device.id}`}
+    >
       <div className="device-card-main">
         <div className="device-card-body">
           <div className="device-card-header">
@@ -1136,7 +1141,7 @@ function DeviceConnectionRow({
  * `SnapshotLink`. */
 function UnassignedCard({ link }: { link: SnapshotLink }) {
   return (
-    <div className="device-card" data-testid={`unassigned-card-${link.id}`}>
+    <div className={isLocalLink(link) ? "device-card device-card-local" : "device-card"} data-testid={`unassigned-card-${link.id}`}>
       <div className="device-card-main">
         <div className="device-card-body">
           <div className="device-card-header">

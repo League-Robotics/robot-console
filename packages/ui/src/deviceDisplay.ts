@@ -1002,24 +1002,41 @@ const USB_BRIDGE_UNAVAILABLE_STATES = new Set<SnapshotLink["state"]>(["stale", "
  * relay link id to send in `session-open {relayLinkId, name}`, or
  * `undefined` when none is available:
  *
- * 1. the first directly-attached radio bridge (`usb`, or `mbregistry` --
- *    sprint 018: mbregistry dials a directly-attached board exactly like
- *    usb does, just through mbregistry's own daemon) carrying no robot
- *    (one exclusive attach, one robot at a time);
- * 2. otherwise the first mbrelay pool -- a pool serves each connection
+ * 1. a free radio bridge plugged into this machine (`usb`, or an
+ *    `mbregistry` board this host's registry owns) -- always, ahead of
+ *    any remote one (stakeholder, 2026-10-24);
+ * 2. a free remote `mbregistry` bridge on another host, one that has
+ *    not failed ahead of one that has -- a remote bridge is never
+ *    retried on its own, so its `failed` may be long out of date;
+ * 3. otherwise the first mbrelay pool -- a pool serves each connection
  *    with its own relay board, so it is never "in use" from here; a pool
  *    with no free board fails the connect instead.
+ *
+ * A bridge carrying a robot is never free (one exclusive attach, one
+ * robot at a time).
  */
 export function allocateRadioBridge(devices: readonly SnapshotDevice[]): string | undefined {
   const bridgeLinks = devices.filter((device) => device.kind === "relay").flatMap((device) => device.links);
-  const freeDirect = bridgeLinks.find(
-    (link) =>
-      (link.transport === "usb" || link.transport === "mbregistry") &&
-      !USB_BRIDGE_UNAVAILABLE_STATES.has(link.state) &&
-      relayConnections(devices, link.id).length === 0,
-  );
-  if (freeDirect) {
-    return freeDirect.id;
+  const free = (link: SnapshotLink) =>
+    (link.transport === "usb" || link.transport === "mbregistry") && relayConnections(devices, link.id).length === 0;
+  const local = bridgeLinks.find((link) => isLocalLink(link) && free(link) && !USB_BRIDGE_UNAVAILABLE_STATES.has(link.state));
+  if (local) {
+    return local.id;
+  }
+  const remote = bridgeLinks.filter((link) => !isLocalLink(link) && free(link) && link.state !== "stale" && link.state !== "connecting");
+  const direct = remote.find((link) => link.state !== "failed" && link.state !== "unresponsive") ?? remote[0];
+  if (direct) {
+    return direct.id;
   }
   return bridgeLinks.find((link) => link.transport === "mbrelay" && link.state !== "stale")?.id;
+}
+
+/** True when any of the device's live links is a board plugged into
+ * this machine. */
+export function isLocalDevice(device: SnapshotDevice): boolean {
+  return device.links.some((link) => isLocalLink(link) && link.state !== "stale");
+}
+
+export function isLocalLink(link: SnapshotLink): boolean {
+  return link.local === true || link.transport === "usb";
 }

@@ -227,6 +227,7 @@
  * multicast socket and no real wall-clock wait anywhere in this
  * module's own suite.
  */
+import { networkInterfaces } from "node:os";
 import { nameToValue, nameToWifiAddress } from "@robot-console/protocol";
 import { isLocalMdnsService } from "../localHost.js";
 import { Store, type Transport } from "../store/index.js";
@@ -324,7 +325,26 @@ const IPV4_PATTERN = /^\d{1,3}(\.\d{1,3}){3}$/;
  * hang this ticket fixes (`sprint.md`'s own root-cause section).
  */
 function firstIpv4(addresses: readonly string[] | undefined): string | undefined {
-  return addresses?.find((address) => IPV4_PATTERN.test(address));
+  const candidates = addresses?.filter((address) => IPV4_PATTERN.test(address)) ?? [];
+  return candidates.find((address) => onLocalSubnet(address)) ?? candidates[0];
+}
+
+/** Whether `address` is on a subnet one of this host's interfaces is
+ * attached to -- a host on two networks advertises both addresses, and
+ * only one of them may be reachable from here. */
+export function onLocalSubnet(address: string, interfaces = networkInterfaces()): boolean {
+  const ip = ipv4ToInt(address);
+  return Object.values(interfaces).some((entries) =>
+    (entries ?? []).some((entry) => {
+      if (entry.family !== "IPv4" || entry.internal) return false;
+      const mask = ipv4ToInt(entry.netmask);
+      return (ip & mask) === (ipv4ToInt(entry.address) & mask);
+    }),
+  );
+}
+
+function ipv4ToInt(address: string): number {
+  return address.split(".").reduce((value, octet) => ((value << 8) | Number(octet)) >>> 0, 0);
 }
 
 /**

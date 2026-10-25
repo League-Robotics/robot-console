@@ -1523,6 +1523,17 @@ describe("radio chip and radio bridge cards (stakeholder, 2026-09-14)", () => {
     expect(allocateRadioBridge([])).toBeUndefined();
   });
 
+  it("allocateRadioBridge prefers a bridge plugged into this machine over any remote one", () => {
+    const remote = (id: number, name: string, state: SnapshotLink["state"] = "discovered"): SnapshotDevice =>
+      device(id, { name, kind: "relay", links: [link(`mbregistry-${name}`, { transport: "mbregistry", state })] });
+    const local = (id: number, name: string): SnapshotDevice =>
+      device(id, { name, kind: "relay", links: [link(`mbregistry-${name}`, { transport: "mbregistry", state: "discovered", local: true })] });
+    expect(allocateRadioBridge([remote(1, "vitut"), local(2, "guvov")])).toBe("mbregistry-guvov");
+    expect(allocateRadioBridge([remote(1, "vitut", "failed"), remote(2, "gitev")])).toBe("mbregistry-gitev");
+    expect(allocateRadioBridge([remote(1, "vitut", "failed")])).toBe("mbregistry-vitut");
+    expect(allocateRadioBridge([remote(1, "vitut", "stale")])).toBeUndefined();
+  });
+
   it("every robot card carries a yellow radio chip, with no radio link needed; a bridge card carries none", () => {
     const el = mount(withRouter(<DevicesList status="open" devices={[device(1, { name: "tovez" }), usbBridge(2, "vevav")]} unassigned={[]} />));
     expect(chipState(el, 1)).toBe("idle");

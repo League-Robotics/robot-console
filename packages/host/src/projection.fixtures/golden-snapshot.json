@@ -30,6 +30,7 @@
           "since": 91,
           "lastSeen": 90,
           "nextRetryAt": null,
+          "local": true,
           "capabilities": {
             "open": true,
             "close": false,
@@ -66,6 +67,7 @@
           "since": 110,
           "lastSeen": 100,
           "nextRetryAt": null,
+          "local": true,
           "capabilities": {
             "open": false,
             "close": true,
@@ -152,6 +154,7 @@
       "since": 97,
       "lastSeen": 97,
       "nextRetryAt": null,
+      "local": true,
       "capabilities": {
         "open": true,
         "close": false,

@@ -132,10 +132,7 @@ export function buildSnapshotFromRows(rows: ProjectionRows, seq: number, at: num
       } else {
         linksByDevice.set(link.deviceId, [link]);
       }
-    } else if (
-      (link.transport === "usb" || (link.transport === "mbregistry" && addressField(link.address, "host") == null)) &&
-      link.state !== "stale"
-    ) {
+    } else if (isLocalLink(link) && link.state !== "stale") {
       // A usb link with no device_id yet is an unnamed/unidentified USB
       // board -- architecture.md §9's `unassigned` list. Ticket 018-010
       // (bench fix) widens this to `mbregistry` too: a board whose
@@ -347,6 +344,7 @@ function buildLink(link: ProjectionLinkRow, ctx: LinkContext): SnapshotLink {
     since: link.stateSince,
     lastSeen: link.lastSeen,
     nextRetryAt: link.nextRetryAt,
+    ...(isLocalLink(link) ? { local: true } : {}),
     capabilities: {
       open: !hasSession && !isConnecting && (!requiresOwned(link.transport) || (device?.owned ?? false)),
       close: hasSession || isConnecting,
@@ -506,6 +504,10 @@ function buildLabel(link: ProjectionLinkRow): string {
       return String(exhaustive);
     }
   }
+}
+
+function isLocalLink(link: ProjectionLinkRow): boolean {
+  return link.transport === "usb" || (link.transport === "mbregistry" && addressField(link.address, "host") == null);
 }
 
 function hostPort(address: unknown): string {

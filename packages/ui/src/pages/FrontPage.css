@@ -39,6 +39,11 @@
   height: 100%;
 }
 
+/* Plugged into this machine. */
+.device-card.device-card-local {
+  background: color-mix(in srgb, var(--rc-accent) 9%, var(--rc-surface));
+}
+
 /* The whole card is the navigation affordance (a real `Link`, not a
    `<div onClick>`) -- reset anchor defaults so it reads as a card,
    not a link, while staying keyboard/middle-click/screen-reader

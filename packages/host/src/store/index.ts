@@ -1105,6 +1105,9 @@ export class Store {
    * under the *requested* candidate's link id rather than checking the
    * two agreed. */
   upsertLink(input: UpsertLinkInput): void {
+    // A failed link whose address changed failed somewhere else: its
+    // failures say nothing about the new address, so it starts over.
+    const MOVED_FAILED = "links.state = 'failed' AND links.address <> excluded.address";
     const addressJson = JSON.stringify(input.address);
     const deviceId = this.resolveRadioLinkDeviceId(input.id, input.deviceId);
     this.withChange(
@@ -1118,7 +1121,12 @@ export class Store {
              ON CONFLICT(id) DO UPDATE SET
                device_id = CASE WHEN ? THEN NULL ELSE COALESCE(excluded.device_id, links.device_id) END,
                address = excluded.address,
-               last_seen = excluded.last_seen`,
+               last_seen = excluded.last_seen,
+               state = CASE WHEN ${MOVED_FAILED} THEN 'discovered' ELSE links.state END,
+               state_reason = CASE WHEN ${MOVED_FAILED} THEN NULL ELSE links.state_reason END,
+               state_since = CASE WHEN ${MOVED_FAILED} THEN excluded.state_since ELSE links.state_since END,
+               next_retry_at = CASE WHEN ${MOVED_FAILED} THEN NULL ELSE links.next_retry_at END,
+               fail_count = CASE WHEN ${MOVED_FAILED} THEN 0 ELSE links.fail_count END`,
           )
           .run(input.id, deviceId ?? null, input.transport, addressJson, input.at, input.at, input.detach === true ? 1 : 0);
       },

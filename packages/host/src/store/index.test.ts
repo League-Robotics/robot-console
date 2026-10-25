@@ -1882,3 +1882,28 @@ describe("Store: upsertDevice simulated free-form names (nezsim sprint 015, tick
     }
   });
 });
+
+describe("upsertLink -- a failed link that moved", () => {
+  const id = "mbregistry-vitut";
+  const at = (endpoint: string) => ({ endpoint, host: "magni", uid: "vitut" });
+  const row = (db: DatabaseSync) =>
+    db.prepare("SELECT state, state_reason, fail_count, next_retry_at FROM links WHERE id = ?").get(id) as Record<string, unknown>;
+
+  it("starts over at a new address, since its failures were at the old one", () => {
+    const { store, db } = freshStore();
+    store.upsertLink({ id, transport: "mbregistry", address: at("192.168.1.147:7440"), at: 100 });
+    store.setLinkState({ id, state: "failed", at: 200, reason: "ECONNREFUSED 192.168.1.147:7440", nextRetryAt: 900, failCount: 174 });
+    store.upsertLink({ id, transport: "mbregistry", address: at("192.168.4.147:7440"), at: 300 });
+    expect(row(db)).toEqual({ state: "discovered", state_reason: null, fail_count: 0, next_retry_at: null });
+    store.close();
+  });
+
+  it("stays failed when the address is unchanged", () => {
+    const { store, db } = freshStore();
+    store.upsertLink({ id, transport: "mbregistry", address: at("192.168.4.147:7440"), at: 100 });
+    store.setLinkState({ id, state: "failed", at: 200, reason: "refused", nextRetryAt: 900, failCount: 3 });
+    store.upsertLink({ id, transport: "mbregistry", address: at("192.168.4.147:7440"), at: 300 });
+    expect(row(db)).toMatchObject({ state: "failed", fail_count: 3 });
+    store.close();
+  });
+});

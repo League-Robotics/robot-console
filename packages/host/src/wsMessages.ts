@@ -394,6 +394,9 @@ export interface SnapshotLink {
   /** `links.next_retry_at` -- present only while `state === "failed"`
    * and a backoff is pending; `null` otherwise. */
   nextRetryAt: number | null;
+  /** The board is plugged into this machine: a `usb` link, or an
+   * `mbregistry` link this host's own registry owns (no peer `host`). */
+  local?: boolean;
   /** Present only for a `radio`/`mbrelay` link -- which relay it rides
    * on and the `(channel, group)` in use, so a client never has to parse
    * {@link id} to find that out. */

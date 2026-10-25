@@ -1,13 +1,62 @@
 .app {
+  display: grid;
+  grid-template-columns: var(--rail-width) minmax(0, 1fr);
   min-height: 100vh;
-  display: flex;
-  flex-direction: column;
+  background: var(--surface-page);
 }
 
-/* .app-header* rules moved to components/AppHeader.css (ticket
-   012-004) -- AppHeader.tsx is now the sole owner of that markup. */
+.app-rail {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.app-workspace {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
 
 .app-main {
   flex: 1;
-  padding: 1.25rem;
+  padding: var(--space-6) var(--space-7);
+}
+
+.app-scrim {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-rail {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 50;
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition:
+      transform 0.2s ease,
+      visibility 0.2s;
+  }
+
+  .app[data-nav-open="true"] .app-rail {
+    transform: none;
+    visibility: visible;
+  }
+
+  .app-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 45;
+    background: rgba(16, 37, 82, 0.45);
+  }
+
+  .app-main {
+    padding: var(--space-4);
+  }
 }

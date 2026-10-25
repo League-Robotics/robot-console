@@ -4,6 +4,7 @@
  * browser.
  */
 import { useState, type ReactNode } from "react";
+import { Icon } from "./Icon";
 import "./CollapsibleGroup.css";
 
 function storageKey(id: string): string {
@@ -48,21 +49,32 @@ export function CollapsibleGroup({ id, title, count, defaultOpen = false, classN
     writeOpen(id, next);
   }
   return (
-    <section className={`devices-group${className ? ` ${className}` : ""}`} aria-label={ariaLabel ?? title} data-testid={`devices-group-${id}`}>
+    <section
+      className={`devices-group devices-group-collapsible${className ? ` ${className}` : ""}`}
+      id={`group-${id}`}
+      aria-label={ariaLabel ?? title}
+      data-testid={`devices-group-${id}`}
+    >
       <h2 className="devices-group-heading">
         <button
           type="button"
-          className="devices-group-toggle"
+          className="devices-group-toggle lg-group"
           data-testid={`devices-group-toggle-${id}`}
           aria-expanded={open}
           aria-controls={contentId}
           onClick={toggle}
         >
           <span className="devices-group-arrow" aria-hidden="true">
-            {open ? "▾" : "▸"}
+            <Icon name="chevron" size={16} />
           </span>
           {title}
-          {!open && count !== undefined && <span className="devices-group-count"> ({count})</span>}
+          {!open && count !== undefined && (
+            <span className="devices-group-count lg-group__n">
+              <span className="devices-group-paren">(</span>
+              {count}
+              <span className="devices-group-paren">)</span>
+            </span>
+          )}
         </button>
       </h2>
       <div id={contentId} className="devices-group-content" data-testid={`devices-group-${id}-content`} hidden={!open}>

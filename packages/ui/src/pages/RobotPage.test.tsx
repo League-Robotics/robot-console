@@ -146,9 +146,21 @@ function mountRobotPage(
 }
 
 describe("RobotPage", () => {
-  it("renders a header with the device's name", () => {
+  it("leaves the device's name to the top bar, unless asked to show it (a robot inside a relay's page)", () => {
     const { el } = mountRobotPage(robotDevice());
-    expect(el.textContent).toContain("vevav");
+    expect(el.textContent).not.toContain("vevav");
+  });
+
+  it("shows the name pill and meta line above the tabs when showIdentity is set", () => {
+    const device = robotDevice();
+    const el = mount(
+      <WsProvider url="ws://test/" socketFactory={() => new FakeSocket()}>
+        <RobotPage device={device} link={device.links[0]!} onActiveTargetChange={() => {}} showIdentity />
+      </WsProvider>,
+    );
+    const name = el.querySelector(".robot-page-identity h2");
+    expect(name?.textContent).toBe("vevav");
+    expect(name?.getAttribute("data-status")).not.toBeNull();
   });
 
   it("has no Main tab: the page opens on Drive, and status sits at the top of Diagnostics with the robot's identity", () => {
@@ -174,11 +186,12 @@ describe("RobotPage", () => {
     expect(el.querySelector('[data-testid="console-log"]')).toBeNull();
   });
 
-  it("ticket 018-013: tabs sit beside the name; every robot (including a plain, non-calibration one) gets Drive, Calibration and Diagnostics", () => {
+  it("ticket 018-013: every robot (including a plain, non-calibration one) gets Drive, Calibration and Diagnostics tabs, each with an icon", () => {
     const { el } = mountRobotPage();
-    const row = el.querySelector(".robot-page-title-row")!;
-    expect(row.querySelector("h2")?.textContent).toBe("vevav");
-    expect(Array.from(row.querySelectorAll('[role="tab"]')).map((t) => t.textContent)).toEqual(["Drive", "Calibration", "Diagnostics"]);
+    const tablist = el.querySelector('[role="tablist"]')!;
+    const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+    expect(tabs.map((t) => t.textContent)).toEqual(["Drive", "Calibration", "Diagnostics"]);
+    expect(tabs.map((t) => t.querySelector("svg")?.getAttribute("data-icon"))).toEqual(["drive", "gauge", "pulse"]);
     expect(el.querySelector('[data-testid="robot-tab-drive"]')?.getAttribute("aria-selected")).toBe("true");
   });
 

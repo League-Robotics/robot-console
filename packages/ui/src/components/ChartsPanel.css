@@ -1,27 +1,14 @@
-/* ChartsPanel.css — sprint 9 ticket 004.
- *
- * Chrome (surface/border/ink) reuses this project's existing `--rc-*`
- * tokens (`theme.css`) directly. Chart-specific slots this project has
- * no token for yet (categorical series colors, gridlines, the diverging
- * positive/negative pair) are declared here as local `--rc-chart-*`
- * custom properties, using the `dataviz` skill's validated reference
- * palette (`references/palette.md`) hex steps verbatim -- see
- * `ChartsPanel.tsx`'s own doc comment. Scoped to `.charts-panel` so
- * nothing here leaks onto the rest of the page; overridden under
- * `@media (prefers-color-scheme: dark)` exactly the way `theme.css`
- * itself redefines `--rc-*` for dark, since this app has no separate
- * light/dark toggle -- system preference is the only input.
- */
+/* Chart series colours are local to the chart panels; chrome uses the League tokens. */
 
 .charts-panel {
-  --rc-chart-grid: #e1e0d9;
-  --rc-chart-baseline: #c3c2b7;
+  --chart-grid: #e1e0d9;
+  --chart-baseline: #c3c2b7;
   /* Categorical order (blue, orange, aqua, yellow) -- fixed, never
    * cycled, per the dataviz skill's non-negotiables. */
-  --rc-chart-series-1: #2a78d6;
-  --rc-chart-series-2: #eb6834;
-  --rc-chart-series-3: #1baf7a;
-  --rc-chart-series-4: #eda100;
+  --chart-series-1: #2a78d6;
+  --chart-series-2: #eb6834;
+  --chart-series-3: #1baf7a;
+  --chart-series-4: #eda100;
 
   display: flex;
   flex-direction: column;
@@ -30,57 +17,62 @@
 
 @media (prefers-color-scheme: dark) {
   .charts-panel {
-    --rc-chart-grid: #2c2c2a;
-    --rc-chart-baseline: #383835;
-    --rc-chart-series-1: #3987e5;
-    --rc-chart-series-2: #d95926;
-    --rc-chart-series-3: #199e70;
-    --rc-chart-series-4: #c98500;
+    --chart-grid: #2c2c2a;
+    --chart-baseline: #383835;
+    --chart-series-1: #3987e5;
+    --chart-series-2: #d95926;
+    --chart-series-3: #199e70;
+    --chart-series-4: #c98500;
   }
 }
 
 .charts-panel-mode {
-  display: flex;
-  gap: 0.4rem;
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
 }
 
 .charts-panel-mode-button {
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.3rem 0.7rem;
-  border-radius: 0.4rem;
-  font-size: 0.8rem;
+  padding: 6px 12px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font: 600 13px/1 var(--font-sans);
   cursor: pointer;
 }
 
+.charts-panel-mode-button:last-child {
+  border-right: 0;
+}
+
 .charts-panel-mode-button[aria-pressed="true"] {
-  background: var(--rc-accent);
-  border-color: var(--rc-accent);
-  color: var(--rc-accent-contrast);
+  background: var(--league-navy);
+  color: #ffffff;
 }
 
 .charts-panel-waiting {
   margin: 0;
-  padding: 0.75rem;
-  border: 1px dashed var(--rc-border);
-  border-radius: 0.4rem;
-  color: var(--rc-text-muted);
-  font-size: 0.85rem;
+  padding: 14px;
+  border: 1px dashed var(--border-control);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
 .charts-panel-unavailable {
   margin: 0;
-  padding: 0.5rem 0.75rem;
-  border-radius: 0.4rem;
-  background: var(--rc-warn-bg);
-  border: 1px solid var(--rc-warn-border);
-  color: var(--rc-warn-text);
-  font-size: 0.82rem;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--warn-bg);
+  border: 1px solid var(--status-warn-border);
+  color: var(--warn-text);
+  font-size: 13px;
 }
 
-/* Line one: the stream buttons with the column picker beside them;
- * the chart itself is line two. */
 .charts-panel-controls {
   display: flex;
   flex-wrap: wrap;
@@ -96,8 +88,8 @@
   flex: 1 1 10rem;
   min-width: 0;
   gap: 0.3rem 0.6rem;
-  font-size: 0.78rem;
-  color: var(--rc-text-muted);
+  font: 12px/16px var(--font-mono);
+  color: var(--text-muted);
 }
 
 .charts-panel-column-toggle {
@@ -116,18 +108,18 @@
 .charts-panel-chart-svg {
   width: 100%;
   height: 8rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 0.4rem;
-  background: var(--rc-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
 }
 
 .charts-panel-chart-grid {
-  stroke: var(--rc-chart-grid);
+  stroke: var(--chart-grid);
   stroke-width: 0.4;
 }
 
 .charts-panel-chart-baseline {
-  stroke: var(--rc-chart-baseline);
+  stroke: var(--chart-baseline);
   stroke-width: 0.6;
 }
 
@@ -140,27 +132,26 @@
 }
 
 .charts-panel-chart-series-1 {
-  stroke: var(--rc-chart-series-1);
+  stroke: var(--chart-series-1);
 }
 
 .charts-panel-chart-series-2 {
-  stroke: var(--rc-chart-series-2);
+  stroke: var(--chart-series-2);
 }
 
 .charts-panel-chart-series-3 {
-  stroke: var(--rc-chart-series-3);
+  stroke: var(--chart-series-3);
 }
 
 .charts-panel-chart-series-4 {
-  stroke: var(--rc-chart-series-4);
+  stroke: var(--chart-series-4);
 }
 
 .charts-panel-chart-axis-y {
   display: flex;
   justify-content: space-between;
-  font-size: 0.72rem;
-  color: var(--rc-text-muted);
-  font-variant-numeric: tabular-nums;
+  font: 11px/14px var(--font-mono);
+  color: var(--text-muted);
 }
 
 .charts-panel-chart-legend {
@@ -168,7 +159,7 @@
   flex-wrap: wrap;
   gap: 0.75rem;
   font-size: 0.78rem;
-  color: var(--rc-text);
+  color: var(--text);
 }
 
 .charts-panel-chart-legend-item {
@@ -185,17 +176,17 @@
 }
 
 .charts-panel-chart-legend-item.charts-panel-chart-series-1 .charts-panel-chart-legend-swatch {
-  background: var(--rc-chart-series-1);
+  background: var(--chart-series-1);
 }
 
 .charts-panel-chart-legend-item.charts-panel-chart-series-2 .charts-panel-chart-legend-swatch {
-  background: var(--rc-chart-series-2);
+  background: var(--chart-series-2);
 }
 
 .charts-panel-chart-legend-item.charts-panel-chart-series-3 .charts-panel-chart-legend-swatch {
-  background: var(--rc-chart-series-3);
+  background: var(--chart-series-3);
 }
 
 .charts-panel-chart-legend-item.charts-panel-chart-series-4 .charts-panel-chart-legend-swatch {
-  background: var(--rc-chart-series-4);
+  background: var(--chart-series-4);
 }

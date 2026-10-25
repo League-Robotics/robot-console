@@ -83,7 +83,7 @@
 import { CollapsibleGroup } from "../components/CollapsibleGroup";
 import { ForgetDeviceDialog, TrashIcon } from "../components/ForgetDeviceDialog";
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router";
+import { Link, useLocation } from "react-router";
 import type { SnapshotDevice, SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import type { ConnectionStatus, LinkNotice, PendingRadioMigration } from "../ws/WsProvider";
 import {
@@ -116,6 +116,8 @@ import {
   roleDisplay,
 } from "../deviceDisplay";
 import { TransportIcon, transportShortName } from "../components/TransportIcon";
+import { Icon } from "../components/Icon";
+import { deviceStatus, frontPageGroups, linkStatus, primaryLinkFor, statusTitle, statusWord, type Status } from "../status";
 import { FlashDialog } from "../components/FlashDialog";
 import "./FrontPage.css";
 
@@ -168,63 +170,24 @@ export function FrontPage() {
     });
   }, [devices, radioAttempts]);
 
-  // Stakeholder (2026-09-13): "pay attention to things that are
-  // connected or disconnected ... put it in a list of things we've seen
-  // before, but don't put it on my list of things that are available."
-  // A device is listed as available only when it has at least one link
-  // that is not `stale` (`cardLinks`); a device whose every link has
-  // aged out (unplugged, powered off, no longer advertised) goes to
-  // "Not seen recently" instead of a card full of hidden connections.
-  // A robot this console has had plugged in stays in the Robots list
-  // with no live link at all: it can still be reached by radio, and only
-  // Forget takes it away.
-  const presentBeforeHold = devices.filter(
-    (device) => cardLinks(device).length > 0 || (device.kind === "robot" && device.owned),
-  );
-  // Ticket 017-010 fix (team-lead bench evidence, 2026-09-13): a
-  // known-robots.json placeholder that hasn't merged with its real,
-  // currently-linked row yet (e.g. `mergeNamePlaceholderIfAny` hasn't
-  // run yet, or the merge is defined not to fire -- see
-  // `store/placeholderMerge.ts`'s own doc comment) must never be listed
-  // here under the same name a device card already shows -- that is
-  // exactly the duplicate-`tovez` bench defect ("Not seen recently ·
-  // tovez" alongside a real `tovez` card). Filtering by name, not id, is
-  // deliberate: the whole point is to hide a *different* device row that
-  // merely shares a name with one already on screen.
-  // Stakeholder, 2026-09-21: "they shouldn't move up to the top as soon
-  // as you click the radio button. You should try to make contact
-  // first... if it connects and goes green, then you put it in the top
-  // section. If you can't connect to it? Leave it down below."
-  //
-  // Clicking sends `session-open`, and the host answers with a link in
-  // `connecting` almost immediately. `cardLinks` counts that, so the
-  // card leapt to the Robots section on the click rather than on the
-  // contact -- announcing a robot as present before anything had
-  // answered, and leaving it stranded up there if nothing ever did.
-  //
-  // So a device with an attempt outstanding is HELD in this section
-  // until one of its links is genuinely usable (`isLinkUsable`: state
-  // `connected` AND a live session). That is the same test the radio
-  // chip up top uses to call itself linked, so "moves up" and "goes
-  // green" become the same event rather than two guesses about it.
-  // Both `trying` AND `failed` hold the card here. A failed attempt
-  // usually leaves a link behind -- `connecting`, then `failed` -- and
-  // `cardLinks` counts those, so without this the card would float up
-  // to Robots the moment the attempt gave up: the exact opposite of
-  // "if you can't connect to it? Leave it down below." Only a genuinely
-  // usable link releases the hold.
+  // A radio attempt holds its device in Not seen recently until a link is
+  // genuinely usable: it moves up when it goes green, not when clicked.
   const heldDown = new Set(
     devices
       .filter((device) => radioAttempts[device.id] !== undefined && !device.links.some(isLinkUsable))
       .map((device) => device.id),
   );
-  const present = presentBeforeHold.filter((device) => !heldDown.has(device.id));
-  const presentNames = new Set(present.map((device) => device.name));
-  const notSeenRecently = devices.filter(
-    (device) => (cardLinks(device).length === 0 || heldDown.has(device.id)) && !presentNames.has(device.name),
-  );
+  const { present, notSeenRecently, robots } = frontPageGroups(devices, heldDown);
+  useScrollToHash();
+  const linkedCount = present.filter((device) => deviceStatus(device) === "linked").length;
   return (
     <>
+      <div className="front-page-head">
+        <h1>Devices</h1>
+        <p className="front-page-summary">
+          {robots.length} {robots.length === 1 ? "robot" : "robots"} · {linkedCount} linked · {notSeenRecently.length} not seen recently
+        </p>
+      </div>
       <RadioMigrationOffers offers={radioMigrationOffers} onResolve={resolveRadioMigration} />
       <DevicesList
         status={status}
@@ -251,6 +214,22 @@ export function FrontPage() {
       />
     </>
   );
+}
+
+/** Scrolls the element named by the URL hash into view (the sidebar's
+ * bench rows and Browse links), opening the collapsed group it sits in. */
+function useScrollToHash(): void {
+  const { hash } = useLocation();
+  useEffect(() => {
+    if (!hash) return;
+    const target = document.getElementById(decodeURIComponent(hash.slice(1)));
+    if (!target) return;
+    const hidden = target.closest<HTMLElement>(".devices-group-content[hidden]");
+    if (hidden) {
+      document.querySelector<HTMLButtonElement>(`[aria-controls="${hidden.id}"]`)?.click();
+    }
+    target.scrollIntoView?.({ block: "start", behavior: "smooth" });
+  }, [hash]);
 }
 
 /** One dismissible offer per leftover `localStorage` radio override
@@ -386,7 +365,7 @@ export function DevicesList({
         </p>
       )}
       {empty ? (
-        <p className="devices-empty">No devices detected yet. Plug a micro:bit into a USB port.</p>
+        <p className="devices-empty lg-empty">No devices detected yet. Plug a micro:bit into a USB port.</p>
       ) : (
         <>
           {/* Stakeholder (2026-09-13): the home page lists things in
@@ -394,21 +373,21 @@ export function DevicesList({
               unidentified boards), then radio bridges, then not seen
               recently. */}
           {robots.length > 0 && (
-            <section className="devices-group" aria-label="Robots" data-testid="devices-group-robots">
+            <section className="devices-group" id="group-robots" aria-label="Robots" data-testid="devices-group-robots">
               <h2 className="devices-group-heading">Robots</h2>
-              <ul className="devices-list">{robots.map(renderCard)}</ul>
+              <ul className="devices-list lg-cards">{robots.map(renderCard)}</ul>
             </section>
           )}
           {/* Boards plugged into this computer that are not a robot, a
               radio bridge or a joystick -- blank, or running something
               else. Listed so they can be flashed. */}
           {unassigned.length > 0 && (
-            <section className="devices-group" aria-label="Unknown" data-testid="devices-group-unknown">
+            <section className="devices-group" id="group-unknown" aria-label="Unknown" data-testid="devices-group-unknown">
               <h2 className="devices-group-heading">Unknown</h2>
               <p className="remembered-robots-hint">
                 Plugged into this computer, but not a robot, radio bridge or joystick. Flash one to make it one.
               </p>
-              <ul className="devices-list">
+              <ul className="devices-list lg-cards">
                 {unassigned.map((link) => (
                   <li key={link.id}>
                     <UnassignedCard link={link} />
@@ -419,7 +398,7 @@ export function DevicesList({
           )}
           {bridges.length > 0 && (
             <CollapsibleGroup id="bridges" title="Radio bridges" count={bridges.length}>
-              <ul className="devices-list">{bridges.map(renderCard)}</ul>
+              <ul className="devices-list lg-cards">{bridges.map(renderCard)}</ul>
             </CollapsibleGroup>
           )}
           {/* Stakeholder, 2026-09-21: "There should be a joystick
@@ -430,7 +409,7 @@ export function DevicesList({
               other, not a special case. */}
           {joysticks.length > 0 && (
             <CollapsibleGroup id="joysticks" title="Joysticks" count={joysticks.length}>
-              <ul className="devices-list">{joysticks.map(renderCard)}</ul>
+              <ul className="devices-list lg-cards">{joysticks.map(renderCard)}</ul>
             </CollapsibleGroup>
           )}
         </>
@@ -453,34 +432,6 @@ export function DevicesList({
   );
 }
 
-/** Which link a device card's main open-arrow should lead to: a usable
- * link (see `deviceDisplay.ts`'s `isLinkUsable`), preferring the first
- * one. This is a display choice over links the host has *already*
- * grouped under one device (unlike the retired `linkScore`, which
- * scored/grouped possibly-different devices across transports itself)
- * -- not a re-implementation of host auto-switch policy.
- *
- * **Extended scope (team-lead, 2026-09-13), item B**: before this
- * change, a card with NO usable link still fell back to `links[0]`,
- * producing an open arrow into a device the student could not actually
- * use -- exactly the bench complaint ("How is it letting me go into it
- * if it's not connected?"). Now, a non-relay device with no usable link
- * gets no primary at all (`DeviceCard` renders no open arrow, and a
- * per-link Connect row instead -- see its own doc comment). A relay
- * device keeps the old fallback: its own connectivity link legitimately
- * has no session most of the time (`RelayConnectControls` owns the
- * actual bridge/session lifecycle, not this link directly), so relay
- * cards must keep their existing open arrow and relay controls
- * regardless. */
-function primaryLinkFor(device: SnapshotDevice): SnapshotLink | undefined {
-  const usable = device.links.find((link) => isLinkUsable(link));
-  if (usable) {
-    return usable;
-  }
-  return device.kind === "relay" ? device.links[0] : undefined;
-}
-
-
 /** A device's current (non-stale) usb or mbregistry link, if it has one
  * -- the gate for the front-page lightning Flash trigger (ticket
  * 018-015; widened to `mbregistry` in sprint 018). Both transports'
@@ -490,44 +441,6 @@ function primaryLinkFor(device: SnapshotDevice): SnapshotLink | undefined {
  * here. */
 function currentUsbLink(device: SnapshotDevice): SnapshotLink | undefined {
   return device.links.find((link) => (link.transport === "usb" || link.transport === "mbregistry") && link.state !== "stale");
-}
-
-/** A lightning-bolt glyph for the Flash trigger buttons -- inline SVG,
- * `currentColor` stroke, matching `ArrowIcon`'s/`TransportIcon.tsx`'s
- * own pattern so it needs no icon font. */
-function LightningIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-      <polygon
-        points="13 2 4 14 11 14 9 22 20 10 13 10 13 2"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-/** An arrow glyph for the open buttons -- inline SVG so it needs no
- * icon font and inherits `currentColor`. */
-function ArrowIcon({ direction }: { direction: "forward" | "back" }) {
-  const points = direction === "forward" ? "9 5 16 12 9 19" : "15 5 8 12 15 19";
-  return (
-    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
-      <polyline points={points} fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
-      <line
-        x1={direction === "forward" ? "4" : "20"}
-        y1="12"
-        x2={direction === "forward" ? "16" : "8"}
-        y2="12"
-        stroke="currentColor"
-        strokeWidth="2.4"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
 }
 
 /** One device's card. Nothing in the informational region navigates:
@@ -590,6 +503,7 @@ function DeviceCard({
   // `isLinkAnswering` doc comment.
   const linked = device.links.some((link) => isLinkAnswering(link));
   const isRelay = device.kind === "relay";
+  const status = deviceStatus(device);
   const isCalibration = isCalibrationProgram(device.program);
   // Ticket 018-015: "Make the flash button pop up when the device is
   // on USB ... the flash button shows below the open arrow; arrow in
@@ -604,24 +518,25 @@ function DeviceCard({
   const hasWsStore = useHasWsStore();
 
   return (
-    <div className="device-card" data-testid={`device-card-${device.id}`}>
+    <div className="device-card lg-card" id={`device-${device.id}`} data-testid={`device-card-${device.id}`}>
       <div className="device-card-main">
-        <div className="device-card-body">
-          <div className="device-card-header">
+        <div className="device-card-body lg-card__body">
+          <div className="device-card-header lg-card__head">
             {/* Stakeholder (2026-09-14): the name itself shows link status
                 -- yellow while no link answers, green once one does --
                 instead of a "Linked" pill popping in and out. A bridge's
                 own card has no link of its own to show. */}
             <h3
-              className={isRelay ? "device-name" : "device-name device-name-link"}
+              className="device-name lg-name"
               data-linked={isRelay ? undefined : String(linked)}
-              title={isRelay ? undefined : linked ? "Linked" : "Not linked"}
+              data-status={status}
+              title={`${device.name}: ${statusWord(status)}`}
               data-testid={`device-name-${device.id}`}
             >
               {nameDisplay(device).text}
             </h3>
             {isCalibration && (
-              <span className="device-calibration-badge" data-testid="calibration-badge">
+              <span className="device-calibration-badge lg-badge" data-testid="calibration-badge">
                 {/* Ticket 018-017: the release version comes from
                     `device.program` (e.g. `calibration-0.20260913.1` ->
                     `0.20260913.1`), never `device.version` -- that's the
@@ -632,7 +547,7 @@ function DeviceCard({
             )}
           </div>
 
-          <p className="device-role" data-testid={`device-role-${device.id}`}>
+          <p className="device-role lg-meta" data-testid={`device-role-${device.id}`}>
             {roleDisplay(device)}
           </p>
 
@@ -644,7 +559,7 @@ function DeviceCard({
               row (state, reason, last checked, Connect) lives in the
               chip's hover/focus popover. Everything older is on the
               robot page's Diagnostics tab. */}
-          <ul className="device-connections" aria-label={`Connections for ${device.name}`}>
+          <ul className="device-connections lg-chips" aria-label={`Connections for ${device.name}`}>
             {/* Stakeholder (2026-09-14): a robot's radio links fold into
                 one always-present radio chip, which finds a bridge
                 itself; a bridge's own card still lists its own link. */}
@@ -675,16 +590,16 @@ function DeviceCard({
         </div>
 
         {(primary || (usbLink && hasWsStore)) && (
-          <div className="device-card-side">
+          <div className="device-card-side lg-card__side">
             {primary && (
               <Link
                 to={`/d/${primary.id}`}
-                className="device-open-button"
+                className="device-open-button lg-round lg-round--open"
                 aria-label={`Open ${device.name}`}
                 title={`Open ${device.name}`}
                 data-testid={`device-open-${device.id}`}
               >
-                <ArrowIcon direction="forward" />
+                <Icon name="arrow-right" size={22} />
               </Link>
             )}
             {usbLink && hasWsStore && (
@@ -699,8 +614,8 @@ function DeviceCard({
               <FlashDialog
                 link={usbLink}
                 name={device.name}
-                triggerIcon={<LightningIcon />}
-                triggerClassName="device-flash-button"
+                triggerIcon={<Icon name="bolt" />}
+                triggerClassName="device-flash-button lg-round"
                 allowedFirmware={ALL_FLASHABLE_FIRMWARE}
                 allowLocalHex={true}
               />
@@ -711,12 +626,12 @@ function DeviceCard({
             in the arrow's place, so a robot nothing can reach right now
             can still be removed. */}
         {!primary && !usbLink && hasWsStore && (
-          <div className="device-card-side">
+          <div className="device-card-side lg-card__side">
             <ForgetDeviceDialog
               deviceId={device.id}
               name={device.name}
               triggerIcon={<TrashIcon />}
-              triggerClassName="device-open-button"
+              triggerClassName="device-open-button lg-round lg-round--forget"
             />
           </div>
         )}
@@ -824,6 +739,7 @@ function LinkChip({
   notice: LinkNotice | undefined;
 }) {
   const state = chipState(link);
+  const lgStatus = linkStatus(link, device.kind);
   // Stakeholder (2026-09-13): "reduce this down to just the icons and
   // not the name" -- the chip is the icon alone; the short name ("Radio
   // via vevav") is the popover's title and the accessible label.
@@ -850,7 +766,9 @@ function LinkChip({
     <li className="device-chip" data-state={state} data-testid={`device-chip-${link.id}`}>
       <button
         type="button"
-        className="device-chip-face"
+        className="device-chip-face lg-chip"
+        data-status={lgStatus}
+        title={statusTitle(short, lgStatus, link)}
         aria-label={label}
         aria-disabled={!toggleable || !sendable}
         data-testid={`device-chip-toggle-${link.id}`}
@@ -997,12 +915,21 @@ function RadioChip({
       ? "Connecting through a radio bridge…"
       : (problem ?? "Not linked · press to connect through a free radio bridge");
   const verb = state === "linked" || state === "failed" ? "Disconnect" : state === "busy" ? "Connecting" : "Connect";
+  const lgStatus: Status = flashing
+    ? "error"
+    : active
+      ? linkStatus(active, device.kind)
+      : pending === null && allocateRadioBridge(devices) === undefined
+        ? "absent"
+        : "idle";
 
   return (
     <li className="device-chip device-chip-radio" data-state={state} data-testid={`device-radio-chip-${device.id}`}>
       <button
         type="button"
-        className="device-chip-face"
+        className="device-chip-face lg-chip"
+        data-status={lgStatus}
+        title={statusTitle("Radio", lgStatus, active)}
         aria-label={`${verb} ${device.name} over radio`}
         aria-disabled={!sendable}
         data-testid={`device-radio-toggle-${device.id}`}
@@ -1140,23 +1067,31 @@ function DeviceConnectionRow({
  * `SnapshotLink`. */
 function UnassignedCard({ link }: { link: SnapshotLink }) {
   return (
-    <div className="device-card" data-testid={`unassigned-card-${link.id}`}>
+    <div className="device-card lg-card device-card-local" id={`link-${link.id}`} data-testid={`unassigned-card-${link.id}`}>
       <div className="device-card-main">
-        <div className="device-card-body">
-          <div className="device-card-header">
-            <h3 className="device-name">Unknown board</h3>
+        <div className="device-card-body lg-card__body">
+          <div className="device-card-header lg-card__head">
+            <h3 className="device-name lg-name" data-status="linked">
+              Unknown board
+            </h3>
           </div>
 
-          <p className="device-role" data-testid={`unassigned-role-${link.id}`}>
+          <p className="device-role lg-meta" data-testid={`unassigned-role-${link.id}`}>
             {link.label}
           </p>
 
           {/* The board is only listed because it is plugged in, so its one
               connection is always live: a green chip that cannot be
               switched off, unlike a robot's. */}
-          <ul className="device-connections" aria-label="Connection">
+          <ul className="device-connections lg-chips" aria-label="Connection">
             <li className="device-chip" data-state="linked" data-testid={`unassigned-chip-${link.id}`}>
-              <span className="device-chip-face" role="img" aria-label={`Plugged into this computer: ${link.label}`}>
+              <span
+                className="device-chip-face lg-chip"
+                data-status="linked"
+                role="img"
+                aria-label={`Plugged into this computer: ${link.label}`}
+                title={`${transportShortName(link.transport)}: connected`}
+              >
                 <TransportIcon transport={link.transport} size={20} />
               </span>
             </li>
@@ -1165,12 +1100,12 @@ function UnassignedCard({ link }: { link: SnapshotLink }) {
 
         {/* Nothing to open on a board with no firmware, so the Flash
             control takes the open arrow's place at the top. */}
-        <div className="device-card-side">
+        <div className="device-card-side lg-card__side">
           <FlashDialog
             link={link}
             name={link.label}
-            triggerIcon={<LightningIcon />}
-            triggerClassName="device-flash-button"
+            triggerIcon={<Icon name="bolt" />}
+            triggerClassName="device-flash-button lg-round"
             allowedFirmware={ALL_FLASHABLE_FIRMWARE}
             allowLocalHex={true}
           />
@@ -1265,7 +1200,9 @@ function NotSeenRadioButton({
           says silently, since there is no text to read. */}
       <button
         type="button"
-        className="remembered-robot-radio"
+        className="remembered-robot-radio lg-chip"
+        data-status={trying ? "idle" : "absent"}
+        title={trying ? "Radio: connecting" : "Radio: not reachable now"}
         data-testid={`not-seen-radio-${device.id}`}
         data-state={trying ? "busy" : "idle"}
         aria-label={trying ? `Trying ${device.name} over radio…` : `Try ${device.name} over radio`}
@@ -1313,19 +1250,21 @@ function NotSeenRecentlySection({
         </p>
       }
     >
-      <ul className="remembered-robots-list">
+      <ul className="remembered-robots-list lg-cards">
         {devices.map((device) => (
           <li key={device.id}>
-            <div className="remembered-robot-card" data-testid={`not-seen-device-${device.id}`}>
-              <div className="remembered-robot-header">
-                <h3 className="remembered-robot-name">{nameDisplay(device).text}</h3>
+            <div className="remembered-robot-card lg-card" id={`device-${device.id}`} data-testid={`not-seen-device-${device.id}`}>
+              <div className="remembered-robot-header lg-card__body">
+                <h3 className="remembered-robot-name lg-name" data-status="absent" title={`${device.name}: not reachable now`}>
+                  {nameDisplay(device).text}
+                </h3>
                 {/* Stakeholder, 2026-09-21: "Last seen" belongs under
                     the name, not beside it. The card is a wrapping flex
                     row, so a sibling `<p>` sat on the name's baseline;
                     moving it inside the header (a column) stacks the two
                     without disturbing the actions, which stay on the
                     card's right edge. */}
-                <p className="remembered-robot-note">Last seen {new Date(device.lastSeen).toLocaleString()}</p>
+                <p className="remembered-robot-note lg-meta">Last seen {new Date(device.lastSeen).toLocaleString()}</p>
               </div>
               <div className="remembered-robot-actions">
                 <NotSeenRadioButton
@@ -1338,7 +1277,7 @@ function NotSeenRecentlySection({
                 />
                 <button
                   type="button"
-                  className="remembered-robot-forget"
+                  className="remembered-robot-forget lg-round lg-round--forget"
                   data-testid={`not-seen-forget-${device.id}`}
                   aria-label={`Forget ${device.name}`}
                   title={`Forget ${device.name}`}

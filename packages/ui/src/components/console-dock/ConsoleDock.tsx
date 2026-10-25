@@ -289,6 +289,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { SnapshotLink } from "@robot-console/host/src/wsMessages.js";
 import { ConsoleBody } from "./ConsoleBody";
+import { Icon } from "../Icon";
 import { useLinkNotices } from "../../ws/WsProvider";
 import { useDockPersistence } from "./useDockPersistence";
 import { openPopupWindow } from "../../lib/popupWindow";
@@ -698,7 +699,10 @@ export function ConsoleDock({ link, name }: ConsoleDockProps) {
   return (
     <section className="console-dock" aria-label="Debug console" data-testid="console-dock">
       <div className="console-dock-bar">
-        <span className="console-dock-title">Debug Console</span>
+        <span className="console-dock-title">
+          <Icon name="terminal" size={16} />
+          Debug Console
+        </span>
         {showIndicator && (
           <span
             className={`console-dock-indicator console-dock-indicator-${notice!.level}`}

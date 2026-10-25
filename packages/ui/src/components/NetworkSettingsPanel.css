@@ -1,6 +1,8 @@
 .network-settings-field {
-  display: inline-block;
-  margin-right: 1.2rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: var(--space-4);
   white-space: nowrap;
 }
 
@@ -16,22 +18,8 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.6rem;
-}
-
-.network-settings-actions button {
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.3rem 0.8rem;
-  border-radius: 0.4rem;
-  font-size: 0.85rem;
-  cursor: pointer;
-}
-
-.network-settings-actions button:disabled {
-  color: var(--rc-text-muted);
-  cursor: default;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
 }
 
 .network-settings-address {

@@ -33,8 +33,8 @@
  * sprint: `ConfigurationPage.tsx` relies on `.calibration-code` rules
  * that live in `CalibrationPage.css`, not its own file — and the same
  * risk applies here, since `DeviceConsole`/`CommandStrip` may equally
- * depend on ambient rules, e.g. the `--rc-*` custom properties defined
- * on `:root` in whichever file happens to declare them). So
+ * depend on ambient rules, e.g. the design-token custom properties
+ * defined on `:root` in `styles/tokens.css`). So
  * {@link copyParentStylesheets} below copies every `<style>` and
  * `<link rel="stylesheet">` element actually present in the *live*
  * parent `document.head` at the moment the popup opens, verbatim, via

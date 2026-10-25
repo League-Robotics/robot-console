@@ -59,15 +59,17 @@ export function UnknownDevicePage({ link, onActiveTargetChange }: UnknownDeviceP
 
   return (
     <section className="unknown-device-page" aria-label="Unknown device">
-      <h2>{link.label}</h2>
+      <div className="lg-panel unknown-device-panel">
+        <h2 className="lg-panel__h">{link.label}</h2>
 
-      {showReason && <p className="device-note">Link attempt: {link.reason}</p>}
+        {showReason && <p className="device-note">Link attempt: {link.reason}</p>}
 
-      {/* Sprint 023 ticket 005: a not-yet-identified board has no "own
-       * kind" to restrict to -- narrowing this page's flash options
-       * would defeat its actual purpose, which is deciding what to make
-       * the board. Permissive: every release kind plus local hex. */}
-      <FlashDialog link={link} name={link.label} allowedFirmware={ALL_FLASHABLE_FIRMWARE} allowLocalHex={true} />
+        {/* Sprint 023 ticket 005: a not-yet-identified board has no "own
+         * kind" to restrict to -- narrowing this page's flash options
+         * would defeat its actual purpose, which is deciding what to make
+         * the board. Permissive: every release kind plus local hex. */}
+        <FlashDialog link={link} name={link.label} allowedFirmware={ALL_FLASHABLE_FIRMWARE} allowLocalHex={true} />
+      </div>
     </section>
   );
 }

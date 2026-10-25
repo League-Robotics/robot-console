@@ -1,124 +1,40 @@
 .app-header {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  padding: 0.75rem 1.25rem;
-  border-bottom: 1px solid var(--rc-border);
-  background: var(--rc-surface);
+  position: relative;
 }
 
-.app-header-bar {
-  display: flex;
-  align-items: center;
-  gap: 1.5rem;
-}
-
-/* Sprint 015 ticket 009: the disconnected-from-host banner (UC-020). */
 .app-header-banner {
+  flex: 1 0 100%;
+  order: -1;
   margin: 0;
-  padding: 0.4rem 0.75rem;
-  border: 1px solid var(--rc-warn-border);
-  background: var(--rc-warn-bg);
-  color: var(--rc-warn-text);
-  border-radius: 0.4rem;
-  font-size: 0.85rem;
-}
-
-.app-header h1 {
-  font-size: 1.05rem;
+  padding: 6px 12px;
+  border: 1px solid var(--status-warn-border);
+  border-radius: var(--radius-md);
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  font-size: 13px;
   font-weight: 600;
-  margin: 0;
 }
 
-/* A fact, not a title -- visually subordinate to the app name it
- * follows on the same line. */
-.app-header-version {
-  font-size: 0.75rem;
-  font-weight: 400;
-  color: var(--rc-text-muted, currentColor);
-  opacity: 0.7;
-}
-
-/* OOP 2026-09-10: a back arrow button, not a text link. */
-.app-header-back {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2.4rem;
-  height: 2.4rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 999px;
-  background: var(--rc-surface);
-  color: var(--rc-accent);
-  text-decoration: none;
-}
-
-.app-header-back:hover,
-.app-header-back:focus-visible {
-  border-color: var(--rc-accent);
-  background: var(--rc-accent);
-  color: var(--rc-accent-contrast);
-}
-
-.app-header-actions {
-  margin-left: auto;
-  display: flex;
-  gap: 0.5rem;
-}
-
-.app-header-flash-toggle {
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.35rem 0.9rem;
-  border-radius: 0.4rem;
-  font-size: 0.85rem;
-  cursor: pointer;
-}
-
-.app-header-flash-toggle:hover {
-  border-color: var(--rc-accent);
-}
-
-/* Ticket 018-010 (second pass): label/state/Connect/switch-link ran
- * together with no visible gap in a real browser -- this container had
- * no layout rules of its own at all before this pass (only its
- * children's own classes existed), so plain inline-flow put every child
- * right up against the next with nothing but their own text between
- * them (e.g. "WiFi · gopiv.local:7654Linked"). `flex-wrap` keeps this
- * readable at phone width, where the label/state/button/link would
- * otherwise be forced onto one overflowing line. */
-.app-header-connection {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.6rem;
-  font-size: 0.9rem;
+.app-header-menu {
+  display: none;
 }
 
 .app-header-connection-label {
-  font-weight: 600;
-}
-
-.app-header-connect {
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.3rem 0.8rem;
-  border-radius: 0.4rem;
-  font-size: 0.85rem;
-  cursor: pointer;
-}
-
-.app-header-connect:hover {
-  border-color: var(--rc-accent);
+  color: var(--text);
 }
 
 .app-header-switch-link {
-  color: var(--rc-accent);
+  font-family: var(--font-sans);
+  font-weight: 600;
+  color: var(--link);
 }
 
-.app-header-icon-toggle {
-  display: inline-flex;
-  align-items: center;
+.app-header-actions .lg-tb svg {
+  flex: none;
+}
+
+@media (max-width: 900px) {
+  .app-header-menu {
+    display: inline-flex;
+  }
 }

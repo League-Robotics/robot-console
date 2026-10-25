@@ -1,30 +1,18 @@
-/* NewCalibrationPanel.css — the guided run: one call to action, then
-   one row per step (button, then that step's statistics). */
+/* The next step's button carries the accent; it moves as the run advances. */
+.new-calibration button.new-calibration-next {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
 
-/* The next step to press carries the accent the wizards' own Go buttons
-   used to (--rc-accent); every other button on the panel keeps the plain
-   chrome. Exactly one is blue at a time, so the eye is always on the
-   thing to do next rather than on the step that started the run. */
-.new-calibration-next {
+.new-calibration button.new-calibration-next:hover:not(:disabled) {
+  border-color: var(--on-accent);
+}
+
+.new-calibration-start {
   align-self: flex-start;
-  border: 1px solid var(--rc-accent);
-  background: var(--rc-accent);
-  color: var(--rc-accent-contrast);
-  padding: 0.35rem 0.9rem;
-  border-radius: 0.4rem;
-  font-size: 0.85rem;
-  font-weight: 600;
-  cursor: pointer;
 }
 
-.new-calibration-next:disabled {
-  background: var(--rc-border);
-  border-color: var(--rc-border);
-  color: var(--rc-text-muted);
-  cursor: not-allowed;
-}
-
-/* New calibration panel: one row per step, button then its statistics. */
 .new-calibration-step {
   display: flex;
   align-items: center;
@@ -34,34 +22,29 @@
 }
 
 .new-calibration-stat {
-  color: #555;
-  font-size: 0.92em;
+  color: var(--text-muted);
+  font: 12px/16px var(--font-mono);
+}
+
+.new-calibration-running {
+  margin: 0;
+  color: var(--text-muted);
 }
 
 .new-calibration-failure {
-  color: #a11;
+  margin: 0;
+  color: var(--danger);
 }
 
 .new-calibration-written {
-  color: #0a6;
+  margin: 0;
+  color: var(--ok-text);
 }
 
-/* "Stop waiting" -- the escape hatch beside the running line (2026-09-21).
-   Deliberately quiet: it is not the action anyone should be reaching
-   for in a normal run, only the one that has to exist when a run can no
-   longer finish. Styled as a plain secondary control rather than a
-   danger button, because nothing destructive happens when it is pressed
-   -- the console stops waiting, the robot is untouched. */
-.new-calibration-stop {
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text-muted);
-  padding: 0.25rem 0.7rem;
-  border-radius: 0.4rem;
-  font-size: 0.8rem;
-  cursor: pointer;
-}
-
-.new-calibration-stop:hover {
-  color: var(--rc-text);
+/* Stopping a run is not destructive, so it stays a quiet secondary control. */
+.new-calibration button.new-calibration-stop {
+  height: 30px;
+  padding: 0 10px;
+  font-size: 13px;
+  color: var(--text-muted);
 }

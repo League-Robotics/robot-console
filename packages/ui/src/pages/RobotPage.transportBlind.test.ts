@@ -257,7 +257,6 @@ describe("RobotPage renders correctly for a relay-transport link (sprint 8 ticke
     expect(container.querySelector('[data-testid="estop-button"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="drive-forward"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Console"]')).toBeNull();
-    expect(container.textContent).toContain("vevav");
   });
 });
 
@@ -307,6 +306,5 @@ describe("RobotPage renders correctly for a wifi-transport link (sprint 10 ticke
     expect(container.querySelector('[data-testid="estop-button"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="drive-forward"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Console"]')).toBeNull();
-    expect(container.textContent).toContain("gopiv");
   });
 });

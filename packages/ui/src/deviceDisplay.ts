@@ -60,6 +60,12 @@ export function programVersionText(program: string): string {
   return match ? match[1]! : program;
 }
 
+/** `robot · NEZHA2 · program vevov`: kind, board, then the program (or firmware version). */
+export function deviceMetaText(device: SnapshotDevice): string {
+  const program = device.program ? `program ${programVersionText(device.program)}` : device.version;
+  return [device.commonName ?? device.kind, device.role, program].filter((part): part is string => !!part).join(" · ");
+}
+
 /** A device's role text.
  *
  * For `kind === "robot"` (018-016, stakeholder verbatim: "show the

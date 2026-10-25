@@ -1,57 +1,97 @@
 .flash-dialog {
-  border: 1px solid var(--rc-border);
-  border-radius: 0.75rem;
-  background: var(--rc-bg);
-  color: var(--rc-text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-card);
+  color: var(--text);
   padding: 0;
   width: min(34rem, calc(100vw - 2rem));
   max-height: calc(100vh - 4rem);
   overflow-y: auto;
+  box-shadow: 0 12px 32px rgba(16, 37, 82, 0.18);
 }
 
 .flash-dialog::backdrop {
-  background: rgba(15, 18, 22, 0.55);
+  background: rgba(16, 37, 82, 0.55);
 }
 
 .flash-dialog-panel {
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
-  padding: 1.1rem 1.25rem 1.25rem;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-4) var(--space-6);
 }
 
 .flash-dialog-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: var(--space-4);
 }
 
 .flash-dialog-header h2 {
   margin: 0;
-  font-size: 1.05rem;
+  font: 700 20px/1.25 var(--font-display);
+  color: var(--text-heading);
 }
 
 .flash-dialog-close {
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.3rem 0.75rem;
-  border-radius: 0.4rem;
-  font-size: 0.82rem;
-  cursor: pointer;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-heading);
+  font: 600 13px/1 var(--font-sans);
+  cursor: pointer;
 }
 
 .flash-dialog-close:hover {
-  border-color: var(--rc-accent);
+  border-color: var(--border-control);
+  background: var(--surface-sunken);
 }
 
 .flash-dialog-warning {
   margin: 0;
-  padding: 0.6rem 0.8rem;
-  border: 1px solid var(--rc-warn-border);
-  background: var(--rc-warn-bg);
-  color: var(--rc-warn-text);
-  border-radius: 0.4rem;
+  padding: 10px 12px;
+  border: 1px solid var(--status-warn-border);
+  border-radius: var(--radius-md);
+  background: var(--warn-bg);
+  color: var(--warn-text);
+}
+
+.flash-dialog .network-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.flash-dialog .network-settings-actions button {
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  color: var(--text);
+  font: 600 14px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.flash-dialog .network-settings-actions button:hover:not(:disabled) {
+  border-color: var(--text-heading);
+}
+
+.flash-dialog .network-settings-actions button[data-testid="forget-device-confirm"] {
+  color: var(--danger);
+}
+
+.flash-dialog .network-settings-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }

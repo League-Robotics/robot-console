@@ -1,37 +1,45 @@
 .command-strip {
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: var(--space-2);
 }
 
 .command-strip-hint {
   margin: 0;
-  padding: 0.5rem 0.75rem;
-  border-radius: 0.4rem;
-  background: var(--rc-warn-bg);
-  border: 1px solid var(--rc-warn-border);
-  color: var(--rc-warn-text);
-  font-size: 0.85rem;
+  padding: 8px 12px;
+  border: 1px solid var(--status-warn-border);
+  border-radius: var(--radius-md);
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  font-size: 13px;
 }
 
 .command-strip-buttons {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .command-strip-button {
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.35rem 0.9rem;
-  border-radius: 0.4rem;
-  font-size: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  color: var(--text);
+  font: 600 12.5px/1 var(--font-mono);
   cursor: pointer;
 }
 
+.command-strip-button:hover:not(:disabled) {
+  border-color: var(--text-heading);
+}
+
 .command-strip-button:disabled {
-  color: var(--rc-text-muted);
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
@@ -39,27 +47,23 @@
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 0.6rem;
+  gap: var(--space-2);
 }
 
 .command-strip-field {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.8rem;
-  color: var(--rc-text-muted);
+  gap: var(--space-1);
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .command-strip-field input {
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.35rem 0.6rem;
-  border-radius: 0.4rem;
-  font-size: 0.9rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  height: 30px;
+  padding: 0 8px;
+  font: 13px var(--font-mono);
 }
 
 .command-strip-field input:disabled {
-  color: var(--rc-text-muted);
+  color: var(--text-muted);
 }

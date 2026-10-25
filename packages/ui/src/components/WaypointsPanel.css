@@ -1,73 +1,121 @@
 .waypoints-panel {
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: var(--space-3);
   min-height: 0;
+  padding: var(--space-4);
+  background: var(--surface-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.waypoints-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.waypoints-panel-title {
+  margin: 0;
+  font: 700 12px/16px var(--font-sans);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }
 
 .waypoints-panel-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .waypoints-panel-record,
-.waypoints-panel-copy,
-.waypoints-panel-format {
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.35rem 0.8rem;
-  border-radius: 0.4rem;
-  font-size: 0.85rem;
+.waypoints-panel-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  color: var(--text);
+  font: 600 14px/1 var(--font-sans);
   cursor: pointer;
 }
 
 .waypoints-panel-record {
-  font-weight: 600;
-  border-color: var(--rc-accent);
-  color: var(--rc-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.waypoints-panel-record:hover:not(:disabled) {
+  border-color: var(--on-accent);
+}
+
+.waypoints-panel-copy:hover:not(:disabled) {
+  border-color: var(--text-heading);
 }
 
 .waypoints-panel-record:disabled,
 .waypoints-panel-copy:disabled {
-  border-color: var(--rc-border);
-  color: var(--rc-text-muted);
+  opacity: 0.45;
   cursor: not-allowed;
-}
-
-.waypoints-panel-formats {
-  display: flex;
-  gap: 0.3rem;
-}
-
-.waypoints-panel-format[aria-pressed="true"] {
-  background: var(--rc-accent);
-  border-color: var(--rc-accent);
-  color: var(--rc-accent-contrast);
 }
 
 .waypoints-panel-copy {
   margin-left: auto;
 }
 
+.waypoints-panel-formats {
+  display: inline-flex;
+  margin-left: auto;
+  overflow: hidden;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+}
+
+.waypoints-panel-format {
+  padding: 6px 12px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font: 600 13px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.waypoints-panel-format:last-child {
+  border-right: 0;
+}
+
+.waypoints-panel-format[aria-pressed="true"] {
+  background: var(--league-navy);
+  color: #ffffff;
+}
+
 .waypoints-panel-empty {
   margin: 0;
-  padding: 0.75rem;
-  border: 1px dashed var(--rc-border);
-  border-radius: 0.4rem;
-  color: var(--rc-text-muted);
-  font-size: 0.85rem;
+  padding: 14px;
+  border: 1px dashed var(--border-control);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
 .waypoints-panel-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  border: 1px solid var(--rc-border);
-  border-radius: 0.4rem;
-  background: var(--rc-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
   overflow-y: auto;
   min-height: 0;
   flex: 1;
@@ -77,9 +125,9 @@
   display: grid;
   grid-template-columns: 2rem 1fr auto;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.4rem 0.6rem;
-  border-bottom: 1px solid var(--rc-border);
+  gap: var(--space-2);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
   cursor: pointer;
 }
 
@@ -88,23 +136,22 @@
 }
 
 .waypoints-panel-item:hover {
-  background: var(--rc-bg);
+  background: var(--surface-sunken);
 }
 
 .waypoints-panel-item-selected {
-  background: var(--rc-warn-bg);
-  box-shadow: inset 3px 0 0 var(--rc-accent);
+  background: var(--info-bg);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .waypoints-panel-number {
-  font-weight: 600;
-  color: var(--rc-text-muted);
+  font: 600 12px/16px var(--font-mono);
+  color: var(--text-muted);
   text-align: right;
-  font-variant-numeric: tabular-nums;
 }
 
 .waypoints-panel-text {
-  font-size: 0.8rem;
+  font: 12px/16px var(--font-mono);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -112,15 +159,15 @@
 .waypoints-panel-delete {
   border: 1px solid transparent;
   background: transparent;
-  color: var(--rc-text-muted);
+  color: var(--text-muted);
   font-size: 1rem;
   line-height: 1;
   padding: 0.15rem 0.4rem;
-  border-radius: 0.3rem;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
 .waypoints-panel-delete:hover {
-  border-color: var(--rc-danger-border);
-  color: var(--rc-danger-text);
+  border-color: var(--border-control);
+  color: var(--danger);
 }

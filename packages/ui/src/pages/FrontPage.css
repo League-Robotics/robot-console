@@ -1,586 +1,169 @@
+.front-page-head {
+  margin-bottom: 20px;
+}
+
+.front-page-head h1 {
+  margin: 0;
+  font: 700 30px/1.1 var(--font-display);
+  letter-spacing: -0.01em;
+  color: var(--text-heading);
+}
+
+.front-page-summary {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+}
+
 .front-page {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--space-6);
 }
 
 .connection-banner {
   margin: 0;
-  padding: 0.5rem 0.75rem;
-  border-radius: 0.4rem;
-  background: var(--rc-warn-bg);
-  border: 1px solid var(--rc-warn-border);
-  color: var(--rc-warn-text);
-  font-size: 0.9rem;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--warn-bg);
+  border: 1px solid var(--status-warn-border);
+  color: var(--warn-text);
+  font-weight: 600;
 }
 
 .devices-empty {
-  color: var(--rc-text-muted);
-  font-size: 0.95rem;
+  margin: 0;
 }
 
-/* Stakeholder (2026-09-13): cards are ~400px wide and float into rows. */
-.devices-list {
+.radio-migration-offers {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-6);
+  padding: 0;
   list-style: none;
-  margin: 0;
-  padding: 0;
+}
+
+.radio-migration-offer {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: stretch;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--status-warn-border);
+  border-radius: var(--radius-lg);
+  background: var(--warn-bg);
+  color: var(--warn-text);
 }
 
-.devices-list > li {
-  flex: 0 0 400px;
-  max-width: 100%;
+.radio-migration-offer span {
+  flex: 1 1 20rem;
 }
 
-.devices-list > li > .device-card {
-  height: 100%;
-}
-
-/* The whole card is the navigation affordance (a real `Link`, not a
-   `<div onClick>`) -- reset anchor defaults so it reads as a card,
-   not a link, while staying keyboard/middle-click/screen-reader
-   navigable. */
-.device-card {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  border-radius: 0.6rem;
-  padding: 0.9rem 1.1rem;
-  color: inherit;
-}
-
-/* OOP 2026-09-10: the card no longer navigates itself -- the open
-   arrow on the right is the one way into the robot's page. */
-.device-card-main {
-  display: flex;
-  align-items: stretch;
-  gap: 0.9rem;
-}
-
-.device-card-body {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.device-open-button,
-.device-connection-open-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--rc-accent);
-  text-decoration: none;
-  border: 1px solid var(--rc-border);
-  border-radius: 999px;
-  background: var(--rc-surface);
-  transition: border-color 0.1s ease, background 0.1s ease;
-}
-
-.device-open-button {
-  flex: 0 0 auto;
-  align-self: center;
-  width: 3rem;
-  height: 3rem;
-}
-
-.device-connection-open-button {
-  width: 1.6rem;
-  height: 1.6rem;
-  margin-left: 0.4rem;
-}
-
-.device-connection-open-button svg {
-  width: 14px;
-  height: 14px;
-}
-
-.device-open-button:hover,
-.device-open-button:focus-visible,
-.device-connection-open-button:hover,
-.device-connection-open-button:focus-visible {
-  border-color: var(--rc-accent);
-  background: var(--rc-accent);
-  color: var(--rc-accent-contrast);
-}
-
-.device-open-button:focus-visible,
-.device-connection-open-button:focus-visible {
-  outline: 2px solid var(--rc-accent);
-  outline-offset: 2px;
-}
-
-/* Ticket 018-015: the open arrow and the lightning Flash trigger share
-   this column -- arrow at the top, Flash at the bottom
-   (`justify-content: space-between`), so a card with only one of the
-   two (or the arrow alone, the common case with no usb link) keeps that
-   one control in its original upper-right position instead of shifting
-   toward the middle: with a single flex item, `space-between` packs it
-   at the start, same as the old bare `.device-open-button` placement. */
-.device-card-side {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.6rem;
-}
-
-.device-flash-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  align-self: center;
-  width: 2rem;
-  height: 2rem;
-  padding: 0;
-  border: 1px solid var(--rc-border);
-  border-radius: 999px;
-  background: var(--rc-surface);
-  color: var(--rc-accent);
+.radio-migration-offer button {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  color: var(--text);
+  font: 600 13px/1 var(--font-sans);
   cursor: pointer;
-  transition: border-color 0.1s ease, background 0.1s ease;
 }
 
-.device-flash-button:hover,
-.device-flash-button:focus-visible {
-  border-color: var(--rc-accent);
-  background: var(--rc-accent);
-  color: var(--rc-accent-contrast);
-}
-
-.device-flash-button:focus-visible {
-  outline: 2px solid var(--rc-accent);
-  outline-offset: 2px;
-}
-
-.device-flash-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-/* Ticket 017-007: the relay quick-connect card's own `.device-relay-*`
- * rules moved to `components/RelayConnectControls.css` (imported by
- * `RelayConnectControls.tsx`, which now owns this card's markup). */
-
-.device-card-header {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-.device-name {
-  margin: 0;
-  font-size: 1.15rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-.device-name-flagged {
-  color: var(--rc-danger-text);
-}
-
-.device-flag {
-  font-size: 0.75rem;
-  padding: 0.1rem 0.5rem;
-  border-radius: 999px;
-  background: var(--rc-warn-bg);
-  border: 1px solid var(--rc-warn-border);
-  color: var(--rc-warn-text);
-}
-
-/* Stakeholder (2026-09-14): a robot's name is its link status -- yellow
-   while no link answers, green once one does -- replacing the "Linked"
-   pill that popped in and out. */
-.device-name-link {
-  padding: 0.05rem 0.6rem;
-  border: 1px solid transparent;
-  border-radius: 999px;
-}
-
-.device-name-link[data-linked="false"] {
-  background: var(--rc-link-off-bg);
-  border-color: var(--rc-link-off-border);
-  color: var(--rc-link-off-text);
-}
-
-.device-name-link[data-linked="true"] {
-  background: var(--rc-link-on-bg);
-  border-color: var(--rc-link-on-border);
-  color: var(--rc-link-on-text);
-}
-
-/* Calibration-classification badge (sprint 011 ticket 002) -- same pill
- * shape as `.device-flag`, distinguished by the
- * accent color so it reads as "a fact about this device" rather than
- * "linked" or "a problem". */
-.device-calibration-badge {
-  font-size: 0.75rem;
-  padding: 0.1rem 0.5rem;
-  border-radius: 999px;
-  background: var(--rc-accent);
-  color: var(--rc-accent-contrast);
-}
-
-.device-fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-  gap: 0.5rem 1.25rem;
-  margin: 0.6rem 0 0;
-}
-
-.device-fields div {
+/* ---------- Groups ---------- */
+.devices-group {
   display: flex;
   flex-direction: column;
-  gap: 0.1rem;
+  gap: var(--space-3);
+  scroll-margin-top: var(--space-4);
 }
 
-.device-fields dt {
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--rc-text-muted);
-}
-
-.device-fields dd {
+.devices-group-heading {
   margin: 0;
-  font-size: 0.92rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  word-break: break-word;
+  font: 700 12px/16px var(--font-sans);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }
 
-.device-note {
-  margin: 0.6rem 0 0;
-  font-size: 0.82rem;
-  color: var(--rc-text-muted);
-}
-
-/* Sibling of the card's `<a>` (ticket 012-002), not nested inside it --
-   `FlashControls` renders `null` for a non-flashable device, so this
-   wrapper only ever appears with content in it; no border/background
-   of its own so an already-identified card looks exactly as before. */
-.device-card-actions {
-  margin-top: 0.6rem;
-}
-
-/* Remembered-robot roster (sprint 5) -- visually secondary to the
-   attached-endpoint list above it: muted, no hover/focus affordance
-   (there is nothing to navigate to), so it never reads as a clickable
-   card the way `.device-card` does. */
-.remembered-robots {
-  margin-top: 1.25rem;
+.devices-group-collapsible > .devices-group-heading {
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .remembered-robots-hint {
   margin: 0;
-  font-size: 0.85rem;
-  color: var(--rc-text-muted);
+  font-size: 13px;
+  color: var(--text-muted);
 }
 
-.remembered-robots-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
+.devices-list > li,
 .remembered-robots-list > li {
-  flex: 0 0 400px;
-  max-width: 100%;
-}
-
-.remembered-robot-card {
-  display: flex;
-  /* `center`, not `baseline`: the name/last-seen block is two lines
-     tall as of 2026-09-21, and baseline-aligning the action buttons
-     against the first of them hung them off the top of the card. */
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem 0.9rem;
-  border: 1px dashed var(--rc-border);
-  border-radius: 0.6rem;
-  padding: 0.6rem 0.9rem;
-  color: var(--rc-text-muted);
-}
-
-/* Name over "Last seen", stacked -- the stakeholder's own arrangement,
-   2026-09-21. */
-.remembered-robot-header {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.15rem;
   min-width: 0;
 }
 
-.remembered-robot-name {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--rc-text-muted);
-}
-
-.remembered-robot-note {
-  margin: 0;
-  font-size: 0.82rem;
-  color: var(--rc-text-muted);
-}
-
-/* Radio and Forget sit on one row at the card's right edge. The row
-   owns the `margin-left: auto` that Forget used to carry on its own, so
-   the two stay together instead of Forget alone hugging the edge. */
-.remembered-robot-actions {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-}
-
-/* "Radio" -- try to reach this robot over a bridge right now
-   (stakeholder, 2026-09-21: "it can just be white; it doesn't have to
-   be a particular color"). Deliberately identical in shape to Forget
-   beside it, and deliberately NOT green: green on this page means "a
-   connection is live" (see `.device-chip[data-state="linked"]`), and a
-   button that merely attempts one must not borrow that meaning. */
-.remembered-robot-radio {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2rem;
-  height: 2rem;
-  padding: 0;
-  border-radius: 999px;
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text-muted);
-  line-height: 1;
-  cursor: pointer;
-}
-
-/* An attempt in flight goes yellow -- the stakeholder's own
-   progression, 2026-09-21: "the button starts off as white. You click
-   it, maybe it goes yellow, and then, if it connects and goes green,
-   then you put it in the top section."
-
-   Yellow deliberately uses `--rc-link-off-*`, the exact tokens the
-   robot cards' own radio chip uses for "not linked yet", so the three
-   states read as one scale across both sections: white (never tried)
-   -> yellow (trying, still down here) -> green (linked, and by then the
-   card has moved up and this button no longer exists). The green end of
-   that scale is `.device-chip-radio[data-state="linked"]`; there is
-   deliberately no green case in this file, because a robot that is
-   green is no longer in this section. */
-.remembered-robot-radio[data-state="busy"] {
-  background: var(--rc-link-off-bg);
-  border-color: var(--rc-link-off-border);
-  color: var(--rc-link-off-text);
-  cursor: default;
-}
-
-.remembered-robot-radio:hover,
-.remembered-robot-radio:focus-visible {
-  border-color: var(--rc-accent);
-}
-
-.remembered-robot-radio[aria-disabled="true"] {
-  color: var(--rc-text-muted);
-  cursor: default;
-}
-
-/* Why an attempt did not happen, or did not land. Muted: it is an
-   explanation, not an alarm -- a robot that is off is the normal case
-   for this section, not a fault. */
-.remembered-robot-problem {
-  font-size: 0.78rem;
-  color: var(--rc-text-muted);
-}
-
-.remembered-robot-forget {
-  font-size: 0.82rem;
-  padding: 0.25rem 0.7rem;
-  border-radius: 0.4rem;
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: inherit;
-  cursor: pointer;
-}
-
-.remembered-robot-forget:hover,
-.remembered-robot-forget:focus-visible {
-  border-color: var(--rc-accent);
-}
-
-/* One card per robot (out-of-process, 2026-09-10): a robot reachable
-   over more than one link renders its links as a compact list under
-   the card's informational region -- a sibling of the card's anchor,
-   never nested inside it. */
-.device-card-group {
+/* ---------- Robot cards ---------- */
+.device-card {
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 10px;
+  height: 100%;
+  scroll-margin-top: var(--space-4);
 }
 
-.device-connections {
-  list-style: none;
-  margin: 0.5rem 0 0;
-  padding: 0;
+.device-card-local {
+  background: var(--surface-sunken);
+}
+
+.device-card-main {
   display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-  font-size: 0.85rem;
+  align-items: stretch;
+  gap: 14px;
+  flex: 1;
 }
 
-.device-connection {
-  display: flex;
-  gap: 0.75rem;
-  align-items: center;
-  flex-wrap: wrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+.device-card-side {
+  flex: none;
 }
 
-.device-connection-state {
-  color: var(--rc-text-muted);
+.device-name {
+  align-self: flex-start;
 }
 
-.device-connection-open {
-  color: var(--rc-accent);
-  font-weight: 600;
-}
-
-/* Bench defect 010 addendum (2026-09-13), fix item 3: a refused/failed
-   Connect's notice text, shown on that link's own row -- see
-   `FrontPage.tsx`'s `DeviceConnectionRow`/`useLinkNotice`. */
-.device-connection-notice {
-  color: var(--rc-warn-text);
-  flex-basis: 100%;
-}
-
-/* Sprint 019 ticket 005 (SUC-005): an MCP-opened session's caller,
-   alongside this row's own existing "who holds this board" state text --
-   not a warning, so it does not share `.device-connection-notice`'s
-   color; a quiet, distinct label is enough to make an agent's presence
-   visible without reading as an alarm. */
-.device-connection-agent {
-  color: var(--rc-accent);
-}
-
-/* Ticket 018-010: the quiet "N older connections hidden" summary line
-   for whatever `deviceDisplay.ts`'s `cardLinks` filtered out of the
-   Connections list above -- deliberately muted/small, matching
-   `.device-connection-state`'s own muted color, so it reads as
-   background information rather than another row worth alarm. */
-.device-connections-hidden {
-  margin: 0.35rem 0 0;
-  font-size: 0.8rem;
-  color: var(--rc-text-muted);
-}
-
-/* Stakeholder (2026-09-13): the card shows the role as one quiet line
-   and one icon chip per live connection; every detail lives in the
-   chip's hover/focus popover, and history on the Diagnostics tab. */
 .device-role {
-  margin: 0.15rem 0 0;
-  font-size: 0.8rem;
-  color: var(--rc-text-muted);
+  overflow-wrap: anywhere;
 }
 
 .device-connections {
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 0.7rem;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
 }
 
 .device-chip {
   position: relative;
 }
 
-.device-chip-face {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2.4rem;
-  height: 2.4rem;
-  padding: 0;
-  border-radius: 999px;
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text-muted);
-  font: inherit;
-  font-size: 0.82rem;
-  line-height: 1;
-  text-decoration: none;
-  cursor: default;
-}
-
-/* Stakeholder (2026-09-14): every robot's connection chip is an on/off
-   toggle; only the card's arrow goes into the robot. */
-button.device-chip-face:not([aria-disabled="true"]) {
+button.device-chip-face {
   cursor: pointer;
 }
 
-/* A linked connection chip -- USB, a radio bridge, Wi-Fi. Stakeholder,
-   2026-09-21: "when I do the bridge badge, it's a lighter green than
-   radio, and they should be the same color green." It was: this rule
-   used `--rc-ok-*` (#e8f6ec, a pale wash) while the radio chip below
-   uses `--rc-link-on-*` (#bbf7d0 with a real border). Two greens for
-   one meaning -- "this connection is live" -- with nothing to
-   distinguish them but which chip you happened to be looking at.
-
-   Both now use the `--rc-link-on-*` set. Note the radio chip carries
-   BOTH classes (`device-chip device-chip-radio`), so its own rule below
-   still wins on equal specificity by being later in the file; these two
-   rules now simply agree. */
-.device-chip[data-state="linked"] .device-chip-face {
-  background: var(--rc-link-on-bg);
-  border-color: var(--rc-link-on-border);
-  color: var(--rc-link-on-text);
-  font-weight: 600;
-}
-
-.device-chip[data-state="open"] .device-chip-face {
-  border-color: var(--rc-accent);
-  color: var(--rc-accent);
+button.device-chip-face[aria-disabled="true"] {
+  cursor: default;
 }
 
 .device-chip[data-state="busy"] .device-chip-face {
-  border-style: dashed;
-  color: var(--rc-text);
-}
-
-.device-chip[data-state="failed"] .device-chip-face {
-  background: var(--rc-warn-bg);
-  border-color: var(--rc-warn-border);
-  color: var(--rc-warn-text);
-}
-
-/* The radio chip every robot card carries: yellow while no bridge
-   carries the robot, green once one does, a red flash when a connect
-   could not happen (then back to yellow). */
-.device-chip-radio[data-state="idle"] .device-chip-face {
-  background: var(--rc-link-off-bg);
-  border-color: var(--rc-link-off-border);
-  color: var(--rc-link-off-text);
-}
-
-.device-chip-radio[data-state="linked"] .device-chip-face {
-  background: var(--rc-link-on-bg);
-  border-color: var(--rc-link-on-border);
-  color: var(--rc-link-on-text);
+  animation: device-chip-pulse 1.2s ease-in-out infinite;
 }
 
 .device-chip[data-state="flash"] .device-chip-face {
-  background: var(--rc-danger-bg);
-  border-color: var(--rc-danger-border);
-  color: var(--rc-danger-contrast);
   animation: device-chip-flash 0.4s ease-in-out 3;
+}
+
+@keyframes device-chip-pulse {
+  50% {
+    opacity: 0.55;
+  }
 }
 
 @keyframes device-chip-flash {
@@ -589,43 +172,26 @@ button.device-chip-face:not([aria-disabled="true"]) {
   }
 }
 
-/* A radio bridge card's bottom line(s): what it carries right now. */
-.device-relay-connections {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-  margin: 0;
-  padding: 0.5rem 0 0;
-  list-style: none;
-  border-top: 1px solid var(--rc-border);
-  font-size: 0.85rem;
-}
-
-.device-relay-connections li[data-state="busy"],
-.device-relay-unconnected {
-  color: var(--rc-text-muted);
-}
-
-.device-chip-face:hover,
-.device-chip-face:focus-visible {
-  outline: 2px solid var(--rc-accent);
-  outline-offset: 1px;
+@media (prefers-reduced-motion: reduce) {
+  .device-chip-face {
+    animation: none !important;
+  }
 }
 
 .device-chip-popover {
   display: none;
   position: absolute;
   z-index: 20;
-  top: calc(100% + 0.4rem);
+  top: calc(100% + 6px);
   left: 0;
   min-width: 18rem;
   max-width: min(32rem, 90vw);
-  padding: 0.6rem 0.75rem;
-  border-radius: 0.5rem;
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
-  font-size: 0.85rem;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface-card);
+  box-shadow: 0 6px 20px rgba(16, 37, 82, 0.15);
+  font-size: 13px;
 }
 
 .device-chip:hover .device-chip-popover,
@@ -633,60 +199,97 @@ button.device-chip-face:not([aria-disabled="true"]) {
   display: block;
 }
 
-/* keep the popover open while the pointer crosses the gap */
 .device-chip-popover::before {
   content: "";
   position: absolute;
-  top: -0.5rem;
+  top: -8px;
   left: 0;
   right: 0;
-  height: 0.5rem;
-}
-
-.device-chip-popover .device-connection {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.3rem;
-}
-
-/* Stakeholder (2026-09-13): the home page lists things in groups --
-   Robots, Radio bridges, Not seen recently. */
-.devices-group {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-}
-
-.devices-group + .devices-group {
-  margin-top: 1.25rem;
-}
-
-.devices-group-heading {
-  margin: 0;
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: var(--rc-text-muted);
+  height: 8px;
 }
 
 .device-chip-popover-title {
-  margin: 0 0 0.35rem;
-  font-weight: 600;
+  margin: 0 0 6px;
+  font-weight: 700;
+  color: var(--text-heading);
 }
 
-/* Stakeholder (2026-09-13): cards in a row share one height. */
-.devices-list > li > .device-card {
-  min-height: 7.5rem;
-  box-sizing: border-box;
+.device-connection {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
 }
 
-button.device-open-button {
-  cursor: pointer;
-  padding: 0;
-  font: inherit;
+.device-connection-label {
+  font: 12px/16px var(--font-mono);
+  color: var(--text);
+  overflow-wrap: anywhere;
 }
 
-.remembered-robot-forget {
-  display: inline-flex;
+.device-connection-state,
+.device-connection-last-checked {
+  color: var(--text-muted);
+}
+
+.device-connection-notice {
+  color: var(--warn-text);
+}
+
+.device-connection-agent {
+  color: var(--info-text);
+}
+
+.device-relay-connections {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 8px 0 0;
+  list-style: none;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.device-relay-connections li[data-state="busy"],
+.device-relay-unconnected {
+  color: var(--text-muted);
+}
+
+/* ---------- Not seen recently ---------- */
+.remembered-robot-card {
   align-items: center;
-  padding: 0.25rem 0.4rem;
+  flex-wrap: wrap;
+  height: 100%;
+  border-style: dashed;
+  box-shadow: none;
+  background: transparent;
+  scroll-margin-top: var(--space-4);
+}
+
+.remembered-robot-header {
+  align-items: flex-start;
+}
+
+.remembered-robot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.remembered-robot-radio {
+  cursor: pointer;
+}
+
+.remembered-robot-radio[aria-disabled="true"] {
+  cursor: default;
+}
+
+.remembered-robot-problem {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--text-muted);
 }

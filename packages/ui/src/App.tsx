@@ -1,37 +1,33 @@
-/**
- * @robot-console/ui — root component.
- *
- * Ticket 007 replaces the flat Devices/Console tab-bar shell (tickets
- * 010/011, sprint 1) with the two-level navigation `sprint.md` calls
- * for: a `BrowserRouter` mounted here, and the actual route table in
- * `router.tsx` (`/` the front page, `/d/:endpointId` the per-device
- * page). See `sprint.md`'s Architecture section for the full
- * navigation design and Step 6's router decision. `server.ts` already
- * serves `index.html` for any unmatched GET, so no host change is
- * needed for client-side routes to be bookmarkable/refreshable.
- *
- * Ticket 012-004 replaces the static `<h1>`-only header with the
- * route-aware `AppHeader` (back-to-devices link + Flash menu, see its
- * own doc comment), mounted here as a sibling of `<AppRoutes />` so it
- * renders above every route, including states `<AppRoutes />` itself
- * never reaches (e.g. an unmatched path).
- */
+import { useState } from "react";
 import { BrowserRouter } from "react-router";
 import { WsProvider } from "./ws/WsProvider";
 import { AppHeader } from "./components/AppHeader";
+import { Sidebar } from "./components/Sidebar";
 import { AppRoutes } from "./router";
 import "./App.css";
+
+/** The navy rail on the left, the workspace (top bar + route) on the right. */
+export function AppShell() {
+  const [navOpen, setNavOpen] = useState(false);
+  return (
+    <div className="app lg" data-nav-open={navOpen}>
+      <Sidebar onNavigate={() => setNavOpen(false)} />
+      {navOpen && <div className="app-scrim" aria-hidden="true" onClick={() => setNavOpen(false)} />}
+      <div className="app-workspace">
+        <AppHeader onOpenNav={() => setNavOpen(true)} />
+        <main className="app-main">
+          <AppRoutes />
+        </main>
+      </div>
+    </div>
+  );
+}
 
 export function App() {
   return (
     <WsProvider>
       <BrowserRouter>
-        <div className="app">
-          <AppHeader />
-          <main className="app-main">
-            <AppRoutes />
-          </main>
-        </div>
+        <AppShell />
       </BrowserRouter>
     </WsProvider>
   );

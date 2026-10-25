@@ -41,6 +41,7 @@ import { DriveControls, driveSpeedFrom } from "./DriveControls";
 import { FunctionsPanel } from "./FunctionsPanel";
 import { PathTracePanel } from "./PathTracePanel";
 import { WaypointsPanel } from "./WaypointsPanel";
+import { Icon } from "./Icon";
 import "./DriveTab.css";
 
 /** Same number `DriveControls` drives at -- one dialect for every held
@@ -297,29 +298,39 @@ export function DriveTab({ link, name }: DriveTabProps) {
   return (
     <div className="robot-page-columns drive-tab" data-testid="robot-tab-panel-drive">
       <div className="robot-page-column robot-page-column-left drive-tab-left">
-        <div className="drive-tab-top">
-          <div className="drive-tab-pad">
-            <DriveControls link={link} speedText={speedText} onSpeedText={setSpeedText} />
-          </div>
-          <div className="robot-page-panel drive-tab-charts" aria-label="Charts">
-            <h3>Charts</h3>
-            <ChartsPanel linkId={linkId} />
+        <div className="robot-page-panel drive-tab-pad" aria-label="Drive">
+          <h3>
+            Drive
+            <span className="lg-panel__aside drive-tab-keys" aria-hidden="true">
+              <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> · <kbd>space</kbd> stops
+            </span>
+          </h3>
+          <DriveControls link={link} speedText={speedText} onSpeedText={setSpeedText} />
+          <div className="drive-tab-aids">
+            <p className="drive-tab-aid" data-testid="drive-tab-keyboard">
+              <strong>Keyboard:</strong> arrow keys (or WASD) drive and turn; space stops.
+              {keyLabel ? ` Holding ${keyLabel}.` : ""}
+            </p>
+            <p className="drive-tab-aid" data-testid="drive-tab-gamepad">
+              <strong>Gamepad:</strong>{" "}
+              {gamepadId
+                ? `${gamepadId} — left stick drives with proportional speed.${stick ? ` Wheels ${stick[0]} / ${stick[1]} mm/s.` : ""}`
+                : "none detected — plug in a controller and move its stick."}
+            </p>
           </div>
         </div>
-        <div className="drive-tab-aids">
-          <p className="drive-tab-aid" data-testid="drive-tab-keyboard">
-            <strong>Keyboard:</strong> arrow keys (or WASD) drive and turn; space stops.
-            {keyLabel ? ` Holding ${keyLabel}.` : ""}
-          </p>
-          <p className="drive-tab-aid" data-testid="drive-tab-gamepad">
-            <strong>Gamepad:</strong>{" "}
-            {gamepadId
-              ? `${gamepadId} — left stick drives with proportional speed.${stick ? ` Wheels ${stick[0]} / ${stick[1]} mm/s.` : ""}`
-              : "none detected — plug in a controller and move its stick."}
-          </p>
+        <div className="robot-page-panel drive-tab-charts" aria-label="Charts">
+          <h3>
+            <Icon name="chart" size={16} />
+            Charts
+          </h3>
+          <ChartsPanel linkId={linkId} />
         </div>
         <div className="robot-page-panel drive-tab-trace" aria-label="Path trace">
-          <h3>Path trace</h3>
+          <h3>
+            <Icon name="pin" size={16} />
+            Path trace
+          </h3>
           <PathTracePanel
             linkId={linkId}
             linkOpen={linkOpen}
@@ -329,7 +340,10 @@ export function DriveTab({ link, name }: DriveTabProps) {
           />
         </div>
         <div className="robot-page-panel">
-          <h3>Functions</h3>
+          <h3>
+            <Icon name="terminal" size={16} />
+            Functions
+          </h3>
           <FunctionsPanel link={link} name={name} />
         </div>
       </div>

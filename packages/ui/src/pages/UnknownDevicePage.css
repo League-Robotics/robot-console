@@ -1,16 +1,30 @@
 .unknown-device-page {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--space-6);
   max-width: 46rem;
+}
+
+.unknown-device-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.unknown-device-panel > h2 {
+  margin: 0;
+  font-family: var(--font-mono);
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .device-note {
   margin: 0;
-  font-size: 0.82rem;
-  color: var(--rc-text-muted);
+  font: 500 12px/16px var(--font-sans);
+  color: var(--text-muted);
 }
 
 .device-note-error {
-  color: var(--rc-danger-text);
+  color: var(--danger);
 }

@@ -158,6 +158,8 @@ export interface FlashDialogProps {
    * trigger) already uses. Text-trigger call sites (`AppHeader`,
    * `UnknownDevicePage`) are unaffected -- they simply don't pass this. */
   triggerIcon?: ReactNode;
+  /** Visible trigger content in place of `triggerLabel`, keeping its text-button naming. */
+  triggerContent?: ReactNode;
 }
 
 /** Focusable elements inside `container`, in DOM order -- used by the
@@ -183,6 +185,7 @@ export function FlashDialog({
   triggerLabel = "Flash",
   triggerClassName = "device-button",
   triggerIcon,
+  triggerContent,
 }: FlashDialogProps) {
   const progress = useFlashProgress(link.id);
   const inProgress = progress !== undefined;
@@ -305,7 +308,7 @@ export function FlashDialog({
         title={sendable ? iconTriggerName : "Disconnected from the host"}
         onClick={() => sendable && setOpen(true)}
       >
-        {triggerIcon ?? triggerLabel}
+        {triggerIcon ?? triggerContent ?? triggerLabel}
       </button>
       <Modal
         open={open}

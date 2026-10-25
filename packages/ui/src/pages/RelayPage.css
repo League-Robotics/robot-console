@@ -1,95 +1,64 @@
-/* Sprint 022 ticket 008: this file deliberately gains no
- * `var(--console-dock-height)` reference of its own. This page has no
- * `calc(100vh - ...)` column-sizing rule to begin with -- confirmed via
- * `grep -rn "calc(100vh" packages/ui/src` while implementing this
- * ticket -- because the one place that math matters for a bridged robot
- * is `RobotPage.css`'s `.robot-page-column-console`, applied to the
- * nested `<RobotPage device={child.device} link={child.link} />` this
- * page renders for its own connected child (`relay-page-connected`,
- * below), not to anything this file itself owns. `--console-dock-height`
- * reaches that nested `RobotPage` for free regardless -- it's written to
- * `document.documentElement.style` (`console-dock/ConsoleDock.tsx`'s own
- * doc comment, "Ticket 008"), and a CSS custom property inherits down
- * the DOM tree from the document root to everywhere, independent of how
- * deeply nested the reading rule's own component happens to be. See that
- * file's own ticket 008 comment for the actual fix. */
 .relay-page {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--space-6);
   max-width: 46rem;
 }
 
-/* Connected: the page hands the robot-via-relay endpoint to RobotPage --
- * the SAME component DevicePage renders for a USB robot, and DevicePage
- * renders it with no wrapper at all, so the robot's two-column layout
- * gets the full window. This page's own 46rem shell (right for the
- * connect bar and the relay's raw console) must not squeeze it into one
- * narrow column, so the cap is lifted whenever a robot is on screen. */
 .relay-page-connected {
   max-width: none;
 }
 
+.relay-page-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 46rem;
+}
+
+.relay-page-panel > h2 {
+  margin: 0;
+}
+
 .relay-page-hint {
   margin: 0;
-  color: var(--rc-text-muted);
-  font-size: 0.9rem;
+  font: 500 12px/16px var(--font-sans);
+  color: var(--text-muted);
 }
-
-/* 018-010 item 3: the relay's own role/host label, right under its
- * name -- same muted treatment as `.relay-page-hint`, one line. */
-.relay-page-role {
-  margin: 0;
-  color: var(--rc-text-muted);
-  font-size: 0.9rem;
-}
-
-/* Ticket 017-007: `.relay-autoconnecting-status`/`.relay-page-alert`/
- * `.relay-connected-status`/`.relay-idle-status`/`.relay-connect-bar`
- * moved to `components/RelayConnectControls.css` (imported by
- * `RelayConnectControls.tsx`, which now owns this page's connect-bar
- * and status-text markup, shared with `FrontPage.tsx`'s relay card). */
 
 .relay-robot-picker {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  font-size: 0.85rem;
-  color: var(--rc-text-muted);
+  gap: var(--space-2);
+  font-size: 13px;
+  color: var(--text-muted);
 }
 
 .relay-robot-picker select {
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.3rem 0.6rem;
-  border-radius: 0.4rem;
-  font-size: 0.9rem;
+  height: 36px;
+  padding: 0 10px;
+  font-size: 14px;
 }
 
 .relay-robot-picker select:disabled {
-  color: var(--rc-text-muted);
+  color: var(--text-muted);
 }
 
 .relay-radio-fields {
   display: flex;
-  gap: 0.75rem;
+  gap: var(--space-3);
 }
 
 .relay-radio-fields label {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.8rem;
-  color: var(--rc-text-muted);
+  gap: var(--space-1);
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .relay-radio-fields input {
   width: 4.5rem;
-  border: 1px solid var(--rc-border);
-  background: var(--rc-surface);
-  color: var(--rc-text);
-  padding: 0.3rem 0.5rem;
-  border-radius: 0.4rem;
-  font-size: 0.9rem;
+  height: 34px;
+  padding: 0 8px;
 }

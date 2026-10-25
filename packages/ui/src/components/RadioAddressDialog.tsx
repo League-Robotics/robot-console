@@ -53,7 +53,7 @@
  * narrower, derived-address-space `validateRadioAddress`. The host's
  * `set-radio-override` handler remains the actual authority either way.
  */
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { nameToRadioAddress } from "@robot-console/protocol";
 import type { RadioSourceWire } from "@robot-console/host/src/wsMessages.js";
 import { useWsActions } from "../ws/WsProvider";
@@ -73,9 +73,10 @@ export interface RadioAddressDialogProps {
    * name-derived default. See this module's doc comment. */
   radio?: { channel: number; group: number; source: RadioSourceWire };
   triggerClassName?: string;
+  triggerContent?: ReactNode;
 }
 
-export function RadioAddressDialog({ deviceId, name, radio, triggerClassName = "device-button" }: RadioAddressDialogProps) {
+export function RadioAddressDialog({ deviceId, name, radio, triggerClassName = "device-button", triggerContent }: RadioAddressDialogProps) {
   const { send } = useWsActions();
   const [open, setOpen] = useState(false);
   const [channel, setChannel] = useState("");
@@ -118,9 +119,10 @@ export function RadioAddressDialog({ deviceId, name, radio, triggerClassName = "
         className={triggerClassName}
         aria-haspopup="dialog"
         data-testid="radio-address-trigger"
+        title="Set radio address"
         onClick={() => setOpen(true)}
       >
-        Set Radio
+        {triggerContent ?? "Set Radio"}
       </button>
       <Modal
         open={open}

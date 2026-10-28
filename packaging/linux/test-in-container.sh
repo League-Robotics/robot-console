@@ -178,10 +178,11 @@ no_native_errors() { ! grep -Eq 'ERR_DLOPEN|cannot open shared object' "$1"; }
 at_most() { [ "$1" -le "$2" ]; }
 dpkg_status_is() { [ "$(dpkg-query -W -f='${db:Status-Status}' robot-console 2>/dev/null)" = "$1" ]; }
 conffile_mode_ok() { [ "$(stat -c '%a %U:%G' "$CONF")" = "644 root:root" ]; }
-conffile_values_ok() { # exactly the two public firmware sources, nothing else assigned
+conffile_values_ok() { # the two public firmware sources and the calwheels distance, nothing else assigned
   grep -qxF "ROBOT_CONSOLE_RELAY_FIRMWARE=$RELAY_SRC" "$CONF" &&
     grep -qxF "ROBOT_CONSOLE_ROBOT_FIRMWARE=$ROBOT_SRC" "$CONF" &&
-    [ "$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' "$CONF")" = 2 ]
+    grep -qE '^ROBOT_CONSOLE_CALWHEELS_CM=[0-9.]+$' "$CONF" &&
+    [ "$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' "$CONF")" = 3 ]
 }
 conffile_listed() {
   local c
@@ -231,6 +232,16 @@ curl -fsSL https://raw.githubusercontent.com/League-Microbit/mbtools/main/packag
   | sh -s -- "$MBTOOLS_VERSION"
 check "A: mbregistry is on \$PATH after installing mbtools" sh -c 'command -v mbregistry'
 
+# The package installs a system mbregistry unit, so the host defers to the
+# system socket and never spawns its own registry. No systemd runs here:
+# start the unit's ExecStart by hand, with the directories systemd would make.
+MBREG_UNIT=$(ls /etc/systemd/system/mbregistry.service /usr/lib/systemd/system/mbregistry.service 2>/dev/null | head -1)
+mkdir -p /run/mbregistry /var/lib/mbregistry
+# shellcheck disable=SC2046
+PYTHONDONTWRITEBYTECODE=1 setsid nohup $(sed -n 's/^ExecStart=//p' "$MBREG_UNIT") \
+  </dev/null >/tmp/mbregistry.log 2>&1 &
+check "A: the system mbregistry answers on /run/mbregistry/api.sock" wait_file /run/mbregistry/api.sock 60
+
 check "A: apt-get install ./deb" apt-get install -y -q "$DEB"
 check "A: package status is installed" installed
 dpkg-query -W -f='Package: ${Package}\nVersion: ${Version}\nDepends: ${Depends}\nRecommends: ${Recommends}\nInstalled-Size: ${Installed-Size} KiB\n' robot-console
@@ -257,7 +268,7 @@ log "firmware-source conffile"
 cat "$CONF"
 check "A: ships the conffile $CONF" test -f "$CONF"
 check "A: $CONF is 0644 root:root" conffile_mode_ok
-check "A: $CONF sets exactly the relay and robot firmware release sources" conffile_values_ok
+check "A: $CONF sets exactly the firmware release sources and calwheels distance" conffile_values_ok
 check "A: dpkg lists $CONF in Conffiles" conffile_listed
 check "A: every packaged path is owned by root:root" \
   test -z "$(dpkg -L robot-console | xargs -d '\n' stat -c '%U:%G %n' | grep -v '^root:root ')"
